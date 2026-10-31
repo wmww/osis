@@ -383,6 +383,40 @@ impl Fragment {
         }
     }
 
+    /// Whether joining `x` into this fragment changes nothing, judged on the part of it at
+    /// `x`'s positions (`part_at`), so it costs about what `x` and those positions hold rather
+    /// than the whole fragment. That part is a piece of `self` (joining it into `self` changes
+    /// nothing), so `x` joining into it unchanged joins into `self` unchanged: never true when
+    /// the join would change `self`.
+    pub fn contains(&self, x: &Fragment) -> bool {
+        let part = self.part_at(x);
+        let mut j = part.clone();
+        j.join(x.clone());
+        j == part
+    }
+
+    /// The piece of this fragment at `x`'s positions: of a struct the fields `x` holds (each
+    /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
+    /// or bag the elements `x` holds, each with this fragment's meta; anything else whole. A
+    /// narrowed field left empty is left out (a join drops empty children).
+    fn part_at(&self, x: &Fragment) -> Fragment {
+        match (self, x) {
+            (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.part_at(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
+            (Fragment::Map(s), Fragment::Map(d)) => {
+                let mut keep: BTreeMap<Eid, Entry> = BTreeMap::new();
+                for id in d.entries.keys() {
+                    for (e, r) in s.of_dot(&id.dot) {
+                        keep.entry(e.clone()).or_insert_with(|| r.clone());
+                    }
+                }
+                Fragment::Map(Map::new(s.meta.clone(), keep))
+            }
+            (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
+            (Fragment::Bag(s), Fragment::Bag(d)) if s.kind == d.kind => Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
+            _ => self.clone(),
+        }
+    }
+
     /// The empty fragment of `enc`; `Slots` has none (it is formed by join).
     pub fn empty(enc: Encoding) -> Option<Fragment> {
         Some(match enc {

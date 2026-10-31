@@ -97,6 +97,9 @@ pub struct Eph {
     remote: remote::Remote,
     /// Held ephemeral commits dropped (covered or expired), for the sync layer.
     dropped: Vec<CommitId>,
+    /// Held ephemeral commits let go because a change of the held durable set made every part
+    /// invalid, for the sync layer (it forgets their blobs, deletes them nowhere, reconciles).
+    unheld: Vec<CommitId>,
 }
 
 /// A batch written by `Engine::write`.
@@ -109,7 +112,7 @@ pub struct Written {
 impl Eph {
     /// Empty, under a new random session.
     pub fn new(session: [u8; 32]) -> Eph {
-        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new() }
+        Eph { session, src: Source::commit(CommitId(session)), next: 1, batches: 0, things: HashMap::new(), aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
     }
 
     fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {

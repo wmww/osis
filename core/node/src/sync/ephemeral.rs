@@ -69,6 +69,9 @@ pub(crate) struct LaneEntry {
     pub keys: Vec<DeleteKey>,
     /// A presence entry (prefix class presence).
     pub presence: bool,
+    /// What it counts against the label's cap (others' entries: `Engine::ephemeral_charge` of
+    /// its parts, at least its bytes).
+    pub charge: u64,
 }
 
 impl LaneEntry {
@@ -339,6 +342,8 @@ impl SyncEngine {
         // a holder applies the cover first, and an author crashing in between loses nothing
         let dropped = self.engine.take_dropped_ephemeral();
         self.eph_forget(&dropped, out)?;
+        let unheld = self.engine.take_unheld_ephemeral();
+        self.eph_unhold(&unheld);
         for c in commits {
             self.eph_place(c, out)?;
         }
@@ -658,7 +663,7 @@ impl SyncEngine {
                 }
                 let ai = p.parts.first().map_or(0, |x| x.0);
                 let a = c.blob.header.aspects.get(ai);
-                let e = LaneEntry { commit: c.id, blob: s.blob, wrap, stamp, own: true, salt: s.salt, blind: c.blob.header.blind, tid: a.map_or(g, |a| a.tid), actor: c.blob.header.actor, keys: p.keys, presence: c.class == EphClass::Presence };
+                let e = LaneEntry { commit: c.id, blob: s.blob, wrap, stamp, own: true, salt: s.salt, blind: c.blob.header.blind, tid: a.map_or(g, |a| a.tid), actor: c.blob.header.actor, keys: p.keys, presence: c.class == EphClass::Presence, charge: 0 };
                 self.eph_keep(l, s.id, e);
                 self.eph_spread(l, s.id, None, out)?;
             }
@@ -669,7 +674,7 @@ impl SyncEngine {
     /// Keeps an entry under `l` (served to peers from now on).
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
         if !e.own {
-            *self.eph.bytes.entry(l).or_default() += e.blob.len() as u64;
+            *self.eph.bytes.entry(l).or_default() += e.charge;
         }
         if e.foreign_presence() {
             self.eph.presence.insert(e.commit);
@@ -1019,7 +1024,8 @@ impl SyncEngine {
         }
         let commit = cb.id();
         let h = cb.header.clone();
-        let first = osis_commit::CommitBlob::decode(&pt).ok().and_then(|c| c.parts.first().map(|p| p.ai)).unwrap_or(0);
+        let ais: Vec<usize> = osis_commit::CommitBlob::decode(&pt).map(|c| c.parts.iter().map(|p| p.ai).collect()).unwrap_or_default();
+        let first = ais.first().copied().unwrap_or(0);
         // unverified blobs wait under a share of the cap: one past it is not kept apart, and
         // what already waits (an honest copy of the same commit included) stays
         let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
@@ -1028,7 +1034,7 @@ impl SyncEngine {
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
         let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
-        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys, presence: class == Class::Presence };
+        let e = LaneEntry { commit, blob, wrap, stamp, own: false, salt, blind: h.blind, tid: a.map_or(g, |a| a.tid), actor: h.actor, keys, presence: class == Class::Presence, charge: size };
         match ingested {
             Ok(EphIngest::Held { .. }) if self.engine.holds_ephemeral(&commit) => {}
             Ok(EphIngest::Pending) => {
@@ -1063,6 +1069,10 @@ impl SyncEngine {
         if let Some(s) = server {
             self.eph.present.insert((s, l, b));
         }
+        // counted as held in memory (decoded), not as its bytes: a blob of tiny entries takes
+        // about 200 times its size; admitted while under the cap, so past it by one blob at most
+        let mut e = e;
+        e.charge = self.engine.ephemeral_charge(&commit, &ais).max(size);
         self.eph_keep(l, b, e);
         if stamp.is_some() {
             self.eph_spread(l, b, server, out)?;
@@ -1208,20 +1218,7 @@ impl SyncEngine {
             }
             let Some(keys) = self.eph.by_commit.remove(c) else { continue };
             for (l, b) in keys {
-                let Some(e) = self.eph.entries.remove(&(l, b)) else { continue };
-                self.eph.by_blob.remove(&(b, l));
-                self.eph.served_src.remove(&(l, b));
-                if !e.own
-                    && let Some(n) = self.eph.bytes.get_mut(&l)
-                {
-                    *n = n.saturating_sub(e.blob.len() as u64);
-                    // room again after a refusal: the label is reconciled at its next periodic
-                    // pass, so what was refused is fetched again (`SyncEngine::timers`)
-                    if *n < self.cfg.ephemeral_bytes && self.eph.refused.remove(&l) {
-                        self.eph.reconciled.retain(|(_, x)| *x != l);
-                    }
-                }
-                self.state.feed.deleted(l, b);
+                let Some(e) = self.eph_unkeep(l, b) else { continue };
                 let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
                 for (conn, server, hk) in self.eph_conns(&l) {
                     self.eph.capped.remove(&(conn, l, b));
@@ -1241,6 +1238,46 @@ impl SyncEngine {
             }
         }
         Ok(())
+    }
+
+    /// Forgets lane entry `b` of `l` (no longer served); its bytes leave the label's count.
+    fn eph_unkeep(&mut self, l: LabelId, b: BlobId) -> Option<LaneEntry> {
+        let e = self.eph.entries.remove(&(l, b))?;
+        self.eph.by_blob.remove(&(b, l));
+        self.eph.served_src.remove(&(l, b));
+        if !e.own
+            && let Some(n) = self.eph.bytes.get_mut(&l)
+        {
+            *n = n.saturating_sub(e.charge);
+            // room again after a refusal: the label is reconciled at its next periodic pass, so
+            // what was refused is fetched again (`SyncEngine::timers`)
+            if *n < self.cfg.ephemeral_bytes && self.eph.refused.remove(&l) {
+                self.eph.reconciled.retain(|(_, x)| *x != l);
+            }
+        }
+        self.state.feed.deleted(l, b);
+        Some(e)
+    }
+
+    /// Commits the engine let go because every part turned invalid (`take_unheld_ephemeral`):
+    /// their entries are forgotten here without a delete anywhere (the author's or another
+    /// writer's business), and their labels reconciled at the next periodic pass, so they come
+    /// back to wait apart until valid again.
+    fn eph_unhold(&mut self, commits: &[CommitId]) {
+        for c in commits {
+            self.eph.presence.remove(c);
+            let Some(keys) = self.eph.by_commit.remove(c) else { continue };
+            for (l, b) in keys {
+                if self.eph_unkeep(l, b).is_none() {
+                    continue;
+                }
+                for (conn, server, _) in self.eph_conns(&l) {
+                    self.eph.capped.remove(&(conn, l, b));
+                    self.eph.present.remove(&(server, l, b));
+                }
+                self.eph.reconciled.retain(|(_, x)| *x != l);
+            }
+        }
     }
 
     /// A connection ended: what it knew of its peer goes with it.
@@ -1355,9 +1392,15 @@ impl SyncEngine {
         Self::eph_entries_of(&self.eph, l).filter(|(_, e)| !e.presence).map(|(b, e)| (b, e.blob.len())).collect()
     }
 
-    /// Ephemeral bytes held from others under `l` (tests, diagnostics).
+    /// What the ephemeral entries held from others under `l` count against its cap (their
+    /// `charge`: memory held, not encoded bytes; tests, diagnostics).
     pub fn ephemeral_bytes(&self, l: &LabelId) -> u64 {
         self.eph.bytes.get(l).copied().unwrap_or(0)
+    }
+
+    /// The encoded bytes and the charge of each entry held from others under `l` (tests).
+    pub fn ephemeral_held_from_others(&self, l: &LabelId) -> Vec<(usize, u64)> {
+        Self::eph_entries_of(&self.eph, l).filter(|(_, e)| !e.own).map(|(_, e)| (e.blob.len(), e.charge)).collect()
     }
 
     /// Bytes of entries under `l` waiting for their author's record (tests, diagnostics).

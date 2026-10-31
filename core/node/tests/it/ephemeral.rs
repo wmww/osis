@@ -113,6 +113,11 @@ fn map(kv: &[(&str, &str)]) -> BTreeMap<String, String> {
     kv.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
 }
 
+/// The encoded bytes of the ephemeral entries node `n` holds from others under `l`.
+fn encoded_held(net: &mut Net, n: usize, l: &osis_base::LabelId) -> usize {
+    net.sync(n).ephemeral_held_from_others(l).iter().map(|h| h.0).sum()
+}
+
 pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
     b.scan(&[], None, usize::MAX).unwrap().len()
 }
@@ -355,6 +360,9 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     note(&mut net, b, w, "b", "2");
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1"), ("b", "2")]));
+    let l = net.label(a);
+    let theirs: Vec<_> = net.engine(a).held_ephemeral().into_iter().filter(|h| !h.2).map(|h| h.0).collect();
+    assert!(!theirs.is_empty() && net.sync(a).ephemeral_bytes(&l) > 0, "b's commits held and counted");
     let bt = net.tid(b);
     let me = net.tid(a);
     let e = net.engine(a);
@@ -362,6 +370,15 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     remove_member(e, g, bt, &rs, 9);
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b's ephemeral write is un-merged");
+    // issues/eph-node-cost-bounds.md: invalid now, they are let go at once (kept and counted
+    // until restart, and listed as gained at every first Sync)
+    net.advance(60_000);
+    for c in &theirs {
+        assert!(!net.engine(a).holds_ephemeral(c), "not held");
+        assert!(net.sync(a).ephemeral_entries_of(c).is_empty(), "not kept in the lane");
+    }
+    assert_eq!(net.sync(a).ephemeral_bytes(&l), 0, "not counted");
+    assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]));
 }
 
 // notes/ephemeral.md Bounds (server ephemeral bytes per label): past the cap uploads are refused;
@@ -441,6 +458,40 @@ fn server_cap_one_huge_write_reports_spec_sync_5() {
     assert_eq!(notes(&mut net, b, w), map(&[("k", "v")]), "a later write that fits syncs");
 }
 
+// spec/sync.md §9 (caps), issues/eph-node-cost-bounds.md: the node cap counts what a held commit
+// takes in memory, not its encoded bytes: a commit of many tiny entries (about 200 times its size
+// decoded) fills it, and the next one is refused
+#[test]
+fn node_cap_counts_decoded_size_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let cap = 200_000;
+    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: cap, ..SyncConfig::default() });
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    let t = net.item(a, g, g, "doc");
+    net.run();
+    let l = net.label(a);
+    let tiny = |net: &mut Net, from: usize| {
+        let mut m = Mutation::new();
+        for k in from..from + 500 {
+            m.op(t, &eph(NOTES), PathOp { path: vec![PathSeg::Key(Value::Int(k as i64))], op: Op::Set(Value::Int(1)) }).unwrap();
+        }
+        net.engine(a).write(m).unwrap();
+        local(net, a);
+        net.run();
+    };
+    tiny(&mut net, 0);
+    let held = net.sync(b).ephemeral_bytes(&l);
+    let at_server = net.servers[sv].hub.store().ephemeral_bytes(&l);
+    assert!(at_server < 40_000 && held > 500 * 2048, "{at_server} B at the server, {held} counted here");
+    tiny(&mut net, 500);
+    match net.eph_read(b, t, NOTES) {
+        Some(Value::Map(m)) => assert_eq!(m.len(), 500, "the second refused"),
+        v => panic!("{v:?}"),
+    }
+}
+
 // notes/ephemeral.md Bounds (node ephemeral bytes per label held from others): a writer flooding
 // a label with ephemeral commits fills at most the cap at another node; the rest is refused
 // (`EphemeralRefused`)
@@ -460,7 +511,11 @@ fn ephemeral_flood_bounded_spec_requirements_scale() {
         net.run();
     }
     let l = net.label(a);
-    assert!(net.sync(b).ephemeral_bytes(&l) <= 4_000, "{}", net.sync(b).ephemeral_bytes(&l));
+    // each admitted while the label's count was under the cap: past it by one entry at most
+    let held = net.sync(b).ephemeral_held_from_others(&l);
+    let charged: u64 = held.iter().map(|h| h.1).sum();
+    assert_eq!(charged, net.sync(b).ephemeral_bytes(&l));
+    assert!(charged - held.iter().map(|h| h.1).max().unwrap_or(0) <= 4_000, "{held:?}");
     assert!(notes(&mut net, b, w).len() < 40);
     let refused = rx.try_iter().any(|e| matches!(e, osis_node::Event::Diagnostic(d) if d.kind == osis_node::DiagnosticKind::EphemeralRefused));
     assert!(refused, "reported");
@@ -2172,7 +2227,7 @@ fn cover_past_page_target_bounded_spec_sync_9() {
         let load = net.engine(a).own_ephemeral_load();
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "write {i}: {held} B of own commits, cover {cover} B");
-        let (at_b, at_sv) = (net.sync(b).ephemeral_bytes(&l) as usize, net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
+        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
         assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "write {i}: holder {at_b} B, server {at_sv} B, cover {cover} B");
         peak = (cover, at_b, at_sv);
     }
@@ -2338,7 +2393,7 @@ fn own_cover_split_by_aspect_spec_sync_9() {
         let load = net.engine(a).own_ephemeral_load();
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "round {round}: {held} B of own commits, cover {cover} B");
-        let (at_b, at_sv) = (net.sync(b).ephemeral_bytes(&l) as usize, net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
+        let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
         assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
     }

@@ -40,6 +40,17 @@ fn laws(s: &[Fragment]) {
     assert_eq!(join(a, a), a.clone(), "idempotent");
     assert_eq!(join(&join(a, b), b), join(a, b), "absorbing");
     assert!(!join(a, a).is_empty() || a.is_empty());
+    // `contains` (judged on a piece at the other's positions): sound, and true for what a join
+    // took in
+    let ab = join(a, b);
+    for x in [a, b, c, &ab] {
+        for y in [a, b, c, &ab] {
+            if x.contains(y) {
+                assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
+            }
+        }
+        assert!(ab.contains(x) || x == c, "a join contains its parts");
+    }
     // §4.3: the short-circuit presence equals the presence stamp's
     for x in [a, b, c, &join(a, b)] {
         assert_eq!(x.present(), x.written().is_some(), "present");
@@ -196,4 +207,3 @@ fn forged_edge_copy_cached_placement() {
     crate::testutil::check_lin(&x);
     forged_laws(17419099531132830180, &[Ty::Text]);
 }
-
