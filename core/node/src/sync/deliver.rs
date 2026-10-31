@@ -15,6 +15,13 @@ use std::collections::BTreeSet;
 impl SyncEngine {
     /// Carries out a flow's result (call it with every `Done` a flow returns).
     pub fn carry_out(&mut self, done: Done) -> Result<Vec<Action>> {
+        self.take_done_lost(done)?;
+        Ok(self.handle(super::Event::Local))
+    }
+
+    /// `take_done` for a flow that may be a self-removal (`Done::drop_lost`): what it lost is
+    /// dropped once it is placed (every label idle), at once when it goes under no label.
+    fn take_done_lost(&mut self, done: Done) -> Result<()> {
         if done.drop_lost {
             if done.deliveries.iter().any(|d| matches!(d, Delivery::First { under, .. } if !under.is_empty())) {
                 self.drop_when_idle = true;
@@ -25,7 +32,7 @@ impl SyncEngine {
         self.take_done(done)?;
         // placements wait for a pass
         self.mark_dirty();
-        Ok(self.handle(super::Event::Local))
+        Ok(())
     }
 
     /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
@@ -406,15 +413,7 @@ impl SyncEngine {
             match self.engine.untie(&t, &g) {
                 Ok(done) => {
                     self.tied.due.remove(&(t, g));
-                    if done.drop_lost {
-                        if done.deliveries.iter().any(|d| matches!(d, Delivery::First { under, .. } if !under.is_empty())) {
-                            self.drop_when_idle = true;
-                        } else {
-                            self.drop_lost()?;
-                        }
-                    }
-                    self.take_done(done)?;
-                    self.mark_dirty();
+                    self.take_done_lost(done)?;
                 }
                 Err(e) => {
                     self.tied.failed.insert((t, g));
