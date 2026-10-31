@@ -142,6 +142,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | sim `STATE_FACTOR` 2 etc. | M (calibrated detection bound, notes/testing.md) | growth below the bound goes unseen |
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
+| sim world `STORM` 5000 rounds (`world.rs`; busiest osis-test settle about 300) | M | a storm panics; at infinity it hangs the test |
 
 ## Counts
 Table rows (a row may group several related values): P 17, R 33, M 33, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.

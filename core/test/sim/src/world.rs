@@ -19,6 +19,12 @@ use std::task::{Context, Poll, Waker};
 /// Start of the world's wall clock (ms).
 pub const T0: u64 = 1_700_000_000_000;
 
+/// Rounds one `pump` may take before it panics as a message storm. M: the osis tests' busiest
+/// settle takes about 300; at 0 every settle panics, at infinity a storm hangs the test.
+pub const STORM: usize = 5_000;
+/// Rounds a storm is watched for after `STORM`, to name what it carries.
+const STORM_TRACE: usize = 500;
+
 /// One blind server.
 pub struct Server {
     pub hub: Hub<MemoryBackend>,
@@ -60,8 +66,6 @@ pub struct World {
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
     tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
     decoders: BTreeMap<(usize, ConnId), FrameDecoder>,
-    /// Messages one `pump` carries at most before it reports a storm.
-    pub max_pump: usize,
 }
 
 impl Default for World {
@@ -85,7 +89,6 @@ impl World {
             traffic: Vec::new(),
             tally: None,
             decoders: BTreeMap::new(),
-            max_pump: 200_000,
         }
     }
 
@@ -156,11 +159,7 @@ impl World {
         let dec = self.decoders.entry((d, conn)).or_default();
         dec.push(bytes);
         while let Ok(Some(f)) = dec.next_frame() {
-            let kind = match Message::decode(&f) {
-                Ok(m) => format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("?").to_string(),
-                Err(_) => "Hello".to_string(),
-            };
-            let e = t.entry((d, kind)).or_default();
+            let e = t.entry((d, frame_kind(&f))).or_default();
             e.0 += 1;
             e.1 += f.len() as u64 + 4;
         }
@@ -283,51 +282,90 @@ impl World {
         }
     }
 
-    /// Carries every queued action and message until nothing moves. False if it did not
-    /// settle within a bound (a message storm).
-    pub fn pump(&mut self) -> bool {
-        for _ in 0..self.max_pump {
-            let mut moved = false;
-            let dbs = self.dbs();
-            for (d, db) in dbs.iter().enumerate() {
-                let Some(db) = db else { continue };
-                let acts = db.take_actions();
-                if !acts.is_empty() {
-                    moved = true;
-                    // offline: dials fail, nothing is sent
-                    self.actions(d, acts);
-                }
-            }
-            let Some(m) = self.queue.pop_front() else {
-                if moved {
-                    continue;
-                }
-                return true;
-            };
-            let now = self.now();
-            match m {
-                Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
-                Msg::ToHub(s, hc, b) => {
-                    let out = match self.servers.get_mut(s) {
-                        Some(sv) => sv.hub.input(now, hc, b),
-                        None => Vec::new(),
-                    };
-                    self.hub_out(s, out);
-                }
-                Msg::ToDb(d, c, b) => {
-                    if let Some(t) = self.traffic.get_mut(d) {
-                        t.down += b.len() as u64;
-                    }
-                    self.with(d, |db| db.feed(Event::Bytes { conn: c, bytes: b }))
-                }
-                Msg::Down(d, c) => self.with(d, |db| db.feed(Event::Down { conn: c })),
+    /// Carries every queued action and message until nothing moves. Panics on a message storm
+    /// (`STORM` rounds), naming what the storm carries.
+    pub fn pump(&mut self) {
+        for _ in 0..STORM {
+            if !self.step(None) {
+                return;
             }
         }
-        false
+        let mut seen = BTreeMap::new();
+        let mut settled = false;
+        for _ in 0..STORM_TRACE {
+            if !self.step(Some(&mut seen)) {
+                settled = true;
+                break;
+            }
+        }
+        let mut seen: Vec<(u64, String)> = seen.into_iter().map(|(k, n)| (n, k)).collect();
+        seen.sort_by(|a, b| b.cmp(a));
+        let lines: Vec<String> = seen.iter().take(20).map(|(n, k)| format!("  {n} x {k}")).collect();
+        let end = if settled { "settled during the trace" } else { "still moving" };
+        panic!("message storm: {STORM} rounds without settling ({end}); the next {STORM_TRACE} rounds carried:\n{}", lines.join("\n"));
+    }
+
+    /// One round of `pump`: every database's actions, then one queued message. False if nothing
+    /// moved. With `seen`, counts what it carries.
+    fn step(&mut self, mut seen: Option<&mut BTreeMap<String, u64>>) -> bool {
+        let mut moved = false;
+        let dbs = self.dbs();
+        for (d, db) in dbs.iter().enumerate() {
+            let Some(db) = db else { continue };
+            let acts = db.take_actions();
+            if !acts.is_empty() {
+                moved = true;
+                if let Some(seen) = seen.as_deref_mut() {
+                    for a in &acts {
+                        let k = match a {
+                            Action::Send { .. } => continue,
+                            Action::Dial { .. } => "dial",
+                            Action::Close { .. } => "close",
+                            Action::Wake { .. } => "wake",
+                            Action::Reach => "reach",
+                        };
+                        *seen.entry(format!("db {d} action {k}")).or_default() += 1;
+                    }
+                }
+                // offline: dials fail, nothing is sent
+                self.actions(d, acts);
+            }
+        }
+        let Some(m) = self.queue.pop_front() else {
+            return moved;
+        };
+        if let Some(seen) = seen {
+            let k = match &m {
+                Msg::Up(d, c) => format!("up db {d} conn {c:?}"),
+                Msg::ToHub(s, hc, b) => format!("db {:?} -> server {s}: {}", self.links.iter().find(|(_, v)| **v == (*s, *hc)).map(|(k, _)| k.0), kind(b)),
+                Msg::ToDb(d, _, b) => format!("server -> db {d}: {}", kind(b)),
+                Msg::Down(d, c) => format!("down db {d} conn {c:?}"),
+            };
+            *seen.entry(k).or_default() += 1;
+        }
+        let now = self.now();
+        match m {
+            Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
+            Msg::ToHub(s, hc, b) => {
+                let out = match self.servers.get_mut(s) {
+                    Some(sv) => sv.hub.input(now, hc, b),
+                    None => Vec::new(),
+                };
+                self.hub_out(s, out);
+            }
+            Msg::ToDb(d, c, b) => {
+                if let Some(t) = self.traffic.get_mut(d) {
+                    t.down += b.len() as u64;
+                }
+                self.with(d, |db| db.feed(Event::Bytes { conn: c, bytes: b }))
+            }
+            Msg::Down(d, c) => self.with(d, |db| db.feed(Event::Down { conn: c })),
+        }
+        true
     }
 
     /// Moves time on by `ms`: server ticks, database ticks, then everything settles.
-    pub fn advance(&mut self, ms: u64) -> bool {
+    pub fn advance(&mut self, ms: u64) {
         self.clock.advance(ms);
         let now = self.now();
         for s in 0..self.servers.len() {
@@ -338,7 +376,7 @@ impl World {
             self.hub_out(s, out);
         }
         self.tick_all();
-        self.pump()
+        self.pump();
     }
 
     fn tick_all(&mut self) {
@@ -349,18 +387,17 @@ impl World {
         }
     }
 
-    /// Lets everything settle (several rounds: a pass may start another). False on a storm.
+    /// Lets everything settle (several rounds: a pass may start another). Panics on a storm.
     /// Invite requests that appeared are accepted (`accept_invites`) and settled again.
-    pub fn run(&mut self) -> bool {
-        let mut ok = true;
+    pub fn run(&mut self) {
         loop {
             for _ in 0..3 {
-                ok &= self.pump();
+                self.pump();
                 self.tick_all();
             }
-            ok &= self.pump();
-            if !ok || !self.accept_invites() {
-                return ok;
+            self.pump();
+            if !self.accept_invites() {
+                return;
             }
         }
     }
@@ -398,5 +435,39 @@ impl World {
             self.advance(step_ms);
         }
         None
+    }
+}
+
+/// A frame's message kind (`Hello` for the handshake, which `Message` does not decode).
+fn frame_kind(f: &[u8]) -> String {
+    match Message::decode(f) {
+        Ok(m) => format!("{m:?}").split([' ', '{', '(']).next().unwrap_or("?").to_string(),
+        Err(_) => "Hello".to_string(),
+    }
+}
+
+/// The kind of the first message in `bytes` (a chunk a connection carried), for storm reports.
+fn kind(bytes: &[u8]) -> String {
+    let mut dec = FrameDecoder::default();
+    dec.push(bytes);
+    match dec.next_frame() {
+        Ok(Some(f)) => frame_kind(&f),
+        _ => format!("{} bytes", bytes.len()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // spec: none (test harness): a storm fails at once and names what it carries.
+    #[test]
+    #[should_panic(expected = "down db 7 conn 1")]
+    fn storm_panics_naming_messages() {
+        let mut w = World::new();
+        for _ in 0..STORM + STORM_TRACE {
+            w.queue.push_back(Msg::Down(7, 1));
+        }
+        w.pump();
     }
 }
