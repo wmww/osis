@@ -805,6 +805,8 @@ impl SyncEngine {
                     self.tied.touched(&aspects);
                     self.placed_cache.0 = u64::MAX;
                     let Some(h) = self.engine.header(&id) else { continue };
+                    // a placement applied invalid changes no state but may decide a tie
+                    self.tied.groups.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/group").map(|a| a.tid));
                     // a creation record moves the roles downstream of the thing
                     roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
                     let membership = h.kind.is_membership();

@@ -404,24 +404,27 @@ impl SyncEngine {
 
     /// Every label of `groups` passed completely after `since` at its servers and at the
     /// co-readers it was received from (those for at most `peer_pass_wait_ms` after the last
-    /// remote membership commit of `actors`), as `complete_pass`; false when no such pass is
-    /// counted.
+    /// remote membership commit of `actors`), as `complete_pass`. A label with neither servers
+    /// nor such co-readers passes once that wait is over (else the removal never came).
     fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actors: &[Tid]) -> bool {
         let waited = actors.iter().all(|a| self.membership_at.get(a).is_none_or(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now()));
-        let mut any = false;
         for (g, l) in &self.synced.labels {
             if !groups.contains(g) {
                 continue;
             }
             let peers = self.pass_peers.get(&l.id).into_iter().flatten().filter(|_| !waited);
+            let mut any = false;
             for s in l.servers.iter().map(|a| &a.key).chain(peers) {
                 any = true;
                 if self.passes.get(&(*s, l.id)).is_none_or(|p| p.0 <= since) {
                     return false;
                 }
             }
+            if !any && !waited {
+                return false;
+            }
         }
-        any
+        true
     }
 }
 

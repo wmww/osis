@@ -96,8 +96,11 @@ impl Engine {
         self.run(|tx| {
             let mut out = BTreeSet::new();
             for (t, g, tie) in &ties {
-                let Some(st) = tx.state(g, &gak)? else { continue };
-                if st.set_elem(field(tie.subgroup), &stamp_of(tie)) == Held::Dead {
+                let at = stamp_of(tie);
+                let held = tx.state(g, &gak)?.map_or(Held::Unknown, |st| st.set_elem(field(tie.subgroup), &at));
+                // not held because its own commit is held invalid here: it never comes (§5.2)
+                let invalid = || tx.core.commit_of(g, &gak, &at.dot).is_some_and(|c| tx.core.ix.invalid.get(&(*g, gak.clone())).is_some_and(|s| s.contains(&c)));
+                if held == Held::Dead || (held == Held::Unknown && invalid()) {
                     out.insert((*t, *g));
                 }
             }
