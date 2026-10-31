@@ -929,7 +929,8 @@ impl Engine {
     }
 
     /// `ingest_ephemeral`; `may_wait` false: a blob that would wait (`Pending`) is not kept
-    /// apart (the sync layer has no room for it), so what already waits stays as it was. A
+    /// apart nor any part of it held (the sync layer has no room for it), so what already waits
+    /// stays as it was. A
     /// blob with a part that waits is `Pending` even when its other parts were verified and
     /// held: the blob is not fully checked, so it is neither kept nor spread until it is.
     pub fn ingest_ephemeral_within(&mut self, blob: CommitBlob, may_wait: bool) -> Result<EphIngest> {
@@ -1028,9 +1029,11 @@ impl Engine {
             fresh.push(hp);
         }
         let is_content = |p: &HeldPart| h.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() != CREATED.ak());
-        if !waits.is_empty() && !fresh.iter().any(is_content) {
+        if !waits.is_empty() && (!may_wait || !fresh.iter().any(is_content)) {
             // nothing of it checked but records: it waits whole (holding it would keep and spread
-            // a blob none of whose parts was verified)
+            // a blob none of whose parts was verified); with no room to wait, nothing of it is
+            // held either (its verified parts would be held uncounted: the sync layer keeps no
+            // entry for it)
             if may_wait {
                 self.wait_apart(id, blob, waits);
             }

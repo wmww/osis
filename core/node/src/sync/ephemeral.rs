@@ -178,6 +178,10 @@ pub(crate) struct Lane {
     pub bytes: BTreeMap<LabelId, u64>,
     /// Labels whose cap was hit (reported once until bytes drop under it).
     pub refused: BTreeSet<LabelId>,
+    /// Labels whose share for unverified entries was hit (reported once until a waiting entry
+    /// leaves it, which reconciles the label: room in the cap is no room in the share, and
+    /// reconciling at it fetched what the share refused again at every drop).
+    pub refused_pending: BTreeSet<LabelId>,
     /// Per connection and label: whether the first Sync listed the held entries, and those it
     /// listed that the peer has not asked for yet.
     pub announced: BTreeSet<(ConnId, LabelId)>,
@@ -223,7 +227,8 @@ pub(crate) struct Lane {
     pub reconciled: BTreeSet<(ServerKey, LabelId)>,
     pub reconciling: BTreeMap<(ConnId, LabelId), BTreeSet<BlobId>>,
     /// Entries not fully checked (a part waits for a record, or none is valid yet): neither
-    /// served nor spread, with where they came from; their bytes per label (`PENDING_SHARE`).
+    /// served nor spread, with where they came from; their charge per label (`PENDING_SHARE`:
+    /// encoded bytes, or what parts of it the engine holds already, `Engine::ephemeral_charge`).
     pub pending: BTreeMap<(LabelId, BlobId), (LaneEntry, Option<ServerKey>)>,
     pub pending_bytes: BTreeMap<LabelId, u64>,
     /// Held entry IDs by blob (serving a fetch by ID).
@@ -598,7 +603,11 @@ impl SyncEngine {
             let held = self.engine.holds_ephemeral(&c);
             let Some((e, from)) = self.eph.pending.remove(&(l, b)) else { continue };
             if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
-                *n = n.saturating_sub(e.blob.len() as u64);
+                *n = n.saturating_sub(e.charge);
+            }
+            // room in the share: what it refused is fetched again at the next periodic pass
+            if self.eph.refused_pending.remove(&l) {
+                self.eph.reconciled.retain(|(_, x)| *x != l);
             }
             // the commit is held now, but this blob may be a junk copy (the real header with junk
             // parts or signature, kept apart beside the real one): it arrives again, so its copy
@@ -1041,12 +1050,15 @@ impl SyncEngine {
                 // not fully checked: kept apart under a share of the cap, neither served nor
                 // spread (its verified parts may be held already)
                 if !may_wait {
-                    if self.eph.refused.insert(l) {
+                    if self.eph.refused_pending.insert(l) {
                         self.eph_report(&l, "this node's share for unverified ephemeral commits was reached: further ones are not kept");
                     }
                     return Ok(());
                 }
-                *self.eph.pending_bytes.entry(l).or_default() += size;
+                // its verified parts the engine may hold already count as held ones would
+                let mut e = e;
+                e.charge = self.engine.ephemeral_charge(&commit, &ais).max(size);
+                *self.eph.pending_bytes.entry(l).or_default() += e.charge;
                 if let Some(s) = server {
                     self.eph.present.insert((s, l, b));
                 }
@@ -1403,7 +1415,7 @@ impl SyncEngine {
         Self::eph_entries_of(&self.eph, l).filter(|(_, e)| !e.own).map(|(_, e)| (e.blob.len(), e.charge)).collect()
     }
 
-    /// Bytes of entries under `l` waiting for their author's record (tests, diagnostics).
+    /// What entries under `l` not fully checked count against its share (tests, diagnostics).
     pub fn ephemeral_pending_bytes(&self, l: &LabelId) -> u64 {
         self.eph.pending_bytes.get(l).copied().unwrap_or(0)
     }

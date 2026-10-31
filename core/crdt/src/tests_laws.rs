@@ -45,6 +45,8 @@ fn laws(s: &[Fragment]) {
     let ab = join(a, b);
     for x in [a, b, c, &ab] {
         for y in [a, b, c, &ab] {
+            // its soundness rests on this: the piece is below the whole
+            assert_eq!(&join(x, &x.part_at(y)), x, "a piece joins in unchanged");
             if x.contains(y) {
                 assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
             }
