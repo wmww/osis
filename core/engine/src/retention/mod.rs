@@ -753,18 +753,10 @@ impl Engine {
         Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
     }
 
-    /// Whether snapshot `s`'s keep at most could cut short body `c`'s keep at least were `c`
-    /// dropped as covered by `s` (spec/commits.md §5): `c` has a relative keep at least and a
-    /// live write (a death to come starts it again), and `s` a keep-at-most component stricter
-    /// than `c`'s own. Such a body stays until a snapshot that does not undercut it covers it.
-    pub fn undercuts(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        let r = |e: &Self, x: &CommitId| e.header(x).and_then(|h| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention));
-        let (Some(sr), Some(cr)) = (r(self, s), r(self, c)) else { return Ok(false) };
-        let stricter = |a: Option<u64>, b: Option<u64>| a.is_some_and(|a| b.is_none_or(|b| a < b));
-        if cr.at_least.rel.is_none_or(|d| d == 0) || !(stricter(sr.at_most.rel, cr.at_most.rel) || stricter(sr.at_most.abs, cr.at_most.abs)) {
-            return Ok(false);
-        }
-        self.body_live(c, tid, ak)
+    /// Whether snapshot `s` is a carrier only on `(tid, ak)` (`osis_commit::retention::carrier_only`
+    /// of its retention there): it drops no body as covered and covers none for must-hold.
+    pub fn carrier_only(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        self.header(s).and_then(|h| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
     }
 
     /// First and last death so far of the writes of the body holding aspect `ak` of `c`.
@@ -824,8 +816,18 @@ impl Engine {
 
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from the receipt record.
+    /// value-less; frontiers from the receipt record. A carrier-only one included.
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+        self.snapshot_if(tid, ak, false)
+    }
+
+    /// `snapshot` for compaction: none when it would be a carrier only (spec/commits.md §5:
+    /// it would drop nothing).
+    pub fn compaction_snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+        self.snapshot_if(tid, ak, true)
+    }
+
+    fn snapshot_if(&mut self, tid: &Tid, ak: &Ak, compaction: bool) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
         if ak.as_str() == "/members" || ak.as_str() == "/tenures" {
             return Err(Error::Misuse("/members and /tenures are compacted by roster snapshots"));
@@ -890,6 +892,9 @@ impl Engine {
             // bounds from the retention of the writes it carries, schema known here or not; it
             // names the schema of the newest delta naming one (spec/commits.md §5)
             let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0);
+            if compaction && osis_commit::retention::carrier_only(&retention) {
+                return Ok(None);
+            }
             let schema_ref = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().rev().find_map(|(_, c)| {
                 let h = &tx.core.ix.commits.get(c)?.header;
                 let a = h.aspects.iter().find(|a| a.tid == tid && a.ak == ak)?;

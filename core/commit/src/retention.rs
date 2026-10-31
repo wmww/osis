@@ -80,6 +80,14 @@ pub fn snapshot_retention(ak: &str, own: impl IntoIterator<Item = Retention>, no
     Retention { by: PurgeBy::Writer, at_least, at_most }
 }
 
+/// Whether a compaction snapshot of retention `r` is a carrier only (spec/commits.md §5): it
+/// has a keep at least other than 0 after replaced and a keep at most, so no body is dropped
+/// as covered by it nor counts it covering for must-hold.
+pub fn carrier_only(r: &Retention) -> bool {
+    let least = r.at_least.abs.is_some() || r.at_least.rel.is_some_and(|d| d > 0);
+    least && (r.at_most.abs.is_some() || r.at_most.rel.is_some())
+}
+
 /// Expiry of a write: an explicit T, else the schema's default duration from the write's `ts`.
 /// Aspects with fixed retention never expire. A T above 2^63 - 1 is refused.
 pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: Option<u64>) -> Result<Option<u64>, Error> {
