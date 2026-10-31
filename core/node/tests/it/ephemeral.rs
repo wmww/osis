@@ -2542,9 +2542,7 @@ fn cover_past_page_target_bounded_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    // a cover's decode bound (about 25 times its bytes for 1 KB strings) must fit beside what
-    // the holder holds: past the cap is its own outcome, tested elsewhere
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 64 << 20, ..SyncConfig::default() });
+    let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let w = window(&mut net, a, g, "w");
@@ -2715,10 +2713,7 @@ fn own_cover_split_by_aspect_spec_sync_9() {
     let mut net = Net::new();
     let sv = net.add_server();
     let a = net.node(1, &[sv]);
-    // the holder's cap charges 2 KiB per part, which several 1000-part commits fill before the
-    // author's cover (weighed by delta bytes) comes: past the cap is its own outcome, tested
-    // elsewhere
-    let b = net.add_node(2, SyncConfig { servers: vec![net.address(sv)], ephemeral_bytes: 64 << 20, ..SyncConfig::default() });
+    let b = net.node(2, &[sv]);
     let g = net.group(a, &[(b, Role::Write)], &[sv]);
     net.run();
     let l = net.label(a);
@@ -2731,8 +2726,7 @@ fn own_cover_split_by_aspect_spec_sync_9() {
         let [(_, held, cover, largest)] = load[..] else { panic!("one actor: {load:?}") };
         assert!(held <= osis_node::ephemeral::COVER_FACTOR * cover + largest, "round {round}: {held} B of own commits, cover {cover} B");
         let (at_b, at_sv) = (encoded_held(&mut net, b, &l), net.servers[sv].hub.store().ephemeral_bytes(&l) as usize);
-        // headers weigh about what these small deltas do (the trigger counts deltas alone)
-        assert!(at_b <= 4 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
+        assert!(at_b <= 3 * cover && at_sv <= 4 * cover, "round {round}: holder {at_b} B, server {at_sv} B, cover {cover} B");
         assert_eq!(read_many(&mut net, b, g, N), read_many(&mut net, a, g, N), "round {round}");
     }
     assert_eq!(net.eph_read(b, g, "/x/a0000"), Some(s("r6")));
@@ -3123,16 +3117,20 @@ fn restarted_cover_waits_for_every_label_spec_sync_9() {
     // the placement in g2 and the note's entry there: fetched late after the restart
     let own: Vec<osis_base::CommitId> = net.engine(a).held_ephemeral().into_iter().filter(|x| x.2).map(|x| x.0).collect();
     let l2 = labels[&g2];
-    let mut slow = BTreeSet::new();
+    // (separate commits, or one cover of them, whichever the author's trigger left)
+    let (mut slow, mut placed, mut noted) = (BTreeSet::new(), false, false);
     for id in &own {
         let h = net.engine(a).ephemeral_header(id).unwrap();
         let placing = h.aspects.iter().any(|x| x.tid == g2);
         let noting = h.aspects.iter().any(|x| x.ak.as_str() == NOTES);
+        let under: Vec<osis_base::BlobId> = net.sync(a).ephemeral_entries_of(id).into_iter().filter(|x| x.0 == l2).map(|x| x.1).collect();
         if placing || noting {
-            slow.extend(net.sync(a).ephemeral_entries_of(id).into_iter().filter(|x| x.0 == l2).map(|x| x.1));
+            placed |= placing && !under.is_empty();
+            noted |= noting && !under.is_empty();
+            slow.extend(under);
         }
     }
-    assert_eq!(slow.len(), 2, "the placement and the note under g2's label");
+    assert!(placed && noted, "the placement and the note under g2's label");
     net.restart(a, 31);
     net.hold_blobs = slow;
     for _ in 0..200 {

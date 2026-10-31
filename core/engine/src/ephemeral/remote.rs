@@ -52,9 +52,9 @@ pub const MAX_DELIVERED: usize = 1 << 16;
 /// every entry.
 pub const COVER_FACTOR: usize = 2;
 
-/// Bytes charged per held ephemeral commit besides its delta bytes when an author weighs its own
-/// held commits against their cover (spec/sync.md §9): about a server's per-entry and log record
-/// overhead plus the commit header. Performance switch: 0 lets small writes pile up as entries
+/// Bytes charged per held ephemeral commit besides its parts (`part_weight`) when an author
+/// weighs its own held commits against their cover (spec/sync.md §9): about a server's per-entry
+/// and log record overhead plus the commit header. Performance switch: 0 lets small writes pile up as entries
 /// whose overhead dwarfs their bytes (a server's cap fills with overhead the trigger never sees),
 /// infinity compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
@@ -788,24 +788,24 @@ impl Engine {
         Ok(Attempt::Made(Box::new(EphCommit { id, class, blob })))
     }
 
-    /// The cost of an own cover of `deltas`: its encoded deltas (unpaged, with their `Sources`,
-    /// which dominate small values) plus `ENTRY_CHARGE`. Each lists one commit absorbed, as the
+    /// The cost of an own cover of `deltas`: each encoded delta (unpaged, with its `Sources`,
+    /// which dominate small values) as a part (`part_weight`), plus `ENTRY_CHARGE`. Each lists one commit absorbed, as the
     /// next cover will (the cover itself: what it absorbs now goes with the next one), so a held
     /// cover weighs what its own cover would.
     fn cover_cost(&self, deltas: &[EphDelta]) -> usize {
         let me = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
         let cx = snapshot_ctx(ts, me);
-        let bytes: usize = deltas
+        let weight: usize = deltas
             .iter()
             .map(|(_, _, f, _)| {
                 let absorbed = BTreeMap::from([(CommitId([0; 32]), me)]);
                 let s = Snapshot { nonce: [0; osis_crdt::NONCE_LEN], fragment: f.clone(), frontiers: Frontiers::default(), absorbed };
                 // unpaged encoding fails only on a malformed fragment: counted as nothing
-                osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len())
+                part_weight(osis_crdt::encode_snapshot(&s, &cx, Some(&mut Unpaged)).map_or(0, |b| b.len()))
             })
             .sum();
-        bytes + ENTRY_CHARGE
+        weight + ENTRY_CHARGE
     }
 
     fn report_eph(&mut self, detail: &str) {
@@ -1785,14 +1785,16 @@ impl Engine {
     }
 
     /// Per actor, this node's own held plain commits without expiry (what an own cover absorbs),
-    /// each with its cost: its delta bytes plus `ENTRY_CHARGE`.
+    /// each with its cost: its delta bytes and `PART_OVERHEAD` per part (`part_weight`) plus
+    /// `ENTRY_CHARGE`.
     fn own_held(&self) -> BTreeMap<Tid, Vec<(CommitId, usize)>> {
         let me = self.tid();
         let mut by: BTreeMap<Tid, Vec<(CommitId, usize)>> = BTreeMap::new();
         for (id, h) in &self.eph.remote.held {
             let own_plain = h.header.author == me && h.header.ephemeral == Some(EphClass::Plain);
             if own_plain && h.parts.iter().all(|p| h.header.aspects.get(p.ai).is_some_and(|a| a.expires.is_none())) {
-                by.entry(h.header.actor).or_default().push((*id, h.bytes + ENTRY_CHARGE));
+                let weight: usize = h.parts.iter().map(|p| part_weight(p.bytes)).sum();
+                by.entry(h.header.actor).or_default().push((*id, weight + ENTRY_CHARGE));
             }
         }
         by
@@ -1839,8 +1841,7 @@ impl Engine {
         (joined.into_iter().map(|((t, ak), f)| (t, ak, f, None)).collect(), absorbed)
     }
 
-    /// Per actor, this node's own held plain commits without expiry: their cost (delta bytes plus
-    /// `ENTRY_CHARGE` each), the cost of their cover, and the largest one's cost (tests: within
+    /// Per actor, this node's own held plain commits without expiry: their cost (`own_held`), the cost of their cover, and the largest one's cost (tests: within
     /// `COVER_FACTOR` times the cover and one commit in flight after every step).
     pub fn own_ephemeral_load(&self) -> Vec<(Tid, usize, usize, usize)> {
         let mut out = Vec::new();
@@ -1993,9 +1994,17 @@ impl Engine {
 }
 
 /// What a held part costs (`ephemeral_charge`): its decoded heap size (`heap`, at least its
-/// encoded `bytes`) in each copy kept, and `PART_OVERHEAD`.
+/// encoded `bytes`) in each copy kept, weighed as a part (`part_weight`).
 fn part_charge(heap: usize, bytes: usize) -> u64 {
-    heap.max(bytes).saturating_mul(HELD_COPIES).saturating_add(PART_OVERHEAD) as u64
+    part_weight(heap.max(bytes).saturating_mul(HELD_COPIES)) as u64
+}
+
+/// A part of `bytes` with the per-part overhead a holder's cap charges (`PART_OVERHEAD`). Shared
+/// by the node cap (`part_charge`) and an author's cover trigger (`own_held`, `cover_cost`), so
+/// the trigger weighs per part what holders are charged: else a holder of many small parts fills
+/// its cap before the cover comes.
+fn part_weight(bytes: usize) -> usize {
+    bytes.saturating_add(PART_OVERHEAD)
 }
 
 /// An upper bound on `part_charge` of part `p` once decoded, from its bytes alone
