@@ -783,7 +783,7 @@ impl SyncEngine {
     pub(crate) fn lost(&mut self, conn: ConnId) {
         // its requests not answered go with it (asked again on the next connection)
         if let Some(c) = self.conns.remove(&conn) {
-            self.eph_lost(conn, c.server);
+            self.eph_lost(conn, c.server, &c.req.fetching);
             // deposits not answered on this connection go out again on the next one
             for o in self.outbox.values_mut().filter(|o| o.sent == Some(conn)) {
                 o.sent = None;
@@ -1746,6 +1746,33 @@ mod tests {
         s.conns.get_mut(&conn).unwrap().req.missing.insert(b2);
         s.reconciled(conn, l, vec![b2], Vec::new(), &mut Vec::new()).unwrap();
         assert!(s.fetching(&b2), "asked once reconciled");
+    }
+
+    // spec/sync.md §6: a connection ending before the entries a reconciliation after a start
+    // found missing arrived reconciles that label again on the next: no cursor or entry here
+    // names those ephemeral entries (`ephemeral::random_window_inflight_large` seed 100013: a
+    // twice-restarted author never got its earlier sessions' commits back). Answered first, it
+    // stays reconciled.
+    #[test]
+    fn reconcile_fetches_lost_reconcile_again_spec_sync_6() {
+        for answered in [false, true] {
+            let lp = crate::local_peer::LocalPeer::new(1, 970, osis_base::WallMs(1_700_000_000_000)).unwrap();
+            let p = lp.peers.into_iter().next().unwrap();
+            let server = Address { url: "quic://server:1".into(), key: [7; 32] };
+            let cfg = SyncConfig { servers: vec![server], ..SyncConfig::default() };
+            let mut s = SyncEngine::new(p.engine, p.clock, Box::new(osis_crypto::SeededRng::from_u64(971)), cfg).unwrap();
+            let conn = s.handle(Event::Tick).into_iter().find_map(|a| if let Action::Dial { conn, .. } = a { Some(conn) } else { None }).unwrap();
+            let key = s.conns[&conn].server;
+            let (l, b) = (LabelId([1; 16]), osis_base::BlobId([1; 32]));
+            s.eph.reconciling.insert((conn, l), BTreeSet::new());
+            s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
+            assert!(s.fetching(&b) && s.eph.reconciled.contains(&(key, l)));
+            if answered {
+                s.conns.get_mut(&conn).unwrap().req.fetching.remove(&b);
+            }
+            s.handle(Event::Down { conn });
+            assert_eq!(s.eph.reconciled.contains(&(key, l)), answered);
+        }
     }
 
     // spec/sync.md §5: a deposit is kept until each of its servers answers it, also across a

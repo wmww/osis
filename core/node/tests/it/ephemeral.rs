@@ -146,6 +146,39 @@ fn window_reaches_member_no_store_rows_spec_sync_4() {
     assert_eq!(net.engine(b).commit_ids().len(), commits);
 }
 
+// spec/sync.md §9 (a thing entering a labeled closure goes out whole): an own expiring write
+// made while its thing was in no labeled closure (after a restart, before its placement came
+// back: `ephemeral::random_churn_converges_large` seed 203) goes with it, under its expiry
+#[test]
+fn expiring_write_before_entering_closure_goes_spec_sync_9() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.set(w, &eph(STATE), &s("local")).unwrap();
+    e.write(m).unwrap();
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 60_000)).unwrap();
+    net.engine(a).write(m).unwrap();
+    assert!(!net.engine(a).ephemeral_synced(&w), "written in no labeled closure");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("local")));
+    assert_eq!(notes(&mut net, b, w), BTreeMap::from([("k".to_string(), "v".to_string())]));
+    net.advance(61_000);
+    assert_eq!(notes(&mut net, b, w), BTreeMap::new(), "expired there too");
+    assert_eq!(notes(&mut net, a, w), BTreeMap::new());
+}
+
 // notes/ephemeral.md Owner direction (the shared window): two holders keep editing while one is
 // offline; on reconnect both converge on the merge, through a server
 #[test]

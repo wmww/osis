@@ -438,28 +438,37 @@ impl Engine {
         Ok(out)
     }
 
-    /// Things with ephemeral state that entered a labeled closure: their own state (without
-    /// expiring writes) joins `unsent`.
+    /// Things with ephemeral state that entered a labeled closure: their own state joins
+    /// `unsent`, each expiry class apart (writes made while the thing was in no labeled closure,
+    /// say after a restart before its placement came back, went to no `unsent`).
     fn note_entered(&mut self) {
         let entered: Vec<Tid> = self.eph.remote.local.iter().filter(|t| self.ephemeral_synced(t)).copied().collect();
         let me = self.tid();
         for t in entered {
             self.eph.remote.local.remove(&t);
             let src = &self.eph.src;
-            // `None`: only expiring or expired writes (`unsent` has the former), whose records
-            // `own_unexpiring` keeps value-less; a part of those would carry the thing's record
-            // past their expiry
-            let aspects: Vec<(Ak, Option<Fragment>)> = self
-                .eph
-                .aspects
-                .get(&t)
-                .map(|m| m.iter().map(|(ak, a)| (ak.clone(), Some(own_unexpiring(a, src)).filter(|f| f.holds_dots(&|d| !in_ranges(d, src, &a.expired) && !a.expiring.values().any(|r| in_ranges(d, src, r)))))).collect())
-                .unwrap_or_default();
-            let r = &mut self.eph.remote;
-            for (ak, f) in aspects {
-                if let Some(f) = f {
-                    r.unsent.entry((t, ak)).or_default().entry((me, None)).or_default().join(f);
+            let mut classes: Vec<(Ak, Option<u64>, Fragment)> = Vec::new();
+            for (ak, a) in self.eph.aspects.get(&t).into_iter().flatten() {
+                // `None`: the writes without expiry; expiring or expired ones `own_unexpiring`
+                // keeps value-less, and a part of those alone would carry the thing's record
+                // past their expiry
+                let f = own_unexpiring(a, src);
+                if f.holds_dots(&|d| !in_ranges(d, src, &a.expired) && !a.expiring.values().any(|r| in_ranges(d, src, r))) {
+                    classes.push((ak.clone(), None, f));
                 }
+                // each expiry class: its writes alone (a value-less record of another write
+                // in an expiring part would strip that write's value at its expiry)
+                for (exp, ranges) in &a.expiring {
+                    let mut f = a.own_writes().clone();
+                    f.remove_writes(&|d| !in_ranges(d, src, ranges));
+                    if f.holds_dots(&|d| in_ranges(d, src, ranges)) {
+                        classes.push((ak.clone(), Some(*exp), f));
+                    }
+                }
+            }
+            let r = &mut self.eph.remote;
+            for (ak, exp, f) in classes {
+                r.unsent.entry((t, ak)).or_default().entry((me, exp)).or_default().join(f);
             }
         }
     }
