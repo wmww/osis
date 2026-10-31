@@ -1470,7 +1470,7 @@ impl Engine {
     /// Frees the records of `cands`, ephemeral things received from others (not made by this
     /// session), that nothing here uses: no held part on the thing (a commit about it or placing
     /// it carries its record), no pending commit waiting for it, no state, no own write to send,
-    /// no ephemeral thing it owns. Their content is gone (expired or its holder's tie ended), and
+    /// no ephemeral thing it owns. Their content is gone (expired), and
     /// a later commit about them brings the record again (notes/ephemeral.md Own covers).
     fn free_unused_records(&mut self, mut cands: BTreeSet<Tid>) {
         loop {
