@@ -1311,6 +1311,8 @@ impl SyncEngine {
             }
             E::Reconciled { label, need, have } => self.reconciled(conn, label, need, have, out)?,
             E::Fetched { label, items } => {
+                let ids: Vec<osis_base::BlobId> = items.iter().map(|f| f.blob_id).collect();
+                self.eph_fetch_done(conn, label, &ids, false);
                 // asked for and not there: not asked again on this connection
                 let mut gone = false;
                 for f in items.iter().filter(|f| f.entry.is_none()) {
@@ -1328,11 +1330,15 @@ impl SyncEngine {
             }
             E::Subscribed { .. } => {}
             E::Refused { label, kind, code, fetch } => {
-                // no longer in flight on this connection: a pass asks again (after a reopen)
+                // no longer in flight on this connection: a pass asks again (after a reopen);
+                // a reconciliation's ephemeral ones only a reconciliation names again
                 if let Some(c) = self.conns.get_mut(&conn) {
                     for b in &fetch {
                         c.req.fetching.remove(b);
                     }
+                }
+                if let Some(l) = label {
+                    self.eph_fetch_done(conn, l, &fetch, true);
                 }
                 self.refused(conn, label, kind, code, out)?
             }
@@ -1751,11 +1757,11 @@ mod tests {
     // spec/sync.md §6: a connection ending before the entries a reconciliation after a start
     // found missing arrived reconciles that label again on the next: no cursor or entry here
     // names those ephemeral entries (`ephemeral::random_window_inflight_large` seed 100013: a
-    // twice-restarted author never got its earlier sessions' commits back). Answered first, it
-    // stays reconciled.
+    // twice-restarted author never got its earlier sessions' commits back). A refused fetch
+    // reconciles again too; answered first, it stays reconciled.
     #[test]
     fn reconcile_fetches_lost_reconcile_again_spec_sync_6() {
-        for answered in [false, true] {
+        for case in ["down", "answered", "refused"] {
             let lp = crate::local_peer::LocalPeer::new(1, 970, osis_base::WallMs(1_700_000_000_000)).unwrap();
             let p = lp.peers.into_iter().next().unwrap();
             let server = Address { url: "quic://server:1".into(), key: [7; 32] };
@@ -1767,11 +1773,17 @@ mod tests {
             s.eph.reconciling.insert((conn, l), BTreeSet::new());
             s.reconciled(conn, l, vec![b], Vec::new(), &mut Vec::new()).unwrap();
             assert!(s.fetching(&b) && s.eph.reconciled.contains(&(key, l)));
-            if answered {
-                s.conns.get_mut(&conn).unwrap().req.fetching.remove(&b);
+            match case {
+                "answered" => s.session_event(conn, ClientEvent::Fetched { label: l, items: vec![osis_proto::msg::Fetched { blob_id: b, entry: None }] }, &mut Vec::new()).unwrap(),
+                "refused" => s.session_event(conn, ClientEvent::Refused { label: Some(l), kind: osis_proto::Request::Fetch, code: osis_proto::Code::RATE_LIMITED, fetch: vec![b] }, &mut Vec::new()).unwrap(),
+                _ => {}
             }
-            s.handle(Event::Down { conn });
-            assert_eq!(s.eph.reconciled.contains(&(key, l)), answered);
+            let left = s.eph.reconcile_fetches.contains_key(&(conn, l));
+            if case != "refused" {
+                s.handle(Event::Down { conn });
+            }
+            assert_eq!(s.eph.reconciled.contains(&(key, l)), case == "answered", "{case}");
+            assert!(case == "down" || !left, "{case}: answered or refused fetches are not tracked");
         }
     }
 
