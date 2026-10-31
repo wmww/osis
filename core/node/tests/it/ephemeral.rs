@@ -1427,6 +1427,42 @@ fn sessions_of_one_node_never_collide_spec_crdt_2_1() {
     assert_eq!(items(&mut net, b, w), want, "a restarted holder, from the server");
 }
 
+// spec/crdt.md §2.1 (counters never reused within a session): a thing freed here while others
+// hold its writes, received again and written, takes the session's next counters, not 1 again
+#[test]
+fn freed_thing_received_again_keeps_counters_spec_crdt_2_1() {
+    let mut net = Net::new();
+    let sv = net.add_server();
+    let a = net.node(1, &[sv]);
+    let b = net.node(2, &[sv]);
+    let g = net.group(a, &[(b, Role::Write)], &[sv]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    note(&mut net, a, w, "k1", "v1");
+    net.run();
+    assert_eq!(notes(&mut net, b, w), map(&[("k1", "v1")]));
+    // a unplaces and frees it; b still holds its writes and places it again
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.free(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(net.engine(a).ephemeral_thing(&w).is_none(), "freed at a");
+    let mut m = Mutation::new();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    assert!(net.engine(a).ephemeral_thing(&w).is_some(), "received again at a");
+    note(&mut net, a, w, "k2", "v2");
+    net.run();
+    let s1 = net.engine(a).ephemeral_session();
+    assert_eq!(session_dots(&mut net, a, w, NOTES), vec![(s1, 2)], "the next counter");
+    assert_eq!(notes(&mut net, b, w), map(&[("k1", "v1"), ("k2", "v2")]));
+    assert_eq!(session_dots(&mut net, b, w, NOTES), vec![(s1, 1), (s1, 2)], "two writes, two dots");
+}
+
 // spec/sync.md §9 (an ephemeral commit carries only its author's writes): a write under another
 // node's source or another node's session is not joined either
 #[test]
