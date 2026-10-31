@@ -1904,6 +1904,31 @@ fn backdated_revoke_spec_perm_5_3() {
     }
 }
 
+// spec/permissions.md §5.1 (frontier: chain certificates as of T): a backdated revoke lists
+// only the certificate commits its author had received by its cutoff. The thief's write on an
+// edge of the demoter's own chain (d1 re-grants d2 on P), received after the cutoff, is
+// dropped.
+#[test]
+fn backdated_revoke_lists_certs_as_of_cutoff_spec_perm_5_1() {
+    const HOUR: u64 = 3_600_000;
+    let (mut lp, p, _pa, _) = devices_and_alice(525);
+    let (d1, d2) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    let theft = lp.peers[0].engine.now();
+    lp.advance(2 * HOUR);
+    let done = lp.peers[0].engine.grant(&p, &d2, &edge_of(Role::Admin)).unwrap();
+    let forged: Vec<CommitId> = done.commits.iter().copied().filter(|c| lp.peers[0].engine.edge_applied(&p, c)).collect();
+    assert_eq!(forged.len(), 1);
+    spread(&mut lp);
+    assert!(lp.peers[1].engine.edge_applied(&p, &forged[0]));
+    lp.advance(HOUR);
+    let backdated = PreSync::Backdated(osis_base::WallMs(theft.0 + HOUR / 2));
+    lp.peers[1].engine.demote(&p, &Demotion { member: d1, new: None, presync: backdated }).unwrap();
+    spread(&mut lp);
+    for i in [1, 2] {
+        assert!(!lp.peers[i].engine.edge_applied(&p, &forged[0]), "peer {i}");
+    }
+}
+
 // spec/permissions.md §7, spec/sync.md §2: a labeled doc's copy gets a label of its own at the
 // doc's servers before its members are re-granted, so they sync and write it whatever else of
 // the new owner they read.

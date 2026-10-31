@@ -407,11 +407,12 @@ impl Engine {
                     }
                 }
                 // this node's own chain counts only as listed: its chain certificates for the
-                // target, by commit ID (spec/permissions.md §5.1, §4)
+                // target, by commit ID, those received by `as_of` (a backdated revoke lists none
+                // received after its cutoff; spec/permissions.md §5.1, §4)
                 let certs = tl.certificates(&who, &t);
                 let mut f = self.frontier(&scope, as_of)?;
-                f.commits.extend(certs.commits);
-                f.commits.extend(certs.snapshots.into_keys());
+                let by_then = |c: &CommitId| self.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0);
+                f.commits.extend(certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| by_then(c)));
                 Some(osis_schema::Codec::to_value(&f))
             }
             None => None,
