@@ -1235,11 +1235,10 @@ impl SyncEngine {
             E::Opened { label, head, entry_box } => self.opened(conn, label, head, entry_box, out)?,
             E::Step { label, step } => self.stale_step(conn, label, step, out)?,
             E::Registered { label } => self.registered(conn, label, out)?,
-            E::Head { label, head } => self.head_reply(conn, label, head, out)?,
             E::PathSteps { label, steps, more } => self.path_steps(conn, label, steps, more, out)?,
             E::EntryStatus { label, blob_ids, codes, head } => self.entry_status(conn, label, blob_ids, codes, head, out)?,
             E::DeleteStatus { label, blob_ids, codes, head } => self.delete_status(conn, label, blob_ids, codes, head, out)?,
-            E::Budget { label, blob_id, code, entries_left, head, .. } => self.budget(conn, label, blob_id, code, entries_left, head, out)?,
+            E::Budget { label, blob_id, code, budget } => self.budget(conn, label, blob_id, code, budget.map(|b| b.0))?,
             // a Push names its label: one not started on this connection is junk (spec/wire.md
             // §11.2; peer input never grows storage unasked)
             E::Events { label, .. } if !self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(&label)) => self.diag("server pushed a label not opened".into()),

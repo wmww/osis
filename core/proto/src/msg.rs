@@ -177,7 +177,8 @@ pub enum Message {
     Upload { id: Id, label: LabelId, entries: Vec<Entry> },
     Status { id: Id, codes: Vec<Code>, head: Option<Step> },
     Deposit { id: Id, label: LabelId, blob: Vec<u8>, wrap: Wrap, sig: Signature },
-    Budget { id: Id, code: Code, entries_left: u64, bytes_left: u64, head: Option<Step> },
+    /// `budget` (entries, bytes left) only for a deposit signed by the head's deposit key.
+    Budget { id: Id, code: Code, budget: Option<(u64, u64)> },
     /// Items with `at` above 2^63 - 1 cannot be encoded (check with `osis_label::delete_digest`).
     Delete { id: Id, label: LabelId, items: Vec<DeleteItem> },
     Sync { id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId> },
@@ -290,7 +291,7 @@ impl Message {
             M::Upload { label, entries, .. } => vec![k, id, l(label), entries_value(entries)],
             M::Status { codes, head, .. } => vec![k, id, codes_value(codes), Value::opt(head.as_ref().map(step_value))],
             M::Deposit { label, blob, wrap, sig, .. } => vec![k, id, l(label), Value::bytes(blob), Value::bytes(wrap), Value::bytes(&sig.0)],
-            M::Budget { code, entries_left, bytes_left, head, .. } => vec![k, id, Value::uint(code.0), Value::uint(*entries_left), Value::uint(*bytes_left), Value::opt(head.as_ref().map(step_value))],
+            M::Budget { code, budget, .. } => vec![k, id, Value::uint(code.0), Value::opt(budget.map(|(e, b)| Value::List(vec![Value::uint(e), Value::uint(b)])))],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
             M::Sync { label, cursor, inline_limit, entries, gained, .. } => vec![k, id, l(label), Value::opt(cursor.as_ref().map(cursor_value)), Value::uint(*inline_limit), entries_value(entries), ids_value(gained)],
@@ -340,9 +341,9 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
         0 | 2 | 3 | 6 | 18 | 20 | 21 | 22 => 3,
-        4 | 5 | 8 | 9 | 10 | 11 | 14 | 17 | 19 => 4,
+        4 | 5 | 8 | 9 | 10 | 11 | 13 | 14 | 17 | 19 => 4,
         7 | 23 => 5,
-        12 | 13 => 6,
+        12 => 6,
         15 | 16 => 7,
         _ => return Err(Error::UnknownKind(kind)),
     };
@@ -374,7 +375,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         10 => Message::Upload { id, label: label(&mut f)?, entries: entries(f.list(1, MAX_ITEMS, "upload entries")?)? },
         11 => Message::Status { id, codes: codes(f.list(1, usize::MAX, "status codes")?)?, head: f.opt()?.map(step_of).transpose()? },
         12 => Message::Deposit { id, label: label(&mut f)?, blob: f.bytes(MAX_BLOB)?, wrap: f.fixed()?, sig: Signature(f.fixed()?) },
-        13 => Message::Budget { id, code: Code(f.uint()?), entries_left: f.uint()?, bytes_left: f.uint()?, head: f.opt()?.map(step_of).transpose()? },
+        13 => Message::Budget { id, code: Code(f.uint()?), budget: f.opt()?.map(budget).transpose()? },
         14 => {
             let label = label(&mut f)?;
             let items = f.list(1, MAX_ITEMS, "delete items")?.iter().map(DeleteItem::from_value).collect::<Result<_, _>>()?;
@@ -469,6 +470,13 @@ fn entries_value(es: &[Entry]) -> Value {
             })
             .collect(),
     )
+}
+
+fn budget(v: Value) -> Result<(u64, u64), Error> {
+    let mut f = Fields::exact(v, 2, "budget")?;
+    let b = (f.uint()?, f.uint()?);
+    f.end()?;
+    Ok(b)
 }
 
 fn cursor(v: Value) -> Result<Cursor, Error> {

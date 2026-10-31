@@ -511,17 +511,19 @@ impl ServerConnection {
             }
             M::Deposit { id, label, blob, wrap, sig } => {
                 let Some(k) = head_keys(&mut self.keys, store, &label)? else {
-                    return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, entries_left: 0, bytes_left: 0, head: None }));
+                    return Ok(Some(M::Budget { id, code: Code::UNKNOWN_LABEL, budget: None }));
                 };
                 let blob_id = osis_label::blob_id(&blob);
-                let mut code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig, &mut self.struck);
-                let head = if code == Code::NOT_HEAD { Some(k.head.clone()) } else { None };
-                if code == Code::OK {
-                    code = self.accept(store, now, &label, blob_id, &blob, wrap, None, &[], out)?;
+                let code = check(k, StepKey::Deposit, Domain::Deposit, &entry_digest(&label, &blob_id, &wrap), &sig, &mut self.struck);
+                // a deposit not signed by the head's deposit key learns its code only: neither
+                // the head nor the budget (spec/sync.md §5)
+                if code != Code::OK {
+                    return Ok(Some(M::Budget { id, code, budget: None }));
                 }
+                let code = self.accept(store, now, &label, blob_id, &blob, wrap, None, &[], out)?;
                 changed(&[code], &label, out);
                 let b = store.budget(&label)?;
-                M::Budget { id, code, entries_left: b.entries_left, bytes_left: b.bytes_left, head }
+                M::Budget { id, code, budget: Some((b.entries_left, b.bytes_left)) }
             }
             M::Delete { id, label, items } => {
                 let mut codes = Vec::with_capacity(items.len());
@@ -624,9 +626,11 @@ impl ServerConnection {
             }
             None => return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }),
             Some(h) if h.id() == step.id() => return Ok(Message::Ok { id }),
+            // not a child of the head: the code alone, never the head (an ex-member or link
+            // holder would watch rotations; a registrar learns the head by opening, spec/sync.md §5)
             Some(h) => {
                 if step.verify_child(h).is_err() {
-                    return Ok(Message::Step { id, step: h.clone() });
+                    return Ok(Message::Error { id, code: Code::NOT_HEAD });
                 }
             }
         }

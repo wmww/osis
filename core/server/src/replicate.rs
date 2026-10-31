@@ -352,7 +352,6 @@ impl Replicator {
                 let refused: Vec<u64> = codes.iter().filter(|c| **c != Code::OK && **c != Code::TOMBSTONED).map(|c| c.0).collect();
                 (!refused.is_empty()).then(|| format!("label {label:?}: {} entries refused, codes {refused:?}", refused.len()))
             }
-            ClientEvent::Head { label, .. } => Some(format!("label {label:?}: the peer holds another head")),
             ClientEvent::Refused { label, kind, code, .. } => Some(format!("label {label:?}: {kind:?} refused, code {}", code.0)),
             ClientEvent::PeerError(err) => Some(format!("protocol error: {err}")),
             _ => None,
