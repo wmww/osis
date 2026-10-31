@@ -1590,11 +1590,10 @@ impl SyncEngine {
     /// A grantee device places a certificate copy of what `g`'s inbox brought, once applied,
     /// under `g`'s home label `l` (spec/sync.md §3; the inbox may be another label, its owner's:
     /// a group's members learn its edges there, its inbox reaching only its admins): of a
-    /// membership commit, the carried
-    /// parts on the things it writes an edge of `g` or an actor it owns on, or boxes one on
-    /// (boxes are sealed to the actor anyway), with the `/label` and `/created` commits of
-    /// those things, so the actor's other devices find the grant and its labels
-    /// there; nothing from a blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry
+    /// membership commit, the carried parts on the things it writes an edge of `g` or an actor
+    /// it owns on, or boxes one on (boxes are sealed to the actor anyway), with the `/label` and
+    /// `/created` commits of those things, so the actor's other devices find the grant and its
+    /// labels there; nothing from a blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry
     /// is the sender's word: a short one would free the deposit budget for the next copy), and
     /// not what an entry there already holds (each member of a group actor reads its inbox and
     /// placed the same copy again). The consumed inbox blob stays until it expires: its label

@@ -291,10 +291,9 @@ impl SyncEngine {
     }
 
     /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
-    /// sealed and sent at once; one `INBOX_LIFETIME` old whose member
-    /// has not acted is sealed again (to its newest keyset) and sent again, at most
-    /// `MAX_INBOX_RESENDS` times; one whose commit is gone, or whose member acted or (for a grant
-    /// or re-seal) left, is forgotten.
+    /// sealed and sent at once; one `INBOX_LIFETIME` old whose member has not acted is sealed
+    /// again (to its newest keyset) and sent again, at most `MAX_INBOX_RESENDS` times; one whose
+    /// commit is gone, or whose member acted or (for a grant or re-seal) left, is forgotten.
     pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
         let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).cloned().collect();

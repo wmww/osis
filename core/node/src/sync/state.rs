@@ -842,7 +842,7 @@ impl State {
     }
 
     /// Records an inbox delivery not sent yet (`at` 0; `SyncEngine::send_inbox` seals and sends
-    /// it once its commit is placed), unless one is recorded already.
+    /// it at its next step), unless one is recorded already.
     pub fn note_unsent(&mut self, member: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) {
         if self.sent_inbox.contains_key(&(member, commit)) {
             return;
