@@ -783,14 +783,14 @@ fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_cr
 }
 
 /// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
-/// delta of that aspect as `f` judges it: the node-form commit whose range holds it; for
+/// delta of that aspect as `f` judges it: the node- or session-form commit whose range holds it; for
 /// `Commit(c)`, `c` itself as a commit-form commit with the aspect, else any held import of `c`
 /// with it (§7, `Core::imports`; `c` on the moved thing owns nothing there).
 pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
     let at = |m: &Meta| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak);
     let d = d.owner();
     match d.src.kind() {
-        osis_crdt::SourceKind::Node(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
+        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
         osis_crdt::SourceKind::Commit(c) => {
             if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes())
                 && let Some(ai) = at(m)
@@ -799,8 +799,7 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
             }
             core.ix.imports.get(&(*tid, *c)).is_some_and(|s| s.iter().any(|i| core.ix.commits.get(i).is_some_and(|m| at(m).is_some_and(|ai| f(i, m, ai)))))
         }
-        // a session's writes are ephemeral: no durable commit owns them
-        osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
+        osis_crdt::SourceKind::Derived(_) => false,
     }
 }
 
@@ -923,7 +922,7 @@ fn regiven(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
-/// its counters (node form), its whole source (commit form), its origins' sources (an import).
+/// its counters (node and session form), its whole source (commit form), its origins' sources (an import).
 /// Returns, per such aspect, the snapshots whose copies it dropped: they are compared with the
 /// delta (`differing_copies`).
 pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
@@ -931,7 +930,7 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(
     if h.kind.has_own_writes() && h.form == Form::Commit {
         srcs.push(osis_crdt::Source::commit(*id));
     }
-    let node_src = (h.kind.has_own_writes() && h.form == Form::Node).then(|| osis_crdt::Source::node(h.author));
+    let node_src = (h.kind.has_own_writes() && h.form.counted()).then(|| h.form.own_source(h.author, *id));
     let mut out = Vec::new();
     if srcs.is_empty() && node_src.is_none() {
         return out;

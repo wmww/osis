@@ -32,10 +32,10 @@ struct Carrier {
 
 impl Carrier {
     /// Whether the snapshot covers the write with owner dot `x`: its frontier holds the counter
-    /// of a node-form write; it carries writes of a commit-form write's commit.
+    /// of a node- or session-form write; it carries writes of a commit-form write's commit.
     fn covers_dot(&self, x: &Dot) -> bool {
         match x.src.kind() {
-            SourceKind::Node(n) => self.frontiers.nodes.get(n).is_some_and(|f| *f >= x.ctr),
+            SourceKind::Node(_) | SourceKind::Session(_) => self.frontiers.of(&x.src) >= x.ctr,
             SourceKind::Commit(c) => self.rank.keys().any(|d| matches!(d.src.kind(), SourceKind::Commit(y) if y == c)),
             _ => false,
         }

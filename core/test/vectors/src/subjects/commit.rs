@@ -118,6 +118,25 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     built(b)
 }
 
+/// A session-form ephemeral content commit (spec/commits.md §2, §3): its own write under
+/// `(Session(author, nonce), 1)`, the nonce in the header's form.
+fn session_commit() -> CommitBlob {
+    let at = ts(1_700_000_004_500);
+    let nonce = [0x28; osis_crdt::SESSION_NONCE_LEN];
+    let src = Source::session(osis_crdt::Session { node: AUTHOR, nonce });
+    let mut w = Writer::new(at, src.clone(), 1);
+    let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
+    let mut cx = writer_ctx(Kind::Content, at, AUTHOR, 1, 2);
+    cx.own = src;
+    let bytes = encode_delta(&Delta { nonce: [11; 16], fragment }, &cx, None).unwrap();
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Session(nonce));
+    let mut a = AspectWrite::new(THING, Ak::new("/app/state").unwrap(), 1, 2, bytes);
+    a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
+    b.aspects.push(a);
+    b.ephemeral = Some(osis_commit::EphClass::Plain);
+    built(b)
+}
+
 fn import() -> CommitBlob {
     let at = ts(1_700_000_003_000);
     let origin = CommitId([0x24; 32]);
@@ -149,6 +168,7 @@ pub fn headers() -> VecFile {
     cases.push(record("ephemeral commit", "spec/wire.md §4; spec/commits.md §2", &e));
     cases.push(record("relay-only commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Relay)));
     cases.push(record("presence commit", "spec/wire.md §4; spec/commits.md §2", &ephemeral(osis_commit::EphClass::Presence)));
+    cases.push(record("session-form ephemeral content commit", "spec/wire.md §4; spec/commits.md §2, §3", &session_commit()));
     let mut purged = c.clone();
     purged.parts.clear();
     cases.push(case("header-only purge rewrite", "spec/wire.md §4; spec/commits.md §5").with("blob", hex(&purged.encode())).with("commit-id", hex(&c.id().0)));
@@ -347,6 +367,17 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("/app/title").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
+    let s = session_commit().header;
+    let mut x = s.clone();
+    x.ephemeral = None;
+    out.push(reject("session form without the ephemeral marker", "spec/commits.md §3", &x, "ephemeral"));
+    let mut v = s.to_value();
+    if let Value::List(items) = &mut v {
+        items[5] = Value::List(vec![Value::Int(3), Value::Bytes(vec![0x28; 16])]);
+    }
+    let bytes = osis_base::encode(&v);
+    assert!(Header::decode(&bytes).is_err());
+    out.push(case("unknown dot form", "spec/wire.md §4").with("header", hex(&bytes)).with("reject", "form"));
     let mut x = ephemeral(osis_commit::EphClass::Relay).header;
     x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
     out.push(reject("relay-only commit with an expiry", "spec/commits.md §2", &x, "ephemeral"));

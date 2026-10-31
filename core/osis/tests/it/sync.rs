@@ -484,7 +484,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     assert_eq!(log(&w), before, "the phone placed nothing under H's label");
     // received by header only: by commit ID, never by counters (spec/permissions.md §5.1)
     let r = phone.engine(|e| e.receipt(&in_h, &ak("/t/x")).unwrap());
-    assert!(r.nodes.is_empty() && r.commits.len() == 1, "{r:?}");
+    assert!(r.sources.is_empty() && r.commits.len() == 1, "{r:?}");
     for db in [&alice, bob, carol] {
         w.set_online(db, true);
     }
