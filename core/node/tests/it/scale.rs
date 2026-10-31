@@ -76,11 +76,11 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect /s/text: text; aspect /s/tags: set<string>; aspect /s/kept: set<string> [by: writer, keep_at_least: 1d]; aspect /s/short: map<string, string> [by: writer, keep_at_most: 10m];\n");
-const TEXT: Aspect<Value> = Aspect::new("/s/text", &SCALE);
-const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SCALE);
-const KEPT: Aspect<Value> = Aspect::new("/s/kept", &SCALE);
-const SHORT: Aspect<Value> = Aspect::new("/s/short", &SCALE);
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:short.0: map<string, string> [by: writer, keep_at_most: 10m];\n");
+const TEXT: Aspect<Value> = Aspect::new("s:text.0", &SCALE);
+const TAGS: Aspect<Value> = Aspect::new("s:tags.0", &SCALE);
+const KEPT: Aspect<Value> = Aspect::new("s:kept.0", &SCALE);
+const SHORT: Aspect<Value> = Aspect::new("s:short.0", &SCALE);
 
 /// A size from `var`, else `release` in a release build and `dev` in a dev one. A dev build
 /// re-examines every pending commit at each re-examination (`check_unchanged`, debug only): a
@@ -100,7 +100,7 @@ fn ak(s: &str) -> Ak {
 #[ignore]
 fn big_map_edit_cost() {
     let max: usize = size("OSIS_SCALE_MAX", 1_000_000, 1_000_000);
-    let a = ak("/app/big");
+    let a = ak("app:big.0");
     let mut n = 10_000;
     while n <= max {
         let (mut e, batches, bytes, reopen) = engine_reopenable(n as u64);
@@ -190,7 +190,7 @@ fn roster_removal_cost() {
         let roles = BTreeSet::from([Role::Read, Role::Write]);
         let t0 = Instant::now();
         let view = e.epochs(&a).unwrap();
-        let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
+        let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
         let r = rotate(&a, &roles, &view, &state, &holders, &|_, _| true, &mut SeededRng::from_u64(1)).unwrap();
         let sealed = t0.elapsed();
         let mut m = Mutation::new();
@@ -223,13 +223,13 @@ fn roster_removal_cost() {
         // Budget: notes/chat.md, 2.7 KB per remaining holder per rotation, plus about 10%.
         assert!(total <= 3000 * (n - 1), "{total} B for {n} holders");
         // One history entry more afterwards: with the box map paged, only the skeleton (the small
-        // fields) is rewritten, not the whole `/secrets` state.
+        // fields) is rewritten, not the whole `secrets.0` state.
         let mut m2 = Mutation::new();
         m2.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(Value::Int(999_999))], op: Op::Set(Value::Bytes(vec![7; 64])) }).unwrap();
         let w0 = bytes.load(Ordering::Relaxed);
         let t2 = Instant::now();
         e.commit(m2).unwrap().unwrap();
-        println!("roster {n}: one more /secrets entry {:?}, store writes {} B ({} batches total)", t2.elapsed(), bytes.load(Ordering::Relaxed) - w0, batches.load(Ordering::Relaxed));
+        println!("roster {n}: one more secrets.0 entry {:?}, store writes {} B ({} batches total)", t2.elapsed(), bytes.load(Ordering::Relaxed) - w0, batches.load(Ordering::Relaxed));
     }
 }
 
@@ -239,7 +239,7 @@ fn roster_removal_cost() {
 #[test]
 #[ignore = "tier 2"]
 fn deep_map_edit_cost() {
-    let a = ak("/app/deep");
+    let a = ak("app:deep.0");
     for n in [10_000usize, 100_000] {
         let (mut e, batches, bytes) = engine(n as u64 + 1);
         let me = e.tid();
@@ -268,7 +268,7 @@ fn deep_map_edit_cost() {
 #[ignore = "tier 2"]
 fn big_set_by_value_cost() {
     let n = 100_000usize;
-    let a = ak("/app/set");
+    let a = ak("app:set.0");
     let s = |x: String| Value::Str(x);
     let (mut e, batches, bytes, reopen) = engine_reopenable(8);
     let me = e.tid();
@@ -336,7 +336,7 @@ fn text_undo_and_first_access_cost() {
     let mut e = reopen.open(&batches, &bytes);
     let opened = t2.elapsed();
     let t3 = Instant::now();
-    let v = e.get(&t, &ak("/s/text")).unwrap();
+    let v = e.get(&t, &ak("s:text.0")).unwrap();
     let first = t3.elapsed();
     assert!(matches!(&v, Some(Value::Str(x)) if x.len() == n + 3 + k));
     println!("text {n} chars: open {opened:?}, first read {first:?}");
@@ -357,12 +357,12 @@ fn text_undo_and_first_access_cost() {
 fn text_range_and_edit_cost() {
     let n = 100_000usize;
     let mut lp = osis_node::local_peer::LocalPeer::new(2, 31, WallMs(1_700_000_000_000)).unwrap();
-    let a = ak("/s/text");
+    let a = ak("s:text.0");
     let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     let b = lp.peers[1].engine.tid();
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     // not periodic: an edit whose window repeats elsewhere in its base matches the whole text
     let mut rng = SeededRng::from_u64(5);
@@ -493,7 +493,7 @@ fn text_range_and_edit_cost() {
 #[test]
 #[ignore = "tier 2"]
 fn role_change_and_open_cost() {
-    let a = ak("/app/v");
+    let a = ak("app:v.0");
     let (mut e, batches, bytes, reopen) = engine_reopenable(6);
     let me = e.tid();
     let mut things = Vec::new();
@@ -521,7 +521,7 @@ fn role_change_and_open_cost() {
     osis_node::costs::take();
     let t1 = Instant::now();
     let mut m = Mutation::new();
-    m.op(things[0], &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+    m.op(things[0], &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap();
     println!("one grant with 10^4 commits held: {:?}", t1.elapsed());
     for (k, d, c) in osis_node::costs::take() {
@@ -584,9 +584,9 @@ fn demotion_heavy_open() {
     let set = |e: &mut Engine, t: Tid, holder: Tid, role: Option<Role>| -> Option<osis_base::CommitId> {
         // an edge change is remove + put (spec/permissions.md §2)
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
         if let Some(r) = role {
-            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         }
         e.commit(m).ok().flatten()
     };
@@ -862,13 +862,13 @@ fn sync_roles_pass_cost() {
 #[ignore = "tier 2"]
 fn late_delta_deaths_cost_spec_crdt_4_8() {
     let n: usize = size("OSIS_SCALE_N", 3000, 3000);
-    for (name, asp, key, compact) in [("unbounded set", &TAGS, "/s/tags", false), ("keep-at-least set", &KEPT, "/s/kept", false), ("keep-at-least set, compacted", &KEPT, "/s/kept", true)] {
+    for (name, asp, key, compact) in [("unbounded set", &TAGS, "s:tags.0", false), ("keep-at-least set", &KEPT, "s:kept.0", false), ("keep-at-least set, compacted", &KEPT, "s:kept.0", true)] {
         let mut lp = osis_node::local_peer::LocalPeer::new(2, 41, WallMs(1_700_000_000_000)).unwrap();
         let me = lp.peers[0].engine.tid();
         let b = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         lp.sync_all().unwrap();
         let add = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, v: String| {
@@ -952,7 +952,7 @@ fn validity_flip_cost_spec_permissions_5_2() {
     lp.peers[0].commit(m).unwrap().unwrap();
     for (x, r) in [(b, Role::Write), (c, Role::Admin)] {
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: r, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.sync_all().unwrap();
@@ -974,13 +974,13 @@ fn validity_flip_cost_spec_permissions_5_2() {
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
     m.frontier(f.to_value());
     let rv = lp.peers[2].commit(m).unwrap().unwrap();
     let late = add(&mut lp, 1, "late".into());
     let pk2 = lp.packages(2).unwrap();
     let pk1 = lp.packages(1).unwrap();
-    let k = ak("/s/tags");
+    let k = ak("s:tags.0");
     let tags = |lp: &mut osis_node::local_peer::LocalPeer| match lp.peers[0].engine.get(&t, &k).unwrap() {
         Some(Value::Set(s)) => s.len(),
         _ => 0,
@@ -1121,7 +1121,7 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
     let w = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let base = lp.packages(0).unwrap();
     for i in 0..n {
@@ -1129,7 +1129,7 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
         m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(Value::Str(format!("e{i}"))) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
-    let k = ak("/s/tags");
+    let k = ak("s:tags.0");
     let snap = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
     let pks = lp.packages(0).unwrap();
     for p in &base {
@@ -1168,10 +1168,10 @@ fn dropped_snapshot_receipts_cost_spec_commits_5() {
     let b = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(b))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
-    let key = ak("/s/short");
+    let key = ak("s:short.0");
     let t0 = Instant::now();
     for i in 0..k {
         for j in 0..5 {
@@ -1221,10 +1221,10 @@ fn eph_net() -> (crate::net::Net, usize, usize, Tid) {
     (net, b, x, t)
 }
 
-/// Node `x`'s ephemeral commits setting `per` keys of `/doc/notes` of `t` each, `commits` times
+/// Node `x`'s ephemeral commits setting `per` keys of `doc:notes.0` of `t` each, `commits` times
 /// (fresh keys every time), as blobs.
 fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, per: usize, value: &Value) -> Vec<osis_commit::CommitBlob> {
-    let notes = crate::net::ukey("/doc/notes", osis_schema::Lifetime::Ephemeral);
+    let notes = crate::net::ukey("doc:notes.0~", osis_schema::Lifetime::Ephemeral);
     let mut blobs = Vec::new();
     for c in 0..commits {
         let mut m = Mutation::new();
@@ -1246,8 +1246,8 @@ fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, 
 fn eph_absorb_lists_cost() {
     let n = size("OSIS_EPH_N", 8000, 400);
     let (mut net, b, x, t) = eph_net();
-    let cur = crate::net::ukey("/doc/cursor", osis_schema::Lifetime::Ephemeral);
-    let ca = ak("/doc/cursor");
+    let cur = crate::net::ukey("doc:cursor.0~", osis_schema::Lifetime::Ephemeral);
+    let ca = ak("doc:cursor.0~");
     let t0 = Instant::now();
     let mut blobs = Vec::with_capacity(n);
     for k in 0..n {
@@ -1295,7 +1295,7 @@ fn eph_decoded_memory() {
         for c in 0..commits {
             let mut m = Mutation::new();
             for e in 0..per {
-                m.set(t, &crate::net::ukey(&format!("/x/a{:06}", c * per + e), osis_schema::Lifetime::Ephemeral), &value).unwrap();
+                m.set(t, &crate::net::ukey(&format!("x:a{:06}.0~", c * per + e), osis_schema::Lifetime::Ephemeral), &value).unwrap();
             }
             net.engine(x).write(m).unwrap();
             blobs.extend(net.engine(x).take_ephemeral().unwrap().into_iter().map(|c| c.blob));
@@ -1378,11 +1378,11 @@ fn big_map_apply_memory() {
     for i in [1, 2] {
         let w = lp.peers[i].engine.tid();
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.sync_all().unwrap();
-    let a = ak("/app/big");
+    let a = ak("app:big.0");
     let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let step = |what: &str, f: &mut dyn FnMut()| {
         let rss0 = rss_kib();
@@ -1428,13 +1428,13 @@ fn big_map_apply_memory() {
 #[ignore = "tier 2"]
 fn snapshot_join_cost_spec_permissions_5_2() {
     let n: usize = size("OSIS_SCALE_N", 100_000, 10_000);
-    for (name, asp, key) in [("unbounded set", &TAGS, "/s/tags"), ("keep-at-least set", &KEPT, "/s/kept")] {
+    for (name, asp, key) in [("unbounded set", &TAGS, "s:tags.0"), ("keep-at-least set", &KEPT, "s:kept.0")] {
         let mut lp = osis_node::local_peer::LocalPeer::new(2, 49, WallMs(1_700_000_000_000)).unwrap();
         let me = lp.peers[0].engine.tid();
         let w = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let t0 = Instant::now();
         let mut m = Mutation::new();

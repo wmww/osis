@@ -36,7 +36,7 @@ pub struct Verdicts {
     pub unsettled: Vec<Option<(Tid, Ak)>>,
 }
 
-/// How long another node's fresh demotion or `/keys` is left to its author before this node
+/// How long another node's fresh demotion or `keys.0` is left to its author before this node
 /// places it as its own chain certificate (ms; the periodic pass picks it up after).
 const SETTLE_MS: u64 = 30_000;
 
@@ -173,12 +173,12 @@ pub(super) fn is_snapshot(k: CKind) -> bool {
 
 /// A node card's aspects (spec/permissions.md §4).
 pub(super) fn is_card(ak: &str) -> bool {
-    matches!(ak, "/node" | "/reach" | "/keys")
+    matches!(ak, "node.0" | "reach.0" | "keys.0")
 }
 
 /// What stays under a replaced label besides role-class commits (spec/sync.md §2).
 pub(super) fn kept_when_replaced(ak: &str) -> bool {
-    ct::is_role_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen")
+    ct::is_role_class(ak) || matches!(ak, "created.0" | "node.0" | "reach.0" | "seen.0")
 }
 
 /// Every part of `h` on the aspects `keep` admits.
@@ -336,7 +336,7 @@ impl SyncEngine {
         for id in self.cert_entries(&l, scope) {
             let Some(e) = self.state.entries.get(&(l, id)) else { continue };
             let c = if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None };
-            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "/seen"));
+            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0"));
             let prio = if c.is_some_and(|c| self.first.contains(&c)) {
                 0
             } else if beat {
@@ -516,14 +516,14 @@ impl SyncEngine {
         full
     }
 
-    /// Local passes over the labels this node syncs with nobody (no host in their `/label`):
+    /// Local passes over the labels this node syncs with nobody (no host in their `label.0`):
     /// this node is their host, so a peer that dials it (a direct link's redeemer,
     /// spec/permissions.md §9) finds a complete state (spec/sync.md §5, co-reader peer). Passes
     /// otherwise run only per dialed connection, and a node serves only the entries they placed.
     pub(crate) fn local_passes(&mut self) -> Result<()> {
         self.local_dirty = false;
         self.local_last = self.raw_now();
-        // nobody can dial a node without `/reach` (no listener): nothing to serve
+        // nobody can dial a node without `reach.0` (no listener): nothing to serve
         if self.own_reach().is_none() {
             self.local_any = false;
             return Ok(());
@@ -565,10 +565,10 @@ impl SyncEngine {
     }
 
     /// Whether this node may issue a new step for a label of `g` now: another node's rotation
-    /// of the actor (a `/secrets` write) received less than `SETTLE_MS` ago is its author's to
+    /// of the actor (a `secrets.0` write) received less than `SETTLE_MS` ago is its author's to
     /// register first (a second admin's step, issued before the author's reaches it, would be a
     /// sibling); a wake brings the pass back then. Other role writes (an admin recording
-    /// a step in `/label`, a `/keys` update) get no step from their author and delay nothing.
+    /// a step in `label.0`, a `keys.0` update) get no step from their author and delay nothing.
     fn step_settled(&mut self, g: &Tid) -> bool {
         let a = self.engine.core.secret_actor(g).unwrap_or(*g);
         let Some(t) = self.rotation_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
@@ -581,7 +581,7 @@ impl SyncEngine {
 
     /// One label's local pass, as a pass at a host would leave that host: a newer
     /// established epoch first issues a child step of the head when that head is recorded in
-    /// `/label` (recorded there, so the served head moves; `reregister` without the upload),
+    /// `label.0` (recorded there, so the served head moves; `reregister` without the upload),
     /// and the pass goes on under it; then what a pass would upload is placed (`body_sends`:
     /// the must-hold bodies and the blobs they link; inbox copies, certificates, the
     /// heartbeat), stamped when this node writes; carriers are asked for before keep-at-most
@@ -847,7 +847,7 @@ impl SyncEngine {
 
     /// No entry under `l` this node can open, present at a host it is connected to that has
     /// not said it lacks it, is unopened (in flight, or not fetched), and no pending commit by an
-    /// admin writes the actor's `/keys` (`Engine::keys_write_pending`). Entries only a host out
+    /// admin writes the actor's `keys.0` (`Engine::keys_write_pending`). Entries only a host out
     /// of reach lists do not count: one that never comes back would hold the step back for good.
     fn keys_caught_up(&mut self, g: &Tid, l: &LabelId) -> bool {
         let secrets = self.read_secrets(g);
@@ -1071,7 +1071,7 @@ impl SyncEngine {
             }
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
-            if h.aspects.iter().any(|a| a.ak.as_str() == "/seen") {
+            if h.aspects.iter().any(|a| a.ak.as_str() == "seen.0") {
                 continue;
             }
             let (commit, parts) = (*commit, parts.clone());
@@ -1131,7 +1131,7 @@ impl SyncEngine {
             let Some(mut e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| h.aspects.iter().any(|a| a.ak.as_str() == "/seen")) {
+            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")) {
                 continue;
             }
             if let Some(t) = self.relay_at(&commit) {
@@ -1363,7 +1363,7 @@ impl SyncEngine {
     /// `Engine::parts_genuine`). Opening a blob checks its prefix, not its deltas, and a held
     /// commit's late parts are skipped unchecked, so an entry's parts are only its own claim
     /// until this says yes. A forged blob is marked `Bad` under every label; unknown yet (a
-    /// thing's `/created` missing) counts as no.
+    /// thing's `created.0` missing) counts as no.
     pub(crate) fn genuine(&mut self, id: &BlobId) -> bool {
         if let Some(v) = self.genuine.get(id) {
             return *v;
@@ -1452,13 +1452,13 @@ impl SyncEngine {
     /// under `g`'s home label `l` (spec/sync.md §3; the inbox may be another label, its owner's:
     /// a group's holders learn its edges there, its inbox reaching only its admins): of a
     /// role commit, the carried parts on the things it writes an edge of `g` or an actor
-    /// it owns on, or boxes one on (boxes are sealed to the actor anyway), with the `/label` and
-    /// `/created` commits of those things, so the actor's other devices find the grant and its
+    /// it owns on, or boxes one on (boxes are sealed to the actor anyway), with the `label.0` and
+    /// `created.0` commits of those things, so the actor's other devices find the grant and its
     /// labels there; nothing from a blob expiring less than `INBOX_COPY_MIN_LEFT` from now (an expiry
     /// is the sender's word: a short one would free the deposit budget for the next copy), and
     /// not what an entry there already holds (each holder of a group actor reads its inbox and
     /// placed the same copy again). The consumed inbox blob stays until it expires: its label
-    /// hints are what a later holder that cannot apply the copied `/label` yet (the granter's
+    /// hints are what a later holder that cannot apply the copied `label.0` yet (the granter's
     /// chain pending) opens the thing's label by.
     fn inbox_copies(&mut self, g: &Tid, l: LabelId) -> Result<()> {
         // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
@@ -1499,7 +1499,7 @@ impl SyncEngine {
             // labels only of those things the payload names (its list is the sender's word: it
             // could name any thing this device holds)
             for t in o.things.iter().map(|t| t.tid).filter(|t| on.contains(t)) {
-                for ak in ["/created", "/label"] {
+                for ak in ["created.0", "label.0"] {
                     let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
                     if !self.state.certs.contains(&(l, x)) && !self.held_whole(g, l, &x, &xs)? {
                         self.place_certificate_in(g, &x, &xs)?;
@@ -1565,7 +1565,7 @@ impl SyncEngine {
             if missing.is_empty() || mine.is_empty() && self.state.certs.contains(&(l, c)) && !self.own_card_read(g, &c, &missing) {
                 continue;
             }
-            // another node's demotion or new `/keys` received less than `SETTLE_MS` ago is its
+            // another node's demotion or new `keys.0` received less than `SETTLE_MS` ago is its
             // author's to place (spec/permissions.md §3, §4): holders that learn of it under
             // another label first do not all copy it; a wake brings the pass back then
             let me = self.engine.tid();
@@ -1573,7 +1573,7 @@ impl SyncEngine {
             let due = self.engine.core.ix.commits.get(&c).filter(|m| m.header.author != me).map(|m| m.received.0.saturating_add(SETTLE_MS)).filter(|t| *t > now);
             if let Some(t) = due
                 && let Some(h) = self.engine.header(&c)
-                && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "/keys")))
+                && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
             {
                 let at = self.raw_now().saturating_add(t - now);
                 self.settle_by(at);
@@ -1588,7 +1588,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Whether `parts` of `c` are this node's own card (its `/node`, `/reach`, `/keys` writes)
+    /// Whether `parts` of `c` are this node's own card (its `node.0`, `reach.0`, `keys.0` writes)
     /// and it currently reads `g`'s actor.
     fn own_card_read(&self, g: &Tid, c: &CommitId, parts: &BTreeSet<(usize, usize)>) -> bool {
         let me = self.engine.tid();
@@ -1670,12 +1670,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A `/seen` commit on this node (spec/permissions.md §4): reused within the interval.
+    /// A `seen.0` commit on this node (spec/permissions.md §4): reused within the interval.
     pub(crate) fn heartbeat_commit(&mut self, stranded: bool) -> Result<Option<CommitId>> {
         let me = self.engine.tid();
         let now = self.now();
         if !stranded
-            && let Some(c) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("/seen").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
+            && let Some(c) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
             && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
             && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
@@ -1753,7 +1753,7 @@ impl SyncEngine {
         if !uploads.is_empty() {
             self.command(conn, Command::Upload { label: l, entries: uploads }, out)?;
         }
-        // a child of the host's head already recorded in `/label` (this node's local step,
+        // a child of the host's head already recorded in `label.0` (this node's local step,
         // another admin's) is registered first: the walk down the recorded path issues nothing
         let (step, set) = match self.recorded_child(&g, &l, &head.id()) {
             Some(x) => x,
@@ -1774,7 +1774,7 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// A child of step `head` recorded in `/label` with its claim set (the lowest ID among
+    /// A child of step `head` recorded in `label.0` with its claim set (the lowest ID among
     /// several).
     fn recorded_child(&mut self, g: &Tid, l: &LabelId, head: &osis_label::StepId) -> Option<(osis_label::Step, osis_label::ClaimSet)> {
         let gl = self.group_label(g, l)?;

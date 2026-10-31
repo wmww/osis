@@ -48,7 +48,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
     let frontier = Frontier {
-        writes: BTreeMap::from([(tid(19), BTreeMap::from([("/note/body".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
+        writes: BTreeMap::from([(tid(19), BTreeMap::from([("note:body.0".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
         commits: BTreeSet::from([CommitId([21; 32])]),
     };
     let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
@@ -57,22 +57,22 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
     )]);
     vec![
-        ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
-        ("created key actor", "/created", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
-        ("holders", "/members", MEMBERS.encode(&holders)),
-        ("keys", "/keys", KEYS.encode(&keys)),
-        ("secrets", "/secrets", SECRETS.encode(&secrets)),
-        ("tenures", "/tenures", TENURES.encode(&tenures)),
-        ("label", "/label", LABEL.encode(&labels)),
-        ("moved", "/moved", MOVED.encode(&tid(25))),
-        ("was", "/was", WAS.encode(&tid(26))),
-        ("node", "/node", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
-        ("reach", "/reach", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
-        ("seen", "/seen", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
-        ("group", "/group", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
-        ("name", "/name", NAME.encode(&"Trip".to_string())),
-        ("body", "/body", BODY.encode(&"# Plan\n".to_string())),
-        ("tag", "/tag", TAG.encode(&Tag { color: Some("#ff8800".into()) })),
+        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
+        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
+        ("holders", "roles.0", ROLES.encode(&holders)),
+        ("keys", "keys.0", KEYS.encode(&keys)),
+        ("secrets", "secrets.0", SECRETS.encode(&secrets)),
+        ("tenures", "tenures.0", TENURES.encode(&tenures)),
+        ("label", "label.0", LABEL.encode(&labels)),
+        ("moved", "moved.0", MOVED.encode(&tid(25))),
+        ("was", "was.0", WAS.encode(&tid(26))),
+        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
+        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
+        ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
+        ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
+        ("name", "name.0", NAME.encode(&"Trip".to_string())),
+        ("body", "body.0", BODY.encode(&"# Plan\n".to_string())),
+        ("tag", "tag.0", TAG.encode(&Tag { color: Some("#ff8800".into()) })),
     ]
 }
 
@@ -90,7 +90,7 @@ pub fn core() -> VecFile {
     ];
     for (name, ak, v) in samples() {
         let typ = s.aspects.get(ak).map(|a| &a.ty);
-        assert!(ak == "/created" || typ.is_some_and(|t| osis_schema::validate_write(s, &v, t).is_ok()), "{name}: not a valid write");
+        assert!(ak == "created.0" || typ.is_some_and(|t| osis_schema::validate_write(s, &v, t).is_ok()), "{name}: not a valid write");
         cases.push(Record::new().with("case", name).with("spec", SPEC).with("ak", ak).with("value", hex(&encode(&v))));
     }
     VecFile { header: generated_header("schema", SPEC), cases }

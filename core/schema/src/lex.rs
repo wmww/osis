@@ -8,7 +8,7 @@ pub(crate) enum Tok {
     Str(String),
     /// `0x...`, even number of hex digits.
     Hex(Vec<u8>),
-    /// `/a/b`: an AK.
+    /// `a:b.0`: an AK.
     Ak(String),
     /// `30d`, `12h`, `5m`, `10s`, `250ms`: milliseconds.
     Dur(u64),
@@ -53,6 +53,40 @@ impl Lexer<'_> {
         }
         Some(c)
     }
+    /// Length in chars of the AK starting here, if one does: name segments joined by `:`
+    /// (after a `:<tid>` segment) up to a `.` and a digit, then the version and markers. Its
+    /// grammar is checked later (`Ak::new`), so a near-miss reads as an AK and fails there.
+    fn ak_len(&self) -> Option<usize> {
+        let mut it = self.chars.clone().peekable();
+        let mut n = 0;
+        if it.peek() == Some(&':') {
+            it.next();
+            n += 1;
+            while it.next_if(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_')).is_some() {
+                n += 1;
+            }
+            it.next_if_eq(&':')?;
+            n += 1;
+        }
+        loop {
+            it.next_if(|c| c.is_ascii_lowercase() || *c == '_')?;
+            n += 1;
+            while it.next_if(|c| c.is_ascii_alphanumeric() || *c == '_').is_some() {
+                n += 1;
+            }
+            if it.next_if_eq(&':').is_none() {
+                break;
+            }
+            n += 1;
+        }
+        it.next_if_eq(&'.')?;
+        it.next_if(char::is_ascii_digit)?;
+        n += 2;
+        while it.next_if(|c| c.is_ascii_digit() || matches!(c, '^' | '~' | '*')).is_some() {
+            n += 1;
+        }
+        Some(n)
+    }
     fn take_while(&mut self, f: impl Fn(char) -> bool) -> String {
         let mut s = String::new();
         while let Some(c) = self.peek().filter(|c| f(*c)) {
@@ -89,8 +123,7 @@ pub(crate) fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                     _ => continue,
                 }
             } else {
-                let rest = lx.take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '@' | '/'));
-                Tok::Ak(format!("/{rest}"))
+                return Err(err("unexpected character '/'"));
             }
         } else if c.is_ascii_digit() {
             let digits = lx.take_while(|c| c.is_ascii_alphanumeric() || c == '_');
@@ -136,6 +169,8 @@ pub(crate) fn lex(src: &str) -> Result<Vec<Token>, LexError> {
                     Some(m) => Tok::Dur(n.checked_mul(m).ok_or_else(|| err("duration out of range"))?),
                 }
             }
+        } else if let Some(n) = lx.ak_len() {
+            Tok::Ak((0..n).filter_map(|_| lx.bump()).collect())
         } else if c.is_ascii_alphabetic() || c == '_' {
             Tok::Ident(lx.take_while(|c| c.is_ascii_alphanumeric() || c == '_'))
         } else if c == '"' {

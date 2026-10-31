@@ -29,34 +29,34 @@ type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 
-aspect /tid: tid [synthetic, guaranteed];
+aspect tid.0: tid [synthetic, guaranteed];
 /// AKs present on the thing.
-aspect /aspects: set<string> [synthetic, guaranteed];
-aspect /created: creation [guaranteed, by: nobody];
-aspect /members: map<tid, edge> [by: admin, keep_at_least: 90d];
-aspect /keys: struct {
+aspect aspects.0: set<string> [synthetic, guaranteed];
+aspect created.0: creation [guaranteed, by: nobody];
+aspect roles.0: map<tid, edge> [by: admin, keep_at_least: 90d];
+aspect keys.0: struct {
     0 read: option<keyset>, 1 write: option<keyset>, 2 admin: option<keyset>,   // actors other than key actors
     3 key: option<kem_key>,                                                       // a key actor's one KEM key
     4 inbox: option<inbox>, 5 deposit_seed: option<blob>,                        // deposit seed: 32 bytes
 } [by: admin, keep_at_least: 90d];
-aspect /secrets: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> } [by: admin, keep_at_least: 90d];
-aspect /tenures: set<tenure> [by: admin, keep_at_least: 90d];
+aspect secrets.0: struct { 0 boxes: map<box_key, box>, 1 history: map<history_key, blob> } [by: admin, keep_at_least: 90d];
+aspect tenures.0: set<tenure> [by: admin, keep_at_least: 90d];
 /// Label ID -> label.
-aspect /label: map<blob, label> [by: admin, keep_at_least: 90d];
-aspect /moved: tid [by: admin, keep_at_least: 90d];
-aspect /was: tid [by: admin, keep_at_least: 90d];
+aspect label.0: map<blob, label> [by: admin, keep_at_least: 90d];
+aspect moved.0: tid [by: admin, keep_at_least: 90d];
+aspect was.0: tid [by: admin, keep_at_least: 90d];
 /// Schema ID -> revision.
-aspect /node: struct { 0 software: string, 1 schemas: map<blob, int> };
+aspect node.0: struct { 0 software: string, 1 schemas: map<blob, int> };
 /// 32-byte P2P key, relay URLs, 32-byte LAN secret.
-aspect /reach: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
+aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
 /// ts: wall ms of the commit's ts.
-aspect /seen: struct { 0 ts: timestamp, 1 stranded: bool };
-aspect /group: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
-aspect /groups: set<tid> [synthetic, guaranteed];
+aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };
+aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
+aspect groups.0: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.
-aspect /name: string;
+aspect name.0: string;
 /// Freeform markdown: a note's content, notes on an event or a contact.
-aspect /body: markdown;
+aspect body.0: markdown;
 /// Marks a group as a user-facing tag (notes/tags.md): its items are the tag's contents, its subgroups its sub-tags.
-aspect /tag: struct { 0 color: option<string> };
+aspect tag.0: struct { 0 color: option<string> };

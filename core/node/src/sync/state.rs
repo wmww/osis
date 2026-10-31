@@ -41,7 +41,7 @@ const SENT_INBOX: &[u8] = b"y/v";
 const STRANDED: &[u8] = b"y/u";
 /// Commits for a node over a direct connection, until the app takes them (`take_direct`).
 const DIRECT: &[u8] = b"y/j";
-/// Per-group `/reach` policy set by the app (1 publish, 0 exclude; `SyncEngine::set_reach_policy`).
+/// Per-group `reach.0` policy set by the app (1 publish, 0 exclude; `SyncEngine::set_reach_policy`).
 const REACH_POLICY: &[u8] = b"y/n";
 /// Persons marked as contacts (`SyncEngine::set_contact`).
 const CONTACT: &[u8] = b"y/a";
@@ -132,14 +132,14 @@ pub struct SentInbox {
     pub holder: Tid,
     pub commit: CommitId,
     pub things: Vec<Tid>,
-    /// Only the `/members` parts went (a removal).
+    /// Only the `roles.0` parts went (a removal).
     pub edge_only: bool,
     pub at: u64,
     /// Re-sends so far.
     pub tries: u32,
 }
 
-/// A label learned from an inbox blob before its `/label` is held, or followed by a held key
+/// A label learned from an inbox blob before its `label.0` is held, or followed by a held key
 /// actor's static entry (`via`: a recovery card's home label, a link's label).
 #[derive(Clone, Debug)]
 pub struct Hint {
@@ -251,7 +251,7 @@ pub struct State {
     pub stranded: BTreeMap<LabelId, u64>,
     /// Commits for nodes over a direct connection (pairing), until the app takes them.
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
-    /// `/reach` policy per group the app set (`y/n`).
+    /// `reach.0` policy per group the app set (`y/n`).
     pub reach_policy: BTreeMap<Tid, bool>,
     /// Groups this node holds none of (`y/w`): their labels are read only for receipts.
     pub receipts_only: BTreeSet<Tid>,
@@ -759,7 +759,7 @@ impl State {
         }
     }
 
-    /// Sets (or clears, `None`) a group's `/reach` policy.
+    /// Sets (or clears, `None`) a group's `reach.0` policy.
     pub fn set_reach_policy(&mut self, g: Tid, publish: Option<bool>) {
         match publish {
             Some(p) => {

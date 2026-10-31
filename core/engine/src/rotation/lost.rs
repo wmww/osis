@@ -122,7 +122,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
 /// a read epoch newer than any it held checked (`held`: newest checked read epoch number per
 /// dropped actor; a grant from after a rotation that left the node out; reading candidates, as
 /// a re-grant read before the removal applied gives, do not count), signed (`authentic`) by an
-/// author who may grant on them now: forgetting keeps those `/secrets` parts, whatever the
+/// author who may grant on them now: forgetting keeps those `secrets.0` parts, whatever the
 /// commit's age (spec/permissions.md §3), so a re-grant applied after the loss brings its boxes.
 /// A box only at an epoch the node held (a grant from before the removal, which applied gives no
 /// role) goes: kept, it would hold the lost secrets for good. Cost: such a re-grant that never
@@ -136,7 +136,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
 }
 
 impl Engine {
-    /// Whether a held, not applied commit (parked ones aside) writes `a`'s `/keys`, signed
+    /// Whether a held, not applied commit (parked ones aside) writes `a`'s `keys.0`, signed
     /// (`authentic`) by an admin of `a` now: a newer deposit seed may be on its way (node-sync
     /// holds back a deposit-only step meanwhile). Anyone can send a pending commit naming any
     /// aspect, so an unsigned one never counts: it would hold the step back for good.
@@ -148,7 +148,7 @@ impl Engine {
                 let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
                 let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
                 let h = &blob.header;
-                if h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/keys") && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
+                if h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "keys.0") && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
                     return Ok(true);
                 }
             }
@@ -157,7 +157,7 @@ impl Engine {
     }
 }
 
-/// Whether pending `blob` is signed by its author and its `/secrets` parts on `x` are the ones its
+/// Whether pending `blob` is signed by its author and its `secrets.0` parts on `x` are the ones its
 /// header lists: a commit waiting on its author's chain or a creation record is stored unchecked, so its
 /// `author` and `ts` could be anyone's.
 pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_base::CommitId, x: &Tid) -> bool {
@@ -167,7 +167,7 @@ pub(crate) fn authentic(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_b
     let mut interner = osis_crdt::Interner::new();
     osis_commit::verify_signature(id, &blob.signature, &vk).is_ok()
         && blob.parts.iter().all(|p| match h.aspects.get(p.ai) {
-            Some(a) if a.tid == *x && a.ak.as_str() == "/secrets" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
+            Some(a) if a.tid == *x && a.ak.as_str() == "secrets.0" => core.dedup(x).is_some_and(|d| osis_commit::verify_part(h, id, p, &d, &mut interner, None).is_ok()),
             _ => true,
         })
 }

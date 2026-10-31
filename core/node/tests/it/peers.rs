@@ -18,7 +18,7 @@ fn reach(net: &mut Net, n: usize, key: u8) {
 }
 
 // spec/sync.md §5 (co-reader peer), §10: two holders of a group whose label names no host sync
-// it directly: each dials the other by the dialable key in its `/reach` and is served the label
+// it directly: each dials the other by the dialable key in its `reach.0` and is served the label
 // through the host engine over the other's label state; writes flow both ways.
 #[test]
 fn co_readers_sync_without_host_spec_sync_5() {
@@ -52,8 +52,8 @@ fn reader_served_by_co_reader_peer_spec_sync_5() {
     assert_eq!(net.read(r, t), Some(s("for the reader")));
 }
 
-// spec/sync.md §5, §10: co-readers are the nodes with a `/reach` this node holds that may read
-// a label it syncs; a node with `/reach` that is no holder is not dialed, and nothing is dialed
+// spec/sync.md §5, §10: co-readers are the nodes with a `reach.0` this node holds that may read
+// a label it syncs; a node with `reach.0` that is no holder is not dialed, and nothing is dialed
 // while it is the only one known.
 #[test]
 fn co_reader_selection_spec_sync_5() {
@@ -72,7 +72,7 @@ fn co_reader_selection_spec_sync_5() {
     assert!(peers[&[0xb3; 32]].labels.contains(&l));
     assert_eq!(peers[&[0xb3; 32]].node, net.tid(b));
     let _ = g;
-    // the dial goes to the peer scheme with the relays from its `/reach`
+    // the dial goes to the peer scheme with the relays from its `reach.0`
     let acts = net.sync(a).handle(osis_node::sync::Event::Local);
     let dials: Vec<Address> = acts.iter().filter_map(|x| if let osis_node::sync::Action::Dial { address, .. } = x { Some(address.clone()) } else { None }).collect();
     assert!(dials.iter().all(|d| d.key == [0xb3; 32] && d.url == "peer://https://relay.example"), "{dials:?}");
@@ -91,7 +91,7 @@ fn lan_tag_windows_spec_sync_10() {
     assert_eq!(&lan_tag(&s1, t0)[..], &want.expose()[..16]);
 }
 
-/// Publishes `/reach` with the Ed25519 key of node `n`'s dialable secret (what a transport
+/// Publishes `reach.0` with the Ed25519 key of node `n`'s dialable secret (what a transport
 /// listening with it presents); returns the key.
 pub fn reach_ed(net: &mut Net, n: usize) -> [u8; 32] {
     let secret = net.sync(n).dialable_secret();
@@ -221,7 +221,7 @@ fn lan_replay_from_other_source_ignored_spec_sync_10() {
 fn lan_announcement_needs_own_key_spec_sync_10() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
-    assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "no /reach yet");
+    assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "no reach.0 yet");
     reach(&mut net, a, 0xa5);
     assert!(net.sync(a).lan_announcement([1; 32], 1).is_none(), "not the secret's key");
     reach_ed(&mut net, a);
@@ -264,10 +264,10 @@ fn lan_replaces_relay_route_spec_sync_10() {
     assert!(dials(&acts).is_empty());
 }
 
-// spec/permissions.md §4 (`/reach` only under labels whose group qualifies), spec/sync.md §10: a
-// group whose labels hold this node's current `/reach` stops qualifying (its policy turns to
+// spec/permissions.md §4 (`reach.0` only under labels whose group qualifies), spec/sync.md §10: a
+// group whose labels hold this node's current `reach.0` stops qualifying (its policy turns to
 // exclude): the dialable key and lan secret rotate, the driver is told to listen again, and the
-// new `/reach` goes only under groups that still qualify; a reader of only that group keeps the
+// new `reach.0` goes only under groups that still qualify; a reader of only that group keeps the
 // old one, which reaches nothing.
 #[test]
 fn reach_rotates_when_group_stops_qualifying_spec_permissions_4() {

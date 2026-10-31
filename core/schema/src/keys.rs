@@ -95,7 +95,7 @@ impl AspectKey for Untyped {
     }
 }
 
-/// Untyped keys of the other lifetimes: `Ak::new("/app/x")?.ephemeral()`.
+/// Untyped keys of the other lifetimes: `Ak::new("app:x.0")?.ephemeral()`.
 pub trait Lifetimes {
     fn ephemeral(self) -> Untyped;
     fn signal(self) -> Untyped;
@@ -118,8 +118,10 @@ pub struct Aspect<T> {
 }
 
 impl<T> Aspect<T> {
+    /// Fails the build, in a `const` item, unless `ak` parses as an AK: every generated key
+    /// constant is checked so (`Ak::check`).
     pub const fn new(ak: &'static str, schema: &'static StaticSchema) -> Aspect<T> {
-        Aspect { ak, schema, _t: PhantomData }
+        Aspect { ak: Ak::check(ak), schema, _t: PhantomData }
     }
 }
 

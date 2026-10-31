@@ -51,7 +51,7 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     }
     assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
     // spec: none (local store index, notes/node.md Open): the grant reached Bob with a late
-    // `/members` part; his `node/edges` row was rewritten with the record, so a reopen from the
+    // `roles.0` part; his `node/edges` row was rewritten with the record, so a reopen from the
     // index equals a rebuild from the commit records and keeps the edge
     let e = net.engine(b);
     let held = |d: osis_node::engine::IndexDigest| d.without_held();

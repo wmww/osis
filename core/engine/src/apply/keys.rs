@@ -1,6 +1,6 @@
 //! Established epochs (spec/crypto.md §4):
-//! an applied valid commit's `/secrets` write is `SecretsWrite::applied` with its `/keys` write
-//! and the keysets held before it; a held `/secrets` compaction snapshot keys its epochs
+//! an applied valid commit's `secrets.0` write is `SecretsWrite::applied` with its `keys.0` write
+//! and the keysets held before it; a held `secrets.0` compaction snapshot keys its epochs
 //! (`snapshot_keyed`); a commit later found invalid has its rotations unset. Establishment is
 //! persisted with the epochs, never re-inferred from state.
 
@@ -32,7 +32,7 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records for each box a `/secrets` delta writes the commit's time: the earliest write of the
+/// Records for each box a `secrets.0` delta writes the commit's time: the earliest write of the
 /// box. A box introduces no epoch (a grant or re-seal boxes an epoch it did not make;
 /// `note_keysets`).
 pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
@@ -42,7 +42,7 @@ pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fr
     }
 }
 
-/// Notes `boxes_to` alone for a `/secrets` delta of any validity (the boxes keyed to each holder,
+/// Notes `boxes_to` alone for a `secrets.0` delta of any validity (the boxes keyed to each holder,
 /// for `flows::reopen_dependents`; a load notes every held part alike).
 pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     for (bk, k) in written_boxes(delta) {
@@ -50,11 +50,11 @@ pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     }
 }
 
-/// The epochs role part `ai` of `h` keys in `bodies` (its `/keys` deltas): what it noted
+/// The epochs role part `ai` of `h` keys in `bodies` (its `keys.0` deltas): what it noted
 /// in `epoch_intro`, kept in its record when it drops (`Dropped::intros`).
 pub(crate) fn intro_epochs(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<(Role, osis_crypto::Epoch)> {
     let mut out = std::collections::BTreeSet::new();
-    if h.kind == Kind::Role && h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "/keys") {
+    if h.kind == Kind::Role && h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
         for (r, ks) in bodies.iter().flat_map(|b| keys_write(b).keysets) {
             if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
                 out.insert((r, e));
@@ -64,24 +64,24 @@ pub(crate) fn intro_epochs(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<(R
     out.into_iter().collect()
 }
 
-/// The boxes a `/secrets` delta writes (removals aside): typed key and key value.
+/// The boxes a `secrets.0` delta writes (removals aside): typed key and key value.
 fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
     let Some(m) = map(field(delta, 0)) else { return Vec::new() };
     m.entries().filter(|(_, _, _, f)| f.is_some()).filter_map(|(_, _, k, _)| Some((typed(k?, "box_key").and_then(|t| BoxKey::from_value(&t).ok())?, k?))).collect()
 }
 
-/// A role commit's `/secrets` or `/keys` part dropped its body (`bodies`, its deltas):
+/// A role commit's `secrets.0` or `keys.0` part dropped its body (`bodies`, its deltas):
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
 /// still held: `box_written`, and the `boxes_to` entries of the boxes it wrote that no held body
 /// writes (an unknown first write costs a rotation or a re-seal, never a leak). `epoch_intro`
-/// keeps a `/keys` part's epochs (`Dropped::intros`): the rotation stays known.
+/// keeps a `keys.0` part's epochs (`Dropped::intros`): the rotation stays known.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
-    if h.kind != Kind::Role || !matches!(a.ak.as_str(), "/secrets" | "/keys") {
+    if h.kind != Kind::Role || !matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
         return Ok(());
     }
     rebuild_intro(tx, &std::collections::BTreeSet::from([a.tid]))?;
-    if a.ak.as_str() != "/secrets" {
+    if a.ak.as_str() != "secrets.0" {
         return Ok(());
     }
     let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder, k.clone())).collect();
@@ -106,9 +106,9 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     Ok(())
 }
 
-/// Records for each keyset a `/keys` delta writes the commit's time as the epoch's introduction
+/// Records for each keyset a `keys.0` delta writes the commit's time as the epoch's introduction
 /// if earliest: a rotation writes the rotated roles' keysets, nothing else does, so the epoch's
-/// introducer (`Core::epoch_intro`) is its rotation commit, or unknown while that `/keys` part is
+/// introducer (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is
 /// not held (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
     for (r, ks) in keys_write(delta).keysets {
@@ -119,7 +119,7 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fra
 }
 
 /// Re-derives `epoch_intro` and `box_written` of `actors` from their valid role-kind
-/// `/secrets` and `/keys` parts (after validity flips, and at load once validity is judged):
+/// `secrets.0` and `keys.0` parts (after validity flips, and at load once validity is judged):
 /// an invalid write (a removed admin's backdated rotation) never introduces an epoch.
 pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
     if actors.is_empty() {
@@ -129,7 +129,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
     tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
     tx.core.ix.box_written.retain(|(a, _), _| !actors.contains(a));
     for a in actors {
-        for ak in ["/secrets", "/keys"] {
+        for ak in ["secrets.0", "keys.0"] {
             let ak = osis_base::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
             let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
             for id in ids {
@@ -146,7 +146,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
                 }
                 for d in super::held_parts(tx, &id, ai)? {
                     if let Decoded::Delta(d) = d {
-                        if ak.as_str() == "/keys" {
+                        if ak.as_str() == "keys.0" {
                             note_keysets(tx.core, &m.header, a, &d.fragment);
                         } else {
                             note_box_keys(tx.core, &m.header, a, &d.fragment);
@@ -160,7 +160,7 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
     Ok(())
 }
 
-/// Notes the `/keys` parts of role commit `h` whose bodies write a keyset, whatever their
+/// Notes the `keys.0` parts of role commit `h` whose bodies write a keyset, whatever their
 /// validity (`records::OWN_KEYS`: a fact of the body, kept once it drops or goes missing), then
 /// re-derives `own_keys` of their things.
 fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
@@ -171,7 +171,7 @@ fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decode
     let mut things = std::collections::BTreeSet::new();
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "/keys" || keys_write(d.fragment()).keysets.is_empty() {
+        if a.ak.as_str() != "keys.0" || keys_write(d.fragment()).keysets.is_empty() {
             continue;
         }
         if tx.core.ix.keyset_parts.insert(a.tid, id) {
@@ -184,7 +184,7 @@ fn note_keyset_parts(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decode
 }
 
 /// Re-derives whether each of `things` has secrets of its own (spec/crypto.md §3): a held
-/// commit's valid `/keys` part wrote a keyset in its body (held, or dropped or missing since).
+/// commit's valid `keys.0` part wrote a keyset in its body (held, or dropped or missing since).
 /// Called once a part is noted, after validity flips and at load (`!regain`). A thing that loses
 /// it (that commit turned invalid) derives from its owner again; what it learned stays for
 /// reading (`Core::epochs`). One that regains it starts its epochs again from those.
@@ -200,7 +200,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::No)?;
                 continue;
             };
-            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "/keys" && m.valid.get(ai).copied().unwrap_or(false));
+            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "keys.0" && m.valid.get(ai).copied().unwrap_or(false));
         }
         if own == tx.core.ix.own_keys.contains(t) {
             continue;
@@ -233,7 +233,7 @@ pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: o
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 
-/// The `/secrets` write a delta makes: keyed entries put, keyed entries reset removed (a removal
+/// The `secrets.0` write a delta makes: keyed entries put, keyed entries reset removed (a removal
 /// record carries its entry's key, spec/crdt.md §5.6).
 pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     let mut w = SecretsWrite::default();
@@ -263,7 +263,7 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     w
 }
 
-/// The keysets a `/keys` delta writes (whole keysets: a rotation replaces the field).
+/// The keysets a `keys.0` delta writes (whole keysets: a rotation replaces the field).
 pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     let mut w = KeysWrite::default();
     for (id, r) in [(0, Role::Read), (1, Role::Write), (2, Role::Admin)] {
@@ -285,7 +285,7 @@ fn keyset_of_value(v: &Value) -> Option<ct::Keyset> {
     ct::Keyset::from_value(&typed(inner, "keyset")?).ok()
 }
 
-/// Inputs gathered before a commit's deltas join: per actor, its `/secrets` write, `/keys`
+/// Inputs gathered before a commit's deltas join: per actor, its `secrets.0` write, `keys.0`
 /// write and the keysets held before.
 pub(crate) struct Pending {
     id: CommitId,
@@ -303,10 +303,10 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if let (Decoded::Delta(d), "/keys", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
+        if let (Decoded::Delta(d), "keys.0", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
             note_keysets(tx.core, h, &a.tid, &d.fragment);
         }
-        if a.ak.as_str() != "/secrets" {
+        if a.ak.as_str() != "secrets.0" {
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
@@ -318,11 +318,11 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
-                (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "/keys" => Some(keys_write(&k.fragment)),
+                (Some(b), Decoded::Delta(k)) if b.tid == a.tid && b.ak.as_str() == "keys.0" => Some(keys_write(&k.fragment)),
                 _ => None,
             })
             .unwrap_or_default();
-        let keys_ak = osis_base::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
+        let keys_ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
         let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
         out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys, before });
     }
@@ -338,7 +338,7 @@ fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     Ok(())
 }
 
-/// After the joins: the applied rotations, and `/secrets` compaction snapshots held.
+/// After the joins: the applied rotations, and `secrets.0` compaction snapshots held.
 pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool], pending: Vec<Pending>) -> Result<()> {
     tx.core.touch();
     // per part, the write of all its held deltas at once
@@ -366,7 +366,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
     if h.kind == Kind::RoleSnapshot {
         for (ai, _, d) in parts {
             let Some(a) = h.aspects.get(*ai) else { continue };
-            if a.ak.as_str() != "/secrets" || !valid.get(*ai).copied().unwrap_or(false) {
+            if a.ak.as_str() != "secrets.0" || !valid.get(*ai).copied().unwrap_or(false) {
                 continue;
             }
             let Decoded::Snapshot(s) = d else { continue };
@@ -380,11 +380,11 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
     Ok(())
 }
 
-/// A held commit's `/secrets` delta became invalid: the rotations it claimed are no longer
+/// A held commit's `secrets.0` delta became invalid: the rotations it claimed are no longer
 /// applied by it (another valid commit claiming the same epoch keeps it applied).
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai)).cloned() else { return Ok(()) };
-    if a.ak.as_str() != "/secrets" {
+    if a.ak.as_str() != "secrets.0" {
         return Ok(());
     }
     tx.core.touch();
@@ -395,15 +395,15 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     save(tx, &a.tid)
 }
 
-/// The `/secrets` compaction gate (spec/crypto.md §4).
+/// The `secrets.0` compaction gate (spec/crypto.md §4).
 pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
     let Some(s) = state.read().and_then(|v| crate::engine::secrets::secrets_value(&v)) else { return false };
     let e = core.epochs(actor).unwrap_or_default();
     osis_keys::may_compact_secrets(&s, &e).unwrap_or(false)
 }
 
-/// A held commit's `/secrets` delta became valid again (re-grant): applied as received, with
-/// the current `/keys` as the keysets before it (an approximation: a keyset it replaced is no
+/// A held commit's `secrets.0` delta became valid again (re-grant): applied as received, with
+/// the current `keys.0` as the keysets before it (an approximation: a keyset it replaced is no
 /// longer known).
 pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
@@ -415,14 +415,14 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
         }
     }
     let mut keys = KeysWrite::default();
-    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "/keys") {
+    if let Some(ki) = h.aspects.iter().position(|x| x.tid == a.tid && x.ak.as_str() == "keys.0") {
         for d in super::held_parts(tx, c, ki)? {
             if let Decoded::Delta(d) = d {
                 keys = keys_write(&d.fragment);
             }
         }
     }
-    let keys_ak = osis_base::Ak::new("/keys").map_err(|_| crate::Error::Misuse("ak"))?;
+    let keys_ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
     let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
     tx.core.touch();
     let e = tx.core.ix.secrets.entry_or_default(a.tid);
@@ -443,7 +443,7 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// Opens, read-only, the boxes of a pending role commit addressed to this node or an actor
 /// it holds (spec/crypto.md §4: such secrets are "kept for
 /// reading"): the epochs are recorded unestablished, so a grantee whose grant waits for the
-/// target's `/created` and chain can open the target's label and download them. Parts are
+/// target's `created.0` and chain can open the target's label and download them. Parts are
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
@@ -454,7 +454,7 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
         tx.core.touch();
         // an author whose chain is not known here shares one budget with every such author (a
-        // claimed grant earns nothing: its `/members` part is as unverified as the boxes)
+        // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
         let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
         let from = osis_keys::Unchecked { author, commit: *id };
         if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new()) {
@@ -494,7 +494,7 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     crate::rotation::mark_lost_due(tx, lost)
 }
 
-/// The holders a held, not applied role commit's `/members` parts on `on` put an edge
+/// The holders a held, not applied role commit's `roles.0` parts on `on` put an edge
 /// for, decoded unverified.
 pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on: &Tid) -> Vec<Tid> {
     let h = &blob.header;
@@ -504,7 +504,7 @@ pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on
     }
     let mut interner = osis_crdt::Interner::new();
     for p in &blob.parts {
-        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "/members" || a.tid != *on) {
+        if h.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() != "roles.0" || a.tid != *on) {
             continue;
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
@@ -519,7 +519,7 @@ pub(crate) fn pending_grantees(blob: &osis_commit::CommitBlob, id: &CommitId, on
     out
 }
 
-/// The `/secrets` writes of a held, not applied role commit, per actor, decoded
+/// The `secrets.0` writes of a held, not applied role commit, per actor, decoded
 /// unverified (what `read_pending_boxes` reads; the lost-access trigger's pending grants).
 pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &CommitId) -> Vec<(Tid, SecretsWrite)> {
     let h = &blob.header;
@@ -530,7 +530,7 @@ pub(crate) fn pending_secrets_writes(blob: &osis_commit::CommitBlob, id: &Commit
     let mut interner = osis_crdt::Interner::new();
     for p in &blob.parts {
         let Some(a) = h.aspects.get(p.ai) else { continue };
-        if a.ak.as_str() != "/secrets" {
+        if a.ak.as_str() != "secrets.0" {
             continue;
         }
         let Ok(cx) = osis_commit::delta_ctx(h, id, p.ai, &mut interner) else { continue };
@@ -569,7 +569,7 @@ mod tests {
         let e = &mut lp.peers[i].engine;
         let mut m = Mutation::new();
         let t = e.new_thing(&mut m, owner);
-        m.set(t, &osis_base::Ak::new("/x/reg").unwrap(), &Value::Str("new".into())).unwrap();
+        m.set(t, &osis_base::Ak::new("x:reg.0").unwrap(), &Value::Str("new".into())).unwrap();
         e.commit(m).unwrap().unwrap();
         t
     }
@@ -613,10 +613,10 @@ mod tests {
         }
     }
 
-    // spec/crypto.md §4 (opening `/secrets`; reading-only secrets of unchecked boxes; history
+    // spec/crypto.md §4 (opening `secrets.0`; reading-only secrets of unchecked boxes; history
     // keys with several live entries): random grants, demotions and rotations by several admins,
     // carried by inbox blobs (pending until their chain arrives) and partial deliveries. Every
-    // per-entry ingestion of a `/secrets` change is checked against ingesting the whole state
+    // per-entry ingestion of a `secrets.0` change is checked against ingesting the whole state
     // (the engine fails the operation where the whole state teaches more).
     #[test]
     fn per_entry_secrets_ingestion_equals_whole_state_spec_crypto_4() {
@@ -645,7 +645,7 @@ mod tests {
                 };
                 match done {
                     Ok(d) => carry(&mut lp, by, &d),
-                    Err(e) => assert!(!format!("{e}").contains("/secrets ingestion"), "seed {seed}: {e}"),
+                    Err(e) => assert!(!format!("{e}").contains("secrets.0 ingestion"), "seed {seed}: {e}"),
                 }
                 if r(3) == 0 {
                     spread(&mut lp);
@@ -685,7 +685,7 @@ mod tests {
         let (b, c) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         let g1 = *lp.peers[0].engine.grant(&t, &b, &edge).unwrap().commits.last().unwrap();
@@ -695,7 +695,7 @@ mod tests {
             let n = u8::try_from(n).unwrap();
             lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
         }
-        // pending (the thing's `/created` is not held): its boxes are read only under the cap
+        // pending (the thing's `created.0` is not held): its boxes are read only under the cap
         lp.deliver(1, &p1).unwrap();
         lp.deliver(2, &p2).unwrap();
         assert!(!lp.peers[2].engine.pending().is_empty());
@@ -704,7 +704,7 @@ mod tests {
         assert!(!held(&lp, 1), "at the cap: not read");
     }
 
-    /// Peer 0 owns thing `t` (`/x/a` = 1); peer 1 is the grantee, holding nothing of peer 0;
+    /// Peer 0 owns thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;
     /// peers 2.. are throwaway authors unknown to the grantee.
     fn grantee_world(seed: u64, n: usize) -> (LocalPeer, Tid) {
         let mut lp = LocalPeer::new(n, seed, WallMs(1_700_000_000_000)).unwrap();
@@ -713,7 +713,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         (lp, t)
     }
@@ -742,8 +742,8 @@ mod tests {
         sent
     }
 
-    /// A role commit by peer `by` setting `t`'s `/secrets` to `v` (and `also`'s, a thing
-    /// whose `/created` nobody holds, so the commit stays pending), signed past every writer
+    /// A role commit by peer `by` setting `t`'s `secrets.0` to `v` (and `also`'s, a thing
+    /// whose `created.0` nobody holds, so the commit stays pending), signed past every writer
     /// rule (its author holds no chain to `t`).
     fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value, also: Option<Tid>) -> Vec<u8> {
         use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
@@ -764,7 +764,7 @@ mod tests {
                 Some(osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([2; 32])).verifying_key())
             }
         }
-        let ak = osis_base::Ak::new("/secrets").unwrap();
+        let ak = osis_base::Ak::new("secrets.0").unwrap();
         let author = lp.peers[by].engine.tid();
         lp.peers[by].clock.advance(1);
         let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
@@ -807,7 +807,7 @@ mod tests {
         let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
         lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         lp.sync(0, 1).unwrap();
-        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));
         (lp, t)
     }
 
@@ -842,7 +842,7 @@ mod tests {
         assert_eq!(lp.peers[1].engine.wrap_secret(&t, None).unwrap().as_ref(), Some(&genuine));
     }
 
-    // spec/crypto.md §4 (`/keys` vouches for no secret): a writer
+    // spec/crypto.md §4 (`keys.0` vouches for no secret): a writer
     // re-publishing the current read epoch with another epoch's keys, applied at a late joiner
     // before or after the grant that boxes it that epoch, drops nothing: the joiner holds and
     // wraps under the genuine secret.
@@ -856,7 +856,7 @@ mod tests {
             let (w, d, m) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
             let mut mu = Mutation::new();
             let t = lp.peers[0].engine.new_thing(&mut mu, me);
-            mu.set(t, &osis_base::Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+            mu.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
             lp.peers[0].commit(mu).unwrap();
             let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
             lp.peers[0].engine.grant(&t, &w, &edge(Role::Write)).unwrap();
@@ -866,7 +866,7 @@ mod tests {
             let e = e0.read.newest().unwrap();
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
-            // the writer's `/keys`: E's keyset with another secret's keys
+            // the writer's `keys.0`: E's keyset with another secret's keys
             let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]));
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
@@ -907,7 +907,7 @@ mod tests {
         remove(&mut lp, t);
         assert!(lp.peers[1].engine.drop_lost_due().unwrap().contains(&t));
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
-        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), None);
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None);
     }
 
     // spec/permissions.md §3: a pending grant by an admin of the thing keeps the removed node's
@@ -916,7 +916,7 @@ mod tests {
     fn admins_pending_grant_keeps_lost_secrets_for_a_while_spec_perm_3() {
         let (mut lp, t) = removed_reader(912);
         remove(&mut lp, t);
-        // pending for good: it also writes a thing nobody holds the `/created` of
+        // pending for good: it also writes a thing nobody holds the `created.0` of
         forged_grant(&mut lp, 0, t, 2, Some(Tid::from_bytes([0x5a; 15])));
         assert!(lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
         assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
@@ -942,7 +942,7 @@ mod tests {
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let w = osis_keys::reseal_holder(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
         let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
-        // signed before the removal; pending for good (a thing nobody holds the `/created` of)
+        // signed before the removal; pending for good (a thing nobody holds the `created.0` of)
         let bytes = forge_role_commit(&mut lp, 0, t, &rec, &v, Some(Tid::from_bytes([0x5b; 15])));
         remove(&mut lp, t);
         assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
@@ -952,13 +952,13 @@ mod tests {
         assert_eq!(secrets_parts(&mut lp, &id, t), 0, "a held epoch's box goes");
     }
 
-    // spec/permissions.md §3 (a deposit-only step waits for a pending `/keys` write): only one
+    // spec/permissions.md §3 (a deposit-only step waits for a pending `keys.0` write): only one
     // signed by an admin of the actor counts; one whose author nobody can check (anyone can send
     // it) would hold the step back for good.
     #[test]
     fn keys_write_pending_needs_an_admin_spec_perm_3() {
         let (mut lp, t) = removed_reader(916);
-        // a stranger's `/keys` write on its own thing: its author's chain is unknown here
+        // a stranger's `keys.0` write on its own thing: its author's chain is unknown here
         let mut m = Mutation::new();
         let me2 = lp.peers[2].engine.tid();
         let t2 = lp.peers[2].engine.new_thing(&mut m, me2);
@@ -976,11 +976,11 @@ mod tests {
         assert!(lp.peers[1].engine.keys_write_pending(&t).unwrap(), "the admin's");
     }
 
-    /// Parts on `t`'s `/secrets` of held commit `id` at peer 1.
+    /// Parts on `t`'s `secrets.0` of held commit `id` at peer 1.
     fn secrets_parts(lp: &mut LocalPeer, id: &CommitId, t: Tid) -> usize {
         let Some(bytes) = lp.peers[1].engine.commit_bytes(id).unwrap() else { return 0 };
         let blob = osis_commit::CommitBlob::decode(&bytes).unwrap();
-        blob.parts.iter().filter(|p| blob.header.aspects.get(p.ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "/secrets")).count()
+        blob.parts.iter().filter(|p| blob.header.aspects.get(p.ai).is_some_and(|a| a.tid == t && a.ak.as_str() == "secrets.0")).count()
     }
 
     // spec/permissions.md §3: a re-grant held pending past the removal and outside the wait (here
@@ -1006,7 +1006,7 @@ mod tests {
         lp.peers[1].engine.drop_lost_due().unwrap();
         lp.peers[1].engine.drop_lost_secrets().unwrap();
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none(), "outside the wait: dropped, candidates too");
-        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), None, "content forgotten");
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), None, "content forgotten");
         assert_eq!(secrets_parts(&mut lp, &regrant, t), 1, "the boxes stay");
         lp.peers[1].clock.advance(3 * osis_base::format::MAX_DRIFT_MS);
         lp.peers[1].engine.reexamine().unwrap();
@@ -1016,7 +1016,7 @@ mod tests {
     }
 
     // spec/permissions.md §3: a pending commit waiting on its author's chain is stored unchecked;
-    // only a signature by the named admin over a header listing its `/secrets` part makes it
+    // only a signature by the named admin over a header listing its `secrets.0` part makes it
     // a grant that keeps lost secrets (a stranger naming the admin as author keeps nothing).
     #[test]
     fn pending_grant_counts_only_signed_spec_perm_3() {
@@ -1073,7 +1073,7 @@ mod tests {
         assert_eq!(candidates(&lp, &t), before, "the pool is full: the grant's candidate waits");
         lp.sync(0, 1).unwrap();
         assert!(!lp.peers[1].engine.core.ix.pending.contains_key(&g), "the grant applied");
-        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("/x/a").unwrap()).unwrap(), Some(Value::Int(1)));
+        assert_eq!(lp.peers[1].engine.get(&t, &osis_base::Ak::new("x:a.0").unwrap()).unwrap(), Some(Value::Int(1)));
     }
 
     // spec/crypto.md §4, spec/permissions.md §3: a pending commit that applies or is dropped
@@ -1090,9 +1090,9 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }
 
-    // spec/crypto.md §3 (a thing has secrets of its own while a valid `/keys` part wrote a
+    // spec/crypto.md §3 (a thing has secrets of its own while a valid `keys.0` part wrote a
     // keyset), §4 (secrets of an invalid commit are kept for reading only): admin A of G grants
-    // X on G's plain thing T (T's first `/keys`, a rotation from derived epochs) after the owner
+    // X on G's plain thing T (T's first `keys.0`, a rotation from derived epochs) after the owner
     // removed A. Once A's grant is invalid, every node derives T from G again (encrypting under
     // G's epoch rotated past A, not A's), delete base G, open = rebuild; peer 3 had A's commit
     // applied valid first (Y: a reader of G). The owner's own grant then gives T secrets of its own everywhere.
@@ -1157,7 +1157,7 @@ mod tests {
 
     // spec/crypto.md §3: B, an admin of G, grants Z on T while A's rotation (T's first keyset,
     // made after the owner removed A) still made T own-keyed at B, boxing under A's epochs. Once
-    // A's commit is invalid, B's valid `/secrets` part does not make T own-keyed again: its
+    // A's commit is invalid, B's valid `secrets.0` part does not make T own-keyed again: its
     // opened epochs are derived from G's epochs from before A's removal (A knows those). T is
     // plain at every node: encrypted under G's epoch rotated past A, the owner can write.
     #[test]
@@ -1187,7 +1187,7 @@ mod tests {
             let derived = osis_keys::ActorEpochs::derived(&core.epochs(&g).unwrap(), &t).role(Role::Read).newest();
             assert_eq!(core.epochs(&t).unwrap().role(Role::Read).newest_held().map(|x| x.0), derived, "peer {i}: under G's epoch past A");
             let mut m = Mutation::new();
-            m.set(t, &osis_base::Ak::new("/x/reg").unwrap(), &Value::Str(format!("w{i}"))).unwrap();
+            m.set(t, &osis_base::Ak::new("x:reg.0").unwrap(), &Value::Str(format!("w{i}"))).unwrap();
             lp.peers[i].engine.commit(m).unwrap().unwrap();
             let d0 = lp.peers[i].engine.index_digest();
             lp.peers[i].engine.rebuild_index().unwrap();
@@ -1221,7 +1221,7 @@ mod tests {
         assert_eq!((0..5).map(|i| own_due(&mut lp, i, &g, &t)).sum::<usize>(), 0, "one rotation per admin");
         for i in [0usize, 3] {
             let mut m = Mutation::new();
-            m.set(t, &osis_base::Ak::new(format!("/x/new{i}")).unwrap(), &Value::Int(i as i64)).unwrap();
+            m.set(t, &osis_base::Ak::new(format!("x:new{i}.0")).unwrap(), &Value::Int(i as i64)).unwrap();
             lp.peers[i].engine.commit(m).unwrap().unwrap();
         }
         lp.sync_all().unwrap();
@@ -1231,7 +1231,7 @@ mod tests {
             assert!(core.has_own_secrets(&t), "peer {i}: own keys");
             if i != 1 {
                 for w in [0i64, 3] {
-                    let v = lp.peers[i].engine.get(&t, &osis_base::Ak::new(format!("/x/new{w}")).unwrap()).unwrap();
+                    let v = lp.peers[i].engine.get(&t, &osis_base::Ak::new(format!("x:new{w}.0")).unwrap()).unwrap();
                     assert_eq!(v, Some(Value::Int(w)), "peer {i} reads peer {w}'s write");
                 }
             }

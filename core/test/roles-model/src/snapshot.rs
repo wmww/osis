@@ -22,7 +22,7 @@
 //! Projected rosters (`SHist::projected`): a node holding only one actor's certificate
 //! closure computes that actor's P and G roles as the full node does, with or without
 //! compaction. A **record** here is a plain write on G by its owner chain that touches no
-//! roster (`/moved`, say, spec/permissions.md §7); one is valid iff its author was a P-admin
+//! roster (`moved.0`, say, spec/permissions.md §7); one is valid iff its author was a P-admin
 //! at its point and no P demotion dropped it. Checked: a record by a device whose removal's
 //! frontier misses it is never valid; record validity is order independent, survives
 //! compaction and projection.

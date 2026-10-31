@@ -15,7 +15,7 @@ use osis_sim::world::World;
 #[test]
 fn undo_redo_cycle_spec_commits_7() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
@@ -46,14 +46,14 @@ fn undo_redo_cycle_spec_commits_7() {
     assert_eq!(get(), Some(Value::Int(1)));
     // separate aspects undo step by step
     let scope = Scope::Thing(t);
-    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     db.write_with(|w| w.at(t, a.clone()).set(&Value::Int(1))).unwrap();
     db.write_with(|w| w.at(t, b.clone()).set(&Value::Int(1))).unwrap();
     db.undo(&scope).unwrap().unwrap();
     db.undo(&scope).unwrap().unwrap();
     assert_eq!((db.get(t, a.clone()).unwrap(), db.get(t, b.clone()).unwrap()), (None, None));
     // another scope sees nothing to undo
-    let other = Scope::Aspects(vec![(t, ak("/t/other"))]);
+    let other = Scope::Aspects(vec![(t, ak("t:other.0"))]);
     assert_eq!(db.undo(&other).unwrap(), None);
 }
 
@@ -61,7 +61,7 @@ fn undo_redo_cycle_spec_commits_7() {
 #[test]
 fn new_change_clears_redo_spec_commits_7() {
     let db = db(1);
-    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
@@ -83,7 +83,7 @@ fn new_change_clears_redo_spec_commits_7() {
 #[test]
 fn undo_blocked_by_dropped_body_spec_commits_7() {
     let db = db(1);
-    let (a, b) = (ak("/t/a"), ak("/t/b"));
+    let (a, b) = (ak("t:a.0"), ak("t:b.0"));
     let mut w = db.write();
     let t = w.create(db.me()).unwrap();
     w.commit().unwrap();
@@ -103,7 +103,7 @@ fn undo_mutation_alone_spec_commits_7() {
     let t = w.create_durable(db.me()).unwrap();
     let c = w.commit().unwrap().unwrap().id.commit().unwrap();
     let mut m = osis::internals::node::Mutation::new();
-    m.undo(c).set(t, &ak("/t/x"), &Value::Int(1)).unwrap();
+    m.undo(c).set(t, &ak("t:x.0"), &Value::Int(1)).unwrap();
     assert!(matches!(db.engine(|e| e.commit(m)), Err(osis::internals::node::Error::Misuse(_))));
 }
 
@@ -113,7 +113,7 @@ fn undo_mutation_alone_spec_commits_7() {
 #[test]
 fn query_relations_spec_crdt_4_6() {
     let db = db(1);
-    let (k, j) = (ak("/t/x"), ak("/t/y"));
+    let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let mut w = db.write();
     let g = w.create(db.me()).unwrap();
     w.make_group(g).unwrap();
@@ -150,7 +150,7 @@ fn query_relations_spec_crdt_4_6() {
 #[test]
 fn query_filters_api_commits() {
     let db = db(1);
-    let (k, j) = (ak("/t/x"), ak("/t/y"));
+    let (k, j) = (ak("t:x.0"), ak("t:y.0"));
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let c1 = commit_with(&db, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     let mut w = db.write();
@@ -201,7 +201,7 @@ fn sync2(a: &Osis, b: &Osis) {
 #[test]
 fn undo_redo_across_devices_spec_commits_7() {
     let (da, db) = two_devices();
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = da.write_with(|w| w.create(da.me())).unwrap();
     let c1 = commit_with(&da, |w| w.at(t, k.clone()).set(&Value::Int(1)));
     sync2(&da, &db);
@@ -225,7 +225,7 @@ fn undo_redo_across_devices_spec_commits_7() {
     sync2(&da, &db);
     assert_eq!(get(&da), None);
     // a new change on A clears redo on B too
-    commit_with(&da, |w| w.at(t, ak("/t/y")).set(&Value::Int(3)));
+    commit_with(&da, |w| w.at(t, ak("t:y.0")).set(&Value::Int(3)));
     sync2(&da, &db);
     assert_eq!(db.redo(&scope).unwrap(), None);
     assert_eq!(get(&db), None);
@@ -240,7 +240,7 @@ fn find_another_actors_revert_api_commits() {
     let alice = crate::scenario::person(&mut w, 1, host);
     let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = alice
         .write_with(|wr| {
             let t = wr.create(alice.me())?;
@@ -275,7 +275,7 @@ fn find_another_actors_revert_api_commits() {
 #[test]
 fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     let db = db(1);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let mut w = db.write();
     let t = w.create_durable(db.me()).unwrap();
     w.commit().unwrap();
@@ -297,7 +297,7 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
 fn snapshot_only_attribution_api_history() {
     use osis::Source;
     let (a, b, c) = (db(1), db(2), db(3));
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let t = a.write_with(|w| w.create_durable(a.me())).unwrap();
     deliver(&a, &b);
     deliver(&a, &c);
@@ -324,7 +324,7 @@ fn snapshot_only_attribution_api_history() {
     assert!(hc.iter().any(|e| e.commit.id == osis::ChangeId::Commit(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
 }
 
-const DOC_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd02;\nrevision 1;\naspect /x/doc: struct { 0 name: string, 1 tags: set<string>, 2 extra: enum { 0 none, 1 some(struct { 0 notes: set<string> }) }, 3 items: list<string> };\n";
+const DOC_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd02;\nrevision 1;\naspect x:doc.0: struct { 0 name: string, 1 tags: set<string>, 2 extra: enum { 0 none, 1 some(struct { 0 notes: set<string> }) }, 3 items: list<string> };\n";
 
 fn field(id: u64) -> osis::Step {
     osis::Step::Field(id)
@@ -340,7 +340,7 @@ fn exact_undo_spec_crdt_4_6() {
     for d in [&a, &b] {
         d.register_schema_source("doc.osis", DOC_SCHEMA).unwrap();
     }
-    let doc = ak("/x/doc");
+    let doc = ak("x:doc.0");
     let t = a.write_with(|w| w.create(a.me())).unwrap();
     a.write_with(|w| {
         w.at(t, doc.clone()).path(osis::Path(vec![field(0)])).set(&"n".to_string())?;
@@ -357,7 +357,7 @@ fn exact_undo_spec_crdt_4_6() {
     ];
     let write = |d: &Osis, p: &osis::Path, item: &str| {
         let item = item.to_string();
-        let key = d.key("/x/doc").unwrap();
+        let key = d.key("x:doc.0").unwrap();
         d.write_with(|w| if p.0.len() == 1 && p.0[0] == field(3) { w.at(t, key.clone()).path(p.clone()).insert(0, &[item]) } else { w.at(t, key.clone()).path(p.clone()).add(&item) }).unwrap();
     };
     for (name, p) in &spots {
@@ -421,7 +421,7 @@ fn step(db: &Osis, scope: &Scope, n: Next) -> Option<ChangeId> {
 #[test]
 fn undo_of_creation_deletes_spec_crdt_4_6() {
     let db = db(1);
-    let (x, y) = (ak("/t/x"), ak("/t/y"));
+    let (x, y) = (ak("t:x.0"), ak("t:y.0"));
     let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2, f3) = (mk(&db), mk(&db), mk(&db));
     let t = db.write_with(|w| { let t = w.create_in(db.me(), &[f])?; w.at(t, x.clone()).set(&Value::Int(1))?; Ok(t) }).unwrap();
@@ -463,7 +463,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 #[test]
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
-    let k = osis::Lifetimes::ephemeral(ak("/app/draft"));
+    let k = osis::Lifetimes::ephemeral(ak("app:draft.0~"));
     let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db.write_with(|w| { let e = w.create_in(db.me(), &[f])?; w.at(e, k.clone()).set(&Value::Int(1))?; Ok(e) }).unwrap();
@@ -492,7 +492,7 @@ fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
 #[test]
 fn next_reports_what_undo_and_redo_revert_api_commits() {
     let db = db(3);
-    let k = ak("/t/x");
+    let k = ak("t:x.0");
     let f = db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let in_f = |w: &mut osis::Write<'_>| -> osis::Result<osis::Tid> {
         let t = w.create_durable(db.me())?;
@@ -529,7 +529,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
     let alice = crate::scenario::person(&mut w, 1, host);
     let bob = crate::scenario::person(&mut w, 2, host);
     let b = crate::scenario::introduce(&mut w, &alice, &bob);
-    let x = ak("/t/x");
+    let x = ak("t:x.0");
     let g = alice.write_with(|wr| { let g = wr.create(alice.me())?; wr.make_group(g)?; Ok(g) }).unwrap();
     alice.sync(g, &[]).unwrap();
     alice.grant(g, b, osis::Role::Write, osis::EdgeOpts::default()).unwrap();
@@ -559,7 +559,7 @@ fn undo_of_creation_shared_spec_crdt_4_6() {
 }
 
 // notes/api.md Commits: a revert of a creation is related to it in a scope naming only
-// `/created`, though it writes none of the aspects the creation wrote (removed meanwhile; seen
+// `created.0`, though it writes none of the aspects the creation wrote (removed meanwhile; seen
 // on the other device, which has no log entry of it).
 #[test]
 fn creation_revert_found_by_created_scope_api_commits() {
@@ -567,12 +567,12 @@ fn creation_revert_found_by_created_scope_api_commits() {
     let t = da.write_with(|w| w.create_durable(da.me())).unwrap();
     let c = da.created(t).unwrap().commit.map(ChangeId::Commit).unwrap();
     commit_with(&da, |w| {
-        w.at(t, ak("/t/made")).remove()?;
-        w.at(t, ak("/t/y")).set(&Value::Int(1))
+        w.at(t, ak("t:made.0")).remove()?;
+        w.at(t, ak("t:y.0")).set(&Value::Int(1))
     });
     let r = da.revert(c).unwrap();
     sync2(&da, &db);
     assert!(!db.knows(t));
-    let e = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, ak("/created"))]))).unwrap();
+    let e = db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, ak("created.0"))]))).unwrap();
     assert_eq!(e.iter().map(|e| (e.commit.id, e.in_effect, e.reverted_by.clone())).collect::<Vec<_>>(), vec![(c, false, vec![r.id])]);
 }

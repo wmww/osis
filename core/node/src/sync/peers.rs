@@ -1,7 +1,7 @@
 //! Reachability and co-reader dialing (spec/sync.md §5 last bullet, §10; spec/data-model.md §9;
-//! spec/permissions.md §4): this node's `/reach` (dialable key, relays, lan secret), the co-reader
+//! spec/permissions.md §4): this node's `reach.0` (dialable key, relays, lan secret), the co-reader
 //! nodes it knows from theirs, and LAN discovery tags. A co-reader of a label is a node thing
-//! other than this node, holding `/reach`, that may read the label's group; this node dials it at
+//! other than this node, holding `reach.0`, that may read the label's group; this node dials it at
 //! `peer://` + its relays (osis-transport finds it by key), or at the address a matching LAN
 //! announcement gave, and syncs those labels with it as with a host.
 
@@ -139,8 +139,8 @@ impl SyncEngine {
     }
 
     /// Rotates this node's reach now (`Osis::rotate_reach`; also done by itself when a label
-    /// holding the current `/reach` stopped qualifying, `check_reach`): a new dialable secret and
-    /// lan secret, `/reach` written with the new key and the same relays (it goes only under
+    /// holding the current `reach.0` stopped qualifying, `check_reach`): a new dialable secret and
+    /// lan secret, `reach.0` written with the new key and the same relays (it goes only under
     /// labels that qualify, spec/permissions.md §4), and `Action::Reach` so the driver listens
     /// with the new key and joins the LAN with a fresh one. The osis handle also rotates when a
     /// direct link ends. A co-reader removed since can no longer dial this node or recognise it
@@ -150,7 +150,7 @@ impl SyncEngine {
     pub fn rotate_reach(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         if let Err(e) = self.rotate_now(&mut out) {
-            self.diag(format!("rotating /reach: {e}"));
+            self.diag(format!("rotating reach.0: {e}"));
         }
         out.extend(self.handle(Event::Local));
         out
@@ -169,12 +169,12 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Looks for this node's current `/reach` under a label of a group that no longer qualifies
+    /// Looks for this node's current `reach.0` under a label of a group that no longer qualifies
     /// (`publishes_reach`: its policy turned to exclude, a reader is no contact any more) and
     /// rotates it then (spec/permissions.md §4): readers there keep the old one, useless.
     pub(crate) fn check_reach(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let me = self.engine.tid();
-        let Some((c, _)) = self.engine.aspect_commit(&me, "/reach") else { return Ok(()) };
+        let Some((c, _)) = self.engine.aspect_commit(&me, "reach.0") else { return Ok(()) };
         let placed: Vec<(Tid, LabelId)> = self.labels().into_iter().map(|(g, l)| (g, l.id)).filter(|(_, l)| self.state.certs.contains(&(*l, c))).collect();
         if placed.iter().any(|(g, _)| !self.publishes_reach(g)) {
             self.rotate_now(out)?;
@@ -183,13 +183,13 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// This node's `/reach`, if published.
+    /// This node's `reach.0`, if published.
     pub fn own_reach(&mut self) -> Option<Reach> {
         let me = self.engine.tid();
         self.engine.get_typed(&me, &ct::REACH).ok().flatten()
     }
 
-    /// Writes `/reach` on this node (spec/data-model.md §9) when it changed: `dialable` the key
+    /// Writes `reach.0` on this node (spec/data-model.md §9) when it changed: `dialable` the key
     /// the listener presents, the relays, and the lan secret (kept; fresh when none or after
     /// `rotate_reach`). The node card goes under every synced label with the next pass
     /// (spec/permissions.md §4).
@@ -200,7 +200,7 @@ impl SyncEngine {
         Ok(self.handle(Event::Local))
     }
 
-    /// Commits `/reach` when it changed; true when it did.
+    /// Commits `reach.0` when it changed; true when it did.
     fn write_reach(&mut self, dialable: [u8; 32], relays: Vec<String>) -> Result<bool> {
         let old = self.own_reach();
         let lan_secret = match &old {
@@ -232,7 +232,7 @@ impl SyncEngine {
 
     /// This node's LAN announcement now for a listener with transport key `key` at `port`:
     /// the current tag and the signature under the dialable key, sealed under the lan secret
-    /// and window (spec/sync.md §10). None before `/reach` is published, or when its dialable
+    /// and window (spec/sync.md §10). None before `reach.0` is published, or when its dialable
     /// key is not the Ed25519 key of the dialable secret.
     pub fn lan_announcement(&mut self, key: [u8; 32], port: u16) -> Option<Announce> {
         let r = self.own_reach()?;
@@ -247,7 +247,7 @@ impl SyncEngine {
         Some(Announce { tag, key, port, sig })
     }
 
-    /// Node things with a `/reach` this node holds, other than itself, by dialable key (cached
+    /// Node things with a `reach.0` this node holds, other than itself, by dialable key (cached
     /// until a commit applies). A key two node things claim matches neither.
     pub(crate) fn reach_nodes(&mut self) -> Arc<BTreeMap<[u8; 32], Tid>> {
         self.peers_fresh();
@@ -255,7 +255,7 @@ impl SyncEngine {
             return r.clone();
         }
         let me = self.engine.tid();
-        let mut nodes: Vec<Tid> = self.engine.core.ix.by_aspect.keys().filter(|(t, ak)| ak.as_str() == "/reach" && *t != me).map(|(t, _)| *t).collect();
+        let mut nodes: Vec<Tid> = self.engine.core.ix.by_aspect.keys().filter(|(t, ak)| ak.as_str() == "reach.0" && *t != me).map(|(t, _)| *t).collect();
         nodes.dedup();
         let own = self.own_reach().map(|r| r.dialable);
         let mut m = BTreeMap::new();
@@ -274,7 +274,7 @@ impl SyncEngine {
         m
     }
 
-    /// Co-reader nodes known from their `/reach`, by dialable key (spec/sync.md §5, §10): node
+    /// Co-reader nodes known from their `reach.0`, by dialable key (spec/sync.md §5, §10): node
     /// things other than this one that may read a label this node syncs now. Per label at most
     /// `SyncConfig.max_peers_per_label`, in total at most `max_peers`, newest heartbeat first.
     /// Cached until the engine's state changes, and at most a minute (edges expire).
@@ -295,7 +295,7 @@ impl SyncEngine {
             // newest heartbeat first, unknown last
             reaches.sort_by_key(|x| std::cmp::Reverse(x.0));
             for (g, l) in self.labels() {
-                // a group whose labels carry no `/reach` of ours: its co-readers are not dialed
+                // a group whose labels carry no `reach.0` of ours: its co-readers are not dialed
                 if !self.publishes_reach(&g) {
                     continue;
                 }
@@ -320,7 +320,7 @@ impl SyncEngine {
         out
     }
 
-    /// Forgets the cached co-readers, `/reach` holders and LAN tags when the engine's state
+    /// Forgets the cached co-readers, `reach.0` holders and LAN tags when the engine's state
     /// changed or a minute passed since they were computed.
     fn peers_fresh(&mut self) {
         let key = (self.engine.core.generation, self.raw_now() / PEERS_TTL_MS);
@@ -597,22 +597,22 @@ impl SyncEngine {
         }
     }
 
-    /// Whether `group`'s labels carry this node's `/reach` (spec/permissions.md §4): `Some`
+    /// Whether `group`'s labels carry this node's `reach.0` (spec/permissions.md §4): `Some`
     /// sets it, `None` returns to the default (`publishes_reach`). Stored. A group that stops
-    /// qualifying while its labels hold the current `/reach` rotates it (`check_reach`).
+    /// qualifying while its labels hold the current `reach.0` rotates it (`check_reach`).
     #[must_use]
     pub fn set_reach_policy(&mut self, group: Tid, publish: Option<bool>) -> Vec<Action> {
         self.state.set_reach_policy(group, publish);
         self.policy_changed()
     }
 
-    /// `group`'s `/reach` policy as set (`set_reach_policy`); `None`: the default.
+    /// `group`'s `reach.0` policy as set (`set_reach_policy`); `None`: the default.
     pub fn reach_policy(&self, group: &Tid) -> Option<bool> {
         self.state.reach_policy.get(group).copied()
     }
 
     /// Marks a person as a contact of this node's person (stored): groups whose readers are only
-    /// contacts get `/reach` by default. Unmarking may rotate `/reach` (`check_reach`).
+    /// contacts get `reach.0` by default. Unmarking may rotate `reach.0` (`check_reach`).
     #[must_use]
     pub fn set_contact(&mut self, person: Tid, contact: bool) -> Vec<Action> {
         self.state.set_contact(person, contact);
@@ -625,7 +625,7 @@ impl SyncEngine {
         self.handle(Event::Local)
     }
 
-    /// Whether `/reach` goes under `g`'s labels: the policy set for `g`, else when everyone who
+    /// Whether `reach.0` goes under `g`'s labels: the policy set for `g`, else when everyone who
     /// reads it is this node's own or a contact (notes/sync.md: excluded by default from labels
     /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
     /// holder of), or each holder of it is this node's own, a contact, or a thing such an actor
@@ -648,12 +648,12 @@ impl SyncEngine {
     }
 
     /// This node's chain certificates and node card for `g` (`Engine::certificates`), without
-    /// its `/reach` commit where `publishes_reach` says no (spec/permissions.md §4).
+    /// its `reach.0` commit where `publishes_reach` says no (spec/permissions.md §4).
     pub(crate) fn card_certificates(&mut self, g: &Tid) -> BTreeMap<osis_base::CommitId, std::collections::BTreeSet<(usize, usize)>> {
         let mut certs = self.engine.certificates(g);
         if !self.publishes_reach(g) {
             let me = self.engine.tid();
-            certs.retain(|c, _| !self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == me && a.ak.as_str() == "/reach")));
+            certs.retain(|c, _| !self.engine.header(c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == me && a.ak.as_str() == "reach.0")));
         }
         certs
     }

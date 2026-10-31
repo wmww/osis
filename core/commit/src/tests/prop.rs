@@ -22,7 +22,7 @@ fn tid() -> impl Strategy<Value = Tid> {
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
     (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::option::of(0u64..1 << 50), proptest::option::of(0usize..4), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
-        .prop_map(|(tid, ak, lo, hi, retention, expires, schema, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("/{ak}")).unwrap(), lo, hi, retention, expires, schema, keys, hashes })
+        .prop_map(|(tid, ak, lo, hi, retention, expires, schema, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, expires, schema, keys, hashes })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -54,8 +54,8 @@ prop_compose! {
             aspects,
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
-                Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("/p").unwrap() },
-                None => PurgeItem::Aspect { tid, ak: Ak::new("/p").unwrap() },
+                Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("p.0").unwrap() },
+                None => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
             }).collect(),
             undoes: undoes.map(CommitId), blind,
             keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),
@@ -86,7 +86,7 @@ fn commit(classes: &[(u8, u8, bool)]) -> CommitBlob {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
     for (i, (thing, by, exp)) in classes.iter().enumerate() {
-        let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("/app/f{i}")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
+        let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
         a.retention = Retention { by: PurgeBy::from_id(u64::from(*by)).unwrap(), ..Default::default() };
         a.expires = exp.then_some(5_000_000);
         b.aspects.push(a);

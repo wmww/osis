@@ -41,7 +41,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
     let frontier = Frontier {
-        writes: BTreeMap::from([(tid(19), BTreeMap::from([("/note/body".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
+        writes: BTreeMap::from([(tid(19), BTreeMap::from([("note:body.0".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
         commits: BTreeSet::from([CommitId([21; 32])]),
     };
     let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
@@ -50,19 +50,19 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
     )]);
     vec![
-        ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
-        ("created key actor", "/created", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
-        ("holders", "/members", MEMBERS.encode(&holders)),
-        ("keys", "/keys", KEYS.encode(&keys)),
-        ("secrets", "/secrets", SECRETS.encode(&secrets)),
-        ("tenures", "/tenures", TENURES.encode(&tenures)),
-        ("label", "/label", LABEL.encode(&labels)),
-        ("moved", "/moved", MOVED.encode(&tid(25))),
-        ("was", "/was", WAS.encode(&tid(26))),
-        ("node", "/node", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
-        ("reach", "/reach", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
-        ("seen", "/seen", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
-        ("group", "/group", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
+        ("created thing", "created.0", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
+        ("created key actor", "created.0", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
+        ("holders", "roles.0", ROLES.encode(&holders)),
+        ("keys", "keys.0", KEYS.encode(&keys)),
+        ("secrets", "secrets.0", SECRETS.encode(&secrets)),
+        ("tenures", "tenures.0", TENURES.encode(&tenures)),
+        ("label", "label.0", LABEL.encode(&labels)),
+        ("moved", "moved.0", MOVED.encode(&tid(25))),
+        ("was", "was.0", WAS.encode(&tid(26))),
+        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
+        ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
+        ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
+        ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
 }
 
@@ -71,7 +71,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
     let sc = core_schema();
     for (name, ak, v) in samples() {
         // Every sample is a valid write of its aspect's schema type...
-        if ak != "/created" {
+        if ak != "created.0" {
             validate_write(sc, &v, &sc.aspects[ak].ty).unwrap_or_else(|e| panic!("{name}: {e}"));
         }
         // ...and survives the canonical round trip through its typed key.
@@ -82,18 +82,18 @@ fn core_aspects_round_trip_spec_data_model_9() {
     let samples = samples();
     let decoded = |ak: &str, v: &Value| -> Value {
         match ak {
-            "/created" => CREATED.encode(&CREATED.decode(v).unwrap()),
-            "/members" => MEMBERS.encode(&MEMBERS.decode(v).unwrap()),
-            "/keys" => KEYS.encode(&KEYS.decode(v).unwrap()),
-            "/secrets" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
-            "/tenures" => TENURES.encode(&TENURES.decode(v).unwrap()),
-            "/label" => LABEL.encode(&LABEL.decode(v).unwrap()),
-            "/moved" => MOVED.encode(&MOVED.decode(v).unwrap()),
-            "/was" => WAS.encode(&WAS.decode(v).unwrap()),
-            "/node" => NODE.encode(&NODE.decode(v).unwrap()),
-            "/reach" => REACH.encode(&REACH.decode(v).unwrap()),
-            "/seen" => SEEN.encode(&SEEN.decode(v).unwrap()),
-            "/group" => GROUP.encode(&GROUP.decode(v).unwrap()),
+            "created.0" => CREATED.encode(&CREATED.decode(v).unwrap()),
+            "roles.0" => ROLES.encode(&ROLES.decode(v).unwrap()),
+            "keys.0" => KEYS.encode(&KEYS.decode(v).unwrap()),
+            "secrets.0" => SECRETS.encode(&SECRETS.decode(v).unwrap()),
+            "tenures.0" => TENURES.encode(&TENURES.decode(v).unwrap()),
+            "label.0" => LABEL.encode(&LABEL.decode(v).unwrap()),
+            "moved.0" => MOVED.encode(&MOVED.decode(v).unwrap()),
+            "was.0" => WAS.encode(&WAS.decode(v).unwrap()),
+            "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
+            "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
+            "seen.0" => SEEN.encode(&SEEN.decode(v).unwrap()),
+            "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),
         }
     };
@@ -112,17 +112,17 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
     // An unknown role case in a holder edge: parked, with the path.
-    let mut m = MEMBERS.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None })]));
+    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
         if let Value::Map(f) = e {
             f.insert(Value::Int(0), Value::Enum(9, None));
         }
     }
-    let e = MEMBERS.decode(&m).unwrap_err();
+    let e = ROLES.decode(&m).unwrap_err();
     assert_eq!(e.kind, PathErrorKind::UnknownCase(9));
     assert_eq!(e.path, p![tid(1), FieldId(0)]);
-    // /created: an unknown signing key case parks; both owner and key is bad input.
+    // created.0: an unknown signing key case parks; both owner and key is bad input.
     let rec = CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] }.to_value();
     let Value::Map(mut f) = rec else { panic!() };
     f.insert(Value::Int(1), Value::Enum(7, Some(Box::new(Value::Bytes(vec![0; 40])))));
@@ -130,7 +130,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     f.insert(Value::Int(1), Value::Enum(1, Some(Box::new(Value::Bytes(vec![3; 32])))));
     f.insert(Value::Int(0), Value::Tid(tid(1)));
     assert_eq!(CREATED.decode(&Value::Map(f)).unwrap_err().class(), ErrorClass::BadInput);
-    // Reader defaults: an /keys written with only some fields reads with none for the rest.
+    // Reader defaults: an keys.0 written with only some fields reads with none for the rest.
     let k = KEYS.decode(&Value::Map(BTreeMap::new())).unwrap();
     assert_eq!(k, Keys::default());
 }
@@ -146,20 +146,20 @@ fn tenure_frontier_may_be_a_link_spec_data_model_6() {
 
 #[test]
 fn key_defaults_and_identity_spec_commits_5() {
-    let m = MEMBERS.defaults();
+    let m = ROLES.defaults();
     assert_eq!((m.retention.by, m.retention.at_least.rel, m.expires), (PurgeBy::Admin, Some(ROLE_KEEP_MS), None));
     for ak in ROLE_CLASS {
         let a = &core_schema().aspects[ak];
         assert_eq!((a.retention.by, a.retention.at_least.rel), (PurgeBy::Admin, Some(ROLE_KEEP_MS)), "{ak}");
         assert!(is_role_class(ak));
     }
-    assert!(!is_role_class("/group"));
+    assert!(!is_role_class("group.0"));
     assert_eq!(CREATED.defaults().retention.by, PurgeBy::Nobody);
     assert_eq!(SEEN.defaults(), AspectDefaults::default());
     assert_eq!(GROUP.schema_ref(), Some((CORE_SCHEMA_ID, CORE_SCHEMA_REVISION)));
-    let untyped = Ak::new("/x/y").unwrap();
+    let untyped = Ak::new("x:y.0").unwrap();
     assert_eq!((untyped.schema_ref(), untyped.defaults()), (None, AspectDefaults::default()));
     assert_eq!(AspectKey::decode(&untyped, &Value::Int(3)).unwrap(), Value::Int(3));
-    assert!(core_schema().aspects["/tid"].flags.contains(&Flag::Synthetic));
-    assert!(core_schema().aspects["/created"].flags.contains(&Flag::Guaranteed));
+    assert!(core_schema().aspects["tid.0"].flags.contains(&Flag::Synthetic));
+    assert!(core_schema().aspects["created.0"].flags.contains(&Flag::Guaranteed));
 }

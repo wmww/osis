@@ -105,7 +105,7 @@ fn replayed_signal_dropped_spec_sync_9() {
     net.run();
     let rx = net.listen(b);
     let mut m = osis_node::Mutation::new();
-    m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(true)).unwrap();
+    m.set(t, &ukey("t:typing.0*", osis_schema::Lifetime::Signal), &Value::Bool(true)).unwrap();
     net.engine(a).write(m).unwrap();
     let acts = net.sync(a).handle(Event::Local);
     let conn_a = net.conn_to(a, host).unwrap();
@@ -144,7 +144,7 @@ fn junk_relays_raise_no_floor_spec_sync_9() {
     let rx = net.listen(b);
     let signal = |net: &mut Net, v: bool| {
         let mut m = osis_node::Mutation::new();
-        m.set(t, &ukey("/t/typing", osis_schema::Lifetime::Signal), &Value::Bool(v)).unwrap();
+        m.set(t, &ukey("t:typing.0*", osis_schema::Lifetime::Signal), &Value::Bool(v)).unwrap();
         net.engine(a).write(m).unwrap();
         let acts = net.sync(a).handle(Event::Local);
         let conn_a = net.conn_to(a, host).unwrap();
@@ -432,7 +432,7 @@ fn header_list_chunks_level_2_only_spec_wire_5() {
     let t = net.item(a, g, g, "x");
     let mut m = osis_node::Mutation::new();
     for i in 0..800 {
-        m.set(t, &Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+        m.set(t, &Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
     }
     let c = net.engine(a).commit(m).unwrap().unwrap();
     net.run();
@@ -487,7 +487,7 @@ fn linked_header_prefix_checked_spec_commits_4() {
     net.set_online(a, false);
     let mut m = osis_node::Mutation::new();
     for i in 0..800 {
-        m.set(t, &Ak::new(format!("/u/{}{i:05}", "a".repeat(100))).unwrap(), &s("v")).unwrap();
+        m.set(t, &Ak::new(format!("u:{}{i:05}.0", "a".repeat(100))).unwrap(), &s("v")).unwrap();
     }
     let c = net.engine(a).commit(m).unwrap().unwrap();
     let h = net.engine(a).header(&c).unwrap();
@@ -810,7 +810,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
 
 // spec/sync.md §5 (claims by the keys a step's claim set lists: holders' read-role KEM keys),
 // spec/crypto.md §4 (boxes): a node that reads the hinted thing through an actor a rotation
-// boxed, with no `/members` edge of it held, still claims by that actor's key, and by no other.
+// boxed, with no `roles.0` edge of it held, still claims by that actor's key, and by no other.
 #[test]
 fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     let mut net = Net::new();
@@ -828,7 +828,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
     rotation(e, g, &rcpt, 11, false);
     net.pair(b, a);
     assert!(net.engine(a).epochs(&g).is_some_and(|x| x.read.holds_any()), "a reads g through P's box");
-    assert!(!net.engine(a).get_typed(&g, &osis_schema::core_types::MEMBERS).unwrap().unwrap_or_default().contains_key(&p), "no edge of P on g");
+    assert!(!net.engine(a).get_typed(&g, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().contains_key(&p), "no edge of P on g");
     let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x40; 32])).unwrap();
     let kem = |net: &mut Net, t| net.engine(a).epochs(&t).unwrap().read.held_newest_first().into_iter().map(|(_, s)| osis_crypto::role_kem(s).x25519().clone()).collect::<Vec<_>>();
     let ps = kem(&mut net, p);
@@ -877,7 +877,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
 
 // spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §8: a thing's admin who is no admin of
 // its group deletes a write-only holder's blobs at a host by the level-1 delete key the writer
-// listed from the thing's published `/keys` (the gap hashed tokens left), after a
+// listed from the thing's published `keys.0` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
 // admin's `admin`-retention blobs (levels stay apart).
 #[test]
@@ -892,7 +892,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     let g = net.group(a, &[(c, Role::Write), (w, Role::Write)], &[host]);
     let (ct_, wt) = (net.tid(c), net.tid(w));
     // c owns thing t in g and makes w its writer and g its reader (so t's content goes under
-    // g's label): t gets secrets of its own and a `/keys`
+    // g's label): t gets secrets of its own and a `keys.0`
     let t = net.item(c, g, ct_, "x");
     net.pair(w, c);
     let e = net.engine(c);

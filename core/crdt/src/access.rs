@@ -1,4 +1,4 @@
-//! Read-only views into fragments for the node (perm adapts `/members` entries into edge
+//! Read-only views into fragments for the node (perm adapts `roles.0` entries into edge
 //! writes, spec/permissions.md §5.1): map entries with their keys and fragments.
 
 use crate::fragment::{Eid, Fragment, Map};

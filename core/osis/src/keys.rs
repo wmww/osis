@@ -30,9 +30,9 @@ impl AspectKey for Key {
         self.schema.as_deref()
     }
     fn decode(&self, v: &Value) -> Result<Value, PathError> {
-        // `/created` is typed by its exclusivity rule, not the missing-field rule
+        // `created.0` is typed by its exclusivity rule, not the missing-field rule
         // (spec/data-model.md §9).
-        if self.schema.as_deref().is_some_and(Schema::is_core) && self.ak.as_str() == "/created" {
+        if self.schema.is_some() && self.ak.as_str() == osis_schema::core_types::CREATED.ak() {
             return <osis_base::CreationRecord as Codec>::from_value(v).map(|_| v.clone());
         }
         match (self.schema.as_deref(), self.ty()) {
@@ -48,9 +48,9 @@ impl AspectKey for Key {
 /// Typed keys of the core aspects (spec/data-model.md §9). Role-class aspects are read
 /// here and written only through the sharing calls.
 pub mod core {
-    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, MEMBERS, MOVED, NAME, NODE, PLACED, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag, WAS};
+    pub use osis_schema::core_types::{ASPECTS, BODY, CREATED, GROUP, GROUPS, Group, KEYS, LABEL, ROLES, MOVED, NAME, NODE, PLACED, REACH, SECRETS, SEEN, TAG, TENURES, TID, Tag, WAS};
 
-    /// Field ids of `/group` (spec/data-model.md §8), for path ops on it.
+    /// Field ids of `group.0` (spec/data-model.md §8), for path ops on it.
     pub mod group {
         use osis_schema::FieldId;
         /// `set<tid>`: the group's items.

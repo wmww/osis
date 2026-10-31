@@ -305,7 +305,7 @@ impl Osis {
     }
 
     /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
-    /// (or an invite edge) and the holder's `/keys` (a contact card, a shared group, pairing),
+    /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
     /// else `UnknownActor`. The grant reaches the holder's devices through its inbox.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         let (target, holder) = (self.resolved(target), self.resolved(holder));
@@ -314,7 +314,7 @@ impl Osis {
         }
         self.persist(&[target])?;
         let done = self.engine(|e| -> Result<_> {
-            // unknown, or a key actor (a node, a recovery or link key) whose `/keys` is not held
+            // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
             if !e.knows(&holder) || (e.owner(&holder).is_none() && e.get_typed(&holder, &ct::KEYS)?.is_none()) {
                 return Err(Error::UnknownActor { tid: holder });
             }
@@ -778,7 +778,7 @@ impl Osis {
     }
 
     /// This person's contact card (spec/sync.md §3): a read link to its profile P, a group of
-    /// itself under its own label carrying the person's `/created` and `/keys` as certificates.
+    /// itself under its own label carrying the person's `created.0` and `keys.0` as certificates.
     /// Made once; later calls return the same card.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
@@ -799,10 +799,10 @@ impl Osis {
             self.inner.net.apply(acts);
             let (_, acts) = x.sync.create_label(&p, hosts.clone())?;
             self.inner.net.apply(acts);
-            // the person's creation and `/keys` commits, as certificates under P's label
+            // the person's creation and `keys.0` commits, as certificates under P's label
             let e = x.engine();
-            let created = Ak::new("/created").map_err(|_| Error::Invalid("ak".into()))?;
-            let keys = Ak::new("/keys").map_err(|_| Error::Invalid("ak".into()))?;
+            let created = Ak::new("created.0").map_err(|_| Error::Invalid("ak".into()))?;
+            let keys = Ak::new("keys.0").map_err(|_| Error::Invalid("ak".into()))?;
             let mut certs = Vec::new();
             for id in e.commit_ids() {
                 let Some(h) = e.header(&id) else { continue };
@@ -824,7 +824,7 @@ impl Osis {
     }
 
     /// This person's profile thing (notes/std.md): the target of its contact card, made on first
-    /// use. The person writes its profile aspects on it (`/name`, `/contact/*`); everyone holding
+    /// use. The person writes its profile aspects on it (`name.0`, `/contact/*`); everyone holding
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
         let card = self.contact_card()?;
@@ -839,7 +839,7 @@ impl Osis {
     }
 
     /// Imports a contact card: reads the profile by the card's link key (bearer use, nothing
-    /// written) until the person's `/keys` is here. Returns the person, usable in `grant`. Fails
+    /// written) until the person's `keys.0` is here. Returns the person, usable in `grant`. Fails
     /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
         let link = card.parse()?;
@@ -904,7 +904,7 @@ impl Osis {
     /// The person's devices: nodes with an edge on the person actor.
     pub fn devices(&self) -> Result<Vec<Device>> {
         let me = self.me();
-        let node_ak = Ak::new("/node").map_err(|_| Error::Invalid("ak".into()))?;
+        let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
         self.engine(|e| -> Result<Vec<Device>> {
             let mut out = Vec::new();
             for (m, edge) in e.roster(&me) {
@@ -1096,7 +1096,7 @@ impl Osis {
     }
 
     /// Moves `tid` to `owner` (spec/permissions.md §7): a copy with a new tid and the held
-    /// history imported, `/was` on the copy, `/moved` on the old thing when this node is its
+    /// history imported, `was.0` on the copy, `moved.0` on the old thing when this node is its
     /// admin, every current holder of the old thing re-granted on the copy; the copy is placed
     /// into `groups` in one more write. Reads and writes through the old tid then reach the copy.
     pub fn move_thing(&self, tid: Tid, owner: Tid, groups: &[Tid]) -> Result<Tid> {
@@ -1124,7 +1124,7 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
     s.iter().cloned().collect::<BTreeSet<_>>() == *old
 }
 
-/// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `/label`
+/// Moves the labels whose host list is `old` (as a set) to `new` (spec/sync.md §2 `label.0`
 /// hosts; the sync engine registers a label's path at a host that does not know it): the
 /// home label and the labels of groups in the person's own owner tree this node administers,
 /// except `fixed` ones (links, the contact card) and link actors made elsewhere (a key-actor

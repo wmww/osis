@@ -1,4 +1,4 @@
-//! `/label` (spec/sync.md §2, spec/data-model.md §9): the aspect types are osis-schema's
+//! `label.0` (spec/sync.md §2, spec/data-model.md §9): the aspect types are osis-schema's
 //! (`Label`, `StepRecord`, `Labels`); this module converts records to verified steps and claim
 //! sets and back.
 
@@ -56,7 +56,7 @@ mod tests {
     use osis_crypto::{Epoch, SeededRng};
     use osis_schema::Codec;
 
-    // spec/sync.md §2, spec/data-model.md §9: `/label` holds steps by ID with their claim sets;
+    // spec/sync.md §2, spec/data-model.md §9: `label.0` holds steps by ID with their claim sets;
     // records round trip through the `label` value; paths and tips follow `prev`.
     #[test]
     fn records() {

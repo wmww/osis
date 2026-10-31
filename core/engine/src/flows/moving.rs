@@ -1,6 +1,6 @@
 //! Moving a thing (spec/permissions.md §7): node-core's copy with import (`Engine::move_thing`,
 //! which refuses a second import of a continued thing), then the roster re-granted on the copy
-//! by its new owner's chain and `/moved` written on the old thing by its admins. `/keys`
+//! by its new owner's chain and `moved.0` written on the old thing by its admins. `keys.0`
 //! writes an admin makes outside rotations (deposit-seed refresh, spec/crypto.md §3: MAY).
 
 use super::Done;
@@ -15,7 +15,7 @@ use osis_schema::core_types::{self as ct, Edge};
 impl Engine {
     /// Moves `t` to `owner` (an actor this node is admin of): the copy with `t`'s history,
     /// each current holder of `t` re-granted its edge on the copy (with boxes, by inbox), and
-    /// `/moved` on `t` when this node is its admin. A labeled `t`'s copy gets secrets of its
+    /// `moved.0` on `t` when this node is its admin. A labeled `t`'s copy gets secrets of its
     /// own and a label at `t`'s hosts first. Returns the copy.
     pub fn move_to(&mut self, t: &Tid, owner: &Tid) -> Result<(Tid, Done)> {
         let ts = super::now_ts(&self.core);
@@ -49,7 +49,7 @@ impl Engine {
     }
 
     /// Refreshes `actor`'s deposit seed (spec/crypto.md §3, a MAY: a departed holder can then no
-    /// longer deposit under its labels, nor can a holder that has not read the new `/keys`).
+    /// longer deposit under its labels, nor can a holder that has not read the new `keys.0`).
     pub fn refresh_deposit_seed(&mut self, actor: &Tid) -> Result<Done> {
         let a = *actor;
         let mut done = Done::default();

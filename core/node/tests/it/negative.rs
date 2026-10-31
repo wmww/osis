@@ -12,12 +12,12 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 schema 0x0123456789abcdef0123456789abcd01;
 revision 1;
-aspect /k/kept: string [by: writer, keep_at_least: 1d];
-aspect /k/short: string [by: writer, keep_at_most: 10m];
+aspect k:kept.0: string [by: writer, keep_at_least: 1d];
+aspect k:short.0: string [by: writer, keep_at_most: 10m];
 "#,
 );
-const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/kept", &KEEP);
-const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/k/short", &KEEP);
+const KEPT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:kept.0", &KEEP);
+const SHORT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("k:short.0", &KEEP);
 
 // spec/commits.md §5 (keep at least): a compaction before the bound neither drops the covered
 // bodies nor deletes them at the host; once the bound has passed (by MAX_DRIFT) it does both.

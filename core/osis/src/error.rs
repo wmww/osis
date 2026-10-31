@@ -8,9 +8,9 @@ use osis_schema::{Path, PathError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// A write or call names a thing whose `/created` is not held.
+    /// A write or call names a thing whose `created.0` is not held.
     UnknownThing { tid: Tid },
-    /// An actor whose `/keys` is not held (grants need it).
+    /// An actor whose `keys.0` is not held (grants need it).
     UnknownActor { tid: Tid },
     /// The acting node lacks `needs` on `tid` (checked locally before signing).
     Permission { tid: Tid, needs: Role },

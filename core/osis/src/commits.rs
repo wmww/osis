@@ -17,7 +17,7 @@ use osis_node::undo::HeldCommit;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Which aspects a query, undo or redo ranges over; resolved when used. `Thing` and `Group`
-/// cover durable aspects and ephemeral things (and `/placed`); an
+/// cover durable aspects and ephemeral things (and `placed.0~`); an
 /// ephemeral aspect of a durable thing (a cursor, a selection) is in scope only when named by
 /// `Aspects`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -241,7 +241,7 @@ impl Osis {
                         reverts: undoes(h),
                         reverted_by: Vec::new(),
                         in_effect: true,
-                        dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "/created"),
+                        dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "created.0"),
                         aspects: c.aspects.into_iter().map(|(t, a, _)| (t, a)).collect(),
                     },
                 );
@@ -424,7 +424,7 @@ impl Osis {
                 if h.kind != Kind::Content {
                     return Err(Error::Invalid("only changes and reverts are reverted".into()));
                 }
-                if h.aspects.iter().any(|a| a.ak.as_str() != "/created" && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
+                if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
                     return Err(blocked(DropReason::Compacted));
                 }
             }

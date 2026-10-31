@@ -29,7 +29,7 @@ pub use purge::PurgeBy;
 pub use roster::RosterState;
 pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
-pub use types::{Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Tie, TieSource, WriteId, MEMBERS};
+pub use types::{Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Tie, TieSource, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[cfg(debug_assertions)]
 #[doc(hidden)]

@@ -1,4 +1,4 @@
-//! `/secrets` boxes, entry boxes and history boxes (spec/crypto.md §4, spec/wire.md §7).
+//! `secrets.0` boxes, entry boxes and history boxes (spec/crypto.md §4, spec/wire.md §7).
 //! The `box` value itself (spec/data-model.md §9) is osis-keys'; this module builds the AD
 //! tuples and seals, wraps and opens the payloads.
 
@@ -85,7 +85,7 @@ impl BoxForm {
 /// Where a box sits: the AD fields before the form (spec/wire.md §7).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoxSlot {
-    /// A `/secrets` box of `actor` to `holder` for (role, epoch).
+    /// A `secrets.0` box of `actor` to `holder` for (role, epoch).
     Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
     /// An entry box of a label step; `group`, the label's group thing, is the actor whose epoch
     /// the payload names (not in the AD).
@@ -101,7 +101,7 @@ impl BoxSlot {
         }
     }
 
-    /// The (role, epoch) of a `/secrets` box's key: what its payload must name.
+    /// The (role, epoch) of a `secrets.0` box's key: what its payload must name.
     fn key(&self) -> Option<(Role, Epoch)> {
         match self {
             BoxSlot::Secrets { role, epoch, .. } => Some((*role, *epoch)),
@@ -131,7 +131,7 @@ pub struct BoxItem {
 
 /// Sealed form `[[role, n, secret]+]` ascending by role, to `recipient` (the KEM key of keyset
 /// `keyset`, none for a key actor) under suite 1. Returns the raw sealed box. Each item's epoch
-/// must be the one its secret names (spec/crypto.md §4), and a `/secrets` box carries its key's.
+/// must be the one its secret names (spec/crypto.md §4), and a `secrets.0` box carries its key's.
 pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>, items: &[BoxItem], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let mut sorted: Vec<&BoxItem> = items.iter().collect();
     sorted.sort_by_key(|i| i.role);
@@ -160,7 +160,7 @@ pub fn seal_box(recipient: &KemPublicKey, slot: &BoxSlot, keyset: Option<Epoch>,
 
 /// Opens a sealed-form box at `slot` with the form fields read beside it. The AD is built here,
 /// so a box opens only under its own slot and form. An unknown suite parks before decryption.
-/// Each item's epoch is the one its secret names (spec/crypto.md §4); a `/secrets` box without
+/// Each item's epoch is the one its secret names (spec/crypto.md §4); a `secrets.0` box without
 /// an item naming its key's (role, epoch) is `Malformed`.
 pub fn open_box(kem: &KemSecret, slot: &BoxSlot, form: BoxForm, sealed: &[u8]) -> Result<Vec<BoxItem>, Error> {
     match form {
@@ -200,14 +200,14 @@ fn parse_box_items(v: &Value, actor: &Tid) -> Result<Vec<BoxItem>, Error> {
 }
 
 /// Symmetric form at `slot`: wrap of `secret` under `kdf("box", s)`, s of epoch `epoch_s`;
-/// nonce = BLAKE3(AD)[..24]. At a `/secrets` slot, `secret` must name the key's epoch.
+/// nonce = BLAKE3(AD)[..24]. At a `secrets.0` slot, `secret` must name the key's epoch.
 pub fn wrap_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, secret: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
     check_names(slot, secret)?;
     let ad = slot.ad(BoxForm::Symmetric { epoch_s })?;
     aead::seal_suite_key(kdf(kdf::BOX, s.expose(), b"").expose(), &ad_nonce(&ad), &ad, secret)
 }
 
-/// Opens a symmetric box; at a `/secrets` slot a secret that does not name the key's epoch is
+/// Opens a symmetric box; at a `secrets.0` slot a secret that does not name the key's epoch is
 /// `Malformed` (spec/crypto.md §4).
 pub fn open_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, wrap: &[u8]) -> Result<Secret32, Error> {
     let ad = slot.ad(BoxForm::Symmetric { epoch_s })?;
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(Epoch::derive(&actor(1), Role::Read, u64::MAX, &sec(1)), Err(Error::TooLarge));
     }
 
-    // spec/wire.md §7: sealed /secrets box round trip; AD binds actor, holder, role, epoch, form;
+    // spec/wire.md §7: sealed secrets.0 box round trip; AD binds actor, holder, role, epoch, form;
     // items name their epochs.
     #[test]
     fn sealed_box() {

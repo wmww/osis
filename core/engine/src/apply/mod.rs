@@ -34,9 +34,9 @@ use std::sync::Arc;
 /// Why a commit is pending (spec/commits.md §4).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reason {
-    /// The `/created` record (key) of the author or of a thing on an owner chain is missing.
+    /// The `created.0` record (key) of the author or of a thing on an owner chain is missing.
     MissingChain(Tid),
-    /// The `/created` record of a thing whose delta it holds or that it syncs is unknown.
+    /// The `created.0` record of a thing whose delta it holds or that it syncs is unknown.
     UnknownCreated(Tid),
     /// `ts` more than `MAX_DRIFT` ahead of the corrected clock.
     Drift,
@@ -80,7 +80,7 @@ fn is_missing_page(e: &osis_commit::Error) -> bool {
     matches!(e, osis_commit::Error::Delta(osis_crdt::Error::Page(osis_crdt::PageError::Missing)) | osis_commit::Error::Missing)
 }
 
-/// Creation records a commit carries: a durable one's on `/created` (decoded without a hash
+/// Creation records a commit carries: a durable one's on `created.0` (decoded without a hash
 /// check; the part is verified later under the record's own dedup secret), an ephemeral one's
 /// beside its deltas (a record hashes to its tid, spec/commits.md §2).
 pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> Result<BTreeMap<Tid, CreationRecord>> {
@@ -99,13 +99,13 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> R
         }
         let cx = delta_ctx(h, id, p.ai, &mut interner)?;
         let d = osis_crdt::decode_delta(&p.delta, &cx, &mut interner, None)?;
-        let v = d.fragment.read().ok_or(Error::BadInput("empty /created"))?;
-        let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("/created is not a creation record"))?;
+        let v = d.fragment.read().ok_or(Error::BadInput("empty created.0"))?;
+        let rec = CreationRecord::from_value(&v).ok_or(Error::BadInput("created.0 is not a creation record"))?;
         if rec.tid() != a.tid {
-            return Err(Error::BadInput("/created does not hash to its tid"));
+            return Err(Error::BadInput("created.0 does not hash to its tid"));
         }
         if !crate::engine::write::is_minting(&d.fragment, &rec) {
-            return Err(Error::BadInput("/created is not one minting of its record"));
+            return Err(Error::BadInput("created.0 is not one minting of its record"));
         }
         out.insert(a.tid, rec);
     }
@@ -223,12 +223,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         .map(|p| (p.ai, p.di))
         .collect();
     // a memory part goes only to a memory-class aspect: one on an aspect of durable deltas here
-    // (schemas disagree, or a writer broke the rule) or on a core aspect but `/placed` is dropped
+    // (schemas disagree, or a writer broke the rule) or on a core aspect but `placed.0~` is dropped
     // alone, as its rows would shadow durable ones (spec/data-model.md §1)
     let mut bad = bad;
     if memory {
         let placed = osis_schema::AspectKey::ak(&osis_schema::core_types::PLACED);
-        let core = |ak: &str| ak.matches('/').count() == 1 && ak != placed;
+        let core = |ak: &str| osis_schema::core_types::is_core_key(ak) && ak != placed;
         bad.extend(blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| core(a.ak.as_str()) || durable_class(tx, &a.tid, &a.ak))).map(|p| (p.ai, p.di)));
     }
     if !bad.is_empty() {
@@ -358,7 +358,7 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 }
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
-/// §4); dropped parts stay dropped. Late deltas that wait (their thing's `/created`, chain or
+/// §4); dropped parts stay dropped. Late deltas that wait (their thing's `created.0`, chain or
 /// pages) are kept pending under the commit's ID and joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
@@ -441,7 +441,7 @@ impl Engine {
 
     /// Whether every delta of `blob` hashes to its entry in the commit's header (the applied,
     /// resolved one when held; spec/commits.md §4): a blob of a held commit is otherwise never
-    /// checked, its parts being skipped as held. `None` while a thing's `/created` (its dedup
+    /// checked, its parts being skipped as held. `None` while a thing's `created.0` (its dedup
     /// secret) or the resolved header is unknown (or fails to decode).
     pub fn parts_genuine(&self, blob: &CommitBlob) -> Option<bool> {
         let h = match self.core.ix.commits.get(&blob.id()) {
@@ -523,7 +523,7 @@ impl Engine {
     }
 
     /// Re-examines pending and parked commits until none applies (after new certificates or
-    /// `/created` records, a change of what this node syncs, time passing, or an upgrade).
+    /// `created.0` records, a change of what this node syncs, time passing, or an upgrade).
     /// Role commits are tried first. A commit whose examination's inputs have not changed
     /// since it was last examined is left out (`apply::waits`).
     pub fn reexamine(&mut self) -> Result<()> {
@@ -659,12 +659,12 @@ impl Engine {
     }
 
     /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
-    /// step not verified yet): its applied holders and the holders its applied `/secrets` boxes
+    /// step not verified yet): its applied holders and the holders its applied `secrets.0` boxes
     /// (one may read it through an actor a rotation boxed, with no grant held), and those that
     /// `inbox`, the pending commits of the inbox blobs that named the label, grant or box on it;
     /// those this node is or holds secrets of.
     pub fn hint_actors(&mut self, thing: &Tid, inbox: &[CommitId]) -> Result<std::collections::BTreeSet<Tid>> {
-        let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::MEMBERS)?.unwrap_or_default().into_keys().collect();
+        let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::ROLES)?.unwrap_or_default().into_keys().collect();
         out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
         for c in inbox {
             if !self.core.ix.pending.contains_key(c) {
@@ -714,15 +714,15 @@ impl Engine {
         self.core.ix.commits.get(id).and_then(|m| m.header.decoded())
     }
 
-    /// The commit that created `tid`: the oldest held commit carrying its `/created` that is
-    /// valid here (no durable snapshot carries `/created`, spec/commits.md §2).
-    /// `/created` is kept forever, so every node reading the thing gets that commit; until it
+    /// The commit that created `tid`: the oldest held commit carrying its `created.0` that is
+    /// valid here (no durable snapshot carries `created.0`, spec/commits.md §2).
+    /// `created.0` is kept forever, so every node reading the thing gets that commit; until it
     /// is here (only a snapshot held) `None`.
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
         if let Some(e) = self.ephemeral_thing(tid) {
             return Some(Creation { commit: None, ts: e.ts, node: e.node, actor: e.actor, received: e.received });
         }
-        let ak = osis_base::Ak::new("/created").ok()?;
+        let ak = osis_base::Ak::new("created.0").ok()?;
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
             let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
@@ -731,7 +731,7 @@ impl Engine {
     }
 
     /// The thing's last content change: of the held content commits (changes, reverts,
-    /// imports) validly writing one of its aspects other than `/created`, `/group` and the
+    /// imports) validly writing one of its aspects other than `created.0`, `group.0` and the
     /// role-class ones, the one shown latest by `min(ts, received)` (an author's clock may
     /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
     /// ephemeral writes do not count (an ephemeral thing reports its creation).
@@ -741,7 +741,7 @@ impl Engine {
         let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
         for ((_, ak), ids) in aspects {
             let a = ak.as_str();
-            if a == "/created" || a == "/group" || osis_schema::core_types::is_role_class(a) {
+            if a == "created.0" || a == "group.0" || osis_schema::core_types::is_role_class(a) {
                 continue;
             }
             for (ts, id) in ids.iter().rev() {
@@ -829,7 +829,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         Ok(())
     })?;
     tx.core.ix.secrets.extend(secrets);
-    // the `/keys` parts that wrote a keyset, kept once their bodies dropped or went missing
+    // the `keys.0` parts that wrote a keyset, kept once their bodies dropped or went missing
     let mut parts = Vec::new();
     tx.scan(records::OWN_KEYS, |k, _| {
         let bad = || Error::Corrupt("own keys");
@@ -940,8 +940,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 for (ai, _, d) in &parts {
                     if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                         match a.ak.as_str() {
-                            "/secrets" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
-                            "/keys" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
+                            "secrets.0" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
+                            "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
                             _ => {}
                         }
                     }
@@ -991,11 +991,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (tid, ak) in aspects {
         match ak.as_str() {
             // definitions first, derived once below
-            "/group" => {
+            "group.0" => {
                 let v = tx.state(&tid, &ak)?.and_then(osis_crdt::Fragment::read);
                 tx.core.ix.groups.set_def(tid, atomic::group_def(v));
             }
-            "/secrets" | "/keys" if fast => {}
+            "secrets.0" | "keys.0" if fast => {}
             _ => atomic::observe_state(tx, &tid, &ak)?,
         }
     }
@@ -1024,7 +1024,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
         }
     }
-    stale.retain(|(_, ak)| !matches!(ak.as_str(), "/members" | "/tenures" | "/created"));
+    stale.retain(|(_, ak)| !matches!(ak.as_str(), "roles.0" | "tenures.0" | "created.0"));
     Ok(Some(stale.into_iter().collect()))
 }
 
@@ -1043,7 +1043,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
     Ok(Exam::Ready(out))
 }
 
-/// What perm's adaptation reads of a held role commit: its held `/members` and `/tenures`
+/// What perm's adaptation reads of a held role commit: its held `roles.0` and `tenures.0`
 /// parts.
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
@@ -1054,7 +1054,7 @@ pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::Edg
 /// `edge_parts` of a commit record's blob (`h`: its resolved header).
 pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob: CommitBlob) -> Result<validity::EdgeParts> {
     blob.header = h.clone();
-    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
     match examine_stored(tx, &mut blob, id)? {
         Exam::Ready(v) => Ok(validity::EdgeParts::of(h, &v)),
         _ => Ok(validity::EdgeParts::default()),
@@ -1110,14 +1110,14 @@ mod tests {
         let me = p0.engine.tid();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
-        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         p0.commit(m).unwrap();
         let b = lp.peers[1].engine.tid();
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
             let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
-            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
         let id = lp.peers[0].commit(m).unwrap().unwrap();
@@ -1141,7 +1141,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 901, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (a0, a1) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let reg = Ak::new("/x/a").unwrap();
+        let reg = Ak::new("x:a.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..2 {
             let mut m = Mutation::new();
@@ -1153,7 +1153,7 @@ mod tests {
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
         let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
-        m.op(x, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
+        m.op(x, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         let p1 = &mut lp.peers[1];
@@ -1196,7 +1196,7 @@ mod tests {
             for _ in 0..depth {
                 cur = p1.engine.new_thing(&mut m, cur);
             }
-            m.op(cur, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(adm.to_value()) }).unwrap();
+            m.op(cur, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(adm.to_value()) }).unwrap();
             assert!(matches!(p1.commit(m), Err(crate::Error::Permission { .. })), "depth {depth}");
         }
         // under Y (no role there) the tree is refused
@@ -1239,7 +1239,7 @@ mod tests {
         let me = p0.engine.tid();
         let mut m = Mutation::new();
         let t = p0.engine.new_thing(&mut m, me);
-        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(1)).unwrap();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         let id = p0.commit(m).unwrap().unwrap();
         let blob = p0.engine.run(|tx| tx.get_commit(&id)).unwrap().unwrap();
         let c = &mut p0.engine.core;
@@ -1249,7 +1249,7 @@ mod tests {
         assert!(p0.engine.header(&id).is_none());
         assert_eq!(p0.engine.parts_genuine(&blob), None);
         let mut m = Mutation::new();
-        m.set(t, &Ak::new("/x/a").unwrap(), &Value::Int(2)).unwrap();
+        m.set(t, &Ak::new("x:a.0").unwrap(), &Value::Int(2)).unwrap();
         assert!(matches!(p0.engine.commit(m), Err(crate::Error::Corrupt(_))));
         assert!(matches!(p0.engine.commit(Mutation::new()), Err(crate::Error::Corrupt(_))));
     }

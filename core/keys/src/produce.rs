@@ -23,7 +23,7 @@ pub enum HolderKeys {
 }
 
 impl HolderKeys {
-    /// From the holder's `/keys`: its key-actor KEM key, else its keysets.
+    /// From the holder's `keys.0`: its key-actor KEM key, else its keysets.
     pub fn from_keys(k: &Keys) -> Result<HolderKeys, Error> {
         if let Some(KemKey::X25519MlKem768(b)) = &k.key {
             return Ok(HolderKeys::KeyActor { kem: KemPublicKey::from_slice(b)?, seed: None });
@@ -205,7 +205,7 @@ fn carried(m: &Recipient, roles: &BTreeSet<Role>, removed: &BTreeSet<BoxKey>) ->
 /// every distinct earlier established secret held (spec/crypto.md §4: never one got by re-seal
 /// before its rotation commit), the keyset, and the removal of the role's boxes held at the
 /// epochs it supersedes. `held` is the rotator's view of the actor (a plain thing's derived
-/// epochs for the switch to secrets of its own); `held_secrets` the actor's `/secrets`.
+/// epochs for the switch to secrets of its own); `held_secrets` the actor's `secrets.0`.
 /// Secrets of other roles carried to key-actor holders are encrypting under their epochs: a
 /// carried role whose newest epoch `may_carry` refuses (the covers rule) is rotated too.
 pub fn rotate(

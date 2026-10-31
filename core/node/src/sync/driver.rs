@@ -81,7 +81,7 @@ pub enum Control {
     Call(Call),
     /// Actions the holder's own calls produced: carry them out.
     Apply(Vec<Action>),
-    /// Listen at `url` with the engine's dialable secret and publish `/reach` with that
+    /// Listen at `url` with the engine's dialable secret and publish `reach.0` with that
     /// listener's key and `relays` (spec/data-model.md §9). For iroh, `url` lists the relays the
     /// listener registers at (`peer_url(relays)`).
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
@@ -363,7 +363,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         }
     }
 
-    /// Listens with the dialable secret and publishes `/reach` with that listener's key; a
+    /// Listens with the dialable secret and publishes `reach.0` with that listener's key; a
     /// listener of an older dialable key stops.
     async fn reach(&mut self, url: String, relays: Vec<String>) -> Result<Address, String> {
         self.reach = Some((url.clone(), relays.clone()));
@@ -376,7 +376,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         self.call(&mut |s| match s.publish_reach(key, relays.clone()) {
             Ok(a) => a,
             Err(e) => {
-                s.diag(format!("publishing /reach: {e}"));
+                s.diag(format!("publishing reach.0: {e}"));
                 Vec::new()
             }
         });
@@ -593,7 +593,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 self.unlisten_now(old).await;
             }
             if let Err(e) = self.reach(url, relays).await {
-                // `/reach` already names the new key: keep trying
+                // `reach.0` already names the new key: keep trying
                 (self.log)(&format!("listening with the new dialable key: {e}; again in {RELISTEN_RETRY:?}"));
                 self.relisten = true;
                 self.relisten_at = Some(tokio::time::Instant::now() + RELISTEN_RETRY);
@@ -616,7 +616,7 @@ pub async fn run<T: Transport>(sync: SyncEngine, transport: T, clock: Arc<dyn Cl
 /// `Control::Reach` and the LAN loop): one listening with the engine's `dialable_secret`
 /// (publish its `address().key` with `publish_reach`), and one per LAN join with a fresh secret
 /// whose key is announced with the LAN tag (spec/sync.md §10). Never put a listener's
-/// `address().url` into `/reach`: it lists bound IP addresses, which are never published
+/// `address().url` into `reach.0`: it lists bound IP addresses, which are never published
 /// (spec/sync.md §10); only its key and the relays go there.
 pub async fn run_serving<T: Transport>(sync: SyncEngine, transport: T, listeners: Vec<T::Listener>, clock: Arc<dyn Clock>, control: mpsc::UnboundedReceiver<Control>, log: Log) -> SyncEngine {
     let Owned(m) = run_shared(Owned(std::sync::Mutex::new(sync)), transport, listeners, clock, control, log).await;

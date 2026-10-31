@@ -56,7 +56,7 @@ fn stranded_reseal() {
 }
 
 // spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4: sweep seed 0, an admin's
-// `/label` record of the first step held back the second rotation's step (the settle rule), so
+// `label.0` record of the first step held back the second rotation's step (the settle rule), so
 // both rotations shared one step and the stale device claimed through.
 #[test]
 #[ignore = "tier 2"]
@@ -113,7 +113,7 @@ fn disk_loss() {
 }
 
 // spec/permissions.md §4 (chain certificates, placed whenever they change): sweep seed 3, the
-// lost device's copy of the card key's `/created` never reached the host and the remaining
+// lost device's copy of the card key's `created.0` never reached the host and the remaining
 // device's placed copy lacked it, so the recovering device could not verify the person.
 #[test]
 fn disk_loss_seed_3() {
@@ -207,14 +207,14 @@ fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
 
-// spec/sync.md §9: a run where the full host held `/created`-only commits no cover absorbed
+// spec/sync.md §9: a run where the full host held `created.0`-only commits no cover absorbed
 // (before own covers).
 #[test]
 fn ephemeral_capped_seed_2400045() {
     ok("ephemeral_capped", 2400045);
 }
 
-// spec/sync.md §9: periodic run 8, node 3 held a commit of node 0 with its /e/notes part missing.
+// spec/sync.md §9: periodic run 8, node 3 held a commit of node 0 with its e:notes.0 part missing.
 #[test]
 fn ephemeral_seed_21054() {
     ok("ephemeral", 21054);

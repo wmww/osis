@@ -77,7 +77,7 @@ pub struct BodyCtx {
 impl BodyCtx {
     /// Whether a commit (its `View`) may have bodies under the group's labels.
     pub(crate) fn touches(&self, v: &crate::engine::View) -> bool {
-        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"))
+        v.aspects.iter().any(|a| self.closure.contains(&a.tid) || self.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"))
     }
 }
 
@@ -136,7 +136,7 @@ impl Engine {
 
     /// The bodies a group's label must hold from its closure (spec/sync.md §3): projections of
     /// held commits touching the closure whose deltas the group's actor may read. A home label
-    /// (an actor synced as a group of itself) also carries the `/label` and `/created` writes of
+    /// (an actor synced as a group of itself) also carries the `label.0` and `created.0` writes of
     /// the labeled groups it is the nearest labeled owner-chain actor of (spec/sync.md §2).
     pub fn label_bodies(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let mut out = self.label_bodies_meta(g)?;
@@ -164,7 +164,7 @@ impl Engine {
         let core = &self.core;
         let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
         for t in ctx.published.iter() {
-            for ak in ["/label", "/created"] {
+            for ak in ["label.0", "created.0"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
                 ids.extend(core.ix.by_aspect.get(&(*t, ak)).into_iter().flatten().map(|x| x.1));
             }
@@ -210,7 +210,7 @@ impl Engine {
         };
         let mut out = Vec::new();
         for b in bodies {
-            let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "/label" | "/created"));
+            let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"));
             if inside && self.core.may_read(&ctx.actor, &b.reader) {
                 out.push(b);
             }
@@ -219,7 +219,7 @@ impl Engine {
     }
 
     /// Labeled groups whose nearest labeled owner-chain actor is `g` (its home label publishes
-    /// their `/label`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
+    /// their `label.0`, spec/sync.md §2). Empty unless `g` is an actor with secrets of its own.
     /// Taken for every actor at once, again only when a creation record, `own_keys` or the
     /// labeled things changed (`Core::published`): O(labeled things) per change, not per pass.
     pub fn published_under(&mut self, g: &Tid) -> std::sync::Arc<std::collections::BTreeSet<Tid>> {
@@ -230,10 +230,10 @@ impl Engine {
             core.published = Some((at, map.into_iter().map(|(k, v)| (k, std::sync::Arc::new(v))).collect()));
         }
         let out = core.published.as_ref().and_then(|(_, m)| m.get(g).cloned()).unwrap_or_default();
-        // the cache and the `/label` index against a scan of every held aspect
+        // the cache and the `label.0` index against a scan of every held aspect
         #[cfg(debug_assertions)]
         {
-            let scan: std::collections::BTreeSet<Tid> = core.ix.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "/label").map(|(t, _)| *t).collect();
+            let scan: std::collections::BTreeSet<Tid> = core.ix.by_aspect.keys().filter(|(_, ak)| ak.as_str() == "label.0").map(|(t, _)| *t).collect();
             assert!(scan == *core.ix.labeled, "labeled index {:?} vs held {scan:?}", *core.ix.labeled);
             assert_eq!(published_by_actor(core, &scan).remove(g).unwrap_or_default(), *out, "published_under({g}) cached");
         }
@@ -264,7 +264,7 @@ impl Engine {
     /// rotation that gave it its own is wrapped under the derived epoch, spec/crypto.md §5).
     pub fn read_secrets(&self, g: &Tid) -> Vec<Secret32> {
         let mut v: Vec<Secret32> = self.epochs(g).map(|e| e.read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect()).unwrap_or_default();
-        // the owner's epochs; a thing whose `/created` is not here yet (a recovery card's
+        // the owner's epochs; a thing whose `created.0` is not here yet (a recovery card's
         // person) may be owned by any key actor held
         let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g) {
             Some(osis_base::CreationRecord::Thing { owner, .. }) => self.epochs(owner).or_else(|| self.core.key_actors.get(owner).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
@@ -281,12 +281,12 @@ impl Engine {
         v
     }
 
-    /// Whether these deltas of `c` hold the `/secrets` or `/keys` of the actor `g`'s secrets derive
+    /// Whether these deltas of `c` hold the `secrets.0` or `keys.0` of the actor `g`'s secrets derive
     /// from (only a blob carrying the boxes takes the rotation's wrap exception).
     pub fn carries_secrets(&self, g: &Tid, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(a) = self.core.secret_actor(g) else { return false };
         let Some(h) = self.header(c) else { return false };
-        parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "/secrets" | "/keys"))
+        parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|x| x.tid == a && matches!(x.ak.as_str(), "secrets.0" | "keys.0"))
     }
 
     /// The newest established read secret held, current or not (a stranded heartbeat's wrap,
@@ -299,13 +299,13 @@ impl Engine {
         }
     }
 
-    /// For a rotation commit of the read role of `g`'s secret actor (its `/keys` delta writes a
+    /// For a rotation commit of the read role of `g`'s secret actor (its `keys.0` delta writes a
     /// read keyset): the newest held epoch the new read epoch supersedes.
     fn rotation_wrap_epoch(&mut self, g: &Tid, c: &CommitId) -> Result<Option<Epoch>> {
         let Some(a) = self.core.secret_actor(g) else { return Ok(None) };
         let Some(h) = self.header(c) else { return Ok(None) };
-        let Some(ai) = h.aspects.iter().position(|x| x.tid == a && x.ak.as_str() == "/keys") else { return Ok(None) };
-        if !h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "/secrets") {
+        let Some(ai) = h.aspects.iter().position(|x| x.tid == a && x.ak.as_str() == "keys.0") else { return Ok(None) };
+        if !h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "secrets.0") {
             return Ok(None);
         }
         let id = *c;
@@ -326,7 +326,7 @@ impl Engine {
         Ok(best)
     }
 
-    /// The deposit seed of `g`'s actor (its `/keys`).
+    /// The deposit seed of `g`'s actor (its `keys.0`).
     pub fn deposit_seed(&mut self, g: &Tid) -> Result<Option<Secret32>> {
         let x = self.group_actor(g);
         Ok(self.get_typed(&x, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(Secret32::from_bytes))
@@ -478,7 +478,7 @@ mod tests {
         let mut m = Mutation::new();
         let g = e.new_thing(&mut m, me);
         e.commit(m).unwrap();
-        let ak = osis_base::Ak::new("/x/a").unwrap();
+        let ak = osis_base::Ak::new("x:a.0").unwrap();
         let mut group = ct::Group::default();
         let add = |e: &mut Engine, group: &mut ct::Group| {
             let mut m = Mutation::new();

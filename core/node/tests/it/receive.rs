@@ -56,10 +56,10 @@ fn dedup_and_events_spec_commits_4() {
     let (origin, changed, author) = last.unwrap();
     assert_eq!(origin, Origin::Remote);
     assert_eq!(author, lp.peers[0].engine.tid());
-    assert!(changed.contains(&(t, ak("/t/reg"))));
+    assert!(changed.contains(&(t, ak("t:reg.0"))));
 }
 
-// spec/commits.md §4: unknown `/created` of the author or a touched thing keeps a commit
+// spec/commits.md §4: unknown `created.0` of the author or a touched thing keeps a commit
 // pending, counted as not received; it applies once the record arrives.
 #[test]
 fn pending_until_created_spec_commits_4() {
@@ -69,10 +69,10 @@ fn pending_until_created_spec_commits_4() {
     m.set(t, &REG, &s("second")).unwrap();
     lp.peers[0].commit(m).unwrap();
     let pks = packages(&mut lp, 0);
-    // the last commit first: its author's /created is unknown
+    // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
-    assert!(lp.peers[1].engine.receipt(&t, &ak("/t/reg")).unwrap().sources.is_empty());
+    assert!(lp.peers[1].engine.receipt(&t, &ak("t:reg.0")).unwrap().sources.is_empty());
     // node commits, then the thing's creation
     for p in &pks[..2] {
         lp.deliver(1, p).unwrap();
@@ -81,7 +81,7 @@ fn pending_until_created_spec_commits_4() {
     assert!(matches!(r, Ingested::Pending(_, Reason::UnknownCreated(x)) if x == t), "{r:?}");
     lp.deliver(1, &pks[2]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("second")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("second")));
     // pending survives a restart too (checked through a fresh pending commit)
     let mut m = Mutation::new();
     m.set(t, &REG, &s("third")).unwrap();
@@ -93,7 +93,7 @@ fn pending_until_created_spec_commits_4() {
     assert_eq!(lp2.peers[0].engine.pending().len(), 1);
 }
 
-// spec/commits.md §4: commits waiting for a thing's `/created` apply once it arrives; while
+// spec/commits.md §4: commits waiting for a thing's `created.0` apply once it arrives; while
 // they wait, commits applied in between re-examine none of them (spec/requirements.md, Scale:
 // a first sync is O(commits), not O(commits × pending)).
 #[test]
@@ -126,7 +126,7 @@ fn pending_not_reexamined_while_unchanged_spec_commits_4() {
     assert_eq!(examined(&osis_node::costs::take()), 80, "each commit examined once");
     lp.deliver(1, &pks[3]).unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("v39")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("v39")));
     assert_eq!(examined(&osis_node::costs::take()), 41);
 }
 
@@ -148,7 +148,7 @@ fn drift_parks_spec_crdt_2_2() {
     lp.peers[1].clock.advance(3_600_000 + 1);
     lp.peers[1].engine.tick().unwrap();
     assert!(lp.peers[1].engine.pending().is_empty());
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("future")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("future")));
     // the HLC moved past the received ts
     let me = lp.peers[1].engine.tid();
     let mut m = Mutation::new();
@@ -178,13 +178,13 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
-    let partial = without_parts(&pk.bytes, |a| a == "/t/reg", &h);
+    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     // not synced: applies with what arrived
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), None);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
     lp.peers[1].drain_events();
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap().is_some());
+    assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_node::Cause::LateDelta, .. })));
     // synced: waits
     let mut lp = net(2, 27);
@@ -197,12 +197,12 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
-    let partial = without_parts(&pk.bytes, |a| a == "/t/reg", &h);
+    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("new")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
     // stopping to sync the thing re-examines it
     lp.peers[1].engine.set_syncing(t, false).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("r")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
 }
 
 /// Secrets for hand-built commits: dedup, and made-up delete keys (hosts' business).
@@ -234,7 +234,7 @@ fn parked_spec_versioning_2() {
     let rec = e.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let ts = Ts::make(WallMs(T0.0 + 10), 0).unwrap();
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
-    let mut w = AspectWrite::new(t, ak("/t/future"), 100, 101, delta);
+    let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.retention = Retention { by: PurgeBy::Nobody, at_least: Bound::default(), at_most: Bound::default() };
     let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), Form::Node);
     b.aspects.push(w);
@@ -259,7 +259,7 @@ fn parked_spec_versioning_2() {
     m.set(t, &REG, &s("on")).unwrap();
     lp.peers[0].commit(m).unwrap();
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("on")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("on")));
     assert_eq!(lp.peers[1].engine.pending().len(), 2);
 }
 
@@ -284,7 +284,7 @@ fn grantee_waits_for_grant_spec_commits_4() {
     assert!(!lp.peers[2].engine.pending().is_empty());
     sync(&mut lp, 0, 2);
     assert!(lp.peers[2].engine.pending().is_empty(), "{:?}", lp.peers[2].engine.pending());
-    assert_eq!(lp.peers[2].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("from b")));
+    assert_eq!(lp.peers[2].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("from b")));
 }
 
 // spec/crdt.md §4.1 at the node level: three writers, random ops, random delivery order with

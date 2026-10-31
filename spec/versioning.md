@@ -19,7 +19,7 @@ Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negot
 ## 3. Schema identity
 - Each AK belongs to exactly one schema. Only that schema extends the AK's type closure or allocates IDs under it.
 - A commit header carries a **schema table** `[(schema ID, revision)]` and, per delta, an index into it, or none for an untyped write (spec/commits.md §1).
-- A reader whose schema claims an AK and sees a delta on it under a different schema ID reports a namespace collision diagnostic. Merge is unaffected: the writes merge like any concurrent writes (spec/crdt.md §7).
+- A reader whose schema claims an AK and sees a delta on it under a different schema ID reports an AK collision diagnostic. Merge is unaffected: the writes merge like any concurrent writes (spec/crdt.md §7).
 
 ## 4. Evolution rules
 A published revision MUST be an additive superset of every earlier one. Relative to the last published revision, a new revision MUST NOT:
@@ -28,7 +28,7 @@ A published revision MUST be an additive superset of every earlier one. Relative
 - add a field without a default to an existing struct;
 - change or remove a default, or add one to a formerly required field unless explicitly marked;
 - change the schema ID, or publish without bumping the revision.
-An aspect's wire type never changes; a different type is a new AK. Enum cases are never removed.
+An aspect's wire type never changes; a different type is a new AK, normally the successor version (spec/data-model.md §2). Enum cases are never removed.
 
 ## 5. Reads and writes across revisions
 - **Open structs**: state may hold field IDs a schema does not know. They are preserved, joined and ignored by typed reads.

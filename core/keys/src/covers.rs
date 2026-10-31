@@ -201,8 +201,8 @@ pub fn expired(until: Option<WallMs>, now: WallMs) -> bool {
     until.is_some_and(|u| u <= now)
 }
 
-/// What the node holds of the actors on a departure's chain: their `/secrets` and epochs
-/// (keysets from their `/keys` included, `observe_keys`).
+/// What the node holds of the actors on a departure's chain: their `secrets.0` and epochs
+/// (keysets from their `keys.0` included, `observe_keys`).
 pub trait HeldActors {
     fn secrets(&self, actor: &Tid) -> Option<&Secrets>;
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs>;
@@ -259,7 +259,7 @@ fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, e: 
     })
 }
 
-/// Does epoch `e` of role `r` of `actor` (whose `/secrets` and epochs are given) cover `d`?
+/// Does epoch `e` of role `r` of `actor` (whose `secrets.0` and epochs are given) cover `d`?
 /// Not when `held` counts it as written by the departed party (`departed_wrote`), at this or
 /// any actor down the chain. Else a holder's departure: `e` holds no box for it (a key actor's
 /// box keyed higher counts). A departure inside holder M: M's box in `e` names the newest
@@ -344,7 +344,7 @@ pub struct Holder {
 /// they hold, established through its rotation commit (`Chain`, `Own`; not a snapshot alone, see
 /// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder whose `until` is within `MAX_DRIFT`.
 /// `carries(key, r, e)`: whether the commit that wrote a key actor's box keyed at a higher role
-/// knew epoch e of r (its `/secrets` write names e, or it is ordered after e's rotation); only
+/// knew epoch e of r (its `secrets.0` write names e, or it is ordered after e's rotation); only
 /// then does that box count for (r, e). The caller decides after a sync pass of the actor's
 /// labels that fetched everything, and only for roles it may rotate.
 pub fn reseal_needed(

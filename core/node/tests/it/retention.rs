@@ -25,12 +25,12 @@ fn deaths_and_bounds_spec_commits_5() {
     let c2 = set(&mut lp, 0, t, &KEPT, "two");
     let ts2 = lp.peers[0].engine.header(&c2).unwrap().ts;
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.deaths(&c1, &t, &ak("/t/kept")).unwrap(), Some((ts2, ts2)));
-    assert_eq!(e.deaths(&c2, &t, &ak("/t/kept")).unwrap(), None);
-    let k = e.body_keep(&c1, &t, &ak("/t/kept")).unwrap();
+    assert_eq!(e.deaths(&c1, &t, &ak("t:kept.0")).unwrap(), Some((ts2, ts2)));
+    assert_eq!(e.deaths(&c2, &t, &ak("t:kept.0")).unwrap(), None);
+    let k = e.body_keep(&c1, &t, &ak("t:kept.0")).unwrap();
     assert_eq!(k.at_least, ts2.wall_ms().0 + 86_400_000);
     assert_eq!(k.at_most, None);
-    assert!(e.body_not_dropped(&c1, &t, &ak("/t/kept")));
+    assert!(e.body_not_dropped(&c1, &t, &ak("t:kept.0")));
 }
 
 // spec/commits.md §5: keep at most 0 after replaced: the replacing node drops the body in the
@@ -46,13 +46,13 @@ fn keep_at_most_zero_spec_commits_5() {
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");
     let e = &mut lp.peers[0].engine;
-    assert!(!e.body_not_dropped(&c1, &t, &ak("/t/gone")));
-    assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
+    assert!(!e.body_not_dropped(&c1, &t, &ak("t:gone.0")));
+    assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
     assert_eq!(e.revert(&c1).unwrap(), None);
     // every node drops it by the bound, here when it applies the kill
     sync(&mut lp, 0, 1);
-    assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("/t/gone")));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&c1, &t, &ak("t:gone.0")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
 }
 
 // spec/commits.md §6, spec/crdt.md §4.7: at T the delta's values go value-less everywhere and
@@ -64,23 +64,23 @@ fn expiry_spec_commits_6() {
     let t = new_thing(&mut lp, 0);
     let c = set(&mut lp, 0, t, &BRIEF, "soon gone");
     let h = lp.peers[0].engine.header(&c).unwrap();
-    let a = h.aspects.iter().find(|a| a.ak.as_str() == "/t/brief").unwrap();
+    let a = h.aspects.iter().find(|a| a.ak.as_str() == "t:brief.0").unwrap();
     assert_eq!(a.expires, Some(h.ts.wall_ms().0 + 3_600_000));
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/brief")).unwrap(), Some(s("soon gone")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:brief.0")).unwrap(), Some(s("soon gone")));
     lp.advance(3_600_001);
     for i in 0..2 {
         lp.peers[i].drain_events();
         lp.peers[i].engine.tick().unwrap();
-        assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/brief")).unwrap(), None, "node {i}");
-        assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &ak("/t/brief")));
+        assert_eq!(lp.peers[i].engine.get(&t, &ak("t:brief.0")).unwrap(), None, "node {i}");
+        assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
         assert!(lp.peers[i].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: Cause::Expiry, .. })));
     }
     // a late copy (from a relay that still had it) is stripped on arrival
     let pk = osis_node::local_peer::Package { id: c, bytes: lp.peers[1].engine.commit_bytes(&c).unwrap().unwrap(), blobs: Vec::new() };
     sync(&mut lp, 0, 2);
     let _ = lp.deliver(2, &pk);
-    assert_eq!(lp.peers[2].engine.get(&t, &ak("/t/brief")).unwrap(), None);
+    assert_eq!(lp.peers[2].engine.get(&t, &ak("t:brief.0")).unwrap(), None);
     // an explicit T on any aspect
     let mut m = Mutation::new();
     let now = lp.peers[0].engine.now();
@@ -89,7 +89,7 @@ fn expiry_spec_commits_6() {
     lp.peers[0].commit(m).unwrap();
     lp.advance(1000);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), None);
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
 // spec/commits.md §5, spec/permissions.md §8: a purge request drops the named deltas its author
@@ -109,18 +109,18 @@ fn purge_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("b's")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     lp.peers[1].commit(m).unwrap();
-    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     // a purges it
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     let pc = lp.peers[0].commit(m).unwrap().unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     sync(&mut lp, 0, 1);
-    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     // node 2 gets the purge before the purged delta: the delta arrives purged
     let pks = lp.packages(1).unwrap();
     let purge_pk = pks.iter().find(|p| p.id == pc).unwrap().clone();
@@ -131,9 +131,9 @@ fn purge_spec_commits_5() {
     // a relay still holding the old full blob
     lp.deliver(2, &full).unwrap();
     assert!(lp.peers[2].engine.commit_ids().contains(&secret));
-    assert!(!lp.peers[2].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[2].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     for i in 0..3 {
-        assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("public")), "node {i}");
+        assert_eq!(lp.peers[i].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("public")), "node {i}");
     }
 }
 
@@ -153,27 +153,27 @@ fn compaction_snapshot_spec_commits_5() {
     let mut m = Mutation::new();
     m.op(t, &KEPTSET, PathOp { path: Vec::new(), op: Op::Remove(s("t0")) }).unwrap();
     bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/keptset")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:keptset.0")).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&snap).unwrap();
     assert_eq!(h.kind, Kind::ContentSnapshot);
     assert_eq!((h.aspects[0].lo, h.aspects[0].hi), (0, 0));
     assert_eq!(h.aspects[0].retention.by, osis_schema::PurgeBy::Writer);
     for c in &bodies {
-        assert_eq!(lp.peers[0].engine.covered(&snap, c, &t, &ak("/t/keptset")).unwrap(), Some(true));
+        assert_eq!(lp.peers[0].engine.covered(&snap, c, &t, &ak("t:keptset.0")).unwrap(), Some(true));
     }
     // the receiver gets the creation and the snapshot only
     let me0 = lp.peers[0].engine.tid();
     for p in lp.packages(0).unwrap() {
         let h = lp.peers[0].engine.header(&p.id).unwrap();
-        let only_tags = h.aspects.iter().all(|a| a.ak.as_str() == "/t/keptset");
+        let only_tags = h.aspects.iter().all(|a| a.ak.as_str() == "t:keptset.0");
         if !only_tags || p.id == snap || h.author != me0 {
             lp.deliver(1, &p).unwrap();
         }
     }
-    let want = lp.peers[0].engine.get(&t, &ak("/t/keptset")).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/keptset")).unwrap(), want);
+    let want = lp.peers[0].engine.get(&t, &ak("t:keptset.0")).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:keptset.0")).unwrap(), want);
     // its frontiers count only on headers held (spec/crdt.md §8): none here
-    let r = lp.peers[1].engine.receipt(&t, &ak("/t/keptset")).unwrap();
+    let r = lp.peers[1].engine.receipt(&t, &ak("t:keptset.0")).unwrap();
     assert_eq!(r.contiguous(&osis_crdt::Source::node(me0), u64::MAX), 0);
     // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
     // it, the snapshot's included, also where its own body was never held
@@ -188,9 +188,9 @@ fn compaction_snapshot_spec_commits_5() {
         }
     }
     for i in 0..2 {
-        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("/t/keptset")).unwrap(), Some((ts, ts)), "node {i}");
+        assert_eq!(lp.peers[i].engine.deaths(&snap, &t, &ak("t:keptset.0")).unwrap(), Some((ts, ts)), "node {i}");
     }
-    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("/t/keptset")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.deaths(&bodies[1], &t, &ak("t:keptset.0")).unwrap(), Some((ts, ts)));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6: revert, redo as a revert of the revert; the held
@@ -205,21 +205,21 @@ fn undo_redo_spec_commits_7() {
     let mut m = Mutation::new();
     m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Add(s("x")) }).unwrap();
     let c3 = lp.peers[0].commit(m).unwrap().unwrap();
-    let scope = [(t, ak("/t/reg")), (t, ak("/t/tags"))];
+    let scope = [(t, ak("t:reg.0")), (t, ak("t:tags.0"))];
     assert_eq!(lp.peers[0].engine.held_commits(Some(&scope))[0].id, c3);
     let u3 = lp.peers[0].engine.revert(&c3).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap(), None, "exact: the set was absent before");
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap(), None, "exact: the set was absent before");
     let u2 = lp.peers[0].engine.revert(&c2).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("a")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
     let held: Vec<_> = lp.peers[0].engine.held_commits(Some(&scope)).into_iter().map(|c| (c.id, c.header.undoes)).collect();
     assert_eq!(held[..2], [(u2, Some(c2)), (u3, Some(c3))]);
     // redo = undo of the undo commit
     lp.peers[0].engine.revert(&u2).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
     // undo replicates like any commit
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/tags")).unwrap(), None);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
     // an admin undoes another's change
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
@@ -229,7 +229,7 @@ fn undo_redo_spec_commits_7() {
     sync(&mut lp, 1, 0);
     assert!(lp.peers[0].engine.held_commits(Some(&scope)).iter().any(|c| c.id == cb && c.header.author == b));
     lp.peers[0].engine.revert(&cb).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("b")));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
 }
 
 // spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/node.md, Paged state): in a new
@@ -256,16 +256,16 @@ fn undo_in_lazily_loaded_pages_spec_commits_7() {
     let c2 = edit(&mut lp, PathOp { path: Vec::new(), op: Op::Remove(s("k200")) });
     lp.advance(5);
     let c3 = edit(&mut lp, PathOp { path: vec![key("new")], op: Op::Set(s("added")) });
-    let before = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap();
+    let before = lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap();
     for (c, k, want) in [(c3, "new", None), (c2, "k200", Some(s(&"v".repeat(300)))), (c1, "k100", Some(s(&"v".repeat(300))))] {
         lp.peers[0].restart(58).unwrap();
         lp.advance(5);
         lp.peers[0].engine.revert(&c).unwrap().unwrap();
-        assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[key(k)]).unwrap(), want, "undo of {k}");
+        assert_eq!(lp.peers[0].engine.get_at(&t, &ak("t:big.0"), &[key(k)]).unwrap(), want, "undo of {k}");
     }
     // a whole read after the three undos: the fill again
     lp.peers[0].restart(59).unwrap();
-    let Some(Value::Map(after)) = lp.peers[0].engine.get(&t, &ak("/t/big")).unwrap() else { panic!() };
+    let Some(Value::Map(after)) = lp.peers[0].engine.get(&t, &ak("t:big.0")).unwrap() else { panic!() };
     assert_eq!(after.len(), 300);
     assert!(after.values().all(|v| *v == s(&"v".repeat(300))));
     assert_ne!(Some(Value::Map(after)), before);
@@ -283,7 +283,7 @@ fn undo_nested_edit_reads_every_entry_of_its_key_spec_commits_7() {
         let t = new_thing(&mut lp, 0);
         let b = lp.peers[1].engine.tid();
         set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-        let big = ak("/x/big");
+        let big = ak("x:big.0");
         let key = |k: &str| osis_crdt::PathSeg::Key(s(k));
         let put = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, v: Value| {
             let mut m = Mutation::new();
@@ -337,7 +337,7 @@ fn deaths_alike_after_carried_write_dropped_spec_crdt_4_8() {
     }
     sync(&mut lp, 0, 1);
     sync(&mut lp, 0, 2);
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     lp.advance(10);
     let kc = set(&mut lp, 0, t, &KEPT, "k");
     sync(&mut lp, 0, 1);
@@ -395,7 +395,7 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
     sync(&mut lp, 1, 0);
     lp.advance(10);
     let c = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k")), PathSeg::Field(1)], Value::Int(3));
-    let k = ak("/t/map");
+    let k = ak("t:map.0");
     let e = &mut lp.peers[0].engine;
     let (tb, tc) = (e.header(&b).unwrap().ts, e.header(&c).unwrap().ts);
     let want = (e.deaths(&a, &t, &k).unwrap(), e.deaths(&b, &t, &k).unwrap());
@@ -412,7 +412,7 @@ fn deaths_alike_nested_in_others_entry_spec_crdt_4_8() {
 fn late_entry_creator_dies_at_carried_nested_write_spec_crdt_4_8() {
     let mut lp = net(2, 84);
     let t = new_thing(&mut lp, 0);
-    let k = ak("/t/gonemap");
+    let k = ak("t:gonemap.0");
     let put = |lp: &mut osis_node::local_peer::LocalPeer, v: &str| {
         let mut m = Mutation::new();
         m.op(t, &GONEMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s("a"))], op: Op::Set(s(v)) }).unwrap();
@@ -451,7 +451,7 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
         set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
     }
     sync(&mut lp, 0, 2);
-    let k = ak("/t/map");
+    let k = ak("t:map.0");
     lp.advance(10);
     let a = map_op(&mut lp, 0, t, vec![PathSeg::Key(s("k"))], item("a", 1));
     sync(&mut lp, 0, 2);
@@ -482,8 +482,8 @@ fn replay_dates_at_carried_write_in_held_entry_spec_crdt_4_8() {
 // learning of them past Z's bound drops the dead bodies on arrival.
 #[test]
 fn deaths_dated_from_first_superseder_held_spec_commits_5() {
-    for (k, name) in [(&KEPT, "/t/kept"), (&SHORT, "/t/short")] {
-        let kept = name == "/t/kept";
+    for (k, name) in [(&KEPT, "t:kept.0"), (&SHORT, "t:short.0")] {
+        let kept = name == "t:kept.0";
         let mut lp = net(4, 54);
         let t = new_thing(&mut lp, 0);
         let mut ids = Vec::new();
@@ -544,8 +544,8 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
     }
     lp.deliver(1, &p1).unwrap();
     let e = &mut lp.peers[1].engine;
-    assert!(e.header(&c1).is_some() && !e.body_not_dropped(&c1, &t, &ak("/t/gone")));
-    assert_eq!(e.get(&t, &ak("/t/gone")).unwrap(), Some(s("final")));
+    assert!(e.header(&c1).is_some() && !e.body_not_dropped(&c1, &t, &ak("t:gone.0")));
+    assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), Some(s("final")));
 }
 
 // spec/commits.md §5 (keep at most: a tombstone is no live write): a compaction snapshot carrying a
@@ -556,7 +556,7 @@ fn keep_at_most_zero_late_body_dropped_on_arrival_spec_commits_5() {
 #[test]
 fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
     use osis_crdt::PathSeg;
-    for (k, name, zero, dropped) in [(&GONEMAP, "/t/gonemap", true, false), (&SHORTMAP, "/t/shortmap", false, false), (&SHORTMAP, "/t/shortmap", false, true)] {
+    for (k, name, zero, dropped) in [(&GONEMAP, "t:gonemap.0", true, false), (&SHORTMAP, "t:shortmap.0", false, false), (&SHORTMAP, "t:shortmap.0", false, true)] {
         let mut lp = net(1, 57);
         let t = new_thing(&mut lp, 0);
         let a = ak(name);
@@ -626,7 +626,7 @@ fn dating_history(seed: u64) {
     for i in 1..5 {
         sync(&mut lp, 0, i);
     }
-    let aks = [ak("/t/kept"), ak("/t/keptset"), ak("/t/map"), ak("/t/short")];
+    let aks = [ak("t:kept.0"), ak("t:keptset.0"), ak("t:map.0"), ak("t:short.0")];
     let (mut writes, mut snaps) = (Vec::new(), Vec::new());
     for _ in 0..28 {
         let x = below(100);
@@ -771,7 +771,7 @@ fn commit_form_and_import_deaths_dated_spec_commits_5() {
     let mut lp = net(1, 91);
     let t = new_thing(&mut lp, 0);
     let me = lp.peers[0].engine.tid();
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     let mut m = Mutation::new();
     m.commit_form();
     m.set(t, &KEPT, &s("one")).unwrap();
@@ -805,7 +805,7 @@ fn snapshot_dated_through_superseders_snapshot_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     let w = set(&mut lp, 0, t, &KEPT, "w");
     sync(&mut lp, 0, 1);
     lp.advance(10);
@@ -841,7 +841,7 @@ fn snapshot_dated_through_commit_form_superseder_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let p1 = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     let w = set(&mut lp, 0, t, &KEPT, "w");
     sync(&mut lp, 0, 1);
     lp.advance(10);
@@ -880,7 +880,7 @@ fn snapshot_of_unheld_import_dated_spec_commits_5() {
     let mut lp = net(2, 94);
     let t = new_thing(&mut lp, 0);
     let me = lp.peers[0].engine.tid();
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     let mut m = Mutation::new();
     m.commit_form();
     m.set(t, &KEPT, &s("one")).unwrap();
@@ -917,7 +917,7 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
         set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
     }
     lp.sync_all().unwrap();
-    let k = ak("/t/kept");
+    let k = ak("t:kept.0");
     let mut m = Mutation::new();
     m.set(t, &KEPT, &s("x")).unwrap();
     m.set(t, &REG, &s("r")).unwrap();

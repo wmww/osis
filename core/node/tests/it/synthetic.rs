@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Synthetic aspects, moving a thing (import, `/was`, `/moved`, resolution), diagnostics.
+//! Synthetic aspects, moving a thing (import, `was.0`, `moved.0`, resolution), diagnostics.
 
 use crate::common;
 use common::*;
@@ -15,7 +15,7 @@ fn group(e: &mut osis_node::Engine, g: Tid, items: &[Tid], subs: &[Tid]) {
     e.commit(m).unwrap();
 }
 
-// spec/data-model.md §8, §9: `/tid`, `/aspects`, and `/groups` as the closure over `/group`
+// spec/data-model.md §8, §9: `tid.0`, `aspects.0`, and `groups.0` as the closure over `group.0`
 // (nesting and cycles), kept current as groups change.
 #[test]
 fn synthetic_aspects_spec_dm_8() {
@@ -24,13 +24,13 @@ fn synthetic_aspects_spec_dm_8() {
     let g1 = new_thing(&mut lp, 0);
     let g2 = new_thing(&mut lp, 0);
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&x, &ak("/tid")).unwrap(), Some(Value::Tid(x)));
-    assert_eq!(e.get(&x, &ak("/aspects")).unwrap(), Some(Value::Set([s("/created"), s("/t/reg")].into_iter().collect())));
+    assert_eq!(e.get(&x, &ak("tid.0")).unwrap(), Some(Value::Tid(x)));
+    assert_eq!(e.get(&x, &ak("aspects.0")).unwrap(), Some(Value::Set([s("created.0"), s("t:reg.0")].into_iter().collect())));
     group(e, g1, &[x], &[]);
     group(e, g2, &[], &[g1]);
     group(e, g1, &[x], &[g2]); // a cycle
     assert_eq!(e.groups_of(&x), BTreeSet::from([g1, g2]));
-    assert_eq!(e.get(&x, &ak("/groups")).unwrap(), Some(Value::Set([Value::Tid(g1), Value::Tid(g2)].into_iter().collect())));
+    assert_eq!(e.get(&x, &ak("groups.0")).unwrap(), Some(Value::Set([Value::Tid(g1), Value::Tid(g2)].into_iter().collect())));
     group(e, g1, &[], &[g2]);
     assert!(e.groups_of(&x).is_empty());
     group(e, g1, &[x], &[]);
@@ -41,7 +41,7 @@ fn synthetic_aspects_spec_dm_8() {
 }
 
 // spec/permissions.md §7: a move copies T into M under a new owner with T's history imported
-// (dots re-sourced, ts kept), `/was` on M; the old owner's `/moved`; reads resolve references
+// (dots re-sourced, ts kept), `was.0` on M; the old owner's `moved.0`; reads resolve references
 // by the referencing thing's owner chain; a second import is refused.
 #[test]
 fn move_and_resolve_spec_perm_7() {
@@ -65,10 +65,10 @@ fn move_and_resolve_spec_perm_7() {
     let (copy, imports) = lp.peers[1].engine.move_thing(&t, b).unwrap();
     assert!(!imports.is_empty());
     let e1 = &mut lp.peers[1].engine;
-    for k in ["/t/tags", "/t/text", "/t/reg"] {
+    for k in ["t:tags.0", "t:text.0", "t:reg.0"] {
         assert_eq!(e1.get(&copy, &ak(k)).unwrap(), e1.get(&t, &ak(k)).unwrap(), "{k}");
     }
-    assert_eq!(e1.get(&copy, &ak("/was")).unwrap(), Some(Value::Tid(t)));
+    assert_eq!(e1.get(&copy, &ak("was.0")).unwrap(), Some(Value::Tid(t)));
     assert!(matches!(e1.move_thing(&t, b), Err(osis_node::Error::Misuse(_))));
     // the copy continues to accept writes
     let mut m = Mutation::new();
@@ -79,19 +79,19 @@ fn move_and_resolve_spec_perm_7() {
     let mut m = Mutation::new();
     let r = e1.new_thing(&mut m, me1);
     m.set(r, &REG, &Value::Tid(t)).unwrap_err();
-    m.set(r, &ak("/x/ref"), &Value::Tid(t)).unwrap();
+    m.set(r, &ak("x:ref.0"), &Value::Tid(t)).unwrap();
     e1.commit(m).unwrap();
-    assert_eq!(e1.get(&r, &ak("/x/ref")).unwrap(), Some(Value::Tid(copy)));
-    // the old owner points T at the copy; elsewhere references resolve through `/moved`
+    assert_eq!(e1.get(&r, &ak("x:ref.0")).unwrap(), Some(Value::Tid(copy)));
+    // the old owner points T at the copy; elsewhere references resolve through `moved.0`
     let mut m = Mutation::new();
     m.set(t, &ct::MOVED, &copy).unwrap();
     lp.peers[0].commit(m).unwrap();
     lp.sync_all().unwrap();
     let e2 = &mut lp.peers[2].engine;
-    assert_eq!(e2.get(&copy, &ak("/t/tags")).unwrap(), lp.peers[1].engine.get(&copy, &ak("/t/tags")).unwrap());
+    assert_eq!(e2.get(&copy, &ak("t:tags.0")).unwrap(), lp.peers[1].engine.get(&copy, &ak("t:tags.0")).unwrap());
     assert_eq!(lp.peers[2].engine.resolve(&lp.peers[2].engine.tid(), &t), copy);
     // imports are idempotent: the same dots whoever imports (spec/permissions.md §7)
-    assert_eq!(lp.peers[1].engine.state(&copy, &ak("/t/text")).unwrap(), lp.peers[2].engine.state(&copy, &ak("/t/text")).unwrap());
+    assert_eq!(lp.peers[1].engine.state(&copy, &ak("t:text.0")).unwrap(), lp.peers[2].engine.state(&copy, &ak("t:text.0")).unwrap());
 }
 
 // spec/permissions.md §7 (origins: snapshots, whose carried writes are imported): after a
@@ -112,9 +112,9 @@ fn move_imports_from_snapshot_spec_perm_7() {
     let mut m = Mutation::new();
     m.op(t, &TAGS, PathOp { path: Vec::new(), op: Op::Remove(s("a")) }).unwrap();
     bodies.push(lp.peers[0].commit(m).unwrap().unwrap());
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/tags")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:tags.0")).unwrap().unwrap();
     for c in &bodies {
-        lp.peers[0].engine.drop_body(c, &t, &ak("/t/tags")).unwrap();
+        lp.peers[0].engine.drop_body(c, &t, &ak("t:tags.0")).unwrap();
     }
     lp.advance(10);
     let mut m = Mutation::new();
@@ -124,14 +124,14 @@ fn move_imports_from_snapshot_spec_perm_7() {
     let me = lp.peers[0].engine.tid();
     let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
     let e = &mut lp.peers[0].engine;
-    assert_eq!(e.get(&copy, &ak("/t/tags")).unwrap(), e.get(&t, &ak("/t/tags")).unwrap());
-    assert_eq!(e.get(&copy, &ak("/t/tags")).unwrap(), Some(Value::Set([s("c"), s("d")].into_iter().collect())));
+    assert_eq!(e.get(&copy, &ak("t:tags.0")).unwrap(), e.get(&t, &ak("t:tags.0")).unwrap());
+    assert_eq!(e.get(&copy, &ak("t:tags.0")).unwrap(), Some(Value::Set([s("c"), s("d")].into_iter().collect())));
     let from_snap = imports.iter().find(|i| e.header(i).unwrap().origins.first().map(|o| o.commit) == Some(snap)).expect("an import from the snapshot");
     let h = e.header(from_snap).unwrap();
     assert!(h.aspects[0].schema.is_some() && !h.schemas.is_empty(), "the origin's schema");
     sync(&mut lp, 0, 1);
-    assert_eq!(lp.peers[1].engine.get(&copy, &ak("/t/tags")).unwrap(), lp.peers[0].engine.get(&copy, &ak("/t/tags")).unwrap());
-    assert_eq!(lp.peers[1].engine.state(&copy, &ak("/t/tags")).unwrap(), lp.peers[0].engine.state(&copy, &ak("/t/tags")).unwrap());
+    assert_eq!(lp.peers[1].engine.get(&copy, &ak("t:tags.0")).unwrap(), lp.peers[0].engine.get(&copy, &ak("t:tags.0")).unwrap());
+    assert_eq!(lp.peers[1].engine.state(&copy, &ak("t:tags.0")).unwrap(), lp.peers[0].engine.state(&copy, &ak("t:tags.0")).unwrap());
 }
 
 // notes/architecture.md §3: diagnostics are deduped.

@@ -29,7 +29,7 @@ pub fn person(b: u8) -> ActorEpochs {
     a
 }
 
-/// `/keys` of an actor from its newest held secrets.
+/// `keys.0` of an actor from its newest held secrets.
 pub fn keys_of(a: &ActorEpochs) -> Keys {
     let mut k = Keys::default();
     for r in ROLES {

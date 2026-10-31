@@ -415,7 +415,7 @@ fn history_box_poison_refused_spec_crypto_4() {
     assert!(gv.read.held_established().all(|(e, _)| !planted.contains(&e)));
 }
 
-// spec/crypto.md §4: `/keys` vouches for no secret: a writer's bogus keyset at an existing
+// spec/crypto.md §4: `keys.0` vouches for no secret: a writer's bogus keyset at an existing
 // epoch (applied valid) recorded before or after the genuine box drops nothing.
 #[test]
 fn bogus_keyset_drops_nothing_spec_crypto_4() {

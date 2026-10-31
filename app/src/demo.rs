@@ -1,5 +1,5 @@
 //! Demo data (`osis-app DIR --demo`): tags, people, notes and events to play with, written once
-//! per person (marked `/osis-app/demo` on the app group).
+//! per person (marked `osis_app:demo.0` on the app group).
 
 use crate::contact::{EMAILS, Labeled, ORG, Org, PHONES};
 use crate::data::Data;

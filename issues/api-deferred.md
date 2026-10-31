@@ -4,7 +4,7 @@
 
 Repro: osis-cli `unbuilt_commands_report_unsupported_plan_cli_4` (the CLI reports them unsupported); no failing test.
 
-- **Queries and backlinks** (`query(in_group, with, order, page) -> Live`, `backlinks(tid)`): need local rebuildable indexes per aspect (notes/local-store.md) and a live result over the dispatcher; a design pass first (notes/api.md, Open). Apps list group items with `get(g, /group)` plus per-thing reads meanwhile (O(items) per change); `Osis::created(t)` gives a sort time. The CLI's `ls`/`backlinks` report Unsupported.
+- **Queries and backlinks** (`query(in_group, with, order, page) -> Live`, `backlinks(tid)`): need local rebuildable indexes per aspect (notes/local-store.md) and a live result over the dispatcher; a design pass first (notes/api.md, Open). Apps list group items with `get(g, group.0)` plus per-thing reads meanwhile (O(items) per change); `Osis::created(t)` gives a sort time. The CLI's `ls`/`backlinks` report Unsupported.
 - **`undelete` and text cut/paste**: a deleted text range is named by its elements' dots, which no visible range reaches, so an API needs an opaque clipboard handle remembered across edits (`cut(range) -> Clip`, `paste(clip, at)`: a move plus undelete when the clipboard still matches, notes/crdt.md; osis-crdt's `Op::Paste` exists). Workaround: undo.
 - **`sync_policy` heartbeats**: `sync_policy(group, GroupPolicy { publish_reach })` exists (stored per group in node-sync); a per-group `heartbeats` field is not built (`SyncConfig.heartbeats` is per node and read in `sync/pass/`), so `osis group policy` (CLI) still reports Unsupported.
 - **Bearer `open_link`**: read-only use of a link without an account (flows' `bear` exists).

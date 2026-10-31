@@ -323,7 +323,7 @@ fn edge_first_then_placement_then_unplace_removes_it() {
 }
 
 // spec/permissions.md §2 (held dead), spec/crdt.md §4.2, §5.5: while Alice and Bob are offline,
-// Carol unplaces the card and then replaces the tag's whole `/group`: the reset prunes the placement's tombstone, so the
+// Carol unplaces the card and then replaces the tag's whole `group.0`: the reset prunes the placement's tombstone, so the
 // others never see the element; absent under a later reset counts as dead, and the edge goes.
 #[test]
 fn placement_pruned_by_a_reset_counts_as_gone() {
@@ -396,7 +396,7 @@ fn group_holders_learn_edge_removal() {
         assert_eq!(reach_of(db, t, g).map(|r| r.share), Some(Share::Excluded));
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
-    // the placement carries no `/keys` or `/secrets` of the card: its refreshed deposit seed
+    // the placement carries no `keys.0` or `secrets.0` of the card: its refreshed deposit seed
     // is for its remaining holders
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
     assert_ne!(seed(&carol), seed(&bob), "Carol does not learn the new one");
@@ -424,7 +424,7 @@ fn inherited_inbox_opens() {
 
 // spec/permissions.md §2 (a node that applied a removal of G's edge on a thing in G's closure
 // places it under G's labels): Dave, admin of Bob's card through his tag H only (he syncs no
-// label holding the tag G and holds no `/keys` of G, so no inbox blob goes), removes G's edge on
+// label holding the tag G and holds no `keys.0` of G, so no inbox blob goes), removes G's edge on
 // the card placed in G and H; Alice, G's admin, learns it through H and places it under G's
 // label, so Carol learns it too (before, she uploaded the card's bodies Alice deleted there
 // again on every pass), and not the card's new deposit seed.

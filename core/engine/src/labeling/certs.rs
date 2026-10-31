@@ -11,7 +11,7 @@ use osis_base::{Ak, BlobId, CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects a node card holds (each its own commit, spec/permissions.md §4).
-const CARD: [&str; 3] = ["/keys", "/node", "/reach"];
+const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
 
 /// Parts of a commit: (aspect index, delta index).
 pub type Parts = BTreeSet<(usize, usize)>;
@@ -48,7 +48,7 @@ impl Engine {
     }
 
     /// The newest held commit writing `(tid, ak)` with the indexes of its deltas on it (a
-    /// grantee's certificate copy names a thing's `/label` and `/created`, spec/sync.md §3).
+    /// grantee's certificate copy names a thing's `label.0` and `created.0`, spec/sync.md §3).
     pub fn aspect_commit(&self, tid: &Tid, ak: &str) -> Option<(CommitId, BTreeSet<usize>)> {
         let c = self.latest_on(tid, ak)?;
         let h = self.header(&c)?;
@@ -56,8 +56,8 @@ impl Engine {
         Some((c, ais))
     }
 
-    /// The holders each `/members` or `/secrets` aspect of applied role commit `c` is
-    /// about (spec/sync.md §3): those whose edge a `/members` delta writes, those a `/secrets`
+    /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
+    /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
     pub fn holders_named(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
         let mut out: BTreeMap<usize, BTreeSet<Tid>> = BTreeMap::new();
@@ -66,12 +66,12 @@ impl Engine {
             return out;
         }
         let id = *c;
-        let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/secrets"));
+        let keep = |ai: usize| h.aspects.get(ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0"));
         let Ok(parts) = self.run(|tx| crate::apply::held_parts_at(tx, &id, &keep)) else { return out };
         for (ai, _, d) in parts {
             let (Some(a), Decoded::Delta(d)) = (h.aspects.get(ai), &d) else { continue };
             let named: Vec<Tid> = match a.ak.as_str() {
-                "/members" => crate::apply::validity::edge_holders(&self.core, &a.tid, &d.fragment),
+                "roles.0" => crate::apply::validity::edge_holders(&self.core, &a.tid, &d.fragment),
                 _ => crate::apply::keys::secrets_write(&d.fragment).boxes.into_keys().map(|k| k.holder).collect(),
             };
             out.entry(ai).or_default().extend(named);
@@ -80,11 +80,11 @@ impl Engine {
     }
 
     /// Whether commit `c` gave this node a read secret of `t` (an inbox payload's label is
-    /// followed only for such a thing, spec/sync.md §3): applied with a valid `/secrets` delta
+    /// followed only for such a thing, spec/sync.md §3): applied with a valid `secrets.0` delta
     /// on `t`, or held pending with a reading-only read candidate from it (its box opened).
     pub fn boxed_by(&self, c: &CommitId, t: &Tid) -> bool {
         if let Some(m) = self.core.ix.commits.get(c) {
-            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "/secrets" && m.valid.get(i).copied().unwrap_or(false));
+            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "secrets.0" && m.valid.get(i).copied().unwrap_or(false));
         }
         self.core.ix.pending.contains_key(c)
             && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
@@ -94,7 +94,7 @@ impl Engine {
     /// those naming one of `holders`, and those naming nobody (the reset alone). None when the
     /// commit cannot be read here (diagnostic): never the whole roster.
     pub(crate) fn snapshot_parts(&mut self, c: &CommitId, things: &BTreeSet<Tid>, holders: &BTreeSet<Tid>) -> Parts {
-        let all = self.parts_of(c, things, &["/members", "/tenures"]);
+        let all = self.parts_of(c, things, &["roles.0", "tenures.0"]);
         let ais: BTreeSet<usize> = all.iter().map(|x| x.0).collect();
         let id = *c;
         let read = match self.header(c) {
@@ -128,20 +128,20 @@ impl Engine {
             }
         };
         let mine = BTreeSet::from([me]);
-        for ak in CARD.iter().chain(["/created"].iter()) {
+        for ak in CARD.iter().chain(["created.0"].iter()) {
             if let Some(c) = self.latest_on(&me, ak) {
                 add(c, self.parts_of(&c, &mine, &[ak]));
             }
         }
-        // the owner chain's `/created` records
+        // the owner chain's `created.0` records
         let mut cur = Some(*g);
         let mut seen = BTreeSet::new();
         while let Some(t) = cur {
             if !seen.insert(t) {
                 break;
             }
-            if let Some(c) = self.latest_on(&t, "/created") {
-                add(c, self.parts_of(&c, &BTreeSet::from([t]), &["/created"]));
+            if let Some(c) = self.latest_on(&t, "created.0") {
+                add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
             cur = match self.core.created(&t) {
                 Some(CreationRecord::Thing { owner, .. }) => Some(*owner),
@@ -201,7 +201,7 @@ impl Engine {
 
     /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
     /// edge writes projected to their edge deltas on the chain's things, roster snapshots to
-    /// their holders' entries, the newest `/created` of each thing and `/keys` of each actor.
+    /// their holders' entries, the newest `created.0` of each thing and `keys.0` of each actor.
     fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
@@ -210,19 +210,19 @@ impl Engine {
         };
         let all: BTreeSet<Tid> = certs.created.iter().copied().collect();
         for c in &certs.commits {
-            add(*c, self.parts_of(c, &all, &["/members", "/tenures"]));
+            add(*c, self.parts_of(c, &all, &["roles.0", "tenures.0"]));
         }
         for (c, holders) in &certs.snapshots {
             add(*c, self.snapshot_parts(c, &all, holders));
         }
         for t in &certs.created {
-            if let Some(c) = self.latest_on(t, "/created") {
-                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["/created"]));
+            if let Some(c) = self.latest_on(t, "created.0") {
+                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["created.0"]));
             }
         }
         for t in &certs.keys {
-            if let Some(c) = self.latest_on(t, "/keys") {
-                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["/keys"]));
+            if let Some(c) = self.latest_on(t, "keys.0") {
+                add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
     }
@@ -230,8 +230,8 @@ impl Engine {
     /// Revokes of the departures inside holders of `actor` that leave its epochs uncovered now
     /// (`rotation::uncovered_departures`: a departure from M, the last actor on its chain, with
     /// secrets of its own and outside `closure`; the newest applied write lowering the departed
-    /// holder's edge on M), each the whole write on M with what judges it, and the newest `/keys`
-    /// commit of each actor on the chain, projected to that `/keys`, with its author's chain: the only
+    /// holder's edge on M), each the whole write on M with what judges it, and the newest `keys.0`
+    /// commit of each actor on the chain, projected to that `keys.0`, with its author's chain: the only
     /// certificates a node that may not rotate places under such an epoch (spec/permissions.md
     /// §4). A departure by `until` has no write and places only the keysets.
     pub fn inside_holder_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
@@ -248,7 +248,7 @@ impl Engine {
                 continue;
             }
             // each actor on the chain's newest keyset: a rotator holding none of its secrets seals
-            // to it, and one rotated apart from the departure write is known only from its `/keys`
+            // to it, and one rotated apart from the departure write is known only from its `keys.0`
             keyed.extend(d.via.iter().filter(|t| !closure.contains(t)).copied());
             let Some(tl) = self.core.timelines.get(&m) else { continue };
             let mut newest: Option<(osis_base::Ts, osis_perm::WriteId, CommitId)> = None;
@@ -278,22 +278,22 @@ impl Engine {
             self.cert_parts(cs, &mut out);
         }
         for t in keyed {
-            let Some(c) = self.latest_on(&t, "/keys") else { continue };
+            let Some(c) = self.latest_on(&t, "keys.0") else { continue };
             if whole.contains(&(c, t)) {
                 continue;
             }
-            // its `/keys` delta, like a chain certificate's (not its boxes: a covered removal
+            // its `keys.0` delta, like a chain certificate's (not its boxes: a covered removal
             // that rotated it stays unplaced as a whole write)
-            let p = self.parts_of(&c, &BTreeSet::from([t]), &["/keys"]);
+            let p = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
             for (x, q) in self.author_chain(&c, &p).unwrap_or_default() {
                 out.entry(x).or_default().extend(q);
             }
             out.entry(c).or_default().extend(p);
         }
-        // the whole write on M (its rotation's `/keys` and `/secrets` too: boxes sealed to M's
+        // the whole write on M (its rotation's `keys.0` and `secrets.0` too: boxes sealed to M's
         // holders): a reader that syncs M waits for every delta of it (spec/commits.md §4)
         for (c, m) in whole {
-            let p = self.parts_of(&c, &BTreeSet::from([m]), &["/members", "/tenures", "/keys", "/secrets"]);
+            let p = self.parts_of(&c, &BTreeSet::from([m]), &["roles.0", "tenures.0", "keys.0", "secrets.0"]);
             if !p.is_empty() {
                 out.entry(c).or_default().extend(p);
             }
@@ -313,7 +313,7 @@ impl Engine {
         if !m.header.kind.is_role() {
             return true;
         }
-        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/tenures")).map(|a| a.tid).collect();
+        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")).map(|a| a.tid).collect();
         targets.iter().all(|t| {
             let Some(tl) = self.core.timelines.get(t) else { return true };
             let Some(mc) = tl.role_commit(c) else { return true };
@@ -367,8 +367,8 @@ impl Engine {
     /// (spec/permissions.md §2, §4): `x`'s holders still holding the edge would re-upload the
     /// thing's bodies its delete-key holders drop. Also the commits whose own parts these are:
     /// placed though inside the closure (the label no longer carries them as bodies). Never a
-    /// `/secrets` or `/keys` delta of such a commit (`cert_parts` takes its `/members` and
-    /// `/tenures`).
+    /// `secrets.0` or `keys.0` delta of such a commit (`cert_parts` takes its `roles.0` and
+    /// `tenures.0`).
     pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> (BTreeMap<CommitId, Parts>, BTreeSet<CommitId>) {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         let mut own = BTreeSet::new();
@@ -396,11 +396,11 @@ impl Engine {
         for cs in &found {
             self.cert_parts(cs, &mut out);
         }
-        // the thing's newest `/keys` is often the removal's own (its fresh deposit seed)
+        // the thing's newest `keys.0` is often the removal's own (its fresh deposit seed)
         for c in &own {
             let Some(h) = self.header(c) else { continue };
             if let Some(p) = out.get_mut(c) {
-                p.retain(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+                p.retain(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
             }
         }
         (out, own)
@@ -485,7 +485,7 @@ mod tests {
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let b = lp.peers[1].engine.tid();
-        let ak = Ak::new("/x/a").unwrap();
+        let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &ak, &Value::Int(1)).unwrap();
@@ -502,7 +502,7 @@ mod tests {
         lp.sync(1, 2).unwrap();
         let e = &lp.peers[2].engine;
         assert!(e.header(&bad).is_some_and(|h| h.ts > e.header(&good).unwrap().ts), "the reader's write is held, later");
-        assert_eq!(e.latest_by(&t, "/x/a", None), Some(good));
-        assert_eq!(e.latest_by(&t, "/x/a", Some(&b)), None);
+        assert_eq!(e.latest_by(&t, "x:a.0", None), Some(good));
+        assert_eq!(e.latest_by(&t, "x:a.0", Some(&b)), None);
     }
 }

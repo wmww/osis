@@ -467,7 +467,7 @@ impl Net {
                     }
                 }
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
-                // peers are found by their current `/reach`
+                // peers are found by their current `reach.0`
                 Action::Reach => {}
             }
         }
@@ -640,7 +640,7 @@ impl Net {
     }
 
     /// A content thing in group `g` written by node `n`: created under `owner`, listed in
-    /// `/group` of `g`.
+    /// `group.0` of `g`.
     pub fn item(&mut self, n: usize, g: Tid, owner: Tid, v: &str) -> Tid {
         let e = self.engine(n);
         let mut m = Mutation::new();
@@ -723,27 +723,27 @@ pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 schema 0x0123456789abcdef0123456789abcdee;
 revision 1;
-aspect /t/reg: string;
-aspect /t/gone: string [by: writer, keep_at_most: 1h];
-aspect /t/brief: string [expires: 1h];
-aspect /t/blob: blob;
-aspect /t/big: map<string, string>;
-aspect /t/gonemap: map<string, string> [by: writer, keep_at_most: 0s];
-aspect /t/shortmap: map<string, string> [by: writer, keep_at_most: 10m];
-aspect /t/gonetext: text [by: writer, keep_at_most: 0s];
-aspect /t/briefmap: map<string, string> [expires: 1h];
+aspect t:reg.0: string;
+aspect t:gone.0: string [by: writer, keep_at_most: 1h];
+aspect t:brief.0: string [expires: 1h];
+aspect t:blob.0: blob;
+aspect t:big.0: map<string, string>;
+aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
+aspect t:shortmap.0: map<string, string> [by: writer, keep_at_most: 10m];
+aspect t:gonetext.0: text [by: writer, keep_at_most: 0s];
+aspect t:briefmap.0: map<string, string> [expires: 1h];
 "#,
 );
 
-pub const REG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/reg", &TEST);
-pub const GONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gone", &TEST);
-pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/brief", &TEST);
-pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/blob", &TEST);
-pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/big", &TEST);
-pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gonemap", &TEST);
-pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/shortmap", &TEST);
-pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/gonetext", &TEST);
-pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("/t/briefmap", &TEST);
+pub const REG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:reg.0", &TEST);
+pub const GONE: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gone.0", &TEST);
+pub const BRIEF: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:brief.0", &TEST);
+pub const BLOB: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:blob.0", &TEST);
+pub const BIG: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:big.0", &TEST);
+pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonemap.0", &TEST);
+pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:shortmap.0", &TEST);
+pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonetext.0", &TEST);
+pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:briefmap.0", &TEST);
 
 /// The signal parts fired among the events received so far: (thing, aspect, value, origin).
 pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, osis_node::Origin)> {
@@ -781,8 +781,8 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId
     let mut m = Mutation::new();
     let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
     // remove + put (spec/permissions.md §2)
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap()
 }
 
@@ -797,7 +797,7 @@ pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed
 /// (spec/permissions.md §3).
 pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
     let mut m = Mutation::new();
-    m.op(a, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(a, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     rotation_ops(e, &mut m, a, recipients, rng, false);
     e.commit(m).unwrap().unwrap()
 }

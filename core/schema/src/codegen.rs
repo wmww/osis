@@ -12,6 +12,7 @@
 use crate::error::Error;
 use crate::schema::Schema;
 use crate::types::Type;
+use osis_base::Ak;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write;
 
@@ -37,10 +38,10 @@ pub fn generate(schema: &Schema, file: &str, src: &str) -> Result<Generated, Err
     for (name, def) in &schema.types {
         g.items.push(Item { rust: camel(name), schema_name: Some(name.clone()), params: def.params.clone(), body: def.body.clone(), doc: def.doc.clone() });
     }
-    let prefix = common_namespace(schema.aspects.keys());
+    let drop_first = shared_first_segment(schema.aspects.keys());
     let mut consts = String::new();
     for (ak, def) in &schema.aspects {
-        let cname = const_name(ak, prefix.as_deref());
+        let cname = const_name(ak, drop_first);
         let t = g.rust_type(&def.ty, &camel(&cname.to_lowercase()), false)?;
         if let Some(d) = &def.doc {
             doc_lines(&mut consts, d, "");
@@ -305,28 +306,33 @@ fn field_ident(name: &str) -> String {
     }
 }
 
-/// The first AK segment shared by every key, if any.
-fn common_namespace<'a>(keys: impl Iterator<Item = &'a String>) -> Option<String> {
-    let mut ns: Option<&str> = None;
+/// Whether every key shares its first name segment (dropped from the constant names then).
+fn shared_first_segment<'a>(keys: impl Iterator<Item = &'a String>) -> bool {
+    let mut first: Option<String> = None;
     for k in keys {
-        let first = k.trim_start_matches('/').split('/').next().unwrap_or("");
-        match ns {
-            None => ns = Some(first),
-            Some(n) if n == first => {}
-            Some(_) => return None,
+        let f = Ak::new(k.as_str()).ok().and_then(|a| a.segments().next().map(str::to_string)).unwrap_or_default();
+        match &first {
+            None => first = Some(f),
+            Some(x) if *x == f => {}
+            Some(_) => return false,
         }
     }
-    ns.map(str::to_string)
+    first.is_some()
 }
 
-/// `/note/last_opened` → `LAST_OPENED` (namespace dropped when shared).
-fn const_name(ak: &str, prefix: Option<&str>) -> String {
-    let mut segs: Vec<&str> = ak.trim_start_matches('/').split('/').collect();
-    if prefix.is_some() && segs.len() > 1 {
+/// `note:last_opened.0` → `LAST_OPENED` (shared first segment dropped); a later version adds
+/// `_V<n>`.
+fn const_name(ak: &str, drop_first: bool) -> String {
+    let a = Ak::new(ak).ok();
+    let mut segs: Vec<&str> = a.as_ref().map(|a| a.segments().collect()).unwrap_or_default();
+    if drop_first && segs.len() > 1 {
         segs.remove(0);
     }
-    let s: String = segs.join("_").chars().map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' }).collect();
-    if s.starts_with(|c: char| c.is_ascii_digit()) { format!("A_{s}") } else { s }
+    let mut s: String = segs.join("_").to_ascii_uppercase();
+    if let Some(v) = a.as_ref().map(Ak::version).filter(|v| *v > 0) {
+        let _ = write!(s, "_V{v}");
+    }
+    s
 }
 
 fn doc_lines(out: &mut String, doc: &str, indent: &str) {

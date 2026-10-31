@@ -126,7 +126,7 @@ pub enum Cmd {
         #[arg(long, value_name = "FILE")]
         key: Option<PathBuf>,
     },
-    /// Create a thing, optionally setting aspects: create --owner me --in home /note/title '"x"'
+    /// Create a thing, optionally setting aspects: create --owner me --in home note:title.0 '"x"'
     Create(CreateArgs),
     /// Read an aspect (or a path in it); absent exits 3
     Get {
@@ -370,7 +370,7 @@ pub struct CreateArgs {
     pub owner: String,
     #[command(flatten)]
     pub place: PlaceArgs,
-    /// Give it an empty /group
+    /// Give it an empty group.0
     #[arg(long)]
     pub group: bool,
     /// Bind $NAME to the new tid (write scripts)

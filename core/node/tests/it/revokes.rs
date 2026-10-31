@@ -63,7 +63,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
 
 // spec/permissions.md §4 (exception to spec/crypto.md §4: a holder that may not rotate the
 // label's actor places the revoke of a departure inside a holder, the write on the last actor of
-// its chain, and each chain actor's newest `/keys`): G <- X1 <- X2 <- {W, R}; X2's admin B, who
+// its chain, and each chain actor's newest `keys.0`): G <- X1 <- X2 <- {W, R}; X2's admin B, who
 // does not sync G, removes W from X2 and rotates X2 and X1 (apart); R reads G through two levels,
 // may not rotate it, and places W's removal from X2 and X1's new keys under G's label; G's admin
 // rotates, sealing to X1's new keyset, and W reads nothing new.

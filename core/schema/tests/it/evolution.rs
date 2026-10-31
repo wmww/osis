@@ -9,12 +9,12 @@ const BASE: &str = "\
 type t = struct { 0 a: int, 1 b: string = \"x\", 2 c: option<int>, reserved 5 };
 type e = enum { 0 x, 1 y(int), reserved 7 };
 type tree = struct { 0 kids: list<tree>, 1 n: int };
-aspect /n/a: t;
-aspect /n/n: int;
-aspect /n/s: string;
-aspect /n/e: e;
-aspect /n/tree: tree;
-aspect /n/sig: int [signal];
+aspect n:a.0: t;
+aspect n:n.0: int;
+aspect n:s.0: string;
+aspect n:e.0: e;
+aspect n:tree.0: tree;
+aspect n:sig.0*: int [signal];
 ";
 
 fn schema(id: &str, rev: u64, body: &str) -> Schema {
@@ -61,7 +61,7 @@ fn from_value_rejects_bad_forms() {
     assert!(Schema::from_value(&Value::Int(1)).is_err());
     // Typed but invalid: an aspect naming an unknown type.
     let mut s = schema(ID, 1, BASE);
-    s.aspects.get_mut("/n/n").unwrap().ty = Type::named("nope");
+    s.aspects.get_mut("n:n.0").unwrap().ty = Type::named("nope");
     let e = Schema::from_value(&s.to_value()).unwrap_err();
     assert!(e.to_string().contains("unknown type nope"), "{e}");
     // A short schema ID.
@@ -77,7 +77,7 @@ fn lock_file_round_trip_and_tamper() {
     let lock = Lock::parse(&text).unwrap();
     assert_eq!(lock.schema, s);
     assert_eq!(check_lock(&s, &lock, &[]).unwrap(), LockStatus::Published);
-    let s2 = schema(ID, 2, &format!("{BASE}aspect /n/new: int;"));
+    let s2 = schema(ID, 2, &format!("{BASE}aspect n:new.0: int;"));
     assert_eq!(check_lock(&s2, &lock, &[]).unwrap(), LockStatus::Unpublished);
     let bad = text.replacen("hash 0", "hash 1", 1).replacen("hash 1", "hash 2", 1);
     let tampered = if bad == text { text.replace("osis-lock 1\nhash ", "osis-lock 1\nhash ff") } else { bad };
@@ -91,19 +91,19 @@ fn additive_changes_pass_spec_versioning_4() {
         ("reserved 5 }", "reserved 5, 3 d: int = 0, 4 o: option<string> }"),
         ("reserved 7 }", "reserved 7, 2 z(string) }"),
         ("0 a: int", "0 renamed: int"),
-        ("aspect /n/n: int;", "aspect /n/n: counter<int>;"),
-        ("aspect /n/n: int;", "aspect /n/n: max<int>;"),
-        ("aspect /n/s: string;", "aspect /n/s: text;"),
-        ("aspect /n/s: string;", "aspect /n/s: markdown;"),
+        ("aspect n:n.0: int;", "aspect n:n.0: counter<int>;"),
+        ("aspect n:n.0: int;", "aspect n:n.0: max<int>;"),
+        ("aspect n:s.0: string;", "aspect n:s.0: text;"),
+        ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
         ("2 c: option<int>, reserved 5", "reserved (2, 5)"),
-        ("aspect /n/n: int;", "/// Docs change freely.\naspect /n/n: int [indexed, by: admin, expires: 1d];"),
-        ("aspect /n/sig: int [signal];", "aspect /n/sig: int [signal];\naspect /n/more: set<tid>;"),
+        ("aspect n:n.0: int;", "/// Docs change freely.\naspect n:n.0: int [indexed, by: admin, expires: 1d];"),
+        ("aspect n:sig.0*: int [signal];", "aspect n:sig.0*: int [signal];\naspect n:more.0: set<tid>;"),
         ("type t = struct", "type t2 = struct { 0 q: int };\ntype t = struct"),
     ] {
         assert_eq!(rules(from, to), vec![], "{to}");
     }
     // Aliases compare structurally.
-    assert_eq!(rules("aspect /n/n: int;", "type i = int;\naspect /n/n: timestamp;"), vec![]);
+    assert_eq!(rules("aspect n:n.0: int;", "type i = int;\naspect n:n.0: timestamp;"), vec![]);
     assert_eq!(check(&schema(ID, 1, BASE), &schema(ID, 1, BASE)), vec![]);
 }
 
@@ -120,9 +120,9 @@ fn each_rule_is_enforced_spec_versioning_4() {
         ("0 x, ", "", vec![CaseRemoved]),
         ("0 x, 1 y(int), reserved 7", "1 y(int), reserved (0, 7)", vec![CaseRemoved]),
         ("0 a: int", "0 a: string", vec![TypeChanged]),
-        ("aspect /n/n: int;", "aspect /n/n: string;", vec![TypeChanged]),
-        ("aspect /n/s: string;", "aspect /n/s: counter<int>;", vec![TypeChanged]),
-        ("aspect /n/n: int;", "aspect /n/n: counter<float>;", vec![TypeChanged]),
+        ("aspect n:n.0: int;", "aspect n:n.0: string;", vec![TypeChanged]),
+        ("aspect n:s.0: string;", "aspect n:s.0: counter<int>;", vec![TypeChanged]),
+        ("aspect n:n.0: int;", "aspect n:n.0: counter<float>;", vec![TypeChanged]),
         ("1 y(int)", "1 y(string)", vec![TypeChanged]),
         ("0 x,", "0 x(int),", vec![TypeChanged]),
         ("1 y(int)", "1 y", vec![TypeChanged]),
@@ -132,14 +132,14 @@ fn each_rule_is_enforced_spec_versioning_4() {
         ("b: string = \"x\"", "b: string", vec![DefaultChanged]),
         ("2 c: option<int>", "2 c: option<int> = some(1)", vec![DefaultChanged]),
         ("0 a: int", "0 a: int = 0", vec![DefaultAdded]),
-        ("aspect /n/e: e;\n", "", vec![AspectRemoved]),
-        ("aspect /n/sig: int [signal];\n", "", vec![AspectRemoved]),
+        ("aspect n:e.0: e;\n", "", vec![AspectRemoved]),
+        ("aspect n:sig.0*: int [signal];\n", "", vec![AspectRemoved]),
     ] {
         assert_eq!(rules(from, to), want, "{from} -> {to}");
     }
     // Encodings only move up the embedding edge.
-    let old = schema(ID, 1, "aspect /n/n: counter<int>;\naspect /n/s: text;");
-    let new = schema(ID, 2, "aspect /n/n: int;\naspect /n/s: string;");
+    let old = schema(ID, 1, "aspect n:n.0: counter<int>;\naspect n:s.0: text;");
+    let new = schema(ID, 2, "aspect n:n.0: int;\naspect n:s.0: string;");
     assert_eq!(check(&old, &new).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![TypeChanged, TypeChanged]);
 }
 
@@ -148,7 +148,7 @@ fn identity_and_revision_rules_spec_versioning_4() {
     let old = schema(ID, 3, BASE);
     let other = schema("ffffffffffffffffffffffffffffff00", 4, BASE);
     assert_eq!(check(&old, &other).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::SchemaIdChanged]);
-    let changed = schema(ID, 3, &format!("{BASE}aspect /n/z: int;"));
+    let changed = schema(ID, 3, &format!("{BASE}aspect n:z.0: int;"));
     assert_eq!(check(&old, &changed).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
     let lower = schema(ID, 2, BASE);
     assert_eq!(check(&old, &lower).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
@@ -169,9 +169,9 @@ fn default_added_passes_only_when_marked() {
 
 #[test]
 fn parametric_types_compare_positionally() {
-    let old = schema(ID, 1, "type p<A> = struct { 0 v: A };\naspect /n/p: p<int>;");
-    let new = schema(ID, 2, "type p<B> = struct { 0 v: B, 1 w: option<B> };\naspect /n/p: p<int>;");
+    let old = schema(ID, 1, "type p<A> = struct { 0 v: A };\naspect n:p.0: p<int>;");
+    let new = schema(ID, 2, "type p<B> = struct { 0 v: B, 1 w: option<B> };\naspect n:p.0: p<int>;");
     assert_eq!(check(&old, &new), vec![]);
-    let new = schema(ID, 2, "type p<B, C> = struct { 0 v: B };\naspect /n/p: p<int, int>;");
+    let new = schema(ID, 2, "type p<B, C> = struct { 0 v: B };\naspect n:p.0: p<int, int>;");
     assert_eq!(check(&old, &new).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::TypeChanged]);
 }

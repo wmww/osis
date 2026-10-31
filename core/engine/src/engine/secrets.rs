@@ -1,5 +1,5 @@
 //! Secrets the engine holds (spec/crypto.md §3–§4): the node's own role secrets, derived secrets
-//! of plain things, epochs of actors with secrets of their own opened from `/secrets` (kept
+//! of plain things, epochs of actors with secrets of their own opened from `secrets.0` (kept
 //! in the store per actor), dedup secrets from creation records, delete keys
 //! (spec/crypto.md §7), and the `Secrets` osis-commit asks for when building a commit.
 
@@ -86,7 +86,7 @@ impl Core {
 
     /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
     /// in `own_keys`, is no known thing, or, no keyset part of it held (`keyset_parts`), holds an epoch
-    /// established by an applied valid rotation or a held snapshot, a valid `/secrets` part or an
+    /// established by an applied valid rotation or a held snapshot, a valid `secrets.0` part or an
     /// inbox hint of its delete keys. Not by this node's own rotation alone: that commit may have
     /// turned invalid.
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
@@ -105,12 +105,12 @@ impl Core {
         (rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
     }
 
-    /// Whether a held role commit's `/secrets` part on `tid` is valid (only a thing with
-    /// secrets of its own has boxes: a grant whose target's `/keys` is not held yet).
+    /// Whether a held role commit's `secrets.0` part on `tid` is valid (only a thing with
+    /// secrets of its own has boxes: a grant whose target's `keys.0` is not held yet).
     fn valid_secrets_part(&self, tid: &Tid) -> bool {
-        let Ok(ak) = osis_base::Ak::new("/secrets") else { return false };
+        let Ok(ak) = osis_base::Ak::new("secrets.0") else { return false };
         self.ix.by_aspect.get(&(*tid, ak)).into_iter().flatten().any(|(_, c)| {
-            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "/secrets" && m.valid.get(ai).copied().unwrap_or(false)))
+            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "secrets.0" && m.valid.get(ai).copied().unwrap_or(false)))
         })
     }
 
@@ -192,7 +192,7 @@ impl Core {
         None
     }
 
-    /// Opens what `/secrets` of `actor` holds for this node or for actors it holds secrets of
+    /// Opens what `secrets.0` of `actor` holds for this node or for actors it holds secrets of
     /// (spec/crypto.md §4). `unchecked`: `None` when `secrets` is the applied valid state; the
     /// source for the boxes of a pending commit, whose secrets are kept for reading only.
     /// Returns whether anything new was learned.
@@ -226,7 +226,7 @@ impl Core {
         false
     }
 
-    /// `ingest_secrets` over the entries of `actor`'s `/secrets` state `st` that a change touched:
+    /// `ingest_secrets` over the entries of `actor`'s `secrets.0` state `st` that a change touched:
     /// the boxes keyed `boxes` and history boxes keyed `history` (key values), then the history
     /// box of every epoch with a secret held, repeatedly, as `open_histories` would reach them
     /// over the whole state. Boxes outside `boxes` were opened when they joined (an opener's new
@@ -305,7 +305,7 @@ impl Core {
         }
     }
 
-    /// Notes the `/keys` state of `actor`: its published delete keys replace any inbox hint, and
+    /// Notes the `keys.0` state of `actor`: its published delete keys replace any inbox hint, and
     /// the keysets' epochs and suites are recorded with its epochs. Whether it has secrets of its
     /// own is the parts' (`apply::keys::refresh_own_keys`), not the state's.
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
@@ -341,7 +341,7 @@ pub struct CommitSecrets<'c> {
     pub actor: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c crate::engine::write::Creates,
-    /// Delete keys published in `/keys` of delete bases whose secret of that role is not held
+    /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
     /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
 }
@@ -360,7 +360,7 @@ fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> O
     None
 }
 
-/// The admin and write delete keys published in `/keys` (spec/crypto.md §3, §7) of the delete
+/// The admin and write delete keys published in `keys.0` (spec/crypto.md §3, §7) of the delete
 /// bases of `tids` whose secret of that role this node does not hold: a writer that is no admin
 /// lists the admin one.
 pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::engine::write::Creates, tids: impl IntoIterator<Item = Tid>) -> Result<BTreeMap<(Tid, Role), VerifyingKey>> {
@@ -375,7 +375,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
         }
     }
     if !need.is_empty() {
-        // the keys an inbox payload named stand in until `/keys` arrives
+        // the keys an inbox payload named stand in until `keys.0` arrives
         tx.core.promote_hints();
     }
     let mut out = BTreeMap::new();
@@ -445,7 +445,7 @@ const MAX_HINT_COMMITS: usize = 64;
 impl Core {
     /// Keeps the hints of candidate commits that applied: a thing's hint only from a commit
     /// touching it with valid deltas, by an author with admin on it at the commit's `ts`, and
-    /// only while no hint and no `/keys` with keysets is held for it (the first stays).
+    /// only while no hint and no `keys.0` with keysets is held for it (the first stays).
     pub(crate) fn promote_hints(&mut self) {
         let applied: Vec<CommitId> = self.ix.hint_candidates.keys().filter(|c| self.ix.commits.contains_key(c)).copied().collect();
         for c in applied {
@@ -567,7 +567,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
 /// commits naming made-up actors cannot grow it without bound).
 pub(crate) const MAX_READING_ACTORS: usize = 64;
 
-/// The live entries of history keys holding several in a `/secrets` state (puts of one key by
+/// The live entries of history keys holding several in a `secrets.0` state (puts of one key by
 /// different writers): readers try each, so a newer entry does not hide the genuine box.
 pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
     let mut out = HistoryAlts::new();
@@ -588,7 +588,7 @@ pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
     out
 }
 
-/// The history-box map of a `/secrets` state.
+/// The history-box map of a `secrets.0` state.
 fn history_map(f: &osis_crdt::Fragment) -> Option<&osis_crdt::Map> {
     use osis_crdt::{Encoding, Fragment, SlotRef};
     let Some(SlotRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return None };
@@ -604,7 +604,7 @@ fn typed_as<T: osis_schema::Codec>(v: &Value, name: &str) -> Option<T> {
     T::from_value(&v).ok()
 }
 
-/// The keys of the box and history-box entries a `/secrets` delta (or snapshot) writes; `None`
+/// The keys of the box and history-box entries a `secrets.0` delta (or snapshot) writes; `None`
 /// when it writes the value, a field or a map whole (a reset): then every entry may change.
 pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, Vec<Value>)> {
     use osis_crdt::{Encoding, Fragment, SlotRef};
@@ -672,7 +672,7 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
     Ok(a)
 }
 
-/// The typed `/secrets` of a state value, if it reads as one. A map field never written (a
+/// The typed `secrets.0` of a state value, if it reads as one. A map field never written (a
 /// rotation that boxed nobody, a grant that carried no history box) reads as empty: the node
 /// otherwise lost every box and history box of the actor.
 pub(crate) fn secrets_value(v: &Value) -> Option<Secrets> {
@@ -720,7 +720,7 @@ mod tests {
         use osis_crdt::{Batch, Op, PathOp, PathSeg, Source, Writer};
         use osis_schema::Codec;
         let schema = osis_schema::core_schema();
-        let view = schema.view("/secrets").unwrap();
+        let view = schema.view("secrets.0").unwrap();
         let k = osis_schema::core_types::HistoryKey { role: Role::Read, epoch: osis_keys::aspects::to_schema(&Epoch::new(1, [1; 32]).unwrap()) };
         let mut st = osis_crdt::Fragment::default();
         for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {

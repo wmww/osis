@@ -34,7 +34,7 @@ pub struct Write<'d> {
     created: Vec<Tid>,
     /// Things placed into groups by this batch (the `NotSynced` check).
     placed: Vec<Tid>,
-    /// Per group whose `/group` this batch writes through the group calls: the expiry those
+    /// Per group whose `group.0` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
     group_exp: BTreeMap<Tid, Option<Duration>>,
     /// (thing, group) placements and subgroup edges this batch removes: their tied edges go
@@ -61,9 +61,9 @@ impl Osis {
     }
 }
 
-/// Synthetic aspects and `/created`: never written by ops.
+/// Synthetic aspects and `created.0`: never written by ops.
 fn read_only(ak: &str) -> bool {
-    matches!(ak, "/tid" | "/aspects" | "/groups" | "/created")
+    matches!(ak, "tid.0" | "aspects.0" | "groups.0" | "created.0")
 }
 
 pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
@@ -121,8 +121,8 @@ impl<'d> Write<'d> {
         Ok(t)
     }
 
-    /// Gives `tid` an empty `/group` if it is no group yet (neither `/group` nor ephemeral
-    /// placements, `/placed`).
+    /// Gives `tid` an empty `group.0` if it is no group yet (neither `group.0` nor ephemeral
+    /// placements, `placed.0~`).
     pub fn make_group(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         if !self.created.contains(&t) && (self.db.get(t, GROUP)?.is_some() || self.db.get(t, PLACED)?.is_some()) {
@@ -133,7 +133,7 @@ impl<'d> Write<'d> {
         Ok(())
     }
 
-    /// Records that this batch writes `g`'s `/group` with expiry `d`; `Invalid` when another
+    /// Records that this batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another
     /// write of it in this batch asked for a different one.
     fn group_expiry(&mut self, g: Tid, d: Option<Duration>) -> Result<()> {
         match self.group_exp.get(&g) {

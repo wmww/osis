@@ -17,12 +17,12 @@ static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     r#"
 schema 0x5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f;
 revision 1;
-aspect /k/pairs: map<string, string> [by: writer, keep_at_most: 1h];
+aspect k:pairs.0: map<string, string> [by: writer, keep_at_most: 1h];
 "#,
 );
-const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("/k/pairs", &KEEP);
+const KMAP: osis_schema::Aspect<osis_base::Value> = osis_schema::Aspect::new("k:pairs.0", &KEEP);
 
-/// Node `a` (dialable: `/reach` published) with group `g` labeled at no host, and `b` a
+/// Node `a` (dialable: `reach.0` published) with group `g` labeled at no host, and `b` a
 /// writer of it.
 fn setup() -> (Net, usize, usize, Tid, LabelId) {
     let mut net = Net::new();
@@ -202,7 +202,7 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     let at = WallMs(e.now().0 + 5_000);
     // few aspects with long keys: the list just above `CHUNK_THRESHOLD`
     for i in 0..160 {
-        let ak = Ak::new(format!("/u/{}{i:05}", "a".repeat(900))).unwrap();
+        let ak = Ak::new(format!("u:{}{i:05}.0", "a".repeat(900))).unwrap();
         m.set(u, &ak, &s("v")).unwrap();
         m.expires(u, &ak, at).unwrap();
     }
@@ -298,7 +298,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     let v = e.new_thing(&mut m, me);
     let at = WallMs(e.now().0 + 40_000);
     for i in 0..160 {
-        let ak = Ak::new(format!("/u/{}{i:05}", "a".repeat(900))).unwrap();
+        let ak = Ak::new(format!("u:{}{i:05}.0", "a".repeat(900))).unwrap();
         m.set(v, &ak, &s("v")).unwrap();
         m.expires(v, &ak, at).unwrap();
     }
@@ -395,7 +395,7 @@ fn local_inbox_blob_expires_spec_sync_5() {
 
 // spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
 // co-reader peer: served as a host's sync would leave it): a reader that dials the writer serving
-// a label with no host (the writer cannot dial back: no `/reach`) deposits its node card; the
+// a label with no host (the writer cannot dial back: no `reach.0`) deposits its node card; the
 // writer's local pass stamps it as a promotion would, never the reader's heartbeat.
 #[test]
 fn deposit_promoted_on_local_label_spec_sync_5() {
@@ -420,9 +420,9 @@ fn deposit_promoted_on_local_label_spec_sync_5() {
         }
         let stamped = net.sync(a).entry_meta(&l, &id).unwrap().1.is_some();
         let aks: Vec<&str> = h.aspects.iter().map(|x| x.ak.as_str()).collect();
-        if aks.contains(&"/seen") {
+        if aks.contains(&"seen.0") {
             assert!(!stamped, "heartbeats are never promoted");
-        } else if aks.contains(&"/node") {
+        } else if aks.contains(&"node.0") {
             assert!(stamped, "the card was promoted");
             card += 1;
         }
@@ -443,7 +443,7 @@ type Placed = (String, osis_base::CommitId, BlobId, bool);
 
 /// The deposit-promotion setup above, with the reader's deposits of the blobs in `lose`
 /// refused on the way (rate-limited): returns the net, the writer, the label, and the reader's
-/// commits under it by aspect (`/keys`, `/node`) with their entries at the writer.
+/// commits under it by aspect (`keys.0`, `node.0`) with their entries at the writer.
 fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<Placed>) {
     let mut net = Net::new();
     net.lose_deposits = lose.clone();
@@ -469,25 +469,25 @@ fn promote_run(lose: &BTreeSet<BlobId>) -> (Net, usize, LabelId, Vec<Placed>) {
 }
 
 // spec/sync.md §5, spec/permissions.md §4 (a promoter completes the author's chain it holds):
-// as above, but the reader's deposit of its `/keys` commit (part of its card's chain) never
+// as above, but the reader's deposit of its `keys.0` commit (part of its card's chain) never
 // reaches the writer; the writer places its own copy of it, then promotes the card.
 #[test]
 fn deposit_chain_completed_on_local_label_spec_sync_5() {
     let (_, _, _, first) = promote_run(&BTreeSet::new());
-    let keys: BTreeSet<BlobId> = first.iter().filter(|x| x.0 == "/keys").map(|x| x.2).collect();
-    assert_eq!(keys.len(), 1, "the reader deposited its /keys: {first:?}");
-    let keys_commit = first.iter().find(|x| x.0 == "/keys").unwrap().1;
+    let keys: BTreeSet<BlobId> = first.iter().filter(|x| x.0 == "keys.0").map(|x| x.2).collect();
+    assert_eq!(keys.len(), 1, "the reader deposited its keys.0: {first:?}");
+    let keys_commit = first.iter().find(|x| x.0 == "keys.0").unwrap().1;
     let (_, _, _, run) = promote_run(&keys);
-    assert!(run.iter().all(|x| !keys.contains(&x.2)), "the reader's /keys deposit was lost");
+    assert!(run.iter().all(|x| !keys.contains(&x.2)), "the reader's keys.0 deposit was lost");
     let copies: Vec<_> = run.iter().filter(|x| x.1 == keys_commit).collect();
-    assert!(!copies.is_empty() && copies.iter().all(|x| x.3), "the writer placed its own copy of the reader's /keys: {run:?}");
-    let cards: Vec<_> = run.iter().filter(|x| x.0 == "/node").collect();
+    assert!(!copies.is_empty() && copies.iter().all(|x| x.3), "the writer placed its own copy of the reader's keys.0: {run:?}");
+    let cards: Vec<_> = run.iter().filter(|x| x.0 == "node.0").collect();
     assert!(!cards.is_empty() && cards.iter().all(|x| x.3), "the card was promoted: {run:?}");
 }
 
 // spec/permissions.md §9 (link finalized: when K's labels have no host, at once by the node
 // that wrote the seed thing), spec/sync.md §5 (a label listing `peer://` nodes only is served by
-// this node, never dialed from `/label`): an expired link whose K label lists no host, or
+// this node, never dialed from `label.0`): an expired link whose K label lists no host, or
 // only a `peer://` node, is finalized by its maker once it expires.
 #[test]
 fn expired_link_at_no_host_finalized_spec_permissions_9() {
@@ -534,7 +534,7 @@ fn hostless_reseal(restart: bool) {
     let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
     net.actions(a, acts);
     net.run();
-    // c learns a's `/reach` and dials it
+    // c learns a's `reach.0` and dials it
     net.pair(a, c);
     net.run();
     assert!(net.sync(a).labels()[0].1.hosts.is_empty());
@@ -552,10 +552,10 @@ fn hostless_reseal(restart: bool) {
     let newest = |net: &mut Net, n: usize| net.engine(n).epochs(&g).and_then(|e| e.read.newest_held().map(|x| x.0));
     let e1 = newest(&mut net, a).unwrap();
     assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
-    // a's role commits naming c's boxes (`/secrets` of g): the re-seals
+    // a's role commits naming c's boxes (`secrets.0` of g): the re-seals
     let reseals = |net: &mut Net| {
         let ids = net.engine(a).commit_ids();
-        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/secrets"))).count()
+        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "secrets.0"))).count()
     };
     let before = reseals(&mut net);
     net.advance(60_000);

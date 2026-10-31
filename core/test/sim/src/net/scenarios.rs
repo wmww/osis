@@ -65,7 +65,7 @@ pub fn shared_group(sim: &mut NetSim, a: usize, pa: Tid, hosts: &[usize], grants
     Ok(g)
 }
 
-/// A purge of `c`'s `/s/gone` delta on `t` by node `n` (spec/commits.md §5), recorded for the
+/// A purge of `c`'s `s:gone.0` delta on `t` by node `n` (spec/commits.md §5), recorded for the
 /// purge invariant.
 pub fn purge(sim: &mut NetSim, n: usize, c: osis_base::CommitId, t: Tid) -> Res<()> {
     sim.observe()?;
@@ -78,7 +78,7 @@ pub fn purge(sim: &mut NetSim, n: usize, c: osis_base::CommitId, t: Tid) -> Res<
     Ok(())
 }
 
-/// Node `n` writes `/s/gone` on `t`.
+/// Node `n` writes `s:gone.0` on `t`.
 pub fn write_gone(sim: &mut NetSim, n: usize, t: Tid, v: &str) -> Res<osis_base::CommitId> {
     let mut m = Mutation::new();
     m.set(t, &workload::GONE, &Value::Str(v.into())).map_err(|e| sim.fail(e.to_string()))?;
@@ -454,7 +454,7 @@ pub fn large_edits(seed: u64) -> Res<Report> {
     sim.pair(d0, d1, p)?;
     let t = sim.item(d0, p)?;
     sim.quiet(40)?;
-    let file = Ak::new("/app/file").map_err(|e| sim.fail(e.to_string()))?;
+    let file = Ak::new("app:file.0").map_err(|e| sim.fail(e.to_string()))?;
     let mut cur = vec![0u8; 8 << 20];
     osis_crypto::RngCore::fill_bytes(&mut osis_crypto::SeededRng::from_u64(seed), &mut cur);
     let mut m = Mutation::new();

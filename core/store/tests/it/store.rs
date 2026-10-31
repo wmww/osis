@@ -18,7 +18,7 @@ fn transactions_commit_or_abort() {
     for dev in devices("txn") {
         let mut rng = SeededRng::from_u64(1);
         let mut s = create(&*dev, &mut rng);
-        let (t1, a) = (tid(1), ak("/name"));
+        let (t1, a) = (tid(1), ak("name.0"));
         let unit = AspectUnit { state: b"state".to_vec(), undo: b"undo".to_vec(), snapshots: vec![] };
         {
             let mut t = s.transaction(&mut rng).unwrap();
@@ -36,7 +36,7 @@ fn transactions_commit_or_abort() {
         let mut t = s.transaction(&mut rng).unwrap();
         assert_eq!(t.get_aspect(&t1, &a).unwrap(), Some(unit), "{}", dev.name());
         assert_eq!(t.get_secrets(&tid(2)).unwrap(), Some(b"secret".to_vec()));
-        assert_eq!(t.get_aspect(&t1, &ak("/other")).unwrap(), None);
+        assert_eq!(t.get_aspect(&t1, &ak("other.0")).unwrap(), None);
     }
 }
 
@@ -47,7 +47,7 @@ fn death_records() {
     let mut rng = SeededRng::from_u64(2);
     let mut s = create(&dev, &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
-    let (t1, a) = (tid(1), ak("/m"));
+    let (t1, a) = (tid(1), ak("m.0"));
     let body = BlobId([9; 32]);
     assert_eq!(t.note_death(&t1, &a, &body, ts(50)).unwrap(), Deaths { first: ts(50), last: ts(50) });
     t.note_death(&t1, &a, &body, ts(70)).unwrap();
@@ -55,7 +55,7 @@ fn death_records() {
     for b in 0..5u8 {
         t.note_death(&t1, &a, &BlobId([b; 32]), ts(1)).unwrap();
     }
-    t.note_death(&t1, &ak("/n"), &BlobId([1; 32]), ts(1)).unwrap();
+    t.note_death(&t1, &ak("n.0"), &BlobId([1; 32]), ts(1)).unwrap();
     let all = t.deaths(&t1, &a, None, 100).unwrap();
     assert_eq!(all.len(), 6);
     let after = t.deaths(&t1, &a, Some(&BlobId([2; 32])), 2).unwrap();
@@ -72,7 +72,7 @@ fn counters() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(3);
     let mut s = create(&dev, &mut rng);
-    let (t1, a) = (tid(1), ak("/c"));
+    let (t1, a) = (tid(1), ak("c.0"));
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.counter(&t1, &a).unwrap(), 1);
     assert_eq!(t.reserve_counters(&t1, &a, 5).unwrap(), 1);
@@ -198,7 +198,7 @@ fn lifecycle_errors() {
     let mut s = Store::open(Box::new(b), Box::new(r), Default::default()).unwrap();
     assert_eq!(s.config().arity, 8);
     let mut t = s.transaction(&mut rng).unwrap();
-    let big_ak = ak(&format!("/{}", "a".repeat(200)));
+    let big_ak = ak(&format!("{}.0", "a".repeat(200)));
     assert!(matches!(t.put_aspect(&tid(1), &big_ak, &AspectUnit::default(), Shred::No), Err(Error::Misuse(_))));
 }
 
@@ -210,20 +210,20 @@ fn abort_after_spill() {
     let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
     let mut s = Store::create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    let tb = t.create_table(&tid(1), &ak("/t"), 0).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     for i in 0..20u32 {
         t.table_put(tb, &i.to_be_bytes(), vec![1; 30], Shred::No).unwrap();
     }
     drop(t);
     let mut t = s.transaction(&mut rng).unwrap();
-    let tb = t.create_table(&tid(1), &ak("/t"), 0).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
     t.table_put(tb, b"k", vec![2; 5], Shred::No).unwrap();
     t.commit().unwrap();
     assert!(s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "aborted spill rolled back");
     drop(s);
     let mut s = Store::open(dev.backend(), dev.root(), cfg).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    let tb = t.table(&tid(1), &ak("/t"), 0).unwrap().unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     assert_eq!(t.table_get(tb, b"k").unwrap(), Some(vec![2; 5]));
     assert_eq!(t.table_len(tb).unwrap(), 1);
 }
@@ -295,7 +295,7 @@ fn memory_overlay_rows() {
     let dev = MemDevice::new();
     let mut rng = SeededRng::from_u64(3);
     let mut s = create(&dev, &mut rng);
-    let (t1, a, b) = (tid(1), ak("/mem"), ak("/dur"));
+    let (t1, a, b) = (tid(1), ak("mem.0"), ak("dur.0"));
     let unit = AspectUnit { state: b"m".to_vec(), undo: vec![], snapshots: vec![] };
     {
         let mut t = s.transaction(&mut rng).unwrap();
@@ -396,7 +396,7 @@ fn memory_rows_never_spill() {
     let writes = dev.faults.writes();
     let mut t = s.transaction(&mut rng).unwrap();
     t.set_memory(true);
-    let tb = t.create_table(&tid(1), &ak("/m"), 0).unwrap();
+    let tb = t.create_table(&tid(1), &ak("m.0"), 0).unwrap();
     for i in 0..200u32 {
         t.table_put(tb, &i.to_be_bytes(), vec![1; 300], Shred::No).unwrap();
         t.table_put(ix, &i.to_be_bytes(), vec![2; 300], Shred::No).unwrap();

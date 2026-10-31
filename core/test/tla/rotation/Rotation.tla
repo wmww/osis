@@ -58,7 +58,7 @@ NewestOf(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
 \* crypto §4: an epoch is established at x when it is x's own rotation, or x
 \* applied its rotation commit and every epoch it supersedes is established
 \* (own rotations are in kn at once and supersede established epochs only).
-\* Epoch 0 is the derived epoch. No /secrets snapshots (ASSUMPTIONS.md). A
+\* Epoch 0 is the derived epoch. No secrets.0 snapshots (ASSUMPTIONS.md). A
 \* rotation supersedes lower ids only, so one pass in id order is the fixpoint.
 Est(x) == LET f[i \in Ids] == IF i = 0 THEN TRUE
                               ELSE i \in kn[x] /\ \A j \in ep[i].sup : j < i /\ f[j]
@@ -292,7 +292,7 @@ InboxRecv(m, e) ==
   /\ UNCHANGED <<ep, made, kn, fsec, dep, hld, removed, granted, hostRot, before, bx, rd, steps,
                  inRot, via, stranded, enc, leakP, online, budget>>
 
-\* Adversary (crypto §4): anyone can seal a box to a holder's /keys in a
+\* Adversary (crypto §4): anyone can seal a box to a holder's keys.0 in a
 \* commit that stays pending or is invalid, naming an existing epoch with a
 \* secret of its choosing; the holder keeps it for reading only (fsec).
 Plant(x, e) ==
@@ -306,7 +306,7 @@ Plant(x, e) ==
 \* current epoch: it reached the head and after a complete pass there cannot
 \* open the epoch it registers, or a claim on the way was refused. By deposit
 \* (no open needed), wrapped under the newest established held secret;
-\* refused if the deposit seed was refreshed by a rotation whose /keys the
+\* refused if the deposit seed was refreshed by a rotation whose keys.0 the
 \* node has not read (crypto §3).
 Heartbeat(x) ==
   /\ online[x] /\ x \in Holding /\ x \notin stranded /\ x \notin dep[x]

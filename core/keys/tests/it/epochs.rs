@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Epochs, rotations, forks and the `/secrets` delta rules (spec/crypto.md §3, §4).
+//! Epochs, rotations, forks and the `secrets.0` delta rules (spec/crypto.md §3, §4).
 
 use crate::common;
 use common::*;

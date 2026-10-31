@@ -6,7 +6,7 @@
 //! (`WaitDeltas`). Its examination read the commit (fixed), the held set, what the node syncs,
 //! the corrected clock (drift, expiry) and, for missing deltas, the receipt and purge records
 //! of their aspects. Kept only for commits whose header is inline (no header-list blobs) and
-//! that carry no `/secrets` part (pending boxes are read at every examination), within byte
+//! that carry no `secrets.0` part (pending boxes are read at every examination), within byte
 //! bounds (a record wait keeps its order key and things, a delta wait its header too); the
 //! others are examined at every `reexamine`, as all were.
 //!
@@ -228,7 +228,7 @@ fn next_expiry(h: &Header, missing: &[(usize, usize)], now: u64) -> Option<u64> 
 /// Notes what examining pending commit `id` (`blob`, after `examine`) read, if it can be judged
 /// again from that alone.
 pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, now: u64) {
-    if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() == "/secrets")) {
+    if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() == "secrets.0")) {
         return;
     }
     let h = &blob.header;

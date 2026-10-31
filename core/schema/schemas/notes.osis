@@ -21,11 +21,11 @@ type task = struct {
 type tagged<T> = struct { 0 label: string, 1 value: T };
 
 /// Markdown; not guaranteed valid.
-aspect /note/body: markdown [indexed];
-aspect /note/title: string [indexed];
-aspect /note/tasks: list<task>;
-aspect /note/views: counter<int>;
-aspect /note/last_opened: timestamp [expires: 30d];
-aspect /note/pinned: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
+aspect note:body.0: markdown [indexed];
+aspect note:title.0: string [indexed];
+aspect note:tasks.0: list<task>;
+aspect note:views.0: counter<int>;
+aspect note:last_opened.0: timestamp [expires: 30d];
+aspect note:pinned.0: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
 /// Someone is typing in the note.
-aspect /note/typing: struct { 0 who: tid, 1 at: timestamp } [signal];
+aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp } [signal];

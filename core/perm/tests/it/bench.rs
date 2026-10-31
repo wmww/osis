@@ -115,10 +115,10 @@ fn bench_10k_edges() {
         let _ = tl.role(&nodes[200], &doc, At::before(mid));
         let point_query = t4.elapsed();
         let t5 = Instant::now();
-        let v = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
+        let v = tl.delta_valid(mid, &doc, "app:x.0", osis_perm::Dots::Commit, Write);
         let valid_cold = t5.elapsed();
         let t6 = Instant::now();
-        let _ = tl.delta_valid(mid, &doc, "/app/x", osis_perm::Dots::Commit, Write);
+        let _ = tl.delta_valid(mid, &doc, "app:x.0", osis_perm::Dots::Commit, Write);
         let valid_warm = t6.elapsed();
         // what a node re-judges after a change in this component: one content delta per
         // applied write, by its author on its target, on a fresh timeline (nothing memoized)
@@ -126,7 +126,7 @@ fn bench_10k_edges() {
         let deltas: Vec<_> = fresh.applied().values().take(1000).map(|a| (a.point, a.target)).collect();
         let t7 = Instant::now();
         for (p, t) in &deltas {
-            let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+            let _ = fresh.delta_valid(*p, t, "app:x.0", osis_perm::Dots::Commit, Write);
         }
         let rejudge = t7.elapsed();
         drop(fresh);
@@ -146,7 +146,7 @@ fn bench_10k_edges() {
         let t7b = Instant::now();
         let mut valid_holders = 0;
         for (p, t) in &by_holders {
-            valid_holders += usize::from(fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
+            valid_holders += usize::from(fresh.delta_valid(*p, t, "app:x.0", osis_perm::Dots::Commit, Write) == osis_perm::Validity::Valid);
         }
         let rejudge_holders = t7b.elapsed();
         drop(fresh);
@@ -182,7 +182,7 @@ fn bench_10k_edges() {
         let restore_stale = t12.elapsed();
         assert_eq!(stale.restored(), 1);
         drop(stale);
-        // a new thing (a leaf: only its `/created`) under the team and under the doc with the
+        // a new thing (a leaf: only its `created.0`) under the team and under the doc with the
         // most demotions recorded
         inc.update(&held4);
         let tl4 = Timeline::evaluate(&held4);
@@ -277,7 +277,7 @@ fn bench_deltas() {
     let deltas: Vec<_> = tl.applied().values().take(1000).map(|a| (a.point, a.target)).collect();
     let t0 = Instant::now();
     for (p, t) in &deltas {
-        let _ = tl.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+        let _ = tl.delta_valid(*p, t, "app:x.0", osis_perm::Dots::Commit, Write);
     }
     let admins = t0.elapsed();
     let fresh = Timeline::evaluate(&held);
@@ -294,7 +294,7 @@ fn bench_deltas() {
     by_holders.truncate(1000);
     let t1 = Instant::now();
     for (p, t) in &by_holders {
-        let _ = fresh.delta_valid(*p, t, "/app/x", osis_perm::Dots::Commit, Write);
+        let _ = fresh.delta_valid(*p, t, "app:x.0", osis_perm::Dots::Commit, Write);
     }
     eprintln!("{n} edge writes: {} admins' deltas cold {admins:?}, {} holders' deltas cold {:?}", deltas.len(), by_holders.len(), t1.elapsed());
 }

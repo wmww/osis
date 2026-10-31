@@ -487,8 +487,8 @@ impl MoveIndex for Moves {
     }
 }
 
-/// §7: a `/was` claim with standing wins, else `/moved`, else the tid itself; two claims with
-/// standing fall back to `/moved`; hops are bounded.
+/// §7: a `was.0` claim with standing wins, else `moved.0`, else the tid itself; two claims with
+/// standing fall back to `moved.0`; hops are bounded.
 #[test]
 fn move_resolution() {
     let mut w = World::new();
@@ -508,7 +508,7 @@ fn move_resolution() {
     let idx = Moves { was: BTreeMap::from([(t, vec![f])]), moved: BTreeMap::from([(t, m)]) };
     assert_eq!(tl.resolve(&idx, &r, &t, now), m);
     let idx = Moves { was: BTreeMap::from([(t, vec![m, g])]), moved: BTreeMap::from([(t, f)]) };
-    assert_eq!(tl.resolve(&idx, &r, &t, now), f, "two claims with standing: /moved");
+    assert_eq!(tl.resolve(&idx, &r, &t, now), f, "two claims with standing: moved.0");
     let idx = Moves { was: BTreeMap::new(), moved: BTreeMap::new() };
     assert_eq!(tl.resolve(&idx, &r, &t, now), t);
     let idx = Moves { was: BTreeMap::new(), moved: BTreeMap::from([(t, m), (m, t)]) };

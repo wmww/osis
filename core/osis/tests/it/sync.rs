@@ -14,17 +14,17 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-/// A thing in `g` (owned by `owner`) with `/t/x` = `v`.
+/// A thing in `g` (owned by `owner`) with `t:x.0` = `v`.
 fn item(db: &Osis, owner: Tid, g: Tid, v: &str) -> Tid {
     let mut w = db.write();
     let t = w.create_in(owner, &[g]).unwrap();
-    w.at(t, ak("/t/x")).set(&s(v)).unwrap();
+    w.at(t, ak("t:x.0")).set(&s(v)).unwrap();
     w.commit().unwrap();
     t
 }
 
 fn x(db: &Osis, t: Tid) -> Option<Value> {
-    db.get(t, ak("/t/x")).unwrap()
+    db.get(t, ak("t:x.0")).unwrap()
 }
 
 // notes/api.md Handle (create), Sync status; spec/sync.md §2 (home label): a new person's home
@@ -61,7 +61,7 @@ fn pairing_spec_permissions_1() {
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
     let (node, reply) = da.pair_accept(&req).unwrap();
     assert_eq!(node, join.node());
-    assert!(reply.to_string().len() < 40_000, "certificates and /label only, no content: {}", reply.to_string().len());
+    assert!(reply.to_string().len() < 40_000, "certificates and label.0 only, no content: {}", reply.to_string().len());
     assert!(da.pair_accept(&req).is_err(), "an offer is used once");
     let db = join.finish(&reply).unwrap();
     assert_eq!(db.me(), da.me());
@@ -319,7 +319,7 @@ fn until_link_finalized_by_other_device_spec_permissions_9() {
     assert!(finalized(&alice2, k, l), "finalized at expiry");
     assert!(!finalized(&alice, k, l), "offline: not yet here");
     // removals of L on K written by a database
-    let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.node() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "/members"))).count());
+    let removals = |db: &Osis| db.engine(|e| e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == db.node() && h.frontier.is_some() && h.aspects.iter().any(|a| a.tid == k && a.ak.as_str() == "roles.0"))).count());
     assert_eq!(removals(&alice2), 1);
     w.set_online(&alice, true);
     w.advance(60_000);
@@ -394,7 +394,7 @@ fn demote_link_joiner_spec_permissions_9() {
 // joiner reads new content and the removed one does not; another device of the sharer, which
 // holds no record of the link, refuses to demote a joiner instead of reporting success, and
 // syncs the removal to rest (spec/permissions.md §3: it once rotated the target without end,
-// since a late part of a joiner's redemption was judged without its `/members` part and the
+// since a late part of a joiner's redemption was judged without its `roles.0` part and the
 // rotation of K that removal made never established there).
 #[test]
 fn demote_link_joiner_content_spec_permissions_9() {
@@ -483,7 +483,7 @@ fn removal_from_partial_device_keeps_unheld_edits_spec_permissions_5_3() {
     w.run();
     assert_eq!(log(&w), before, "the phone placed nothing under H's label");
     // received by header only: by commit ID, never by counters (spec/permissions.md §5.1)
-    let r = phone.engine(|e| e.receipt(&in_h, &ak("/t/x")).unwrap());
+    let r = phone.engine(|e| e.receipt(&in_h, &ak("t:x.0")).unwrap());
     assert!(r.sources.is_empty() && r.commits.len() == 1, "{r:?}");
     for db in [&alice, bob, carol] {
         w.set_online(db, true);
@@ -539,7 +539,7 @@ fn remote_signal_spec_sync_5() {
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
-    let ring = osis::Lifetimes::signal(ak("/t/typing"));
+    let ring = osis::Lifetimes::signal(ak("t:typing.0*"));
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
     let _a = alice.at(g, ring.clone()).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();
@@ -569,7 +569,7 @@ fn disappearing_message_spec_commits_6() {
     w.run();
     let mut wr = alice.write();
     let m = wr.create_in(g, &[g]).unwrap();
-    wr.at(m, ak("/t/x")).expires_in(Duration::from_secs(10)).set(&s("gone soon")).unwrap();
+    wr.at(m, ak("t:x.0")).expires_in(Duration::from_secs(10)).set(&s("gone soon")).unwrap();
     wr.commit().unwrap();
     w.run();
     assert_eq!(x(bob, m), Some(s("gone soon")));
@@ -578,7 +578,7 @@ fn disappearing_message_spec_commits_6() {
     assert_eq!(x(bob, m), None);
 }
 
-const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 1;\naspect /n/body: text;\n";
+const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 1;\naspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two devices edit one text concurrently in sessions; each commit is one edit, the
@@ -596,7 +596,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     for d in [&da, &db] {
         d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
     }
-    let body = da.key("/n/body").unwrap();
+    let body = da.key("n:body.0").unwrap();
     let mut wr = da.write();
     let t = wr.create_in(da.me(), &[da.home()]).unwrap();
     wr.commit().unwrap();
@@ -605,7 +605,7 @@ fn text_sessions_merge_spec_crdt_5_7() {
     assert!(sa.commit().unwrap().is_some());
     assert_eq!(sa.commit().unwrap(), None, "nothing new");
     w.run();
-    let sb = db.edit_text(t, db.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    let sb = db.edit_text(t, db.key("n:body.0").unwrap(), osis::Path::root()).unwrap();
     assert_eq!(sb.text(), "hello");
     let (tx, rx) = std::sync::mpsc::channel();
     sa.on_remote(move |s, _| {
@@ -637,7 +637,7 @@ fn text_pair() -> (World, Osis, Osis, Tid, osis::TextSession) {
         d.register_schema_source("t.osis", TEXT_SCHEMA).unwrap();
     }
     let t = da.write_with(|w| w.create_in(da.me(), &[da.home()])).unwrap();
-    let sa = da.edit_text(t, da.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    let sa = da.edit_text(t, da.key("n:body.0").unwrap(), osis::Path::root()).unwrap();
     sa.insert(0, "hello world").unwrap();
     sa.commit().unwrap();
     w.run();
@@ -667,7 +667,7 @@ fn text_session_remote_splices_map_caret() {
     sa.on_remote(move |s, e| {
         let _ = tx.send((s.to_string(), e.to_vec()));
     });
-    let sb = db.edit_text(t, db.key("/n/body").unwrap(), osis::Path::root()).unwrap();
+    let sb = db.edit_text(t, db.key("n:body.0").unwrap(), osis::Path::root()).unwrap();
     assert_eq!(sb.text(), "hello world");
     sb.replace(0..1, "H").unwrap();
     sb.insert(6, "big ").unwrap();
@@ -706,7 +706,7 @@ fn text_session_after_remote_delete_drops() {
     w.run();
     for d in [&da, &db] {
         assert!(!d.knows(t), "not recreated");
-        assert_eq!(d.get(t, d.key("/n/body").unwrap()).unwrap(), None);
+        assert_eq!(d.get(t, d.key("n:body.0").unwrap()).unwrap(), None);
     }
 }
 
@@ -723,7 +723,7 @@ fn text_session_after_local_delete_drops() {
     w.run();
     for d in [&da, &db] {
         assert!(!d.knows(t), "not recreated");
-        assert_eq!(d.get(t, d.key("/n/body").unwrap()).unwrap(), None);
+        assert_eq!(d.get(t, d.key("n:body.0").unwrap()).unwrap(), None);
     }
 }
 
@@ -741,10 +741,10 @@ fn text_session_keeps_edits_across_delete_undo() {
     da.undo(&osis::Scope::Thing(t)).unwrap().unwrap();
     assert!(da.knows(t));
     sa.commit().unwrap().unwrap();
-    assert_eq!(da.get(t, da.key("/n/body").unwrap()).unwrap(), Some(osis::Value::Str("hello world!".into())));
+    assert_eq!(da.get(t, da.key("n:body.0").unwrap()).unwrap(), Some(osis::Value::Str("hello world!".into())));
 }
 
-// notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`/label` hosts, inbox): a
+// notes/api.md Sync configuration (`add_host`), spec/sync.md §2 (`label.0` hosts, inbox): a
 // database created without hosts has its home label on none; adding a host moves the home
 // label and the person's inbox there, and the home group syncs.
 #[test]

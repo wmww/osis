@@ -12,31 +12,31 @@ pub static SIM: StaticSchema = StaticSchema::new(
     r#"
 schema 0x51a0000000000000000000000000005a;
 revision 1;
-aspect /s/reg: string;
-aspect /s/count: counter<int>;
-aspect /s/hi: max<int>;
-aspect /s/tags: set<string>;
-aspect /s/map: map<string, int>;
-aspect /s/gone: string [by: writer];
-aspect /s/note: string;
-aspect /s/story: set<string>;
-aspect /s/short: string [by: writer, keep_at_most: 10m];
+aspect s:reg.0: string;
+aspect s:count.0: counter<int>;
+aspect s:hi.0: max<int>;
+aspect s:tags.0: set<string>;
+aspect s:map.0: map<string, int>;
+aspect s:gone.0: string [by: writer];
+aspect s:note.0: string;
+aspect s:story.0: set<string>;
+aspect s:short.0: string [by: writer, keep_at_most: 10m];
 "#,
 );
 
-pub const REG: Aspect<Value> = Aspect::new("/s/reg", &SIM);
-pub const COUNT: Aspect<Value> = Aspect::new("/s/count", &SIM);
-pub const HI: Aspect<Value> = Aspect::new("/s/hi", &SIM);
-pub const TAGS: Aspect<Value> = Aspect::new("/s/tags", &SIM);
-pub const MAP: Aspect<Value> = Aspect::new("/s/map", &SIM);
+pub const REG: Aspect<Value> = Aspect::new("s:reg.0", &SIM);
+pub const COUNT: Aspect<Value> = Aspect::new("s:count.0", &SIM);
+pub const HI: Aspect<Value> = Aspect::new("s:hi.0", &SIM);
+pub const TAGS: Aspect<Value> = Aspect::new("s:tags.0", &SIM);
+pub const MAP: Aspect<Value> = Aspect::new("s:map.0", &SIM);
 /// Purgeable by any writer (scenarios only; random writes leave it alone).
-pub const GONE: Aspect<Value> = Aspect::new("/s/gone", &SIM);
+pub const GONE: Aspect<Value> = Aspect::new("s:gone.0", &SIM);
 /// A scenario's story marks (random writes leave it alone).
-pub const STORY: Aspect<Value> = Aspect::new("/s/story", &SIM);
+pub const STORY: Aspect<Value> = Aspect::new("s:story.0", &SIM);
 /// Written with an expiry (scenarios only).
-pub const NOTE: Aspect<Value> = Aspect::new("/s/note", &SIM);
+pub const NOTE: Aspect<Value> = Aspect::new("s:note.0", &SIM);
 /// Kept at most 10 minutes after replaced (scenarios only).
-pub const SHORT: Aspect<Value> = Aspect::new("/s/short", &SIM);
+pub const SHORT: Aspect<Value> = Aspect::new("s:short.0", &SIM);
 
 const WORDS: [&str; 5] = ["ash", "birch", "cedar", "dogwood", "elm"];
 

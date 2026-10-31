@@ -170,7 +170,7 @@ pub fn revoke_while_writing(seed: u64) -> Res<Report> {
 
 /// spec/crdt.md §2.2: a commit more than MAX_DRIFT ahead of the receiver's clock is parked until
 /// local time catches up, then joined; then a random run with one node two hours ahead. The
-/// clock jumps after setup (a node whose `/created` is parked has its commits wait for the chain).
+/// clock jumps after setup (a node whose `created.0` is parked has its commits wait for the chain).
 pub fn drift_parks(seed: u64) -> Res<Report> {
     let cfg = Config { nodes: 2, net: lossy(), ..Config::default() };
     let mut sim = Sim::new("drift_parks", seed, cfg)?;

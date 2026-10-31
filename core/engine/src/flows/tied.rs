@@ -1,6 +1,6 @@
 //! Tied grants (spec/permissions.md §2): an edge whose holder is a group G, tied to G's placement
-//! of the target T, named by the `/group` element's creation stamp. Written after the placement
-//! (`Osis::share_into`); once a node's state of G's `/group` holds that element dead, the tied
+//! of the target T, named by the `group.0` element's creation stamp. Written after the placement
+//! (`Osis::share_into`); once a node's state of G's `group.0` holds that element dead, the tied
 //! edge is to be removed by a node that may (the obligation node-sync runs,
 //! `SyncEngine::untie_unplaced`): explicitly by an admin of T, else as a self-removal by an admin
 //! of G. An element not held yet is on its way: nothing. One way only: a stale placement never
@@ -49,7 +49,7 @@ fn stamp_of(t: &Tie) -> Stamp {
     Stamp::new(t.ts, src, t.ctr)
 }
 
-/// The `/group` struct field of the items (0) or subgroups (1) set.
+/// The `group.0` struct field of the items (0) or subgroups (1) set.
 fn field(subgroup: bool) -> u64 {
     u64::from(subgroup)
 }
@@ -134,7 +134,7 @@ impl Engine {
 
     /// The tied edges whose placement this node holds dead (`tie_dead`), as (target, group):
     /// those of every group in `groups` (from the targets it is named on as a holder) and every
-    /// tied edge on a thing in `targets`; with `all`, of every group this node holds a `/group`
+    /// tied edge on a thing in `targets`; with `all`, of every group this node holds a `group.0`
     /// of.
     pub fn tied_unplaced(&mut self, groups: &BTreeSet<Tid>, targets: &BTreeSet<Tid>, all: bool) -> Result<BTreeSet<(Tid, Tid)>> {
         let defs = &self.core.ix.groups.defs;

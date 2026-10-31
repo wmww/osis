@@ -7,15 +7,15 @@ gives machine output. Full reference: `osis --help` and notes/cli.md.
 ```sh
 export OSIS_STORE=/tmp/demo
 osis init                                        # prints me, node, home
-t=$(osis create --owner me --in home /note/title '"groceries"')
-osis set $t /note/tags '#{"food"}'
-osis op $t /note/tags '' add '"weekly"'
+t=$(osis create --owner me --in home note:title.0 '"groceries"')
+osis set $t note:tags.0 '#{"food"}'
+osis op $t note:tags.0 '' add '"weekly"'
 osis show $t                                     # every aspect, groups, role
-osis get $t /note/tags                           # #{"food", "weekly"}
-osis --json get $t /note/title                   # "groceries"
-printf 'create --owner me --in home --as a /x/n 1\nset $a /x/m {1: [true]}\n' | osis write
+osis get $t note:tags.0                           # #{"food", "weekly"}
+osis --json get $t note:title.0                   # "groceries"
+printf 'create --owner me --in home --as a x:n.0 1\nset $a x:m.0 {1: [true]}\n' | osis write
 osis commits --thing $t; osis undo --thing $t
-osis --schema todo.osis get $t /todo/task        # named fields with a schema
+osis --schema todo.osis get $t todo:task.0        # named fields with a schema
 ```
 
 Exit codes: 0 ok, 1 other, 2 usage, 3 absent or unknown, 4 not allowed, 5 type or too large,

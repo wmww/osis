@@ -46,7 +46,7 @@ fn perm_edge(e: &Edge) -> PermEdge {
 pub enum Parts {
     /// Every part (a grant: the edge and the grantee's boxes; a re-seal).
     All,
-    /// The `/members` parts only (a removal: the rotation's boxes are not about the holder).
+    /// The `roles.0` parts only (a removal: the rotation's boxes are not about the holder).
     Edge,
 }
 
@@ -82,7 +82,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     let Some(kem) = kem else { return Ok(Vec::new()) };
     let mut blob = tx.get_commit(&c)?.ok_or(Error::UnknownCommit(c))?;
     if parts == Parts::Edge {
-        let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "/members").map(|(i, _)| i).collect();
+        let keep: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "roles.0").map(|(i, _)| i).collect();
         blob.parts.retain(|p| keep.contains(&p.ai));
     }
     let commit = osis_base::decode(&blob.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB })
@@ -192,7 +192,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     Ok(done)
 }
 
-/// The dots of `holder`'s `/members` entries on `target` this node has seen, live or dead.
+/// The dots of `holder`'s `roles.0` entries on `target` this node has seen, live or dead.
 fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, osis_base::Value)> {
     tx.core.ix.holder_keys.iter().filter(|((t, _), m)| t == target && *m == holder).map(|((_, d), m)| (d.clone(), osis_base::Value::Tid(*m))).collect()
 }
@@ -244,7 +244,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             if dots.is_empty() {
                 return Err(Error::Misuse("no edge of that holder was ever seen"));
             }
-            m.dead_resets.insert((target, super::ak("/members")?), dots);
+            m.dead_resets.insert((target, super::ak("roles.0")?), dots);
         }
     }
     if let Some(n) = &d.new {

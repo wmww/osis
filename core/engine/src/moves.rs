@@ -1,6 +1,6 @@
 //! Moving a thing (spec/permissions.md §7): a copy M under a new owner that imports T's
 //! history. One import commit per origin commit (each delta carries its origin delta's
-//! retention and schema), `/was` on M; the guard against importing a thing a held copy already
+//! retention and schema), `was.0` on M; the guard against importing a thing a held copy already
 //! continues. Each write is imported from one origin: the newest held compaction snapshot of
 //! its aspect where that covers it (its frontier holds the write's counter, or it carries writes
 //! of the write's commit-form commit) and carries it, else its own commit. A write of origin C
@@ -125,7 +125,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "/created" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
+        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "created.0" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);
@@ -252,8 +252,8 @@ fn copies_held(tx: &mut Tx<'_>, t: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> 
 }
 
 impl Engine {
-    /// Moves `t` to `owner`: creates the copy M (with `/was = t`) and imports `t`'s held
-    /// history into it. Returns M and the import commits. T's admins write `/moved` on T.
+    /// Moves `t` to `owner`: creates the copy M (with `was.0 = t`) and imports `t`'s held
+    /// history into it. Returns M and the import commits. T's admins write `moved.0` on T.
     pub fn move_thing(&mut self, t: &Tid, owner: Tid) -> Result<(Tid, Vec<CommitId>)> {
         let t = *t;
         if !self.knows(&t) {
@@ -266,7 +266,7 @@ impl Engine {
         // the copy names this node its creator: only its imports apply to it
         let copy = self.new_copy(&mut m, owner);
         m.set(copy, &ct::WAS, &t)?;
-        // one local transaction: the copy, `/was` and every import (spec/permissions.md §7)
+        // one local transaction: the copy, `was.0` and every import (spec/permissions.md §7)
         let out = self.run(|tx| {
             crate::engine::write::commit_in(tx, m)?;
             import_all(tx, &t, &copy)
@@ -321,7 +321,7 @@ mod tests {
             .run(|tx| {
                 let h = tx.core.ix.commits.get(&d).unwrap().header.clone();
                 let ch = tx.core.ix.commits.get(&c).unwrap().header.clone();
-                let (ai, a) = h.aspects.iter().enumerate().find(|(_, a)| a.ak.as_str() == "/t/body").unwrap();
+                let (ai, a) = h.aspects.iter().enumerate().find(|(_, a)| a.ak.as_str() == "t:body.0").unwrap();
                 let mut f = crate::apply::held_parts(tx, &d, ai)?.into_iter().next().unwrap().into_fragment();
                 f.map_dots(&|x| (x.src == Source::commit(d)).then(|| Dot::new(Source::commit(c), x.ctr)));
                 let node = tx.core.id.tid();
@@ -344,7 +344,7 @@ mod tests {
         lp.sync_all().unwrap();
         let me = lp.peers[0].engine.tid();
         let x = lp.peers[1].engine.tid();
-        let body = Ak::new("/t/body").unwrap();
+        let body = Ak::new("t:body.0").unwrap();
         let mut things = Vec::new();
         for _ in 0..3 {
             let mut m = Mutation::new();
@@ -353,7 +353,7 @@ mod tests {
         }
         let (t, o, z) = (things[0], things[1], things[2]);
         let mut m = Mutation::new();
-        m.op(o, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        m.op(o, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();

@@ -38,12 +38,12 @@ fn list_reader_bounds() {
     assert_eq!(read_list(&mins, &d, &mut m, MAX_LIST_BYTES).unwrap().len(), 4 * min.len());
 }
 
-// spec/commits.md §5, §6: `/created` (fixed retention) never carries `expires`.
+// spec/commits.md §5, §6: `created.0` (fixed retention) never carries `expires`.
 #[test]
 fn created_rejects_expires() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
-    a.ak = Ak::new("/created").unwrap();
+    a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
     a.schema = None;
@@ -55,12 +55,12 @@ fn created_rejects_expires() {
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
 }
 
-// spec/commits.md §2 (created one minting): a durable snapshot or import never carries `/created`.
+// spec/commits.md §2 (created one minting): a durable snapshot or import never carries `created.0`.
 #[test]
 fn created_only_in_commits_with_own_writes() {
     let mut h = sample_header();
     let a = &mut h.aspects[0];
-    a.ak = Ak::new("/created").unwrap();
+    a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
     a.schema = None;
@@ -83,7 +83,7 @@ fn prefix_inputs_mixed_class_bad_input() {
     let mut b = content(2);
     b.aspects[0].tid = t(3);
     b.aspects[1].tid = t(3);
-    b.aspects[1].ak = Ak::new("/app/body").unwrap();
+    b.aspects[1].ak = Ak::new("app:body.0").unwrap();
     b.aspects[0].retention = Retention { by: PurgeBy::Admin, ..Default::default() };
     let c = b.build(&key(), &TestSecrets { admin: true }, &mut MemoryBlobs::default(), &mut rng()).unwrap().commit;
     let e = prefix_inputs(&c.header, &[(0, 0), (1, 0)]).unwrap_err();
@@ -103,12 +103,12 @@ fn delete_levels_strict() {
     x.keys.remove(1);
     x.aspects[0].keys = vec![0];
     assert!(x.validate().unwrap_err().to_string().contains("delete levels"), "level 2 missing on a content commit");
-    let mut m = role_header("/members");
+    let mut m = role_header("roles.0");
     m.keys.clear();
     m.aspects[0].keys.clear();
     assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "role commit: level 1");
     let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     assert!(matches!(b.clone().build(&key(), &TestSecrets { admin: false }, &mut MemoryBlobs::default(), &mut rng()), Err(Error::Build(_))));
@@ -120,11 +120,11 @@ fn delete_levels_strict() {
 // without deltas.
 #[test]
 fn zero_deltas_refused() {
-    let mut h = role_header("/members");
+    let mut h = role_header("roles.0");
     h.aspects[0].hashes.clear();
     assert!(matches!(h.validate(), Err(Error::Malformed(_))));
     let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, vec![]);
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, vec![]);
     a.deltas.clear();
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -136,8 +136,8 @@ fn zero_deltas_refused() {
 #[test]
 fn expiry_range() {
     let d = AspectDefaults { retention: Retention::default(), expires: Some(u64::MAX - 5), ..Default::default() };
-    assert!(retention::write_expires("/app/x", ts(10), Some(&d), None).is_err());
-    assert!(retention::write_expires("/app/x", ts(10), None, Some(FOREVER + 1)).is_err());
+    assert!(retention::write_expires("app:x.0", ts(10), Some(&d), None).is_err());
+    assert!(retention::write_expires("app:x.0", ts(10), None, Some(FOREVER + 1)).is_err());
     let mut h = sample_header();
     h.aspects[0].expires = Some(FOREVER + 1);
     assert!(h.validate().is_err());
@@ -154,7 +154,7 @@ fn one_level_2_key() {
     let k = h.keys.iter().position(|k| *k == crate::tests::dkey(2, 9)).unwrap();
     h.aspects[0].keys = vec![i, j];
     let mut a2 = h.aspects[0].clone();
-    a2.ak = Ak::new("/app/title2").unwrap();
+    a2.ak = Ak::new("app:title2.0").unwrap();
     a2.keys = vec![i, k];
     h.aspects.push(a2);
     assert!(h.validate().unwrap_err().to_string().contains("level-2"));

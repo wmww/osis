@@ -1,4 +1,4 @@
-//! `box/`: hybrid sealed boxes, `/secrets` boxes in both forms, entry boxes, history boxes and the
+//! `box/`: hybrid sealed boxes, `secrets.0` boxes in both forms, entry boxes, history boxes and the
 //! inbox sealed box (spec/crypto.md §1, §4, spec/wire.md §7, §9). Generated. Randomness a box
 //! draws is listed in draw order: `ephemeral` (X25519 private key), then `mlkem-m`.
 
@@ -93,7 +93,7 @@ pub fn boxes() -> VecFile {
     assert_eq!(open_sealed(&recipient, b"ae", &sealed), Err(Error::Decrypt));
     cases.push(case("hybrid sealed box wrong ad", "spec/crypto.md §1").with("recipient-kem-seed", hex(kem_seed.expose())).with("ad", hex(b"ae")).with("sealed", hex(&sealed)).with("reject", "decrypt"));
 
-    // Sealed /secrets boxes: to an actor holder (one item, keyset named), to a key-actor holder
+    // Sealed secrets.0 boxes: to an actor holder (one item, keyset named), to a key-actor holder
     // (no keyset, every written role).
     let ew = named(&actor, Role::Write, 4, &s32(0x09));
     let er = named(&actor, Role::Read, 2, &s32(0x08));

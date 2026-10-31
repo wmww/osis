@@ -233,7 +233,7 @@ fn note_removal(sim: &mut NetSim, nodes: [usize; 2], g: Tid, holder: Tid, knew: 
             continue;
         }
         let Some(e) = sim.nodes.get_mut(n).and_then(|x| x.sync.as_mut()).map(|x| x.engine_mut()) else { continue };
-        let holders = e.get_typed(&g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        let holders = e.get_typed(&g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
         if !holders.contains_key(&holder) {
             let own: BTreeSet<CommitId> = e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == t)).collect();
             knew.insert(t, own);
@@ -414,7 +414,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     sim.reconnect_all();
     sim.quiet(40)?;
-    let eq = osis_base::Ak::new("/x/eq").map_err(|e| sim.fail(e.to_string()))?;
+    let eq = osis_base::Ak::new("x:eq.0").map_err(|e| sim.fail(e.to_string()))?;
     let mut m = osis_node::Mutation::new();
     m.set(t, &eq, &osis_base::Value::Str("c1".into())).map_err(|e| sim.fail(e.to_string()))?;
     let c1 = sim.commit(b, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
@@ -439,7 +439,7 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
     let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, Form::Node);
     cb.aspects.push(aw);
-    let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no /created"))?;
+    let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;
     let key = sim.engine(b)?.identity().keys().signing.clone();
     let built = cb.build(&key, &Dedup(rec), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(sim.dice.u64())).map_err(|e| sim.fail(e.to_string()))?;
     let c2 = built.commit.id();

@@ -14,7 +14,7 @@ fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool)
     b.encode()
 }
 
-// spec/commits.md §4: a commit waiting for deltas, then a thing of it whose `/created` is
+// spec/commits.md §4: a commit waiting for deltas, then a thing of it whose `created.0` is
 // unknown starts syncing: it waits for that record now (examined in full, not only its
 // missing deltas).
 #[test]
@@ -34,7 +34,7 @@ fn syncing_on_reexamines_in_full_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let partial = only(&pk.bytes, &h, |x, a| x == t && a == "/t/reg");
+    let partial = only(&pk.bytes, &h, |x, a| x == t && a == "t:reg.0");
     let r = lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
     lp.peers[1].engine.set_syncing(u, true).unwrap();
@@ -59,7 +59,7 @@ fn clock_back_after_ingest_reexamines_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
-    let partial = only(&pk.bytes, &h, |_, a| a == "/t/reg");
+    let partial = only(&pk.bytes, &h, |_, a| a == "t:reg.0");
     lp.peers[1].clock.advance(2 * 3_600_000);
     let r = lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");

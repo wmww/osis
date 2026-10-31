@@ -47,7 +47,7 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                 // layer 2 there (re-grant's first tenure is carried over `extend`)
                 let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
                 for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
-                    if part.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) != full.delta_valid(p, &t, "/x", osis_perm::Dots::Commit, r) {
+                    if part.delta_valid(p, &t, "x.0", osis_perm::Dots::Commit, r) != full.delta_valid(p, &t, "x.0", osis_perm::Dots::Commit, r) {
                         return Some(format!("validity of {n:?}'s {r:?} delta on {t:?} at {p:?}"));
                     }
                 }
@@ -66,9 +66,9 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
     None
 }
 
-/// 1-3 leaves (things only their `/created` names) under random held things, leaves included,
-/// and 0-2 things the history names whose `/created` arrives late (§1: their owner links),
-/// each with the step from which its `/created` is held (0: from the start).
+/// 1-3 leaves (things only their `created.0` names) under random held things, leaves included,
+/// and 0-2 things the history names whose `created.0` arrives late (§1: their owner links),
+/// each with the step from which its `created.0` is held (0: from the start).
 fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
     let mut out = Vec::new();
     for _ in 0..1 + rng.below(3) {
@@ -247,7 +247,7 @@ fn incremental_equals_from_scratch_large() {
     assert!(sharded(1_024, 0x5eed_0302, run).iter().sum::<usize>() > 0);
 }
 
-/// A `/created` arriving before, between or after the commits naming its thing: the cached
+/// A `created.0` arriving before, between or after the commits naming its thing: the cached
 /// component is re-evaluated, in every arrival order.
 #[test]
 fn created_late_every_order() {
@@ -258,7 +258,7 @@ fn created_late_every_order() {
     let d = w.thing(g);
     let c1 = w.set(k, g, x, edge(osis_base::Role::Admin), 10, &[]);
     let c2 = w.set(x, d, k, edge(osis_base::Role::Write), 11, &[]);
-    // Arrivals: 0 = g's /created, 1 = c1, 2 = c2.
+    // Arrivals: 0 = g's created.0, 1 = c1, 2 = c2.
     let perms = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
     for order in perms {
         let mut inc = Timelines::new();
@@ -316,7 +316,7 @@ fn kept_standing_absent_edge_every_order() {
     }
 }
 
-/// §5.1: a new thing's `/created` alone (nothing names it yet: `Timeline::add_leaves`, no held-set
+/// §5.1: a new thing's `created.0` alone (nothing names it yet: `Timeline::add_leaves`, no held-set
 /// gathering) and a write after every held one continue the component's timeline; each reports what
 /// changed (the leaf; the write's target), and the result equals an evaluation from scratch.
 #[test]
@@ -375,7 +375,7 @@ fn late_write_mid_history_keeps_states_exact() {
     for x in &n {
         for a in tl.applied().values() {
             for r in [Read, Write, Admin] {
-                let _ = tl.delta_valid(osis_perm::Point { node: *x, ..a.point }, &g, "/x", osis_perm::Dots::Commit, r);
+                let _ = tl.delta_valid(osis_perm::Point { node: *x, ..a.point }, &g, "x.0", osis_perm::Dots::Commit, r);
             }
         }
     }
@@ -596,7 +596,7 @@ fn extend_over_commits_and_leaves_together() {
     assert!(extended > 10, "{extended}");
 }
 
-/// spec/commits.md §4 (overlapping node-form `/members` ranges void both commits), spec/permissions.md §5.1:
+/// spec/commits.md §4 (overlapping node-form `roles.0` ranges void both commits), spec/permissions.md §5.1:
 /// writes after every held one go on by `Timelines::append` alone while their ranges are
 /// disjoint; one overlapping a held range (or a voided one) takes the general path, and every
 /// step equals an evaluation from scratch.
@@ -733,7 +733,7 @@ fn late_write_idle_only_in_final_walk_spec_permissions_5_1() {
 /// Random small histories built to drop and un-drop (few nodes, every one an admin at first;
 /// grants, removals, demotions with partial frontiers, invites, `until`, a team, sometimes a
 /// roster snapshot held from the start; two nodes only some writes name, one with its
-/// `/created` held, one without), the second half arriving late in random order through
+/// `created.0` held, one without), the second half arriving late in random order through
 /// `update_touched`: equal to an evaluation from scratch after every arrival. Returns how many
 /// updates `Timelines::append` did alone.
 fn adversarial(samples: u64, seed: u64) -> usize {
@@ -924,10 +924,10 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
     }
 }
 
-/// §5.1: a holder new to the group (a key actor whose `/created` alone is held, or no record
+/// §5.1: a holder new to the group (a key actor whose `created.0` alone is held, or no record
 /// at all) granted late joins the group's walk by `Timelines::append` (a node no earlier write
 /// names reaches nothing before it), not by an evaluation from scratch, as does one whose
-/// `/created` arrives with the grant; then writes of its own. Each equals an evaluation from
+/// `created.0` arrives with the grant; then writes of its own. Each equals an evaluation from
 /// scratch.
 #[test]
 fn new_holder_joins_walk_spec_permissions_5_1() {
@@ -1018,7 +1018,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
                     return Some(format!("standing of {n:?} on {t:?} before {:?}", a.point));
                 }
             }
-            // (per component: a node of another one brings no `/keys` here)
+            // (per component: a node of another one brings no `keys.0` here)
             let f = fresh.get(&t)?.certificates(n, &t);
             if part.certificates(n, &t) != f {
                 return Some(format!("certificates of {n:?} on {t:?}: part {:?} fresh {f:?}", part.certificates(n, &t)));
@@ -1158,7 +1158,7 @@ fn append_shapes_equals_from_scratch_large() {
 }
 
 /// §5.1 step 5, §6: a held record replaced under its commit ID by a fuller one (a roster
-/// snapshot whose `/tenures` part arrives after its `/members` part; a commit with more of its
+/// snapshot whose `tenures.0` part arrives after its `roles.0` part; a commit with more of its
 /// edge writes) changes the input: through `update_touched`, after a restart from walks saved
 /// before, and with a cached component of the same IDs, equal to an evaluation from scratch.
 #[test]
@@ -1176,7 +1176,7 @@ fn record_replaced_under_its_id_spec_permissions_6() {
         let c = w.set(n[1], g, n[3], edge(Read), 12, &[]);
         let mut part = w.clone();
         if fuller {
-            // the snapshot's `/tenures` part arrives late
+            // the snapshot's `tenures.0` part arrives late
             w.snaps.iter_mut().find(|x| x.id == s).unwrap().ledger = vec![(n[2], Write, Some((2, k, None)), (5, n[1], None), true)];
         } else {
             // the commit's second edge write arrives late
@@ -1274,7 +1274,7 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
     assert!(!full.falls(&b, &d).is_empty(), "b's class on d falls");
 }
 
-/// §1, §5.1: a thing an earlier write names (as holder) whose `/created` arrives late, and one
+/// §1, §5.1: a thing an earlier write names (as holder) whose `created.0` arrives late, and one
 /// named as target: the walk goes on from the first item naming it (before it, a node's role on
 /// it is its role on its owner), not evaluated anew; equal to an evaluation from scratch.
 #[test]
@@ -1315,8 +1315,8 @@ fn created_late_after_writes_naming_it_spec_permissions_5_1() {
 }
 
 /// §5.1 step 5 (notes/local-store.md, rebuildable caches): a walk saved before a new node
-/// joined (its `/created`, a grant to it, a write of its own) and a thing named before its
-/// `/created` arrived is restored and continued, not evaluated anew; equal to an evaluation
+/// joined (its `created.0`, a grant to it, a write of its own) and a thing named before its
+/// `created.0` arrived is restored and continued, not evaluated anew; equal to an evaluation
 /// from scratch.
 #[test]
 fn saved_walk_restored_after_a_node_joined_spec_permissions_5_1() {
@@ -1383,7 +1383,7 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 /// things (a doc owned by a team, a sub-doc by the doc) and things as holders, invites,
 /// `until`, removals, two-op commits, late writes by the key actor at the top, sometimes an
 /// epoch start with an audited ledger (virtual writes with a frontier) held from the start,
-/// and `/created` records of named things and of new nodes arriving late, with commits or
+/// and `created.0` records of named things and of new nodes arriving late, with commits or
 /// alone; restarts from saved walks now and then. Equal to an evaluation from scratch after
 /// every arrival. Returns (updates `append` did alone, commits placed without walking again).
 fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
@@ -1464,7 +1464,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
                 late.push(id);
             }
         }
-        // `/created` records held late: a team or doc the history names, the node with one
+        // `created.0` records held late: a team or doc the history names, the node with one
         let mut created_late: Vec<(Tid, usize)> = Vec::new();
         for t in [team, doc, extra[0]] {
             if rng.below(3) == 0 {
@@ -1481,7 +1481,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
         while i < order.len() {
             let take = if rng.below(3) == 0 { 1 + rng.below(3) } else { 1 };
             let step = i + 1;
-            // (half the time the `/created` records of this step alone first)
+            // (half the time the `created.0` records of this step alone first)
             if rng.below(2) == 0 && created_late.iter().any(|c| c.1 == step) {
                 let held = held_at(&w, &skip, &created_late, step);
                 inc.update_touched(&held, &touched(&prev, &held));
@@ -1683,7 +1683,7 @@ fn append_falls_equals_from_scratch_large() {
 }
 
 /// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
-/// until its `/created` says it is owned) gets its `/created` late: the walk goes on from the
+/// until its `created.0` says it is owned) gets its `created.0` late: the walk goes on from the
 /// dropped write, which is dropped again; and with a late write before it in the same update.
 /// Equal to an evaluation from scratch, not evaluated anew.
 #[test]
@@ -1830,7 +1830,7 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
 }
 
 /// Random histories biased toward thing creation: owner trees grown as commits arrive (leaves,
-/// chains of new things in one arrival, things created then named by later commits, `/created`
+/// chains of new things in one arrival, things created then named by later commits, `created.0`
 /// arriving after commits naming the thing, nodes joining), arrivals mixing records and commits,
 /// walks saved now and then, restarts from them. After every arrival the fast path (`append`,
 /// `Timeline::add_leaves`) reports what the general path reports (or less, where that is covered),
@@ -1889,7 +1889,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             let t = named.first().copied().unwrap_or(base[0]);
             w.snapshot(k, t, &[(n[1], osis_perm::Edge::new(Admin))], 2 + rng.below(40) as u64, &[]);
         }
-        // arrivals: each new `/created` and each commit, in random order, 1-4 at a time
+        // arrivals: each new `created.0` and each commit, in random order, 1-4 at a time
         #[derive(Clone, Copy)]
         enum Item {
             Created(Tid),

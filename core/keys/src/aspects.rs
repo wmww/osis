@@ -1,4 +1,4 @@
-//! `/keys` and `/secrets` contents and the writes rotations, grants and re-seals make to them
+//! `keys.0` and `secrets.0` contents and the writes rotations, grants and re-seals make to them
 //! (spec/crypto.md §3, §4; types: osis-schema `core_types`).
 
 use crate::epoch::{ActorEpochs, ROLES, SUITE};
@@ -35,7 +35,7 @@ pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
     }
 }
 
-/// A write to `/secrets`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
+/// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecretsWrite {
     pub boxes: BTreeMap<BoxKey, SecretBox>,
@@ -74,7 +74,7 @@ impl SecretsWrite {
 
     /// The epochs this write introduces per role and what each supersedes: a history box
     /// written for (r, e) with the epochs of the boxes of r it removes and, from `keys`
-    /// (the commit's `/keys` write and the keysets held before it), the keyset epoch of r it
+    /// (the commit's `keys.0` write and the keysets held before it), the keyset epoch of r it
     /// replaces; the latter covers an actor whose holders are all key actors (their boxes are
     /// keyed at their top role, so a rotation of a lower role removes none). A grant or re-seal
     /// re-writes history boxes and removes nothing, so it supersedes nothing. Superseded epochs
@@ -111,7 +111,7 @@ impl SecretsWrite {
     }
 
     /// The rotations this write makes as part of a rotation commit: its history boxes at the
-    /// epochs whose keyset the commit's `/keys` write sets (`keys`: that write and the keysets
+    /// epochs whose keyset the commit's `keys.0` write sets (`keys`: that write and the keysets
     /// held before it). A grant or re-seal re-writes history boxes but writes no keyset, so it
     /// makes none (spec/crypto.md §4).
     pub fn rotation_commit(&self, keys: (&KeysWrite, &Keys)) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
@@ -132,12 +132,12 @@ impl SecretsWrite {
     }
 }
 
-/// Every (role, epoch) the `/secrets` state keys (box and history keys).
+/// Every (role, epoch) the `secrets.0` state keys (box and history keys).
 fn keyed(s: &Secrets) -> Result<Vec<(Role, Epoch)>, Error> {
     s.boxes.keys().map(|k| (k.role, &k.epoch)).chain(s.history.keys().map(|k| (k.role, &k.epoch))).map(|(r, e)| Ok((r, from_schema(e)?))).collect()
 }
 
-/// Records every epoch the applied `/secrets` state names (box and history keys). Establishes
+/// Records every epoch the applied `secrets.0` state names (box and history keys). Establishes
 /// nothing (spec/crypto.md §4: a box or history box names an epoch without establishing it).
 pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Error> {
     for (r, e) in keyed(s)? {
@@ -146,7 +146,7 @@ pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Erro
     Ok(())
 }
 
-/// A held compaction snapshot of `/secrets` (`s`, its pages joined) keys these epochs: they are
+/// A held compaction snapshot of `secrets.0` (`s`, its pages joined) keys these epochs: they are
 /// established (`Snapshot`, spec/crypto.md §4). Returns whether anything changed (an epoch's
 /// snapshot mark or establishment): what the caller persists.
 pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Error> {
@@ -157,13 +157,13 @@ pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Err
     Ok(epochs.establish() | changed)
 }
 
-/// The `/secrets` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
+/// The `secrets.0` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is
 /// established, so the snapshot vouches for nothing this node did not verify.
 pub fn may_compact_secrets(s: &Secrets, epochs: &ActorEpochs) -> Result<bool, Error> {
     Ok(keyed(s)?.iter().all(|(r, e)| epochs.role(*r).is_established(e)))
 }
 
-/// Records the suite each keyset of `/keys` names for its epoch. Establishes nothing.
+/// Records the suite each keyset of `keys.0` names for its epoch. Establishes nothing.
 pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
     for r in ROLES {
         if let Some(ks) = keyset_of(k, r) {
@@ -173,7 +173,7 @@ pub fn observe_keys(k: &Keys, epochs: &mut ActorEpochs) -> Result<(), Error> {
     Ok(())
 }
 
-/// A write to `/keys` by a rotation: the rotated roles' keysets (spec/crypto.md §3).
+/// A write to `keys.0` by a rotation: the rotated roles' keysets (spec/crypto.md §3).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct KeysWrite {
     pub keysets: BTreeMap<Role, Keyset>,
@@ -192,7 +192,7 @@ impl KeysWrite {
     }
 }
 
-/// The keyset of `role` in `/keys`.
+/// The keyset of `role` in `keys.0`.
 pub fn keyset_of(k: &Keys, role: Role) -> Option<&Keyset> {
     match role {
         Role::Read => k.read.as_ref(),

@@ -34,9 +34,9 @@ impl Rng {
 fn try_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Option<Role>) {
     // remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(r) = role {
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
+        m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(r).to_value()) }).unwrap();
     }
     let _ = e.commit(m);
 }
@@ -100,9 +100,9 @@ fn history(seed: u64, steps: usize, mut each: impl FnMut(&mut LocalPeer, usize, 
             }
             7 => {
                 let _ = lp.peers[0].engine.roster_snapshot(&doc, None);
-                // a role snapshot (of the node's `/keys`) reaches perm's inputs too
+                // a role snapshot (of the node's `keys.0`) reaches perm's inputs too
                 let node = lp.peers[0].engine.tid();
-                if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_base::Ak::new("/keys").unwrap()) {
+                if let Ok(Some(_)) = lp.peers[0].engine.snapshot(&node, &osis_base::Ak::new("keys.0").unwrap()) {
                     snapshots += 1;
                 }
             }
@@ -301,7 +301,7 @@ fn crash_at_every_write_keeps_saved_walks_exact() {
 }
 
 // spec/permissions.md §5.1 step 5; spec: none (local store cache, notes/local-store.md): new
-// things in a saved component between opens (leaves by their `/created`, one of them with a
+// things in a saved component between opens (leaves by their `created.0`, one of them with a
 // smaller tid than the saved root, then edges on them) still resume its walk
 #[test]
 fn new_things_between_opens_still_restore() {
@@ -384,13 +384,13 @@ fn open_equals_rebuild_after_each_kind_of_change() {
     let now = lp.peers[2].engine.now();
     let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
     let mut m = Mutation::new();
-    m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(b)) }).unwrap();
     m.frontier(f.to_value());
     let rv = lp.peers[2].commit(m).unwrap().unwrap();
     let late = add_tag(&mut lp, 1, t, "late");
     let (pk2, pk1) = (lp.packages(2).unwrap(), lp.packages(1).unwrap());
     lp.deliver(0, pk2.iter().find(|p| p.id == rv).unwrap()).unwrap();
-    let tags = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap() {
+    let tags = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() {
         Some(Value::Set(s)) => s.len(),
         _ => 0,
     };
@@ -438,7 +438,7 @@ fn open_equals_rebuild_after_a_forget() {
 }
 
 // spec/requirements.md, Decentralization; spec/commits.md §5 (a dropped body leaves no local
-// index entry derived from it): after `/secrets` and `/keys` compactions drop a grant's and a
+// index entry derived from it): after `secrets.0` and `keys.0` compactions drop a grant's and a
 // demotion's rotation bodies, an open from the persisted index computes what a rebuild from the
 // commit records computes, whole index included (box and epoch notes, rotation roles, epochs'
 // snapshot marks), also after a later rotation
@@ -463,7 +463,7 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
     // the admin compacts both aspects and drops every body a snapshot covers
     let compact = |e: &mut Engine, ids: &mut Vec<osis_base::CommitId>| {
         let mut dropped = 0;
-        for k in ["/secrets", "/keys"] {
+        for k in ["secrets.0", "keys.0"] {
             let k = osis_base::Ak::new(k).unwrap();
             let Some(snap) = e.snapshot(&t, &k).unwrap() else { continue };
             for c in ids.iter() {
@@ -488,11 +488,11 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted again");
 }
 
-// as above, randomized: four nodes grant, demote (rotations), compact `/secrets` and `/keys`
+// as above, randomized: four nodes grant, demote (rotations), compact `secrets.0` and `keys.0`
 // dropping what the snapshot covers, and pass commits on late and out of order; at random points
 // and at the end an open equals a rebuild, whole index included. Seeds: OSIS_WALKS_SECRETS_START,
 // OSIS_WALKS_SECRETS_SEEDS (default 0..4 and FOUND), a thread per core (OSIS_WALKS_THREADS).
-// FOUND: 10607 kept a thing in `own_keys` after its `/keys` went back to missing, which a rebuild
+// FOUND: 10607 kept a thing in `own_keys` after its `keys.0` went back to missing, which a rebuild
 // lost; 225191 left a part `uncover` made missing judged by its dropped body's role
 // (`uncovered_part_judged_anew`).
 #[test]
@@ -513,7 +513,7 @@ fn open_equals_rebuild_random_secrets_compactions() {
 
 // spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
 // again, judged as at a node that never held it): B removes admin D, rotating the admin keyset;
-// C compacts `/keys` and drops the rotation's part; A demotes B to write (the rotation's `/keys`
+// C compacts `keys.0` and drops the rotation's part; A demotes B to write (the rotation's `keys.0`
 // part turns invalid: it needs admin) and removes C (the snapshot turns invalid): the part,
 // missing again, needs only write and turns valid, as a rebuild judges it. Shrunk from walks seed 225191, where
 // the flip went unjudged.
@@ -540,13 +540,13 @@ fn uncovered_part_judged_anew() {
     let rm = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced };
     let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
     deliver(&mut lp, 1, 2, &g);
-    // C compacts `/keys`, dropping the rotation's part
+    // C compacts `keys.0`, dropping the rotation's part
     tick(&mut lp);
-    let keys = ak("/keys");
+    let keys = ak("keys.0");
     let e = &mut lp.peers[2].engine;
     let snap = e.snapshot(&t, &keys).unwrap().unwrap();
     let on: Vec<_> = g.iter().filter(|x| e.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == t && a.ak == keys))).copied().collect();
-    assert!(!on.is_empty(), "the removal writes `/keys`");
+    assert!(!on.is_empty(), "the removal writes `keys.0`");
     for x in &on {
         assert_eq!(e.covered(&snap, x, &t, &keys).unwrap(), Some(true));
         e.drop_body(x, &t, &keys).unwrap();
@@ -593,7 +593,7 @@ fn secrets_history(seed: u64) -> usize {
                 let _ = lp.peers[i].engine.demote(&t, &d);
             }
             3 | 4 => {
-                let k = ak(["/secrets", "/keys"][rng.below(2) as usize]);
+                let k = ak(["secrets.0", "keys.0"][rng.below(2) as usize]);
                 let e = &mut lp.peers[i].engine;
                 if let Ok(Some(snap)) = e.snapshot(&t, &k) {
                     let on: Vec<_> = e.commit_ids().into_iter().filter(|c| *c != snap && e.header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak == k))).collect();
@@ -663,7 +663,7 @@ fn open_equals_rebuild_after_a_crash() {
 /// A frontier covering `x`'s writes on `t`'s tags up to `n`, padded past `CHUNK_THRESHOLD` when
 /// `big` (it then goes by link).
 fn tags_frontier(t: Tid, x: Tid, n: u64, big: bool) -> ct::Frontier {
-    let tags = |n: u64| std::collections::BTreeMap::from([("/t/tags".to_string(), std::collections::BTreeMap::from([(x, n)]))]);
+    let tags = |n: u64| std::collections::BTreeMap::from([("t:tags.0".to_string(), std::collections::BTreeMap::from([(x, n)]))]);
     let mut writes = std::collections::BTreeMap::from([(t, tags(n))]);
     for i in 0..if big { 4000u32 } else { 0 } {
         let b = i.to_be_bytes();
@@ -688,7 +688,7 @@ fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
     lp.peers[0].commit(m).unwrap().unwrap();
     let demote = |lp: &mut LocalPeer, f: ct::Frontier| {
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
+        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
         m.frontier(f.to_value());
         lp.peers[0].commit(m).unwrap().unwrap()
     };
@@ -703,7 +703,7 @@ fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
         demote(&mut lp, tags_frontier(t, x, n * 2 - 1, big));
         open_equals_rebuild(&mut lp.peers[0].engine, &[t], &format!("demotion {n}"));
         lp.sync_all().unwrap();
-        let Some(Value::Set(tags)) = lp.peers[0].engine.get(&t, &ak("/t/tags")).unwrap() else { panic!("demotion {n}: no tags") };
+        let Some(Value::Set(tags)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!("demotion {n}: no tags") };
         assert!(tags.contains(&s(&format!("x{n}"))) && !tags.contains(&s(&format!("late{n}"))), "demotion {n}: the unreceived write dropped");
     }
     let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
@@ -908,7 +908,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
                 }
             }
             6 => {
-                let a = ak(["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize]);
+                let a = ak(["t:keptset.0", "t:gonemap.0", "t:tags.0"][rng.below(3) as usize]);
                 let e = &mut lp.peers[i].engine;
                 if let Ok(Some(snap)) = e.snapshot(&t, &a)
                     && rng.below(2) == 0
@@ -926,9 +926,9 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
             7 => {
                 // the admin revokes or restores the writer, a revoke with what it received
                 let role = [None, Some(Role::Read), Some(Role::Write)][rng.below(3) as usize];
-                m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ids[1])) }).unwrap();
+                m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(ids[1])) }).unwrap();
                 if let Some(e) = role {
-                    m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[1]))], op: Op::Set(edge(e).to_value()) }).unwrap();
+                    m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[1]))], op: Op::Set(edge(e).to_value()) }).unwrap();
                 }
                 let scope = osis_perm::DemotionScope { roles: [(ids[1], [t].into())].into(), content: [(ids[1], [t].into())].into() };
                 let now = lp.peers[2].engine.now();
@@ -959,7 +959,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
                         double_imports += 1;
                     }
                 }
-                let a = ["/t/keptset", "/t/gonemap", "/t/tags"][rng.below(3) as usize];
+                let a = ["t:keptset.0", "t:gonemap.0", "t:tags.0"][rng.below(3) as usize];
                 let _ = lp.peers[i].engine.snapshot(&c, &ak(a));
             }
             10 => lp.advance(1 + rng.below(1_200_000)),
@@ -1001,7 +1001,7 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
     if forge {
         // every node holds every commit it has not dropped: the tags agree, a valid forger's
         // copies showing wherever they are held, the original or not (spec/permissions.md §5.2)
-        let tagged = |lp: &mut LocalPeer, i: usize| things.iter().map(|t| lp.peers[i].engine.get(t, &ak("/t/tags")).unwrap()).collect::<Vec<_>>();
+        let tagged = |lp: &mut LocalPeer, i: usize| things.iter().map(|t| lp.peers[i].engine.get(t, &ak("t:tags.0")).unwrap()).collect::<Vec<_>>();
         let first = tagged(&mut lp, 0);
         for i in 1..3 {
             assert_eq!(tagged(&mut lp, i), first, "seed {seed}: peer {i} differs ({forged} forged)");
@@ -1010,11 +1010,11 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
     (most, double_imports)
 }
 
-/// Peer `i` forges a snapshot of `t`'s `/t/tags`: its state with the value of a held tag (a
+/// Peer `i` forges a snapshot of `t`'s `t:tags.0`: its state with the value of a held tag (a
 /// node-form commit's element) replaced, under that element's dot and `ts`, and takes it.
 fn forge_tag(lp: &mut LocalPeer, i: usize, t: Tid, step: usize, rng: &mut Rng) -> bool {
     use osis_crdt::{Batch, Source, Writer};
-    let tags = ak("/t/tags");
+    let tags = ak("t:tags.0");
     let e = &lp.peers[i].engine;
     let held: Vec<(osis_base::Ts, Tid, u64)> = e
         .commit_ids()
@@ -1056,7 +1056,7 @@ fn carried_imports_alike_in_both_orders() {
     let pk = lp.packages(1).unwrap();
     lp.deliver(0, pk.iter().find(|p| p.id == o).unwrap()).unwrap();
     let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap();
+    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap();
     let pk = lp.packages(0).unwrap();
     let (late, rest): (Vec<_>, Vec<_>) = pk.iter().partition(|p| p.id == o);
     // peer 2: o last; peer 3: o first
@@ -1094,12 +1094,12 @@ fn carried_imports_without_the_import_spec_perm_5_2() {
     let (copy, imports) = lp.peers[0].engine.move_thing(&t, p).unwrap();
     assert!(!imports.is_empty());
     // peer 0 snapshots the copy's tags: the snapshot carries the import's writes
-    assert!(lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().is_some());
-    let shown = lp.peers[0].engine.get(&copy, &ak("/t/tags")).unwrap();
+    assert!(lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().is_some());
+    let shown = lp.peers[0].engine.get(&copy, &ak("t:tags.0")).unwrap();
     assert!(format!("{shown:?}").contains("\"a\""), "peer 0 shows its import: {shown:?}");
     sync(&mut lp, 0, 2);
     // peer 2, holding everything: the import is invalid, so nothing
-    let tags = ak("/t/tags");
+    let tags = ak("t:tags.0");
     let none = lp.peers[2].engine.get(&copy, &tags).unwrap();
     assert!(!format!("{none:?}").contains("\"a\""), "the invalid import's writes are not shown: {none:?}");
     let full = states(&mut lp.peers[2].engine, &[t, copy, p]);
@@ -1153,7 +1153,7 @@ fn double_import_alike_in_both_orders_spec_perm_7() {
         }
     }
     // peer 0 holds both and snapshots the copy's tags
-    let snap = lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
     let pk0 = lp.packages(0).unwrap();
     let sp: Vec<_> = pk0.iter().filter(|p| p.id == snap).cloned().collect();
     // peer 4: the second move, the snapshot, the first; peer 5: the snapshot, then both
@@ -1223,7 +1223,7 @@ fn import_of_own_thing_commit_void_spec_perm_7() {
     let (copy, _) = lp.peers[1].engine.move_thing(&t, o).unwrap();
     lp.sync(1, 0).unwrap();
     set_edge(&mut lp.peers[0].engine, o, x, None, None);
-    let body = ak("/t/body");
+    let body = ak("t:body.0");
     let mut m = Mutation::new();
     m.commit_form();
     m.set(copy, &body, &s("by owner")).unwrap();
@@ -1271,7 +1271,7 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
     lp.sync_all().unwrap();
     let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
     set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
-    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
     // peer 2: everything but the imports; peer 1 (a reader of the copy): everything
     let pk0 = lp.packages(0).unwrap();
     for p in &pk0 {
@@ -1280,7 +1280,7 @@ fn foreign_import_does_not_claim_carried_writes_spec_perm_7() {
             lp.deliver(2, p).unwrap();
         }
     }
-    let tags = ak("/t/tags");
+    let tags = ak("t:tags.0");
     let shown = lp.peers[2].engine.get(&copy, &tags).unwrap();
     assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
     let moved = |e: &Engine| {
@@ -1315,7 +1315,7 @@ fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
     lp.sync_all().unwrap();
     let (copy, imports) = lp.peers[0].engine.move_thing(&t, a).unwrap();
     set_edge(&mut lp.peers[0].engine, copy, x, Some(edge(Role::Read)), None);
-    lp.peers[0].engine.snapshot(&copy, &ak("/t/tags")).unwrap().unwrap();
+    lp.peers[0].engine.snapshot(&copy, &ak("t:tags.0")).unwrap().unwrap();
     let pk0 = lp.packages(0).unwrap();
     for p in &pk0 {
         lp.deliver(1, p).unwrap();
@@ -1335,7 +1335,7 @@ fn foreign_import_without_parts_waits_for_the_record_spec_perm_7() {
         lp.deliver(2, p).unwrap();
     }
     assert!(lp.peers[2].engine.pending().is_empty(), "refused once the record is held");
-    let shown = lp.peers[2].engine.get(&copy, &ak("/t/tags")).unwrap();
+    let shown = lp.peers[2].engine.get(&copy, &ak("t:tags.0")).unwrap();
     assert!(format!("{shown:?}").contains("\"a\""), "the snapshot's carried writes: {shown:?}");
     open_equals_rebuild_any(&mut lp.peers[2].engine, &[t, copy], "after the foreign import");
 }
@@ -1361,7 +1361,7 @@ fn invalid_import_after_snapshot_alike_spec_perm_7() {
     m.set(t, &REG, &s("r")).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
     let (copy, _) = lp.peers[0].engine.move_thing(&t, p).unwrap();
-    let list = ak("/t/list");
+    let list = ak("t:list.0");
     lp.peers[0].engine.snapshot(&copy, &list).unwrap().unwrap();
     let mut m = Mutation::new();
     m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Delete { at: 0, len: 1 } }).unwrap();

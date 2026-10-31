@@ -25,7 +25,7 @@ impl Rng {
 }
 
 fn reg() -> Ak {
-    Ak::new("/t/reg").unwrap()
+    Ak::new("t:reg.0").unwrap()
 }
 
 fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, frontier: Option<Value>) -> CommitId {
@@ -34,7 +34,7 @@ fn edge(lp: &mut LocalPeer, by: usize, t: Tid, m: Tid, role: Option<Role>, front
         Some(role) => PathOp { path: vec![PathSeg::Key(Value::Tid(m))], op: Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value()) },
         None => PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(m)) },
     };
-    mu.op(t, &ct::MEMBERS, op).unwrap();
+    mu.op(t, &ct::ROLES, op).unwrap();
     if let Some(f) = frontier {
         mu.frontier(f);
     }

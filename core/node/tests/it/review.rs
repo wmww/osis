@@ -54,10 +54,10 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     sync(&mut lp, 0, 2);
     sync(&mut lp, 0, 1);
     sync(&mut lp, 1, 0);
-    let want = lp.peers[0].engine.get(&t, &ak("/t/map")).unwrap();
+    let want = lp.peers[0].engine.get(&t, &ak("t:map.0")).unwrap();
     for i in 1..3 {
-        assert_eq!(lp.peers[i].engine.get(&t, &ak("/t/map")).unwrap(), want, "node {i}");
-        assert_eq!(lp.peers[i].engine.state(&t, &ak("/t/map")).unwrap(), lp.peers[0].engine.state(&t, &ak("/t/map")).unwrap());
+        assert_eq!(lp.peers[i].engine.get(&t, &ak("t:map.0")).unwrap(), want, "node {i}");
+        assert_eq!(lp.peers[i].engine.state(&t, &ak("t:map.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:map.0")).unwrap());
     }
 }
 
@@ -74,11 +74,11 @@ fn expired_missing_delta_counts_as_held_spec_commits_4() {
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    let partial = strip_parts(&pk, |a| a != "/t/brief", &h);
+    let partial = strip_parts(&pk, |a| a != "t:brief.0", &h);
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
     lp.advance(3_600_001);
     lp.peers[1].engine.tick().unwrap();
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/reg")).unwrap(), Some(s("stays")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("stays")));
 }
 
 // spec/commits.md §4: a part that does not hash to its header entry is dropped alone; the
@@ -101,7 +101,7 @@ fn bad_part_dropped_alone_spec_commits_4() {
     let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
     assert_eq!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(id));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("/t/kept")).unwrap(), Some(s("k")));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:kept.0")).unwrap(), Some(s("k")));
 }
 
 // spec/commits.md §5: a purge drops every body carrying the purged values, snapshots included.
@@ -110,19 +110,19 @@ fn purge_drops_snapshots_spec_commits_5() {
     let mut lp = net(1, 74);
     let t = new_thing(&mut lp, 0);
     let secret = set(&mut lp, 0, t, &REG, "secret");
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/reg")).unwrap().unwrap();
-    assert!(lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("/t/reg")));
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+    assert!(lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("t:reg.0")));
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
-    assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&snap, &t, &ak("t:reg.0")));
     // a purge never carries expires (spec/commits.md §5)
     let mut m = Mutation::new();
     m.set(t, &BRIEF, &s("x")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     assert!(lp.peers[0].commit(m).is_err());
 }
 
@@ -133,7 +133,7 @@ fn purge_drops_snapshots_spec_commits_5() {
 fn purge_drops_late_snapshot_spec_commits_5() {
     let mut lp = net(2, 0x5b00);
     let t = new_thing(&mut lp, 0);
-    let reg = ak("/t/reg");
+    let reg = ak("t:reg.0");
     let secret = set(&mut lp, 0, t, &REG, "secret");
     let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
     let spk = lp.peers[0].engine.package(&snap).unwrap().unwrap();
@@ -199,7 +199,7 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let t = new_thing(&mut lp, 0);
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    let (short, reg, doc) = (ak("/t/short"), ak("/t/reg"), ak("/u/doc"));
+    let (short, reg, doc) = (ak("t:short.0"), ak("t:reg.0"), ak("u:doc.0"));
     set(&mut lp, 0, t, &SHORT, "a");
     set(&mut lp, 0, t, &KEPT, "k");
     let mut m = Mutation::new();
@@ -222,7 +222,7 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let snap = e1.snapshot(&t, &short).unwrap().unwrap();
     assert_eq!(ret(e1, &snap), most(Some(600_000)), "schema default, schema unknown here");
     assert_eq!(e1.header(&snap).unwrap().schemas, vec![(TEST.get().id, 1)], "names the deltas' schema");
-    let snap = e1.snapshot(&t, &ak("/t/kept")).unwrap().unwrap();
+    let snap = e1.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
     assert_eq!(ret(e1, &snap), Retention { at_least: Bound { abs: None, rel: Some(86_400_000) }, ..most(None) }, "keep at least");
     let u = e1.snapshot(&t, &doc).unwrap().unwrap();
     assert_eq!(ret(e1, &u), most(None), "untyped");
@@ -269,13 +269,13 @@ fn body_is_a_class_spec_commits_5() {
     set(&mut lp, 0, t, &GONE, "b");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
-    assert!(e.body_not_dropped(&c, &t, &ak("/t/gone")) && e.body_not_dropped(&c, &t, &ak("/t/gone2")), "/t/gone2 is still live");
+    assert!(e.body_not_dropped(&c, &t, &ak("t:gone.0")) && e.body_not_dropped(&c, &t, &ak("t:gone2.0")), "t:gone2.0 is still live");
     set(&mut lp, 0, t, &GONE2, "b2");
     sync(&mut lp, 0, 1);
     let e = &mut lp.peers[1].engine;
-    assert!(!e.body_not_dropped(&c, &t, &ak("/t/gone")));
-    assert!(!e.body_not_dropped(&c, &t, &ak("/t/gone2")));
-    assert_eq!(e.get(&t, &ak("/t/gone2")).unwrap(), Some(s("b2")));
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:gone.0")));
+    assert!(!e.body_not_dropped(&c, &t, &ak("t:gone2.0")));
+    assert_eq!(e.get(&t, &ak("t:gone2.0")).unwrap(), Some(s("b2")));
     // deaths aggregate over the class: killing one delta's write dates the other's body
     let mut m = Mutation::new();
     m.set(t, &SHORT, &s("r")).unwrap();
@@ -283,8 +283,8 @@ fn body_is_a_class_spec_commits_5() {
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
     set(&mut lp, 0, t, &SHORT, "r2");
     let e = &mut lp.peers[0].engine;
-    assert!(e.deaths(&c2, &t, &ak("/t/short2")).unwrap().is_some());
-    assert_eq!(e.deaths(&c2, &t, &ak("/t/short2")).unwrap(), e.deaths(&c2, &t, &ak("/t/short")).unwrap());
+    assert!(e.deaths(&c2, &t, &ak("t:short2.0")).unwrap().is_some());
+    assert_eq!(e.deaths(&c2, &t, &ak("t:short2.0")).unwrap(), e.deaths(&c2, &t, &ak("t:short.0")).unwrap());
 }
 
 // spec/crdt.md §8: snapshot frontiers cover only writes the state reflects (valid ones).
@@ -304,23 +304,23 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     lp.advance(10);
     set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
     sync(&mut lp, 1, 0);
-    let r = lp.peers[0].engine.receipt(&t, &ak("/t/reg")).unwrap();
+    let r = lp.peers[0].engine.receipt(&t, &ak("t:reg.0")).unwrap();
     assert_eq!(r.contiguous(&osis_crdt::Source::node(b), u64::MAX), 1, "received, though invalid");
-    let snap = lp.peers[0].engine.snapshot(&t, &ak("/t/reg")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
     let mut lp2 = net(1, 77);
     lp2.advance(100);
     for p in lp.packages(0).unwrap() {
         let h = lp.peers[0].engine.header(&p.id).unwrap();
-        let skip = h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/reg");
+        let skip = h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:reg.0");
         if !skip {
             let _ = lp2.deliver(0, &p);
         }
     }
     assert!(lp2.peers[0].engine.commit_ids().contains(&snap));
-    assert_eq!(lp2.peers[0].engine.receipt(&t, &ak("/t/reg")).unwrap().contiguous(&osis_crdt::Source::node(b), u64::MAX), 0);
+    assert_eq!(lp2.peers[0].engine.receipt(&t, &ak("t:reg.0")).unwrap().contiguous(&osis_crdt::Source::node(b), u64::MAX), 0);
     // snapshot retention takes the carried write's relative keep at least (1d)
     set(&mut lp, 0, t, &KEPT, "k");
-    let ks = lp.peers[0].engine.snapshot(&t, &ak("/t/kept")).unwrap().unwrap();
+    let ks = lp.peers[0].engine.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
     let sh = lp.peers[0].engine.header(&ks).unwrap();
     assert_eq!(sh.aspects[0].retention.at_least.rel, Some(86_400_000));
 }
@@ -343,10 +343,10 @@ fn move_is_atomic_spec_perm_7() {
     let x = lp.peers[1].engine.new_thing(&mut m, me);
     m.set(x, &REG, &s("ok")).unwrap();
     lp.peers[1].commit(m).unwrap();
-    assert_eq!(lp.peers[1].engine.get(&x, &ak("/t/reg")).unwrap(), Some(s("ok")));
+    assert_eq!(lp.peers[1].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("ok")));
 }
 
-// spec/permissions.md §7: resolution follows `/moved` up to RESOLUTION_HOPS.
+// spec/permissions.md §7: resolution follows `moved.0` up to RESOLUTION_HOPS.
 #[test]
 fn resolution_hops_spec_perm_7() {
     let mut lp = net(1, 79);
@@ -389,7 +389,7 @@ fn move_reset_compacted_text_complete_spec_perm_7() {
     m.op(t, &TEXT, PathOp { path: Vec::new(), op: Op::Insert { at: 2, items: vec![s("q")] } }).unwrap();
     let c3 = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
-    let k = ak("/t/text");
+    let k = ak("t:text.0");
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("xyzq")));
     let snap = e.snapshot(&t, &k).unwrap().unwrap();
@@ -423,7 +423,7 @@ fn move_keeps_anchor_of_later_insert_spec_perm_7() {
     let mut m = Mutation::new();
     m.replace(t, &TEXT, &s("xyz")).unwrap();
     let c2 = lp.peers[0].commit(m).unwrap().unwrap();
-    let k = ak("/t/text");
+    let k = ak("t:text.0");
     let e = &mut lp.peers[0].engine;
     let snap = e.snapshot(&t, &k).unwrap().unwrap();
     for c in [c1, c2] {
@@ -450,7 +450,7 @@ fn move_many_bare_anchors_spec_perm_7() {
     let mut lp = net(1, 81);
     let t = new_thing(&mut lp, 0);
     let a = lp.peers[0].engine.tid();
-    let k = ak("/t/text");
+    let k = ak("t:text.0");
     let mut ids = Vec::new();
     for ch in ["a", "b", "c", "d"] {
         let mut m = Mutation::new();
@@ -491,7 +491,7 @@ fn deleted_text(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, n:
         ids.push(lp.peers[0].commit(m).unwrap().unwrap());
     }
     if compact {
-        let k = ak("/t/text");
+        let k = ak("t:text.0");
         let e = &mut lp.peers[0].engine;
         e.snapshot(&t, &k).unwrap().unwrap();
         for c in ids {
@@ -514,7 +514,7 @@ fn move_deleted_text_small_import_spec_perm_7() {
         let t = new_thing(&mut lp, 0);
         let a = lp.peers[0].engine.tid();
         deleted_text(&mut lp, t, 300_000, 0, compact);
-        let k = ak("/t/text");
+        let k = ak("t:text.0");
         let e = &mut lp.peers[0].engine;
         assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidtail")));
         let (copy, imports) = e.move_thing(&t, a).unwrap();
@@ -543,7 +543,7 @@ fn move_over_max_delta_bare_fails_spec_perm_7() {
     let t = new_thing(&mut lp, 0);
     let a = lp.peers[0].engine.tid();
     deleted_text(&mut lp, t, 400_000, 1, true);
-    let k = ak("/t/text");
+    let k = ak("t:text.0");
     let e = &mut lp.peers[0].engine;
     assert_eq!(e.get(&t, &k).unwrap(), Some(s("headmidxtail")));
     let before = e.commit_ids().len();
@@ -566,9 +566,9 @@ fn body_live_spans_its_class_spec_commits_5() {
     let c = lp.peers[0].commit(m).unwrap().unwrap();
     lp.advance(10);
     set(&mut lp, 0, t, &SHORT, "b");
-    let (a1, a2) = (ak("/t/short"), ak("/t/short2"));
+    let (a1, a2) = (ak("t:short.0"), ak("t:short2.0"));
     let e = &mut lp.peers[0].engine;
-    assert!(e.body_live(&c, &t, &a1).unwrap(), "its /t/short2 write is live");
+    assert!(e.body_live(&c, &t, &a1).unwrap(), "its t:short2.0 write is live");
     lp.advance(10);
     set(&mut lp, 0, t, &SHORT2, "b2");
     let e = &mut lp.peers[0].engine;

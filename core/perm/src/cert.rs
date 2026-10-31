@@ -17,13 +17,13 @@ use std::sync::Arc;
 /// The certificate records of a chain.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Certificates {
-    /// Things whose `/created` record goes along.
+    /// Things whose `created.0` record goes along.
     pub created: BTreeSet<Tid>,
     /// Role commits (edge writes) that go along whole.
     pub commits: BTreeSet<CommitId>,
     /// Roster snapshots, projected to these holders' roster and ledger entries.
     pub snapshots: BTreeMap<CommitId, BTreeSet<Tid>>,
-    /// Actors whose current `/keys` commit goes along.
+    /// Actors whose current `keys.0` commit goes along.
     pub keys: BTreeSet<Tid>,
 }
 
@@ -102,7 +102,7 @@ impl Timeline {
                 if !on_paths.insert(*c) {
                     continue;
                 }
-                // /created of each thing and of its owners up to the key actor
+                // created.0 of each thing and of its owners up to the key actor
                 out.created.insert(*c);
                 let (up, top) = self.input.owners.chain(c);
                 out.created.extend(up);

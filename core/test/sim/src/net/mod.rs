@@ -595,7 +595,7 @@ impl NetSim {
                     }
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
-                // the simulated transport finds a node by its current `/reach`
+                // the simulated transport finds a node by its current `reach.0`
                 Action::Reach => {}
             }
         }
@@ -1322,7 +1322,7 @@ impl NetSim {
         }
     }
 
-    /// Node `n` creates a thing owned by `g` and lists it in `g`'s `/group`.
+    /// Node `n` creates a thing owned by `g` and lists it in `g`'s `group.0`.
     pub fn item(&mut self, n: usize, g: Tid) -> Res<Tid> {
         let e = self.engine(n)?;
         let mut m = Mutation::new();

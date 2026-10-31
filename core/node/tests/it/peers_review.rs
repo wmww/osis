@@ -176,7 +176,7 @@ fn stranger_refused_spec_sync_5() {
 }
 
 // spec/sync.md §5, spec/permissions.md §3: a removed holder's node is not dialed (its old
-// `/reach` is held, it may not read now) and, once the label has a new step, opens nothing
+// `reach.0` is held, it may not read now) and, once the label has a new step, opens nothing
 // served.
 // spec/sync.md §5 (co-reader peer)
 #[test]
@@ -463,7 +463,7 @@ fn complete_pass_drops_removed_coreader_spec_permissions_3() {
     assert!(net.sync(a).complete_pass(&g), "x no longer counts for g");
 }
 
-// spec/permissions.md §4: `/reach` goes under a group's labels unless its policy excludes it
+// spec/permissions.md §4: `reach.0` goes under a group's labels unless its policy excludes it
 // (open audiences): a co-reader then neither learns the dialable key there nor is dialed for it.
 #[test]
 fn reach_excluded_per_label_spec_permissions_4() {

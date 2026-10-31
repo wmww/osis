@@ -12,14 +12,14 @@ use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
 pub const ROLE_RETENTION: Retention =
     Retention { by: PurgeBy::Admin, at_least: Bound { abs: None, rel: Some(ROLE_KEEP_MS) }, at_most: Bound { abs: None, rel: None } };
 
-/// The fixed retention of `/created`: `nobody`, kept forever.
+/// The fixed retention of `created.0`: `nobody`, kept forever.
 pub const CREATED_RETENTION: Retention =
     Retention { by: PurgeBy::Nobody, at_least: Bound { abs: Some(FOREVER), rel: None }, at_most: Bound { abs: None, rel: None } };
 
 /// The AK of the creation record.
-pub const CREATED: &str = "/created";
+pub const CREATED: &str = "created.0";
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `/created`).
+/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == CREATED {
         Some(CREATED_RETENTION)

@@ -21,7 +21,7 @@ fn int(n: i64) -> Option<Value> {
 #[test]
 fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let db = setup(1);
-    let k = ak("/app/draft").ephemeral();
+    let k = ak("app:draft.0~").ephemeral();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
@@ -80,8 +80,8 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
 #[test]
 fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let db = setup(3);
-    let text = ak("/doc/text");
-    let cursor = ak("/doc/cursor").ephemeral();
+    let text = ak("doc:text.0");
+    let cursor = ak("doc:cursor.0~").ephemeral();
     let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
     db.write_with(|w| w.at(d, text.clone()).set(&Value::Str("a".into()))).unwrap();
     db.write_with(|w| w.at(d, cursor.clone()).set(&Value::Int(1))).unwrap();
@@ -91,7 +91,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
     db.undo(&doc).unwrap().unwrap();
     assert_eq!(db.get(d, text.clone()).unwrap(), None, "the text change, not a cursor move");
     assert_eq!(db.get(d, cursor.clone()).unwrap(), int(2));
-    let cur = Scope::Aspects(vec![(d, ak("/doc/cursor"))]);
+    let cur = Scope::Aspects(vec![(d, ak("doc:cursor.0~"))]);
     db.undo(&cur).unwrap().unwrap();
     assert_eq!(db.get(d, cursor.clone()).unwrap(), int(1));
     db.redo(&cur).unwrap().unwrap();
@@ -103,15 +103,15 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 #[test]
 fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
     let db = setup(4);
-    let x = ak("/t/x");
-    let sel = ak("/t/sel").ephemeral();
+    let x = ak("t:x.0");
+    let sel = ak("t:sel.0~").ephemeral();
     let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
     let mut w = db.write();
     w.at(d, x.clone()).set(&Value::Int(1)).unwrap();
     w.at(d, sel.clone()).set(&Value::Int(7)).unwrap();
     let c = w.commit().unwrap().unwrap();
     assert!(matches!(c.id, ChangeId::Commit(_)));
-    let scope = Scope::Aspects(vec![(d, x.clone()), (d, ak("/t/sel"))]);
+    let scope = Scope::Aspects(vec![(d, x.clone()), (d, ak("t:sel.0~"))]);
     let found = db.commits(&CommitQuery::new().scope(scope.clone())).unwrap();
     assert_eq!(found[0].commit.id, c.id);
     assert_eq!(found[0].aspects.len(), 2, "both halves in one entry: {:?}", found[0].aspects);
@@ -130,7 +130,7 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
 #[test]
 fn mixed_scope_undo_order_spec_crdt_4_6() {
     let db = setup(5);
-    let (body, draft) = (ak("/t/body"), ak("/t/draft").ephemeral());
+    let (body, draft) = (ak("t:body.0"), ak("t:draft.0~").ephemeral());
     let (f, item, e) = db
         .write_with(|w| {
             let f = w.create_durable(db.me())?;
@@ -178,7 +178,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let mut x = cfg(6, MemStore::new(), &c);
     x.ephemeral_history = 8_000;
     let db = Osis::create(x).unwrap().0;
-    let k = ak("/app/n").ephemeral();
+    let k = ak("app:n.0~").ephemeral();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let mut ids = Vec::new();
     for i in 0..40 {
@@ -225,8 +225,8 @@ impl Tap for osis::Write<'_> {}
 #[test]
 fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let db = setup(9);
-    let draft = ak("/app/draft").ephemeral();
-    let body = ak("/app/body");
+    let draft = ak("app:draft.0~").ephemeral();
+    let body = ak("app:body.0");
     let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
     let e = db
         .write_with(|w| {
@@ -271,7 +271,7 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
     let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
     let e = db.write_with(|w| { let e = w.create(db.me())?; w.place(e, f)?; Ok(e) }).unwrap();
     assert!(db.knows(e));
-    db.write_with(|w| w.at(e, ak("/app/body")).set(&Value::Int(1))).unwrap();
+    db.write_with(|w| w.at(e, ak("app:body.0")).set(&Value::Int(1))).unwrap();
     let s = Scope::Thing(e);
     db.undo(&s).unwrap().unwrap();
     assert!(db.knows(e) && db.groups_of(e).item_of == vec![f], "the draft again");
@@ -291,7 +291,7 @@ fn undo_of_save_restores_an_empty_draft_spec_crdt_4_6() {
 #[test]
 fn durable_thing_into_ephemeral_group_persists_it_spec_data_model_8() {
     let db = setup(11);
-    let n = db.write_with(|w| { let n = w.create(db.me())?; w.at(n, ak("/app/body")).set(&Value::Int(1))?; Ok(n) }).unwrap();
+    let n = db.write_with(|w| { let n = w.create(db.me())?; w.at(n, ak("app:body.0")).set(&Value::Int(1))?; Ok(n) }).unwrap();
     let g = db.write_with(|w| { let g = w.create(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     assert!(db.created(g).unwrap().commit.is_none(), "the group is ephemeral");
     db.write_with(|w| w.place(n, g)).unwrap();

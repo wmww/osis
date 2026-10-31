@@ -3,7 +3,7 @@
 //! node learns"): real engines sync scripted scenarios through an osis-host hub, then the
 //! hub's stored bytes are searched for every secret and identifier of the scenario, blob sizes
 //! checked against Padmé, labels checked for shared bytes, claim sets for reader counts and
-//! heartbeats for content beyond `/seen`.
+//! heartbeats for content beyond `seen.0`.
 
 use crate::net;
 use net::*;
@@ -84,7 +84,7 @@ fn blind_node_stores_nothing_forbidden() {
         ("group tid".into(), g.as_bytes().to_vec()),
         ("item tid".into(), t.as_bytes().to_vec()),
     ];
-    for ak in ["/t/reg", "/t/big", "/members", "/secrets", "/keys", "/label", "/seen", "/node", "/reach", "/group", "/created"] {
+    for ak in ["t:reg.0", "t:big.0", "roles.0", "secrets.0", "keys.0", "label.0", "seen.0", "node.0", "reach.0", "group.0", "created.0"] {
         needles.push((format!("ak {ak}"), ak.as_bytes().to_vec()));
     }
     for n in nodes {
@@ -198,7 +198,7 @@ fn claim_sets_hide_reader_counts() {
     assert_ne!(s5, sorted, "claims in random order");
 }
 
-// spec/permissions.md §4 (heartbeat): a heartbeat commit writes `/seen` on its own node thing
+// spec/permissions.md §4 (heartbeat): a heartbeat commit writes `seen.0` on its own node thing
 // and nothing else, expiring within the heartbeat bounds
 #[test]
 fn heartbeats_carry_only_seen() {
@@ -207,7 +207,7 @@ fn heartbeats_carry_only_seen() {
     let e = net.engine(a);
     for id in e.commit_ids() {
         let h = e.header(&id).unwrap();
-        if !h.aspects.iter().any(|x| x.ak.as_str() == "/seen") {
+        if !h.aspects.iter().any(|x| x.ak.as_str() == "seen.0") {
             continue;
         }
         authors.insert(h.author);
@@ -215,7 +215,7 @@ fn heartbeats_carry_only_seen() {
         assert!(h.chunks.is_empty() && h.purge.is_empty() && h.undoes.is_none() && h.frontier.is_none() && h.origins.is_empty());
         let ts = h.ts.wall_ms().0;
         for x in &h.aspects {
-            assert_eq!((x.ak.as_str(), x.tid), ("/seen", h.author), "a heartbeat carried more than /seen");
+            assert_eq!((x.ak.as_str(), x.tid), ("seen.0", h.author), "a heartbeat carried more than seen.0");
             let exp = x.expires.unwrap();
             assert!(exp >= ts + osis_base::format::HEARTBEAT_MIN_LIFETIME_MS && exp <= ts + osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         }

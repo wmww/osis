@@ -11,8 +11,8 @@ use osis_node::labeling::{open_commit, seal_body};
 use osis_crypto::SeededRng;
 
 // spec/sync.md §3 (entitlement): a shared folder's label holds what its actor may read: items
-// it owns and the folder's own writes; an item of another owner dropped into `/group` without
-// an edge is silently not shared (only the folder's `/group` delta goes).
+// it owns and the folder's own writes; an item of another owner dropped into `group.0` without
+// an edge is silently not shared (only the folder's `group.0` delta goes).
 #[test]
 fn shared_folder_entitlement_spec_sync_3() {
     let mut net = Net::new();

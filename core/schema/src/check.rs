@@ -47,7 +47,7 @@ const MAX_CHECK_WORK: usize = 100_000;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Violation {
     pub rule: Rule,
-    /// Where: `type task.7`, `aspect /note/tasks[].3`, `schema`.
+    /// Where: `type task.7`, `aspect note:tasks.0[].3`, `schema`.
     pub at: String,
 }
 

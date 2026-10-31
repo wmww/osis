@@ -45,7 +45,7 @@ async fn round_trip<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tran
     let (da, card) = Osis::create(cfg(1, vec![host.clone()], a)).unwrap();
     let mut w = da.write();
     let t = w.create_in(da.me(), &[da.home()]).unwrap();
-    w.at(t, ak("/t/x")).set(&Value::Str("over the wire".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("over the wire".into())).unwrap();
     w.commit().unwrap();
     tokio::time::timeout(GUARD, da.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
 
@@ -53,17 +53,17 @@ async fn round_trip<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tran
     let mut own = cfg(2, vec![], b);
     own.runtime = Runtime::Own;
     let db = tokio::time::timeout(GUARD, Osis::restore(own, &card.unwrap())).await.unwrap().unwrap();
-    assert_eq!(db.get(t, ak("/t/x")).unwrap(), Some(Value::Str("over the wire".into())));
+    assert_eq!(db.get(t, ak("t:x.0")).unwrap(), Some(Value::Str("over the wire".into())));
     // the host, and the first device as a co-reader once its connection is up
     assert!(db.status().unwrap().connected >= 1);
     if p2p {
         assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
         let mut w = da.write();
-        w.at(t, ak("/t/x")).set(&Value::Str("peer to peer".into())).unwrap();
+        w.at(t, ak("t:x.0")).set(&Value::Str("peer to peer".into())).unwrap();
         w.commit().unwrap();
         let want = Some(Value::Str("peer to peer".into()));
         tokio::time::timeout(GUARD, async {
-            while db.get(t, ak("/t/x")).unwrap() != want {
+            while db.get(t, ak("t:x.0")).unwrap() != want {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -125,7 +125,7 @@ async fn redeem_over<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tra
     let link = alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     assert_eq!(tokio::time::timeout(Duration::from_secs(90), bob.redeem(&link)).await.unwrap().unwrap(), g);
-    // spec/permissions.md §4, notes/sync.md: `/reach` under the home group, not under a group
+    // spec/permissions.md §4, notes/sync.md: `reach.0` under the home group, not under a group
     // shared with a non-contact, until the policy says so
     let home = alice.home();
     assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
@@ -161,7 +161,7 @@ async fn text_idle_commit_api_text_sessions() {
     let mut c = cfg(1, vec![], Transport::InProcess(net.endpoint("a")));
     c.idle_commit = Duration::from_millis(20);
     let db = Osis::create(c).unwrap().0;
-    let k = ak("/t/body");
+    let k = ak("t:body.0");
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let s = db.edit_text(t, k.clone(), osis::Path::root()).unwrap();
     let watch = db.at(t, k.clone()).watch().unwrap();
@@ -179,12 +179,12 @@ async fn text_idle_commit_api_text_sessions() {
 async fn keep_alive_rewrites_until_dropped() {
     let net = osis_transport::Net::new(4);
     let db = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
-    db.register_schema_source("c.osis", "schema 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;\nrevision 1;\naspect /c/cursor: map<tid, int> [ephemeral, expires: 60ms];\naspect /c/flag: map<tid, int> [ephemeral];\n").unwrap();
-    let k = db.key("/c/cursor").unwrap();
+    db.register_schema_source("c.osis", "schema 0x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c;\nrevision 1;\naspect c:cursor.0~: map<tid, int> [ephemeral, expires: 60ms];\naspect c:flag.0~: map<tid, int> [ephemeral];\n").unwrap();
+    let k = db.key("c:cursor.0~").unwrap();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);
     let mine = |db: &Osis| db.get(t, k.clone()).unwrap().and_then(|v| if let Value::Map(m) = v { m.get(&Value::Tid(db.node())).cloned() } else { None });
-    assert!(db.keep_alive(t, db.key("/c/flag").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
+    assert!(db.keep_alive(t, db.key("c:flag.0~").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
     let ka = db.keep_alive(t, k.clone(), me, &Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
     // rewritten every 30 ms: at least four writes besides the first in 250 ms (expiry itself
@@ -205,7 +205,7 @@ async fn keep_alive_rewrites_until_dropped() {
     .unwrap();
 }
 
-/// Waits until `db` published its `/reach` (the driver listens with its dialable key).
+/// Waits until `db` published its `reach.0` (the driver listens with its dialable key).
 async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
     tokio::time::timeout(GUARD, async {
         loop {
@@ -222,7 +222,7 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
 // spec/permissions.md §9 (first contact: the link carries the sharer's dialable key and relays),
 // spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's host; he redeems her direct link at
 // her device, opening the link's label there by the link key, and then syncs the target with
-// her device though neither publishes `/reach` to the other's groups by default.
+// her device though neither publishes `reach.0` to the other's groups by default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_in_process_spec_permissions_9() {
     let net = osis_transport::Net::new(6);
@@ -249,9 +249,9 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
     let t = w.create_in(g, &[g]).unwrap();
-    w.at(t, ak("/t/x")).set(&Value::Str("first contact".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("first contact".into())).unwrap();
     w.commit().unwrap();
-    // `/reach` went under g (only Alice reads it); the link's K joining g makes g stop
+    // `reach.0` went under g (only Alice reads it); the link's K joining g makes g stop
     // qualifying, so the key rotates, and the link carries the new one, listened on
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
@@ -271,7 +271,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     let want = Some(Value::Str("first contact".into()));
     tokio::time::timeout(GUARD, async {
-        while bob.get(t, ak("/t/x")).unwrap() != want {
+        while bob.get(t, ak("t:x.0")).unwrap() != want {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -279,11 +279,11 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     .unwrap();
     // Bob's writes reach Alice the same way
     let mut w = bob.write();
-    w.at(t, ak("/t/x")).set(&Value::Str("back".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("back".into())).unwrap();
     w.commit().unwrap();
     let back = Some(Value::Str("back".into()));
     tokio::time::timeout(GUARD, async {
-        while alice.get(t, ak("/t/x")).unwrap() != back {
+        while alice.get(t, ak("t:x.0")).unwrap() != back {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -371,24 +371,24 @@ async fn redeem_direct_no_host_in_process_spec_permissions_9() {
     alice.sync(g, &[]).unwrap();
     let mut w = alice.write();
     let t = w.create_in(g, &[g]).unwrap();
-    w.at(t, ak("/t/x")).set(&Value::Str("no host".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("no host".into())).unwrap();
     w.commit().unwrap();
     let link = alice.make_link(g, osis::Role::Write, osis::LinkOpts { direct: true, ..Default::default() }).unwrap();
     assert_eq!(tokio::time::timeout(GUARD, bob.redeem(&link)).await.unwrap().unwrap(), g);
     let want = Some(Value::Str("no host".into()));
     tokio::time::timeout(GUARD, async {
-        while bob.get(t, ak("/t/x")).unwrap() != want {
+        while bob.get(t, ak("t:x.0")).unwrap() != want {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
     .unwrap();
     let mut w = bob.write();
-    w.at(t, ak("/t/x")).set(&Value::Str("back".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("back".into())).unwrap();
     w.commit().unwrap();
     let back = Some(Value::Str("back".into()));
     tokio::time::timeout(GUARD, async {
-        while alice.get(t, ak("/t/x")).unwrap() != back {
+        while alice.get(t, ak("t:x.0")).unwrap() != back {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -437,11 +437,11 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     assert_eq!(alice.sync_engine(|s| s.own_reach()).unwrap().dialable, key, "finalized by redemption: kept");
     let mut w = bob.write();
     let t = w.create_in(g, &[g]).unwrap();
-    w.at(t, ak("/t/x")).set(&Value::Str("still direct".into())).unwrap();
+    w.at(t, ak("t:x.0")).set(&Value::Str("still direct".into())).unwrap();
     w.commit().unwrap();
     let want = Some(Value::Str("still direct".into()));
     tokio::time::timeout(GUARD, async {
-        while alice.get(t, ak("/t/x")).unwrap() != want {
+        while alice.get(t, ak("t:x.0")).unwrap() != want {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
@@ -549,8 +549,8 @@ fn own_runtime_reopen_right_after_close() {
     db.close().unwrap();
     for i in 1..12u64 {
         let db = Osis::open(at(i)).unwrap();
-        assert_eq!(db.get(t, ak("/n/v")).unwrap(), (i > 1).then(|| Value::Int(i as i64 - 1)));
-        db.write_with(|w| w.at(t, ak("/n/v")).set(&Value::Int(i as i64))).unwrap();
+        assert_eq!(db.get(t, ak("n:v.0")).unwrap(), (i > 1).then(|| Value::Int(i as i64 - 1)));
+        db.write_with(|w| w.at(t, ak("n:v.0")).set(&Value::Int(i as i64))).unwrap();
         db.close().unwrap();
     }
     let _ = std::fs::remove_dir_all(&dir);

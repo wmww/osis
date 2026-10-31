@@ -2,7 +2,7 @@
 //! `peer://` addresses, a node dialed by its dialable key (the iroh endpoint key: the Ed25519 key
 //! of the 32-byte static secret, as `Quic` derives it), through the relays the URL lists, with
 //! iroh's hole punching. No n0 infrastructure: no address lookup, no default relays; relays are
-//! the self-hosted `iroh-relay` URLs from `/reach`. Items of a `peer://` URL that parse as socket
+//! the self-hosted `iroh-relay` URLs from `reach.0`. Items of a `peer://` URL that parse as socket
 //! addresses are direct addresses (a LAN announcement's, a loopback test's); the rest are relay
 //! URLs. A listener binds the addresses its URL lists and registers at the relays it lists, and
 //! nowhere else (a LAN listener lists none: a relay would link its fresh key to the node's). ALPN `osis`. The authenticated
@@ -175,7 +175,7 @@ impl Transport for Iroh {
     }
 
     /// `cfg.url`: `peer://` with the socket addresses to bind (none: all interfaces, any port).
-    /// The listener's `address().url` lists bound IP addresses: never publish it in `/reach`
+    /// The listener's `address().url` lists bound IP addresses: never publish it in `reach.0`
     /// (spec/sync.md §10); a peer learns direct addresses by LAN announcement or hole punching.
     async fn listen(&self, cfg: ListenConfig) -> Result<IrohListener, Error> {
         self.listen_inner(cfg).await
@@ -253,7 +253,7 @@ impl Connection for IrohConn {
 }
 
 /// A self-hosted `iroh-relay` on localhost for tier-2 tests (feature `relay`): plain HTTP, no
-/// QUIC address discovery; shut down when dropped. `url` is the relay URL for `/reach` and
+/// QUIC address discovery; shut down when dropped. `url` is the relay URL for `reach.0` and
 /// a listener's URL.
 #[cfg(feature = "relay")]
 pub struct TestRelay {

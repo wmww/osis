@@ -25,7 +25,7 @@ The core does five things (spec/versioning.md): IDs never reused, open structs w
 - **Representation change**: add items with new IDs; the new form `succeeds` the old. Both forms stay writable. Forms are sets, covering splits and merges.
 - **Tie-break**: read the new form unless the old carries a newer timestamp (an old app wrote since), then f(old). Timestamp of a form = greatest commit `ts` over its leaf registers and resets; equal `ts` prefers new. Deterministic, so it converges, with no round-trip law on f and g. A new form equal to its default has no timestamp and reads as "use the old form": give defaults no other meaning.
 - **Removing an item** (dropping f) reserves its ID; data under it is parked, old apps still use it. New records then lack the item, so do this only after an import, when old readers no longer matter.
-- A change of type is a new AK; `/name@2` is only a naming convention.
+- A change of type is a new AK; `name.0@2` is only a naming convention.
 - Cost per edit is O(edit): conversion is per element on read, path ops on write.
 
 ## Which form is written
@@ -33,7 +33,7 @@ An app update must never by itself change what is stored. Per write into a form 
 - **old only**, g(new): the default when g is exact or its approximation is declared acceptable. Old apps stay fully functional.
 - **new only**: when g is impossible for this value, or policy says the group has moved on. Optionally reset the old form in the same commit.
 - **new plus lossy old**: when g approximates usefully and old readers still matter.
-Policy inputs, all local: whether g is exact; (schema ID, revision) pairs in this group's recent headers (move on once every recent writer is at or above the transition's revision); the revision's age; `/node.schemas` (makes read-only old apps visible; pair with an age cutoff for dead nodes, notes/ephemeral.md); an explicit per-group or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later into a group with old writers goes back to old-only if g is exact.
+Policy inputs, all local: whether g is exact; (schema ID, revision) pairs in this group's recent headers (move on once every recent writer is at or above the transition's revision); the revision's age; `node.0` schemas (makes read-only old apps visible; pair with an age cutoff for dead nodes, notes/ephemeral.md); an explicit per-group or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later into a group with old writers goes back to old-only if g is exact.
 
 Cost where the new form is used: old apps see stale or missing data on that item, and their later edit wins through f at the granularity of the converted value. Nothing can do better: old code cannot know what new data means.
 
@@ -46,7 +46,7 @@ Cost where the new form is used: old apps see stale or missing data on that item
 - **Set elements and map keys** are atomic: an old app cannot edit new fields of one. Model editable records as `map<K, struct>` or `list<struct>`.
 
 ## Worked example
-v1 notes app: `/note/tasks: list<task>`, `task { 1 title: string, 2 done: bool }`. v2 wants a status enum and shareable tasks.
+v1 notes app: `note:tasks.0: list<task>`, `task { 1 title: string, 2 done: bool }`. v2 wants a status enum and shareable tasks.
 - Status: add `3 status: option<status>`. v2 reads status, falls back to done; g sets done from status, exact for todo and done, impossible for blocked. Blocked tasks are the only ones old apps see wrong.
 - Tasks as things: add `4 ref: option<tid>`, converted per task when shared. Old apps edit the inline copy, which wins when newer.
 - Later v2 drops `done`: reserve ID 2; v1 fails to type tasks created after that, so only once v1 readers no longer matter.

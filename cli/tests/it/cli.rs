@@ -52,7 +52,7 @@ impl S {
     }
 
     fn thing(&self) -> String {
-        self.ok(&["create", "--owner", "me", "--in", "home", "/t/made", "true"]).line().to_string()
+        self.ok(&["create", "--owner", "me", "--in", "home", "t:made.0", "true"]).line().to_string()
     }
 }
 
@@ -72,28 +72,28 @@ fn command_tree_is_consistent_plan_cli_tests() {
 #[test]
 fn things_and_aspects_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/note/title", "\"hi\"", "/note/n", "3", "/note/neg", "-3"]).line().to_string();
-    assert_eq!(s.ok(&["get", &t, "/note/neg"]).line(), "-3");
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "note:title.0", "\"hi\"", "note:n.0", "3", "note:neg.0", "-3"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "note:neg.0"]).line(), "-3");
     assert!(t.starts_with("osis://"));
-    assert_eq!(s.ok(&["get", &t, "/note/title"]).line(), "\"hi\"");
-    s.ok(&["set", &t, "/note/m", "{\"a\": [1, 2.5], 1: #{h'00'}}"]);
-    assert_eq!(s.ok(&["get", &t, "/note/m"]).line(), "{1: #{h'00'}, \"a\": [1, 2.5]}");
-    assert_eq!(s.ok(&["get", &t, "/note/m", "[\"a\"]"]).line(), "[1, 2.5]");
-    assert_eq!(s.ok(&["get", &t, "/note/m", "[1]"]).line(), "#{h'00'}");
-    s.ok(&["set", &t, "/note/m", "[\"b\"]", "true"]);
-    assert_eq!(s.ok(&["get", &t, "/note/m", "[\"b\"]"]).line(), "true");
-    s.ok(&["rm", &t, "/note/m", "[\"b\"]"]);
-    assert_eq!(s.code(&["get", &t, "/note/m", "[\"b\"]"]), 3);
-    s.ok(&["replace", &t, "/note/n", "4"]);
-    assert_eq!(s.ok(&["get", &t, "/note/n"]).line(), "4");
+    assert_eq!(s.ok(&["get", &t, "note:title.0"]).line(), "\"hi\"");
+    s.ok(&["set", &t, "note:m.0", "{\"a\": [1, 2.5], 1: #{h'00'}}"]);
+    assert_eq!(s.ok(&["get", &t, "note:m.0"]).line(), "{1: #{h'00'}, \"a\": [1, 2.5]}");
+    assert_eq!(s.ok(&["get", &t, "note:m.0", "[\"a\"]"]).line(), "[1, 2.5]");
+    assert_eq!(s.ok(&["get", &t, "note:m.0", "[1]"]).line(), "#{h'00'}");
+    s.ok(&["set", &t, "note:m.0", "[\"b\"]", "true"]);
+    assert_eq!(s.ok(&["get", &t, "note:m.0", "[\"b\"]"]).line(), "true");
+    s.ok(&["rm", &t, "note:m.0", "[\"b\"]"]);
+    assert_eq!(s.code(&["get", &t, "note:m.0", "[\"b\"]"]), 3);
+    s.ok(&["replace", &t, "note:n.0", "4"]);
+    assert_eq!(s.ok(&["get", &t, "note:n.0"]).line(), "4");
     let aks = s.ok(&["aspects", &t]).out;
-    assert!(aks.contains("/note/title") && aks.contains("/created"), "{aks}");
+    assert!(aks.contains("note:title.0") && aks.contains("created.0"), "{aks}");
     let show = s.ok(&["show", &t]).out;
-    assert!(show.contains("/note/title\t\"hi\"") && show.contains("role\tadmin") && show.contains("/created\t{owner: osis://"), "{show}");
-    s.ok(&["rm", &t, "/note/title"]);
-    assert_eq!(s.code(&["get", &t, "/note/title"]), 3);
+    assert!(show.contains("note:title.0\t\"hi\"") && show.contains("role\tadmin") && show.contains("created.0\t{owner: osis://"), "{show}");
+    s.ok(&["rm", &t, "note:title.0"]);
+    assert_eq!(s.code(&["get", &t, "note:title.0"]), 3);
     s.ok(&["delete", &t]);
-    assert_eq!(s.code(&["get", &t, "/note/n"]), 3);
+    assert_eq!(s.code(&["get", &t, "note:n.0"]), 3);
 }
 
 // notes/cli.md Exit codes: exit codes by error category.
@@ -103,16 +103,16 @@ fn exit_codes_plan_cli_6() {
     let t = s.thing();
     // 2: usage, unparsable argument
     assert_eq!(s.code(&["get"]), 2);
-    assert_eq!(s.code(&["set", &t, "/a/b", "{oops"]), 2);
-    assert_eq!(s.code(&["get", "not-a-tid", "/a/b"]), 2);
+    assert_eq!(s.code(&["set", &t, "a:b.0", "{oops"]), 2);
+    assert_eq!(s.code(&["get", "not-a-tid", "a:b.0"]), 2);
     // 3: absent, unknown thing, same false
-    assert_eq!(s.code(&["get", &t, "/a/b"]), 3);
+    assert_eq!(s.code(&["get", &t, "a:b.0"]), 3);
     let other = "osis://AAAAAAAAAAAAAAAAAAAA";
-    assert_eq!(s.code(&["set", other, "/a/b", "1"]), 3);
+    assert_eq!(s.code(&["set", other, "a:b.0", "1"]), 3);
     assert_eq!(s.code(&["same", &t, other]), 3);
     assert_eq!(s.code(&["same", &t, &t]), 0);
     // 7: invalid (role-class aspects are written only through sharing calls)
-    assert_eq!(s.code(&["set", &t, "/members", "{}"]), 7);
+    assert_eq!(s.code(&["set", &t, "roles.0", "{}"]), 7);
     // 1: not supported yet (queries)
     let o = s.call(&["--json", "ls", "home"], "");
     assert_eq!(o.code, 1);
@@ -151,9 +151,9 @@ fn store_dir_init_lock_plan_cli_2() {
         assert_eq!(mode & 0o777, m, "{}", p.display());
     }
     assert_eq!(call(&["init"]).0, 8, "refuses a non-empty store");
-    let (c, t, _) = call(&["create", "--owner", "me", "/a/b", "1"]);
+    let (c, t, _) = call(&["create", "--owner", "me", "a:b.0", "1"]);
     assert_eq!(c, 0);
-    assert_eq!(call(&["get", t.trim(), "/a/b"]).1, "1\n");
+    assert_eq!(call(&["get", t.trim(), "a:b.0"]).1, "1\n");
     let held = osis::Osis::open(osis::Config::dir(&d)).unwrap();
     let (c, _, err) = call(&["whoami"]);
     assert_eq!(c, 8, "{err}");
@@ -167,13 +167,13 @@ fn store_dir_init_lock_plan_cli_2() {
 #[test]
 fn json_output_plan_cli_5() {
     let s = S::mem();
-    let o = s.ok(&["--json", "create", "--owner", "me", "--in", "home", "/a/b", "1.5"]);
+    let o = s.ok(&["--json", "create", "--owner", "me", "--in", "home", "a:b.0", "1.5"]);
     assert!(o.out.starts_with("{\"commit\":\"") && o.out.contains("\"tid\":\"osis://"), "{}", o.out);
     let t = o.out.split("\"tid\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert_eq!(s.ok(&["--json", "get", &t, "/a/b"]).line(), "1.5");
+    assert_eq!(s.ok(&["--json", "get", &t, "a:b.0"]).line(), "1.5");
     let w = s.ok(&["--json", "whoami"]).out;
     assert!(w.contains("\"me\":\"osis://") && w.contains("\"node\":\"osis://") && w.contains("\"hosts\":[]"), "{w}");
-    let e = s.call(&["--json", "get", &t, "/a/b", ".x"], "");
+    let e = s.call(&["--json", "get", &t, "a:b.0", ".x"], "");
     assert_eq!(e.code, 2);
     assert!(e.err.contains("\"kind\":\"Usage\""), "{}", e.err);
 }
@@ -182,18 +182,18 @@ fn json_output_plan_cli_5() {
 #[test]
 fn write_script_atomic_plan_cli_4() {
     let s = S::mem();
-    let script = "# a note with a tag\ncreate --owner me --in home --as n /note/title \"a b\"\nset $n /note/tags #{\"x\"}\nop $n /note/m '' put \"k\" [$n, me]\n";
+    let script = "# a note with a tag\ncreate --owner me --in home --as n note:title.0 \"a b\"\nset $n note:tags.0 #{\"x\"}\nop $n note:m.0 '' put \"k\" [$n, me]\n";
     let o = s.call(&["write"], script);
     assert_eq!(o.code, 0, "{}", o.err);
     let mut lines = o.out.lines();
     let commit = lines.next().unwrap();
     assert_eq!(commit.len(), 64);
     let n = lines.next().unwrap().strip_prefix("n\t").unwrap().to_string();
-    assert_eq!(s.ok(&["get", &n, "/note/title"]).line(), "\"a b\"");
+    assert_eq!(s.ok(&["get", &n, "note:title.0"]).line(), "\"a b\"");
     let me = s.ok(&["--json", "whoami"]).out.split("\"me\":\"").nth(1).unwrap().split('"').next().unwrap().to_string();
-    assert_eq!(s.ok(&["get", &n, "/note/m", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
+    assert_eq!(s.ok(&["get", &n, "note:m.0", "[\"k\"]"]).line(), format!("[{n}, {me}]"));
     // the third line fails: nothing of the script is committed
-    let bad = "create --owner me --in home --as x /a/b 1\nset $x /a/c 2\nset osis://AAAAAAAAAAAAAAAAAAAA /a/b 1\n";
+    let bad = "create --owner me --in home --as x a:b.0 1\nset $x a:c.0 2\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
     let before = s.ok(&["commits", "--group", "home"]).out;
     let o = s.call(&["write"], bad);
     assert_eq!(o.code, 3, "{}", o.err);
@@ -210,22 +210,22 @@ fn write_script_atomic_plan_cli_4() {
 #[test]
 fn untyped_index_paths_notes_cli() {
     let s = S::mem();
-    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/x/l", "[10, 20]", "/x/m", "{1: \"a\"}"]).line().to_string();
-    assert_eq!(s.ok(&["get", &t, "/x/l", "[1]"]).line(), "20");
-    let o = s.call(&["set", &t, "/x/l", "[0]", "5"], "");
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "x:l.0", "[10, 20]", "x:m.0", "{1: \"a\"}"]).line().to_string();
+    assert_eq!(s.ok(&["get", &t, "x:l.0", "[1]"]).line(), "20");
+    let o = s.call(&["set", &t, "x:l.0", "[0]", "5"], "");
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("untyped list"), "{}", o.err);
-    assert_eq!(s.code(&["rm", &t, "/x/l", "[0]"]), 2);
-    assert_eq!(s.ok(&["get", &t, "/x/l"]).line(), "[10, 20]");
+    assert_eq!(s.code(&["rm", &t, "x:l.0", "[0]"]), 2);
+    assert_eq!(s.ok(&["get", &t, "x:l.0"]).line(), "[10, 20]");
     // a map key on a saved untyped map is fine
-    s.ok(&["set", &t, "/x/m", "[1]", "\"b\""]);
-    assert_eq!(s.ok(&["get", &t, "/x/m"]).line(), "{1: \"b\"}");
+    s.ok(&["set", &t, "x:m.0", "[1]", "\"b\""]);
+    assert_eq!(s.ok(&["get", &t, "x:m.0"]).line(), "{1: \"b\"}");
     // in a script, an aspect written by an earlier line cannot be resolved against saved state
     let before = s.ok(&["commits", "--group", "home"]).out;
-    let o = s.call(&["write"], &format!("set {t} /x/m {{1: \"c\"}}\nset {t} /x/m [1] \"d\"\n"));
+    let o = s.call(&["write"], &format!("set {t} x:m.0 {{1: \"c\"}}\nset {t} x:m.0 [1] \"d\"\n"));
     assert_eq!(o.code, 2, "{}", o.err);
     assert!(o.err.contains("line 2") && o.err.contains("earlier in this batch"), "{}", o.err);
-    let o = s.call(&["write"], "create --owner me --in home --as a /x/l [1, 2]\nset $a /x/l [0] 5\n");
+    let o = s.call(&["write"], "create --owner me --in home --as a x:l.0 [1, 2]\nset $a x:l.0 [0] 5\n");
     assert_eq!(o.code, 2, "{}", o.err);
     assert_eq!(s.ok(&["commits", "--group", "home"]).out, before);
 }
@@ -247,8 +247,8 @@ fn timeout_zero_plan_cli_2() {
 fn commits_undo_redo_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
-    s.ok(&["set", &t, "/a/x", "1"]);
-    s.ok(&["set", &t, "/a/x", "2"]);
+    s.ok(&["set", &t, "a:x.0", "1"]);
+    s.ok(&["set", &t, "a:x.0", "2"]);
     let h = s.ok(&["commits", "--thing", &t]).out;
     assert_eq!(h.lines().count(), 3, "{h}");
     assert!(h.lines().all(|l| l.contains(" change in-effect ")), "{h}");
@@ -256,7 +256,7 @@ fn commits_undo_redo_plan_cli_4() {
     let next = s.ok(&["commits", "--thing", &t, "--next", "undo"]).out;
     assert_eq!(next.lines().count(), 1, "{next}");
     s.ok(&["undo", "--thing", &t]);
-    assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "1");
+    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
     let undone = s.ok(&["commits", "--thing", &t, "--in-effect", "false"]).out;
     let undone = undone.split(' ').next().unwrap();
     assert_eq!(next.split(' ').next(), Some(undone), "undo reverted what --next undo listed");
@@ -265,17 +265,17 @@ fn commits_undo_redo_plan_cli_4() {
     let rev = s.ok(&["commits", "--reverts", undone]).out;
     assert_eq!(rev.lines().count(), 1, "{rev}");
     assert!(rev.contains(" revert in-effect reverts="), "{rev}");
-    s.ok(&["redo", "--aspect", &t, "/a/x"]);
-    assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "2");
+    s.ok(&["redo", "--aspect", &t, "a:x.0"]);
+    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "2");
     assert_eq!(s.ok(&["commits", "--thing", &t, "--kind", "revert"]).out.lines().count(), 2);
     let newest = s.ok(&["commits", "--thing", &t, "--max", "1"]).out;
     let id = newest.split(' ').next().unwrap();
     assert_eq!(s.ok(&["commits", "--thing", &t, "--after", id]).out.lines().count(), 4);
     s.ok(&["revert", id]);
-    assert_eq!(s.ok(&["get", &t, "/a/x"]).line(), "1");
+    assert_eq!(s.ok(&["get", &t, "a:x.0"]).line(), "1");
     assert_eq!(s.code(&["undo", "--thing", &t, "--group", "home"]), 2);
     assert_eq!(s.code(&["commits", "--kind", "nope"]), 2);
-    s.ok(&["set", &t, "/a/x", "3"]);
+    s.ok(&["set", &t, "a:x.0", "3"]);
     assert_eq!(s.code(&["redo", "--thing", &t]), 3, "nothing to redo after a new change");
 }
 
@@ -285,14 +285,14 @@ fn groups_and_moves_plan_cli_4() {
     let s = S::mem();
     assert_eq!(s.code(&["create", "--owner", "me"]), 2, "nothing durable: gone at exit");
     assert_eq!(s.code(&["create", "--owner", "me", "--in", "home", "--group"]), 2, "an ephemeral group, placed ephemerally");
-    let g = s.ok(&["create", "--owner", "me", "--group", "/t/made", "true"]).line().to_string();
+    let g = s.ok(&["create", "--owner", "me", "--group", "t:made.0", "true"]).line().to_string();
     let t = s.thing();
     s.ok(&["place", &t, &g]);
     assert!(s.ok(&["groups", &t]).out.contains(&g));
     s.ok(&["unplace", &t, &g]);
     assert!(!s.ok(&["groups", &t]).out.contains(&g));
     s.ok(&["sub", "add", "home", &g]);
-    assert!(s.ok(&["get", "home", "/group"]).line().contains(&g));
+    assert!(s.ok(&["get", "home", "group.0"]).line().contains(&g));
     assert!(s.ok(&["groups", &g]).out.lines().any(|l| l.starts_with("subgroup\t")), "listed as a subgroup of home");
     s.ok(&["sub", "rm", "home", &g]);
     assert_eq!(s.ok(&["role", &t]).line(), "admin");
@@ -311,12 +311,12 @@ fn stream_and_len_plan_cli_4() {
     let s = S::mem();
     let t = s.thing();
     let big = "x".repeat(300_000);
-    assert_eq!(s.call(&["set", &t, "/a/doc", "--stream"], &big).code, 0);
-    assert_eq!(s.ok(&["get", &t, "/a/doc", "--len"]).line(), "300000");
-    assert_eq!(s.ok(&["--json", "get", &t, "/a/doc", "--len"]).line(), "{\"len\":300000}");
-    let o = s.ok(&["get", &t, "/a/doc", "--stream"]);
+    assert_eq!(s.call(&["set", &t, "a:doc.0", "--stream"], &big).code, 0);
+    assert_eq!(s.ok(&["get", &t, "a:doc.0", "--len"]).line(), "300000");
+    assert_eq!(s.ok(&["--json", "get", &t, "a:doc.0", "--len"]).line(), "{\"len\":300000}");
+    let o = s.ok(&["get", &t, "a:doc.0", "--stream"]);
     assert!(o.out.as_bytes() == big.as_bytes(), "untyped: stored as a blob, streamed raw");
-    assert_eq!(s.code(&["get", &t, "/a/none", "--len"]), 3);
+    assert_eq!(s.code(&["get", &t, "a:none.0", "--len"]), 3);
 }
 
 // notes/cli.md Command table Sharing and roles, Sync, Identity and devices: the local half of the
@@ -325,7 +325,7 @@ fn stream_and_len_plan_cli_4() {
 #[test]
 fn sharing_commands_local_plan_cli_4() {
     let s = S::mem();
-    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group", "/t/made", "true"]).line().to_string();
+    let g = s.ok(&["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]).line().to_string();
     s.ok(&["group", "sync", &g]);
     // spec/permissions.md §9: without hosts a link reaches nobody unless direct (opt-in)
     assert_eq!(s.code(&["link", "make", &g, "write", "--single-use"]), 7);
@@ -360,23 +360,23 @@ fn unbuilt_commands_report_unsupported_plan_cli_4() {
 #[test]
 fn watch_initial_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/a/b", "7"]).line().to_string();
-    let o = s.ok(&["watch", &t, "/a/b", "--count", "1"]);
-    assert_eq!(o.line(), "initial - - - /a/b 7");
-    let o = s.ok(&["--json", "watch", &t, "/a/b", "--count", "1"]);
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "a:b.0", "7"]).line().to_string();
+    let o = s.ok(&["watch", &t, "a:b.0", "--count", "1"]);
+    assert_eq!(o.line(), "initial - - - a:b.0 7");
+    let o = s.ok(&["--json", "watch", &t, "a:b.0", "--count", "1"]);
     assert!(o.line().contains("\"source\":\"initial\"") && o.line().ends_with("\"value\":7}"), "{}", o.out);
     // --timeout reached with --count unmet: exit 6, naming the changes seen
-    let o = s.call(&["--timeout", "50ms", "watch", &t, "/a/b", "--count", "2"], "");
+    let o = s.call(&["--timeout", "50ms", "watch", &t, "a:b.0", "--count", "2"], "");
     assert_eq!((o.code, o.err.trim()), (6, "error: timed out after 1 change(s)"), "{}", o.out);
 }
 
 const SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcdef;
 revision 1;
 type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
-aspect /todo/task: task;
-aspect /todo/list: list<task>;
-aspect /todo/count: counter<int>;
-aspect /todo/ping: int [signal];
+aspect todo:task.0: task;
+aspect todo:list.0: list<task>;
+aspect todo:count.0: counter<int>;
+aspect todo:ping.0*: int [signal];
 ";
 
 // notes/cli.md Design Honest about names: named forms with a registered schema; --raw numbered.
@@ -396,48 +396,48 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["init"], "").0, 0);
     assert_eq!(call(&["schema", "add", f.to_str().unwrap()], "").0, 0);
     assert!(call(&["schema", "ls"], "").1.contains("todo.osis"));
-    let (c, t, e) = call(&["create", "--owner", "me", "--in", "home", "/todo/task", "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}"], "");
+    let (c, t, e) = call(&["create", "--owner", "me", "--in", "home", "todo:task.0", "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}"], "");
     assert_eq!(c, 0, "{e}");
     let t = t.trim();
-    assert_eq!(call(&["get", t, "/todo/task"], "").1, "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}\n");
-    assert_eq!(call(&["--raw", "get", t, "/todo/task"], "").1, "{0: \"buy\", 1: false, 2: #1(1767323045000)}\n");
-    assert_eq!(call(&["get", t, "/todo/task", ".due#some"], "").1, "2026-01-02T03:04:05Z\n");
-    assert_eq!(call(&["--json", "get", t, "/todo/task"], "").1, "{\"title\":\"buy\",\"done\":false,\"due\":{\"$case\":\"some\",\"$payload\":1767323045000}}\n");
+    assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: false, due: #some(2026-01-02T03:04:05Z)}\n");
+    assert_eq!(call(&["--raw", "get", t, "todo:task.0"], "").1, "{0: \"buy\", 1: false, 2: #1(1767323045000)}\n");
+    assert_eq!(call(&["get", t, "todo:task.0", ".due#some"], "").1, "2026-01-02T03:04:05Z\n");
+    assert_eq!(call(&["--json", "get", t, "todo:task.0"], "").1, "{\"title\":\"buy\",\"done\":false,\"due\":{\"$case\":\"some\",\"$payload\":1767323045000}}\n");
     // a write is validated against the schema (exit 5) and paths use names
-    assert_eq!(call(&["set", t, "/todo/task", "{title: 1}"], "").0, 5);
-    assert_eq!(call(&["set", t, "/todo/task", ".done", "true"], "").0, 0);
-    assert_eq!(call(&["op", t, "/todo/task", ".due", "set-case", "none"], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/task"], "").1, "{title: \"buy\", done: true, due: #none}\n");
+    assert_eq!(call(&["set", t, "todo:task.0", "{title: 1}"], "").0, 5);
+    assert_eq!(call(&["set", t, "todo:task.0", ".done", "true"], "").0, 0);
+    assert_eq!(call(&["op", t, "todo:task.0", ".due", "set-case", "none"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{title: \"buy\", done: true, due: #none}\n");
     // edit: only what changed since --base
     let base = "{title: \"buy\", done: true, due: #none}";
-    let (c, _, e) = call(&["edit", t, "/todo/task", "--base", base], "{title: \"buy milk\", done: true, due: #none}");
+    let (c, _, e) = call(&["edit", t, "todo:task.0", "--base", base], "{title: \"buy milk\", done: true, due: #none}");
     assert_eq!(c, 0, "{e}");
-    assert!(call(&["get", t, "/todo/task"], "").1.contains("\"buy milk\""));
+    assert!(call(&["get", t, "todo:task.0"], "").1.contains("\"buy milk\""));
     // typed list ops
-    assert_eq!(call(&["set", t, "/todo/list", "[]"], "").0, 0);
-    let (c, _, e) = call(&["op", t, "/todo/list", "", "insert", "0", "{title: \"a\", done: false, due: #none}", "{title: \"b\", done: false, due: #none}"], "");
+    assert_eq!(call(&["set", t, "todo:list.0", "[]"], "").0, 0);
+    let (c, _, e) = call(&["op", t, "todo:list.0", "", "insert", "0", "{title: \"a\", done: false, due: #none}", "{title: \"b\", done: false, due: #none}"], "");
     assert_eq!(c, 0, "{e}");
-    assert_eq!(call(&["get", t, "/todo/list", "[1].title"], "").1, "\"b\"\n");
-    assert_eq!(call(&["op", t, "/todo/list", "", "delete", "0..1"], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/list", "[0].title"], "").1, "\"b\"\n");
-    assert_eq!(call(&["op", t, "/todo/count", "", "inc", "5"], "").0, 0);
-    assert_eq!(call(&["op", t, "/todo/count", "", "inc", "-2"], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/count"], "").1, "3\n");
+    assert_eq!(call(&["get", t, "todo:list.0", "[1].title"], "").1, "\"b\"\n");
+    assert_eq!(call(&["op", t, "todo:list.0", "", "delete", "0..1"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:list.0", "[0].title"], "").1, "\"b\"\n");
+    assert_eq!(call(&["op", t, "todo:count.0", "", "inc", "5"], "").0, 0);
+    assert_eq!(call(&["op", t, "todo:count.0", "", "inc", "-2"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:count.0"], "").1, "3\n");
     // a signal aspect fires and holds nothing
-    assert_eq!(call(&["set", t, "/todo/ping", "1"], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/ping"], "").0, 3, "absent");
-    assert!(!call(&["aspects", t], "").1.contains("/todo/ping"));
+    assert_eq!(call(&["set", t, "todo:ping.0*", "1"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:ping.0*"], "").0, 3, "absent");
+    assert!(!call(&["aspects", t], "").1.contains("todo:ping.0*"));
     assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1 no lock\n");
     // a schema that does not parse: exit 7
     let bad = d.join("bad.osis");
     std::fs::write(&bad, "schema nonsense").unwrap();
-    assert_eq!(call(&["--schema", bad.to_str().unwrap(), "get", t, "/todo/task"], "").0, 7);
+    assert_eq!(call(&["--schema", bad.to_str().unwrap(), "get", t, "todo:task.0"], "").0, 7);
     assert_eq!(call(&["schema", "add", bad.to_str().unwrap()], "").0, 7);
     // with a schema, typed index writes work (untyped ones are refused)
-    assert_eq!(call(&["set", t, "/todo/list", "[0].done", "true"], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/list", "[0].done"], "").1, "true\n");
+    assert_eq!(call(&["set", t, "todo:list.0", "[0].done", "true"], "").0, 0);
+    assert_eq!(call(&["get", t, "todo:list.0", "[0].done"], "").1, "true\n");
     assert_eq!(call(&["schema", "rm", f.to_str().unwrap()], "").0, 0);
-    assert_eq!(call(&["get", t, "/todo/task"], "").1, "{0: \"buy milk\", 1: true, 2: #0}\n");
+    assert_eq!(call(&["get", t, "todo:task.0"], "").1, "{0: \"buy milk\", 1: true, 2: #0}\n");
     let _ = std::fs::remove_dir_all(&d);
 }
 
@@ -445,9 +445,9 @@ fn named_keys_with_schema_plan_cli_1() {
 #[test]
 fn inspect_and_diag_plan_cli_4() {
     let s = S::mem();
-    let t = s.ok(&["create", "--owner", "me", "--in", "home", "/a/b", "1"]).line().to_string();
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "a:b.0", "1"]).line().to_string();
     let o = s.ok(&["inspect", "thing", &t]).out;
-    assert!(o.contains("aspect /a/b commits=1"), "{o}");
+    assert!(o.contains("aspect a:b.0 commits=1"), "{o}");
     assert!(s.ok(&["inspect", "group", "home"]).out.contains(&t));
     // notes/api.md Reads: `show` names the owner and the creating commit; `now` the clock
     let shown = s.ok(&["show", &t]).out;

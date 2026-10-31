@@ -194,16 +194,16 @@ fn malformed_aspects_do_not_break_reads() {
         Ok(())
     };
     a.db.write_with(|w| {
-        bad(w, "/name", Value::Int(7))?;
-        bad(w, "/body", Value::Bool(true))?;
-        bad(w, "/osis-app/view", Value::Enum(9, None))?;
-        bad(w, "/osis-app/color", Value::Int(1))?;
-        bad(w, "/event/start", Value::Str("tomorrow".into()))?;
-        bad(w, "/event/start", Value::Enum(1, Some(Box::new(Value::Int(i64::MAX)))))?;
-        bad(w, "/event/end", Value::Enum(2, Some(Box::new(Value::Int(i64::MAX)))))?;
-        bad(w, "/contact/org", Value::Str("Acme".into()))?;
-        bad(w, "/contact/emails", Value::List(vec![]))?;
-        bad(w, "/tag", Value::Int(3))?;
+        bad(w, "name.0", Value::Int(7))?;
+        bad(w, "body.0", Value::Bool(true))?;
+        bad(w, "osis_app:view.0", Value::Enum(9, None))?;
+        bad(w, "osis_app:color.0", Value::Int(1))?;
+        bad(w, "event:start.0", Value::Str("tomorrow".into()))?;
+        bad(w, "event:start.0", Value::Enum(1, Some(Box::new(Value::Int(i64::MAX)))))?;
+        bad(w, "event:end.0", Value::Enum(2, Some(Box::new(Value::Int(i64::MAX)))))?;
+        bad(w, "contact:org.0", Value::Str("Acme".into()))?;
+        bad(w, "contact:emails.0", Value::List(vec![]))?;
+        bad(w, "tag.0", Value::Int(3))?;
         Ok(())
     })
     .unwrap();
@@ -328,8 +328,8 @@ fn look_merges_and_tolerates_odd_values() {
     assert_eq!(a.look().unwrap(), (Some(want.into()), Mode::Dark), "the main group's theme, the other's mode");
     let main = a.main_group().unwrap();
     a.db.write_with(|w| {
-        w.at(main, Ak::new("/osis-app/theme").unwrap()).set(&Value::Int(3))?;
-        w.at(main, Ak::new("/osis-app/mode").unwrap()).set(&Value::Enum(7, None))
+        w.at(main, Ak::new("osis_app:theme.0").unwrap()).set(&Value::Int(3))?;
+        w.at(main, Ak::new("osis_app:mode.0").unwrap()).set(&Value::Enum(7, None))
     })
     .unwrap();
     // the other group's choice shows through (b's mode lived on gb)
@@ -410,7 +410,7 @@ fn email_rename_against_concurrent_edits() {
     let (a, b, clock) = two_clocked();
     a.main_group().unwrap();
     let c = a.create(NewKind::Contact).unwrap();
-    let add = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "/contact/emails" })).unwrap().act;
+    let add = |d: &Data| d.contact_form(c).unwrap().into_iter().find(|r| matches!(r.act, FormAct::AddKey { ak: "contact:emails.0" })).unwrap().act;
     let email = |d: &Data, v: &str| d.contact_form(c).unwrap().into_iter().find(|r| r.value == v).unwrap().act;
     a.form_apply(c, &add(&a), "x@a.org").unwrap();
     sync(&a, &b);
@@ -443,7 +443,7 @@ fn field_edit_and_nudge_merge() {
     sync(&a, &b);
     let Some(Start::At(w0)) = a.get(e, START).unwrap() else { panic!() };
     let rows = a.field_rows(e).unwrap();
-    let zone = rows.iter().find(|r| r.ak == "/event/start" && r.label == "zone").unwrap().clone();
+    let zone = rows.iter().find(|r| r.ak == "event:start.0" && r.label == "zone").unwrap().clone();
     a.set_field(e, &zone, "Europe/Berlin").unwrap();
     clock.advance(10);
     b.nudge(e, osis_app::time::HOUR, 0).unwrap();

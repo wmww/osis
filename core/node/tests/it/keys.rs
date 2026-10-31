@@ -29,7 +29,7 @@ fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>)
 fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, holders: &[Recipient]) -> (osis_base::CommitId, Rotation) {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
-    let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
+    let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
     let r = rotate(&a, &roles, &view, &state, holders, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
     let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
@@ -88,7 +88,7 @@ fn rotation_out_of_order_spec_crypto_4() {
 }
 
 // spec/crypto.md §4: a node boxed at the newest epoch only opens the earlier ones through the
-// history boxes the actor's `/secrets` already holds (written by rotations that did not box it):
+// history boxes the actor's `secrets.0` already holds (written by rotations that did not box it):
 // the delta's box, then the chain of held history entries, without reading every box.
 #[test]
 fn history_chain_from_state_spec_crypto_4() {
@@ -107,7 +107,7 @@ fn history_chain_from_state_spec_crypto_4() {
     // node 1's box at e2 alone: no history entry in the delta
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
-    let state = e.get(&a, &ak("/secrets")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
+    let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap();
     let w = osis_keys::box_holder(&a, &view, &state, &rcpt(&lp, 1, Role::Read), &roles, &mut SeededRng::from_u64(3)).unwrap().unwrap();
     let mut m = Mutation::new();
     for (k, b) in &w.boxes {
@@ -146,8 +146,8 @@ fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
     assert!(missing.is_empty(), "levels left unopened: {missing:?}");
 }
 
-// spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `/secrets` part
-// applies the role commit; the `/keys` part joining later establishes the epoch as a
+// spec/commits.md §4, spec/crypto.md §4: a syncer holding only a rotation's `secrets.0` part
+// applies the role commit; the `keys.0` part joining later establishes the epoch as a
 // whole arrival does (a size-split body, or a projection, may come first).
 #[test]
 fn late_keys_part_establishes_rotation_spec_crypto_4() {
@@ -167,7 +167,7 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let p2 = pks.iter().find(|p| p.id == c2).unwrap().clone();
     let h = lp.peers[0].engine.header(&c2).unwrap();
     let mut only = osis_commit::CommitBlob::decode(&p2.bytes).unwrap();
-    only.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "/secrets");
+    only.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "secrets.0");
     assert!(!only.parts.is_empty());
     let mut first = p2.clone();
     first.bytes = only.encode();

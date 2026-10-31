@@ -318,7 +318,7 @@ impl SyncEngine {
 
     /// What role changes that leave the actor of `g` alone move under its label `l`
     /// (spec/sync.md §3 entitlement, §6, §7; spec/permissions.md §4): the things of the closure,
-    /// and of the `/label`s its home label publishes, whose roles changed (`Held::reach` of the
+    /// and of the `label.0`s its home label publishes, whose roles changed (`Held::reach` of the
     /// changed rosters and owner links) or whose owner chain holds an actor that got or lost
     /// secrets of its own (reader actors); the label's own commits with a delta on such a thing
     /// (a superset's foreign deltas); other nodes' cards (their author's departure); deletes
@@ -476,7 +476,7 @@ impl SyncEngine {
             } else {
                 w.cards.remove(c);
             }
-            if h.author != me && h.aspects.iter().any(|x| x.ak.as_str() == "/seen" && x.tid == h.author) {
+            if h.author != me && h.aspects.iter().any(|x| x.ak.as_str() == "seen.0" && x.tid == h.author) {
                 let set = w.beats.entry(h.author).or_default();
                 set.retain(|(_, x)| x != c);
                 if !blobs.is_empty() {

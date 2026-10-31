@@ -12,7 +12,7 @@ use std::sync::Arc;
 /// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
 const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
-/// A label of a group as its `/label` records it (spec/sync.md §2).
+/// A label of a group as its `label.0` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]
 pub struct GroupLabel {
     pub group: Tid,
@@ -92,24 +92,24 @@ impl Engine {
         self.core.may_read(x, t)
     }
 
-    /// The things of a group's closure: the group and every thing whose `/groups` holds it.
+    /// The things of a group's closure: the group and every thing whose `groups.0` holds it.
     /// The same `Arc` while it does not change (`Groups::closures`).
     pub fn closure(&self, g: &Tid) -> std::sync::Arc<BTreeSet<Tid>> {
         self.core.ix.groups.closure(g)
     }
 
-    /// Things with a `/label` held.
+    /// Things with a `label.0` held.
     pub fn labeled_groups(&self) -> Vec<Tid> {
         self.core.ix.labeled.iter().copied().collect()
     }
 
-    /// The labels `/label` of `g` records, replaced ones included; records that do not parse
+    /// The labels `label.0` of `g` records, replaced ones included; records that do not parse
     /// are skipped.
     pub fn group_labels(&mut self, g: &Tid) -> Result<Vec<GroupLabel>> {
         Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
     }
 
-    /// `group_labels`, shared: decoded once per write of the `/label` (`Core::labels`).
+    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`).
     pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
         if self.core.created(g).is_none() {
             return Vec::new();

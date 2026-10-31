@@ -10,7 +10,7 @@ use osis_base::{Role, Tid};
 use osis_perm::{overlapping, Dots, Edge, Point, Range, Timeline, Validity};
 use std::collections::BTreeSet;
 
-const DOC: &str = "/doc";
+const DOC: &str = "doc.0";
 
 fn valid(tl: &Timeline, p: Point, thing: Tid, required: Role) -> bool {
     tl.delta_valid(p, &thing, DOC, Dots::Commit, required) == Validity::Valid
@@ -166,11 +166,11 @@ fn node_form_overlap_voids_both() {
     let n = w.nodes(2);
     let t = w.thing(n[0]);
     let r = |c: u32, node: Tid, ak: &str, lo: u64, hi: u64| Range { commit: cid(c), node, tid: t, ak: ak.into(), lo, hi };
-    let v = overlapping([r(1, n[0], DOC, 1, 3), r(2, n[0], DOC, 3, 5), r(3, n[0], DOC, 4, 6), r(4, n[1], DOC, 1, 9), r(5, n[0], "/x", 1, 9), r(1, n[0], DOC, 1, 3)]);
+    let v = overlapping([r(1, n[0], DOC, 1, 3), r(2, n[0], DOC, 3, 5), r(3, n[0], DOC, 4, 6), r(4, n[1], DOC, 1, 9), r(5, n[0], "x.0", 1, 9), r(1, n[0], DOC, 1, 3)]);
     assert_eq!(v, BTreeSet::from([cid(2), cid(3)]));
 }
 
-/// spec/commits.md §4 in layer 1: two edge commits by one node with overlapping `/members`
+/// spec/commits.md §4 in layer 1: two edge commits by one node with overlapping `roles.0`
 /// ranges are both ignored.
 #[test]
 fn overlapping_role_commits_ignored() {

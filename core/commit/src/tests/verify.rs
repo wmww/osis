@@ -80,7 +80,7 @@ fn commit_blob_round_trip() {
 }
 
 // spec/commits.md §2, spec/wire.md §4: an ephemeral commit's parts carry creation records beside
-// their deltas (sorted by tid, distinct) and it holds no `/created` aspect; a durable commit's
+// their deltas (sorted by tid, distinct) and it holds no `created.0` aspect; a durable commit's
 // parts carry none.
 #[test]
 fn records_beside_deltas_spec_commits_2() {
@@ -101,11 +101,11 @@ fn records_beside_deltas_spec_commits_2() {
     b.parts[0].records = rs;
     assert!(matches!(CommitBlob::decode(&b.encode()), Err(Error::Malformed(_))));
     let mut h = b.header.clone();
-    h.aspects[0].ak = osis_base::Ak::new("/created").unwrap();
-    h.aspects[0].retention = crate::retention::fixed_retention("/created").unwrap();
+    h.aspects[0].ak = osis_base::Ak::new("created.0").unwrap();
+    h.aspects[0].retention = crate::retention::fixed_retention("created.0").unwrap();
     h.aspects[0].keys.clear();
     h.keys.clear();
-    assert!(h.validate().unwrap_err().to_string().contains("/created"));
+    assert!(h.validate().unwrap_err().to_string().contains("created.0"));
 }
 
 // spec/wire.md §4: parts are sorted and distinct; a non-array delta is malformed.
@@ -189,8 +189,8 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
         b.parts[0].delta = delta;
         verify_part(&b.header, &b.id(), &b.parts[0], &sec(0xd0, &t(3)), &mut Interner::new(), None)
     };
-    assert!(matches!(check(&mut b, true, "/x/map"), Err(Error::Malformed(_))));
-    assert!(check(&mut b, false, "/x/map").is_ok());
-    assert!(check(&mut b, true, "/secrets").is_ok());
-    assert!(check(&mut b, true, "/members").is_ok());
+    assert!(matches!(check(&mut b, true, "x:map.0"), Err(Error::Malformed(_))));
+    assert!(check(&mut b, false, "x:map.0").is_ok());
+    assert!(check(&mut b, true, "secrets.0").is_ok());
+    assert!(check(&mut b, true, "roles.0").is_ok());
 }

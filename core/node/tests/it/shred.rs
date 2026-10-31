@@ -64,9 +64,9 @@ fn purged_body_unrecoverable_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "purged content recovered");
 }
 
@@ -84,15 +84,15 @@ fn purged_after_pending_unrecoverable_spec_commits_5() {
     assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
     filler(&mut lp, 1, 6);
     lp.sync(0, 1).unwrap();
-    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     filler(&mut lp, 1, 6);
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("public")).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/reg") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:reg.0") });
     lp.peers[0].commit(m).unwrap();
     lp.sync(0, 1).unwrap();
-    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("/t/reg")));
+    assert!(!lp.peers[1].engine.body_not_dropped(&secret, &t, &ak("t:reg.0")));
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "purged content recovered from the pending copy");
 }
 
@@ -106,7 +106,7 @@ fn expired_body_unrecoverable_spec_commits_6() {
     filler(&mut lp, 0, 6);
     lp.advance(3_600_001);
     lp.peers[0].engine.tick().unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/brief")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "expired content recovered");
 }
 
@@ -121,7 +121,7 @@ fn kept_at_most_zero_unrecoverable_spec_commits_5() {
     filler(&mut lp, 0, 6);
     lp.advance(5);
     set(&mut lp, 0, t, &GONE, "final");
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/gone")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:gone.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
 }
 
@@ -148,9 +148,9 @@ fn kept_at_most_zero_paged_unrecoverable_spec_commits_5() {
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(5);
     edit(&mut lp, "final");
-    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("/t/gonemap")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:gonemap.0")));
     assert!(!recoverable(&mut lp.peers[0], marker.as_bytes()), "dropped content recovered");
-    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/gonemap"), &[osis_crdt::PathSeg::Key(s("k047"))]).unwrap(), Some(s("final")));
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("t:gonemap.0"), &[osis_crdt::PathSeg::Key(s("k047"))]).unwrap(), Some(s("final")));
 }
 
 // spec/commits.md §6, spec/crdt.md §4.7 (expiry), spec/requirements.md (Scale: O(change)): an
@@ -174,14 +174,14 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
     assert!(recoverable(&mut lp.peers[0], marker.as_bytes()), "the attack finds live content");
     lp.advance(60_001);
     lp.peers[0].engine.tick().unwrap();
-    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k999"))]).unwrap(), None);
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("k999"))]).unwrap(), None);
     // the value, the key, nor the key's hash (the paged map's key index): one attack
     let h = osis_base::hash::hash(&osis_base::encode(&s("k999")));
     let found = plaintexts(&mut lp.peers[0]);
     for (needle, what) in [(marker.as_bytes(), "expired content"), (b"k999".as_slice(), "the expired key"), (h.as_slice(), "the expired key's index row")] {
         assert!(!found.iter().any(|x| contains(x, needle)), "{what} recovered");
     }
-    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("/t/big"), &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
+    assert_eq!(lp.peers[0].engine.get_at(&t, &ak("t:big.0"), &[osis_crdt::PathSeg::Key(s("k007"))]).unwrap(), Some(s(&"f".repeat(1100))));
 }
 
 // spec/commits.md §6, spec/crdt.md §4.7, §5.5: an expiring element of a paged set goes
@@ -191,7 +191,7 @@ fn expired_entry_paged_unrecoverable_spec_commits_6() {
 fn expired_element_paged_set_unrecoverable_spec_commits_6() {
     let mut lp = net2(77);
     let t = new_thing(&mut lp, 0);
-    let a = ak("/t/bigset");
+    let a = ak("t:bigset.0");
     let mut m = Mutation::new();
     m.set(t, &a, &Value::Set((0..66).map(|i| s(&format!("e{i:03}{}", "f".repeat(1100)))).collect())).unwrap();
     lp.peers[0].commit(m).unwrap().unwrap();
@@ -278,9 +278,9 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     lp.advance(5);
     let mut m = Mutation::new();
     m.set(t, &BLOB, &Value::Bytes(b"small".to_vec())).unwrap();
-    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("/t/blob") });
+    m.purge(PurgeItem::Commit { commit: secret, tid: t, ak: ak("t:blob.0") });
     lp.peers[0].commit(m).unwrap();
-    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("/t/blob")));
+    assert!(!lp.peers[0].engine.body_not_dropped(&secret, &t, &ak("t:blob.0")));
     assert!(!opens(&mut lp.peers[0]), "a purged chunk opened");
 }
 
@@ -299,7 +299,7 @@ fn at_most_zero_live_body_dropped_at_bound_unrecoverable_spec_commits_5() {
         let mut m = Mutation::new();
         m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
         let c0 = lp.peers[0].commit(m).unwrap().unwrap();
-        let k = ak("/t/gonemap");
+        let k = ak("t:gonemap.0");
         // compaction: a snapshot, then the covered body dropped
         let body = if compact {
             let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
@@ -337,7 +337,7 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
     let mut lp = net2(78);
     let t = new_thing(&mut lp, 0);
     let marker = "KEY-MARK-5e17";
-    let k = ak("/t/big");
+    let k = ak("t:big.0");
     let put = |lp: &mut LocalPeer, key: &str| {
         let mut m = Mutation::new();
         m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: osis_crdt::Op::Set(s("v")) }).unwrap();

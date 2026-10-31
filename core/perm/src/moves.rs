@@ -1,5 +1,5 @@
 //! Move resolution (spec/permissions.md §7): read-time resolution of a tid held in a value of
-//! thing R through `/was` claims with standing, else `/moved`, at most `RESOLUTION_HOPS` hops.
+//! thing R through `was.0` claims with standing, else `moved.0`, at most `RESOLUTION_HOPS` hops.
 
 use crate::timeline::{At, Timeline};
 use osis_base::Tid;
@@ -7,11 +7,11 @@ use osis_base::Tid;
 /// `RESOLUTION_HOPS` (spec/wire.md §2).
 pub const RESOLUTION_HOPS: usize = 8;
 
-/// What the node holds of `/was` and `/moved` (valid reads, §5.2).
+/// What the node holds of `was.0` and `moved.0` (valid reads, §5.2).
 pub trait MoveIndex {
-    /// Held things M whose `/was` reads `t`.
+    /// Held things M whose `was.0` reads `t`.
     fn continued_by(&self, t: &Tid) -> Vec<Tid>;
-    /// `/moved` of `t`, if the node holds `t` and it names one.
+    /// `moved.0` of `t`, if the node holds `t` and it names one.
     fn moved(&self, t: &Tid) -> Option<Tid>;
 }
 
@@ -29,8 +29,8 @@ impl Timeline {
         })
     }
 
-    /// §7: resolves tid `t` held in a value of thing `r`: the one held M with `/was = t` in
-    /// which R's owner chain has standing, else `t`'s `/moved`, repeated from the result.
+    /// §7: resolves tid `t` held in a value of thing `r`: the one held M with `was.0 = t` in
+    /// which R's owner chain has standing, else `t`'s `moved.0`, repeated from the result.
     pub fn resolve(&self, index: &dyn MoveIndex, r: &Tid, t: &Tid, at: At) -> Tid {
         let mut cur = *t;
         for _ in 0..RESOLUTION_HOPS {

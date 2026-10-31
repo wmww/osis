@@ -35,7 +35,7 @@ pub(crate) fn sample_header() -> Header {
         schemas: vec![(SchemaId([7; 16]), 3)],
         aspects: vec![AspectEntry {
             tid: t(3),
-            ak: Ak::new("/app/title").unwrap(),
+            ak: Ak::new("app:title.0").unwrap(),
             lo: 1,
             hi: 2,
             retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(5) }, at_most: Bound::default() },

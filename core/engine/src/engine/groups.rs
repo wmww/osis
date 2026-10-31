@@ -1,22 +1,22 @@
-//! `/groups` (spec/data-model.md §8): every group whose items, directly or through subgroups
-//! (cycles allowed), contain the thing. Kept incrementally: a `/group` change recomputes only the
+//! `groups.0` (spec/data-model.md §8): every group whose items, directly or through subgroups
+//! (cycles allowed), contain the thing. Kept incrementally: a `group.0` change recomputes only the
 //! changed group and the groups above it (O(their reach)), never every group.
 
 use osis_base::Tid;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A `/group` definition: (items, subgroups).
+/// A `group.0` definition: (items, subgroups).
 pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
 
-/// The `/group` definitions and what they derive.
+/// The `group.0` definitions and what they derive.
 #[derive(Clone, Debug, Default)]
 pub struct Groups {
-    /// `/group` of each group thing: (items, subgroups).
+    /// `group.0` of each group thing: (items, subgroups).
     pub defs: BTreeMap<Tid, (BTreeSet<Tid>, BTreeSet<Tid>)>,
     /// Subgroup -> groups listing it.
     parents: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Thing -> groups containing it, transitively (`/groups`).
+    /// Thing -> groups containing it, transitively (`groups.0`).
     pub of: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Group -> its closure: itself and the things it contains, transitively (groups that
     /// contain something). The same `Arc` while the closure does not change, so node-sync
@@ -205,7 +205,7 @@ mod tests {
         out
     }
 
-    // spec/data-model.md §8: `/groups` holds every group containing the thing through items and
+    // spec/data-model.md §8: `groups.0` holds every group containing the thing through items and
     // subgroups (cycles allowed); incremental updates equal a recomputation from scratch.
     #[test]
     fn incremental_groups_spec_data_model_8() {

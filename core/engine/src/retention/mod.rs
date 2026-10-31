@@ -357,10 +357,10 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         m.dropped.remove(&ai);
         m.missing.insert(ai);
         // never received from now on: what its body judged goes too (`Dropped::role`; the
-        // header's one-delta rule for `/secrets` stays, `validity::note_required`), and so do
+        // header's one-delta rule for `secrets.0` stays, `validity::note_required`), and so do
         // the epochs it introduced (`keys::rebuild_intro` below)
         tx.core.ix.rotation_role.remove(&(c, ai));
-        let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "/secrets" && a.hashes.len() != 1);
+        let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
         if !several {
             tx.core.ix.grant_overreach.remove(&(c, ai));
         }
@@ -377,7 +377,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
             ch.undropped.insert(c);
         }
     }
-    if any && matches!(ak.as_str(), "/secrets" | "/keys") {
+    if any && matches!(ak.as_str(), "secrets.0" | "keys.0") {
         crate::apply::keys::rebuild_intro(tx, &BTreeSet::from([*tid]))?;
     }
     // held snapshots' copies of the writes of deltas now never received are carried writes
@@ -867,11 +867,11 @@ impl Engine {
 
     fn snapshot_if(&mut self, tid: &Tid, ak: &Ak, compaction: bool) -> Result<Option<CommitId>> {
         let (tid, ak) = (*tid, ak.clone());
-        if ak.as_str() == "/members" || ak.as_str() == "/tenures" {
-            return Err(Error::Misuse("/members and /tenures are compacted by roster snapshots"));
+        if ak.as_str() == "roles.0" || ak.as_str() == "tenures.0" {
+            return Err(Error::Misuse("roles.0 and tenures.0 are compacted by roster snapshots"));
         }
-        if ak.as_str() == "/created" {
-            return Err(Error::Misuse("/created is kept forever, never compacted"));
+        if ak.as_str() == "created.0" {
+            return Err(Error::Misuse("created.0 is kept forever, never compacted"));
         }
         self.run(|tx| {
             let node = tx.core.id.tid();
@@ -882,8 +882,8 @@ impl Engine {
             crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
             tx.load(&tid, &ak)?;
             let Some(mut st) = tx.core.states.get(&(tid, ak.clone())).cloned().flatten() else { return Ok(None) };
-            if ak.as_str() == "/secrets" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
-                return Err(Error::Misuse("/secrets keys an epoch not established here (spec/crypto.md §4)"));
+            if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+                return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
             }
             let expiring: Vec<Owned> = tx
                 .core
@@ -1128,7 +1128,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 951, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let ak = Ak::new("/x/a").unwrap();
+        let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
@@ -1158,7 +1158,7 @@ mod tests {
         let mut lp = LocalPeer::new(2, 952, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-        let ak = Ak::new("/x/a").unwrap();
+        let ak = Ak::new("x:a.0").unwrap();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();

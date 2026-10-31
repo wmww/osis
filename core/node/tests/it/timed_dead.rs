@@ -55,7 +55,7 @@ fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osi
 fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
     use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
-    let gone = osis_base::Ak::new("/t/gone").unwrap();
+    let gone = osis_base::Ak::new("t:gone.0").unwrap();
     for online in [true, false] {
         let mut net = Net::new();
         let host = net.add_host();
@@ -131,7 +131,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
 // spec/permissions.md §5.2 (a write after a revoke's frontier is invalid, whatever the order
 // it arrives in), spec/crdt.md §4.6: a holder that was offline while a writer's later write
 // and a backdated revoke of that writer arrived must read what an online holder reads.
-// (Was order-dependent: the item's `/created` reached perm's walk after the revoke, and the
+// (Was order-dependent: the item's `created.0` reached perm's walk after the revoke, and the
 // walk kept no demotion for it; osis-perm `Walked::alias_leaves`.)
 #[test]
 fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {

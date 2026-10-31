@@ -5,13 +5,13 @@
 //!
 //! A thing is forgotten when its secret actor is one of the actors just lost and neither the
 //! node nor a held key actor may read it now. Of a forgotten thing only the certificate material
-//! perm judges others' writes by stays: `/created`, and the role-class aspects except
-//! `/secrets` (edges, ledger, public keysets, labels, moves). Everything else goes, shredded:
+//! perm judges others' writes by stays: `created.0`, and the role-class aspects except
+//! `secrets.0` (edges, ledger, public keysets, labels, moves). Everything else goes, shredded:
 //! aspect units (state, undo buffer, pre-reset snapshots, tables, deaths), the deltas in commit
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! receipts, value-less lists, purge lists, timers, `/secrets` waits, the sync records of the
+//! receipts, value-less lists, purge lists, timers, `secrets.0` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 
@@ -26,7 +26,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects of a forgotten thing that stay: what perm judges others' writes by, no content and
 /// no secret.
-const KEPT: [&str; 7] = ["/created", "/members", "/tenures", "/keys", "/label", "/moved", "/was"];
+const KEPT: [&str; 7] = ["created.0", "roles.0", "tenures.0", "keys.0", "label.0", "moved.0", "was.0"];
 
 /// What one forgetting removed.
 #[derive(Default)]
@@ -145,7 +145,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         // would hold the role and no secret), marked sealed: read as candidates again, they
         // would keep the lost secrets for good
         let grants = crate::rotation::boxes_kept(tx.core, &blob, &id, held);
-        let kept: Vec<(usize, Tid)> = ais.iter().filter_map(|ai| blob.header.aspects.get(*ai).filter(|a| a.ak.as_str() == "/secrets" && grants.contains(&a.tid)).map(|a| (*ai, a.tid))).collect();
+        let kept: Vec<(usize, Tid)> = ais.iter().filter_map(|ai| blob.header.aspects.get(*ai).filter(|a| a.ak.as_str() == "secrets.0" && grants.contains(&a.tid)).map(|a| (*ai, a.tid))).collect();
         for (ai, x) in kept {
             ais.remove(&ai);
             tx.txn.put_local(&crate::apply::keys::sealed_key(&id, &x), &[], Shred::No)?;
@@ -169,7 +169,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for t in &out.things {
         tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
     }
-    // timers and `/secrets` waits of forgotten parts
+    // timers and `secrets.0` waits of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
     let mut stale = Vec::new();
     tx.scan(records::TIMER, |k, _| {
@@ -182,7 +182,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for k in stale {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
-    // labels of forgotten groups, from their `/label` (kept)
+    // labels of forgotten groups, from their `label.0` (kept)
     for g in out.things.clone() {
         out.labels.extend(crate::flows::labels::labels_in(tx, &g)?);
     }

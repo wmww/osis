@@ -8,7 +8,7 @@ use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
 use osis_schema::core_types::is_role_class;
 
-const ROSTER_AKS: [&str; 2] = ["/members", "/tenures"];
+const ROSTER_AKS: [&str; 2] = ["roles.0", "tenures.0"];
 
 impl Header {
     /// Checks every layout rule and every rule of spec/commits.md §2 a header shows: sort orders,
@@ -70,15 +70,15 @@ impl Header {
             if ak != CREATED && is_role_class(ak) != kind.is_role() {
                 return Err(Error::Invalid("aspect of the wrong class for the commit kind"));
             }
-            // `/created` is kept forever, so a snapshot or import never carries it: each part is
+            // `created.0` is kept forever, so a snapshot or import never carries it: each part is
             // its own commit's one minting; an ephemeral commit carries records beside its
             // deltas instead (spec/commits.md §2)
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
-                return Err(Error::Invalid("/created in a commit without own writes or an ephemeral one"));
+                return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
             }
             match kind {
                 Kind::RosterSnapshot if !ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("roster snapshot of a non-roster aspect")),
-                Kind::RoleSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of /members or /tenures")),
+                Kind::RoleSnapshot if ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("compaction snapshot of roles.0 or tenures.0")),
                 _ => {}
             }
             check_retention(&a.retention)?;
