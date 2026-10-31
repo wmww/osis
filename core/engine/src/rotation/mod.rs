@@ -42,10 +42,10 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
             continue;
         }
         for d in ds {
-            if let Some((m, rest)) = d.via.split_first()
-                && current.contains(m)
-                && !*on_cycle.entry(*m).or_insert_with(|| below_of(tx.core, m).0.contains(a))
-                && !fresh_box_covers(tx, &held, m, r, &Departure { via: rest.clone(), member: d.member, from: d.from })?
+            if let Some((m, inner)) = inside_first(&d)
+                && current.contains(&m)
+                && !*on_cycle.entry(m).or_insert_with(|| below_of(tx.core, &m).0.contains(a))
+                && !fresh_box_covers(tx, &held, &m, r, &inner)?
             {
                 continue 'roles;
             }
@@ -62,13 +62,19 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
 /// skips it until `m` rotates.
 fn member_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
     for d in deps.iter().filter(|d| d.via.first() == Some(m) && r >= d.from) {
-        let Some((_, tail)) = d.via.split_first() else { continue };
-        let inner = Departure { via: tail.clone(), member: d.member, from: d.from };
-        if !fresh_box_covers(tx, held, m, r, &inner)? {
+        if let Some((_, inner)) = inside_first(d)
+            && !fresh_box_covers(tx, held, m, r, &inner)?
+        {
             return Ok(false);
         }
     }
     Ok(true)
+}
+
+/// The first actor on `d`'s chain and the departure inside it, as that actor sees it.
+fn inside_first(d: &Departure) -> Option<(Tid, Departure)> {
+    let (m, rest) = d.via.split_first()?;
+    Some((*m, Departure { via: rest.clone(), member: d.member, from: d.from }))
 }
 
 /// `rc` with its role cut at the first its newest epoch does not cover (`member_covers`, given
@@ -109,8 +115,7 @@ fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, 
 }
 
 /// Current members of `a` as box recipients; each of `skip` gets its new role or is left out
-/// (departing members). Members
-/// whose keys are unknown are left out (re-sealed later).
+/// (departing members). Members whose keys are unknown are left out (re-sealed later).
 pub(crate) fn recipients(tx: &mut Tx<'_>, a: &Tid, skip: &[(Tid, Option<Role>)]) -> Result<Vec<Recipient>> {
     let now = tx.core.now();
     let mut out = Vec::new();
@@ -215,10 +220,6 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     save_epochs(tx, &a)
 }
 
-fn signer_of(tx: &Tx<'_>, who: Tid) -> Option<Tid> {
-    (who != tx.core.id.tid()).then_some(who)
-}
-
 /// Rotates `roles` of `a` in a commit of its own (a cascade rotation: changes no edge), signed
 /// by `who`.
 pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
@@ -230,8 +231,8 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
         fresh_deposit_seed(tx, &mut m, a)?;
     }
     let unreached = unreached(tx, &a, &rot)?;
-    if let Some(s) = signer_of(tx, who) {
-        m.sign_as(s);
+    if who != tx.core.id.tid() {
+        m.sign_as(who);
     }
     let c = Engine::commit_tx(tx, m)?;
     let mut done = Done::default();
