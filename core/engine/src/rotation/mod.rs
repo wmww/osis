@@ -181,6 +181,7 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pending: &[De
         let d = direct_departures(tx, &v, horizon)?;
         direct.push((v, d));
     }
+    until_horizon(tx.core, direct.iter().map(|x| &x.0), horizon);
     let judge = Judge::new(tx.core, &held);
     let found = walk(&parents, direct, |v, d| class_of(&judge, v, d));
     let mut out = mine;
@@ -195,6 +196,29 @@ fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pending: &[De
         }
     }
     Ok(out)
+}
+
+/// Lowers `horizon` to the next edge `until` anywhere in the timelines of `actors`: the verdicts
+/// judge "written by a departed party" by roles now over any path, owner chains included
+/// (`Judge::departed_wrote`), so an `until` outside the walked actors may change them.
+fn until_horizon<'t>(core: &Core, actors: impl Iterator<Item = &'t Tid>, horizon: &mut Option<WallMs>) {
+    let now = now_ts(core).wall_ms();
+    let mut seen: Vec<&osis_perm::Timeline> = Vec::new();
+    for a in actors {
+        let Some(tl) = core.timelines.get(a) else { continue };
+        if seen.iter().any(|t| std::ptr::eq(*t, tl)) {
+            continue;
+        }
+        seen.push(tl);
+        for (_, _, e) in tl.edges_at(None).iter() {
+            if let Some(u) = e.until
+                && u > now
+                && horizon.is_none_or(|h| u < h)
+            {
+                *horizon = Some(u);
+            }
+        }
+    }
 }
 
 /// The actors below `a` with secrets of its own (members, transitively; `a` left out), and who

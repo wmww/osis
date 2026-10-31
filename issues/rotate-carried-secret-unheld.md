@@ -1,0 +1,7 @@
+# A rotator lacking a carried role's newest secret fails ensure_rotated
+> Summary: `ensure_rotated` returns `Keys(NoSecret)` (blocking every encrypt under the actor and the rest of its cascade) when this node may rotate an actor's higher role but holds no current secret of a lower role it must carry to a key-actor member, e.g. it reaches the actor only through a member actor a rotation left out, not yet re-sealed.
+> Tags: engine
+
+Seen: the random cycle test extended with "D rotates unboxed, then leaves" (`cycle_removals_leak_nothing_random_large`), on main's rotation code (before member-epoch-departed), seed 1169: peer rotating `{Write}` of an actor whose newest read (n2) it never got, carrying read to an admin key actor (`osis_keys::rotate`, carried-role check). Not reproduced on member-epoch-departed in 1600 seeds (1000..1200, 77000..78400), but the shape (a node that may rotate, left out of a lower role's newest epoch through a member actor) is still reachable: a leave-out is how the covers rule handles any member actor whose epoch does not cover, and an attacker writer can order the departures.
+
+Not a panic or a leak: an `Err` until the left-out member is re-sealed. Likely fix: in `ensure_rotated`, treat such an actor as stranded (leave the roles uncovered, as for a role it may not rotate) instead of calling `rotate_now`; rotating the carried role too would lose its unheld secret from the history box. Needs a deterministic repro first.
