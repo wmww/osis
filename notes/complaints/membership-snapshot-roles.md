@@ -1,3 +1,0 @@
-- Pre-fix checks of a test (temporarily reverting the fix) are easy to botch: a `; git checkout <file>` cleanup chained after a failing sed reverted uncommitted work (hit twice on this branch). Copy the file aside and restore from the copy instead.
-- A Bash call starting `cat > file 2>/dev/null; ...` (meant to touch a file) waited on stdin until the 120 s timeout. Write scratch files with the Write tool.
-- `cargo test -p osis-crdt -- --include-ignored --skip repro_` runs the 1024-case decoder differentials: minutes, not the "crdt set about 10 s" of notes/build.md's per-branch table; that table does not say which command the crdt set is.

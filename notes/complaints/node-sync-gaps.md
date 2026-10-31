@@ -1,1 +1,0 @@
-- Reviewer: read only the background task's own output ("exit 101" vs the wrapper's "exited with code 0") after `claudewait` reported exit 0 for a `...; echo exit $?` gate run, and released the worktree on a failed gate (clippy type_complexity). `claudewait`'s exit is the wrapper's: read the echoed code or the log's "gate passed" line.
