@@ -422,14 +422,14 @@ fn inherited_inbox_opens() {
     }
 }
 
-// issues/group-inbox-members.md (open): Dave, admin of Bob's card through his tag H only (he
-// syncs no label holding the tag G and holds no `/keys` of G, so no inbox blob goes), removes
-// G's edge on the card placed in G and H; Alice, G's admin, learns it through H and deletes the
-// card's bodies under G's label, while Carol, who never learns it, uploads fresh encryptions of
-// them again on every pass.
+// spec/permissions.md §2 (a node that applied a removal of G's edge on a thing in G's closure
+// places it under G's labels): Dave, admin of Bob's card through his tag H only (he syncs no
+// label holding the tag G and holds no `/keys` of G, so no inbox blob goes), removes G's edge on
+// the card placed in G and H; Alice, G's admin, learns it through H and places it under G's
+// label, so Carol learns it too (before, she uploaded the card's bodies Alice deleted there
+// again on every pass), and not the card's new deposit seed.
 #[test]
-#[ignore = "repro: issues/group-inbox-members.md"]
-fn repro_group_admin_learns_removal_elsewhere() {
+fn group_admin_learns_removal_elsewhere() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let dave = person(&mut w, 4, 0);
     let b = introduce(&mut w, &dave, &bob);
@@ -448,10 +448,19 @@ fn repro_group_admin_learns_removal_elsewhere() {
     bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
     assert!(w.run());
     assert_eq!(text(&carol, t).as_deref(), Some("plan"));
+    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let old = seed(&carol);
     w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).expect("pre-sync").unwrap();
     assert!(w.run(), "settles");
     w.advance(60_000);
     assert!(w.run(), "settles");
     let stale: Vec<&str> = [("alice", &alice), ("bob", &bob), ("carol", &carol), ("dave", &dave)].into_iter().filter(|(_, db)| db.roster(t).contains_key(&g)).map(|(n, _)| n).collect();
     assert!(stale.is_empty(), "the removal reached everyone; not {stale:?}");
+    assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
+    assert_eq!(seed(&carol), old, "Carol does not learn the new one");
+    // and the deletes are not undone again
+    w.start_tally();
+    w.advance(3_600_000);
+    assert!(w.run(), "settles");
+    assert!(!w.tally(&carol).contains_key("Upload"), "Carol uploads nothing: {:?}", w.tally(&carol));
 }

@@ -365,6 +365,50 @@ impl Engine {
         out
     }
 
+    /// Applied writes lowering `x`'s edge on a thing inside `closure` (`x`'s label's closure)
+    /// that `x`'s edge there has not been raised again since, with what judges them
+    /// (spec/permissions.md §2, §4): `x`'s members still holding the edge would re-upload the
+    /// thing's bodies its delete-key holders drop. Also the commits whose own parts these are:
+    /// placed though inside the closure (the label no longer carries them as bodies). Never a
+    /// `/secrets` or `/keys` delta of such a commit (`cert_parts` takes its `/members` and
+    /// `/tenures`).
+    pub fn removal_certificates(&mut self, x: &Tid, closure: &BTreeSet<Tid>) -> (BTreeMap<CommitId, Parts>, BTreeSet<CommitId>) {
+        let mut found: Vec<osis_perm::Certificates> = Vec::new();
+        let mut own = BTreeSet::new();
+        if let Some(tl) = self.core.timelines.get(x) {
+            let current = tl.edges_at(None);
+            for wid in tl.applied().keys() {
+                let osis_perm::WriteId::Op(c, i) = wid else { continue };
+                let Some(mc) = tl.membership_commit(c) else { continue };
+                let Some(op) = mc.ops.get(*i as usize) else { continue };
+                if op.member != *x || !closure.contains(&op.target) {
+                    continue;
+                }
+                let old = tl.edges_at(Some(mc.point())).get(&op.member, &op.target).map(|e| e.role);
+                let new = op.edge.filter(|e| e.alive_at(Some(mc.ts))).map(|e| e.role);
+                let now = current.get(&op.member, &op.target).map(|e| e.role);
+                if new < old && now <= new
+                    && let Some(cs) = tl.write_certificates(wid)
+                {
+                    own.insert(*c);
+                    found.push(cs);
+                }
+            }
+        }
+        let mut out = BTreeMap::new();
+        for cs in &found {
+            self.cert_parts(cs, &mut out);
+        }
+        // the thing's newest `/keys` is often the removal's own (its fresh deposit seed)
+        for c in &own {
+            let Some(h) = self.header(c) else { continue };
+            if let Some(p) = out.get_mut(c) {
+                p.retain(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "/members" | "/tenures")));
+            }
+        }
+        (out, own)
+    }
+
     /// The bodies of commit `c` restricted to aspects `ais` (one per retention class): a
     /// certificate copy.
     pub fn partial_bodies(&mut self, c: &CommitId, ais: &BTreeSet<usize>) -> Result<Vec<Body>> {
