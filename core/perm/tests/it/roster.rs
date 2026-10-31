@@ -76,10 +76,13 @@ fn neutral(w: &World, thing: Tid, author: Tid, things: &[Tid], probes: &[Point])
     };
     let changed: Vec<(Option<Point>, WriteId)> = before.applied.symmetric_difference(&after.applied).map(|x| (at(x), *x)).collect();
     let first = changed.iter().map(|c| c.0).min();
-    // one the snapshot made is a sticky drop proper: its cause is dropped too
+    // one the snapshot made is a sticky drop proper: its cause is dropped too (no write of the
+    // cause's commit applies, one is dropped: a ledger end's commit is ignored, not dropped)
     let t2 = Timeline::evaluate(&w2.held());
     let left = common::residue(&t2);
-    let sticky = |x: &WriteId| t2.dropped().get(x).is_some_and(|p| t2.dropped().keys().any(|d| d.commit() == p.commit));
+    let sticky = |x: &WriteId| {
+        t2.dropped().get(x).is_some_and(|p| t2.dropped().keys().any(|d| d.commit() == p.commit) && !t2.applied().keys().any(|a| a.commit() == p.commit))
+    };
     let repaired = |x: &WriteId| if after.applied.contains(x) { residue.contains(x) } else { left.contains(x) && sticky(x) };
     if after == compacted && first.is_some_and(|f| f.is_some() && changed.iter().filter(|c| c.0 == f).all(|c| repaired(&c.1))) {
         RESIDUE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
