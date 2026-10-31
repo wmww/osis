@@ -1,6 +1,6 @@
 # A commit's partial copy pends forever when its full commit never reaches its things' labels
 > Summary: A node that syncs K and holds only part of a commit on K (a `/members` chain copy, an edge-only inbox blob) waits for the rest from K's label; authors place the full commit there first (spec/sync.md §5 Order), but past `PLACE_WAIT` or in the exempt cases the copies go anyway, and a full commit that never lands leaves the receiver waiting forever. Every remaining fix is a policy trade: owner call.
-> Tags: node, sync, owner-call
+> Tags: node, sync
 
 ## Where it still happens
 - Bound (`PLACE_WAIT_MS`, 5 min of connected time): the full commit not at any server of K's labels by then (server down, deposit refused for good), the copies go with a diagnostic. Test `deposit_queue::projections_go_after_the_bound_spec_sync_5`: the sharer pends `WaitDeltas` until the deposit lands. Forever only if it never lands (author's disk lost, or it lost the right to deposit).
@@ -20,3 +20,6 @@ Every forever case is "the full commit exists nowhere a K-syncer can fetch". So:
 - (b) Membership-only commits go whole: a projection of a commit touching only membership-class aspects carries every delta K-syncers wait for. Closes all three cases for such commits (redemptions, grants, rotations are membership-only). Cost: box bytes per copy; the spec §4 "projected to edge deltas" rule changes; mixed commits keep the residue.
 - (c) Receiver rule: a part on a synced thing that the receiver holds only as a projection counts as held for atomic apply (joins on arrival, as a late delta of an applied commit does). Weakens atomic apply for membership commits (a K-syncer applies a grant before its boxes); no timeout state.
 - Rejected: a receiver timeout (treat a part no reachable entry supplies as never coming): a timeout state.
+
+
+Owner decision (round 13): option (c), consistent with cover-deleted-part-pends: a part on a synced thing that the receiver holds only as a projection counts as held for atomic apply; the rest joins on arrival. No timers, no extra bytes. Accepted cost: a K-syncer may see a grant before it holds the grant's boxes (an admin may re-seal needlessly).
