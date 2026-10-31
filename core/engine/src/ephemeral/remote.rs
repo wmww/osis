@@ -1933,7 +1933,7 @@ fn contains(c: &Fragment, x: &Fragment) -> bool {
 }
 
 /// Whether writes `q` of an author supersede its earlier writes `p` on one aspect (spec/sync.md
-/// §9): `p` expires (`p_exp`), `q` no earlier (`q_exp`, `None` never), every write of `q` is
+/// §9): `p` expires (`p_exp`), `q` too and no earlier (`q_exp`), neither carries a reset, every write of `q` is
 /// later than every write of `p` and none is into a record it did not create (it would be
 /// hidden with `p`'s), and `p` joined into `q` reads as `q` alone (a cursor's newer entry at
 /// its key, a register's newer write). While `q` is held nothing reads `p`, and `p` goes first.
@@ -1941,9 +1941,11 @@ fn supersedes(q: &Fragment, q_exp: Option<u64>, p: &Fragment, p_exp: Option<u64>
     let Some(tp) = p_exp else { return false };
     // a sequence's or bag's elements all show in the read: none shadows another's (cheap out
     // for appended events)
-    // a reset in `q` would make the relation intransitive (a later write without it need not
-    // hide `p`), and the drop order-dependent
-    if q_exp.is_some_and(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) || q.has_any_reset() {
+    // a superseder expires, no earlier than `p`: a plain one could be absorbed
+    // by a cover that does not supersede `p`, and a node getting only the cover would hold `p`;
+    // a reset in either part would make the relation intransitive or drop a tombstone, and the
+    // drop order-dependent
+    if q_exp.is_none_or(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) || q.has_any_reset() || p.has_any_reset() {
         return false;
     }
     let Some(newest_p) = p.writes().into_iter().filter_map(|(_, ts)| ts).max() else { return false };
