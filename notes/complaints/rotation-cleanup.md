@@ -1,0 +1,2 @@
+- Moving tests out of a file into `tests.rs` drops the spec citations they inherited from the old file's `//!` header: `spec_map.py --uncited` caught three. Give a split-out tests file its own citing header.
+- `git diff main --stat` in a worktree compares against main's current tip, not the branch base: it showed 25 files after main moved. Use `git diff $(git merge-base HEAD main)`.
