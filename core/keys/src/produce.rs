@@ -3,7 +3,7 @@
 //! (`covers`), except for the epochs a rotation creates.
 
 use crate::aspects::{KeysWrite, SecretsWrite, box_key, from_schema, history_key, keyset, keyset_of, to_schema};
-use crate::epoch::{ActorEpochs, Provenance, ROLES, SUITE, newest_of};
+use crate::epoch::{ActorEpochs, Provenance, ROLES, SUITE, is_newer, newest_of};
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
@@ -69,28 +69,28 @@ struct Item<'a> {
     secret: &'a Secret32,
 }
 
-/// Writes `rcpt`'s boxes for `items` (one per (role, epoch)) into `out`. A key-actor member
-/// without its seed gets one sealed box keyed at the highest role, carrying one secret per role
-/// (the newest epoch given for each). Returns false when a needed keyset is unknown.
-fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<bool, Error> {
+/// Writes `rcpt`'s boxes for `items` (one per (role, epoch)) into `out`; returns the (role,
+/// epoch) pairs they carry. A key-actor member without its seed gets one sealed box keyed at the
+/// highest role, carrying one secret per role (the newest epoch given for each). `None` when a
+/// needed keyset is unknown.
+fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<Option<Vec<(Role, Epoch)>>, Error> {
     let member = rcpt.member;
     match &rcpt.keys {
         MemberKeys::KeyActor { kem, seed: None } => {
             let mut per_role: BTreeMap<Role, &Item> = BTreeMap::new();
             for i in items {
-                match per_role.get(&i.role) {
-                    Some(prev) if !crate::epoch::is_newer(&i.epoch, &prev.epoch) => {}
-                    _ => {
-                        per_role.insert(i.role, i);
-                    }
+                let newest = per_role.entry(i.role).or_insert(i);
+                if is_newer(&i.epoch, &newest.epoch) {
+                    *newest = i;
                 }
             }
-            let Some((top_role, top)) = per_role.iter().next_back() else { return Ok(true) };
+            let Some((top_role, top)) = per_role.iter().next_back() else { return Ok(Some(Vec::new())) };
             let slot = BoxSlot::Secrets { actor: *actor, member, role: *top_role, epoch: top.epoch };
             let payload: Vec<BoxItem> = per_role.values().map(|i| BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() }).collect();
             let sealed = seal_box(kem, &slot, None, &payload, rng)?;
             let b = SecretBox::Sealed(SealedBox { keyset: None, suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) });
             out.boxes.insert(box_key(member, *top_role, &top.epoch), b);
+            return Ok(Some(per_role.values().map(|i| (i.role, i.epoch)).collect()));
         }
         MemberKeys::KeyActor { seed: Some(seed), .. } => {
             for i in items {
@@ -104,9 +104,9 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
                 let ks = keysets.get(&i.role);
                 let b = match own.get(&i.role) {
                     // Symmetric unless the writer holds a newer keyset than the secret.
-                    Some((es, s)) if ks.is_none_or(|(ek, _)| !crate::epoch::is_newer(ek, es)) => symmetric(actor, member, i, s, *es)?,
+                    Some((es, s)) if ks.is_none_or(|(ek, _)| !is_newer(ek, es)) => symmetric(actor, member, i, s, *es)?,
                     _ => {
-                        let Some((ek, pk)) = ks else { return Ok(false) };
+                        let Some((ek, pk)) = ks else { return Ok(None) };
                         let slot = BoxSlot::Secrets { actor: *actor, member, role: i.role, epoch: i.epoch };
                         let payload = [BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() }];
                         let sealed = seal_box(pk, &slot, Some(*ek), &payload, rng)?;
@@ -117,7 +117,7 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
             }
         }
     }
-    Ok(true)
+    Ok(Some(items.iter().map(|i| (i.role, i.epoch)).collect()))
 }
 
 fn symmetric(actor: &Tid, member: Tid, i: &Item, s: &Secret32, epoch_s: Epoch) -> Result<SecretBox, Error> {
@@ -212,7 +212,7 @@ pub fn rotate(
     rng: &mut dyn CryptoRngCore,
 ) -> Result<Rotation, Error> {
     let mut roles = roles.clone();
-    loop {
+    let removed = loop {
         let removed = removals(&roles, held, held_secrets)?;
         let mut more = BTreeSet::new();
         for m in members {
@@ -224,12 +224,12 @@ pub fn rotate(
             }
         }
         if more.is_empty() {
-            break;
+            break removed;
         }
         roles.extend(more);
-    }
+    };
     let mut rotated = Vec::new();
-    let mut secrets = SecretsWrite { removed: removals(&roles, held, held_secrets)?, ..SecretsWrite::default() };
+    let mut secrets = SecretsWrite { removed, ..SecretsWrite::default() };
     let mut keys = KeysWrite::default();
     let mut wrap = None;
     for &r in &roles {
@@ -255,7 +255,7 @@ pub fn rotate(
             let (epoch, secret) = held.role(r).newest_held().ok_or(Error::NoSecret(r))?;
             items.push(Item { role: r, epoch, secret });
         }
-        if !items.is_empty() && !box_items(actor, m, &items, rng, &mut secrets)? {
+        if !items.is_empty() && box_items(actor, m, &items, rng, &mut secrets)?.is_none() {
             unboxed.push(m.member);
         }
     }
@@ -316,17 +316,7 @@ fn box_at(
         }
     }
     let mut out = SecretsWrite::default();
-    if !box_items(actor, rcpt, &items, rng, &mut out)? {
-        return Ok(None);
-    }
-    let boxed: Vec<(Role, Epoch)> = match &rcpt.keys {
-        // The one sealed box carries each role's newest epoch boxed only.
-        MemberKeys::KeyActor { seed: None, .. } => ROLES
-            .into_iter()
-            .filter_map(|r| newest_of(items.iter().filter(|i| i.role == r).map(|i| &i.epoch)).map(|e| (r, e)))
-            .collect(),
-        _ => items.iter().map(|i| (i.role, i.epoch)).collect(),
-    };
+    let Some(boxed) = box_items(actor, rcpt, &items, rng, &mut out)? else { return Ok(None) };
     for (r, e) in boxed {
         if let Some(h) = held_secrets.history.get(&history_key(r, &e)) {
             out.history.insert(history_key(r, &e), h.clone());
