@@ -639,6 +639,8 @@ impl SyncEngine {
         let settled = self.unsettled_of(!w.unopened.is_empty())?.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
+        // a node serving the label alone decides here: nobody runs a pass at a server for it
+        self.reseal(&g, w)?;
         w.leave(left);
         Ok(())
     }

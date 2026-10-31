@@ -511,3 +511,47 @@ fn expired_link_at_no_server_finalized_spec_permissions_9() {
         assert!(net.engine(a).links_due().unwrap().is_empty(), "{servers:?}: finalized at expiry");
     }
 }
+
+// spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no server and no
+// peer it was received from passes vacuously, once the peer wait after the membership change is
+// over), spec/sync.md §5 (member peer): admin `a` serves g's label alone; admin `b`'s rotation
+// leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
+// before, and only once.
+#[test]
+fn serverless_label_reseals_spec_permissions_3() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[]);
+    let g = net.group(a, &[(b, Role::Admin), (c, Role::Read)], &[]);
+    let acts = net.sync(a).publish_reach([1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    assert!(net.sync(a).labels()[0].1.servers.is_empty());
+    let (ta, tb) = (net.tid(a), net.tid(b));
+    net.set_online(b, false);
+    let e = net.engine(b);
+    let rec = recipients_of(e, &[(ta, Role::Admin), (tb, Role::Admin)]);
+    rotation(e, g, &rec, 91, false);
+    net.pair(b, a);
+    net.run();
+    let newest = |net: &mut Net, n: usize| net.engine(n).epochs(&g).and_then(|e| e.read.newest_held().map(|x| x.0));
+    let e1 = newest(&mut net, a).unwrap();
+    assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
+    // a's membership commits naming c's boxes (`/secrets` of g): the re-seals
+    let reseals = |net: &mut Net| {
+        let ids = net.engine(a).commit_ids();
+        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_membership() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/secrets"))).count()
+    };
+    let before = reseals(&mut net);
+    net.advance(60_000);
+    assert!(!net.sync(a).complete_pass(&g), "within the peer wait");
+    assert_eq!(reseals(&mut net), before, "no re-seal within the peer wait");
+    let wait = net.sync(a).config().peer_pass_wait_ms;
+    net.advance(wait);
+    assert!(net.sync(a).complete_pass(&g), "nothing upstream: passed once the wait is over");
+    assert_eq!(reseals(&mut net), before + 1, "c re-sealed");
+    net.advance(wait);
+    net.advance(wait);
+    assert_eq!(reseals(&mut net), before + 1, "once");
+}

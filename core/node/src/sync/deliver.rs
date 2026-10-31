@@ -415,52 +415,43 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Every label of `groups` passed completely after `since` at its servers and at the
-    /// co-readers it was received from (those for at most `peer_pass_wait_ms` after the last
-    /// remote membership commit of `actors`), as `complete_pass`. A label with neither servers
-    /// nor such co-readers passes once that wait is over (else the removal never came).
+    /// Every label of `groups` passed completely after `since` (`label_passed`), the peer wait
+    /// counted from the last remote membership commit of any of `actors`.
     fn passed_since(&self, groups: &BTreeSet<Tid>, since: u64, actors: &[Tid]) -> bool {
-        let waited = actors.iter().all(|a| self.membership_at.get(a).is_none_or(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now()));
-        for (g, l) in &self.synced.labels {
-            if !groups.contains(g) {
-                continue;
-            }
-            let peers = self.pass_peers.get(&l.id).into_iter().flatten().filter(|_| !waited);
-            let mut any = false;
-            for s in super::peers::server_keys(&l.servers).chain(peers.copied()) {
-                any = true;
-                if self.passes.get(&(s, l.id)).is_none_or(|p| p.0 <= since) {
-                    return false;
-                }
-            }
-            if !any && !waited {
+        let waited = actors.iter().all(|a| self.peers_waited(a));
+        self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::server_keys(&l.servers), since, waited))
+    }
+
+    /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
+    /// after its last remote membership commit, or at once when none applied in this run
+    /// (`membership_at` is memory only; spec/permissions.md §3 bounds the wait after the change).
+    fn peers_waited(&self, actor: &Tid) -> bool {
+        self.membership_at.get(actor).is_none_or(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now())
+    }
+
+    /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
+    /// `servers` and, until `waited`, at each co-reader it was received from with a connection up
+    /// (`pass_peers`). With neither, nothing upstream holds what it lacks: it passes once
+    /// `waited` (a node serving it alone, spec/sync.md §5, else never re-seals or unties).
+    fn label_passed(&self, l: &LabelId, servers: impl Iterator<Item = ServerKey>, since: u64, waited: bool) -> bool {
+        let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited).copied();
+        let mut any = false;
+        for s in servers.chain(peers) {
+            any = true;
+            if self.passes.get(&(s, *l)).is_none_or(|p| p.0 <= since) {
                 return false;
             }
         }
-        true
+        any || waited
     }
 }
 
 impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
         let since = self.membership_seen.get(actor).copied().unwrap_or(0);
-        let mut any = false;
-        for (l, (a, servers)) in &self.synced.actors {
-            if a != actor {
-                continue;
-            }
-            // the label's servers, and the co-readers it received the label from while a
-            // connection to them is up with the label started and they still read it
-            // (spec/permissions.md §3), for at most `peer_pass_wait_ms` after the change
-            let waited = self.membership_at.get(actor).is_some_and(|t| t.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now());
-            let peers = self.pass_peers.get(l).into_iter().flatten().filter(|_| !waited);
-            for s in servers.iter().chain(peers) {
-                any = true;
-                if self.passes.get(&(*s, *l)).is_none_or(|p| p.0 <= since) {
-                    return false;
-                }
-            }
-        }
-        any
+        let waited = self.peers_waited(actor);
+        // no label of the actor known (at start, before `labels()`): no pass yet
+        let mut labels = self.synced.actors.iter().filter(|(_, (a, _))| a == actor).peekable();
+        labels.peek().is_some() && labels.all(|(l, (_, servers))| self.label_passed(l, servers.iter().copied(), since, waited))
     }
 }
