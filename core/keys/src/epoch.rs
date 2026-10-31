@@ -464,7 +464,9 @@ impl ActorEpochs {
                 let Some((de, ds)) = ids.get(e) else { continue };
                 let info = EpochInfo {
                     suite: i.suite,
-                    supersedes: i.supersedes.iter().map(id).collect(),
+                    // past the cap two owner epochs with one secret derive one epoch: it never
+                    // supersedes itself
+                    supersedes: i.supersedes.iter().map(id).filter(|x| x != de).collect(),
                     applied: BTreeMap::new(),
                     snapshot: false,
                     established: i.established.map(|_| Provenance::Derived),
@@ -653,6 +655,17 @@ mod tests {
         let d = ActorEpochs::derived(&owner, &t);
         let ns: Vec<u64> = d.read.epochs().map(|(e, _)| e.n()).collect();
         assert_eq!(ns, [MAX_FREE_N - 2, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1, MAX_FREE_N - 1]);
+        // one secret at two owner epochs past the cap, the later superseding the earlier: one
+        // derived epoch, still current
+        let mut owner = ActorEpochs::default();
+        let (a, b) = (ep(MAX_FREE_N + 10, 1), ep(MAX_FREE_N + 11, 2));
+        for e in [a, b] {
+            owner.read.set_secret(e, Secret32::from_bytes([7; 32]));
+            owner.read.set_established(e, Provenance::Chain);
+        }
+        owner.read.rotation(b, [a]);
+        let d = ActorEpochs::derived(&owner, &t);
+        assert_eq!(d.read.current().len(), 1);
     }
 
     // spec/crypto.md §4: a secret known only from pending commits is reading-only, one per
