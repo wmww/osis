@@ -651,8 +651,8 @@ fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
     v.as_array().ok_or(Error::Malformed("nonce"))
 }
 
-/// Items `MAX_PAGE_ITEMS` counts in one value spanning `bytes` (§8): one per CBOR data item, one
-/// more per byte of a text string; by heads alone, at most `bytes.len()`.
+/// Items `MAX_PAGE_ITEMS` counts in one value spanning `bytes` (§8): one per CBOR head (a tag and
+/// its content apart), one more per byte of a text string; by heads alone, at most `bytes.len()`.
 pub fn page_items(bytes: &[u8]) -> Result<usize, Error> {
     let mut n = 0usize;
     osis_base::visit_items(bytes, &LIMITS, &mut |_, major, arg| {

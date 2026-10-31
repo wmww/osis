@@ -59,7 +59,7 @@ fn mutate_at(r: &mut Rng, v: &mut Value, k: &mut usize) -> bool {
                     1 => i.saturating_sub(1),
                     2 => 0,
                     3 => 1,
-                    _ => 1 << 16,
+                    _ => crate::MAX_RUN as i64,
                 };
                 true
             }
