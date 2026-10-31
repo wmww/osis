@@ -38,6 +38,9 @@ pub struct Write<'d> {
     /// Per group whose `/group` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
     group_exp: BTreeMap<Tid, Option<Duration>>,
+    /// (thing, group) placements and subgroup edges this batch removes: their tied edges go
+    /// after the commit where that is a self-removal (`Osis::untie_now`).
+    unplaced: Vec<(Tid, Tid)>,
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
@@ -46,7 +49,7 @@ pub struct Write<'d> {
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new(), alive: None }
+        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new(), unplaced: Vec::new(), alive: None }
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
@@ -153,6 +156,9 @@ impl<'d> Write<'d> {
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
         self.m.op(g, &GROUP, group_op(items, member, add))?;
+        if !add {
+            self.unplaced.push((member, g));
+        }
         Ok(())
     }
 
@@ -178,12 +184,16 @@ impl<'d> Write<'d> {
         self.placed.push(t);
         Ok(())
     }
+    /// Removes `tid` from the items of `g`. A tied edge of `g` on `tid` (`Osis::share_into`)
+    /// goes in a commit right after when this node may remove it as a self-removal (admin on `g`
+    /// only); otherwise a node that may remove it does so later (spec/permissions.md §2).
     pub fn unplace(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.group(g, true, tid, false, None)
     }
     pub fn add_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, true, None)
     }
+    /// Removes `sub` from the subgroups of `g`; its tied edge as `unplace`'s.
     pub fn remove_subgroup(&mut self, g: Tid, sub: Tid) -> Result<()> {
         self.group(g, false, sub, false, None)
     }
@@ -243,8 +253,10 @@ impl<'d> Write<'d> {
         self.m.act_as(self.actor);
         let m = std::mem::take(&mut self.m);
         let placed = std::mem::take(&mut self.placed);
+        let unplaced = std::mem::take(&mut self.unplaced);
         let alive = self.alive;
-        self.db.engine(|e| {
+        let db = self.db;
+        let r = self.db.engine(|e| {
             if let Some(t) = alive
                 && !crate::read::knows_in(e, t)
             {
@@ -259,7 +271,9 @@ impl<'d> Write<'d> {
                 }
                 None => None,
             })
-        })
+        })?;
+        db.untie_now(&unplaced);
+        Ok(r)
     }
 }
 

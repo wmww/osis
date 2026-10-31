@@ -60,7 +60,7 @@ impl Engine {
         let roster: Members = state
             .roster
             .iter()
-            .map(|(m, e)| (*m, ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(key) }))
+            .map(|(m, e)| (*m, ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(key), tied: e.tied }))
             .collect();
         let ledger = Tenures(
             state

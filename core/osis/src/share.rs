@@ -24,6 +24,37 @@ pub struct EdgeOpts {
     pub invite: Option<Role>,
 }
 
+/// How `Osis::share_into` places.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShareOpts {
+    /// Place the thing (a group) as a subgroup, not as an item.
+    pub subgroup: bool,
+    /// When this node may not grant: place anyway (the thing is then excluded: members of the
+    /// group see its tid, not the thing) instead of failing `Permission`.
+    pub place_anyway: bool,
+}
+
+/// How a group's members reach a thing through that group (`Osis::reach`, `share_into`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Share {
+    /// A tied edge (`share_into`): it goes when the placement goes.
+    Tied(Role),
+    /// An edge granted by hand (`grant`): it stays when the placement goes.
+    Untied(Role),
+    /// No edge: placed, but the group's members do not reach the thing through it.
+    Excluded,
+}
+
+/// One group's view of a thing (`Osis::reach`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GroupReach {
+    pub group: Tid,
+    /// The group lists the thing as an item or subgroup. A tied edge without it is on its way
+    /// out (a node that may remove it does).
+    pub placed: bool,
+    pub share: Share,
+}
+
 /// Whether a demotion waits for its pre-sync (spec/permissions.md §5.3).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WaitForSync {
@@ -228,7 +259,11 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.invite, since: None }
+    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: false }
+}
+
+fn share_of(e: crate::Edge) -> Share {
+    if e.tied { Share::Tied(e.role) } else { Share::Untied(e.role) }
 }
 
 fn needs_admin(e: osis_node::Error) -> Error {
@@ -278,9 +313,97 @@ impl Osis {
             if !e.knows(&member) || (e.owner(&member).is_none() && e.get_typed(&member, &ct::KEYS)?.is_none()) {
                 return Err(Error::UnknownActor { tid: member });
             }
-            e.grant(&target, &member, &edge(role, opts)).map_err(needs_admin)
+            // an edge change keeps its tie; a new hand grant is untied
+            let tied = e.roster(&target).get(&member).is_some_and(|x| x.tied);
+            e.grant(&target, &member, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
         })?;
         self.carry(done)
+    }
+
+    /// Shares `tid` with the members of `group` at `role` by placing it there (spec/permissions.md
+    /// §2): the placement (skipped when the thing is already placed so) and a tied edge of the
+    /// group on it, which goes when the placement goes (`Write::unplace`). An existing edge of the
+    /// group at `role` or above is kept as it is, tied or not. Needs write on the group and admin
+    /// on `tid` (or an invite edge of at least `role`, and no edge of the group yet), else
+    /// `Permission` before anything is written, unless `opts.place_anyway` (then `Excluded`).
+    pub fn share_into(&self, tid: Tid, group: Tid, role: Role, opts: ShareOpts) -> Result<Share> {
+        let (t, g) = (self.resolved(tid), self.resolved(group));
+        for x in [t, g] {
+            if !self.holds(x) {
+                return Err(Error::UnknownThing { tid: x });
+            }
+        }
+        let existing = self.roster(t).get(&g).copied();
+        let grant = existing.is_none_or(|e| e.role < role);
+        let may = grant && self.engine(|e| e.may_grant(&t, &g, role));
+        if grant && !may && !opts.place_anyway {
+            return Err(Error::Permission { tid: t, needs: Role::Admin });
+        }
+        let placed = self.read(|r| {
+            let gs = r.groups_of(t);
+            if opts.subgroup { gs.subgroup_of.contains(&g) } else { gs.item_of.contains(&g) }
+        });
+        if may {
+            // durable first, so the placement is too
+            self.persist(&[t])?;
+        }
+        if !placed {
+            self.write_with(|w| if opts.subgroup { w.add_subgroup(g, t) } else { w.place(t, g) })?;
+        }
+        if !grant {
+            return Ok(existing.map_or(Share::Excluded, share_of));
+        }
+        if !may {
+            return Ok(Share::Excluded);
+        }
+        let tied = existing.is_none_or(|e| e.tied);
+        let done = self.engine(|e| e.grant(&t, &g, &ct::Edge { role, until: None, invite: None, since: None, tied })).map_err(needs_admin)?;
+        self.carry(done)?;
+        Ok(if tied { Share::Tied(role) } else { Share::Untied(role) })
+    }
+
+    /// Removes the tied edges of `pairs` (thing, group) whose placement is gone here, where this
+    /// node may as a self-removal (`Write::commit` after an unplace). Otherwise, or on failure, a
+    /// node that may remove it does so later (node-sync's obligation).
+    pub(crate) fn untie_now(&self, pairs: &[(Tid, Tid)]) {
+        for (t, g) in pairs {
+            let done = self.engine(|e| {
+                let due = e.placed_in(t, g) == Some(false) && e.roster(t).get(g).is_some_and(|x| x.tied) && e.may_remove(t, g) == Some(flows::Untie::SelfRemoval);
+                if due { e.untie(t, g).ok() } else { None }
+            });
+            if let Some(done) = done {
+                let _ = self.carry(done);
+            }
+        }
+    }
+
+    /// Removes `group`'s edge on `target` as an admin of the group (a self-removal,
+    /// spec/permissions.md §2: no pre-sync, no rotation; the target's next writer or admin
+    /// rotates). `Invalid` when this node is an admin of `target` (use `demote`), `Permission`
+    /// when it is no admin of `group`; nothing is written when there is no such edge.
+    pub fn remove_edge_of(&self, group: Tid, target: Tid) -> Result<()> {
+        let (g, t) = (self.resolved(group), self.resolved(target));
+        if !self.roster(t).contains_key(&g) {
+            return Ok(());
+        }
+        let done = self.engine(|e| match e.may_remove(&t, &g) {
+            Some(flows::Untie::SelfRemoval) => Ok(e.demote(&t, &flows::Demotion { member: g, new: None, presync: PreSync::Synced })?),
+            Some(flows::Untie::Explicit) => Err(Error::Invalid(format!("this node is an admin of {t}: use demote"))),
+            None => Err(Error::Permission { tid: g, needs: Role::Admin }),
+        })?;
+        self.carry(done)
+    }
+
+    /// Per group, how its members reach `tid` through it (spec/permissions.md §2): every group
+    /// listing it as an item or subgroup (`Tied`, `Untied` or `Excluded`), and every group with
+    /// a tied edge on it that no longer lists it (`placed: false`, until that edge goes).
+    pub fn reach(&self, tid: Tid) -> Vec<GroupReach> {
+        let t = self.resolved(tid);
+        let (gs, roster) = self.read(|r| (r.groups_of(t), r.roster(t)));
+        let placed: BTreeSet<Tid> = gs.item_of.into_iter().chain(gs.subgroup_of).collect();
+        let mut out: Vec<GroupReach> = placed.iter().map(|g| GroupReach { group: *g, placed: true, share: roster.get(g).copied().map_or(Share::Excluded, share_of) }).collect();
+        out.extend(roster.iter().filter(|(g, e)| e.tied && !placed.contains(g)).map(|(g, e)| GroupReach { group: *g, placed: false, share: Share::Tied(e.role) }));
+        out
     }
 
     /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
@@ -423,7 +546,7 @@ impl Osis {
         let new = match to {
             Lower::To(role) => {
                 let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no member of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None })
+                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: cur.tied })
             }
             Lower::Remove => None,
         };

@@ -2971,7 +2971,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     net.run();
     note(&mut net, b, w, "b", "1");
     let bt = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
     let d = osis_node::flows::Demotion { member: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();

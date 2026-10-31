@@ -1045,7 +1045,7 @@ mod tests {
         let c = osis_base::Tid::from_bytes([7; 15]);
         let mut m = Mutation::new();
         for x in [b, c] {
-            let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+            let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
             m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(e.to_value()) }).unwrap();
         }
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -1081,7 +1081,7 @@ mod tests {
         }
         let (x, y) = (things[0], things[1]);
         let mut m = Mutation::new();
-        let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None };
+        let e = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false };
         m.op(x, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(a1))], op: Op::Set(e.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
@@ -1117,7 +1117,7 @@ mod tests {
         let levels: Vec<u8> = wf.keys.iter().map(|i| h.keys[*i].level).collect();
         assert_eq!(levels, [1, 2, 3]);
         // a writer of X gets no admin on what it creates below X: no edges there
-        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, since: None };
+        let adm = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: false };
         for depth in [1, 3] {
             let p1 = &mut lp.peers[1];
             let mut m = Mutation::new();

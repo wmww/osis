@@ -26,14 +26,18 @@ aspect /tag: struct { 0 color: option<string> };   // marks a group as a user-fa
 - Internal groups (buckets, app indexes) have no `/tag`; generic tools list only tags.
 
 ## Sharing a tag
-Built from the mirrored-edges pattern of notes/permissions.md Patterns; core/osis/tests/it/tags.rs builds it (`add` = place plus grant, `new_sub_tag`, `remove`):
+Built from the mirrored-edges pattern of notes/permissions.md Patterns with **tied grants** (spec/permissions.md §2); core/osis/tests/it/tags.rs and tied.rs build it (`share_into`, `new_sub_tag`, `unplace`):
+- **The operation** (owner, round 13: tied grants over "placement grants access"; explicit; the "no helper" rule withdrawn for it; eventual removal accepted): `db.share_into(T, G, role, ShareOpts { subgroup, place_anyway })` places T and writes G's edge on T with `tied: true`; plain `place` never shares. `unplace`/`remove_subgroup` remove the tied edge right after when that is a self-removal (admin on G only); else node-sync's obligation (`SyncEngine::untie_unplaced`) removes it at a node that may (explicit by T's admin, after complete passes; self-removal by G's admin), like link finalization. One way: a placement without an edge re-grants nothing; an untied (hand) edge survives an unplace. `db.remove_edge_of(G, T)` is G's admin's self-removal; `db.reach(T)` lists per group `Tied`/`Untied`/`Excluded` and tied edges whose placement is gone.
+- Why not "placement grants access" (rejected): the rights record would leave the thing, so T's admins could no longer see or revoke shares (Alice places her note in Bob's tag, Bob removes Alice: she can no longer unplace, nothing on the note stops it); placements would become rights writes in the timeline; readers may tag what they cannot write.
+- Why not one commit for placement plus edge (the issue's first plan): a mixed-kind commit touches commit validation, retention, compaction, projection and undo, and a membership commit applies partially at a receiver anyway (spec/commits.md §4), so it buys no receiver-side atomicity. Two commits in one local operation (placement first: a crash leaves "placed, excluded", safe); the obligation waits for a complete pass of G's labels after the edge arrived, so the placement has too.
+- A self-removal of G's edge goes whole under the labels holding G (`Delivery::Deposit` from `demote_in`): the target is out of G's closure after the unplace, and its bodies leave G's label once G reads it no more, so without it the removal never left the remover.
 - The tag becomes an actor (secrets of its own, a label, a roster). Each direct item gets one edge for the tag's actor at the share's role or lower; a sub-tag gets the same edge and is made a shared actor itself if it is not one yet. Rights chain through membership edges (spec/permissions.md §1): a member of T reaches an item of sub-tag U by the path T → U → item, role = the minimum along it.
 - Items keep tid and owner; an item in several shared tags has one edge per tag; moving between tags is an edge change, never a copy. Everything under the tag travels under the tag's one label (entitlement holds through the chain).
 - Rosters nest: U's roster lists T as one member actor. Removing Bob from T rotates T, then lazily each sub-tag and item below it once (the cascade of spec/permissions.md §3), whatever the graph shape.
 - Members with write on the tag may add their own things (edge for the tag) or create tag-owned things in it.
 - **Recursive by default**: sharing a tag shares everything reachable below it, a sub-tag that also hangs under a private tag included. "Items only" is the same operation without the edges on sub-tags: their contents stay unentitled and are not uploaded under T's label.
 - **Only what you may share**: granting T an edge on a sub-tag or item needs admin on it (or an invite right). A tag or thing someone shared with me read-only, placed under my tag T, is not shared on when I share T; the client shows the tag's reach and what is excluded. This is the honest property the edge model gives over inherited folder ACLs; keep it.
-- Unsharing: removing the last members of T; the edges on items may stay (harmless; T then reads nothing new).
+- Unsharing: removing the last members of T; the edges on items may stay (harmless; T then reads nothing new). Removing an item: unplace (its tied edge follows).
 - Cost: a few KB of secrets per item and sub-tag once, one lazy rotation per thing below the tag per roster change (owner accepted for tags in the thousands of items). A removal of one of my devices also rotates every shared item I own (notes/permissions.md Nesting cost). Rejected: an edge for T copied onto every item below (one edge per shared ancestor per item; add and remove must walk ancestors); per-item labels (N labels, N chain-certificate copies, N steps per removal: the case the usage rule warns about).
 
 ## Guideline for first-party apps (owner)
@@ -49,6 +53,5 @@ A thing made of parts (a presentation of slides) owns its parts and is a group o
 - Files: `blob` plus a mime string on a file thing.
 
 ## Open
-- No "share tag" API helper (owner: avoid convenience functions that only save calling existing ones; `place` plus `grant` is the operation).
 - Admin-only aspects on shared actors: a chat moderation question, not a tag one (writers may rename a shared tag, owner); issues/admin-only-aspects.md, decided with the chat redesign.
 - Chat redesign (notes/chat.md, notes/std.md).

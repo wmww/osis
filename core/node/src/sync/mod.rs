@@ -420,6 +420,10 @@ pub struct SyncEngine {
     pub(crate) resealed: BTreeSet<osis_base::CommitId>,
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
     pub(crate) links_failed: BTreeSet<Tid>,
+    /// Tied edges to remove (`untie_unplaced`): what changed since they were last derived
+    /// (groups whose `/group` changed, things whose `/members` or roster changed, or all), the
+    /// (target, group) pairs whose placement is gone, and those whose removal failed in this run.
+    pub(crate) tied: deliver::TiedWork,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
     /// A self-removal was carried out: its lost secrets are dropped once every label is idle
@@ -536,6 +540,7 @@ impl SyncEngine {
             capped: BTreeSet::new(),
             resealed: BTreeSet::new(),
             links_failed: BTreeSet::new(),
+            tied: deliver::TiedWork { all: true, ..Default::default() },
             synced: Synced::default(),
             unsubscribe: BTreeSet::new(),
             served: BTreeMap::new(),
@@ -739,6 +744,8 @@ impl SyncEngine {
         }
         // links expired or used: a removal of the link key (spec/permissions.md §9)
         self.finalize_links()?;
+        // tied edges whose placement is gone (spec/permissions.md §2)
+        self.untie_unplaced()?;
         // the step's deaths recomputes before its passes: they mark the bodies whose deaths moved
         self.engine.settle_deaths()?;
         self.engine_events()?;
@@ -793,8 +800,9 @@ impl SyncEngine {
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         while let Ok(e) = self.events.try_recv() {
             match e {
-                crate::Event::Applied { id, origin, .. } => {
+                crate::Event::Applied { id, origin, changed: aspects, .. } => {
                     changed = true;
+                    self.tied.touched(&aspects);
                     self.placed_cache.0 = u64::MAX;
                     let Some(h) = self.engine.header(&id) else { continue };
                     // a creation record moves the roles downstream of the thing
@@ -830,6 +838,7 @@ impl SyncEngine {
                 crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(t, a)| self.engine.only_ephemeral(t, a)) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
+                    self.tied.touched(&aspects);
                     if cause == crate::events::Cause::LostAccess {
                         self.touched.full = true;
                     }
@@ -849,6 +858,7 @@ impl SyncEngine {
                 }
                 crate::Event::Roster { thing } => {
                     changed = true;
+                    self.tied.targets.insert(thing);
                     roots.insert(thing);
                     self.served_cache = None;
                     self.members_moved = true;

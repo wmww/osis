@@ -47,7 +47,7 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
     let done = net.engine(a).grant(&g, &to, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -292,7 +292,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, sv: usize, home: &LabelI
     use osis_node::flows::Delivery;
     net.set_online(b, false);
     let before = net.server_ids(sv, home);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -361,7 +361,7 @@ fn holds(net: &mut Net, n: usize, c: &osis_base::CommitId) -> bool {
 /// Alice's grant on `g` to `bob`; the grant commit.
 fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitId {
     use osis_node::flows::Delivery;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: false };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();

@@ -38,7 +38,7 @@ pub struct Demotion {
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -309,6 +309,12 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             under.insert(i, target);
         }
         done.deliveries.push(Delivery::First { commits: vec![c], under });
+        // a self-removal of another actor's edge (an admin of group G removing G's edge): the
+        // removal leaves G's closure bodies (G reads the target no more) and the target may have
+        // left it already (an unplace), so it goes whole under the labels holding G
+        if selfr && member != who && !tx.core.is_key_actor(&member) {
+            done.deliveries.push(Delivery::Deposit { commit: c, under: member });
+        }
     }
     // the leaver drops what it lost once the removal is placed (`Done::drop_lost`): it must
     // still seal the removal under the labels it leaves

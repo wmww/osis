@@ -269,7 +269,7 @@ pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};
 pub use keys::{Key, core};
 pub use large::ValueStream;
 pub use read::{AspectRef, Edge, GroupsOf, PathRef, Reader, Roster, Stamp};
-pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, ShareLink, Status, SyncScope, SyncState, WaitForSync};
+pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, InviteId, LinkInfo, LinkOpts, Lower, PRESYNC_WAIT, RecoveryCard, ServerAddr, Share, ShareLink, ShareOpts, Status, SyncScope, SyncState, WaitForSync};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};

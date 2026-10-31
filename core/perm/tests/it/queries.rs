@@ -281,7 +281,7 @@ fn cert_run_edges(samples: u64, seed: u64) {
                     membership_model::Role::Write => Some(Write),
                     membership_model::Role::Admin => Some(Admin),
                 },
-                since: None,
+                since: None, tied: (e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1,
             })
         };
         let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
@@ -466,7 +466,7 @@ fn patched_view_equals_cloned_edges() {
         let role = [Read, Write, Admin][rng.below(3)];
         let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
         let until = (rng.below(3) == 0).then(|| osis_base::WallMs(rng.below(10) as u64));
-        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None })
+        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: until.is_some() != invite.is_some() })
     };
     for _ in 0..2000 {
         let keys = key_actors(3, 11);

@@ -115,6 +115,7 @@ impl W {
         self.opt(e.until, |w, u| w.n(u.0));
         self.opt(e.invite, W::role);
         self.opt(e.since.as_ref(), W::point);
+        self.bool(e.tied);
     }
     fn dots(&mut self, d: &Dots) {
         match d {
@@ -584,7 +585,8 @@ impl<'a> R<'a> {
         let until = self.opt(|r| r.n().map(WallMs))?;
         let invite = self.opt(R::role)?;
         let since = self.opt(R::point)?;
-        Some(Edge { role, until, invite, since })
+        let tied = self.bool()?;
+        Some(Edge { role, until, invite, since, tied })
     }
     fn dots(&mut self) -> Option<Dots> {
         match self.u8()? {

@@ -6,22 +6,23 @@ use crate::scenario as common;
 use common::*;
 use crate::common::CreateIn;
 use osis::core::{BODY, GROUP, NAME, TAG, Tag};
-use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Result, Role, Tid};
+use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Result, Role, Share, ShareOpts, Tid};
 use osis_sim::world::World;
 
-/// A sub-tag of `parent` owned by `owner`, with an edge for the parent (unless the parent owns it)
-/// so the parent's members reach what it holds.
+/// A sub-tag of `parent` owned by `owner`, with a tied edge for the parent (unless the parent
+/// owns it) so the parent's members reach what it holds.
 fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let t = db.write_with(|w| {
         let t = w.create_in(owner, &[parent])?;
         w.make_group(t)?;
         w.at(t, TAG).set(&Tag::default())?;
         w.at(t, NAME).set(&name.to_string())?;
-        w.add_subgroup(parent, t)?;
         Ok(t)
     })?;
-    if owner != parent {
-        db.grant(t, parent, role, EdgeOpts::default())?;
+    if owner == parent {
+        db.write_with(|w| w.add_subgroup(parent, t))?;
+    } else {
+        db.share_into(t, parent, role, ShareOpts { subgroup: true, ..ShareOpts::default() })?;
     }
     Ok(t)
 }
@@ -35,22 +36,22 @@ fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
     })
 }
 
-/// Adds a thing the person owns to a tag: a placement plus an edge for the tag's actor, so the
-/// tag's members reach it (capped by their role on the tag) and it syncs under the tag's label
-/// (spec/sync.md §3, entitlement). Placing alone shares nothing.
+/// Adds a thing the person owns to a tag: a placement plus a tied edge for the tag's actor, so
+/// the tag's members reach it (capped by their role on the tag) and it syncs under the tag's
+/// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
-    db.write_with(|w| w.place(thing, tag))?;
-    db.grant(thing, tag, role, EdgeOpts::default())
+    assert_eq!(db.share_into(thing, tag, role, ShareOpts::default())?, Share::Tied(role));
+    Ok(())
 }
 
 fn place(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
     db.write_with(|w| w.place(thing, tag))
 }
 
-/// Removes a thing from a tag and ends the tag's edge on it (the thing's secrets rotate).
-async fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
-    db.write_with(|w| w.unplace(thing, tag))?;
-    db.demote(thing, tag, Lower::Remove, Demotion::default()).await
+/// Removes a thing from a tag; the tag's tied edge on it goes once the unplace synced (the
+/// thing's admin removes it with a rotation, spec/permissions.md §2).
+fn remove(db: &Osis, tag: Tid, thing: Tid) -> Result<()> {
+    db.write_with(|w| w.unplace(thing, tag))
 }
 
 fn edit(db: &Osis, card: Tid, shown: &str, new: &str) -> Result<()> {
@@ -109,7 +110,9 @@ fn shared_tag_per_item() {
     assert_eq!(text(&bob, packing).unwrap().as_deref(), Some("socks"));
     assert_eq!(tag_names(&bob, packing).unwrap(), ["Trip"]);
 
-    w.until(remove(&alice, trip, packing), 1000, 20).expect("pre-sync").unwrap();
+    remove(&alice, trip, packing).unwrap();
+    w.run();
+    assert!(!alice.roster(packing).contains_key(&trip), "the tied edge went after the unplace");
     edit(&alice, packing, "socks", "socks, hat").unwrap();
     w.run();
     assert_eq!(text(&bob, packing).unwrap().as_deref(), Some("socks"), "removed from the tag: nothing new");

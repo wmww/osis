@@ -19,6 +19,9 @@ pub struct Edge {
     pub until: Option<WallMs>,
     /// The role this member may grant others (invite grants).
     pub invite: Option<Role>,
+    /// Tied to the placement of the thing in this member, a group (`Osis::share_into`): removed
+    /// once the placement is gone (spec/permissions.md §2).
+    pub tied: bool,
 }
 
 /// A thing's time (`Osis::created`, `Osis::changed`): the commit, its author and when.
@@ -199,7 +202,7 @@ impl Reader<'_> {
 
     /// The membership timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: Tid) -> Roster {
-        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite })).collect()
+        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied })).collect()
     }
 
     /// This node's effective role on `tid` now (`None`: no access).
