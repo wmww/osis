@@ -68,7 +68,7 @@ pub enum Event {
     Joined { id: CommitId },
     /// Aspects changed outside a commit's application.
     Changed { cause: Cause, changed: Vec<(Tid, Ak)> },
-    /// The membership timeline's roster of `thing` may have changed.
+    /// The role timeline's roster of `thing` may have changed.
     Roster { thing: Tid },
     /// Ephemeral state changed in memory, or signal aspects fired (notes/ephemeral.md). `id` is
     /// the batch's commit when it had a durable half (one change, one `ts`); for a remote change,

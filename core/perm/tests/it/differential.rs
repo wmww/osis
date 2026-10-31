@@ -1,21 +1,21 @@
-//! Differential tests against core/test/membership-model (notes/testing.md): random histories from
+//! Differential tests against core/test/roles-model (notes/testing.md): random histories from
 //! the model, evaluated by both; equal rosters, roles, applied and dropped sets.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
 
 use common::*;
-use membership_model::shrink::{shrink, Shrink};
-use membership_model::{edges, joint, snapshot, Rng};
+use roles_model::shrink::{shrink, Shrink};
+use roles_model::{edges, joint, snapshot, Rng};
 use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
 
-fn role(r: membership_model::Role) -> Option<Role> {
+fn role(r: roles_model::Role) -> Option<Role> {
     match r {
-        membership_model::Role::None => None,
-        membership_model::Role::Read => Some(Role::Read),
-        membership_model::Role::Write => Some(Role::Write),
-        membership_model::Role::Admin => Some(Role::Admin),
+        roles_model::Role::None => None,
+        roles_model::Role::Read => Some(Role::Read),
+        roles_model::Role::Write => Some(Role::Write),
+        roles_model::Role::Admin => Some(Role::Admin),
     }
 }
 
@@ -58,7 +58,7 @@ fn joint_world(h: &joint::JHist) -> JointWorld {
         let id = cid(jw.id);
         ids.push(id);
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
-        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.member), role(jw.role).map(Edge::new))], &recv);
+        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), role(jw.role).map(Edge::new))], &recv);
     }
     JointWorld { w, nodes, actors, ids }
 }
@@ -87,15 +87,15 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
             if m == owner_of(x) || m == h.nodes + x {
                 continue;
             }
-            let member = if m < h.nodes { jw.nodes[m] } else { jw.actors[m - h.nodes] };
-            let pe = tl.roster(&jw.actors[x], At::END).get(&member).map(|e| e.role);
+            let holder = if m < h.nodes { jw.nodes[m] } else { jw.actors[m - h.nodes] };
+            let pe = tl.roster(&jw.actors[x], At::END).get(&holder).map(|e| e.role);
             if role(o.edges[m][x]) != pe {
                 return Some(format!("edge {m} on {x}: model {:?} perm {pe:?}", o.edges[m][x]));
             }
         }
     }
     for (i, jwr) in h.writes.iter().enumerate() {
-        if jwr.member == owner_of(jwr.target) {
+        if jwr.holder == owner_of(jwr.target) {
             continue;
         }
         let id = WriteId::Op(jw.ids[i], 0);
@@ -137,7 +137,7 @@ fn joint_run(samples: u64, seed: u64) {
     eprintln!("joint model: {samples} histories, {with_drops} with drops");
 }
 
-/// spec/permissions.md §5.1: the joint walk agrees with core/test/membership-model `joint`.
+/// spec/permissions.md §5.1: the joint walk agrees with core/test/roles-model `joint`.
 #[test]
 fn joint_model_agrees() {
     joint_run(300, 0x5eed_0001);
@@ -167,9 +167,9 @@ fn joint_kept_standing_survives_absent_edge_removal() {
 /// The history of `joint_kept_standing_survives_absent_edge_removal`.
 fn absent_edge_removal_hist() -> joint::JHist {
     use joint::{JHist, JWrite, Owner};
-    use membership_model::Role::{Admin, None as Gone};
-    const LATE: u32 = membership_model::shrink::LATE;
-    let w = |author, t, id, member| JWrite { author, t, id, target: 0, member, role: Gone };
+    use roles_model::Role::{Admin, None as Gone};
+    const LATE: u32 = roles_model::shrink::LATE;
+    let w = |author, t, id, holder| JWrite { author, t, id, target: 0, holder, role: Gone };
     // entities: n0, n1, A0, A1
     let mut genesis = vec![vec![Gone; 2]; 4];
     genesis[1][0] = Admin;
@@ -189,9 +189,9 @@ fn absent_edge_removal_hist() -> joint::JHist {
 /// can arrive late and be inserted before it.
 pub(crate) fn absent_edge_removal_spread_hist() -> joint::JHist {
     use joint::{JHist, JWrite, Owner};
-    use membership_model::Role::{Admin, None as Gone, Read};
-    const LATE: u32 = membership_model::shrink::LATE;
-    let w = |author, t, id, member, role| JWrite { author, t, id, target: 0, member, role };
+    use roles_model::Role::{Admin, None as Gone, Read};
+    const LATE: u32 = roles_model::shrink::LATE;
+    let w = |author, t, id, holder, role| JWrite { author, t, id, target: 0, holder, role };
     // entities: n0, n1, n2, A0, A1
     let mut genesis = vec![vec![Gone; 2]; 5];
     genesis[1][0] = Admin;
@@ -283,8 +283,8 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
             }
         }
     }
-    // Projection agreement (spec/permissions.md §4): a node holding one member's certificate
-    // closure computes that member's authority as the full node does.
+    // Projection agreement (spec/permissions.md §4): a node holding one holder's certificate
+    // closure computes that holder's authority as the full node does.
     for z in 1..h.n() {
         let pw = edges_world(&h.projected(z));
         let ptl = Timeline::evaluate(&pw.w.held());
@@ -300,7 +300,7 @@ fn edges_run(samples: u64, seed: u64) {
 }
 
 /// spec/permissions.md §2, §5.1, §9: `until`, invite power, self-removal and links agree with
-/// core/test/membership-model `edges`, projections included.
+/// core/test/roles-model `edges`, projections included.
 #[test]
 fn edges_model_agrees() {
     edges_run(300, 0x5eed_0003);
@@ -357,7 +357,7 @@ fn residue(tl: &Timeline) -> bool {
 }
 
 /// A snapshot-model history without self-removal: no writes of an author's own edge, and
-/// ledger entries ended by the member's own node given another ending node (that end is a
+/// ledger entries ended by the holder's own node given another ending node (that end is a
 /// self-removal, spec/permissions.md §2, never an audited end, §6; read as one, its author
 /// keeps its standing, §5.1 step 4). The snapshot model has no self-removal.
 fn snap_hist(rng: &mut Rng) -> snapshot::SHist {
@@ -367,8 +367,8 @@ fn snap_hist(rng: &mut Rng) -> snapshot::SHist {
     h.recv = keep.iter().map(|&i| h.recv[i].clone()).collect();
     let n = h.n();
     for e in h.writes.iter_mut().flat_map(|w| w.ledger.iter_mut()) {
-        if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.member) {
-            u.1 = (e.member + 1) % n;
+        if let Some(u) = e.until.as_mut().filter(|u| u.1 == e.holder) {
+            u.1 = (e.holder + 1) % n;
         }
     }
     h
@@ -395,7 +395,7 @@ fn snap_run(samples: u64, seed: u64) {
 }
 
 /// spec/permissions.md §6: epoch starts, ledgers, compaction and projections agree with
-/// core/test/membership-model `snapshot`.
+/// core/test/roles-model `snapshot`.
 #[test]
 fn snapshot_model_agrees() {
     snap_run(300, 0x5eed_0005);

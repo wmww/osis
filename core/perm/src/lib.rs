@@ -1,5 +1,5 @@
-//! osis-perm: membership validity rules as pure logic over an abstract held set
-//! (spec/permissions.md): the layer-1 membership timeline with epoch starts and tenure ledgers,
+//! osis-perm: role validity rules as pure logic over an abstract held set
+//! (spec/permissions.md): the layer-1 role timeline with epoch starts and tenure ledgers,
 //! layer-2 content validity, roster snapshot production, certificates, purge rights and move
 //! resolution. The node implements `HeldSet` and adapts commits into the records of `types`.
 //! Layer 1 (notes/architecture.md). Design and readings: notes/permissions.md, Implementation.
@@ -29,7 +29,7 @@ pub use purge::PurgeBy;
 pub use roster::RosterState;
 pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};
-pub use types::{Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Tie, TieSource, WriteId, MEMBERS};
+pub use types::{Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Tie, TieSource, WriteId, MEMBERS};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[cfg(debug_assertions)]
 #[doc(hidden)]

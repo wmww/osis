@@ -6,7 +6,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 ## Not acceptable
 | value | where | problem | status |
 |---|---|---|---|
-| `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a holder-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_member_chain_spec_crypto_4` |
+| `reopen_all` 8 sweeps | `engine/flows/mod.rs` | taking up a key actor opened at most 8 levels of a holder-actor chain (a 12-chain left 4 unread) | fixed: fixpoint, each learner's dependents reopened at once (one sweep opens a chain in any tid order); test `keys::key_actor_opens_deep_holder_chain_spec_crypto_4` |
 | `reopen_dependents` 4096 steps | `engine/flows/mod.rs` | the reopen fixpoint stopped silently; it terminates anyway: an actor is pushed only when its held epochs grew (epochs and secrets are only added, `set_secret` only when absent), so pushes are bounded by the secrets the held `/secrets` states carry, which writers paid for | fixed: cap removed (no test: needs > 4096 steps) |
 | rotation `MAX_DEPTH` 8 | `engine/rotation/mod.rs` | departures more than 8 holder actors deep are never rotated (security) | fixed: no cap; departures one per covers class (fixpoint over the holder graph, polynomial), cascade iterative, each actor once; tests `rotation::tests::removal_twelve_deep_rotates_every_level_spec_crypto_4`, `wide_lattice_departures_bounded`, differential `walk_matches_path_walk` |
 | `HINT_INDEXES` 4 | `node/sync/open.rs` | a label of index 4 or more cannot be opened from a hint (inbox, link) | fixed: inbox things carry the label index (spec/wire.md §9), links and cards name index 0; test `inbox_retry::hint_opens_a_label_replaced_many_times_spec_wire_9` |
@@ -29,7 +29,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_DELTA_BARE` 2^18 | R | no bare runs / a small delta creates unbounded records |
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
-| `MAX_DRIFT`, `MEMBERSHIP_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
+| `MAX_DRIFT`, `ROLE_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
 | `RESOLUTION_HOPS` 8 | M | no resolution / cycles (guarded); past it a tid reads as an intermediate copy |
 | `MAX_OWNER_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_LINKED_FRONTIERS` 64 MiB | R | no linked frontiers / unbounded snapshot work |
@@ -90,7 +90,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
-| `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
+| `PENDING_SHARE` 4, `RELAYS_REHOLDERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
 | `LOG_KEEP` 4096 | M (a cursor below replays) | |
 | `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE`, asserted) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |

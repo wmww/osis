@@ -230,7 +230,7 @@ pub(crate) struct Follows {
 }
 
 /// Text built by a random history (`upgraded`: then a string register write over it, embedded as
-/// characters with `Derived` dots, §7, and text edits of those, the position's text member taken
+/// characters with `Derived` dots, §7, and text edits of those, the position's text slot taken
 /// alone) and bootstrapped from a snapshot (deleted stretches arrive as range records, deleted
 /// chars without content); then edited by a new writer through the wire: an insert anchored at a random placed element (hidden ones inside range
 /// records and embedded ones included), then a random text op (undelete of part of a deleted
@@ -267,10 +267,10 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
     let bytes = encode_snapshot(&snap, &snap_cx(), None).unwrap();
     let mut ours = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
     let mut f = Follows::default();
-    // the text member alone (the writer's deltas are newer than the register's write, so the
-    // member joins them as the position does)
+    // the text slot alone (the writer's deltas are newer than the register's write, so the
+    // slot joins them as the position does)
     if let Fragment::Slots(x) = &ours {
-        match x.members.get(&crate::fragment::Encoding::Text) {
+        match x.slots.get(&crate::fragment::Encoding::Text) {
             Some(t) => ours = t.clone(),
             None => return f,
         }
@@ -537,7 +537,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
 }
 
 /// §7 (`seq_lin`): joins at a `Slots` position that leave its register and effective reset as
-/// they are (text edits of a text upgraded from a string) follow the text member's cached
+/// they are (text edits of a text upgraded from a string) follow the text slot's cached
 /// placement and read like the model (the join itself is checked against a whole pass).
 #[test]
 fn slots_join_follows_cache_spec_7() {
@@ -549,7 +549,7 @@ fn slots_join_follows_cache_spec_7() {
         let _ = crate::seq_lin::probe();
         ours.join(frag(&d));
         let text = match &*ours {
-            Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text),
+            Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text),
             f => Some(f),
         };
         let followed = crate::seq_lin::probe().1 == 0 && matches!(text, Some(Fragment::Seq(x)) if x.lin_check().is_some());
@@ -1031,7 +1031,7 @@ proptest! {
         for c in &commits {
             mapply(&mut state, c.delta.clone());
             let f = match frag(state.as_ref().unwrap()) {
-                Fragment::Slots(x) => x.members.get(&crate::fragment::Encoding::Text).cloned().unwrap_or_default(),
+                Fragment::Slots(x) => x.slots.get(&crate::fragment::Encoding::Text).cloned().unwrap_or_default(),
                 f => f,
             };
             let Fragment::Seq(_) = &f else { continue };

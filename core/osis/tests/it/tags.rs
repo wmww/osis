@@ -10,7 +10,7 @@ use osis::{Demotion, EdgeOpts, Error, Lower, Osis, Result, Role, Share, ShareOpt
 use osis_sim::world::World;
 
 /// A sub-tag of `parent` owned by `owner`, with a tied edge for the parent (unless the parent
-/// owns it) so the parent's members reach what it holds.
+/// owns it) so the parent's holders reach what it holds.
 fn new_sub_tag(db: &Osis, owner: Tid, parent: Tid, name: &str, role: Role) -> Result<Tid> {
     let t = db.write_with(|w| {
         let t = w.create_in(owner, &[parent])?;
@@ -37,7 +37,7 @@ fn new_card(db: &Osis, owner: Tid, text: &str) -> Result<Tid> {
 }
 
 /// Adds a thing the person owns to a tag: a placement plus a tied edge for the tag's actor, so
-/// the tag's members reach it (capped by their role on the tag) and it syncs under the tag's
+/// the tag's holders reach it (capped by their role on the tag) and it syncs under the tag's
 /// label (spec/sync.md §3, entitlement). Placing alone shares nothing.
 fn add(db: &Osis, tag: Tid, thing: Tid, role: Role) -> Result<()> {
     assert_eq!(db.share_into(thing, tag, role, ShareOpts::default())?, Share::Tied(role));
@@ -120,7 +120,7 @@ fn shared_tag_per_item() {
 }
 
 // notes/tags.md (rosters nest; only what you may share), spec/permissions.md §1 (effective role
-// is the minimum along a path of edges): a member of the tag reaches a sub-tag's card through
+// is the minimum along a path of edges): a holder of the tag reaches a sub-tag's card through
 // tag → sub-tag → card; a card someone shared with Alice read-only, placed in her tag, cannot be
 // given an edge for the tag and so is not shared on.
 #[test]
@@ -217,7 +217,7 @@ fn invite_holder_shares_on() {
 
 // spec/permissions.md §7 (moving is a copy with imported history), notes/tags.md (the only copy
 // is an ownership transfer): the copy has a new tid and owner, the tag keeps the original, and
-// the tag's members do not read the copy.
+// the tag's holders do not read the copy.
 #[test]
 fn ownership_transfer_is_a_copy() {
     let mut w = World::new();

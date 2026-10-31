@@ -37,8 +37,8 @@ pub enum CommitKind {
     Change,
     /// A content commit reverting another (an undo, or a redo: a revert of a revert).
     Revert,
-    /// A membership change (grants, removals, rotations, labels).
-    Membership,
+    /// A role change (grants, removals, rotations, labels).
+    Role,
     /// A compaction or roster snapshot.
     Snapshot,
     /// An import after a move.
@@ -164,8 +164,8 @@ fn kind_of(h: &osis_commit::Header) -> CommitKind {
     match h.kind {
         Kind::Content if h.undoes.is_some() => CommitKind::Revert,
         Kind::Content => CommitKind::Change,
-        Kind::Membership => CommitKind::Membership,
-        Kind::ContentSnapshot | Kind::MembershipSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
+        Kind::Role => CommitKind::Role,
+        Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,
         Kind::Import => CommitKind::Import,
     }
 }

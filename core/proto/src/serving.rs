@@ -146,8 +146,8 @@ fn check(k: &HeadKeys, key: StepKey, domain: Domain, digest: &[u8; 32], sig: &Si
 enum Under {
     /// The sync key of the head it was proven at.
     Sync(osis_crypto::VerifyingKey),
-    /// A member proof (spec/sync.md §5, member peer): the store's word, not a step's.
-    Member,
+    /// A co-reader proof (spec/sync.md §5, co-reader peer): the store's word, not a step's.
+    Holder,
 }
 
 pub struct ServingSession {
@@ -172,8 +172,8 @@ pub struct ServingSession {
     keys: HashMap<LabelId, HeadKeys>,
     /// A signature of the message being handled verified under no key (`check`).
     struck: bool,
-    /// Dialable key of the last member proof that opened a label.
-    member: Option<[u8; 32]>,
+    /// Dialable key of the last co-reader proof that opened a label.
+    holder: Option<[u8; 32]>,
     /// Bytes of `Send` outputs so far.
     written: u64,
     /// The last `ServingInput::Taken` (none: never reported, no flow control).
@@ -240,16 +240,16 @@ impl ServingSession {
             crossed: HashSet::new(),
             keys: HashMap::new(),
             struck: false,
-            member: None,
+            holder: None,
             written: 0,
             taken: None,
             owed: VecDeque::new(),
         }
     }
 
-    /// The dialable key of the last member proof that opened a label here (spec/sync.md §5).
-    pub fn member(&self) -> Option<[u8; 32]> {
-        self.member
+    /// The dialable key of the last co-reader proof that opened a label here (spec/sync.md §5).
+    pub fn holder(&self) -> Option<[u8; 32]> {
+        self.holder
     }
 
     /// Labels opened on this connection (an open a new head ended stays listed until a
@@ -269,11 +269,11 @@ impl ServingSession {
     }
 
     /// Whether `label` is opened and its open holds at the head: under the head's sync key, or
-    /// by a member proof, which holds across steps (spec/sync.md §5).
+    /// by a co-reader proof, which holds across steps (spec/sync.md §5).
     fn holds(&mut self, store: &dyn LabelStore, label: &LabelId) -> Result<bool, StoreError> {
         Ok(match self.opened.get(label).copied() {
             None => false,
-            Some(Under::Member) => true,
+            Some(Under::Holder) => true,
             Some(Under::Sync(k)) => self.keys(store, label)?.is_some_and(|h| h.head.keys.sync == k),
         })
     }
@@ -577,14 +577,14 @@ impl ServingSession {
         if !self.opened.contains_key(&label) && self.opened.len() >= MAX_OPEN_LABELS {
             return Ok(Message::Error { id, code: Code::RATE_LIMITED });
         }
-        // a member node's proof: the store knows its dialable key (spec/sync.md §5)
-        if let Proof::Member { dialable, .. } = &proof {
+        // a holder node's proof: the store knows its dialable key (spec/sync.md §5)
+        if let Proof::CoReader { dialable, .. } = &proof {
             let key = dialable.to_bytes();
-            if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.member_open(&key, &label)?) {
+            if !(proof.verify_sig(&label, &self.cfg.challenge, &self.cfg.static_key).is_ok() && store.co_reader_open(&key, &label)?) {
                 return Ok(Message::Error { id, code: Code::REFUSED });
             }
-            self.opened.insert(label, Under::Member);
-            self.member = Some(key);
+            self.opened.insert(label, Under::Holder);
+            self.holder = Some(key);
             return Ok(Message::Opened { id, head, entry_box: None });
         }
         Ok(match evaluate_open(&head, &Index { store, label: &label }, &proof, &self.cfg.challenge, &self.cfg.static_key)? {
@@ -616,7 +616,7 @@ impl ServingSession {
             }
             None => return Ok(Message::Error { id, code: Code::UNKNOWN_LABEL }),
             Some(h) if h.id() == step.id() => return Ok(Message::Ok { id }),
-            // not a child of the head: the code alone, never the head (an ex-member or link
+            // not a child of the head: the code alone, never the head (an ex-holder or link
             // holder would watch rotations; a registrar learns the head by opening, spec/sync.md §5)
             Some(h) => {
                 if step.verify_child(h).is_err() {

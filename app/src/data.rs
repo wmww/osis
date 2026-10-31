@@ -459,7 +459,7 @@ impl Data {
         Ok(out)
     }
 
-    /// Who can see `t`: its owner and its roster, through member actors (shared tags, with their
+    /// Who can see `t`: its owner and its roster, through holder actors (shared tags, with their
     /// owners) down to people; me and my devices are "you". Edges with an `until` count until it
     /// passes.
     pub fn reach(&self, t: Tid) -> Result<Reach> {
@@ -481,7 +481,7 @@ impl Data {
                 continue;
             }
             if x != t && db.knows(x) && self.get(x, TAG)?.is_some() {
-                // a shared tag: its members see what it holds, and so does its owner (implicitly
+                // a shared tag: its holders see what it holds, and so does its owner (implicitly
                 // its admin, not on its roster)
                 r.via.push(x);
                 todo.extend(db.owner_of(x));

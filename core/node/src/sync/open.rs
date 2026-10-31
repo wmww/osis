@@ -29,10 +29,10 @@ pub(crate) enum Try {
     /// A key actor this node holds (a recovery or link key) by its static entry; the head's
     /// entry box gives the read secret (spec/sync.md §2, §5).
     Static { kem: osis_crypto::KemSecret, key: SigningSecret },
-    /// Last on a co-reader connection: a member proof under this node's dialable key, which a
+    /// Last on a co-reader connection: a co-reader proof under this node's dialable key, which a
     /// peer holding this node's `/reach` opens while the node reads the label (spec/sync.md
-    /// §5, member peer). The transport key stays ephemeral.
-    Member { key: SigningSecret },
+    /// §5, co-reader peer). The transport key stays ephemeral.
+    CoReader { key: SigningSecret },
 }
 
 impl Try {
@@ -41,14 +41,14 @@ impl Try {
             Try::Sync { key, .. } => OpenKey::Sync(key.clone()),
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
-            Try::Member { key } => OpenKey::Member(key.clone()),
+            Try::CoReader { key } => OpenKey::CoReader(key.clone()),
         }
     }
     fn step(&self) -> Option<&Step> {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
-            Try::Static { .. } | Try::Member { .. } => None,
+            Try::Static { .. } | Try::CoReader { .. } => None,
         }
     }
 }
@@ -113,8 +113,8 @@ impl SyncEngine {
             // only the key actor the hint follows for and those the thing's held `/members` lists
             // (spec/sync.md §5): presenting every held one would link their labels at this host
             // (spec/requirements.md, hosts)
-            let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
-            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || members.contains_key(t)).map(|(_, x)| x));
+            let holders = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+            v.extend(self.static_tries().into_iter().filter(|(t, _)| Some(*t) == via || holders.contains_key(t)).map(|(_, x)| x));
             return (index, v);
         };
         let index = gl.index;
@@ -145,8 +145,8 @@ impl SyncEngine {
         }
         // a key actor's signing key goes only where it is listed: elsewhere it would link labels
         // and name the key to the host
-        let members = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
-        v.extend(self.static_tries().into_iter().filter(|(t, _)| members.contains_key(t)).map(|(_, x)| x));
+        let holders = self.engine.get_typed(g, &osis_schema::core_types::MEMBERS).ok().flatten().unwrap_or_default();
+        v.extend(self.static_tries().into_iter().filter(|(t, _)| holders.contains_key(t)).map(|(_, x)| x));
         (index, v)
     }
 
@@ -166,10 +166,10 @@ impl SyncEngine {
     pub(crate) fn start_label(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some((host, peer)) = self.conns.get(&conn).map(|c| (c.host, c.peer)) else { return Ok(()) };
         let (index, mut tries) = self.tries(&host, &g, &l);
-        // the member proof names this node's dialable key: only to co-readers of a group whose
+        // the co-reader proof names this node's dialable key: only to co-readers of a group whose
         // labels carry its `/reach` anyway, never to a link's sharer (spec/sync.md §5)
         if peer && self.state.reach_secret.is_some() && self.publishes_reach(&g) && self.peers().contains_key(&host) {
-            tries.push(Try::Member { key: SigningSecret::from_seed(&self.dialable_secret()) });
+            tries.push(Try::CoReader { key: SigningSecret::from_seed(&self.dialable_secret()) });
         }
         let lc = LConn {
             group: g,
@@ -205,7 +205,7 @@ impl SyncEngine {
         if lc.tries.is_empty() {
             let (g, claimed) = (lc.group, lc.tried_claim && !lc.receipts);
             self.fail(conn, l);
-            // a stranded heartbeat is a member's act: never under a receipts-only label
+            // a stranded heartbeat is a holder's act: never under a receipts-only label
             if claimed {
                 self.stranded(conn, g, l, out)?;
             }

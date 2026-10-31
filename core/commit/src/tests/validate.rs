@@ -36,13 +36,13 @@ fn validate_layout() {
 }
 
 // spec/commits.md §2: kinds and aspect classes; snapshots and imports have empty ranges;
-// one delta per aspect except membership and roster snapshots.
+// one delta per aspect except role and roster snapshots.
 #[test]
 fn validate_kinds() {
     let h = sample_header();
     let mut x = h.clone();
-    x.kind = Kind::Membership;
-    assert!(matches!(invalid(&x), Error::Invalid(_)), "content aspect in a membership commit");
+    x.kind = Kind::Role;
+    assert!(matches!(invalid(&x), Error::Invalid(_)), "content aspect in a role commit");
     let mut x = h.clone();
     x.aspects[0].hashes.push([10; 32]);
     assert!(matches!(invalid(&x), Error::Invalid(_)));
@@ -73,14 +73,14 @@ fn validate_kinds() {
     assert!(invalid(&x).to_string().contains("several things"));
 }
 
-pub(crate) fn membership_header(ak: &str) -> Header {
+pub(crate) fn role_header(ak: &str) -> Header {
     let mut h = sample_header();
-    h.kind = Kind::Membership;
+    h.kind = Kind::Role;
     h.form = crate::header::Form::Commit;
     h.schemas.clear();
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    a.retention = retention::ROLE_RETENTION;
     a.expires = None;
     a.schema = None;
     a.keys = vec![0];
@@ -89,20 +89,20 @@ pub(crate) fn membership_header(ak: &str) -> Header {
     h
 }
 
-// spec/commits.md §2, §5: membership commits carry no expires, keep fixed retention, may carry
+// spec/commits.md §2, §5: role commits carry no expires, keep fixed retention, may carry
 // several sorted delta hashes per aspect, may touch /secrets and /keys of several things; a
-// frontier only on membership commits; roster snapshots only /members and /tenures of one thing.
-// spec/commits.md §2 (membership no expires)
+// frontier only on role commits; roster snapshots only /members and /tenures of one thing.
+// spec/commits.md §2 (role commit no expires)
 #[test]
-fn validate_membership() {
-    let h = membership_header("/members");
+fn validate_role_commit() {
+    let h = role_header("/members");
     h.validate().unwrap();
-    // spec/commits.md §3, §4: a node-form membership commit is bad input
-    for k in [Kind::Membership, Kind::RosterSnapshot] {
+    // spec/commits.md §3, §4: a node-form role commit is bad input
+    for k in [Kind::Role, Kind::RosterSnapshot] {
         let mut x = h.clone();
         x.kind = k;
         x.form = crate::header::Form::Node;
-        assert!(invalid(&x).to_string().contains("node-form membership"));
+        assert!(invalid(&x).to_string().contains("node-form role commit"));
     }
     let mut x = h.clone();
     x.aspects[0].expires = Some(9_999_999_999);
@@ -135,7 +135,7 @@ fn validate_membership() {
     x.aspects.push(a);
     assert!(invalid(&x).to_string().contains("roster"));
     let mut x = h.clone();
-    x.kind = Kind::MembershipSnapshot;
+    x.kind = Kind::RoleSnapshot;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     x.aspects[0].hashes.truncate(1);
@@ -143,8 +143,8 @@ fn validate_membership() {
 }
 
 // spec/commits.md §5, §6: expires after ts; no expires with a purge request; purge never names
-// membership deltas; relative keep at most only under writer.
-// spec/commits.md §5 (purge not membership), §5 (purge no expires)
+// role-class deltas; relative keep at most only under writer.
+// spec/commits.md §5 (purge not role-class), §5 (purge no expires)
 #[test]
 fn validate_expiry_purge_retention() {
     let h = sample_header();
@@ -158,7 +158,7 @@ fn validate_expiry_purge_retention() {
     x.validate().unwrap();
     x.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/members").unwrap() });
     x.purge.sort_by_key(|p| osis_base::encode(&crate::header::purge_value(p)));
-    assert!(invalid(&x).to_string().contains("membership"));
+    assert!(invalid(&x).to_string().contains("role-class"));
     let mut x = h.clone();
     x.aspects[0].retention.at_most.rel = Some(0);
     assert!(invalid(&x).to_string().contains("writer"));
@@ -168,10 +168,10 @@ fn validate_expiry_purge_retention() {
 // snapshot retention from schema defaults, keep bounds, the purge floor.
 #[test]
 fn retention_rules() {
-    use osis_base::format::MEMBERSHIP_KEEP_MS;
+    use osis_base::format::ROLE_KEEP_MS;
     use osis_schema::AspectDefaults;
     use retention::*;
-    assert_eq!(fixed_retention("/secrets"), Some(MEMBERSHIP_RETENTION));
+    assert_eq!(fixed_retention("/secrets"), Some(ROLE_RETENTION));
     assert_eq!(fixed_retention("/created").unwrap().by, PurgeBy::Nobody);
     assert_eq!(fixed_retention("/app/x"), None);
     assert_eq!(write_retention("/app/x", None, None).unwrap(), Retention::default());
@@ -198,7 +198,7 @@ fn retention_rules() {
     assert_eq!(snapshot_retention("/app/x", [], 100), Retention { by: PurgeBy::Writer, ..Default::default() });
     let s = snapshot_retention("/app/x", [own(none, Some(100), None), own(none, Some(400), Some(9))], 100);
     assert_eq!(s.at_most, Bound { abs: Some(400), rel: Some(0) });
-    assert_eq!(snapshot_retention("/keys", [own(none, None, Some(1))], 0), MEMBERSHIP_RETENTION);
+    assert_eq!(snapshot_retention("/keys", [own(none, None, Some(1))], 0), ROLE_RETENTION);
     let r = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(100), rel: Some(50) }, at_most: Bound { abs: Some(400), rel: Some(10) } };
     assert_eq!(keep_at_least(&r, None), 100);
     assert_eq!(keep_at_least(&r, Some(80)), 130);
@@ -208,7 +208,7 @@ fn retention_rules() {
     assert_eq!(body_keep(&h, &r, Some(20), Some(80), false), Keep { at_least: 30, at_most: Some(30) });
     let mut p = h.clone();
     p.purge.push(PurgeItem::Aspect { tid: t(3), ak: Ak::new("/app/title").unwrap() });
-    let floor = h.ts.wall_ms().0 + MEMBERSHIP_KEEP_MS;
+    let floor = h.ts.wall_ms().0 + ROLE_KEEP_MS;
     assert_eq!(purge_keep_until(&p), Some(floor));
     assert_eq!(body_keep(&p, &r, Some(20), Some(80), false), Keep { at_least: floor, at_most: Some(floor) });
 }

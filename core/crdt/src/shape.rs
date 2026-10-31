@@ -6,12 +6,12 @@ use crate::stamp::Dot;
 use std::collections::{BTreeMap, BTreeSet};
 
 impl Fragment {
-    /// A struct fragment with no root reset (alone or as the only member of its slots): it
+    /// A struct fragment with no root reset (alone or as the only slot of its slots): it
     /// writes fields only, never the whole value.
     pub fn is_plain_struct(&self) -> bool {
         match self {
             Fragment::Struct(s) => s.meta.reset.is_none(),
-            Fragment::Slots(Slots { reg: None, members }) => members.len() == 1 && members.values().all(Fragment::is_plain_struct),
+            Fragment::Slots(Slots { reg: None, slots }) => slots.len() == 1 && slots.values().all(Fragment::is_plain_struct),
             _ => false,
         }
     }
@@ -20,7 +20,7 @@ impl Fragment {
     pub fn has_reset(&self) -> bool {
         match self {
             Fragment::Register(r) => r.reset.is_some(),
-            Fragment::Slots(Slots { reg, members }) => reg.as_ref().is_some_and(|r| r.reset.is_some()) || members.values().any(Fragment::has_reset),
+            Fragment::Slots(Slots { reg, slots }) => reg.as_ref().is_some_and(|r| r.reset.is_some()) || slots.values().any(Fragment::has_reset),
             f => f.meta().is_some_and(|m| m.reset.is_some()),
         }
     }
@@ -31,7 +31,7 @@ impl Fragment {
     pub fn is_put_only_map(&self, own: &dyn Fn(&Dot) -> bool) -> bool {
         match self {
             Fragment::Map(m) => m.meta.reset.is_none() && m.entries.iter().all(|(id, e)| own(&id.dot) && e.reset.is_none() && id.key.is_some() && e.frag.is_some()),
-            Fragment::Slots(Slots { reg: None, members }) => members.len() == 1 && members.values().all(|f| f.is_put_only_map(own)),
+            Fragment::Slots(Slots { reg: None, slots }) => slots.len() == 1 && slots.values().all(|f| f.is_put_only_map(own)),
             _ => false,
         }
     }
@@ -115,7 +115,7 @@ impl Fragment {
             Fragment::Struct(s) => s.fields.values().for_each(|x| x.walk_seqs(f)),
             Fragment::Enum(e) => e.payloads.values().for_each(|x| x.walk_seqs(f)),
             Fragment::Map(m) => m.entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| x.walk_seqs(f)),
-            Fragment::Slots(Slots { members, .. }) => members.values().for_each(|x| x.walk_seqs(f)),
+            Fragment::Slots(Slots { slots, .. }) => slots.values().for_each(|x| x.walk_seqs(f)),
             _ => {}
         }
     }

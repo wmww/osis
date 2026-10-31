@@ -6,7 +6,7 @@
 use osis_base::{Clock, CommitId, ManualClock, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_keys::{MemberKeys, Recipient, rotate};
+use osis_keys::{HolderKeys, Recipient, rotate};
 use osis_label::Address;
 use osis_node::sync::{Action, ConnId, Event, SyncConfig, SyncEngine};
 use osis_node::{Config, Engine, Mutation};
@@ -598,23 +598,23 @@ impl Net {
         }
     }
 
-    /// A group owned by node `admin` with secrets of its own, `members` granted with their roles
-    /// (rotation boxing every member), a deposit seed and a label at `hosts`; the setup
-    /// commits delivered to the members directly.
-    pub fn group(&mut self, admin: usize, members: &[(usize, Role)], hosts: &[usize]) -> Tid {
+    /// A group owned by node `admin` with secrets of its own, `holders` granted with their roles
+    /// (rotation boxing every holder), a deposit seed and a label at `hosts`; the setup
+    /// commits delivered to the holders directly.
+    pub fn group(&mut self, admin: usize, holders: &[(usize, Role)], hosts: &[usize]) -> Tid {
         let addrs: Vec<Address> = hosts.iter().map(|s| self.hosts[*s].address.clone()).collect();
-        self.group_at(admin, members, addrs)
+        self.group_at(admin, holders, addrs)
     }
 
     /// `group` with host addresses.
-    pub fn group_at(&mut self, admin: usize, members: &[(usize, Role)], addrs: Vec<Address>) -> Tid {
-        self.group_seeded(admin, members, addrs, 1)
+    pub fn group_at(&mut self, admin: usize, holders: &[(usize, Role)], addrs: Vec<Address>) -> Tid {
+        self.group_seeded(admin, holders, addrs, 1)
     }
 
     /// `group_at` with the rotation's rng seed: groups of one admin need distinct seeds, or they
     /// get equal secrets and so one label ID.
-    pub fn group_seeded(&mut self, admin: usize, members: &[(usize, Role)], addrs: Vec<Address>, rng: u64) -> Tid {
-        for (m, _) in members {
+    pub fn group_seeded(&mut self, admin: usize, holders: &[(usize, Role)], addrs: Vec<Address>, rng: u64) -> Tid {
+        for (m, _) in holders {
             self.pair(*m, admin);
         }
         let me = self.tid(admin);
@@ -624,7 +624,7 @@ impl Net {
         m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
         e.commit(m).unwrap();
         let mut recipients = vec![recipient(e, me, Role::Admin)];
-        let mtids: Vec<(Tid, Role)> = members.iter().map(|(n, r)| (self.tid(*n), *r)).collect();
+        let mtids: Vec<(Tid, Role)> = holders.iter().map(|(n, r)| (self.tid(*n), *r)).collect();
         for (t, r) in &mtids {
             let e = self.engine(admin);
             set_edge(e, g, *t, *r);
@@ -633,7 +633,7 @@ impl Net {
         let e = self.engine(admin);
         rotation(e, g, &recipients, rng, true);
         self.engine(admin).create_label(&g, &addrs).unwrap();
-        for (m, _) in members {
+        for (m, _) in holders {
             self.pair(admin, *m);
         }
         g
@@ -767,22 +767,22 @@ pub fn s(x: &str) -> Value {
 
 fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
     if t == e.tid() {
-        return Recipient { member: t, role, keys: MemberKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } };
+        return Recipient { holder: t, role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } };
     }
     let k = e.get_typed(&t, &ct::KEYS).unwrap().unwrap();
-    let mut keys = MemberKeys::from_keys(&k).unwrap();
-    if let Some(own) = e.epochs(&t).filter(|_| matches!(keys, MemberKeys::Actor { .. })) {
+    let mut keys = HolderKeys::from_keys(&k).unwrap();
+    if let Some(own) = e.epochs(&t).filter(|_| matches!(keys, HolderKeys::Actor { .. })) {
         keys = keys.with_own(&own);
     }
-    Recipient { member: t, role, keys }
+    Recipient { holder: t, role, keys }
 }
 
-pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, role: Role) -> CommitId {
+pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId {
     let mut m = Mutation::new();
     let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None };
     // remove + put (spec/permissions.md §2)
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
-    m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(edge.to_value()) }).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();
     e.commit(m).unwrap().unwrap()
 }
 
@@ -793,11 +793,11 @@ pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed
     e.commit(m).unwrap().unwrap()
 }
 
-/// Removes `member` from `a` with the rotation boxing `recipients`, in one membership commit
+/// Removes `holder` from `a` with the rotation boxing `recipients`, in one role commit
 /// (spec/permissions.md §3).
-pub fn remove_member(e: &mut Engine, a: Tid, member: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
+pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
     let mut m = Mutation::new();
-    m.op(a, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    m.op(a, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     rotation_ops(e, &mut m, a, recipients, rng, false);
     e.commit(m).unwrap().unwrap()
 }
@@ -829,6 +829,6 @@ fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipien
     }
 }
 
-pub fn recipients_of(e: &mut Engine, members: &[(Tid, Role)]) -> Vec<Recipient> {
-    members.iter().map(|(t, r)| recipient(e, *t, *r)).collect()
+pub fn recipients_of(e: &mut Engine, holders: &[(Tid, Role)]) -> Vec<Recipient> {
+    holders.iter().map(|(t, r)| recipient(e, *t, *r)).collect()
 }

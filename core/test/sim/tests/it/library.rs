@@ -41,7 +41,7 @@ fn stolen_device() {
     ok("stolen_device", 1);
 }
 
-// spec/permissions.md §5.3: demotion after the pre-sync keeps the member's edits.
+// spec/permissions.md §5.3: demotion after the pre-sync keeps the holder's edits.
 #[test]
 fn demotion_synced() {
     ok("demotion_synced", 1);
@@ -55,7 +55,7 @@ fn demotion_unsynced() {
 }
 
 // spec/permissions.md §5.1, §5.3, notes/sync.md Receipts-only reads: a phone holding part of the
-// tree removes a member after reading the rest for receipts; his unseen edits there stay and
+// tree removes a holder after reading the rest for receipts; his unseen edits there stay and
 // nothing goes under the labels it reads.
 #[test]
 #[ignore = "tier 2"]
@@ -170,14 +170,14 @@ fn link_race_seed_50() {
     ok("link_race", 50);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 1792, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a membership commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 1792, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_1792() {
     ok("link_race", 1792);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 2255, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a membership commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 2255, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_2255() {
@@ -191,7 +191,7 @@ fn link_race_seed_2898() {
     ok("link_race", 2898);
 }
 
-// spec/sync.md §5, spec/permissions.md §3: sweep seed 3926, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a membership commit applies (spec/commits.md §4).
+// spec/sync.md §5, spec/permissions.md §3: sweep seed 3926, a redemption reached the sharer without its `/secrets` part (WaitDeltas); passes on main since the sweep; since then a held part of a role commit applies (spec/commits.md §4).
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_3926() {
@@ -227,7 +227,7 @@ fn label_replacement() {
     ok("label_replacement", 1);
 }
 
-// spec/sync.md §2: label replacement with a member offline; old label cleaned up.
+// spec/sync.md §2: label replacement with a holder offline; old label cleaned up.
 #[test]
 #[ignore = "tier 2"]
 fn label_replacement_offline() {
@@ -318,7 +318,7 @@ fn evil_host_drops() {
     ok("evil_host_drops", 1);
 }
 
-// spec/sync.md §2, §5; spec/permissions.md §5: a removed member's replays and deposits.
+// spec/sync.md §2, §5; spec/permissions.md §5: a removed holder's replays and deposits.
 #[test]
 #[ignore = "tier 2"]
 fn removed_replayer() {

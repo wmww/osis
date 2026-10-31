@@ -119,7 +119,7 @@ pub enum Frag {
     Seq { text: bool, c: Composite, elems: BTreeMap<Dot, SeqElem> },
     /// Several encodings at one position (§7): the register slot plus non-register slots keyed by encoding, joined
     /// pointwise. Every slot already holds the embedding of the register slot. Never produced by a writer; appears in
-    /// states and snapshots. Always at least two members (`assemble` collapses fewer).
+    /// states and snapshots. Always at least two slots (`assemble` collapses fewer).
     Slots { reg: Option<Box<Frag>>, slots: BTreeMap<u8, Frag> },
 }
 
@@ -192,8 +192,8 @@ impl Frag {
         }
     }
 
-    /// Members of a `Slots` position (the register slot first), or the fragment itself.
-    pub fn members(&self) -> Vec<&Frag> {
+    /// Slots of a `Slots` position (the register slot first), or the fragment itself.
+    pub fn slots(&self) -> Vec<&Frag> {
         match self {
             Frag::Slots { reg, slots } => reg.iter().map(|r| &**r).chain(slots.values()).collect(),
             f => vec![f],
@@ -215,10 +215,10 @@ impl Frag {
         }
     }
 
-    /// The member a `Slots` position reads as: greatest `all_max`, ties by greater encoding id (§7).
+    /// The slot a `Slots` position reads as: greatest `all_max`, ties by greater encoding id (§7).
     pub fn chosen(&self) -> &Frag {
         match self {
-            Frag::Slots { .. } => self.members().into_iter().max_by(|a, b| a.all_max().cmp(&b.all_max()).then(a.enc().cmp(&b.enc()))).unwrap(),
+            Frag::Slots { .. } => self.slots().into_iter().max_by(|a, b| a.all_max().cmp(&b.all_max()).then(a.enc().cmp(&b.enc()))).unwrap(),
             f => f,
         }
     }
@@ -240,11 +240,11 @@ impl Frag {
         }
     }
 
-    /// Own reset; for `Slots` the greatest member reset (one position, one effective reset, §7).
+    /// Own reset; for `Slots` the greatest slot reset (one position, one effective reset, §7).
     pub fn reset(&self) -> Option<Stamp> {
         match self {
             Frag::Register { reset, .. } => reset.clone(),
-            Frag::Slots { .. } => self.members().into_iter().fold(None, |m, f| max_opt(m, f.reset())),
+            Frag::Slots { .. } => self.slots().into_iter().fold(None, |m, f| max_opt(m, f.reset())),
             Frag::Bag { c, .. } | Frag::Struct { c, .. } | Frag::Enum { c, .. } | Frag::Set { c, .. } | Frag::Map { c, .. } | Frag::Seq { c, .. } => c.reset.clone(),
         }
     }
@@ -286,7 +286,7 @@ impl Frag {
         let elems_max = |elems: &BTreeMap<Dot, Elem>| elems.values().fold(None, |m, e| max_opt(max_opt(m, e.reset.clone()), e.frag.as_deref().and_then(child)));
         match self {
             Frag::Register { write, .. } => write.as_ref().filter(|w| !valued || w.1.is_some()).map(|w| w.0.clone()),
-            Frag::Slots { .. } => self.members().into_iter().fold(None, |m, f| max_opt(m, child(f))),
+            Frag::Slots { .. } => self.slots().into_iter().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems_max(elems),
             Frag::Struct { fields, .. } => fields.values().fold(None, |m, f| max_opt(m, child(f))),
             Frag::Enum { case, payloads, .. } => {
@@ -326,7 +326,7 @@ impl Frag {
             Frag::Enum { payloads, .. } => payloads.is_empty(),
             Frag::Map { entries, .. } => entries.is_empty(),
             Frag::Seq { elems, .. } => elems.is_empty(),
-            Frag::Slots { .. } => self.members().iter().all(|f| f.is_empty()),
+            Frag::Slots { .. } => self.slots().iter().all(|f| f.is_empty()),
         }
     }
 
@@ -442,11 +442,11 @@ impl Frag {
         let e = max_opt(e_parent.cloned(), own);
         let e = e.as_ref();
         if let Frag::Slots { .. } = self {
-            // one effective reset for every member (§7): each member is pruned with it like any nested fragment (an
-            // own reset below it goes); members left empty or below the register's embedding go, fewer than two
+            // one effective reset for every slot (§7): each slot is pruned with it like any nested fragment (an
+            // own reset below it goes); slots left empty or below the register's embedding go, fewer than two
             // collapse
             let (reg, mut slots) = parts(std::mem::replace(self, Frag::empty(0)));
-            // every member holds the register's embedding, however the members arrived
+            // every slot holds the register's embedding, however the slots arrived
             if let Some(r) = &reg {
                 for (k, f) in slots.iter_mut() {
                     // a text slot's embedded records are the embedding of the register's winning copy (§7)
@@ -926,10 +926,10 @@ fn parts(f: Frag) -> (Option<Frag>, BTreeMap<u8, Frag>) {
     }
 }
 
-/// Canonical position from its members: a lone member stands alone, nothing is an empty register.
+/// Canonical position from its slots: a lone slot stands alone, nothing is an empty register.
 fn assemble(reg: Option<Frag>, mut slots: BTreeMap<u8, Frag>) -> Frag {
     let reg = reg.filter(|r| !r.is_empty());
-    // a member that adds nothing to the register's embedding is not kept (§7 Canonical form)
+    // a slot that adds nothing to the register's embedding is not kept (§7 Canonical form)
     slots.retain(|_, f| !f.is_empty() && !reg.as_ref().map_or(false, |r| below_embedding(f, r)));
     match (reg, slots.len()) {
         (None, 0) => Frag::Register { reset: None, write: None },

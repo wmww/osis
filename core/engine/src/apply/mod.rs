@@ -1,6 +1,6 @@
 //! Receiving commits (spec/commits.md §4; spec/versioning.md §2; spec/crdt.md §2.2): decode,
 //! verify, dedup by commit ID, pending reasons and parking, re-examination, atomic apply in one
-//! store transaction (membership before content), late deltas of applied commits. Loading the
+//! store transaction (role before content), late deltas of applied commits. Loading the
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 mod atomic;
@@ -244,11 +244,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    // a membership commit any part of which is held does not wait for the rest: it may be held
+    // a role commit any part of which is held does not wait for the rest: it may be held
     // only as a projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest
     // need never come, and the node cannot tell one from its things' labels' bodies; the rest
     // joins on arrival (spec/commits.md §4)
-    let projection = h.kind == Kind::Membership && !blob.parts.is_empty();
+    let projection = h.kind == Kind::Role && !blob.parts.is_empty();
     if !projection && waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
         return Ok(Exam::Pending(Reason::WaitDeltas));
     }
@@ -273,7 +273,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // (tests let a local writer break these rules, to test receivers)
     if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
         validity::check_roster_parts(&h, &out)?;
-        validity::check_members_parts(&h, id, &out)?;
+        validity::check_holders_parts(&h, id, &out)?;
         if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out))?.waiting.is_empty() {
             return Ok(Exam::Pending(Reason::WaitBlobs));
         }
@@ -524,7 +524,7 @@ impl Engine {
 
     /// Re-examines pending and parked commits until none applies (after new certificates or
     /// `/created` records, a change of what this node syncs, time passing, or an upgrade).
-    /// Membership commits are tried first. A commit whose examination's inputs have not changed
+    /// Role commits are tried first. A commit whose examination's inputs have not changed
     /// since it was last examined is left out (`apply::waits`).
     pub fn reexamine(&mut self) -> Result<()> {
         let _s = crate::costs::span("reexamine");
@@ -560,7 +560,7 @@ impl Engine {
                     }
                 }
                 blobs.sort_by_key(|(_, x)| match x {
-                    Turn::Read(b) => (!b.header.kind.is_membership(), b.header.ts),
+                    Turn::Read(b) => (!b.header.kind.is_role(), b.header.ts),
                     Turn::Waiting(k) => *k,
                 });
                 tx.core.touch();
@@ -581,7 +581,7 @@ impl Engine {
                             }
                         }
                     };
-                    let things: Vec<Tid> = if b.header.kind.is_membership() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
+                    let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
                     match ingest_blob(tx, b, Origin::Remote) {
                         Ok(Ingested::Applied(_)) => progressed = true,
                         Ok(_) => {}
@@ -659,13 +659,13 @@ impl Engine {
     }
 
     /// The actors a label of `thing` known only by a hint is for (spec/sync.md §5: claims on a
-    /// step not verified yet): its applied members and the members its applied `/secrets` boxes
+    /// step not verified yet): its applied holders and the holders its applied `/secrets` boxes
     /// (one may read it through an actor a rotation boxed, with no grant held), and those that
     /// `inbox`, the pending commits of the inbox blobs that named the label, grant or box on it;
     /// those this node is or holds secrets of.
     pub fn hint_actors(&mut self, thing: &Tid, inbox: &[CommitId]) -> Result<std::collections::BTreeSet<Tid>> {
         let mut out: std::collections::BTreeSet<Tid> = self.get_typed(thing, &osis_schema::core_types::MEMBERS)?.unwrap_or_default().into_keys().collect();
-        out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.member));
+        out.extend(self.get_typed(thing, &osis_schema::core_types::SECRETS)?.unwrap_or_default().boxes.into_keys().map(|k| k.holder));
         for c in inbox {
             if !self.core.ix.pending.contains_key(c) {
                 continue;
@@ -674,7 +674,7 @@ impl Engine {
                 out.extend(keys::pending_grantees(&b, c, thing));
                 for (a, w) in keys::pending_secrets_writes(&b, c) {
                     if a == *thing {
-                        out.extend(w.boxes.into_keys().map(|k| k.member));
+                        out.extend(w.boxes.into_keys().map(|k| k.holder));
                     }
                 }
             }
@@ -732,7 +732,7 @@ impl Engine {
 
     /// The thing's last content change: of the held content commits (changes, reverts,
     /// imports) validly writing one of its aspects other than `/created`, `/group` and the
-    /// membership-class ones, the one shown latest by `min(ts, received)` (an author's clock may
+    /// role-class ones, the one shown latest by `min(ts, received)` (an author's clock may
     /// run ahead; `received` is this node's), else its creation. Snapshots are no change, and
     /// ephemeral writes do not count (an ephemeral thing reports its creation).
     pub fn changed(&self, tid: &Tid) -> Option<Creation> {
@@ -741,7 +741,7 @@ impl Engine {
         let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
         for ((_, ak), ids) in aspects {
             let a = ak.as_str();
-            if a == "/created" || a == "/group" || osis_schema::core_types::is_membership_class(a) {
+            if a == "/created" || a == "/group" || osis_schema::core_types::is_role_class(a) {
                 continue;
             }
             for (ts, id) in ids.iter().rev() {
@@ -766,7 +766,7 @@ impl Engine {
 
 /// Rebuilds the engine's indexes from the store (open, and after forgetting): from the persisted
 /// index when this build wrote it (`engine::index`: commit metas with their validity, the
-/// indexes derived from membership bodies, perm's reading of each membership commit; no part is
+/// indexes derived from role bodies, perm's reading of each role commit; no part is
 /// decoded), else from every commit record, re-judging every delta. Returns whether it rebuilt
 /// (the persisted index is then to be written).
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
@@ -856,10 +856,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             crate::engine::index::load(tx)?;
         }
         let _s = crate::costs::span("open: adapt");
-        // perm's inputs: the edge writes of the membership commits, oldest first, from what the
+        // perm's inputs: the edge writes of the role commits, oldest first, from what the
         // index keeps of their bodies
         let mut edges = crate::engine::index::load_edges(tx)?;
-        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_membership()).map(|(id, m)| (m.view.ts, *id)).collect();
+        let mut ids: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.commits.iter().filter(|(_, m)| m.view.kind.is_role()).map(|(id, m)| (m.view.ts, *id)).collect();
         ids.sort();
         for (_, id) in ids {
             // the view, not the header (decoded only for a roster snapshot's linked frontiers)
@@ -868,7 +868,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             // every row is what its record reads now (rewritten with it: late parts, drops)
             #[cfg(debug_assertions)]
             debug_assert_eq!(parts, edge_parts(tx, &id)?, "node/edges row of {id:?} is stale");
-            validity::add_membership(tx, &v, None, &id, &parts)?;
+            validity::add_role_commit(tx, &v, None, &id, &parts)?;
         }
         drop(_s);
     } else {
@@ -912,7 +912,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_membership() {
+            if blob.header.kind.is_role() {
                 bodies.push(blob);
             }
         }
@@ -930,7 +930,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
         }
-        // perm inputs from membership bodies, oldest first
+        // perm inputs from role bodies, oldest first
         bodies.sort_by_key(|b| b.header.ts);
         for blob in bodies {
             let id = blob.id();
@@ -947,7 +947,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     }
                 }
                 let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-                validity::add_membership(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
+                validity::add_role_commit(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
             }
         }
     }
@@ -1043,7 +1043,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
     Ok(Exam::Ready(out))
 }
 
-/// What perm's adaptation reads of a held membership commit: its held `/members` and `/tenures`
+/// What perm's adaptation reads of a held role commit: its held `/members` and `/tenures`
 /// parts.
 pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::EdgeParts> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(validity::EdgeParts::default()) };
@@ -1099,7 +1099,7 @@ mod tests {
     use osis_schema::Codec;
     use osis_schema::core_types as ct;
 
-    // spec/permissions.md §5.1; spec/commits.md §2: the membership content rules bind writers
+    // spec/permissions.md §5.1; spec/commits.md §2: the role content rules bind writers
     // only; a received commit breaking them is applied and judged by perm per edge write, so
     // delivery order cannot change the held set.
     #[test]

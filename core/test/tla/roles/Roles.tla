@@ -1,10 +1,10 @@
------------------------------- MODULE Membership ------------------------------
-(* The membership timeline and the tenure ledger (spec/permissions.md §1, §2,  *)
+-------------------------------- MODULE Roles ---------------------------------
+(* The role timeline and the tenure ledger (spec/permissions.md §1, §2,  *)
 (* §5.1, §5.2, §6). A state is a history: a sequence of commits in generation  *)
 (* order, each with a ts that may lie anywhere (clock skew, backdating) and a   *)
 (* frontier taken from the commits generated before it. The invariants run     *)
 (* the walk over the history and check its verdicts.                           *)
-(* Things: actor A owned by key actor node 1; actor B owned by A. Edge members: *)
+(* Things: actor A owned by key actor node 1; actor B owned by A. Edge holders: *)
 (* nodes, and B on A. Roles 0 none, 1 read, 2 write, 3 admin. Classes 0 none,  *)
 (* 2 edge admin, 3 owner chain; a write is audited by its author's class on   *)
 (* `on`: its target, or for a self-removal through B, B.                      *)
@@ -137,7 +137,7 @@ Spec == Init /\ [][Next]_vars
 
 (***************************************************************************)
 (* Roles and classes (§1). Paths climb alive edges and owner links: node 1  *)
-(* owns A, A owns B, B may be a member of A (so admin of B can reach A).    *)
+(* owns A, A owns B, B may be a holder of A (so admin of B can reach A).    *)
 (***************************************************************************)
 AR(E, p, t) == IF E[p].r > 0 /\ (E[p].u = 0 \/ t < E[p].u) THEN E[p].r ELSE 0
 Alive(v, t) == v.r > 0 /\ (v.u = 0 \/ t < v.u)
@@ -227,7 +227,7 @@ Change(st, e, nv, t, key, au, explicit, fr, cid, gen) ==
 
 \* §5.1 step 2 and §2: a = -1 not applied, else the class attributed (on `on`);
 \* s: a self-removal (audits nothing), attributed to the author's class on the
-\* member it is admin of, or on the target for its own edge.
+\* holder it is admin of, or on the target for its own edge.
 Judge(st, R, c, k) ==
   LET o == c.ops[k]
       e == <<o.mb, o.tg>>
@@ -448,7 +448,7 @@ WalkAll(evs, E0, D) ==
      ELSE UNION {WalkAll(evs, E0, D \cup p.cands[j]) : j \in 1..Len(p.cands)}
 DropOrderFree == Chaos => WalkAll(Evs(hist), E00, {}) = {Verd(W0)}
 
-\* (3) A member whose class (or role) a valid explicit demotion R took away:
+\* (3) A holder whose class (or role) a valid explicit demotion R took away:
 \* its edge writes generated after R and ordered before R are dropped; its
 \* content generated after its newest demotion, with no regain, is invalid.
 LateEdge == \A f \in W0.fall : \A a \in W0.app :
@@ -460,7 +460,7 @@ LateContent == \A c \in W0.cinfo :
       /\ RoleEnd(W0, c.au, c.tg) < 2) => ~CValid(W0, c)
 
 \* (4) A demotion never drops its author's writes; a demoter that reached the
-\* member keeps its standing until the next explicit write on that edge,
+\* holder keeps its standing until the next explicit write on that edge,
 \* which audits it.
 NoSelfDrop == \A r \in W0.drec : r.au # r.byau
 StandingAudited ==

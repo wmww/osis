@@ -572,7 +572,7 @@ fn old_step_stamp_vouches_nothing_spec_sync_5() {
     let (at, bt) = (net.tid(a), net.tid(b));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin)]);
-    remove_member(e, g, bt, &rs, 43);
+    remove_holder(e, g, bt, &rs, 43);
     net.run();
     assert_eq!(net.host_path(host, &l).len(), 2, "a newer step");
     let before = net.sync(a).entries(&l).len();
@@ -622,7 +622,7 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     let (at, rt, xt) = (net.tid(a), net.tid(r), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (rt, Role::Read)]);
-    remove_member(e, g, xt, &rs, 44);
+    remove_holder(e, g, xt, &rs, 44);
     net.run();
     assert_eq!(net.read(r, t), Some(s("x")));
     let secrets: Vec<Secret32> = net.engine(r).epochs(&g).unwrap().read.held_newest_first().into_iter().map(|(_, s)| s.clone()).collect();
@@ -752,7 +752,7 @@ fn hinted_open_presents_only_its_key_actor_spec_sync_5() {
 // spec/sync.md §5 (a superseded step's child is verified under its parent; a hinted label has
 // none recorded), spec/requirements.md (hosts: a host cannot link labels or recognise
 // devices): a host answering a hinted label's open with a step of its choosing gets claims
-// only by the actors the hint is for (the thing's members this node is), never by another
+// only by the actors the hint is for (the thing's holders this node is), never by another
 // actor this node holds secrets of.
 #[test]
 fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
@@ -760,7 +760,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     let host = net.add_host();
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
-    // a is a member of g (b's group) and admin of its own g2
+    // a is a holder of g (b's group) and admin of its own g2
     let g = net.group(b, &[(a, Role::Read)], &[host]);
     let g2 = net.group_seeded(a, &[], vec![net.address(host)], 7);
     let k = net.engine(a).hold_key_actor(Secret32::from_bytes([0x3f; 32])).unwrap();
@@ -808,7 +808,7 @@ fn hinted_walk_claims_only_for_its_actors_spec_sync_5() {
     }
 }
 
-// spec/sync.md §5 (claims by the keys a step's claim set lists: members' read-role KEM keys),
+// spec/sync.md §5 (claims by the keys a step's claim set lists: holders' read-role KEM keys),
 // spec/crypto.md §4 (boxes): a node that reads the hinted thing through an actor a rotation
 // boxed, with no `/members` edge of it held, still claims by that actor's key, and by no other.
 #[test]
@@ -876,7 +876,7 @@ fn hinted_walk_claims_for_boxed_actor_spec_sync_5() {
 }
 
 // spec/crypto.md §7, spec/sync.md §5, spec/permissions.md §8: a thing's admin who is no admin of
-// its group deletes a write-only member's blobs at a host by the level-1 delete key the writer
+// its group deletes a write-only holder's blobs at a host by the level-1 delete key the writer
 // listed from the thing's published `/keys` (the gap hashed tokens left), after a
 // rotation of the thing too (it holds the old epoch); the writer's own keys delete none of the
 // admin's `admin`-retention blobs (levels stay apart).
@@ -961,7 +961,7 @@ fn thing_admin_deletes_writer_blobs_by_delete_key_spec_crypto_7() {
     assert!(left.is_empty(), "{} of {} blobs of the purged write stay at the host", left.len(), blobs.len());
 }
 
-// spec/sync.md §5, spec/crypto.md §7, spec/requirements.md (deletion needs current membership):
+// spec/sync.md §5, spec/crypto.md §7, spec/requirements.md (deletion needs current roles):
 // a removed writer still holds a valid delete key for its own blob (its author chain), but its
 // label sync key is stale once the admin re-registers: the host refuses the delete.
 #[test]
@@ -998,7 +998,7 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let (at, wt) = (net.tid(a), net.tid(w));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin)]);
-    remove_member(e, g, wt, &rs, 31);
+    remove_holder(e, g, wt, &rs, 31);
     net.feed(a, Event::Local);
     net.run();
     net.run();
@@ -1011,5 +1011,5 @@ fn removed_writer_stale_label_key_refused_spec_sync_5() {
     let conn = net.conn_to(w, host).expect("connected");
     net.actions(w, vec![Action::Send { conn, bytes: frame(Message::Delete { id: 900_020, label: l, items }) }]);
     net.settle(10_000);
-    assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed member's delete went through");
+    assert!(blobs.iter().all(|(id, _)| net.host_ids(host, &l).contains(id)), "a removed holder's delete went through");
 }

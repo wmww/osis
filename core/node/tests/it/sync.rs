@@ -101,7 +101,7 @@ fn signals_relay_only_spec_sync_5() {
     assert!(net.engine(c).write(m).is_err());
 }
 
-// spec/sync.md §11: a bundle replays a label as a peer with no cursor; a member that never
+// spec/sync.md §11: a bundle replays a label as a peer with no cursor; a holder that never
 // reached a host ends up with the content.
 #[test]
 fn bundle_round_trip_spec_sync_11() {

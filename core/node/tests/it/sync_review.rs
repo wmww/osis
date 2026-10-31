@@ -16,8 +16,8 @@ fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: &osis_base::Comm
     net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c)).map(|(id, _)| id).collect()
 }
 
-// spec/crypto.md §4, spec/permissions.md §3: a member's `until` passes; before this node next
-// wraps under the group's read epoch it rotates (flows' cascade), so the departed member cannot
+// spec/crypto.md §4, spec/permissions.md §3: a holder's `until` passes; before this node next
+// wraps under the group's read epoch it rotates (flows' cascade), so the departed holder cannot
 // read what comes after.
 // spec/crypto.md §4 (encrypt under covering epoch), spec/permissions.md §3 (required rotation)
 #[test]
@@ -234,7 +234,7 @@ fn purged_body_leaves_full_label_spec_sync_7() {
     assert_eq!(ids.len() as u64, full, "the label stays full (the purge request itself waits for space)");
 }
 
-// spec/permissions.md §3 (complete pass): a membership commit pushed to a subscribed node ends
+// spec/permissions.md §3 (complete pass): a role commit pushed to a subscribed node ends
 // with a pass: `complete_pass` holds without another Sync.
 #[test]
 fn complete_pass_after_push_spec_permissions_3() {
@@ -283,7 +283,7 @@ fn no_reupload_ping_pong_spec_sync_6() {
 
 // spec/sync.md §3 (projection, entitlement), spec/commits.md §4 (pending on `/created` only
 // for things whose deltas the node holds or syncs): one commit touching a shared thing and a
-// private one places only the shared deltas under the group's label; a member applies them.
+// private one places only the shared deltas under the group's label; a holder applies them.
 #[test]
 fn private_and_shared_split_spec_sync_3() {
     let mut net = Net::new();
@@ -309,7 +309,7 @@ fn private_and_shared_split_spec_sync_3() {
             assert!(parts.iter().all(|(ai, _)| h.aspects[*ai].tid == t), "only the shared deltas: {parts:?}");
         }
     }
-    // the member applies the shared delta and never sees the private one
+    // the holder applies the shared delta and never sees the private one
     assert!(net.engine(b).pending().is_empty(), "{:?}", net.engine(b).pending());
     assert_eq!(net.read(b, t), Some(s("shared 2")));
     assert_eq!(net.read(b, p), None);
@@ -347,7 +347,7 @@ fn compaction_deletes_exactly_covered_spec_sync_7() {
 }
 
 // spec/permissions.md §3 (complete pass): a pass from before going offline still counts (it
-// proves what the host held then); a remote membership commit received while offline (here
+// proves what the host held then); a remote role commit received while offline (here
 // directly) restarts it.
 #[test]
 fn complete_pass_survives_disconnect_spec_permissions_3() {
@@ -370,7 +370,7 @@ fn complete_pass_survives_disconnect_spec_permissions_3() {
     net.feed(b, Event::Local);
     net.run();
     assert!(net.engine(b).roster(&g).contains_key(&ct_), "arrived directly");
-    assert!(!net.sync(b).complete_pass(&g), "a remote membership commit restarts it");
+    assert!(!net.sync(b).complete_pass(&g), "a remote role commit restarts it");
     net.blocked.remove(&(b, host));
     net.advance(61_000);
     net.settle(100_000);

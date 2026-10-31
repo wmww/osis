@@ -121,7 +121,7 @@ impl Engine {
             ("box_written", format!("{:?}", *ix.box_written)),
             ("own_keys", format!("{:?}", *ix.own_keys)),
             ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
-            ("member_keys", format!("{:?}", *ix.member_keys)),
+            ("holder_keys", format!("{:?}", *ix.holder_keys)),
             ("unresolved", format!("{:?}", *ix.unresolved)),
             ("was", format!("{:?}", *ix.was)),
             ("moved", format!("{:?}", *ix.moved)),
@@ -179,7 +179,7 @@ impl Engine {
         })
     }
 
-    /// The membership timelines' verdicts per thing (rosters, ledgers, epoch starts, applied and
+    /// The role timelines' verdicts per thing (rosters, ledgers, epoch starts, applied and
     /// dropped edge writes): of the components as held (`false`) or of one from-scratch
     /// evaluation of the held set (tests: restored walks equal a from-scratch evaluation).
     #[doc(hidden)]
@@ -216,7 +216,7 @@ impl Engine {
         self.core.walk_cache_min = n;
     }
 
-    /// Membership components the last open restored from their saved walks (tests).
+    /// Role components the last open restored from their saved walks (tests).
     #[doc(hidden)]
     pub fn walks_restored(&self) -> usize {
         self.core.timelines.restored()
@@ -250,7 +250,7 @@ impl Engine {
         })
     }
 
-    /// Damages the membership commits' `EDGES` rows (tests): 0 truncates one, 1 garbles one,
+    /// Damages the role commits' `EDGES` rows (tests): 0 truncates one, 1 garbles one,
     /// 2 removes one. Returns how many rows there were.
     #[doc(hidden)]
     pub fn damage_edges(&mut self, how: u8) -> Result<usize> {

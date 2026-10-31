@@ -5,9 +5,9 @@
 //! (`driver`, feature `driver`) and the simulator's step driver. No sync logic lives in a driver.
 //!
 //! Per host and label: open (sync key of the head, else walk by stale key or claim key),
-//! verify the head, download (cursor sync, reconciliation fallback), apply membership commits
+//! verify the head, download (cursor sync, reconciliation fallback), apply role commits
 //! first, then the pass: re-registration when an admin holds newer epochs (the actor's
-//! membership commits the host lacks first, then the step, then the rest), uploads of
+//! role commits the host lacks first, then the step, then the rest), uploads of
 //! must-hold bodies, relays, certificates and heartbeats, deletions of must-not-hold bodies.
 
 mod bundle;
@@ -97,7 +97,7 @@ pub struct SyncConfig {
     pub max_peers_per_label: usize,
     pub max_peers: usize,
     /// Bytes one peer key, and all peers together, may have uploaded or deposited here that
-    /// are not opened, not at a host and still held (member-peer serving).
+    /// are not opened, not at a host and still held (co-reader-peer serving).
     pub peer_bytes: u64,
     pub peer_total_bytes: u64,
     /// Peer sessions served at once (more are closed at once).
@@ -106,7 +106,7 @@ pub struct SyncConfig {
     pub serve_idle_ms: u64,
     /// A served session that opened no label this long after it started is closed.
     pub serve_open_ms: u64,
-    /// How long a complete pass waits for co-readers after a membership change (then it counts
+    /// How long a complete pass waits for co-readers after a role change (then it counts
     /// hosts only).
     pub peer_pass_wait_ms: u64,
     /// Unopened unvouched entries a label may hold per host (an inbox label a sixteenth).
@@ -171,7 +171,7 @@ pub enum Event {
 pub enum Action {
     /// Open a connection to `address` (checking the host's key against it, spec/sync.md §10)
     /// and report `Up` or `Down`. Always with an ephemeral transport key; a co-reader learns
-    /// this node by its member proof (spec/sync.md §5).
+    /// this node by its co-reader proof (spec/sync.md §5).
     Dial { conn: ConnId, address: Address },
     Send { conn: ConnId, bytes: Vec<u8> },
     Close { conn: ConnId },
@@ -359,16 +359,16 @@ pub struct SyncEngine {
     /// Hosts not connected: when to dial again.
     retry: BTreeMap<HostKey, (Address, u64)>,
     pub(crate) state: State,
-    /// Event counter: pass completions and remote membership commits are ordered by it.
+    /// Event counter: pass completions and remote role commits are ordered by it.
     pub(crate) seq: u64,
     /// Per (host, label), the last pass end: its `seq` and when (corrected wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
-    /// connection". `complete_pass` counts only passes after the actor's last remote membership
-    /// commit (`membership_seen`), and finalizing an expired link only those ended after `until`;
+    /// connection". `complete_pass` counts only passes after the actor's last remote roles
+    /// commit (`roles_seen`), and finalizing an expired link only those ended after `until`;
     /// what reached the host after a pass end is the same race online, and a duplicate re-seal
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
     pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
-    pub(crate) membership_seen: BTreeMap<Tid, u64>,
+    pub(crate) roles_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
     /// When the last Tick was handled (raw wall ms).
     last_tick: u64,
@@ -446,7 +446,7 @@ pub struct SyncEngine {
     pub(crate) synced_closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
-    /// Peer sessions this node serves (member peer, spec/sync.md §5).
+    /// Peer sessions this node serves (co-reader peer, spec/sync.md §5).
     pub(crate) served: BTreeMap<ConnId, serve::Served>,
     /// Steps peers registered here since start, by label.
     pub(crate) peer_steps: BTreeMap<LabelId, Vec<(Step, Option<osis_label::ClaimSet>)>>,
@@ -455,9 +455,9 @@ pub struct SyncEngine {
     /// The next `publish_reach` writes a fresh lan secret.
     pub(crate) lan_rotate: bool,
     /// Whether `/reach` placed under a label that no longer qualifies is to be looked for
-    /// (`check_reach`: at start, after membership, policy and contact changes).
+    /// (`check_reach`: at start, after roles, policy and contact changes).
     pub(crate) reach_check: bool,
-    /// Served labels, until `/label`, membership or peer steps change.
+    /// Served labels, until `/label`, role or peer steps change.
     pub(crate) served_cache: Option<Arc<BTreeMap<LabelId, serve::ServedLabel>>>,
     pub(crate) charges: serve::Charges,
     /// The engine's actors with secrets of their own when its events were last taken.
@@ -468,13 +468,13 @@ pub struct SyncEngine {
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
     pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<HostKey>>,
-    /// When the last remote membership commit of each actor applied (raw ms; the peer part of
+    /// When the last remote role commit of each actor applied (raw ms; the peer part of
     /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
-    pub(crate) membership_at: BTreeMap<Tid, u64>,
-    /// When this engine was built (raw ms): a membership change applied before it came no later,
-    /// so the peer wait of an actor with none in `membership_at` counts from here.
+    pub(crate) roles_at: BTreeMap<Tid, u64>,
+    /// When this engine was built (raw ms): a role change applied before it came no later,
+    /// so the peer wait of an actor with none in `roles_at` counts from here.
     pub(crate) started: u64,
-    /// When the last remote membership commit writing an actor's `/secrets` (a rotation, the
+    /// When the last remote role commit writing an actor's `/secrets` (a rotation, the
     /// only change its author registers a step for) applied (raw ms; `step_settled`).
     pub(crate) rotation_at: BTreeMap<Tid, u64>,
     /// `placed` answers by commit, valid while `State::version` (the first field) is unchanged and
@@ -483,8 +483,8 @@ pub struct SyncEngine {
     /// Per label, the co-readers a complete pass waits for now (`peer_received` narrowed to
     /// those still reading it with a connection up that has it started; set by `handle`).
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
-    /// A membership or roster change since the last step (`members_changed`).
-    pub(crate) members_moved: bool,
+    /// A role or roster change since the last step (`holders_changed`).
+    pub(crate) holders_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
@@ -524,7 +524,7 @@ impl SyncEngine {
             state,
             seq: 0,
             passes: BTreeMap::new(),
-            membership_seen: BTreeMap::new(),
+            roles_seen: BTreeMap::new(),
             wake: None,
             last_tick: 0,
             diagnostics: Vec::new(),
@@ -569,12 +569,12 @@ impl SyncEngine {
             blob_sizes: BTreeMap::new(),
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
-            membership_at: BTreeMap::new(),
+            roles_at: BTreeMap::new(),
             started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
             pass_peers: BTreeMap::new(),
-            members_moved: false,
+            holders_moved: false,
             prefix_checked: BTreeSet::new(),
             eph: ephemeral::Lane::default(),
             relay_gate: osis_proto::RelayGate::default(),
@@ -762,8 +762,8 @@ impl SyncEngine {
         self.engine.settle_deaths()?;
         self.engine_events()?;
         self.retire_replaced();
-        if std::mem::take(&mut self.members_moved) {
-            self.members_changed(out);
+        if std::mem::take(&mut self.holders_moved) {
+            self.holders_changed(out);
             self.reach_check = true;
         }
         if std::mem::take(&mut self.reach_check) {
@@ -803,8 +803,8 @@ impl SyncEngine {
     }
 
     /// Drains the engine's changes: the changed commits (`Engine::take_changed`) go to every
-    /// label's work set and mark every open label for a pass; events carry membership: roles
-    /// moved, keys, and remote membership commits restart `complete_pass` for the actors they
+    /// label's work set and mark every open label for a pass; events carry roles: roles
+    /// moved, keys, and remote role commits restart `complete_pass` for the actors they
     /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
@@ -821,19 +821,19 @@ impl SyncEngine {
                     self.tied.groups.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/group").map(|a| a.tid));
                     // a creation record moves the roles downstream of the thing
                     roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "/created").map(|a| a.tid));
-                    let membership = h.kind.is_membership();
-                    if membership || h.aspects.iter().any(|a| a.ak.as_str() == "/label") {
+                    let role_commit = h.kind.is_role();
+                    if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "/label") {
                         self.served_cache = None;
-                        self.members_moved = true;
+                        self.holders_moved = true;
                         self.touched.keys = true;
                     }
-                    if origin == Origin::Remote && membership {
+                    if origin == Origin::Remote && role_commit {
                         self.seq += 1;
                         let at = self.raw_now();
                         for a in &h.aspects {
                             let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
-                            self.membership_seen.insert(actor, self.seq);
-                            self.membership_at.insert(actor, at);
+                            self.roles_seen.insert(actor, self.seq);
+                            self.roles_at.insert(actor, at);
                             // only an admin registers its rotation's step: another's (a writer
                             // rotating for a departure) is this admin's to register at once
                             if a.ak.as_str() == "/secrets" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
@@ -856,14 +856,14 @@ impl SyncEngine {
                     if cause == crate::events::Cause::LostAccess {
                         self.touched.full = true;
                     }
-                    if aspects.iter().any(|(_, a)| osis_schema::core_types::is_membership_class(a.as_str())) {
+                    if aspects.iter().any(|(_, a)| osis_schema::core_types::is_role_class(a.as_str())) {
                         self.touched.keys = true;
                     }
                 }
                 crate::Event::Joined { id } => {
                     changed = true;
                     if let Some(h) = self.engine.header(&id) {
-                        if h.kind.is_membership() {
+                        if h.kind.is_role() {
                             self.touched.keys = true;
                         }
                         // a late creation record (`note_created`)
@@ -875,13 +875,13 @@ impl SyncEngine {
                     self.tied.targets.insert(thing);
                     roots.insert(thing);
                     self.served_cache = None;
-                    self.members_moved = true;
+                    self.holders_moved = true;
                 }
                 _ => {}
             }
         }
         // roles change only where authority flows from a changed roster or owner link
-        // (`Held::reach`: owned things, things named on as a member, transitively)
+        // (`Held::reach`: owned things, things named on as a holder, transitively)
         if !roots.is_empty() {
             self.touched.moved.extend(self.engine.core.ix.held.reach(&roots));
         }
@@ -952,7 +952,7 @@ impl SyncEngine {
 
     /// Whether every host this node syncs `actor`'s labels with, and every co-reader it
     /// received one of them from and has a connection up to, has had a complete pass of it since
-    /// the last membership commit of the actor applied from elsewhere (`flows::SyncState`;
+    /// the last role commit of the actor applied from elsewhere (`flows::SyncState`;
     /// spec/permissions.md §3 re-seal timing); a label with neither passes once the peer wait is
     /// over (`label_passed`).
     pub fn complete_pass(&self, actor: &Tid) -> bool {
@@ -961,7 +961,7 @@ impl SyncEngine {
 
     /// Labels this node syncs: every non-replaced label of a labeled group it holds read
     /// secrets of; an admin also keeps its replaced labels until done with them at every host
-    /// (spec/sync.md §2: it places the membership-class commits there, the replacement's
+    /// (spec/sync.md §2: it places the role-class commits there, the replacement's
     /// `/label` among them, and deletes the content entries; `retire_at`, `retire_replaced`).
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         // the inputs: engine state, retirements, and the time (an admin edge's `until`)
@@ -998,13 +998,13 @@ impl SyncEngine {
         out
     }
 
-    /// Retires the replaced labels an admin still syncs once `MEMBERSHIP_KEEP_MS` passed since it
+    /// Retires the replaced labels an admin still syncs once `ROLE_KEEP_MS` passed since it
     /// first saw them replaced: a host where the label was lost may never settle a pass.
     fn retire_replaced(&mut self) {
         let now = self.now();
         let replaced: Vec<LabelId> = self.labels().iter().filter(|(_, l)| l.replaced).map(|(_, l)| l.id).collect();
         for l in replaced {
-            if self.state.replaced_seen(l, now).saturating_add(osis_base::format::MEMBERSHIP_KEEP_MS) <= now {
+            if self.state.replaced_seen(l, now).saturating_add(osis_base::format::ROLE_KEEP_MS) <= now {
                 self.state.retire(l);
             }
         }

@@ -1,5 +1,5 @@
 //! More of the sharing and sync surface through hosts in process (notes/api.md Sharing
-//! and membership, Sync configuration and status, Diagnostics), no tokio: see osis_sim::world.
+//! and roles, Sync configuration and status, Diagnostics), no tokio: see osis_sim::world.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Internals as _;
@@ -63,7 +63,7 @@ fn diags(db: &Osis, kind: DiagnosticKind) -> std::sync::mpsc::Receiver<Vec<Tid>>
 }
 
 // notes/api.md Sharing (change_edge, leave), spec/permissions.md §2: a raise is a change, a
-// lower role is refused there (`demote`); a member's self-removal reaches the admin.
+// lower role is refused there (`demote`); a holder's self-removal reaches the admin.
 #[test]
 fn change_edge_and_leave_spec_permissions_2() {
     let mut w = World::new();

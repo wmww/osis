@@ -1,8 +1,8 @@
-//! Validity through osis-perm (spec/permissions.md §5): membership commits and roster
+//! Validity through osis-perm (spec/permissions.md §5): role commits and roster
 //! snapshots become perm's edge-write records (the node's `HeldSet` is perm's `MemoryHeldSet`,
 //! kept current), each delta is judged on its own (layer 2), and a change of the held set
 //! re-judges every held delta; an aspect with a flip is rebuilt from its held bodies
-//! (un-merge or re-merge, spec/crdt.md §4.6). Also the membership-commit content rules
+//! (un-merge or re-merge, spec/crdt.md §4.6). Also the role-commit content rules
 //! osis-commit cannot see (spec/commits.md §2).
 
 use crate::engine::write::required_role;
@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, MembershipCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
+use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,26 +59,26 @@ fn dots_of_view(v: &View, ai: usize) -> Dots {
 
 /// Entries of a `/members` (map) fragment: (dot, key, fragment).
 fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
-    let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) else { return Vec::new() };
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) else { return Vec::new() };
     m.entries().map(|(d, _, k, f)| (d.clone(), k.cloned(), f.cloned())).collect()
 }
 
-/// A `/members` entry as perm's adaptation reads it: dot, the member its key names (`None`: a
+/// A `/members` entry as perm's adaptation reads it: dot, the holder its key names (`None`: a
 /// key that is no tid), and the edge its fragment reads (`None`: no fragment, an entry reset;
 /// `Some(None)`: a fragment reading no well-formed edge).
 pub(crate) type Entry = (Dot, Option<Tid>, Option<Option<Edge>>);
 
-/// One held `/members` or `/tenures` part of a membership commit as perm's adaptation reads it.
+/// One held `/members` or `/tenures` part of a role commit as perm's adaptation reads it.
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum EdgePart {
-    Members(Vec<Entry>),
+    Holders(Vec<Entry>),
     /// The tenure set's elements.
     Tenures(Vec<Value>),
 }
 
-/// What perm's adaptation reads of a membership commit's held parts, by aspect index: a function
+/// What perm's adaptation reads of a role commit's held parts, by aspect index: a function
 /// of the commit record, persisted per commit in the index (`engine::index`, `EDGES`) so an open
-/// decodes no membership body.
+/// decodes no role body.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub(crate) struct EdgeParts(pub Vec<(usize, EdgePart)>);
 
@@ -90,10 +90,10 @@ impl EdgeParts {
             match h.aspects.get(*ai).map(|a| a.ak.as_str()) {
                 Some("/members") => out.push((
                     *ai,
-                    EdgePart::Members(
+                    EdgePart::Holders(
                         entries(f)
                             .into_iter()
-                            // a removal record keyed by no tid acts on no member's entry
+                            // a removal record keyed by no tid acts on no holder's entry
                             // (spec/crdt.md §5.6)
                             .filter(|(_, k, x)| x.is_some() || k.as_ref().is_none_or(|k| matches!(k, Value::Tid(_))))
                             .map(|(d, k, x)| {
@@ -116,9 +116,9 @@ impl EdgeParts {
         EdgeParts(out)
     }
 
-    fn members(&self) -> impl Iterator<Item = (usize, &[Entry])> {
+    fn holders(&self) -> impl Iterator<Item = (usize, &[Entry])> {
         self.0.iter().filter_map(|(ai, p)| match p {
-            EdgePart::Members(e) => Some((*ai, e.as_slice())),
+            EdgePart::Holders(e) => Some((*ai, e.as_slice())),
             EdgePart::Tenures(_) => None,
         })
     }
@@ -126,34 +126,34 @@ impl EdgeParts {
     fn tenures(&self) -> impl Iterator<Item = (usize, Vec<ct::Tenure>)> + '_ {
         self.0.iter().filter_map(|(ai, p)| match p {
             EdgePart::Tenures(t) => Some((*ai, tenures_of(t))),
-            EdgePart::Members(_) => None,
+            EdgePart::Holders(_) => None,
         })
     }
 }
 
-/// Records the member of every `/members` entry these deltas create: (target, entry dot) ->
-/// member. Only the delta owning the entry's dot (`own`) creates it (a nested write into
-/// another's entry is bad input, `check_members_parts`).
+/// Records the holder of every `/members` entry these deltas create: (target, entry dot) ->
+/// holder. Only the delta owning the entry's dot (`own`) creates it (a nested write into
+/// another's entry is bad input, `check_holders_parts`).
 fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> bool {
     let mut new = false;
     for (d, k, _) in es {
         if let Some(m) = k
             && own.is_some_and(|o| o.owns(d.owner()))
-            && core.ix.member_keys.get(&(*target, d.clone())).is_none()
+            && core.ix.holder_keys.get(&(*target, d.clone())).is_none()
         {
-            core.ix.member_keys.insert((*target, d.clone()), *m);
+            core.ix.holder_keys.insert((*target, d.clone()), *m);
             new = true;
         }
     }
     new
 }
 
-/// The edge writes of one `/members` delta of a membership commit, per member: an entry the
+/// The edge writes of one `/members` delta of a role commit, per holder: an entry the
 /// delta creates sets the edge it reads; an entry reset removes the edge its entry's creation
 /// keyed, when the reset carries that key or none (a record acts only on the entry of its key,
 /// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether
 /// every reset's entry is known here: a reset of an entry whose creation is not held names no
-/// member yet.
+/// holder yet.
 fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
     let mut known = true;
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
@@ -169,7 +169,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
             }
             // a nested write into another's entry is no edge write (bad input on receipt)
             (_, Some(_)) => {}
-            (_, None) => match core.ix.member_keys.get(&(*target, d.clone())) {
+            (_, None) => match core.ix.holder_keys.get(&(*target, d.clone())) {
                 Some(m) if k.is_some_and(|k| k != *m) => {}
                 Some(m) if !set.contains(m) => {
                     per.insert(*m, None);
@@ -179,25 +179,25 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
             },
         }
     }
-    (per.into_iter().map(|(member, edge)| EdgeOp { target: *target, member, edge, dots }).collect(), known)
+    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge, dots }).collect(), known)
 }
 
-/// Members whose edge on `target` a `/members` delta writes: an entry it creates names its key,
-/// an entry reset the member its creation keyed (known here or not named).
-pub(crate) fn edge_members(core: &Core, target: &Tid, f: &Fragment) -> Vec<Tid> {
+/// Holders whose edge on `target` a `/members` delta writes: an entry it creates names its key,
+/// an entry reset the holder its creation keyed (known here or not named).
+pub(crate) fn edge_holders(core: &Core, target: &Tid, f: &Fragment) -> Vec<Tid> {
     entries(f)
         .into_iter()
         .filter_map(|(d, k, v)| match (k, v) {
             (Some(Value::Tid(m)), Some(_)) => Some(m),
-            (k, None) => core.ix.member_keys.get(&(*target, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Value::Tid(*m))),
+            (k, None) => core.ix.holder_keys.get(&(*target, d)).copied().filter(|m| k.as_ref().is_none_or(|k| *k == Value::Tid(*m))),
             _ => None,
         })
         .collect()
 }
 
-/// Members a roster snapshot's `/members` or `/tenures` delta names (its edges or ledger
+/// Holders a roster snapshot's `/members` or `/tenures` delta names (its edges or ledger
 /// entries): what a certificate copy of it is projected by (spec/permissions.md §6).
-pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {
+pub(crate) fn named_holders(ak: &str, f: &Fragment) -> Vec<Tid> {
     match ak {
         "/members" => entries(f)
             .into_iter()
@@ -206,7 +206,7 @@ pub(crate) fn named_members(ak: &str, f: &Fragment) -> Vec<Tid> {
                 _ => None,
             })
             .collect(),
-        "/tenures" => tenures(f).into_iter().map(|t| t.member).collect(),
+        "/tenures" => tenures(f).into_iter().map(|t| t.holder).collect(),
         _ => Vec::new(),
     }
 }
@@ -225,7 +225,7 @@ fn tenures_of(s: &[Value]) -> Vec<ct::Tenure> {
 /// A roster snapshot's parts on one thing: roster, ledger, `/members` dots.
 type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>, Dots);
 
-/// A roster snapshot naming one member in two `/members` deltas of a thing is bad input
+/// A roster snapshot naming one holder in two `/members` deltas of a thing is bad input
 /// (spec/permissions.md §6): which one counts would depend on the deltas a node holds.
 pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
     if h.kind != Kind::RosterSnapshot {
@@ -237,9 +237,9 @@ pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) 
         if a.ak.as_str() != "/members" {
             continue;
         }
-        for m in named_members("/members", d.fragment()) {
+        for m in named_holders("/members", d.fragment()) {
             if !seen.insert((a.tid, m)) {
-                return Err(Error::BadInput("a roster snapshot names a member twice"));
+                return Err(Error::BadInput("a roster snapshot names a holder twice"));
             }
         }
     }
@@ -249,7 +249,7 @@ pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) 
 
 /// A `/members` delta writing inside an entry it did not create is bad input: an edge change is
 /// remove + put (spec/permissions.md §2), judged from the delta and its header alone.
-pub(crate) fn check_members_parts(h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
+pub(crate) fn check_holders_parts(h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) -> Result<()> {
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
         if a.ak.as_str() != "/members" || !h.kind.has_own_writes() {
@@ -373,7 +373,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
     Ok(out)
 }
 
-/// Adds a membership commit's edge writes (or a roster snapshot) to perm's held set. A roster
+/// Adds a role commit's edge writes (or a roster snapshot) to perm's held set. A roster
 /// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
 /// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
 /// `roster_snapshot` refuses it (`Indexes::frontier_unknown`).
@@ -381,7 +381,7 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
 /// Reads the commit's `View` (`v`); its header (`h`, else decoded from `Core::commits`) only
 /// for a roster snapshot whose tenures link their frontiers (the chunk list), so an open adapts
 /// without decoding headers.
-pub(crate) fn add_membership(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: &CommitId, parts: &EdgeParts) -> Result<()> {
+pub(crate) fn add_role_commit(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: &CommitId, parts: &EdgeParts) -> Result<()> {
     tx.core.stale_commits.insert(*id);
     let links = v.kind == Kind::RosterSnapshot && parts.tenures().any(|(_, ts)| ts.iter().any(|t| matches!(t.frontier, Some(osis_schema::Chunked::Link(_)))));
     let found = if links && h.is_none() { tx.core.ix.commits.get(id).map(|m| m.header.arc()) } else { None };
@@ -399,23 +399,23 @@ pub(crate) fn add_membership(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id: 
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
         tx.core.ix.frontier_unknown.extend(linked.waiting.iter().copied());
     }
-    add_membership_in(tx.core, v, id, parts, &linked);
+    add_role_commit_in(tx.core, v, id, parts, &linked);
     Ok(())
 }
 
-fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
-    for (ai, es) in parts.members() {
+fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
+    for (ai, es) in parts.holders() {
         if let Some(a) = h.aspects.get(ai) {
             note_keys(core, &a.tid, es, Owned::of_view(h, id, ai).as_ref());
         }
     }
     match h.kind {
-        Kind::Membership => {
-            // the writes whose member is known go to perm now; a commit resetting an entry of
+        Kind::Role => {
+            // the writes whose holder is known go to perm now; a commit resetting an entry of
             // unknown key stays in `unresolved` and is derived again when keys arrive
             let mut ops = Vec::new();
             let mut known = true;
-            for (ai, es) in parts.members() {
+            for (ai, es) in parts.holders() {
                 let Some(a) = h.aspects.get(ai) else { continue };
                 // nothing written on a thing too deep applies (spec/permissions.md §1); its owner
                 // chain is held whole at apply (`examine`), so this never changes later
@@ -439,7 +439,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
             if ops.is_empty() {
                 core.ix.held.remove(id);
             } else {
-                core.ix.held.add_commit(MembershipCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
+                core.ix.held.add_commit(RoleCommit { id: *id, ts: h.ts, author: h.author, actor: h.actor, frontier: h.frontier.clone(), ops });
             }
         }
         Kind::RosterSnapshot => {
@@ -448,7 +448,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                 let Some(a) = h.aspects.get(*ai) else { continue };
                 let e = by_thing.entry(a.tid).or_insert_with(|| (BTreeMap::new(), Vec::new(), Dots::Commit));
                 match p {
-                    EdgePart::Members(es) => {
+                    EdgePart::Holders(es) => {
                         e.2 = dots_of_view(h, *ai);
                         for (_, k, v) in es {
                             if let (Some(m), Some(Some(edge))) = (k, v) {
@@ -463,7 +463,7 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
                                 Some(osis_schema::Chunked::Link(l)) => linked.frontiers.get(&l.hash).cloned(),
                                 None => None,
                             };
-                            e.1.push(Tenure { member: t.member, role: t.role, since: t.since.map(point_of), until: point_of(t.until), frontier });
+                            e.1.push(Tenure { holder: t.holder, role: t.role, since: t.since.map(point_of), until: point_of(t.until), frontier });
                         }
                     }
                 }
@@ -480,9 +480,9 @@ fn add_membership_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts
 }
 
 /// Does a path of held edge writes and owner links lead from `author` to a thing on `chain`?
-/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs membership
+/// (The author's chain certificates, spec/permissions.md §1, §4: a path climbs roles
 /// edges and owner links, as perm's effective role counts them.) Searched backward from
-/// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the members named on
+/// `chain`, as perm's `roles_to_any`: from a thing to its owner and to the holders named on
 /// it, so the search stays within what has authority over the chain.
 pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
     let held = &core.ix.held;
@@ -493,7 +493,7 @@ pub(crate) fn reaches(core: &Core, author: &Tid, chain: &[Tid]) -> bool {
             Some(CreationRecord::Thing { owner, .. }) => Some(owner),
             _ => None,
         };
-        for y in owner.into_iter().chain(held.members_of(&t)) {
+        for y in owner.into_iter().chain(held.holders_of(&t)) {
             if y == author {
                 return true;
             }
@@ -521,7 +521,7 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
     // (spec/crypto.md §3: inbox and deposit seed by an admin); read and write keysets their
     // rotator
     let admin = match f.slot(osis_crdt::Encoding::Struct) {
-        Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
+        Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) => (2..=5).any(|id| st.field(id).is_some()),
         _ => false,
     };
     Some(if admin { Role::Admin } else { Role::Write })
@@ -533,11 +533,11 @@ fn rotation_required(ak: &str, f: &Fragment) -> Option<Role> {
 /// from the delta alone. A key-erased record, a key that is no box or history key, or a write
 /// or reset of the whole value or of a field: admin.
 fn secrets_role(f: &Fragment) -> Role {
-    let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct).filter(|_| f.is_plain_struct()) else { return Role::Admin };
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct).filter(|_| f.is_plain_struct()) else { return Role::Admin };
     let mut top = Role::Write;
     for id in [0, 1] {
         let Some(field) = st.field(id) else { continue };
-        let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Role::Admin };
+        let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map).filter(|_| !field.has_reset()) else { return Role::Admin };
         for (_, _, k, _) in m.entries() {
             let role = k.and_then(|k| match id {
                 0 => typed(k, "box_key").and_then(|k| ct::BoxKey::from_value(&k).ok()).map(|k| k.role),
@@ -550,7 +550,7 @@ fn secrets_role(f: &Fragment) -> Role {
 }
 
 /// Records the roles `/secrets` and `/keys` deltas of a commit need, and the `/secrets` parts
-/// of a membership commit that write beyond its grantees' boxes. `parts`: every held part of the
+/// of a role commit that write beyond its grantees' boxes. `parts`: every held part of the
 /// commit (a late `/secrets` part is judged with the `/members` part held before it).
 pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
     core.stale_commits.insert(*id);
@@ -561,7 +561,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
             core.ix.rotation_role.upsert((*id, *ai), || r, |e| *e = (*e).max(r));
         }
     }
-    if h.kind != Kind::Membership {
+    if h.kind != Kind::Role {
         return;
     }
     // the edges this commit puts, per target: what an invite grant may box
@@ -595,7 +595,7 @@ pub(crate) fn note_required(core: &mut Core, h: &Header, id: &CommitId, parts: &
     }
 }
 
-/// Whether a `/secrets` delta writes only the boxes of the members `granted` puts on `actor`, at
+/// Whether a `/secrets` delta writes only the boxes of the holders `granted` puts on `actor`, at
 /// or below each one's role, and history boxes at or below the highest granted role, as puts
 /// only: entries this delta creates (`own` dots), no reset of the value, a field, a map or any
 /// entry (spec/permissions.md §2). Judged from
@@ -605,16 +605,16 @@ fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), 
     if !f.is_plain_struct() {
         return false;
     }
-    let Some(osis_crdt::MemberRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
+    let Some(osis_crdt::SlotRef::Frag(Fragment::Struct(st))) = f.slot(osis_crdt::Encoding::Struct) else { return false };
     let top = granted.iter().filter(|((t, _), _)| t == actor).map(|(_, r)| *r).max();
-    let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.member)).is_some_and(|r| k.role <= *r);
+    let fits = |k: &ct::BoxKey| granted.get(&(*actor, k.holder)).is_some_and(|r| k.role <= *r);
     for id in [0, 1] {
         let Some(field) = st.field(id) else { continue };
         // every entry new: created by this delta (its own dots), never a write into another's
         if !field.is_put_only_map(&|d| own.owns(d)) {
             return false;
         }
-        let Some(osis_crdt::MemberRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map) else { return false };
+        let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = field.slot(osis_crdt::Encoding::Map) else { return false };
         for (_, _, k, _) in m.entries() {
             let Some(k) = k else { return false };
             let ok = match id {
@@ -637,7 +637,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
         let Some(v) = tx.core.ix.commits.get(&id).map(|m| m.view.clone()) else { continue };
         let parts = super::edge_parts(tx, &id)?;
         let before = tx.core.ix.held.edge_commit(&id).map(|c| c.ops.clone());
-        add_membership(tx, &v, None, &id, &parts)?;
+        add_role_commit(tx, &v, None, &id, &parts)?;
         any |= tx.core.ix.held.edge_commit(&id).map(|c| &c.ops) != before.as_ref();
     }
     Ok(any)
@@ -744,7 +744,7 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
     // put on the thing applied as an invite grant (`grant_overreach` checked the boxes against
     // all of them), so a self-removal beside a failing put exempts nothing
     if ak == "/secrets"
-        && let Some(c) = tl.membership_commit(id)
+        && let Some(c) = tl.role_commit(id)
         && !core.ix.grant_overreach.contains(&(*id, ai))
     {
         let grant = |i: usize| matches!(tl.applied().get(&WriteId::Op(*id, i as u32)), Some(x) if matches!(x.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_))));
@@ -1262,26 +1262,26 @@ fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fr
     Ok(Some(out))
 }
 
-/// Whether `author` lowering `member`'s edge on `target` at `ts` is a self-removal
+/// Whether `author` lowering `holder`'s edge on `target` at `ts` is a self-removal
 /// (spec/permissions.md §2): its own edge, or its authority on the target comes only through the
-/// member (admin on the member, and no admin on the target without the member's edge).
-pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, member: &Tid, ts: osis_base::Ts) -> bool {
-    if author == member {
+/// holder (admin on the holder, and no admin on the target without the holder's edge).
+pub(crate) fn self_removal(core: &Core, author: &Tid, target: &Tid, holder: &Tid, ts: osis_base::Ts) -> bool {
+    if author == holder {
         return true;
     }
     let Some(tl) = core.timelines.get(target) else { return false };
-    if tl.role(author, member, At::now(ts)) != Some(Role::Admin) {
+    if tl.role(author, holder, At::now(ts)) != Some(Role::Admin) {
         return false;
     }
     let edges = tl.edges_at(None);
-    let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(ts)).patched(*member, *target, None);
+    let view = osis_perm::graph::View::at(tl.owners(), &edges, Some(ts)).patched(*holder, *target, None);
     view.roles_from(author).get(target).copied() != Some(Role::Admin)
 }
 
-/// Rules of a membership commit that need its deltas
+/// Rules of a role commit that need its deltas
 /// (spec/commits.md §2, spec/wire.md §4 position 13, spec/permissions.md §3).
 pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
-    if h.kind != Kind::Membership {
+    if h.kind != Kind::Role {
         return Ok(());
     }
     let mut changed: Vec<(Tid, Tid, Option<Edge>)> = Vec::new();
@@ -1294,14 +1294,14 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
             match k {
                 Some(Value::Tid(m)) => changed.push((a.tid, m, frag.and_then(|f| f.read()).as_ref().and_then(edge_of))),
                 _ => {
-                    if let Some(m) = core.ix.member_keys.get(&(a.tid, dot)) {
+                    if let Some(m) = core.ix.holder_keys.get(&(a.tid, dot)) {
                         changed.push((a.tid, *m, None));
                     }
                 }
             }
         }
     }
-    // a change is remove + put of one entry: the put is the member's new edge
+    // a change is remove + put of one entry: the put is the holder's new edge
     let mut net: BTreeMap<(Tid, Tid), Option<Edge>> = BTreeMap::new();
     for (t, m, e) in changed {
         let slot = net.entry((t, m)).or_insert(None);
@@ -1310,20 +1310,20 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         }
     }
     let changed: Vec<(Tid, Tid, Option<Edge>)> = net.into_iter().map(|((t, m), e)| (t, m, e)).collect();
-    let mut members: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
-    members.sort();
-    members.dedup();
-    if members.len() > 1 {
-        // the one exception for edge writes in a plain membership commit: a single-use
+    let mut holders: Vec<(Tid, Tid)> = changed.iter().map(|c| (c.0, c.1)).collect();
+    holders.sort();
+    holders.dedup();
+    if holders.len() > 1 {
+        // the one exception for edge writes in a plain role commit: a single-use
         // redemption (a grant plus the author key's own self-removal, both on K,
         // spec/permissions.md §9, spec/commits.md §2)
-        let redemption = members.len() == 2 && members.first().map(|m| m.0) == members.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
+        let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
         // or an explicit removal of several others' edges on one target (a link joiner with
         // the link key), under one frontier and one rotation: no edge of it a self-removal
-        let first = members.first().map(|m| m.0);
+        let first = holders.first().map(|m| m.0);
         let removal = h.frontier.is_some() && changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none() && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
         if !redemption && !removal {
-            return Err(Error::BadInput("a membership commit changes more than one edge"));
+            return Err(Error::BadInput("a role commit changes more than one edge"));
         }
     }
     let lowers = changed.iter().any(|(target, m, new)| {
@@ -1365,9 +1365,9 @@ mod tests {
     use osis_base::{Role, Value, WallMs};
     use osis_schema::core_types as ct;
 
-    // spec/permissions.md §1, §2: the membership-class aspects are written only by admins, except
+    // spec/permissions.md §1, §2: the role-class aspects are written only by admins, except
     // invite grants, which "carry the grantee's boxes for those roles". A grant's `/secrets` part
-    // that writes another member's box is not the grantee's: it gets no invite exemption.
+    // that writes another holder's box is not the grantee's: it gets no invite exemption.
     #[test]
     fn invite_grant_secrets_limited_to_grantee_spec_perm_2() {
         let mut lp = LocalPeer::new(3, 901, WallMs(1_700_000_000_000)).unwrap();
@@ -1387,7 +1387,7 @@ mod tests {
         assert!(lp.peers[0].engine.core.ix.commits.get(&grant).unwrap().valid[ai], "an honest grant");
         // a grant of c that also writes a box keyed to b
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (bk, bx) = s.boxes.iter().find(|(k, _)| k.member == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let (bk, bx) = s.boxes.iter().find(|(k, _)| k.holder == b).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &edge).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(bk, bx)].into_iter().collect(), ..Default::default() };
@@ -1401,7 +1401,7 @@ mod tests {
     // spec/permissions.md §2 (an edge change is remove + put): a received `/members` delta
     // writing inside an entry it did not create is bad input, whoever signed it.
     #[test]
-    fn nested_members_write_is_bad_input_spec_perm_2() {
+    fn nested_holders_write_is_bad_input_spec_perm_2() {
         let mut lp = LocalPeer::new(2, 907, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
         let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
@@ -1441,7 +1441,7 @@ mod tests {
         lp.sync_all().unwrap();
         // the invite holder grants c and also writes a box keyed to the admin
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.member == a).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let (ak, ab) = s.boxes.iter().find(|(k, _)| k.holder == a).map(|(k, v)| (k.clone(), v.clone())).unwrap();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
         let w = osis_keys::SecretsWrite { boxes: [(ak, ab)].into_iter().collect(), ..Default::default() };
@@ -1470,7 +1470,7 @@ mod tests {
         use osis_schema::Codec;
         let mut lp = LocalPeer::new(6, 903, WallMs(1_700_000_000_000)).unwrap();
         lp.sync_all().unwrap();
-        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a member whose box is reset
+        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers, 5 a holder whose box is reset
         let tid = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.tid();
         let (a, c, e) = (tid(&mut lp, 0), tid(&mut lp, 2), tid(&mut lp, 5));
         let b = tid(&mut lp, 1);
@@ -1486,7 +1486,7 @@ mod tests {
         let ge = lp.peers[0].engine.package(&ge).unwrap().unwrap();
         lp.deliver(1, &ge).unwrap();
         let s = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let ek = s.boxes.keys().find(|k| k.member == e).unwrap().clone();
+        let ek = s.boxes.keys().find(|k| k.holder == e).unwrap().clone();
         let hk = s.history.keys().next().unwrap().clone();
         let mut m = Mutation::new();
         crate::flows::put_edge(&mut m, t, c, &read).unwrap();
@@ -1509,15 +1509,15 @@ mod tests {
         }
     }
     // spec/permissions.md §2: an invite grant's `/secrets` entries are new, created by its own
-    // delta. A record claiming the grantee's key at another member's entry dot would merge into
+    // delta. A record claiming the grantee's key at another holder's entry dot would merge into
     // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
     #[test]
     fn invite_grant_foreign_entry_dot_rejected_spec_perm_2() {
-        use osis_crdt::{Batch, Dot, Encoding, MemberRef, Op, PathOp, PathSeg, Source, Writer};
+        use osis_crdt::{Batch, Dot, Encoding, SlotRef, Op, PathOp, PathSeg, Source, Writer};
         use osis_schema::Codec;
         fn box_entries(f: &osis_crdt::Fragment) -> Vec<(Dot, Option<Value>)> {
-            let Some(MemberRef::Frag(osis_crdt::Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return Vec::new() };
-            let Some(MemberRef::Frag(osis_crdt::Fragment::Map(m))) = st.field(0).and_then(|x| x.slot(Encoding::Map)) else { return Vec::new() };
+            let Some(SlotRef::Frag(osis_crdt::Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return Vec::new() };
+            let Some(SlotRef::Frag(osis_crdt::Fragment::Map(m))) = st.field(0).and_then(|x| x.slot(Encoding::Map)) else { return Vec::new() };
             m.entries().map(|(d, _, k, _)| (d.clone(), k.cloned())).collect()
         }
         let mut lp = LocalPeer::new(3, 904, WallMs(1_700_000_000_000)).unwrap();
@@ -1533,9 +1533,9 @@ mod tests {
         let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         // the admin's own box entry
-        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.member == a)?))).unwrap();
+        let (a_dot, a_key) = box_entries(&st).into_iter().find_map(|(d, k)| Some((d, ct::BoxKey::from_value(&k?).ok().filter(|k| k.holder == a)?))).unwrap();
         let bx = s.boxes.get(&a_key).unwrap().clone();
-        let g_key = ct::BoxKey { member: g, role: Role::Read, epoch: a_key.epoch.clone() };
+        let g_key = ct::BoxKey { holder: g, role: Role::Read, epoch: a_key.epoch.clone() };
         let schema = osis_schema::core_schema();
         let view = schema.view("/secrets").unwrap();
         let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
@@ -1593,8 +1593,8 @@ mod tests {
         }
     }
     // spec/permissions.md §1: an edge write on a thing too deep is invalid like any of its
-    // deltas: it never reaches perm (else a deep actor's members would gain its roles on a
-    // shallow thing it is a member of), at the writer and at receivers.
+    // deltas: it never reaches perm (else a deep actor's holders would gain its roles on a
+    // shallow thing it is a holder of), at the writer and at receivers.
     #[test]
     fn edge_on_deep_thing_not_held_spec_permissions_1() {
         use osis_base::format::MAX_OWNER_DEPTH;
@@ -1615,12 +1615,12 @@ mod tests {
         let mut m = Mutation::new();
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
-        let edge_in = |m: &mut Mutation, t: Tid, member: Tid| {
-            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
+        let edge_in = |m: &mut Mutation, t: Tid, holder: Tid| {
+            m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
         };
-        let edge = |t: Tid, member: Tid| {
+        let edge = |t: Tid, holder: Tid| {
             let mut m = Mutation::new();
-            edge_in(&mut m, t, member);
+            edge_in(&mut m, t, holder);
             m
         };
         lp.peers[0].engine.core.skip_writer_rules = true;
@@ -1658,14 +1658,14 @@ mod tests {
         lp.peers[0].engine.grant(&t, &r, &read).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
-        let (rk, rb) = before.boxes.iter().find(|(k, _)| k.member == r).map(|(k, v)| (k.clone(), v.clone())).unwrap();
-        let zk = ct::BoxKey { member: z, role: Role::Admin, epoch: rk.epoch.clone() };
+        let (rk, rb) = before.boxes.iter().find(|(k, _)| k.holder == r).map(|(k, v)| (k.clone(), v.clone())).unwrap();
+        let zk = ct::BoxKey { holder: z, role: Role::Admin, epoch: rk.epoch.clone() };
         let hk = ct::HistoryKey { role: Role::Admin, epoch: rk.epoch.clone() };
         let commit = |lp: &mut LocalPeer, who: Tid, edge: ct::Edge, i: usize| {
             let mut m = Mutation::new();
             m.op(t, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(lp.peers[i].engine.tid())) }).unwrap();
             crate::flows::put_edge(&mut m, t, who, &edge).unwrap();
-            let k = ct::BoxKey { member: who, role: edge.role, ..zk.clone() };
+            let k = ct::BoxKey { holder: who, role: edge.role, ..zk.clone() };
             let h = ct::HistoryKey { role: edge.role, ..hk.clone() };
             let w = osis_keys::SecretsWrite { boxes: [(k, rb.clone())].into_iter().collect(), history: [(h, vec![0; 48])].into_iter().collect(), ..Default::default() };
             crate::flows::put_secrets(&mut m, t, &w, true).unwrap();
@@ -1872,7 +1872,7 @@ mod keys_tests {
         lp.peers[0].engine.grant(&t, &w2, &we).unwrap();
         let g = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, ..we.clone() }).unwrap().commits.last().unwrap();
         lp.sync_all().unwrap();
-        let rk = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.member == r).unwrap().clone();
+        let rk = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == r).unwrap().clone();
         let rm = |lp: &mut LocalPeer, i: usize| {
             let mut m = Mutation::new();
             m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
@@ -1921,7 +1921,7 @@ mod keys_tests {
         lp.peers[0].engine.grant(&t, &p, &e(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &e(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { member: r, new: None, presync: crate::flows::PreSync::Synced }).unwrap().commits;
+        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, presync: crate::flows::PreSync::Synced }).unwrap().commits;
         lp.sync_all().unwrap();
         let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
         let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);
@@ -1981,7 +1981,7 @@ mod keys_tests {
         let grant = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None }).unwrap().commits.last().unwrap();
         let grant = lp.peers[0].engine.package(&grant).unwrap().unwrap();
         lp.deliver(1, &grant).unwrap();
-        let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.member == r).unwrap().clone();
+        let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == r).unwrap().clone();
         let mut m = Mutation::new();
         m.op(t, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(rk.to_value()) }).unwrap();
         let id = lp.peers[1].commit(m).unwrap().unwrap();

@@ -1,6 +1,6 @@
 //! Roster snapshot inputs (spec/permissions.md §6, spec/commits.md §4): linked tenure frontiers
 //! recorded once read, never audited as empty, bounded, bad input when unlisted or not a
-//! frontier; members named twice; certificate projections failing closed.
+//! frontier; holders named twice; certificate projections failing closed.
 
 use crate::local_peer::LocalPeer;
 use crate::{Ingested, Mutation};
@@ -121,8 +121,8 @@ fn raw_snapshot(lp: &mut LocalPeer, t: Tid, tenures: Vec<Value>) -> CommitId {
     c
 }
 
-fn tenure(member: Tid, frontier: Option<Value>) -> Value {
-    let mut v = ct::Tenure { member, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: member, commit: osis_base::CommitId([0; 32]) }, frontier: None }.to_value();
+fn tenure(holder: Tid, frontier: Option<Value>) -> Value {
+    let mut v = ct::Tenure { holder, role: Role::Write, since: None, until: ct::EdgeKey { ts: Ts::make(T0, 0).unwrap(), node: holder, commit: osis_base::CommitId([0; 32]) }, frontier: None }.to_value();
     if let (Value::Map(m), Some(f)) = (&mut v, frontier) {
         m.insert(Value::Int(4), Value::Enum(1, Some(Box::new(f))));
     }
@@ -232,10 +232,10 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
     assert_eq!(check(&mut lp, c2, 3 * size).unwrap(), 2);
 }
 
-// spec/permissions.md §6: a roster snapshot naming one member in two `/members` deltas is bad
+// spec/permissions.md §6: a roster snapshot naming one holder in two `/members` deltas is bad
 // input (which one counts would depend on the deltas a node holds).
 #[test]
-fn member_named_twice_spec_perm_6() {
+fn holder_named_twice_spec_perm_6() {
     let mut lp = LocalPeer::new(2, 946, T0).unwrap();
     lp.sync_all().unwrap();
     let me = lp.peers[0].engine.tid();
@@ -249,7 +249,7 @@ fn member_named_twice_spec_perm_6() {
         let h = (*tx.core.ix.commits.get(&c).unwrap().header).clone();
         let mut parts = super::held_parts_at(tx, &c, &|_| true)?;
         super::validity::check_roster_parts(&h, &parts)?;
-        let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "/members" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_members("/members", &d.fragment) == vec![x])).cloned().unwrap();
+        let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "/members" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_holders("/members", &d.fragment) == vec![x])).cloned().unwrap();
         parts.push(named);
         super::validity::check_roster_parts(&h, &parts)
     });

@@ -105,12 +105,12 @@ impl Core {
         (rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
     }
 
-    /// Whether a held membership commit's `/secrets` part on `tid` is valid (only a thing with
+    /// Whether a held role commit's `/secrets` part on `tid` is valid (only a thing with
     /// secrets of its own has boxes: a grant whose target's `/keys` is not held yet).
     fn valid_secrets_part(&self, tid: &Tid) -> bool {
         let Ok(ak) = osis_base::Ak::new("/secrets") else { return false };
         self.ix.by_aspect.get(&(*tid, ak)).into_iter().flatten().any(|(_, c)| {
-            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_membership() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "/secrets" && m.valid.get(ai).copied().unwrap_or(false)))
+            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "/secrets" && m.valid.get(ai).copied().unwrap_or(false)))
         })
     }
 
@@ -209,18 +209,18 @@ impl Core {
         let me = self.id.tid();
         let mut openers: Vec<(Tid, ActorEpochs)> = self.ix.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
         openers.sort_by_key(|x| x.0);
-        let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { member: me, seed: &seed }, &mut epochs, unchecked);
+        let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: me, seed: &seed }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
-            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { member: *t, seed: k.seed() }, &mut epochs, unchecked);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: *t, seed: k.seed() }, &mut epochs, unchecked);
         }
         for (m, e) in &openers {
-            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { member: *m, epochs: e }, &mut epochs, unchecked);
+            let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::Actor { holder: *m, epochs: e }, &mut epochs, unchecked);
         }
         self.adopt_derived(actor, &mut epochs);
         let held_any = epochs.holds_any();
         if held_any && Some(&epochs) != before.as_ref() {
             self.ix.secrets.insert(*actor, epochs);
-            self.membership_changed();
+            self.role_changed();
             return true;
         }
         false
@@ -311,7 +311,7 @@ impl Core {
     pub(crate) fn observe_keys(&mut self, actor: &Tid, keys: &Keys) {
         if keys.read.is_some() || keys.write.is_some() || keys.admin.is_some() {
             self.ix.delete_hints.remove(actor);
-            self.membership_changed();
+            self.role_changed();
             if let Some(e) = self.ix.secrets.get_mut(actor) {
                 let _ = osis_keys::observe_keys(keys, e);
             }
@@ -590,10 +590,10 @@ pub(crate) fn history_alts(f: &osis_crdt::Fragment) -> HistoryAlts {
 
 /// The history-box map of a `/secrets` state.
 fn history_map(f: &osis_crdt::Fragment) -> Option<&osis_crdt::Map> {
-    use osis_crdt::{Encoding, Fragment, MemberRef};
-    let Some(MemberRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return None };
+    use osis_crdt::{Encoding, Fragment, SlotRef};
+    let Some(SlotRef::Frag(Fragment::Struct(st))) = f.slot(Encoding::Struct) else { return None };
     match st.field(1)?.slot(Encoding::Map)? {
-        MemberRef::Frag(Fragment::Map(m)) => Some(m),
+        SlotRef::Frag(Fragment::Map(m)) => Some(m),
         _ => None,
     }
 }
@@ -607,15 +607,15 @@ fn typed_as<T: osis_schema::Codec>(v: &Value, name: &str) -> Option<T> {
 /// The keys of the box and history-box entries a `/secrets` delta (or snapshot) writes; `None`
 /// when it writes the value, a field or a map whole (a reset): then every entry may change.
 pub(crate) fn touched_keys(delta: &osis_crdt::Fragment) -> Option<(Vec<Value>, Vec<Value>)> {
-    use osis_crdt::{Encoding, Fragment, MemberRef};
+    use osis_crdt::{Encoding, Fragment, SlotRef};
     if !delta.is_plain_struct() {
         return None;
     }
-    let Some(MemberRef::Frag(Fragment::Struct(st))) = delta.slot(Encoding::Struct) else { return None };
+    let Some(SlotRef::Frag(Fragment::Struct(st))) = delta.slot(Encoding::Struct) else { return None };
     let mut out = (Vec::new(), Vec::new());
     for (id, keys) in [(0, &mut out.0), (1, &mut out.1)] {
         let Some(f) = st.field(id) else { continue };
-        let Some(MemberRef::Frag(Fragment::Map(m))) = f.slot(Encoding::Map) else { return None };
+        let Some(SlotRef::Frag(Fragment::Map(m))) = f.slot(Encoding::Map) else { return None };
         if f.has_reset() {
             return None;
         }

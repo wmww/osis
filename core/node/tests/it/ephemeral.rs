@@ -24,7 +24,7 @@ pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::Signing
 pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
     let p = osis_commit::project(c, |_| ()).unwrap().remove(0);
     let class = osis_label::Class::of_marker(c.header.ephemeral);
-    let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, membership: false };
+    let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, role_commit: false };
     let s = osis_node::labeling::seal_body_as(&body, class, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
     let secret = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
     let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
@@ -122,10 +122,10 @@ pub(crate) fn rows(b: &osis_store::MemoryBackend) -> usize {
 }
 
 // notes/ephemeral.md step 3, spec/sync.md §4: an ephemeral window placed in a synced group
-// reaches the other member's reads and watches; neither its store nor the host's gains a row
+// reaches the other holder's reads and watches; neither its store nor the host's gains a row
 // (the host reserves log numbers in its label meta, the same row)
 #[test]
-fn window_reaches_member_no_store_rows_spec_sync_4() {
+fn window_reaches_holder_no_store_rows_spec_sync_4() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -141,7 +141,7 @@ fn window_reaches_member_no_store_rows_spec_sync_4() {
     assert!(net.engine(b).groups_of(&w).contains(&g), "the placement came along");
     let changed: Vec<_> = rx.try_iter().filter_map(|e| if let osis_node::Event::Ephemeral { changed, origin: osis_node::Origin::Remote, .. } = e { Some(changed) } else { None }).flatten().collect();
     assert!(changed.iter().any(|(t, ak)| *t == w && ak.as_str() == STATE), "{changed:?}");
-    assert_eq!(rows(&net.nodes[b].backend), rb, "nothing stored at the member");
+    assert_eq!(rows(&net.nodes[b].backend), rb, "nothing stored at the holder");
     assert_eq!(rows(&net.hosts[host].backend), rs, "nothing stored at the host");
     assert_eq!(net.engine(b).commit_ids().len(), commits);
 }
@@ -206,7 +206,7 @@ fn shared_window_merges_after_offline_spec_sync_6() {
     assert_eq!(notes(&mut net, b, w), want);
 }
 
-// the shared window over a direct peer link (a member peer serving the label, spec/sync.md §5):
+// the shared window over a direct peer link (a co-reader peer serving the label, spec/sync.md §5):
 // edits while apart merge on reconnect
 #[test]
 fn shared_window_merges_over_peer_link_spec_sync_5() {
@@ -309,7 +309,7 @@ fn bridge_node_carries_between_hosts_spec_sync_6() {
     assert_eq!(notes(&mut net, c, w), want);
 }
 
-// spec/data-model.md §1 (persistence): an ephemeral thing syncs with its record; the other member
+// spec/data-model.md §1 (persistence): an ephemeral thing syncs with its record; the other holder
 // persists it with a durable write, keeping its tid; the first node sees it durable then
 #[test]
 fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
@@ -338,7 +338,7 @@ fn ephemeral_thing_persists_same_tid_elsewhere_spec_data_model_1() {
 // placement): a durable thing whose placement is ephemeral (here a draft saved, the save undone,
 // the node restarted and its ephemeral writes back from the host: no undo log, nothing marks
 // it a draft) gets that placement converted by its next durable write, as at its first; the
-// other member sees it placed durably again
+// other holder sees it placed durably again
 #[test]
 fn ephemeral_placement_of_durable_thing_converts_spec_data_model_8() {
     let mut net = Net::new();
@@ -399,7 +399,7 @@ fn removed_writer_ephemeral_unmerged_spec_permissions_5_2() {
     let me = net.tid(a);
     let e = net.engine(a);
     let rs = recipients_of(e, &[(me, Role::Admin)]);
-    remove_member(e, g, bt, &rs, 9);
+    remove_holder(e, g, bt, &rs, 9);
     net.run();
     assert_eq!(notes(&mut net, a, w), map(&[("a", "1")]), "b's ephemeral write is un-merged");
     // issues/eph-node-cost-bounds.md: invalid now, they are let go at once (kept and counted
@@ -656,7 +656,7 @@ fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
 }
 
 // spec/crdt.md §4.7, spec/sync.md §1 (an ephemeral commit's expiry rides in its header and its
-// blob prefix): a typing indicator written with an expiry reaches the other member and is gone
+// blob prefix): a typing indicator written with an expiry reaches the other holder and is gone
 // everywhere at its time, hosts included
 #[test]
 fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
@@ -1282,7 +1282,7 @@ fn own_cover_survives_rebuild_spec_crdt_4_6() {
     let bt = net.tid(b);
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
-    remove_member(e, g, ct, &rs, 9);
+    remove_holder(e, g, ct, &rs, 9);
     net.run();
     let at_a = notes(&mut net, a, w);
     assert_eq!(at_a, notes(&mut net, b, w), "holders agree");
@@ -1332,10 +1332,10 @@ fn own_cover_absorbs_every_own_commit_spec_sync_9() {
 }
 
 // spec/permissions.md §5.2 (an ephemeral part is judged as its author's delta and carries only
-// its author's writes): covers never carry a member's writes, so once that member is removed its
+// its author's writes): covers never carry a holder's writes, so once that holder is removed its
 // writes go at every holder and at a node arriving later, whoever compacted meanwhile
 #[test]
-fn removed_member_writes_go_after_covers_spec_permissions_5_2() {
+fn removed_holder_writes_go_after_covers_spec_permissions_5_2() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -1363,7 +1363,7 @@ fn removed_member_writes_go_after_covers_spec_permissions_5_2() {
     let dt = net.tid(d);
     let e = net.engine(a);
     let rs = recipients_of(e, &[(me, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
-    remove_member(e, g, ct, &rs, 9);
+    remove_holder(e, g, ct, &rs, 9);
     net.run();
     let left = map(&[("a", "from a"), ("b", "from b")]);
     for n in [a, b, d] {
@@ -1677,8 +1677,8 @@ fn random_window_run_on(seed: u64, single: bool, inflight: bool) {
     let s2 = net.add_host();
     let hosts: Vec<usize> = if single { vec![s1] } else { vec![s1, s2] };
     let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
-    let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &members, &hosts);
+    let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(nodes[0], &grants, &hosts);
     net.run();
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
@@ -1959,8 +1959,8 @@ fn random_churn_run(seed: u64) {
     let mut net = Net::new();
     let hosts = vec![net.add_host(), net.add_host()];
     let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
-    let members: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(nodes[0], &members, &hosts);
+    let grants: Vec<(usize, Role)> = nodes[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(nodes[0], &grants, &hosts);
     net.run();
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
@@ -2022,7 +2022,7 @@ fn random_churn_run(seed: u64) {
                     demoted.insert(i);
                     ever.insert(nodes[i]);
                     log.push(format!("{n} demoted"));
-                    let d = osis_node::flows::Demotion { member: tids[i], new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced };
+                    let d = osis_node::flows::Demotion { holder: tids[i], new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced };
                     net.engine(nodes[0]).demote(&g, &d).unwrap()
                 };
                 let acts = net.sync(nodes[0]).carry_out(done).unwrap();
@@ -2174,7 +2174,7 @@ fn restart_mid_handshake_reopens() {
 }
 
 // spec/data-model.md §1 (two nodes persisting one ephemeral thing both carry its record,
-// idempotent): a synced window under an ephemeral workspace is persisted by both members while
+// idempotent): a synced window under an ephemeral workspace is persisted by both holders while
 // apart; on reconnect both hold one durable thing (same tid, chain durable), one placement, and
 // the ephemeral aspects still merged
 #[test]
@@ -2470,10 +2470,10 @@ fn core_aspect_part_refused_spec_sync_9() {
     assert_eq!(net.eph_read(b, t, "/reach"), None, "not joined");
 }
 
-// open question of the step 3 review: a device reachable only through a member peer gets the
+// open question of the step 3 review: a device reachable only through a co-reader peer gets the
 // signals that peer receives from a host, and its own reach the host's devices; each once
 #[test]
-fn signals_through_member_peer_spec_sync_5() {
+fn signals_through_holder_peer_spec_sync_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -2494,7 +2494,7 @@ fn signals_through_member_peer_spec_sync_5() {
     net.eph_write(a, t, &ukey("/t/ring", Lifetime::Signal), s("from a"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
-    assert_eq!(fired(&rc).len(), 1, "through the member peer, once");
+    assert_eq!(fired(&rc).len(), 1, "through the co-reader peer, once");
     net.eph_write(c, t, &ukey("/t/ring", Lifetime::Signal), s("from c"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
@@ -2662,8 +2662,8 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     let cap = d.ephemeral_bytes * window_ms.min(E) / E;
     let host = net.add_host_with(osis_host::HostPolicy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
     let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[host])).collect();
-    let members: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
-    let g = net.group(ns[0], &members, &[host]);
+    let grants: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
+    let g = net.group(ns[0], &grants, &[host]);
     let t = net.item(ns[0], g, g, "doc");
     net.run();
     let l = net.label(ns[0]);
@@ -3406,7 +3406,7 @@ fn gained_announced_again_after_refused_sync_spec_sync_5() {
     let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
-    remove_member(e, g, xt, &rs, 9);
+    remove_holder(e, g, xt, &rs, 9);
     net.run();
     net.release();
     net.run();
@@ -3439,7 +3439,7 @@ fn offline_entry_across_rotation_restamped_spec_sync_5() {
     let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
-    remove_member(e, g, xt, &rs, 9);
+    remove_holder(e, g, xt, &rs, 9);
     net.run();
     net.set_online(b, true);
     net.run();
@@ -3466,7 +3466,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     note(&mut net, b, w, "b", "1");
     let bt = net.tid(b);
     let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
-    let d = osis_node::flows::Demotion { member: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -3512,7 +3512,7 @@ fn cover_across_unread_rotation(subscribe: bool) {
     let (at, bt, ct, xt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(x));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (ct, Role::Write)]);
-    remove_member(e, g, xt, &rs, 9);
+    remove_holder(e, g, xt, &rs, 9);
     net.run();
     let l = net.label(a);
     let before: BTreeSet<osis_base::BlobId> = net.host_ids(host, &l).into_iter().collect();
@@ -3566,7 +3566,7 @@ fn delete_across_unread_rotation_retried_spec_sync_9() {
     let (at, bt, ct) = (net.tid(a), net.tid(b), net.tid(c));
     let e = net.engine(a);
     let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
-    remove_member(e, g, ct, &rs, 9);
+    remove_holder(e, g, ct, &rs, 9);
     net.run();
     net.release();
     net.run();
@@ -3894,7 +3894,7 @@ fn placed_record_only_to_its_reader_spec_commits_2() {
 
 // spec/sync.md §9 (Caps: held ephemeral bodies counted at an estimate of what they take held):
 // records beside a part are held as ephemeral things with it, so the pre-decode bound and the
-// node cap count them (a member padding a commit's parts with records cannot pass the cap)
+// node cap count them (a holder padding a commit's parts with records cannot pass the cap)
 #[test]
 fn records_beside_parts_counted_spec_sync_9() {
     let mut net = Net::new();
@@ -4100,7 +4100,7 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
     let b = lp.peers[1].engine.tid();
-    let scope = osis_perm::DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     crate::common::set_edge(&mut lp.peers[0].engine, d, b, None, Some(osis_schema::Codec::to_value(&f)));

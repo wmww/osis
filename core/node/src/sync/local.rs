@@ -1,4 +1,4 @@
-//! Requests of the app and of membership flows: compaction
+//! Requests of the app and of role flows: compaction
 //! (spec/sync.md §7), certificate placement under a group's labels (spec/permissions.md §3, §4:
 //! the grantee's `/keys`, a removal's new `/keys`), inbox delivery (spec/sync.md §3), label
 //! creation.
@@ -20,7 +20,7 @@ use std::collections::BTreeSet;
 /// infinity it lands that much later after the refusal clears (a recipient back online).
 pub(crate) const DEPOSIT_RETRY_CAP_MS: u64 = 3_600_000;
 
-/// Re-sends of an inbox delivery whose member never acts (local policy; one per
+/// Re-sends of an inbox delivery whose holder never acts (local policy; one per
 /// `INBOX_LIFETIME`).
 const MAX_INBOX_RESENDS: u32 = 3;
 
@@ -47,7 +47,7 @@ impl SyncEngine {
     /// Replaces label `old` of `g` (spec/sync.md §2; an admin, `Engine::replace_label`: the
     /// admin rotation if the loss calls for it, a new label at the same hosts, the old one
     /// marked replaced); passes then upload the live blobs under the new label, and under the
-    /// old one (an admin keeps syncing it until done there, `labels`) only membership-class
+    /// old one (an admin keeps syncing it until done there, `labels`) only role-class
     /// commits, the replacement's `/label` among them, deleting its content entries;
     /// certificates stay.
     pub fn replace_label(&mut self, g: &Tid, old: &LabelId) -> Result<(LabelId, Vec<Action>)> {
@@ -184,7 +184,7 @@ impl SyncEngine {
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             for b in self.engine.partial_bodies(c, aspects)? {
                 // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
-                // members take it as the body's entry
+                // holders take it as the body's entry
                 let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
                 let s = seal_body(&b, &mut *self.rng)?;
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
@@ -212,9 +212,9 @@ impl SyncEngine {
 
     /// After a settled pass of replaced label `l` of `g` at `host` that had nothing left to
     /// upload (`quiet`): done there when no content entry is present any more (spec/sync.md §2:
-    /// membership-class commits, the replacement's `/label` among them, and certificates stay);
+    /// role-class commits, the replacement's `/label` among them, and certificates stay);
     /// once done at every host of the label (or no key opens it there), this admin stops
-    /// syncing it for good; `labels` retires it after `MEMBERSHIP_KEEP` whatever.
+    /// syncing it for good; `labels` retires it after `ROLE_KEEP` whatever.
     pub(crate) fn retire_at(&mut self, host: super::state::HostKey, g: &Tid, l: LabelId) -> Result<()> {
         // content commits' chunks and pages go too
         if !self.replaced_leftovers(&host, &l).is_empty() {
@@ -291,9 +291,9 @@ impl SyncEngine {
     }
 
     /// Inbox deliveries from their records (spec/sync.md §3, §5): one not sent yet (`at` 0) is
-    /// sealed and sent at once; one `INBOX_LIFETIME` old whose member has not acted is sealed
+    /// sealed and sent at once; one `INBOX_LIFETIME` old whose holder has not acted is sealed
     /// again (to its newest keyset) and sent again, at most `MAX_INBOX_RESENDS` times; one whose
-    /// commit is gone, or whose member acted or (for a grant or re-seal) left, is forgotten.
+    /// commit is gone, or whose holder acted or (for a grant or re-seal) left, is forgotten.
     pub(crate) fn send_inbox(&mut self) -> Result<()> {
         let now = self.now();
         let due: Vec<super::state::SentInbox> = self.state.sent_inbox.values().filter(|s| s.at == 0 || s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS) <= now).cloned().collect();
@@ -302,46 +302,46 @@ impl SyncEngine {
             let ts = self.engine.header(&s.commit).map(|h| h.ts);
             let gone = match ts {
                 None => true,
-                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.member, ts)),
+                Some(ts) => !first && (s.tries >= MAX_INBOX_RESENDS || self.acted(&s.holder, ts)),
             };
-            if gone || !s.edge_only && !self.still_member(&s.member, &s.commit) {
-                self.forget_delivery(&s.member, &s.commit);
+            if gone || !s.edge_only && !self.still_holder(&s.holder, &s.commit) {
+                self.forget_delivery(&s.holder, &s.commit);
                 continue;
             }
             let parts = if s.edge_only { crate::flows::edges::Parts::Edge } else { crate::flows::edges::Parts::All };
-            // a re-sent removal notice names no label: a removed member must not learn the
+            // a re-sent removal notice names no label: a removed holder must not learn the
             // target's current one
             let things = if s.edge_only && !first { Vec::new() } else { s.things.clone() };
-            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.member, s.commit, &things, parts));
+            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts));
             // a new seal replaces the earlier one still queued
-            self.drop_delivery_out(&s.member, &s.commit);
+            self.drop_delivery_out(&s.holder, &s.commit);
             let mut sent = false;
             for d in r.unwrap_or_default() {
                 if let crate::flows::Delivery::Inbox { to, inbox, blob, .. } = d {
                     let owner = self.inbox_owner(&to, &inbox.label)?.unwrap_or(to);
-                    self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, Some((s.member, s.commit)))?;
+                    self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, Some((s.holder, s.commit)))?;
                     sent = true;
                 }
             }
             if sent {
-                self.state.note_sent(s.member, s.commit, s.things.clone(), s.edge_only, now);
+                self.state.note_sent(s.holder, s.commit, s.things.clone(), s.edge_only, now);
             } else {
-                // no inbox or keys for the member any more
-                self.forget_delivery(&s.member, &s.commit);
+                // no inbox or keys for the holder any more
+                self.forget_delivery(&s.holder, &s.commit);
             }
         }
         Ok(())
     }
 
-    /// Forgets inbox delivery `(member, c)` and its seals still queued.
-    fn forget_delivery(&mut self, member: &Tid, c: &CommitId) {
-        self.state.remove_sent(member, c);
-        self.drop_delivery_out(member, c);
+    /// Forgets inbox delivery `(holder, c)` and its seals still queued.
+    fn forget_delivery(&mut self, holder: &Tid, c: &CommitId) {
+        self.state.remove_sent(holder, c);
+        self.drop_delivery_out(holder, c);
     }
 
-    /// Drops the queued seals of inbox delivery `(member, c)`.
-    fn drop_delivery_out(&mut self, member: &Tid, c: &CommitId) {
-        let k = Some((*member, *c));
+    /// Drops the queued seals of inbox delivery `(holder, c)`.
+    fn drop_delivery_out(&mut self, holder: &Tid, c: &CommitId) {
+        let k = Some((*holder, *c));
         let ks: Vec<(HostKey, LabelId, BlobId)> = self.state.outbox.iter().filter(|(_, o)| o.delivery == k).map(|(x, _)| *x).collect();
         for (s, l, b) in ks {
             self.outbox.remove(&(s, l, b));
@@ -367,8 +367,8 @@ impl SyncEngine {
     pub(crate) fn resign_deposit(&mut self, host: &HostKey, l: &LabelId, b: &BlobId) -> Result<bool> {
         let Some(o) = self.state.outbox.get(&(*host, *l, *b)).cloned() else { return Ok(false) };
         let seed = match o.delivery {
-            Some((member, _)) => {
-                let owner = self.inbox_owner(&member, l)?.unwrap_or(member);
+            Some((holder, _)) => {
+                let owner = self.inbox_owner(&holder, l)?.unwrap_or(holder);
                 self.engine.get_typed(&owner, &ct::KEYS)?.and_then(|k| k.deposit_seed).map(osis_crypto::Secret32::from_bytes)
             }
             None => match self.group_of(l) {
@@ -385,23 +385,23 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// Whether `member` is still a current member of a thing whose edges or secrets commit `c`
-    /// writes (a grant or re-seal is re-sent only while the member holds what it gave; a removal
+    /// Whether `holder` is still a current holder of a thing whose edges or secrets commit `c`
+    /// writes (a grant or re-seal is re-sent only while the holder holds what it gave; a removal
     /// since then must not hand it the target's current label).
-    fn still_member(&self, member: &Tid, c: &CommitId) -> bool {
+    fn still_holder(&self, holder: &Tid, c: &CommitId) -> bool {
         let Some(h) = self.engine.header(c) else { return false };
         let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "/members" | "/secrets")).map(|a| a.tid).collect();
-        targets.iter().any(|t| self.engine.core.current_members(t).iter().any(|(m, _, _)| m == member))
+        targets.iter().any(|t| self.engine.core.current_holders(t).iter().any(|(m, _, _)| m == holder))
     }
 
-    /// Whether `member` acted after `since` as this node sees it: a held commit newer than that
-    /// by the member, for it, or by a node with a role on it (its devices).
-    fn acted(&self, member: &Tid, since: Ts) -> bool {
-        let tl = self.engine.core.timelines.get(member);
+    /// Whether `holder` acted after `since` as this node sees it: a held commit newer than that
+    /// by the holder, for it, or by a node with a role on it (its devices).
+    fn acted(&self, holder: &Tid, since: Ts) -> bool {
+        let tl = self.engine.core.timelines.get(holder);
         // the views: O(commits) without decoding headers
         self.engine.core.ix.commits.values().any(|m| {
             let h = &m.view;
-            h.ts > since && (h.author == *member || h.actor == *member || tl.is_some_and(|tl| tl.role(&h.author, member, At::now(h.ts)).is_some()))
+            h.ts > since && (h.author == *holder || h.actor == *holder || tl.is_some_and(|tl| tl.role(&h.author, holder, At::now(h.ts)).is_some()))
         })
     }
 

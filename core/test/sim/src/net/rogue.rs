@@ -1,7 +1,7 @@
 //! Hand-driven client sessions (adversaries): an osis-proto `ClientSession` connected straight to
 //! a host's `Hub`, its requests and the replies exchanged synchronously, no faults. Whatever
 //! keys, blobs, wraps and stamps the scenario builds go on the wire as they are: a removed
-//! member's stale steps and replays, malformed blobs, deposit floods.
+//! holder's stale steps and replays, malformed blobs, deposit floods.
 
 use super::{End, NetSim, Party, Payload};
 use crate::harness::Res;

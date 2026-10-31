@@ -16,8 +16,8 @@ pub enum Domain {
     Delete,
     /// A LAN announcement, by a dialable key (spec/sync.md §10).
     LanAnnounce,
-    /// A member node's open at a member peer, by its dialable key (spec/sync.md §5).
-    MemberOpen,
+    /// A holder node's open at a co-reader peer, by its dialable key (spec/sync.md §5).
+    CoReaderOpen,
 }
 
 impl Domain {
@@ -29,7 +29,7 @@ impl Domain {
         Domain::Deposit,
         Domain::Delete,
         Domain::LanAnnounce,
-        Domain::MemberOpen,
+        Domain::CoReaderOpen,
     ];
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -40,7 +40,7 @@ impl Domain {
             Domain::Deposit => "osis v1 deposit",
             Domain::Delete => "osis v1 delete",
             Domain::LanAnnounce => "osis v1 lan announce",
-            Domain::MemberOpen => "osis v1 member open",
+            Domain::CoReaderOpen => "osis v1 co-reader open",
         }
     }
     fn message(self, digest: &[u8; 32]) -> Vec<u8> {

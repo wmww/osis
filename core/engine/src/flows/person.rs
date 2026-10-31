@@ -1,6 +1,6 @@
 //! Person actors (spec/permissions.md §1, §9): a recovery key owns the person actor and this
 //! node is its admin; pairing a device (a direct grant, or a re-seal of a device already a
-//! member, plus the commits it needs); recovery from a card on a fresh device.
+//! holder, plus the commits it needs); recovery from a card on a fresh device.
 
 use super::labels::{ReaderKey, new_label};
 use super::{Delivery, Done, put_edge};
@@ -13,7 +13,7 @@ use crate::Mutation;
 use osis_base::{CommitId, Role, Tid};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::{KeyActorKeys, Secret32};
-use osis_keys::{ActorEpochs, MemberKeys, ROLES, Recipient};
+use osis_keys::{ActorEpochs, HolderKeys, ROLES, Recipient};
 use osis_label::{Address, RecoveryCard};
 use osis_schema::Codec;
 use osis_schema::core_types::{self as ct, Edge, Inbox, KemKey, Keys};
@@ -58,7 +58,7 @@ impl Engine {
 
     /// Pairing, existing device side (spec/sync.md §2: the only way a node receives a grant):
     /// `node`'s card (`/created`, `/keys`) was received over the direct connection. A device
-    /// that is not a member of `person` is granted admin; one that is (stranded, notes/sync.md
+    /// that is not a holder of `person` is granted admin; one that is (stranded, notes/sync.md
     /// Limits) is re-sealed. Returns the commits to send it directly: the grant or re-seal, the
     /// person's certificates and its `/label` commits (a few KB plus the grant's boxes, whatever
     /// the person holds: the new device downloads the rest under the home label).
@@ -67,8 +67,8 @@ impl Engine {
         if !self.knows(&n) {
             return Err(Error::UnknownThing(n));
         }
-        let member = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
-        let mut done = if member { self.reshare(&p, &n)? } else { self.grant(&p, &n, &admin_edge())? };
+        let holder = self.roster(&p).get(&n).is_some_and(|e| e.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())));
+        let mut done = if holder { self.reshare(&p, &n)? } else { self.grant(&p, &n, &admin_edge())? };
         // the person's certificates (this node's card, the chain to the person and its edges)
         // and its `/label` commits, never its content: the new device downloads the rest from
         // the home label
@@ -124,7 +124,7 @@ impl Engine {
             done.extend(self.run(|tx| grant_in(tx, Some(r), p, me, &admin_edge(), false))?);
         }
         for d in lost {
-            done.extend(self.demote_as(&r, &p, &Demotion { member: *d, new: None, presync })?);
+            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync })?);
         }
         Ok(done)
     }
@@ -140,11 +140,11 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address])
     let me = tx.core.id.tid();
     let node_kem = tx.core.id.keys().kem.public().clone();
     let held = ActorEpochs::derived(&ActorEpochs::key_actor(seed), &p);
-    let members = [
-        Recipient { member: r, role: Role::Admin, keys: MemberKeys::KeyActor { kem: rkeys.kem.public().clone(), seed: None } },
-        Recipient { member: me, role: Role::Admin, keys: MemberKeys::KeyActor { kem: node_kem.clone(), seed: None } },
+    let holders = [
+        Recipient { holder: r, role: Role::Admin, keys: HolderKeys::KeyActor { kem: rkeys.kem.public().clone(), seed: None } },
+        Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } },
     ];
-    let rot = rotation::rotation_into(tx, &mut m, p, &ROLES.into_iter().collect(), &held, &members, &[])?;
+    let rot = rotation::rotation_into(tx, &mut m, p, &ROLES.into_iter().collect(), &held, &holders, &[])?;
     let mut after = held.clone();
     rot.record(&mut after);
     let mut dep = [0u8; 32];

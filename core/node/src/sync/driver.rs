@@ -1,7 +1,7 @@
 //! The tokio driver (feature `driver`; notes/architecture.md §2): moves the `SyncEngine`'s bytes
 //! over osis-transport `link` sessions (one dialed stream per connection, an ephemeral transport
 //! key per connection, the peer's key checked by the transport, spec/sync.md §10) and fires its timers. Every session a peer opens on one of its
-//! listeners is served by the engine (`SyncEngine::accept`, member peer, spec/sync.md §5);
+//! listeners is served by the engine (`SyncEngine::accept`, co-reader peer, spec/sync.md §5);
 //! more listeners come while it runs (`Control::Reach`, the LAN loop's per-network listener).
 //! With feature `lan`, `Control::Lan` runs the LAN loop (spec/sync.md §10): per network a fresh
 //! transport key and listener, announced on join and every `LAN_ANNOUNCE`; announcements heard go

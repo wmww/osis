@@ -17,7 +17,7 @@ fn world() -> (World, usize) {
     (w, c)
 }
 
-// spec/sync.md §5 Open: an ex-member's superseded sync key gets the child step and nothing else
+// spec/sync.md §5 Open: an ex-holder's superseded sync key gets the child step and nothing else
 // spec/sync.md §5 (stale sync key), §5 (download needs open)
 /// A header blind (spec/crypto.md §7).
 const HB: [u8; 16] = [0x4b; 16];

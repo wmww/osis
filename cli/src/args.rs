@@ -204,7 +204,7 @@ pub enum Cmd {
         /// By this actor (repeatable)
         #[arg(long, value_name = "A")]
         actor: Vec<String>,
-        /// change, revert, membership, snapshot or import (repeatable)
+        /// change, revert, role, snapshot or import (repeatable)
         #[arg(long, value_name = "KIND")]
         kind: Vec<String>,
         /// Reverts of commit C
@@ -250,7 +250,7 @@ pub enum Cmd {
     Sub(SubCmd),
     /// Groups listing T as an item or a subgroup, and every group holding T (within)
     Groups { t: String },
-    /// Members of a thing with their edges (--watch: one line per change)
+    /// Holders of a thing with their edges (--watch: one line per change)
     Roster {
         t: String,
         #[arg(long)]
@@ -261,14 +261,14 @@ pub enum Cmd {
     },
     /// This device's role on T
     Role { t: String },
-    /// The edges through which MEMBER is a member of T (thing member, one per line)
-    Via { t: String, member: String },
+    /// The edges through which HOLDER is a holder of T (thing holder, one per line)
+    Via { t: String, holder: String },
     /// The database's corrected clock
     Now,
-    /// Grant MEMBER ROLE (read, write, admin) on T
+    /// Grant HOLDER ROLE (read, write, admin) on T
     Grant {
         t: String,
-        member: String,
+        holder: String,
         role: String,
         #[arg(long, value_name = "TS")]
         until: Option<String>,
@@ -278,7 +278,7 @@ pub enum Cmd {
     /// Change an edge's until/invite or raise its role
     Edge {
         t: String,
-        member: String,
+        holder: String,
         #[arg(long)]
         role: Option<String>,
         #[arg(long, value_name = "TS")]
@@ -286,10 +286,10 @@ pub enum Cmd {
         #[arg(long, value_name = "ROLE")]
         invite: Option<String>,
     },
-    /// Lower MEMBER to ROLE or `remove` (after the pre-sync)
+    /// Lower HOLDER to ROLE or `remove` (after the pre-sync)
     Demote {
         t: String,
-        member: String,
+        holder: String,
         role: String,
         #[command(flatten)]
         d: DemoteFlags,

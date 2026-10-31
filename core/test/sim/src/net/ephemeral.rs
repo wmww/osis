@@ -3,7 +3,7 @@
 //! durable items of them, and their invariants at quiescence (`check`):
 //! - convergence among holders (spec/requirements.md Ephemeral data), within what a host cap
 //!   lets through (spec/sync.md §5: a host whose cap keeps out an entry an up node holds,
-//!   checked against the host's own accounting, is no path): member nodes connected through
+//!   checked against the host's own accounting, is no path): reader nodes connected through
 //!   the other hosts read the same ephemeral state of a durable item; a window is held by
 //!   all of them or by none (none anywhere only if every node seen holding it restarted since:
 //!   a host's copy is not tracked, so a node failing to fetch it back after all holders
@@ -17,8 +17,8 @@
 //!   the total within the host's.
 //!
 //! Scenario helpers check two more after quiescence: `author_leaves` (a cursor its author keeps
-//! refreshing stays up at every connected member; once the author goes away it goes everywhere
-//! by its last write's expiry) and `signal_reaches` (a signal reaches each connected member
+//! refreshing stays up at every connected reader; once the author goes away it goes everywhere
+//! by its last write's expiry) and `signal_reaches` (a signal reaches each connected reader
 //! once).
 
 use super::scenarios::{clock, persons, shared_group, sim};
@@ -248,7 +248,7 @@ impl NetSim {
     }
 
     /// Up nodes (not excused) reading group `g`.
-    fn members(&mut self, g: &Tid) -> Res<Vec<usize>> {
+    fn readers(&mut self, g: &Tid) -> Res<Vec<usize>> {
         let mut out = Vec::new();
         for n in 0..self.nodes.len() {
             if self.excused.contains(&n) || !self.is_up(n) {
@@ -285,12 +285,12 @@ impl NetSim {
     }
 
     /// After quiescence: a random writer of a tracked durable thing sets its cursor there and
-    /// refreshes it every half expiry; each member a path through hosts that keep nothing
+    /// refreshes it every half expiry; each reader a path through hosts that keep nothing
     /// out joins to it reads it just before every refresh. Then the writer goes down (nobody sees it leave) and once its last
     /// write expired nobody reads its cursor. Then it comes back.
     pub fn author_leaves(&mut self) -> Res<()> {
         let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
-        let ms = self.members(&g)?;
+        let ms = self.readers(&g)?;
         let mut writers = Vec::new();
         for n in &ms {
             if self.engine(*n)?.role_on(&t).is_some_and(|r| r >= Role::Write) {
@@ -308,7 +308,7 @@ impl NetSim {
             // just before the next refresh: a second's slack for the nodes' corrected clocks
             self.advance(CURSOR_MS / 2 - 1_000)?;
             self.settle()?;
-            // the members a path through hosts that keep nothing out joins to the writer
+            // the readers a path through hosts that keep nothing out joins to the writer
             let lossy = self.lossy_hosts();
             let readers = self.eph_components(&g, &ms, &lossy).into_iter().find(|c| c.contains(&a)).unwrap_or_default();
             for o in &readers {
@@ -332,11 +332,11 @@ impl NetSim {
         self.quiet(40)
     }
 
-    /// After quiescence: a random writer signals on a tracked durable thing; each member
+    /// After quiescence: a random writer signals on a tracked durable thing; each reader
     /// sharing a host with it gets it exactly once, the writer once (its own event).
     pub fn signal_reaches(&mut self) -> Res<()> {
         let Some(&(t, g)) = self.eph.things.first() else { return Ok(()) };
-        let ms = self.members(&g)?;
+        let ms = self.readers(&g)?;
         let mut writers = Vec::new();
         for n in &ms {
             if self.engine(*n)?.role_on(&t).is_some_and(|r| r >= Role::Write) {
@@ -359,16 +359,16 @@ impl NetSim {
         Ok(())
     }
 
-    /// Per tracked target: its group and the nodes holding it (members for a durable thing,
-    /// members holding the record for a window).
+    /// Per tracked target: its group and the nodes holding it (readers for a durable thing,
+    /// readers holding the record for a window).
     fn holders(&mut self) -> Res<BTreeMap<Tid, (Tid, Vec<usize>)>> {
         let mut out = BTreeMap::new();
         for (t, g) in self.eph.things.clone() {
-            let ms = self.members(&g)?;
+            let ms = self.readers(&g)?;
             out.insert(t, (g, ms));
         }
         for win in self.eph.windows.clone() {
-            let ms = self.members(&win.g)?;
+            let ms = self.readers(&win.g)?;
             let mut hs = Vec::new();
             for n in ms {
                 // holding it in a labeled closure: a record that came without its placement (a
@@ -539,21 +539,21 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     }
     let holders = sim.holders()?;
     for win in sim.eph.windows.clone() {
-        let ms = sim.members(&win.g)?;
+        let ms = sim.readers(&win.g)?;
         let hs = holders.get(&win.w).map(|x| x.1.clone()).unwrap_or_default();
         if hs.is_empty() {
             // lost only when no node holds it: every node that held it restarted since (a
-            // host still holding it would have handed it back to the members)
+            // host still holding it would have handed it back to the readers)
             let kept: Vec<usize> = win.held.iter().filter(|(n, b)| sim.boots_of(**n) == **b).map(|x| *x.0).collect();
             if !kept.is_empty() {
-                return Err(sim.fail(format!("window {} held by no member, though nodes {kept:?} held it and never restarted since", win.w)));
+                return Err(sim.fail(format!("window {} held by no reader, though nodes {kept:?} held it and never restarted since", win.w)));
             }
             sim.note(format!("window {} lost: every node that held it restarted", win.w));
         } else {
             for comp in sim.eph_components(&win.g, &ms, &lossy) {
                 let h: Vec<usize> = comp.iter().copied().filter(|n| hs.contains(n)).collect();
                 if !h.is_empty() && h.len() != comp.len() {
-                    return Err(sim.fail(format!("window {} held by nodes {h:?} of connected members {comp:?} (lossy hosts {lossy:?}) at quiescence", win.w)));
+                    return Err(sim.fail(format!("window {} held by nodes {h:?} of connected readers {comp:?} (lossy hosts {lossy:?}) at quiescence", win.w)));
                 }
             }
         }

@@ -27,7 +27,7 @@ fn edge_key() -> EdgeKey {
 
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
-    let members: Members = BTreeMap::from([
+    let holders: Holders = BTreeMap::from([
         (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
         (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }),
     ]);
@@ -40,10 +40,10 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let secrets = Secrets {
         boxes: BTreeMap::from([
             (
-                BoxKey { member: tid(13), role: Role::Read, epoch: epoch(2) },
+                BoxKey { holder: tid(13), role: Role::Read, epoch: epoch(2) },
                 SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]) }),
             ),
-            (BoxKey { member: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
+            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
@@ -51,7 +51,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         writes: BTreeMap::from([(tid(19), BTreeMap::from([("/note/body".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
         commits: BTreeSet::from([CommitId([21; 32])]),
     };
-    let tenures = Tenures(vec![Tenure { member: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
+    let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
     let labels: Labels = BTreeMap::from([(
         LabelId([22; 16]),
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
@@ -59,7 +59,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
         ("created key actor", "/created", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
-        ("members", "/members", MEMBERS.encode(&members)),
+        ("holders", "/members", MEMBERS.encode(&holders)),
         ("keys", "/keys", KEYS.encode(&keys)),
         ("secrets", "/secrets", SECRETS.encode(&secrets)),
         ("tenures", "/tenures", TENURES.encode(&tenures)),

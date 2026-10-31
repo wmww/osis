@@ -74,13 +74,13 @@ fn content() -> CommitBlob {
     built(b)
 }
 
-fn membership() -> CommitBlob {
+fn role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, ACTOR, Form::Commit);
     let edge = |m: u8| Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), Value::Int(1))].into_iter().collect());
-    let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Membership, at, Source::node(AUTHOR), 1, edge(0x41), 2));
-    a.deltas.push(delta(Kind::Membership, at, Source::node(AUTHOR), 1, edge(0x42), 3));
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x41), 2));
+    a.deltas.push(delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x42), 3));
+    a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     built(b)
 }
@@ -163,7 +163,7 @@ pub fn headers() -> VecFile {
     let mut cases = Vec::new();
     let c = content();
     cases.push(record("minimal content commit", "spec/wire.md §4; spec/commits.md §1", &c));
-    cases.push(record("membership commit, two deltas on one aspect", "spec/wire.md §4; spec/commits.md §2", &membership()));
+    cases.push(record("role commit, two deltas on one aspect", "spec/wire.md §4; spec/commits.md §2", &role_commit()));
     cases.push(record("content compaction snapshot", "spec/wire.md §4; spec/commits.md §2, §5", &snapshot()));
     cases.push(record("import with origins", "spec/wire.md §4; spec/permissions.md §7", &import()));
     let e = ephemeral(osis_commit::EphClass::Plain);
@@ -181,11 +181,11 @@ pub fn headers() -> VecFile {
     assert!(matches!(Header::decode(&bytes), Err(Error::UnknownVersion(2))));
     cases.push(case("unknown format version parks", "spec/versioning.md §2").with("header", hex(&bytes)).with("reject", "parked-version"));
     let mut x = h.clone();
-    x.kind = Kind::Membership;
-    cases.push(reject("content aspect in a membership commit", "spec/commits.md §2", &x, "aspect-class"));
-    let mut x = membership().header;
+    x.kind = Kind::Role;
+    cases.push(reject("content aspect in a role commit", "spec/commits.md §2", &x, "aspect-class"));
+    let mut x = role_commit().header;
     x.aspects[0].expires = Some(x.ts.wall_ms().0 + 1);
-    cases.push(reject("expires on a membership commit", "spec/commits.md §2", &x, "membership-expires"));
+    cases.push(reject("expires on a role commit", "spec/commits.md §2", &x, "role-commit-expires"));
     let mut x = h.clone();
     x.aspects[0].expires = Some(x.ts.wall_ms().0);
     cases.push(reject("expires not after ts", "spec/commits.md §6", &x, "expires-ts"));
@@ -254,14 +254,14 @@ fn more_accepted() -> Vec<Record> {
         PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("/app/title").unwrap() },
     ];
     out.push(record("purge request; /created kept forever", "spec/wire.md §4; spec/commits.md §5", &built(b)));
-    // membership commit with a frontier
+    // role commit with a frontier
     let at = ts(1_700_000_006_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, AUTHOR, ACTOR, Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Membership, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, ACTOR, Form::Commit);
+    let mut a = AspectWrite::new(THING, Ak::new("/members").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
+    a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     b.frontier = Some(Value::Map([(Value::Int(0), Value::Map(Default::default())), (Value::Int(1), Value::Set(Default::default()))].into_iter().collect()));
-    out.push(record("membership demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
+    out.push(record("role demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
     // a linked aspect list (above CHUNK_THRESHOLD)
     let at = ts(1_700_000_007_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
@@ -300,10 +300,10 @@ fn more_accepted() -> Vec<Record> {
 fn more_rejected(content: &Header) -> Vec<Record> {
     use osis_base::SchemaId;
     let mut out = Vec::new();
-    let m = membership().header;
+    let m = role_commit().header;
     let mut x = m.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("/app/title").unwrap() });
-    out.push(reject("purge request on a membership commit", "spec/commits.md §2, §5", &x, "purge-membership"));
+    out.push(reject("purge request on a role commit", "spec/commits.md §2, §5", &x, "purge-role-class"));
     let mut x = content.clone();
     x.origins.push(Origin { commit: CommitId([1; 32]), author: AUTHOR, actor: ACTOR, ts: ts(5) });
     out.push(reject("origins on a non-import", "spec/wire.md §4", &x, "origins"));
@@ -314,14 +314,14 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     out.push(reject("import on several things", "spec/permissions.md §7", &x, "import-things"));
     let frontier = Some(Value::Map(Default::default()));
     let mut x = m.clone();
-    x.kind = Kind::MembershipSnapshot;
+    x.kind = Kind::RoleSnapshot;
     x.aspects[0].ak = Ak::new("/secrets").unwrap();
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     x.aspects[0].hashes.truncate(1);
     x.validate().unwrap();
     x.frontier = frontier.clone();
-    out.push(reject("frontier on a membership compaction snapshot", "spec/wire.md §4", &x, "frontier"));
+    out.push(reject("frontier on a role compaction snapshot", "spec/wire.md §4", &x, "frontier"));
     let mut x = m.clone();
     x.kind = Kind::RosterSnapshot;
     x.validate().unwrap();

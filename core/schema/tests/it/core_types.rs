@@ -2,7 +2,7 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are core/test/vectors/schema/core.vec (osis-vectors).
 
-use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, MEMBERSHIP_KEEP_MS};
+use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, ROLE_KEEP_MS};
 use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, SchemaId, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
@@ -20,7 +20,7 @@ fn edge_key() -> EdgeKey {
 
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
-    let members: Members = BTreeMap::from([
+    let holders: Holders = BTreeMap::from([
         (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
         (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }),
     ]);
@@ -33,10 +33,10 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let secrets = Secrets {
         boxes: BTreeMap::from([
             (
-                BoxKey { member: tid(13), role: Role::Read, epoch: epoch(2) },
+                BoxKey { holder: tid(13), role: Role::Read, epoch: epoch(2) },
                 SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]) }),
             ),
-            (BoxKey { member: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
+            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
@@ -44,7 +44,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         writes: BTreeMap::from([(tid(19), BTreeMap::from([("/note/body".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
         commits: BTreeSet::from([CommitId([21; 32])]),
     };
-    let tenures = Tenures(vec![Tenure { member: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
+    let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
     let labels: Labels = BTreeMap::from([(
         LabelId([22; 16]),
         Label { index: 0, steps: BTreeMap::from([([23; 32], StepRecord { step: vec![24; 10], claims: None })]), hosts: vec![], replaced: false },
@@ -52,7 +52,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
     vec![
         ("created thing", "/created", CREATED.encode(&CreationRecord::Thing { owner: tid(1), nonce: [2; 32], creator: None })),
         ("created key actor", "/created", CREATED.encode(&CreationRecord::KeyActor { alg: 1, public_key: vec![3; 32], nonce: [4; 32] })),
-        ("members", "/members", MEMBERS.encode(&members)),
+        ("holders", "/members", MEMBERS.encode(&holders)),
         ("keys", "/keys", KEYS.encode(&keys)),
         ("secrets", "/secrets", SECRETS.encode(&secrets)),
         ("tenures", "/tenures", TENURES.encode(&tenures)),
@@ -111,7 +111,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     // An unknown agility case is newer data: parked.
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
-    // An unknown role case in a member edge: parked, with the path.
+    // An unknown role case in a holder edge: parked, with the path.
     let mut m = MEMBERS.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
@@ -138,7 +138,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
 #[test]
 fn tenure_frontier_may_be_a_link_spec_data_model_6() {
     let link = Link { hash: [1; 32], blob: BlobId([2; 32]), suite: 1, key: [3; 32] };
-    let t = Tenures(vec![Tenure { member: tid(1), role: Role::Admin, since: Some(edge_key()), until: edge_key(), frontier: Some(Chunked::Link(link)) }]);
+    let t = Tenures(vec![Tenure { holder: tid(1), role: Role::Admin, since: Some(edge_key()), until: edge_key(), frontier: Some(Chunked::Link(link)) }]);
     let v = TENURES.encode(&t);
     TENURES.validate(&v).unwrap();
     assert_eq!(TENURES.decode(&v).unwrap(), t);
@@ -147,13 +147,13 @@ fn tenure_frontier_may_be_a_link_spec_data_model_6() {
 #[test]
 fn key_defaults_and_identity_spec_commits_5() {
     let m = MEMBERS.defaults();
-    assert_eq!((m.retention.by, m.retention.at_least.rel, m.expires), (PurgeBy::Admin, Some(MEMBERSHIP_KEEP_MS), None));
-    for ak in MEMBERSHIP_CLASS {
+    assert_eq!((m.retention.by, m.retention.at_least.rel, m.expires), (PurgeBy::Admin, Some(ROLE_KEEP_MS), None));
+    for ak in ROLE_CLASS {
         let a = &core_schema().aspects[ak];
-        assert_eq!((a.retention.by, a.retention.at_least.rel), (PurgeBy::Admin, Some(MEMBERSHIP_KEEP_MS)), "{ak}");
-        assert!(is_membership_class(ak));
+        assert_eq!((a.retention.by, a.retention.at_least.rel), (PurgeBy::Admin, Some(ROLE_KEEP_MS)), "{ak}");
+        assert!(is_role_class(ak));
     }
-    assert!(!is_membership_class("/group"));
+    assert!(!is_role_class("/group"));
     assert_eq!(CREATED.defaults().retention.by, PurgeBy::Nobody);
     assert_eq!(SEEN.defaults(), AspectDefaults::default());
     assert_eq!(GROUP.schema_ref(), Some((CORE_SCHEMA_ID, CORE_SCHEMA_REVISION)));

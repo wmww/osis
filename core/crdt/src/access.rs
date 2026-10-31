@@ -2,7 +2,7 @@
 //! writes, spec/permissions.md §5.1): map entries with their keys and fragments.
 
 use crate::fragment::{Eid, Fragment, Map};
-use crate::state::MemberRef;
+use crate::state::SlotRef;
 use crate::stamp::{Dot, Stamp};
 use osis_base::Value;
 
@@ -45,7 +45,7 @@ impl Fragment {
     fn struct_set(&self, field: u64) -> Option<(Option<&crate::fragment::Set>, Option<Stamp>)> {
         let (s, e) = match self {
             Fragment::Struct(s) => (s, None),
-            Fragment::Slots(sl) => match sl.members.get(&crate::fragment::Encoding::Struct) {
+            Fragment::Slots(sl) => match sl.slots.get(&crate::fragment::Encoding::Struct) {
                 Some(Fragment::Struct(s)) => (s, self.reset()),
                 _ => return None,
             },
@@ -95,7 +95,7 @@ impl Fragment {
     pub(crate) fn walk(&self, path: &[crate::ops::PathSeg], any_case: bool) -> Option<Fragment> {
         use crate::ops::PathSeg;
         let Some((seg, rest)) = path.split_first() else { return Some(self.clone()) };
-        let MemberRef::Frag(f) = self.chosen_member() else { return None };
+        let SlotRef::Frag(f) = self.chosen_slot() else { return None };
         match (seg, f) {
             (PathSeg::Field(id), Fragment::Struct(s)) => s.fields.get(id)?.walk(rest, any_case),
             (PathSeg::Case(id), Fragment::Enum(e)) if any_case || e.case.as_ref().and_then(|c| c.case) == Some(*id) => e.payloads.get(id)?.walk(rest, any_case),
@@ -178,7 +178,7 @@ impl Fragment {
                         })
                         .fold(0usize, usize::saturating_add)
             }
-            Fragment::Slots(Slots { reg: r, members }) => r.as_ref().map_or(0, reg) + tree(members) + members.values().map(Fragment::approx_bytes).sum::<usize>(),
+            Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().map_or(0, reg) + tree(slots) + slots.values().map(Fragment::approx_bytes).sum::<usize>(),
         }
     }
 }

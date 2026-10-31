@@ -1,6 +1,6 @@
 [package]
 name = "osis-engine"
-description = "The node's engine: store, apply, retention, membership flows, labeling"
+description = "The node's engine: store, apply, retention, role flows, labeling"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

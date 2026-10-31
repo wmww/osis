@@ -89,7 +89,7 @@ fn at_point<'f>(f: Option<&'f Fragment>, at: &[PathSeg], index: bool, batch: boo
     let mut f = f;
     let mut e = None;
     let step = |f: Option<&'f Fragment>, enc: Encoding, e: &mut Option<Stamp>| {
-        let m = member(f, enc);
+        let m = slot(f, enc);
         if batch {
             *e = max_opt(e.take(), reset_of(m));
         }
@@ -185,9 +185,9 @@ impl<'s> Batch<'s> {
                     let view = match &frag {
                         Over::Copy(f) => Cow::Borrowed(f),
                         Over::Layer(l) => {
-                            // a layer over a `Slots` member: that member of the joined position
+                            // a layer over a `Slots` slot: that slot of the joined position
                             if let Fragment::Slots(x) = &mut whole {
-                                whole = x.members.remove(&l.to_seq().encoding()).unwrap_or_default();
+                                whole = x.slots.remove(&l.to_seq().encoding()).unwrap_or_default();
                             }
                             Cow::Owned(Fragment::Seq(l.to_seq()))
                         }
@@ -224,10 +224,10 @@ impl<'s> Batch<'s> {
     }
 }
 
-fn member(f: Option<&Fragment>, enc: Encoding) -> Option<&Fragment> {
+fn slot(f: Option<&Fragment>, enc: Encoding) -> Option<&Fragment> {
     match f?.slot(enc)? {
-        crate::state::MemberRef::Frag(x) => Some(x),
-        crate::state::MemberRef::Reg(_) => None,
+        crate::state::SlotRef::Frag(x) => Some(x),
+        crate::state::SlotRef::Reg(_) => None,
     }
 }
 
@@ -253,7 +253,7 @@ fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Frag
             None => {}
         }
         if e.is_none()
-            && let (Some(Fragment::Seq(b)), Some(Fragment::Seq(x))) = (seq_member(s, a), a)
+            && let (Some(Fragment::Seq(b)), Some(Fragment::Seq(x))) = (seq_slot(s, a), a)
             && let Some(l) = Layered::new(b, x.clone())
         {
             return Cur::Layer(l);
@@ -263,11 +263,11 @@ fn point<'a>(probe: &mut Option<&mut Probe<'a>>, left: usize, s: Option<&'a Frag
 }
 
 /// The state's sequence a batch's sequence writes `a` join as they would at the position `s`: at a
-/// `Slots` position (§7) its member of `a`'s encoding when that carries the position's reset
-/// (the join then leaves the other members as they are), else `s`.
-fn seq_member<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>) -> Option<&'a Fragment> {
+/// `Slots` position (§7) its slot of `a`'s encoding when that carries the position's reset
+/// (the join then leaves the other slots as they are), else `s`.
+fn seq_slot<'a>(s: Option<&'a Fragment>, a: Option<&Fragment>) -> Option<&'a Fragment> {
     match (s, a) {
-        (Some(f @ Fragment::Slots(x)), Some(Fragment::Seq(d))) => x.members.get(&d.encoding()).filter(|m| m.reset() == f.reset()),
+        (Some(f @ Fragment::Slots(x)), Some(Fragment::Seq(d))) => x.slots.get(&d.encoding()).filter(|m| m.reset() == f.reset()),
         _ => s,
     }
 }
@@ -310,7 +310,7 @@ fn resolve<'s, V: View>(w: &mut Writer, s: Option<&'s Fragment>, a: Option<&Frag
     if view.encoding().is_some_and(|x| x != enc) {
         return Err(Error::Mismatch("path does not fit the type"));
     }
-    let (s, a) = (member(s, enc), member(a, enc));
+    let (s, a) = (slot(s, enc), slot(a, enc));
     let e = max_opt(e, reset_of(a));
     Ok(match seg {
         PathSeg::Field(id) => {

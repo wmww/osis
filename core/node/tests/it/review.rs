@@ -42,7 +42,7 @@ fn nested_write_under_invalid_entry_spec_crdt_4_6() {
     let mut m = Mutation::new();
     m.op(t, &MAP, PathOp { path: vec![PathSeg::Key(s("ash")), PathSeg::Field(1)], op: Op::Set(Value::Int(8)) }).unwrap();
     lp.peers[2].commit(m).unwrap().unwrap();
-    let scope = DemotionScope { membership: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     set_edge(&mut lp.peers[0].engine, t, b, None, Some(f.to_value()));
@@ -296,7 +296,7 @@ fn snapshot_frontier_valid_only_spec_crdt_8() {
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
     sync(&mut lp, 0, 1);
-    let scope = DemotionScope { membership: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
+    let scope = DemotionScope { roles: [(b, [t].into())].into(), content: [(b, [t].into())].into() };
     let now = lp.peers[0].engine.now();
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     lp.advance(10);

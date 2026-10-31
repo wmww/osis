@@ -17,7 +17,7 @@ use osis_commit::{CommitBlob, Decoded, Form, Header};
 use osis_crypto::VerifyingKey;
 use osis_crdt::{Frontiers, Source};
 use osis_perm::DemotionScope;
-use osis_schema::core_types::{Frontier, is_membership_class};
+use osis_schema::core_types::{Frontier, is_role_class};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Receipt-time granularity (local policy): adjacent ranges received within one bucket merge.
@@ -290,8 +290,8 @@ impl Engine {
     /// receipts only; `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
-        for (node, things) in &scope.membership {
-            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| is_membership_class(ak.as_str())) {
+        for (node, things) in &scope.roles {
+            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| is_role_class(ak.as_str())) {
                 aspects.push((*node, *t, ak.clone()));
             }
         }
@@ -304,15 +304,15 @@ impl Engine {
         // the scope reaches, so each demoted node's commits on them are listed by ID; one
         // where its class did not fall is never consulted (spec/permissions.md §5.1)
         for (tid, ak) in &self.core.header_receipts {
-            let membership = is_membership_class(ak.as_str());
-            for node in scope.content.keys().chain(scope.membership.keys().filter(|_| membership)) {
+            let role_commit = is_role_class(ak.as_str());
+            for node in scope.content.keys().chain(scope.roles.keys().filter(|_| role_commit)) {
                 aspects.push((*node, *tid, ak.clone()));
             }
         }
         aspects.sort();
         aspects.dedup();
         // things of groups held for receipts only: this node keeps what it applied there (their
-        // membership commits) but never uploads it again, so no holder of such a commit voids
+        // role commits) but never uploads it again, so no holder of such a commit voids
         // another its author signs later on the same counters after deleting it at the host;
         // its held commits there are listed by ID, never by counters (spec/permissions.md §5.1)
         let by_id: BTreeSet<Tid> = self.core.receipts_only.clone().into_iter().flat_map(|g| self.closure(&g).iter().copied().chain([g]).collect::<Vec<_>>()).collect();

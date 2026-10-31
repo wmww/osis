@@ -30,18 +30,18 @@ instances=(
   "rotation Rotation MC_safety.cfg small pass"
   "rotation Rotation MC_fork.cfg small pass"
   "rotation Rotation MC_fork_reorder.cfg all pass"
-  "membership Membership MC_core.cfg small pass"
-  "membership Membership MC_multi.cfg small pass"
-  "membership Membership MC_group.cfg all pass"
-  "membership Membership MC_snapA.cfg all pass"
-  "membership Membership MC_snapB.cfg all pass"
-  "membership Membership MC_until.cfg all pass"
-  "membership Membership MC_depth.cfg all pass"
-  "membership Membership MC_keepoff.cfg small fail"     # negative control: no kept standing
-  "membership Membership MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
-  "membership Membership MC_sticky_snap.cfg small fail" # M2: a snapshot repairs a sticky drop
-  "membership Membership MC_forge.cfg small pass"       # AMBIGUITIES.md M1 (fixed)
-  "membership Membership MC_samets.cfg small pass"      # AMBIGUITIES.md M3 (fixed)
+  "roles Roles MC_core.cfg small pass"
+  "roles Roles MC_multi.cfg small pass"
+  "roles Roles MC_group.cfg all pass"
+  "roles Roles MC_snapA.cfg all pass"
+  "roles Roles MC_snapB.cfg all pass"
+  "roles Roles MC_until.cfg all pass"
+  "roles Roles MC_depth.cfg all pass"
+  "roles Roles MC_keepoff.cfg small fail"     # negative control: no kept standing
+  "roles Roles MC_sticky.cfg small fail"      # AMBIGUITIES.md M2: drop order
+  "roles Roles MC_sticky_snap.cfg small fail" # M2: a snapshot repairs a sticky drop
+  "roles Roles MC_forge.cfg small pass"       # AMBIGUITIES.md M1 (fixed)
+  "roles Roles MC_samets.cfg small pass"      # AMBIGUITIES.md M3 (fixed)
 )
 
 mode=${1:-}

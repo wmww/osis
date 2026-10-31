@@ -263,7 +263,7 @@ fn parked_spec_versioning_2() {
     assert_eq!(lp.peers[1].engine.pending().len(), 2);
 }
 
-// spec/commits.md §2, §4: membership before content: a grantee's write arriving before its
+// spec/commits.md §2, §4: role before content: a grantee's write arriving before its
 // grant waits for the chain and applies after.
 #[test]
 fn grantee_waits_for_grant_spec_commits_4() {
@@ -311,7 +311,7 @@ fn random_delivery_converges_spec_crdt_4_1() {
         for step in 0..30 {
             if step == 15 {
                 // revoke node 2 mid-run (spec/permissions.md §5.2), frontier from node 0's receipts
-                let scope = osis_perm::DemotionScope { membership: [(victim, [t].into())].into(), content: [(victim, [t].into())].into() };
+                let scope = osis_perm::DemotionScope { roles: [(victim, [t].into())].into(), content: [(victim, [t].into())].into() };
                 let now = lp.peers[0].engine.now();
                 let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
                 let id = set_edge(&mut lp.peers[0].engine, t, victim, None, Some(osis_schema::Codec::to_value(&f)));

@@ -108,7 +108,7 @@ fn only_from(u: &Undone, f: &Fragment) -> bool {
             let deleted = e.deleted.as_ref().is_some_and(|d| d.1) || (!x.text && !content.is_some_and(Fragment::present));
             (deleted || e.created.as_ref().is_none_or(|(st, _)| ok(st, e.span))) && content.is_none_or(|c| only_from(u, c))
         }),
-        Fragment::Slots(x) => x.reg.as_ref().is_none_or(reg) && x.members.values().all(|f| only_from(u, f)),
+        Fragment::Slots(x) => x.reg.as_ref().is_none_or(reg) && x.slots.values().all(|f| only_from(u, f)),
     }
 }
 

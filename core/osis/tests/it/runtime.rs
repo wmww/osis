@@ -88,7 +88,7 @@ async fn runtime_in_process_spec_sync_10() {
     round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), false).await;
 }
 
-// spec/sync.md §5 (member peer), §10, notes/api.md (Config.peers): two devices under the
+// spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config.peers): two devices under the
 // handle's driver keep syncing peer to peer once their host is gone.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_peers_in_process_spec_sync_5() {
@@ -220,7 +220,7 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
 }
 
 // spec/permissions.md §9 (first contact: the link carries the sharer's dialable key and relays),
-// spec/sync.md §5 (member peer): Bob cannot reach Alice's host; he redeems her direct link at
+// spec/sync.md §5 (co-reader peer): Bob cannot reach Alice's host; he redeems her direct link at
 // her device, opening the link's label there by the link key, and then syncs the target with
 // her device though neither publishes `/reach` to the other's groups by default.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -289,10 +289,10 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     })
     .await
     .unwrap();
-    // Bob keeps the sharer from the link; Alice never saw his dialable key (no member proof)
+    // Bob keeps the sharer from the link; Alice never saw his dialable key (no co-reader proof)
     assert_eq!(bob.sync_engine(|s| s.link_peer_keys()), [now.dialable].into());
     let bob_key = bob.sync_engine(|s| s.own_reach()).unwrap().dialable;
-    assert!(!alice.sync_engine(|s| s.served_members()).contains(&bob_key));
+    assert!(!alice.sync_engine(|s| s.served_co_readers()).contains(&bob_key));
     // the link ends (revoked): the key it carried rotates
     let k = alice.links(g)[0].id;
     tokio::time::timeout(GUARD, alice.revoke_link(k, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None })).await.unwrap().unwrap();
@@ -354,7 +354,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
 }
 
 // spec/permissions.md §9 (a node without hosts makes only direct links), spec/sync.md §5
-// (member peer: a label synced with nobody is served complete): Alice has no host and no
+// (co-reader peer: a label synced with nobody is served complete): Alice has no host and no
 // other device; Bob redeems her direct link at her device and the two sync the target there.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_no_host_in_process_spec_permissions_9() {

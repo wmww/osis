@@ -1,5 +1,5 @@
 //! Rotation planner (spec/permissions.md §3): the role secrets a departure exposes, over an
-//! abstract membership graph; what a node that lost access drops.
+//! abstract role graph; what a node that lost access drops.
 
 use crate::covers::Departure;
 use crate::epoch::ROLES;
@@ -7,12 +7,12 @@ use osis_base::{Role, Tid};
 use osis_perm::{At, Timeline};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The held membership graph as the planner needs it.
+/// The held role graph as the planner needs it.
 pub trait Graph {
     /// Things `actor` owns directly (its owner link gives it admin on them).
     fn owned(&self, actor: &Tid) -> Vec<Tid>;
-    /// Targets of `member`'s current edges, with the edge's role.
-    fn edges(&self, member: &Tid) -> Vec<(Tid, Role)>;
+    /// Targets of `holder`'s current edges, with the edge's role.
+    fn edges(&self, holder: &Tid) -> Vec<(Tid, Role)>;
     /// Whether `thing` has secrets of its own (else it derives them from its owner).
     fn has_own_secrets(&self, thing: &Tid) -> bool;
 }
@@ -22,7 +22,7 @@ pub trait Graph {
 pub struct Entry {
     /// The roles of the thing whose secrets the departed party could open.
     pub roles: BTreeSet<Role>,
-    /// The departures its epochs must cover (spec/crypto.md §4), one per path: the member's own
+    /// The departures its epochs must cover (spec/crypto.md §4), one per path: the holder's own
     /// on the target, inside each chain of actors it was reached through.
     pub departures: BTreeSet<Departure>,
     /// Secrets of its own: it needs a rotation. A plain thing follows its owner's.
@@ -71,16 +71,16 @@ impl Plan {
     }
 }
 
-/// The rotations required when `member` leaves roles `from` and above of `actor`, having held
+/// The rotations required when `holder` leaves roles `from` and above of `actor`, having held
 /// `held` (spec/permissions.md §3): on the actor the roles it left; on every thing the actor's
 /// roles open (owned things, targets of its edges, transitively) the roles the actor holds there
 /// among those the roles it left open through it (per-role KEM keys).
-pub fn plan_departure(graph: &dyn Graph, actor: Tid, member: Tid, from: Role, held: Role) -> Plan {
+pub fn plan_departure(graph: &dyn Graph, actor: Tid, holder: Tid, from: Role, held: Role) -> Plan {
     let lost: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r >= from && *r <= held).collect();
     if lost.is_empty() {
         return Plan { target: Some(actor), entries: BTreeMap::new() };
     }
-    let mut plan = plan_inside(graph, actor, lost, Departure::member(member, from));
+    let mut plan = plan_inside(graph, actor, lost, Departure::holder(holder, from));
     plan.target = Some(actor);
     plan
 }
@@ -99,7 +99,7 @@ pub fn plan_inside(graph: &dyn Graph, x: Tid, roles: BTreeSet<Role>, departure: 
         for (t, via) in next {
             let opened: BTreeSet<Role> = roles.iter().filter(|r| **r <= via).copied().collect();
             // A path through t already: a cycle.
-            if opened.is_empty() || dep.via.contains(&t) || t == dep.member {
+            if opened.is_empty() || dep.via.contains(&t) || t == dep.holder {
                 continue;
             }
             let d = Departure::inside(x, &dep);
@@ -153,9 +153,9 @@ impl Graph for PermGraph<'_> {
     fn owned(&self, actor: &Tid) -> Vec<Tid> {
         self.timeline.owners().owned(actor).to_vec()
     }
-    fn edges(&self, member: &Tid) -> Vec<(Tid, Role)> {
+    fn edges(&self, holder: &Tid) -> Vec<(Tid, Role)> {
         let edges = self.timeline.edges_at(self.at.point);
-        edges.targets(member).filter_map(|t| edges.get(member, t).filter(|e| e.alive_at(self.at.ts)).map(|e| (*t, e.role))).collect()
+        edges.targets(holder).filter_map(|t| edges.get(holder, t).filter(|e| e.alive_at(self.at.ts)).map(|e| (*t, e.role))).collect()
     }
     fn has_own_secrets(&self, thing: &Tid) -> bool {
         (self.own_secrets)(thing)
@@ -174,8 +174,8 @@ impl Graph for MemoryGraph {
     fn owned(&self, actor: &Tid) -> Vec<Tid> {
         self.owned.get(actor).cloned().unwrap_or_default()
     }
-    fn edges(&self, member: &Tid) -> Vec<(Tid, Role)> {
-        self.edges.get(member).cloned().unwrap_or_default()
+    fn edges(&self, holder: &Tid) -> Vec<(Tid, Role)> {
+        self.edges.get(holder).cloned().unwrap_or_default()
     }
     fn has_own_secrets(&self, thing: &Tid) -> bool {
         self.own_secrets.contains(thing)

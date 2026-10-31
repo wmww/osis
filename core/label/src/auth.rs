@@ -19,9 +19,9 @@ pub enum Proof {
     Sync { pk: VerifyingKey, sig: Signature },
     Claim { step: StepId, pk: VerifyingKey, sig: Signature },
     Static { signing: VerifyingKey, sig: Signature },
-    /// A node's dialable key, to a member peer (spec/sync.md §5): signed under
-    /// `"osis v1 member open"`; hosts refuse it.
-    Member { dialable: VerifyingKey, sig: Signature },
+    /// A node's dialable key, to a co-reader peer (spec/sync.md §5): signed under
+    /// `"osis v1 co-reader open"`; hosts refuse it.
+    CoReader { dialable: VerifyingKey, sig: Signature },
 }
 
 impl Proof {
@@ -36,9 +36,9 @@ impl Proof {
         Proof::Static { signing: signing.verifying_key(), sig: sign_open(signing, label, challenge, static_key) }
     }
 
-    /// By a node's dialable key (a member node at a member peer).
-    pub fn member(dialable: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
-        Proof::Member { dialable: dialable.verifying_key(), sig: dialable.sign(Domain::MemberOpen, &open_digest(label, challenge, static_key)) }
+    /// By a node's dialable key (a co-reader node at a co-reader peer).
+    pub fn co_reader(dialable: &SigningSecret, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Proof {
+        Proof::CoReader { dialable: dialable.verifying_key(), sig: dialable.sign(Domain::CoReaderOpen, &open_digest(label, challenge, static_key)) }
     }
 
     pub fn to_value(&self) -> Value {
@@ -46,7 +46,7 @@ impl Proof {
             Proof::Sync { pk, sig } => vec![Value::Int(0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
             Proof::Claim { step, pk, sig } => vec![Value::Int(1), Value::bytes(&step.0), Value::bytes(&pk.to_bytes()), Value::bytes(&sig.0)],
             Proof::Static { signing, sig } => vec![Value::Int(2), Value::bytes(&signing.to_bytes()), Value::bytes(&sig.0)],
-            Proof::Member { dialable, sig } => vec![Value::Int(3), Value::bytes(&dialable.to_bytes()), Value::bytes(&sig.0)],
+            Proof::CoReader { dialable, sig } => vec![Value::Int(3), Value::bytes(&dialable.to_bytes()), Value::bytes(&sig.0)],
         })
     }
 
@@ -58,7 +58,7 @@ impl Proof {
             [Value::Int(0), pk, s] => Proof::Sync { pk: key(pk)?, sig: sig(s)? },
             [Value::Int(1), step, pk, s] => Proof::Claim { step: StepId(get_bytes(step, "proof step")?), pk: key(pk)?, sig: sig(s)? },
             [Value::Int(2), pk, s] => Proof::Static { signing: key(pk)?, sig: sig(s)? },
-            [Value::Int(3), pk, s] => Proof::Member { dialable: key(pk)?, sig: sig(s)? },
+            [Value::Int(3), pk, s] => Proof::CoReader { dialable: key(pk)?, sig: sig(s)? },
             _ => return Err(Error::Malformed("proof")),
         })
     }
@@ -67,7 +67,7 @@ impl Proof {
     pub fn verify_sig(&self, label: &LabelId, challenge: &[u8; 32], static_key: &[u8; 32]) -> Result<(), Error> {
         let (pk, sig) = match self {
             Proof::Sync { pk, sig } | Proof::Claim { pk, sig, .. } | Proof::Static { signing: pk, sig } => (pk, sig),
-            Proof::Member { dialable, sig } => return dialable.verify(Domain::MemberOpen, &open_digest(label, challenge, static_key), sig).map_err(|_| Error::Verify("open signature")),
+            Proof::CoReader { dialable, sig } => return dialable.verify(Domain::CoReaderOpen, &open_digest(label, challenge, static_key), sig).map_err(|_| Error::Verify("open signature")),
         };
         verify_open(pk, label, challenge, static_key, sig).map_err(|_| Error::Verify("open signature"))
     }
@@ -127,8 +127,8 @@ pub fn evaluate_open<I: PathIndex>(head: &Step, index: &I, proof: &Proof, challe
                 None => OpenOutcome::Refused,
             })
         }
-        // only a member peer that knows the key's node opens it (`ServingSession`)
-        Proof::Member { .. } => Ok(OpenOutcome::Refused),
+        // only a co-reader peer that knows the key's node opens it (`ServingSession`)
+        Proof::CoReader { .. } => Ok(OpenOutcome::Refused),
     }
 }
 

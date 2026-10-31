@@ -246,9 +246,9 @@ pub(crate) fn demoted(elems: &Elems) -> Vec<Dot> {
 
 /// Demotes edges until the parent graph is acyclic (§6.2). Cycles are vertex-disjoint and each
 /// demotion is forced, so any walk may demote the cycle it finds. A node whose parent path ends at
-/// HEAD, END or a hidden anchor is on no cycle and only cycle members change edges, so that mark
+/// HEAD, END or a hidden anchor is on no cycle and only nodes on a cycle change edges, so that mark
 /// persists; within a round every node is walked once. Later rounds start from the victims, the
-/// only nodes whose new edge can close a cycle. Returns the members of every cycle broken.
+/// only nodes whose new edge can close a cycle. Returns the nodes of every cycle broken.
 fn break_cycles(g: &mut Graph) -> Vec<usize> {
     let n = g.dots.len();
     let mut term = vec![false; n];
@@ -257,7 +257,7 @@ fn break_cycles(g: &mut Graph) -> Vec<usize> {
     let mut path: Vec<usize> = Vec::new();
     let mut starts: Vec<usize> = (0..n).collect();
     let mut round = 0usize;
-    let mut members = Vec::new();
+    let mut on_cycles = Vec::new();
     while !starts.is_empty() {
         round += 1;
         let mut victims = Vec::new();
@@ -276,7 +276,7 @@ fn break_cycles(g: &mut Graph) -> Vec<usize> {
                         if let Some(v) = g.demote(&cyc) {
                             victims.push(v);
                         }
-                        members.extend(cyc);
+                        on_cycles.extend(cyc);
                     }
                     break false;
                 }
@@ -302,7 +302,7 @@ fn break_cycles(g: &mut Graph) -> Vec<usize> {
         }
         starts = victims;
     }
-    members
+    on_cycles
 }
 
 

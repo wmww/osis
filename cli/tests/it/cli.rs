@@ -111,7 +111,7 @@ fn exit_codes_plan_cli_6() {
     assert_eq!(s.code(&["set", other, "/a/b", "1"]), 3);
     assert_eq!(s.code(&["same", &t, other]), 3);
     assert_eq!(s.code(&["same", &t, &t]), 0);
-    // 7: invalid (membership-class aspects are written only through sharing calls)
+    // 7: invalid (role-class aspects are written only through sharing calls)
     assert_eq!(s.code(&["set", &t, "/members", "{}"]), 7);
     // 1: not supported yet (queries)
     let o = s.call(&["--json", "ls", "home"], "");
@@ -319,7 +319,7 @@ fn stream_and_len_plan_cli_4() {
     assert_eq!(s.code(&["get", &t, "/a/none", "--len"]), 3);
 }
 
-// notes/cli.md Command table Sharing and membership, Sync, Identity and devices: the local half of the
+// notes/cli.md Command table Sharing and roles, Sync, Identity and devices: the local half of the
 // sharing commands on one store (no hosts): links, cards, devices, grants by error category,
 // status (bundles are binary: the localhost e2e).
 #[test]

@@ -79,9 +79,9 @@ pub const MAX_RELAY_BLOB: usize = 64 * KIB;
 /// A commit more than this ahead of the receiver's wall clock is parked (spec/wire.md §2,
 /// spec/crdt.md §2.2). fixed.
 pub const MAX_DRIFT_MS: u64 = HOUR_MS;
-/// Membership deltas are kept at least this long after replaced (spec/wire.md §2,
+/// Role-class deltas are kept at least this long after replaced (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
-pub const MEMBERSHIP_KEEP_MS: u64 = 90 * DAY_MS;
+pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
 /// Added to the relative keep-at-most bound of a body with a live write (spec/wire.md §2,
 /// spec/commits.md §5). fixed.
 pub const AT_MOST_GRACE_MS: u64 = HOUR_MS;

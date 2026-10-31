@@ -2,7 +2,7 @@
 > Summary: The implementation's shape: crate map and layer DAG, the fixed abstractions (traits) other crates code against, error classes and pervasive rules, build and test performance rules, dependency allowlist, conventions, and the public surfaces of osis-base and osis-schema. Reopen a fixed item only through an issue.
 
 ## 1. Crate map
-Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed directories: `core/base` is osis-base), `core/test/{sim,vectors,crdt-model,membership-model}`, `cli`; `core/test` is excluded otherwise: `core/test/fuzz/` (cargo-fuzz, own workspace), `core/test/tla` (TLA+ specs, no crate). Internal crates are `[workspace.dependencies]`; members write `osis-base.workspace = true`. A new crate needs a line here.
+Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed directories: `core/base` is osis-base), `core/test/{sim,vectors,crdt-model,roles-model}`, `cli`; `core/test` is excluded otherwise: `core/test/fuzz/` (cargo-fuzz, own workspace), `core/test/tla` (TLA+ specs, no crate). Internal crates are `[workspace.dependencies]`; members write `osis-base.workspace = true`. A new crate needs a line here.
 
 | layer | crate | plan(s) | contents |
 |---|---|---|---|
@@ -26,7 +26,7 @@ Workspace root `Cargo.toml`: members `core/*` (library crates in unprefixed dire
 | 10 | `osis-bench` | test-infra | bench harness (no deps) and benches; size budgets (tier 2) |
 | 10 | `osis-sim` (`core/test/sim/`) | sim | deterministic simulator; `world`: `Osis` handles and in-memory hubs under one manual clock (the example apps' tests) |
 | - | `crdt-model` (`core/test/crdt-model`) | | reference model of spec/crdt.md (notes/crdt.md) |
-| - | `membership-model` (`core/test/membership-model`) | | model of the role rules (notes/permissions.md) |
+| - | `roles-model` (`core/test/roles-model`) | | model of the role rules (notes/permissions.md) |
 
 **GUI workspace** (separate, root manifest `kit/Cargo.toml`, notes/app.md): `osis-kit` (`kit/`, UI toolkit over Masonry) and `osis-app` (`app/`, the first-party app), depending on `osis` and `osis-schema` by path only.
 
@@ -125,5 +125,5 @@ One line per external crate; adding a dependency means adding its line. No serde
 - Typed access (spec/versioning.md §5): `typed_read(schema, v, ty) -> Result<Value, PathError>` (projection: known fields, defaults filled; links pass for large values), `type_at`, `value_at`, `validate_write` (every declared field, nothing undeclared, depth). `Path(Vec<Step>)`, `Step::{Field, Case, Key, Index, Elem}`, `FieldId`, `CaseId`, `p![..]`; `PathError { path, kind: PathErrorKind }` (UnknownCase/UnknownTag parked, Schema local, rest BadInput).
 - Diff: `SchemaView` implements `osis_crdt::View` (project = typed read at the position, `None` = opaque). `large_positions(schema, v, ty) -> Vec<Large { path, map_key }>`: atomic positions above `CHUNK_THRESHOLD`.
 - Keys: `trait AspectKey { type T; ak, schema, decode, encode; ty, schema_ref, defaults, validate }` for `Ak` (untyped, `T = Value`) and `Aspect<T>` (const, `Aspect::new(ak, &STATIC_SCHEMA)`); `Codec` (to/from `Value`; std impls incl. `Option` = option enum, `Vec<u8>` = blob, `[u8; N]` fixed blobs, ids, `Role`, `Ts`, `WallMs`), `codec_struct!`, `codec_enum!`, `named_type!` (`TryFrom<&Value>` by the schema's typed read, `From<&T> for Value`), `Chunked<T>`.
-- `core_types`: Rust types of every core aspect (`Edge`, `Keys`, `Keyset`, `Epoch`, `Secrets`, `SecretBox`, `Tenures`, `Label`, `NodeInfo`, `Reach`, `Seen`, `Group`, agility enums, `CreationRecord` codec), constants `TID`..`GROUPS`, `MEMBERSHIP_CLASS`, `is_membership_class`.
+- `core_types`: Rust types of every core aspect (`Edge`, `Keys`, `Keyset`, `Epoch`, `Secrets`, `SecretBox`, `Tenures`, `Label`, `NodeInfo`, `Reach`, `Seen`, `Group`, agility enums, `CreationRecord` codec), constants `TID`..`GROUPS`, `ROLE_CLASS`, `is_role_class`.
 - Codegen: `generate(schema, file, src) -> Generated { code, warnings }`, `generate_file(path)` (checks the lock; for build.rs), bin `osis-schema-gen`. Output: `SCHEMA` (a `StaticSchema`), each struct/enum as a `codec_struct!`/`codec_enum!` invocation plus its field/case id module and `named_type!`, one `Aspect` constant per AK.

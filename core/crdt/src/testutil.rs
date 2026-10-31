@@ -181,7 +181,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                 Fragment::Register(r) => r,
                 _ => panic!("register slot"),
             }),
-            members: slots.iter().map(|(k, f)| (Encoding::from_id(u64::from(*k)).unwrap(), frag(f))).collect(),
+            slots: slots.iter().map(|(k, f)| (Encoding::from_id(u64::from(*k)).unwrap(), frag(f))).collect(),
         }),
     }
 }
@@ -192,7 +192,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
 pub fn check_lin(f: &Fragment) {
     let all = |it: &mut dyn Iterator<Item = &Fragment>| it.for_each(check_lin);
     let big = |f: &Fragment| matches!(f, Fragment::Seq(s) if s.elems().len() > 10_000);
-    if !big(f) && !matches!(f, Fragment::Slots(x) if x.members.values().any(big)) {
+    if !big(f) && !matches!(f, Fragment::Slots(x) if x.slots.values().any(big)) {
         assert_eq!(f.present(), f.written().is_some(), "presence");
     }
     match f {
@@ -208,13 +208,13 @@ pub fn check_lin(f: &Fragment) {
         Fragment::Map(x) => all(&mut x.entries.values().filter_map(|e| e.frag.as_deref())),
         Fragment::Set(Set { elems, .. }) | Fragment::Bag(Bag { elems, .. }) => all(&mut elems.values().filter_map(|e| e.frag.as_deref())),
         Fragment::Slots(x) => {
-            // a lone member is chosen without a scan (§7 Read): it beats the register
-            if let (Some(r), [m]) = (&x.reg, x.members.values().collect::<Vec<_>>().as_slice())
+            // a lone slot is chosen without a scan (§7 Read): it beats the register
+            if let (Some(r), [m]) = (&x.reg, x.slots.values().collect::<Vec<_>>().as_slice())
                 && !big(m)
             {
-                assert!(Fragment::Register(r.clone()).all_max() <= m.all_max(), "lone member chosen");
+                assert!(Fragment::Register(r.clone()).all_max() <= m.all_max(), "lone slot chosen");
             }
-            all(&mut x.members.values())
+            all(&mut x.slots.values())
         }
         Fragment::Register(_) => {}
     }
@@ -273,7 +273,7 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
     let n = sources.len();
-    // odd writers remove keyed (membership-class aspects), even ones keyless (§5.6)
+    // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
     let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
     let mut states: Vec<Option<m::Frag>> = vec![None; n];
     let mut seen: Vec<usize> = vec![0; n];

@@ -31,7 +31,7 @@ impl Writer {
         let lo = lo.max(1);
         Writer { ts, src, lo, next: lo, keyed: false }
     }
-    /// Whether map removals carry the removed record's key (membership-class aspects only,
+    /// Whether map removals carry the removed record's key (role-class aspects only,
     /// §5.6); else a removal is the dot's key-erased record.
     pub fn keyed_removals(mut self, on: bool) -> Writer {
         self.keyed = on;
@@ -256,7 +256,7 @@ pub fn reset_entries(w: &Writer, ids: &[(Dot, Value)]) -> Fragment {
 /// The slot of encoding `enc` at a position, present only.
 pub(crate) fn present_slot(st: Option<&Fragment>, enc: Encoding) -> Option<std::borrow::Cow<'_, Fragment>> {
     let slot = match st.and_then(|s| s.slot(enc))? {
-        crate::state::MemberRef::Frag(f) => std::borrow::Cow::Borrowed(f),
+        crate::state::SlotRef::Frag(f) => std::borrow::Cow::Borrowed(f),
         m => std::borrow::Cow::Owned(m.to_fragment()),
     };
     slot.present().then_some(slot)
@@ -300,7 +300,7 @@ fn some_if_nonempty(f: Fragment) -> Option<Fragment> {
     (!f.is_empty()).then_some(f)
 }
 
-/// Writes that turn position `st` (any members) into `v` under the writer's view (§9);
+/// Writes that turn position `st` (any slots) into `v` under the writer's view (§9);
 /// `None` when nothing changes.
 pub fn diff<V: View>(w: &mut Writer, st: Option<&Fragment>, view: &V, v: &Value) -> Result<Option<Fragment>, Error> {
     // the app sees the position's read; writes go into the slot of the schema's encoding (§7)

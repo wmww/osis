@@ -10,7 +10,7 @@ use osis_keys::{
     ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
-use osis_perm::{At, Dots, Edge, EdgeOp, MembershipCommit, MemoryHeldSet, Timeline};
+use osis_perm::{At, Dots, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
 use std::collections::BTreeSet;
 
 fn set(r: &[Role]) -> BTreeSet<Role> {
@@ -48,7 +48,7 @@ fn device_removal_cascade() {
         vec![(p, all.clone()), (tid(10), all.clone()), (tid(20), rw.clone()), (tid(12), all.clone()), (tid(21), set(&[Role::Read])), (tid(22), rw.clone())]
     );
     assert!(!plan.entries[&tid(11)].own_secrets);
-    let dd = Departure::member(d, Role::Read);
+    let dd = Departure::holder(d, Role::Read);
     assert_eq!(plan.entries[&p].departures, [dd.clone()].into_iter().collect());
     assert_eq!(plan.entries[&tid(12)].departures, [Departure::inside(tid(11), &Departure::inside(p, &dd))].into_iter().collect());
     assert_eq!(plan.entries[&tid(21)].departures, [Departure::inside(tid(20), &Departure::inside(p, &dd))].into_iter().collect());
@@ -73,14 +73,14 @@ fn demotion_scope() {
     assert_eq!(plan.entries[&tid(20)].roles, set(&[Role::Write]));
     assert!(!plan.entries.contains_key(&tid(21)));
     assert_eq!(plan.entries[&tid(22)].roles, set(&[Role::Write]));
-    // A read member's removal: read only, everywhere.
+    // A read holder's removal: read only, everywhere.
     let plan = plan_departure(&g, tid(2), tid(1), Role::Read, Role::Read);
     assert!(plan.required().into_iter().all(|(_, e)| e.roles == set(&[Role::Read])));
     // Nothing lost: nothing to do.
     assert!(plan_departure(&g, tid(2), tid(1), Role::Admin, Role::Write).entries.is_empty());
 }
 
-// spec/permissions.md §3: cycles of membership terminate; a node that lost read access drops the
+// spec/permissions.md §3: cycles of role terminate; a node that lost read access drops the
 // actor and what it reads by no other path.
 // spec/permissions.md §3 (drop lost secrets)
 #[test]
@@ -90,7 +90,7 @@ fn cycles_and_lost_access() {
     g.edges.insert(a, vec![(b, Role::Admin)]);
     g.edges.insert(b, vec![(a, Role::Read), (c, Role::Read)]);
     g.own_secrets = [a, b, c].into_iter().collect();
-    let plan = plan_inside(&g, a, roles_up_to(Role::Admin), Departure::member(tid(9), Role::Read));
+    let plan = plan_inside(&g, a, roles_up_to(Role::Admin), Departure::holder(tid(9), Role::Read));
     assert_eq!(plan.entries[&a].roles, roles_up_to(Role::Admin));
     assert_eq!(plan.entries[&b].roles, roles_up_to(Role::Admin));
     assert_eq!(plan.entries[&c].roles, set(&[Role::Read]));
@@ -100,7 +100,7 @@ fn cycles_and_lost_access() {
 
 // spec/permissions.md §3: `reached` (the labels a removal is placed under, what a lost actor
 // drops) is `plan_inside`'s set of things on random graphs with cycles, owned things and the
-// avoided member among them, and stays linear on a lattice with 6^11 paths.
+// avoided holder among them, and stays linear on a lattice with 6^11 paths.
 #[test]
 fn reached_matches_plan_inside() {
     let mut x: u64 = 0x2545_F491_4F6C_DD1D;
@@ -124,7 +124,7 @@ fn reached_matches_plan_inside() {
         if start == avoid {
             continue;
         }
-        let plan = plan_inside(&g, start, roles_up_to(Role::Admin), Departure::member(avoid, Role::Read));
+        let plan = plan_inside(&g, start, roles_up_to(Role::Admin), Departure::holder(avoid, Role::Read));
         let want: BTreeSet<Tid> = plan.entries.keys().filter(|t| **t != start).copied().collect();
         assert_eq!(reached(&g, start, avoid), want);
     }
@@ -148,13 +148,13 @@ fn perm_graph() {
     let p = held.create(CreationRecord::Thing { owner: d, nonce: [2; 32], creator: None });
     let t = held.create(CreationRecord::Thing { owner: p, nonce: [3; 32], creator: None });
     let a2 = held.create(CreationRecord::Thing { owner: d, nonce: [4; 32], creator: None });
-    held.add_commit(MembershipCommit {
+    held.add_commit(RoleCommit {
         id: CommitId([9; 32]),
         ts: Ts::make(osis_base::WallMs(1000), 0).unwrap(),
         author: d,
         actor: d,
         frontier: None,
-        ops: vec![EdgeOp { target: a2, member: p, edge: Some(Edge::new(Role::Write)), dots: Dots::Node { lo: 0, hi: 1 } }],
+        ops: vec![EdgeOp { target: a2, holder: p, edge: Some(Edge::new(Role::Write)), dots: Dots::Node { lo: 0, hi: 1 } }],
     });
     let tl = Timeline::evaluate(&held);
     let own = |x: &Tid| *x != t;

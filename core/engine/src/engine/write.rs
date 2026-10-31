@@ -14,7 +14,7 @@ use osis_base::{Ak, CommitId, CreationRecord, Role, SchemaId, Tid, Ts, Value, Wa
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
-use osis_schema::core_types::{CREATED, is_membership_class};
+use osis_schema::core_types::{CREATED, is_role_class};
 use osis_schema::{AspectKey, Lifetime, Retention, Schema};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -48,14 +48,14 @@ pub struct Mutation {
     /// before it, `Engine::revert_change`): their writes are undone, they are not deleted.
     pub(crate) undo_keep: std::collections::BTreeSet<Tid>,
     pub(crate) frontier: Option<Value>,
-    /// Membership flows judge their own authority (invite grants, self-removals).
+    /// Role flows judge their own authority (invite grants, self-removals).
     pub(crate) unchecked: bool,
     /// A held key actor that signs instead of the node (commit form).
     pub(crate) signer: Option<Tid>,
-    /// A roster snapshot (spec/permissions.md §6): membership kind with the marker.
+    /// A roster snapshot (spec/permissions.md §6): role kind with the marker.
     pub(crate) roster: bool,
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
-    /// of an edge already removed (membership flows).
+    /// of an edge already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
@@ -130,7 +130,7 @@ impl Mutation {
         Ok(e)
     }
 
-    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a membership
+    /// Persists `tid` with this batch if it is ephemeral (`Engine::write`): a roles
     /// operation's or a move's target, persisted by a content commit first.
     pub fn persist(&mut self, tid: Tid) -> &mut Self {
         self.persist.insert(tid);
@@ -201,13 +201,13 @@ impl Mutation {
         self
     }
 
-    /// The frontier of an explicit demotion (membership flows).
+    /// The frontier of an explicit demotion (role flows).
     pub fn frontier(&mut self, v: Value) -> &mut Self {
         self.frontier = Some(v);
         self
     }
 
-    /// Skips the plain role check (membership flows judge invite grants and self-removals).
+    /// Skips the plain role check (role flows judge invite grants and self-removals).
     pub(crate) fn unchecked(&mut self) -> &mut Self {
         self.unchecked = true;
         self
@@ -379,7 +379,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     let retention = match plan.kind {
         // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
-        Kind::ContentSnapshot | Kind::MembershipSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
+        Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
         _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
     };
     let expires = match plan.kind {
@@ -558,15 +558,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     for k in dead {
         m.aspects.entry(k).or_default();
     }
-    let membership = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_membership_class(ak.as_str()));
-    let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_membership_class(ak.as_str()));
-    if membership && content {
-        return Err(Error::Misuse("a commit is either content or membership"));
+    let role_commit = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && is_role_class(ak.as_str()));
+    let content = m.aspects.keys().any(|(_, ak)| ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()));
+    if role_commit && content {
+        return Err(Error::Misuse("a commit is either content or roles"));
     }
     let kind = match m.roster {
-        true if membership => Kind::RosterSnapshot,
+        true if role_commit => Kind::RosterSnapshot,
         true => return Err(Error::Misuse("a roster snapshot writes /members and /tenures only")),
-        false if membership => Kind::Membership,
+        false if role_commit => Kind::Role,
         false => Kind::Content,
     };
     if let Some(u) = m.undoes {
@@ -575,7 +575,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    // membership commits use commit form: a later commit by the same node can never void
+    // role commits use commit form: a later commit by the same node can never void
     // them by reusing their counters (spec/commits.md §3)
     if kind != Kind::Content {
         m.form = Form::Commit;
@@ -625,7 +625,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
         // map removals carry their key only where keys are public ids (spec/crdt.md §5.6)
-        let keyed = osis_schema::core_types::is_membership_class(ak.as_str());
+        let keyed = osis_schema::core_types::is_role_class(ak.as_str());
         let run = |tx: &Tx<'_>| {
             let state = tx.cached(&tid, &ak).unwrap_or(&empty);
             let w = Writer::new(ts, own_source(m.form, node), lo).keyed_removals(keyed);

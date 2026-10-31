@@ -80,7 +80,7 @@ fn grantee_copy_placed_spec_sync_3() {
 }
 
 // spec/sync.md §3: an inbox blob nobody acts on expires at the host after `INBOX_LIFETIME`;
-// the sender seals the commit again and re-sends it, and the member, back online, reads.
+// the sender seals the commit again and re-sends it, and the holder, back online, reads.
 #[test]
 fn unanswered_inbox_blob_resent_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
@@ -203,15 +203,15 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
 }
 
 // spec/sync.md §3 (re-send if the recipient has not acted), spec/permissions.md §3: a grant
-// is not re-sent to a member removed since: after the lifetime only the removal notice goes
+// is not re-sent to a holder removed since: after the lifetime only the removal notice goes
 // again, never the grant with the target's current label.
 #[test]
-fn removed_member_gets_no_resent_grant_spec_sync_3() {
+fn removed_holder_gets_no_resent_grant_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
     net.set_online(b, false);
     grant(&mut net, a, g, bob);
     net.run();
-    let done = net.engine(a).demote(&g, &osis_node::flows::Demotion { member: bob, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &osis_node::flows::Demotion { holder: bob, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -256,7 +256,7 @@ fn plant_inbox(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
 }
 
 // spec/sync.md §3, spec/requirements.md (read access never stores arbitrary content): a valid
-// commit an inbox blob carries that is no membership commit about the actor is applied but
+// commit an inbox blob carries that is no role commit about the actor is applied but
 // never copied under its home label; nor are its things' labels followed (no box to the actor):
 // their hosts are never dialed.
 #[test]
@@ -505,7 +505,7 @@ fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
 // spec/sync.md §3: a sender is connected by a current role only: Carol, removed from g (which
 // Bob syncs), is a stranger to Bob again, and her invite is a request.
 #[test]
-fn removed_member_invite_is_request_spec_sync_3() {
+fn removed_holder_invite_is_request_spec_sync_3() {
     use osis_node::flows::{Demotion, PreSync};
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let c = net.node(3, &[host]);
@@ -522,7 +522,7 @@ fn removed_member_invite_is_request_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let done = net.engine(a).demote(&g, &Demotion { member: carol.person, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: carol.person, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -542,6 +542,6 @@ fn removed_member_invite_is_request_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    assert_eq!(requests(&mut net, b), vec![x], "a removed member's invite waits");
+    assert_eq!(requests(&mut net, b), vec![x], "a removed holder's invite waits");
     assert!(!holds(&mut net, b, &x));
 }

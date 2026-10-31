@@ -1,5 +1,5 @@
 //! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md, notes/chat.md): the
-//! named membership and retention stories over sync engines and hosts. Each sets up with
+//! named role and retention stories over sync engines and hosts. Each sets up with
 //! flows, runs a faulty schedule around the story's critical moment, checks the story's expected
 //! outcome, and ends with the quiescent invariants (`check`).
 
@@ -52,9 +52,9 @@ fn expect_tags(sim: &mut NetSim, ns: &[usize], t: Tid, story: &[&str], want: &[&
     Ok(())
 }
 
-fn demote(sim: &mut NetSim, n: usize, target: Tid, member: Tid, new: Option<Role>, presync: PreSync) -> Res<()> {
+fn demote(sim: &mut NetSim, n: usize, target: Tid, holder: Tid, new: Option<Role>, presync: PreSync) -> Res<()> {
     let new = new.map(|role| ct::Edge { role, until: None, invite: None, since: None, tied: None });
-    let r = sim.engine(n)?.demote(&target, &Demotion { member, new, presync });
+    let r = sim.engine(n)?.demote(&target, &Demotion { holder, new, presync });
     let done = r.map_err(|e| sim.fail(format!("node {n} demote: {e}")))?;
     sim.carry(n, done)
 }
@@ -179,7 +179,7 @@ pub fn demotion_synced(seed: u64) -> Res<Report> {
 
 /// Demotion without the pre-sync (spec/permissions.md §5.3): the writer's last edit has not
 /// reached the admin, which stamps anyway (`Unsynced { proceed }`): that edit is lost everywhere,
-/// the earlier ones stay; the demoted member still reads.
+/// the earlier ones stay; the demoted holder still reads.
 pub fn demotion_unsynced(seed: u64) -> Res<Report> {
     demotion("demotion_unsynced", seed, false)
 }
@@ -221,7 +221,7 @@ fn demotion(name: &str, seed: u64, synced: bool) -> Res<Report> {
     let want: &[&str] = if synced { &["early", "late"] } else { &["early"] };
     expect_tags(&mut sim, &[a, b], t, &["early", "late"], want)?;
     if sim.engine(b)?.role_on(&t) != Some(Role::Read) {
-        return Err(sim.fail("the demoted member does not read"));
+        return Err(sim.fail("the demoted holder does not read"));
     }
     sim.finish()
 }
@@ -620,13 +620,13 @@ pub fn folders(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Label replacement (spec/sync.md §2): the admin replaces a group's label; members follow the
+/// Label replacement (spec/sync.md §2): the admin replaces a group's label; holders follow the
 /// new label and converge. (Old-label cleanup is checked by `label_replacement_offline`.)
 pub fn label_replacement(seed: u64) -> Res<Report> {
     replacement("label_replacement", seed, false)
 }
 
-/// Label replacement with a member offline (spec/sync.md §2: the replacement `/label` commit
+/// Label replacement with a holder offline (spec/sync.md §2: the replacement `/label` commit
 /// stays under the old label, whose content entries the admin deletes, so a node that knows only
 /// the old label finds the new one).
 pub fn label_replacement_offline(seed: u64) -> Res<Report> {
@@ -659,13 +659,13 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
     sim.run_until_quiescent(60)?;
     let bl: Vec<_> = sim.sync(b)?.labels().into_iter().filter(|(t, _)| *t == g).map(|x| x.1.id).collect();
     if !bl.contains(&new) {
-        return Err(sim.fail(format!("the member does not follow the replacement label: {bl:?}")));
+        return Err(sim.fail(format!("the holder does not follow the replacement label: {bl:?}")));
     }
     if offline {
-        // the old label keeps membership-class commits and certificates (chain certificates,
+        // the old label keeps role-class commits and certificates (chain certificates,
         // node cards, heartbeats: they verify what stays, spec/permissions.md §4) only
         let live = sim.hub(s).map(|h| h.store().live_ids(&old).unwrap_or_default()).unwrap_or_default();
-        let kept = |ak: &str| ct::is_membership_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen" | "/keys");
+        let kept = |ak: &str| ct::is_role_class(ak) || matches!(ak, "/created" | "/node" | "/reach" | "/seen" | "/keys");
         let mut content = 0;
         for ((l, b), (c, parts)) in &sim.known {
             if *l != old || !live.contains(b) {
@@ -683,7 +683,7 @@ fn replacement(name: &str, seed: u64, offline: bool) -> Res<Report> {
     sim.finish()
 }
 
-/// Bundles by hand (spec/sync.md §8): a member cut off from every host gets the group's label
+/// Bundles by hand (spec/sync.md §8): a holder cut off from every host gets the group's label
 /// as a bundle exported by the admin and reads what the admin reads; later online, it converges.
 pub fn bundles(seed: u64) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0xbd);
@@ -717,7 +717,7 @@ pub fn bundles(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Expiry races and disappearing messages (spec/commits.md §5; notes/chat.md): members post
+/// Expiry races and disappearing messages (spec/commits.md §5; notes/chat.md): holders post
 /// messages (a thing with an expiring note, its placement expiring too) under a lossy network
 /// with crashes while time passes; after the expiry no honest node reads an expired note and no
 /// host holds a blob of one.

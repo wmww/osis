@@ -1,6 +1,6 @@
 //! What arrives (spec/sync.md §3, §6, §8, §9): log events and fetched entries become label
 //! entries; blob bytes go to the store; commit blobs are unwrapped with the group's read secrets
-//! (newest first), checked against their prefix and ingested, membership commits first; inbox
+//! (newest first), checked against their prefix and ingested, role commits first; inbox
 //! blobs are opened with the read KEM key of the actor whose inbox the label is; entries that
 //! open with nothing held are retried when new secrets arrive; pages of waiting commits are
 //! fetched before apply; ephemeral entries go to the ephemeral lane (`ephemeral`).
@@ -360,7 +360,7 @@ impl SyncEngine {
         out
     }
 
-    /// Opens entries of `l` not opened yet, ingests what they carry (membership first), and
+    /// Opens entries of `l` not opened yet, ingests what they carry (role first), and
     /// retries every unopened entry while new secrets keep arriving.
     pub(crate) fn open_entries(&mut self, l: LabelId, ids: &[BlobId]) -> Result<()> {
         let mut todo: Vec<(LabelId, BlobId)> = ids.iter().map(|b| (l, *b)).collect();
@@ -370,7 +370,7 @@ impl SyncEngine {
             for (l, b) in std::mem::take(&mut todo) {
                 self.open_one(l, b, &mut commits)?;
             }
-            commits.sort_by_key(|(_, c)| (!c.header.kind.is_membership(), c.header.ts));
+            commits.sort_by_key(|(_, c)| (!c.header.kind.is_role(), c.header.ts));
             for (pt, c) in commits {
                 if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
                     self.diag(format!("ingest {:?}: {e}", c.id()));
@@ -460,7 +460,7 @@ impl SyncEngine {
         if self.engine.core.ix.commits.contains_key(c) || self.engine.core.ix.pending.contains_key(c) {
             return true;
         }
-        // the author's node, then the actors it is named on as a member, transitively (held
+        // the author's node, then the actors it is named on as a holder, transitively (held
         // edges, past and invalid ones too: candidates only, its current role decides below)
         let held = &self.engine.core.ix.held;
         let mut up = BTreeSet::new();
@@ -480,7 +480,7 @@ impl SyncEngine {
                 roots.insert(r)
             }
         };
-        // a current role: an ex-member (a removed device, a kicked member) is a stranger again
+        // a current role: an ex-holder (a removed device, a kicked holder) is a stranger again
         let core = &self.engine.core;
         if !up.intersection(roots).any(|r| *r == o.author || core.role_now(&o.author, r).is_some()) {
             return false;
@@ -749,7 +749,7 @@ impl SyncEngine {
     }
 
     pub(crate) fn bump_pass(&mut self, host: HostKey, l: LabelId) -> Result<()> {
-        // membership commits applied by this run count before the pass end
+        // role commits applied by this run count before the pass end
         self.engine_events()?;
         self.seq += 1;
         self.passes.insert((host, l), (self.seq, self.now()));
@@ -1090,11 +1090,11 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Entry `b` under `l` reached a host: when it holds a membership commit of this node,
+    /// Entry `b` under `l` reached a host: when it holds a role commit of this node,
     /// every label passes again (its held copies may go now, spec/sync.md §5).
     fn reached(&mut self, l: &LabelId, b: &BlobId) {
         let Some(Kind::Commit { commit, .. }) = self.state.entries.get(&(*l, *b)).map(|e| &e.kind) else { return };
-        if self.own(commit) && self.engine.header(commit).is_some_and(|h| h.kind.is_membership()) {
+        if self.own(commit) && self.engine.header(commit).is_some_and(|h| h.kind.is_role()) {
             self.mark_dirty();
         }
     }

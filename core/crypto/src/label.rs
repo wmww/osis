@@ -96,7 +96,7 @@ mod tests {
         assert_eq!(id.0, h.finalize().as_bytes()[..16]);
     }
 
-    // spec/sync.md §2: registrar and member derive the same claim key; non-contributory omits.
+    // spec/sync.md §2: registrar and holder derive the same claim key; non-contributory omits.
     #[test]
     fn claim_keys() {
         let mut rng = SeededRng::from_u64(5);
@@ -104,10 +104,10 @@ mod tests {
         let m = KeyActorKeys::from_seed(&Secret32::from_bytes([6; 32]));
         let label = LabelId([7; 16]);
         let by_registrar = claim_key(&step, &m.kem.public().x25519(), &label, &step.public()).unwrap();
-        let by_member = claim_key(m.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
-        assert_eq!(by_registrar.verifying_key(), by_member.verifying_key());
+        let by_holder = claim_key(m.kem.x25519(), &step.public(), &label, &step.public()).unwrap();
+        assert_eq!(by_registrar.verifying_key(), by_holder.verifying_key());
         let other = claim_key(&step, &m.kem.public().x25519(), &LabelId([8; 16]), &step.public()).unwrap();
-        assert_ne!(other.verifying_key(), by_member.verifying_key());
+        assert_ne!(other.verifying_key(), by_holder.verifying_key());
         assert_eq!(claim_key(&step, &[0; 32], &label, &step.public()).err(), Some(Error::NonContributory));
         let e = static_entry(&label, &m.signing.verifying_key());
         assert_ne!(e, static_entry(&LabelId([8; 16]), &m.signing.verifying_key()));

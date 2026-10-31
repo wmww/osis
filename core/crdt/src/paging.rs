@@ -5,7 +5,7 @@
 
 use crate::fragment::{Bag, Eid, Fragment, Map, Meta, Set, Struct};
 use crate::seq::Seq;
-use crate::state::MemberRef;
+use crate::state::SlotRef;
 use crate::stamp::{Dot, Stamp};
 use osis_base::Value;
 use std::collections::BTreeMap;
@@ -91,16 +91,16 @@ impl Fragment {
     /// The dots of a sequence's visible elements `r` (by index, clamped to its length), in
     /// order; `None` for other encodings.
     pub fn visible_range(&self, r: std::ops::Range<usize>) -> Option<Vec<Dot>> {
-        match self.chosen_member() {
-            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.vis_range(r).into_iter().map(|x| x.dot.clone()).collect()),
+        match self.chosen_slot() {
+            SlotRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.vis_range(r).into_iter().map(|x| x.dot.clone()).collect()),
             _ => None,
         }
     }
 
     /// A sequence's visible length (its placement's); `None` for other encodings.
     pub fn visible_len(&self) -> Option<usize> {
-        match self.chosen_member() {
-            MemberRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.shown()),
+        match self.chosen_slot() {
+            SlotRef::Frag(Fragment::Seq(s)) => Some(s.lin().p.shown()),
             _ => None,
         }
     }
@@ -108,7 +108,7 @@ impl Fragment {
     /// What a sequence's elements `dots` read, in that order (§5.7 Read): a text's chars as one
     /// string, a list's element values. `None` if one is not a visible element here.
     pub fn read_elems(&self, dots: &[Dot]) -> Option<Value> {
-        let MemberRef::Frag(Fragment::Seq(s)) = self.chosen_member() else { return None };
+        let SlotRef::Frag(Fragment::Seq(s)) = self.chosen_slot() else { return None };
         let text = s.encoding() == crate::fragment::Encoding::Text;
         let mut chars = String::new();
         let mut vals = Vec::new();
@@ -199,7 +199,7 @@ pub struct PagedTouch {
 }
 
 impl Fragment {
-    /// The position one step down (no `Slots` member: a position with several encodings is a
+    /// The position one step down (no `Slots` slot: a position with several encodings is a
     /// leaf here).
     pub fn step(&self, s: &Step) -> Option<&Fragment> {
         match (s, self) {

@@ -207,11 +207,11 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
         }
         Fragment::Slots(s) => {
             let reg = Value::List(s.reg.iter().map(|r| encode_register(cx, r)).collect());
-            let mut members = Vec::with_capacity(s.members.len());
-            for f in s.members.values() {
-                members.push(encode_fragment(cx, f)?);
+            let mut slots = Vec::with_capacity(s.slots.len());
+            for f in s.slots.values() {
+                slots.push(encode_fragment(cx, f)?);
             }
-            Value::List(vec![uint(u64::from(Encoding::Slots.id())), reg, Value::List(members)])
+            Value::List(vec![uint(u64::from(Encoding::Slots.id())), reg, Value::List(slots)])
         }
     })
 }
@@ -479,7 +479,7 @@ fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Registe
     Ok(Register { reset, write })
 }
 
-/// Decodes a fragment; `may_reset` where a register may carry a reset (root, slot member).
+/// Decodes a fragment; `may_reset` where a register may carry a reset (root, a `Slots` slot).
 pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
     // nesting counts across pages too (a page's fragments may hold paged arrays)
     if cx.depth >= MAX_OBJECT_DEPTH {
@@ -604,32 +604,32 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
             }
             let reg = opt_stamp_only(reg, |r| match decode_fragment(cx, r, true)? {
                 Fragment::Register(r) => Ok(r),
-                _ => Err(Error::Malformed("slots: first member is not a register")),
+                _ => Err(Error::Malformed("slots: first slot is not a register")),
             })?;
-            let mut members = BTreeMap::new();
+            let mut slots = BTreeMap::new();
             let mut last: Option<Encoding> = None;
             for m in as_array(ms)? {
                 let f = decode_fragment(cx, m, true)?;
                 let e = f.encoding();
                 if matches!(e, Encoding::Register | Encoding::Slots) || last.is_some_and(|l| e <= l) {
-                    return Err(Error::Malformed("slots: unsorted, repeated or nested members"));
+                    return Err(Error::Malformed("slots: unsorted, repeated or nested slots"));
                 }
                 last = Some(e);
-                members.insert(e, f);
+                slots.insert(e, f);
             }
-            if usize::from(reg.is_some()) + members.len() < 2 {
-                return Err(Error::Malformed("slots with fewer than two members"));
+            if usize::from(reg.is_some()) + slots.len() < 2 {
+                return Err(Error::Malformed("slots with fewer than two slots"));
             }
             // §7 Canonical form (§3.3 rule 7): pruning changes nothing the wire carries (every
-            // member holds the register's embedding, none is empty or adds nothing to it, nothing
+            // slot holds the register's embedding, none is empty or adds nothing to it, nothing
             // lies below the position's one reset; the chars of deleted embedded elements the
             // embedding restores are never carried, rule 5), so readers of an unjoined fragment
             // see what a join would; the pruned form is returned, so those chars are held again
             // (a later content-less undelete of one reads it, §4.6)
-            let pruned = crate::state::prune_slots(reg.clone(), members.clone(), None, &mut crate::Changes::new());
+            let pruned = crate::state::prune_slots(reg.clone(), slots.clone(), None, &mut crate::Changes::new());
             let mut carried = pruned.clone();
             carried.drop_deleted_chars();
-            if carried != Fragment::Slots(Slots { reg, members }) {
+            if carried != Fragment::Slots(Slots { reg, slots }) {
                 return Err(Error::Malformed("slots not canonical: pruning changes it"));
             }
             pruned

@@ -32,7 +32,7 @@ pub struct Edge {
     pub invite: Option<Role>,
     /// Roster snapshots only: key of the write that established a write+ edge.
     pub since: Option<Point>,
-    /// The placement of the target in its member group this edge is tied to
+    /// The placement of the target in its holder group this edge is tied to
     /// (spec/permissions.md §2): carried, never an authority.
     pub tied: Option<Tie>,
 }
@@ -126,20 +126,20 @@ impl Frontier {
     }
 }
 
-/// One `/members` edge write of a membership commit: the edge of `member` on `target`, `None`
+/// One `/members` edge write of a role commit: the edge of `holder` on `target`, `None`
 /// for a removal.
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct EdgeOp {
     pub target: Tid,
-    pub member: Tid,
+    pub holder: Tid,
     pub edge: Option<Edge>,
     /// The commit's dots on `(target, /members)`.
     pub dots: Dots,
 }
 
-/// The edge writes of a membership commit (spec/commits.md §2), roster snapshots excluded.
+/// The edge writes of a role commit (spec/commits.md §2), roster snapshots excluded.
 #[derive(Clone, PartialEq, Eq, Debug)]
-pub struct MembershipCommit {
+pub struct RoleCommit {
     pub id: CommitId,
     pub ts: Ts,
     /// Signing node.
@@ -151,7 +151,7 @@ pub struct MembershipCommit {
     pub ops: Vec<EdgeOp>,
 }
 
-impl MembershipCommit {
+impl RoleCommit {
     pub fn point(&self) -> Point {
         Point { ts: self.ts, node: self.author, commit: self.id }
     }
@@ -159,12 +159,12 @@ impl MembershipCommit {
     /// Whether `o` is this record as an input to the walk: every field, frontiers by their
     /// sizes (fixed by the commit ID, `HeldSet`), as the saved-walk tag covers it. A record can
     /// grow under its ID (a part that arrives late).
-    pub(crate) fn same_input(&self, o: &MembershipCommit) -> bool {
+    pub(crate) fn same_input(&self, o: &RoleCommit) -> bool {
         (self.id, self.ts, self.author, self.actor, &self.ops) == (o.id, o.ts, o.author, o.actor, &o.ops) && same_frontier(&self.frontier, &o.frontier)
     }
 }
 
-/// Frontiers as the walk's input compares them: by their sizes (`MembershipCommit::same_input`).
+/// Frontiers as the walk's input compares them: by their sizes (`RoleCommit::same_input`).
 fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
     let shape = |f: &Frontier| (f.writes.len(), f.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum::<usize>(), f.commits.len());
     match (a, b) {
@@ -177,7 +177,7 @@ fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
 /// A tenure ledger entry (spec/data-model.md §9 `tenure`; spec/permissions.md §6).
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub struct Tenure {
-    pub member: Tid,
+    pub holder: Tid,
     pub role: Role,
     pub since: Option<Point>,
     pub until: Point,
@@ -203,16 +203,16 @@ impl RosterSnapshot {
         Point { ts: self.ts, node: self.author, commit: self.id }
     }
 
-    /// `MembershipCommit::same_input` for a roster snapshot (its `/tenures` part may arrive
+    /// `RoleCommit::same_input` for a roster snapshot (its `/tenures` part may arrive
     /// after its `/members` part).
     pub(crate) fn same_input(&self, o: &RosterSnapshot) -> bool {
         (self.id, self.ts, self.author, self.actor, self.thing, self.dots, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, o.dots, &o.roster)
             && self.ledger.len() == o.ledger.len()
-            && self.ledger.iter().zip(&o.ledger).all(|(a, b)| (a.member, a.role, a.since, a.until) == (b.member, b.role, b.since, b.until) && same_frontier(&a.frontier, &b.frontier))
+            && self.ledger.iter().zip(&o.ledger).all(|(a, b)| (a.holder, a.role, a.since, a.until) == (b.holder, b.role, b.since, b.until) && same_frontier(&a.frontier, &b.frontier))
     }
 }
 
-/// An edge write's identity: op `index` of a membership commit, or a roster snapshot.
+/// An edge write's identity: op `index` of a role commit, or a roster snapshot.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum WriteId {
     Op(CommitId, u32),

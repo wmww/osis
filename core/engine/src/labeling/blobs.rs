@@ -25,7 +25,7 @@ pub struct Body {
     /// The header's blind (spec/crypto.md §7).
     pub blind: [u8; 16],
     pub plaintext: Vec<u8>,
-    pub membership: bool,
+    pub role_commit: bool,
 }
 
 /// A blob of a body: ID, bytes, key, prefix salt.
@@ -117,7 +117,7 @@ impl Engine {
     pub fn bodies(&mut self, c: &CommitId) -> Result<Vec<Body>> {
         let id = *c;
         let Some(blob) = self.run(|tx| tx.get_commit(&id))? else { return Ok(Vec::new()) };
-        let membership = blob.header.kind.is_membership();
+        let role_commit = blob.header.kind.is_role();
         // linked header lists: classed by the applied (resolved) header
         let resolved = match self.core.ix.commits.get(&id) {
             Some(m) if !blob.header.is_resolved() => m.header.arc(),
@@ -129,7 +129,7 @@ impl Engine {
             .into_iter()
             .filter_map(|p| {
                 let reader = p.readers?;
-                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, blind: blob.header.blind, plaintext: p.plaintext, membership })
+                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, blind: blob.header.blind, plaintext: p.plaintext, role_commit })
             })
             .collect())
     }

@@ -49,8 +49,8 @@ fn at_host(net: &mut Net, n: usize, host: usize, l: &osis_base::LabelId, c: &osi
 // writer revoked from before its write) revives the write; the host deletes the body at the
 // plain bound all the same, and a right holder online uploads it again at its next resync (a
 // fresh encryption): a window, not a loss. Offline, the window lasts until it next syncs; the
-// revived write has no death, so the body then stays (no bound). A member offline throughout reads v1
-// when it comes back (`late_member_judges_backdated_revoke_alike_*`).
+// revived write has no death, so the body then stays (no bound). A holder offline throughout reads v1
+// when it comes back (`late_holder_judges_backdated_revoke_alike_*`).
 #[test]
 fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
     use osis_base::Role;
@@ -86,7 +86,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         // b revoked from before its write: v2 is void, v1 live again at a
         let bt = net.tid(b);
         net.set_online(b, false);
-        let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
+        let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
         let done = net.engine(a).demote(&g, &d).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
@@ -106,7 +106,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
             net.set_online(late, true);
             net.run();
             net.advance(resync);
-            assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a member offline throughout");
+            assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a holder offline throughout");
             continue;
         }
         assert!(again.is_empty(), "deleted while no right holder is online");
@@ -124,17 +124,17 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         net.run();
         let resync = net.sync(a).config().resync_ms;
         net.advance(resync);
-        assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a member offline throughout");
+        assert_eq!(net.engine(late).get(&t, &gone).unwrap(), Some(s("v1")), "a holder offline throughout");
     }
 }
 
 // spec/permissions.md §5.2 (a write after a revoke's frontier is invalid, whatever the order
-// it arrives in), spec/crdt.md §4.6: a member that was offline while a writer's later write
-// and a backdated revoke of that writer arrived must read what an online member reads.
+// it arrives in), spec/crdt.md §4.6: a holder that was offline while a writer's later write
+// and a backdated revoke of that writer arrived must read what an online holder reads.
 // (Was order-dependent: the item's `/created` reached perm's walk after the revoke, and the
 // walk kept no demotion for it; osis-perm `Walked::alias_leaves`.)
 #[test]
-fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
+fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
     use osis_base::Role;
     use osis_node::flows::{Demotion, PreSync};
     let mut net = Net::new();
@@ -155,15 +155,15 @@ fn late_member_judges_backdated_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { member: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
+    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
     assert_eq!(net.read(a, t), Some(s("v1")));
-    assert_eq!(net.read(on, t), Some(s("v1")), "an online member");
+    assert_eq!(net.read(on, t), Some(s("v1")), "an online holder");
     net.set_online(late, true);
     net.run();
     net.advance(61_000);
-    assert_eq!(net.read(late, t), Some(s("v1")), "a member offline throughout");
+    assert_eq!(net.read(late, t), Some(s("v1")), "a holder offline throughout");
 }

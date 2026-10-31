@@ -71,7 +71,7 @@ fn scenario() -> (Net, usize, [usize; 3], Tid, Tid) {
 }
 
 // spec/sync.md §4, spec/requirements.md Untrusted nodes: no plaintext value or map key, tid, AK,
-// schema ID, member identity (node tid or signing key) or role secret reaches the host's
+// schema ID, holder identity (node tid or signing key) or role secret reaches the host's
 // storage, live or overwritten
 #[test]
 fn blind_node_stores_nothing_forbidden() {

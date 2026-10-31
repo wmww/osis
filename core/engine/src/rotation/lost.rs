@@ -13,7 +13,7 @@ use osis_schema::core_types::BoxKey;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// The lost-access trigger's work list (spec/permissions.md §3, "a node that learns it lost
-/// read access"): `l/` + tid, a roster target of an applied received membership commit, or an
+/// read access"): `l/` + tid, a roster target of an applied received role commit, or an
 /// aspect's thing of a dropped pending one. The held actors a role on it reaches are
 /// re-evaluated after the apply, in a transaction of their own (node-sync, every step).
 pub(crate) const LOST_DUE: &[u8] = b"l/";
@@ -81,7 +81,7 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
 /// good) keeps a node that lost access holding the actor's secrets and content for good.
 pub(crate) const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
 
-/// A held, not applied membership commit's boxes to this node on actor `x`.
+/// A held, not applied role commit's boxes to this node on actor `x`.
 struct PendingGrant {
     x: Tid,
     /// Its author may grant on `x` now, as this node sees it (admin or an invite), and its `ts`
@@ -90,7 +90,7 @@ struct PendingGrant {
     plausible: bool,
 }
 
-/// Actors a held, not applied membership commit (pending, parked readable, or late parts)
+/// Actors a held, not applied role commit (pending, parked readable, or late parts)
 /// boxes secrets of to this node, a held key actor or an actor it reads now: grants this node
 /// may yet get (their secrets may be read already, spec/crypto.md §4), never a loss.
 fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
@@ -107,7 +107,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
             let recent = ts.saturating_add(PENDING_GRANT_WAIT_MS) > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
             for (x, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
                 let core = &*tx.core;
-                if w.boxes.keys().any(|k| ours(core, &k.member)) {
+                if w.boxes.keys().any(|k| ours(core, &k.holder)) {
                     out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x) });
                 }
             }
@@ -131,7 +131,7 @@ pub(crate) fn boxes_kept(core: &Core, blob: &osis_commit::CommitBlob, id: &osis_
     if core.ix.commits.contains_key(id) {
         return BTreeSet::new();
     }
-    let newer = |x: &Tid, k: &BoxKey| ours(core, &k.member) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
+    let newer = |x: &Tid, k: &BoxKey| ours(core, &k.holder) && k.role == Role::Read && held.get(x).is_none_or(|n| k.epoch.n > *n);
     crate::apply::keys::pending_secrets_writes(blob, id).into_iter().filter(|(x, w)| w.boxes.keys().any(|k| newer(x, k)) && may_grant(core, &blob.header.author, x) && authentic(core, blob, id, x)).map(|(x, _)| x).collect()
 }
 
@@ -207,16 +207,16 @@ fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
 /// beside a grant: a plain leave followed by a void grant (a leaver's forgery) defers nothing.
 fn contested(core: &Core, k: &Tid) -> bool {
     let Some(tl) = core.timelines.get(k) else { return false };
-    let op = |mc: &osis_perm::MembershipCommit, i: usize| osis_perm::WriteId::Op(mc.id, i as u32);
+    let op = |mc: &osis_perm::RoleCommit, i: usize| osis_perm::WriteId::Op(mc.id, i as u32);
     // the index of the redemption's self-removal
-    let leave = |mc: &osis_perm::MembershipCommit| {
-        let j = mc.ops.iter().position(|o| o.target == *k && o.member == mc.author && o.edge.is_none())?;
-        mc.ops.iter().any(|o| o.target == *k && o.member != mc.author && o.edge.is_some()).then_some(j)
+    let leave = |mc: &osis_perm::RoleCommit| {
+        let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.author && o.edge.is_none())?;
+        mc.ops.iter().any(|o| o.target == *k && o.holder != mc.author && o.edge.is_some()).then_some(j)
     };
-    let reds: Vec<_> = core.ix.by_thing.get(k).into_iter().flatten().filter_map(|c| tl.membership_commit(c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
+    let reds: Vec<_> = core.ix.by_thing.get(k).into_iter().flatten().filter_map(|c| tl.role_commit(c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
         tl.lowered_unaudited(&mc.author, k)
-            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.member) && !tl.is_applied(&op(mc, i)))
+            && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.holder) && !tl.is_applied(&op(mc, i)))
             && reds.iter().any(|(w, jw)| w.author == mc.author && w.id != mc.id && tl.is_applied(&op(w, *jw)))
     })
 }
@@ -230,7 +230,7 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
     let held: BTreeMap<Tid, u64> = lost.iter().filter_map(|a| Some((*a, tx.core.ix.secrets.get(a)?.read.held().map(|(e, _)| e.n()).max()?))).collect();
     for a in &lost {
         tx.core.ix.secrets.remove(a);
-        tx.core.membership_changed();
+        tx.core.role_changed();
         tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: "lost read access: secrets and what only they read dropped".into() }, now);
@@ -270,7 +270,7 @@ impl Engine {
         !self.core.ix.lost_due.is_empty()
     }
 
-    /// The lost-access trigger (spec/permissions.md §3): after received membership commits
+    /// The lost-access trigger (spec/permissions.md §3): after received role commits
     /// applied, drops the secrets of the actors they touched that this node lost read access to
     /// by every path, unless a held pending grant reaches them, and forgets what only those
     /// read. node-sync runs it every step; an app driving the engine alone calls it after

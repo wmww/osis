@@ -10,7 +10,7 @@ use osis::{Error, Osis, Path, Result, Role, SyncScope, Tid, Scope};
 use osis_sim::world::World;
 use std::time::Duration;
 
-/// A new note in `notebook`, owned by it (so the notebook's members read and write it).
+/// A new note in `notebook`, owned by it (so the notebook's holders read and write it).
 fn new_note(db: &Osis, notebook: Tid, title: &str) -> Result<Tid> {
     db.write_with(|w| {
         let note = w.create_in(notebook, &[notebook])?;

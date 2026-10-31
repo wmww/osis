@@ -2,7 +2,7 @@
 > Summary: Granting someone new to a large tree still re-judges every change in it (about 12 ms at 10^4 changes, linear); a change becoming valid again re-reads every held change of its aspect; opening still scans every commit record (no header decoded but linked ones), adapts every role change from its view and `node/edges` row and restores the walk over its whole input (O(commits), no bodies decoded).
 > Tags: node, permissions, performance
 
-Repro: `cargo test --release --workspace --test it scale::membership_change_and_open_cost -- --ignored --nocapture`; flips: `scale::validity_flip_cost_spec_permissions_5_2`.
+Repro: `cargo test --release --workspace --test it scale::role_change_and_open_cost -- --ignored --nocapture`; flips: `scale::validity_flip_cost_spec_permissions_5_2`.
 
 Done (notes/node.md: Validity, Snapshots vouch for nothing, Snapshots, Import, Open, Rollback): saved walks, the persisted index, journaled rollback, re-judging per changed timeline, the `node/edges` rows, the pass work sets of re-examination; validity that only falls un-merges in place (O(touched pages), no body read: a revoke flip 719 -> 28-40 ms, an invalid delta arriving 704 -> 4-6 ms at 10^4); the re-judge looks things up once per thing and asks perm once per (thing, author, role) (`Timeline::valid_from`): one grant at 10^4 26 -> 12 ms.
 

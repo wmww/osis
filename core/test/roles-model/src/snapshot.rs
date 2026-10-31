@@ -1,5 +1,5 @@
 //! Two-level model of roster snapshots (spec/permissions.md §6). Key actor
-//! K (node 0) owns person actor P, whose admins are devices; P owns G. Membership writes
+//! K (node 0) owns person actor P, whose admins are devices; P owns G. Role writes
 //! target P or G; a write on G by a P-admin acts through the owner chain. A **snapshot** of a
 //! thing is a write by its owner chain (P: K; G: K or a P-admin at that time) carrying the
 //! thing's whole roster. The timeline of a thing starts at its newest *applied* owner-chain
@@ -13,7 +13,7 @@
 //! edge-admins never touch snapshots. A G edge removed while the device still holds the
 //! chain audits nothing (its class on G does not fall).
 //!
-//! Checked (`cargo run --bin membership-model [samples] snapshot`, `cargo test`): compaction, that is
+//! Checked (`cargo run --bin roles-model [samples] snapshot`, `cargo test`): compaction, that is
 //! removing every write of a thing before any applied snapshot of it, never changes the
 //! result; nothing is dropped when nobody is offline; input order independence; bounded
 //! passes. A compaction point that a later backdated removal un-applies diverges from the
@@ -28,7 +28,7 @@
 //! compaction and projection.
 //!
 //! **Ledger**: a snapshot answers authority before its time by its roster and its ledger of
-//! admin intervals (`Entry`): a member held admin inside a closed interval, or after its
+//! admin intervals (`Entry`): a holder held admin inside a closed interval, or after its
 //! roster edge's `since`; a write inside a closed interval is dropped iff the frontier of
 //! the demotion that closed it misses the write. Without the ledger a key-actor re-snapshot
 //! of P that omits a former device disowned that device's earlier records and G writes. Checked: a re-snapshot of P with the
@@ -54,13 +54,13 @@ pub type Key = (u32, usize, usize);
 /// The end of a device's P tenure: by a demotion keyed `key` = (t, demoter node, commit).
 pub struct Event {
     key: Key,
-    member: usize,
+    holder: usize,
 }
 
-/// An admin interval in a snapshot's ledger: `member` held admin from the grant keyed
+/// An admin interval in a snapshot's ledger: `holder` held admin from the grant keyed
 /// `since` (None: from the beginning) until the demotion keyed `until` (None: it still holds
 /// admin in the roster). A closed interval's frontier is its demoter's receipts before its
-/// time; every earlier write of the member that the frontier misses is dropped (each later
+/// time; every earlier write of the holder that the frontier misses is dropped (each later
 /// demotion re-audits, as in the walk). Every interval here ends by an explicit demotion:
 /// the spec's frontier-less ends (`until`, self-removal) and audit-only entries (`since` =
 /// `until`, an explicit demotion auditing after such an end or the standing a demoter kept)
@@ -69,7 +69,7 @@ pub struct Event {
 /// (`tests/it/roster.rs`) cover them.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Entry {
-    pub member: usize,
+    pub holder: usize,
     pub since: Option<Key>,
     pub until: Option<Key>,
 }
@@ -160,7 +160,7 @@ impl SHist {
                 let by_ledger = match p.start {
                     Some(s) if pos_of[j] < pos_of[s] => {
                         let k = self.key(j);
-                        self.writes[s].ledger.iter().any(|e| e.member == z && e.until.map_or(false, |u| k < u && !(self.recv[j][u.1] < u.0)))
+                        self.writes[s].ledger.iter().any(|e| e.holder == z && e.until.map_or(false, |u| k < u && !(self.recv[j][u.1] < u.0)))
                     }
                     _ => false,
                 };
@@ -178,9 +178,9 @@ impl SHist {
         // ending key): the device falls from the owner chain on G. If it holds no G admin edge
         // at that point it falls through edge admin too, so the G walk audits its edge-class
         // writes with that demotion's frontier (spec/permissions.md §5.1 step 4).
-        let mut events: Vec<Event> = p.demotions.iter().map(|&(r, x)| Event { key: self.key(r), member: x }).collect();
+        let mut events: Vec<Event> = p.demotions.iter().map(|&(r, x)| Event { key: self.key(r), holder: x }).collect();
         if let Some(s) = p.start {
-            events.extend(self.writes[s].ledger.iter().filter_map(|e| e.until.map(|key| Event { key, member: e.member })));
+            events.extend(self.writes[s].ledger.iter().filter_map(|e| e.until.map(|key| Event { key, holder: e.holder })));
         }
         events.sort_by_key(|e| e.key);
         let g = self.walk(Thing::G, &order, &self.gg, &chain, dropped_g, audit, if audit { &events } else { &[] });
@@ -222,22 +222,22 @@ impl SHist {
             let mut roles_after = vec![roles.clone(); start_pos.min(order.len()) + 1];
             let mut next_event = 0;
             for pos in start_pos..=order.len() {
-                // Chain demotions up to this point audit edge-class writes of a member that
+                // Chain demotions up to this point audit edge-class writes of a holder that
                 // holds no admin edge here.
                 let upto = if pos < order.len() { self.key(order[pos]) } else { (u32::MAX, usize::MAX, usize::MAX) };
                 let mut grew = false;
                 while next_event < events.len() && events[next_event].key <= upto {
                     let ev = &events[next_event];
                     next_event += 1;
-                    if roles[ev.member] == Role::Admin {
+                    if roles[ev.holder] == Role::Admin {
                         continue;
                     }
                     let (t, d, _) = ev.key;
                     for j in 0..self.writes.len() {
-                        if applied >> j & 1 == 0 || self.writes[j].author != ev.member || self.key(j) > ev.key {
+                        if applied >> j & 1 == 0 || self.writes[j].author != ev.holder || self.key(j) > ev.key {
                             continue;
                         }
-                        if chain(ev.member, pos_of[j]) == Role::Admin {
+                        if chain(ev.holder, pos_of[j]) == Role::Admin {
                             continue; // chain class: dropped up front
                         }
                         if !(self.recv[j][d] < t) {
@@ -304,7 +304,7 @@ impl SHist {
 
     /// The closed ledger interval of `z` in snapshot `sw` containing key `k`.
     fn interval<'a>(&self, sw: &'a SWrite, z: usize, k: Key) -> Option<&'a Entry> {
-        sw.ledger.iter().find(|e| e.member == z && e.since.map_or(true, |s| s < k) && e.until.map_or(false, |u| k < u))
+        sw.ledger.iter().find(|e| e.holder == z && e.since.map_or(true, |s| s < k) && e.until.map_or(false, |u| k < u))
     }
 
     /// Whether `z` held P-admin at position `pos` by P's timeline `p`: before the epoch
@@ -321,7 +321,7 @@ impl SHist {
                 let k = self.key(order[pos]);
                 self.interval(sw, z, k).is_some()
                     || sw.snap.as_ref().unwrap()[z] == Role::Admin
-                        && sw.ledger.iter().filter(|e| e.member == z).all(|e| e.until.map_or(e.since.map_or(true, |s| s < k), |u| u < k))
+                        && sw.ledger.iter().filter(|e| e.holder == z).all(|e| e.until.map_or(e.since.map_or(true, |s| s < k), |u| u < k))
             }
             _ => p.roles_after[pos][z] == Role::Admin,
         }
@@ -333,18 +333,18 @@ impl SHist {
         let order = self.order();
         let mut ledger: Vec<Entry> = p.start.map_or(vec![], |s| self.writes[s].ledger.clone());
         for z in 1..self.n() {
-            let mut open = ledger.iter().position(|e| e.member == z && e.until.is_none());
+            let mut open = ledger.iter().position(|e| e.holder == z && e.until.is_none());
             if open.is_none() && p.roles_after[0][z] == Role::Admin {
                 // In the start roster without a `since`: from after its last closed interval.
-                let since = ledger.iter().filter(|e| e.member == z).filter_map(|e| e.until).max();
-                ledger.push(Entry { member: z, since, until: None });
+                let since = ledger.iter().filter(|e| e.holder == z).filter_map(|e| e.until).max();
+                ledger.push(Entry { holder: z, since, until: None });
                 open = Some(ledger.len() - 1);
             }
             for pos in 0..order.len() {
                 let (before, after) = (p.roles_after[pos][z], p.roles_after[pos + 1][z]);
                 let k = self.key(order[pos]);
                 if before != Role::Admin && after == Role::Admin {
-                    ledger.push(Entry { member: z, since: Some(k), until: None });
+                    ledger.push(Entry { holder: z, since: Some(k), until: None });
                     open = Some(ledger.len() - 1);
                 } else if before == Role::Admin && after != Role::Admin {
                     ledger[open.unwrap()].until = Some(k);
@@ -913,12 +913,12 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
         let mut r: Vec<u32> = (0..n).map(|_| rt(rng, t)).collect();
         r[author] = t;
         let rec = thing == Thing::G && snap.is_none() && rng.below(6) == 0;
-        // Random well-formed ledgers (per member: disjoint intervals in order, ending before
+        // Random well-formed ledgers (per holder: disjoint intervals in order, ending before
         // the snapshot, at most the last one open) exercise the rule; only `ledger_of`
         // produces ones that match a history.
         let mut ledger: Vec<Entry> = vec![];
         if thing == Thing::P && snap.is_some() && rng.below(2) == 0 {
-            for member in 1..n {
+            for holder in 1..n {
                 let intervals = [0, 0, 1, 1, 2][rng.below(5)];
                 let mut times: Vec<u32> = (0..2 * intervals).map(|_| 1 + 2 * rng.below(t as usize / 2) as u32).collect();
                 times.sort();
@@ -928,7 +928,7 @@ pub fn random_hist(rng: &mut crate::Rng) -> SHist {
                     let since = if i == 0 && rng.below(2) == 0 { Option::None } else { Some(key(pair[0], rng)) };
                     let until = if pair.len() == 2 && !(i + 1 == times.len() / 2 && rng.below(3) == 0) { Some(key(pair[1], rng)) } else { Option::None };
                     let open = until.is_none();
-                    ledger.push(Entry { member, since, until });
+                    ledger.push(Entry { holder, since, until });
                     if open {
                         break;
                     }
@@ -981,7 +981,7 @@ mod tests {
     use Role::*;
     use Thing::*;
 
-    // Nodes: K=0, devices D1=1, D2=2, G members A=3 (admin), B=4 (writer), Z=5 (nobody).
+    // Nodes: K=0, devices D1=1, D2=2, G holders A=3 (admin), B=4 (writer), Z=5 (nobody).
     const D1: usize = 1;
     const D2: usize = 2;
     const A: usize = 3;
@@ -1296,7 +1296,7 @@ mod tests {
         let ledger = b.0.ledger_of(&o.p);
         assert_eq!(
             ledger,
-            vec![Entry { member: D1, since: Option::None, until: Some((5, D2, rm + 1)) }, Entry { member: D2, since: Option::None, until: Option::None }]
+            vec![Entry { holder: D1, since: Option::None, until: Some((5, D2, rm + 1)) }, Entry { holder: D2, since: Option::None, until: Option::None }]
         );
         assert!(resnapshot_neutral(&b.0, &o));
         let roster = [None, None, Admin, None, None, None];
@@ -1327,7 +1327,7 @@ mod tests {
         assert!(!b.0.record_valid(&o, gap));
         assert!(resnapshot_neutral(&b.0, &o));
         let ledger = b.0.ledger_of(&o.p);
-        assert_eq!(ledger.iter().find(|e| e.member == D1 && e.until.is_none()).unwrap().since, Some((4, D2, regrant + 1)));
+        assert_eq!(ledger.iter().find(|e| e.holder == D1 && e.until.is_none()).unwrap().since, Some((4, D2, regrant + 1)));
         b.snap_l(K, P, [None, Admin, Admin, None, None, None], ledger, 7, &[]);
         assert!(!b.0.record_valid(&b.0.eval(true), gap));
         let mut no_since = B6::new();

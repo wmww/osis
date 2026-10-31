@@ -94,7 +94,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `/members` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: option<tie> }> | role grants (`since` only in roster snapshots, spec/permissions.md §6; `tied`: the placement the edge goes with, spec/permissions.md §2); read as the role timeline's roster (spec/permissions.md §5) |
 | `/keys` | struct { read, write, admin: { epoch, kem_key, delete_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `/secrets` | struct { boxes: map<(holder, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
-| `/tenures` | set<struct { member: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
+| `/tenures` | set<struct { holder: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
 | `/label` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `/moved` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
 | `/was` | tid (register) | the thing this one continues (spec/permissions.md §7) |
@@ -120,7 +120,7 @@ type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };
 type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
-type box_key = struct { 0 member: tid, 1 role: role, 2 epoch: epoch };
+type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
 type box = enum {
     0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
     1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob }),     // epoch of s; wrap: spec/wire.md §7
@@ -130,7 +130,7 @@ type frontier = struct {
     0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> last counter received contiguously (inclusive)
     1 commits: set<blob>,                                       // commit IDs of commit-form writes and the demoter's chain certificates
 };
-type tenure = struct { 0 member: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
+type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 

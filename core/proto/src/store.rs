@@ -203,10 +203,10 @@ pub trait LabelStore {
     fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
         Ok(Code::OK)
     }
-    /// Whether `dialable` (a verified member proof's key) is the dialable key of a node of a
-    /// current reader of the label (a member peer serving it, spec/sync.md §5): the label then
+    /// Whether `dialable` (a verified co-reader proof's key) is the dialable key of a node of a
+    /// current reader of the label (a co-reader peer serving it, spec/sync.md §5): the label then
     /// opens (no entry box). Hosts: never.
-    fn member_open(&self, _dialable: &[u8; 32], _label: &LabelId) -> Result<bool, StoreError> {
+    fn co_reader_open(&self, _dialable: &[u8; 32], _label: &LabelId) -> Result<bool, StoreError> {
         Ok(false)
     }
     /// Appends a verified step (a child of the head, or a new label's genesis) and logs it:
@@ -296,8 +296,8 @@ pub struct MemoryLabelStore {
     pub entry_cap: Option<usize>,
     /// Ephemeral entry bytes per label beyond which ephemeral uploads get code 12.
     pub ephemeral_cap: Option<u64>,
-    /// (dialable key, label) pairs a member proof opens (`member_open`; member-peer tests).
-    pub member_labels: BTreeSet<([u8; 32], LabelId)>,
+    /// (dialable key, label) pairs a co-reader proof opens (`co_reader_open`; co-reader-peer tests).
+    pub co_reader_labels: BTreeSet<([u8; 32], LabelId)>,
     /// `blob` calls so far (cost tests).
     pub blob_reads: std::cell::Cell<u64>,
     /// IDs `live_ids_in` returned so far (cost tests).
@@ -358,7 +358,7 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Drops a step's claim set (as after `MEMBERSHIP_KEEP`).
+    /// Drops a step's claim set (as after `ROLE_KEEP`).
     pub fn drop_claim_set(&mut self, label: &LabelId, id: &StepId) {
         if let Some((_, c)) = self.labels.get_mut(label).and_then(|s| s.steps.get_mut(id)) {
             *c = None;
@@ -396,8 +396,8 @@ impl MemoryLabelStore {
 }
 
 impl LabelStore for MemoryLabelStore {
-    fn member_open(&self, dialable: &[u8; 32], label: &LabelId) -> Result<bool, StoreError> {
-        Ok(self.member_labels.contains(&(*dialable, *label)))
+    fn co_reader_open(&self, dialable: &[u8; 32], label: &LabelId) -> Result<bool, StoreError> {
+        Ok(self.co_reader_labels.contains(&(*dialable, *label)))
     }
 
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError> {

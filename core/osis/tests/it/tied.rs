@@ -89,7 +89,7 @@ fn share_into_unplace_and_stale_placement() {
     assert!(!bob.roster(t).contains_key(&g), "and grants nothing");
     assert_eq!(reach_of(&bob, t, g).map(|r| r.share), Some(Share::Excluded));
     for db in [&alice, &carol] {
-        assert!(!db.roster(t).contains_key(&g), "the tag's members learn the removal");
+        assert!(!db.roster(t).contains_key(&g), "the tag's holders learn the removal");
     }
     edit(&bob, t, "plan v2");
     w.run();
@@ -161,7 +161,7 @@ fn concurrent_raise_and_unplace_converge_unshared() {
 }
 
 // spec/permissions.md §2 (nesting): a sub-tag shared into the tag with a tied edge, a card shared
-// into the sub-tag; the tag's members reach the card through both; removing the sub-tag from the
+// into the sub-tag; the tag's holders reach the card through both; removing the sub-tag from the
 // tag removes that tied edge and the reach.
 #[test]
 fn nested_tied_shares() {
@@ -378,7 +378,7 @@ fn invalidated_placement_removes_the_tied_edge() {
 // the tag's admin and its other writer drop it from their roster and reach and lose the card
 // (the removal leaves the tag's closure bodies, so only that placement tells Carol).
 #[test]
-fn group_members_learn_edge_removal() {
+fn group_holders_learn_edge_removal() {
     let Setup { mut w, alice, bob, carol, g } = setup();
     let t = card(&bob, "plan");
     bob.write_with(|w| w.place(t, g)).unwrap();
@@ -397,7 +397,7 @@ fn group_members_learn_edge_removal() {
     }
     assert_eq!(text(&carol, t), None, "Carol lost the card");
     // the placement carries no `/keys` or `/secrets` of the card: its refreshed deposit seed
-    // is for its remaining members
+    // is for its remaining holders
     assert_ne!(seed(&bob), old, "the removal refreshed the card's deposit seed");
     assert_ne!(seed(&carol), seed(&bob), "Carol does not learn the new one");
 }

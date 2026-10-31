@@ -80,8 +80,8 @@ pub enum OpenKey {
     Claim { step: StepId, key: SigningSecret },
     /// A key actor's signing key (its static entry).
     Static(SigningSecret),
-    /// A node's dialable key, to a member peer (spec/sync.md §5).
-    Member(SigningSecret),
+    /// A node's dialable key, to a co-reader peer (spec/sync.md §5).
+    CoReader(SigningSecret),
 }
 
 /// What the node asks of the session.
@@ -477,7 +477,7 @@ impl ClientSession {
                     OpenKey::Sync(k) => Proof::sync(k, &label, &ch, &sk),
                     OpenKey::Claim { step, key } => Proof::claim(*step, key, &label, &ch, &sk),
                     OpenKey::Static(k) => Proof::static_entry(k, &label, &ch, &sk),
-                    OpenKey::Member(k) => Proof::member(k, &label, &ch, &sk),
+                    OpenKey::CoReader(k) => Proof::co_reader(k, &label, &ch, &sk),
                 };
                 self.request(|id| Message::Open { id, label, proof }, Pending::Open(label));
             }

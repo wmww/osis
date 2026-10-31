@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A non-writer's deposit of its own membership write (spec/sync.md §5): queued once, sent
+//! A non-writer's deposit of its own role write (spec/sync.md §5): queued once, sent
 //! until a host answers, also after the depositor forgot the label.
 
 use crate::net;
@@ -78,7 +78,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.sync(1).carry_out(done).unwrap();
     // node 1 loses the group before it is back online
     let b = net.tid(1);
-    let d = osis_node::flows::Demotion { member: b, new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(0).demote(&g, &d).unwrap();
     // the admin stays offline: the label keeps the deposit key node 1 signed with (the removal
     // refreshed the deposit seed, spec/crypto.md §3; registered, it refuses node 1's deposit)
@@ -195,7 +195,7 @@ fn missing(net: &mut Net, n: usize, c: &osis_base::CommitId) -> usize {
     net.engine(n).commit_bytes(c).unwrap().map_or(0, |b| osis_commit::CommitBlob::decode(&b).unwrap().missing().len())
 }
 
-// spec/commits.md §4 (atomic apply: a membership commit held in part applies, the rest joins on
+// spec/commits.md §4 (atomic apply: a role commit held in part applies, the rest joins on
 // arrival), spec/sync.md §3, §5: a redeemer whose redemption never reaches K's host sends its
 // projections at once (its chain copy under the target's label, the inbox blob to its own
 // person); the sharer, who syncs K, applies the redemption from them (without the rule it waits
@@ -243,7 +243,7 @@ fn projection_applies_when_k_never_gets_it_spec_commits_4() {
 
 // spec/sync.md §3, §5: a crash between a redemption's commit and carrying out its deliveries
 // loses neither: the inbox delivery's record was written in the commit's transaction, and
-// the deposit of the redeemer's own membership write is placed by its next pass. Single use
+// the deposit of the redeemer's own role write is placed by its next pass. Single use
 // too: L's self-removal, derived from the stored commit after the restart, holds back nothing
 // under K until placed (spec/crypto.md §4).
 #[test]
@@ -311,7 +311,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     let s1 = net.add_host();
     let a = net.node(40, &[s0, s1]);
     let b = net.node(41, &[s0, s1]);
-    // K (label at s1) with member b, a member of T (label at s0)
+    // K (label at s1) with holder b, a holder of T (label at s0)
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
     let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
@@ -322,7 +322,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     net.blocked.insert((a, s1));
     net.set_online(a, true);
     let bt = net.tid(b);
-    let d = osis_node::flows::Demotion { member: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(a).demote(&k, &d).unwrap();
     let c = *done.commits.last().unwrap();
     carry(&mut net, a, done);
@@ -360,7 +360,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let actor = net.engine(0).group_actor(&g);
     let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
     carry(&mut net, 0, done);
-    let demotion = osis_node::flows::Demotion { member: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demotion = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(0).demote(&g, &demotion).unwrap();
     carry(&mut net, 0, done);
     for _ in 0..3 {

@@ -10,7 +10,7 @@ use osis_commit::PurgeItem;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
-use osis_schema::core_types::{GROUP, PLACED, is_membership_class};
+use osis_schema::core_types::{GROUP, PLACED, is_role_class};
 use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Step, type_at, validate_write};
 use std::collections::BTreeMap;
 use std::ops::Range;
@@ -205,7 +205,7 @@ impl<'d> Write<'d> {
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
         let aks = self.db.aspects(t)?;
-        for ak in aks.iter().filter(|a| !read_only(a.as_str()) && !is_membership_class(a.as_str())) {
+        for ak in aks.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
             // the side that holds it (an aspect held on both sides, by keys that disagree on
             // its lifetime, loses its durable side here)
             if self.db.engine(|e| e.has_durable(&t, ak)) {
@@ -239,7 +239,7 @@ impl<'d> Write<'d> {
     pub fn at<K: AspectKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
         let bad = match ak_of(&key) {
             Err(e) => Some(e),
-            Ok(ak) if read_only(ak.as_str()) || is_membership_class(ak.as_str()) => Some(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
+            Ok(ak) if read_only(ak.as_str()) || is_role_class(ak.as_str()) => Some(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
             Ok(_) => None,
         };
         let tid = self.resolve(tid);

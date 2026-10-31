@@ -275,7 +275,7 @@ fn relay_reaches_subscribers_only() {
     assert_eq!(w.take(b).len(), 1);
 }
 
-// spec/sync.md §5 (relay-only uploads; security review H1): a reader or removed member holding
+// spec/sync.md §5 (relay-only uploads; security review H1): a reader or removed holder holding
 // one stamped relay blob re-uploads it in a loop: the subscriber gets it once; a blob without an
 // expiry, expired, expiring far ahead or over `MAX_RELAY_BLOB` is refused; past the label's relay
 // rate fresh relays get code 4

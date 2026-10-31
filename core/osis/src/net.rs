@@ -387,7 +387,7 @@ pub struct GroupPolicy {
     pub publish_reach: Option<bool>,
     /// This device holds none of the group (receipts-only): its labels are not synced, nothing
     /// of it is downloaded or placed from here; what is already here stays, no longer updated.
-    /// A demotion reads the group's commit headers only, so the member's edits there are kept
+    /// A demotion reads the group's commit headers only, so the holder's edits there are kept
     /// (spec/permissions.md §5.3).
     pub receipts_only: bool,
 }

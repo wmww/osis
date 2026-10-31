@@ -42,21 +42,21 @@ impl Timeline {
         let start = self.epoch_start(thing).and_then(|id| self.roster_snapshot(&id));
         let from: Option<Point> = start.map(|s| s.point());
         let mut ledger: Vec<Tenure> = start.map(|s| s.ledger.clone()).unwrap_or_default();
-        // Per member: changes after the epoch start, in order.
+        // Per holder: changes after the epoch start, in order.
         let mut changes: BTreeMap<Tid, Vec<&crate::walk::Change>> = BTreeMap::new();
         for c in &self.walked.history {
             if c.target == *thing && from.is_none_or(|p| c.point > p) {
-                changes.entry(c.member).or_default().push(c);
+                changes.entry(c.holder).or_default().push(c);
             }
         }
-        let mut members: Vec<Tid> = changes.keys().copied().collect();
+        let mut holders: Vec<Tid> = changes.keys().copied().collect();
         if let Some(s) = start {
-            members.extend(s.roster.keys().copied());
+            holders.extend(s.roster.keys().copied());
         }
-        members.sort();
-        members.dedup();
+        holders.sort();
+        holders.dedup();
         let mut roster = BTreeMap::new();
-        for m in members {
+        for m in holders {
             let first = start.and_then(|s| s.roster.get(&m)).copied();
             let mut edge: Option<Edge> = first.map(|e| Edge { since: None, ..e });
             // Key of the write that set the current edge.
@@ -69,7 +69,7 @@ impl Timeline {
                     && let Some(o) = open.take()
                 {
                     let at = Ts::make(u, 0).unwrap_or(c.point.ts).min(c.point.ts);
-                    ledger.push(Tenure { member: m, role: o.role, since: o.since, until: Point::expiry(at), frontier: None });
+                    ledger.push(Tenure { holder: m, role: o.role, since: o.since, until: Point::expiry(at), frontier: None });
                 }
                 // An edge already expired when written grants nothing.
                 let new_role = c.edge.filter(|e| e.alive_at(Some(c.point.ts))).map(|e| e.role).filter(|r| *r >= Role::Write);
@@ -81,7 +81,7 @@ impl Timeline {
                 let split = c.audited.is_some_and(|r| open_role.is_some_and(|o| o < r));
                 if open_role != new_role || split {
                     if let Some(o) = open.take() {
-                        ledger.push(Tenure { member: m, role: o.role, since: o.since, until: key, frontier: audit.as_ref().map(|a| a.0.clone()) });
+                        ledger.push(Tenure { holder: m, role: o.role, since: o.since, until: key, frontier: audit.as_ref().map(|a| a.0.clone()) });
                     }
                     open = new_role.map(|r| Open { role: r, since: Some(key) });
                 }
@@ -89,7 +89,7 @@ impl Timeline {
                 // of the demoter's own standing kept since an earlier demotion): an entry of its
                 // own.
                 if let Some((f, r)) = audit.filter(|_| open_role.is_none()) {
-                    ledger.push(Tenure { member: m, role: r, since: Some(key), until: key, frontier: Some(f) });
+                    ledger.push(Tenure { holder: m, role: r, since: Some(key), until: key, frontier: Some(f) });
                 }
                 edge = c.edge;
                 set_key = Some(key);

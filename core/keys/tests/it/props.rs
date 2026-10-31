@@ -1,14 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Random membership histories of one actor (spec/crypto.md §4, spec/permissions.md §3): a
-//! member departed from a role before an epoch was made opens nothing of that role at it; every
-//! current member opens the newest epoch of each of its roles after every step.
+//! Random role histories of one actor (spec/crypto.md §4, spec/permissions.md §3): a
+//! holder departed from a role before an epoch was made opens nothing of that role at it; every
+//! current holder opens the newest epoch of each of its roles after every step.
 
 use crate::common;
 use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::{Epoch, Secret32};
 use osis_keys::{
-    ActorEpochs, MemberKeys, Opener, ROLES, Recipient, box_member, ingest, roles_up_to, rotate,
+    ActorEpochs, HolderKeys, Opener, ROLES, Recipient, box_holder, ingest, roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
 use proptest::prelude::*;
@@ -80,8 +80,8 @@ impl Sim {
         }
     }
 
-    fn members(&self) -> Vec<Recipient> {
-        let mut v = vec![Recipient { member: self.p, role: Role::Admin, keys: MemberKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe) }];
+    fn holders(&self) -> Vec<Recipient> {
+        let mut v = vec![Recipient { holder: self.p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&self.pe)).unwrap().with_own(&self.pe) }];
         v.extend(self.roster.iter().map(|(i, r)| self.rcpt(*i, *r)));
         v
     }
@@ -93,7 +93,7 @@ impl Sim {
 
     fn rotate(&mut self, roles: &BTreeSet<Role>) {
         let mut r = self.next_rng();
-        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.members(), &|_, _| true, &mut r).unwrap();
+        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &|_, _| true, &mut r).unwrap();
         assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
         rot.record(&mut self.view);
@@ -104,7 +104,7 @@ impl Sim {
             Op::Grant(i, role) if !self.roster.contains_key(&i) && !self.departed.contains_key(&i) => {
                 self.roster.insert(i, role);
                 let mut r = self.next_rng();
-                let w = box_member(&self.a, &self.view, &self.s, &self.rcpt(i, role), &roles_up_to(role), &mut r).unwrap().unwrap();
+                let w = box_holder(&self.a, &self.view, &self.s, &self.rcpt(i, role), &roles_up_to(role), &mut r).unwrap().unwrap();
                 w.apply(&mut self.s);
             }
             Op::Remove(i) | Op::Demote(i, _) if self.roster.contains_key(&i) => {
@@ -130,7 +130,7 @@ impl Sim {
                 let mut forks = Vec::new();
                 for _ in 0..2 {
                     let mut r = self.next_rng();
-                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.members(), &|_, _| true, &mut r).unwrap());
+                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.holders(), &|_, _| true, &mut r).unwrap());
                 }
                 for f in &forks {
                     f.secrets.apply(&mut self.s);
@@ -147,8 +147,8 @@ impl Sim {
         let (t, k) = &self.pool[i];
         let mut v = ActorEpochs::default();
         let opener = match k {
-            Kind::Actor(e) => Opener::Actor { member: *t, epochs: e },
-            Kind::Key(seed) => Opener::KeyActor { member: *t, seed },
+            Kind::Actor(e) => Opener::Actor { holder: *t, epochs: e },
+            Kind::Key(seed) => Opener::KeyActor { holder: *t, seed },
         };
         let errs = ingest(&self.a, &self.s, &opener, &mut v, None).unwrap();
         assert!(errs.is_empty(), "{errs:?}");
@@ -160,14 +160,14 @@ impl Sim {
             let v = self.opened(*i);
             for r in ROLES.into_iter().filter(|r| r <= role) {
                 let newest = self.view.role(r).newest().unwrap();
-                assert!(v.role(r).secret(&newest).is_some(), "member {i} role {r:?}");
+                assert!(v.role(r).secret(&newest).is_some(), "holder {i} role {r:?}");
             }
             // Holding the state as a compaction snapshot, it agrees on the newest epoch.
             let mut sv = v.clone();
             osis_keys::snapshot_keyed(&self.s, &mut sv).unwrap();
             assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
             for r in ROLES.into_iter().filter(|r| r <= role) {
-                assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "member {i} role {r:?}");
+                assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "holder {i} role {r:?}");
             }
         }
         for (i, (lost, known)) in &self.departed {
@@ -182,11 +182,11 @@ impl Sim {
 }
 
 proptest! {
-    // spec/crypto.md §4, spec/permissions.md §3: departed members open nothing newer; current
-    // members open the newest epoch of each of their roles and, establishing from a snapshot of
+    // spec/crypto.md §4, spec/permissions.md §3: departed holders open nothing newer; current
+    // holders open the newest epoch of each of their roles and, establishing from a snapshot of
     // the state, agree on it.
     #[test]
-    fn departures_and_current_members(ops in prop::collection::vec(op(), 1..10)) {
+    fn departures_and_current_holders(ops in prop::collection::vec(op(), 1..10)) {
         let mut sim = Sim::new();
         for o in &ops {
             sim.step(o);

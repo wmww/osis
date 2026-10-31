@@ -1,13 +1,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! A departure two hops below a doc (spec/crypto.md §4 covers rule, recursive; spec/permissions.md
-//! §3 top-down rotation): device D removed from person P, P member of team T, T member of doc U.
+//! §3 top-down rotation): device D removed from person P, P holder of team T, T holder of doc U.
 
 use crate::common;
 use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, Departure, MemberKeys, MemoryGraph, MemoryHeldActors, Opener, Recipient, ingest, may_encrypt_under, plan_departure, roles_up_to,
+    ActorEpochs, Departure, HolderKeys, MemoryGraph, MemoryHeldActors, Opener, Recipient, ingest, may_encrypt_under, plan_departure, roles_up_to,
     rotate,
 };
 use osis_schema::core_types::Secrets;
@@ -25,25 +25,25 @@ fn rseed() -> Secret32 {
 /// Recovery key R owns everything; the node holds its seed.
 fn owner() -> Recipient {
     let seed = rseed();
-    Recipient { member: tid(0x11), role: Role::Admin, keys: MemberKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed) } }
+    Recipient { holder: tid(0x11), role: Role::Admin, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed) } }
 }
 
-/// An actor member whose secrets the node holds (symmetric boxes naming its newest epoch).
+/// An actor holder whose secrets the node holds (symmetric boxes naming its newest epoch).
 fn holder(a: &Actor, role: Role) -> Recipient {
-    Recipient { member: a.tid, role, keys: MemberKeys::from_keys(&keys_of(&a.view)).unwrap().with_own(&a.view) }
+    Recipient { holder: a.tid, role, keys: HolderKeys::from_keys(&keys_of(&a.view)).unwrap().with_own(&a.view) }
 }
 
-fn rotated(a: &Actor, members: &[Recipient], seed: u64) -> Actor {
-    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, members, &|_, _| true, &mut rng(seed)).unwrap();
+fn rotated(a: &Actor, holders: &[Recipient], seed: u64) -> Actor {
+    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, holders, &|_, _| true, &mut rng(seed)).unwrap();
     let (mut view, mut s) = (a.view.clone(), a.s.clone());
     r.secrets.apply(&mut s);
     r.record(&mut view);
     Actor { tid: a.tid, view, s }
 }
 
-fn fresh(t: Tid, members: &[Recipient], seed: u64) -> Actor {
+fn fresh(t: Tid, holders: &[Recipient], seed: u64) -> Actor {
     let derived = ActorEpochs::derived(&ActorEpochs::key_actor(&rseed()), &t);
-    rotated(&Actor { tid: t, view: derived, s: Secrets::default() }, members, seed)
+    rotated(&Actor { tid: t, view: derived, s: Secrets::default() }, holders, seed)
 }
 
 fn held(actors: &[&Actor]) -> MemoryHeldActors {
@@ -54,7 +54,7 @@ fn held(actors: &[&Actor]) -> MemoryHeldActors {
     h
 }
 
-// spec/crypto.md §4: a departure inside a member is covered only if the member's box names its
+// spec/crypto.md §4: a departure inside a holder is covered only if the holder's box names its
 // newest keyset epoch and that epoch covers the departure, recursively; spec/permissions.md §3:
 // the chain rotates top-down (P, T, U), and the removed device, holding P's old secrets, opens
 // nothing at U's new epoch.
@@ -76,7 +76,7 @@ fn two_hop_departure() {
     let order: Vec<Tid> = plan.required().into_iter().map(|(x, _)| *x).collect();
     assert_eq!(order, vec![p.tid, t.tid, u.tid]);
     let deps: Vec<Departure> = plan.entries[&u.tid].departures.iter().cloned().collect();
-    assert_eq!(deps, vec![Departure::inside(t.tid, &Departure::inside(p.tid, &Departure::member(dt, Role::Read)))]);
+    assert_eq!(deps, vec![Departure::inside(t.tid, &Departure::inside(p.tid, &Departure::holder(dt, Role::Read)))]);
 
     // D removed from P: P rotates in the removal commit.
     let p2 = rotated(&p, &[owner(), dev(d2t, &d2seed)], 4);
@@ -99,21 +99,21 @@ fn two_hop_departure() {
 
     // D holds P's old secrets; following the chain it opens nothing new.
     let mut dp = ActorEpochs::default();
-    ingest(&p.tid, &p.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp, None).unwrap();
-    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: dt, seed: &dseed }, &mut dp, None).unwrap();
+    ingest(&p.tid, &p.s, &Opener::KeyActor { holder: dt, seed: &dseed }, &mut dp, None).unwrap();
+    ingest(&p.tid, &p2.s, &Opener::KeyActor { holder: dt, seed: &dseed }, &mut dp, None).unwrap();
     assert!(dp.read.secret(&p2.view.read.newest().unwrap()).is_none());
     let mut dtv = ActorEpochs::default();
-    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &dp }, &mut dtv, None).unwrap();
+    ingest(&t.tid, &t2.s, &Opener::Actor { holder: p.tid, epochs: &dp }, &mut dtv, None).unwrap();
     assert!(dtv.read.secret(&t2.view.read.newest().unwrap()).is_none());
     let mut du = ActorEpochs::default();
-    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &dtv }, &mut du, None).unwrap();
+    ingest(&u.tid, &u2.s, &Opener::Actor { holder: t.tid, epochs: &dtv }, &mut du, None).unwrap();
     assert!(du.read.secret(&u2.view.read.newest().unwrap()).is_none());
     // The remaining device follows the same chain to U's new epoch.
     let mut d2p = ActorEpochs::default();
-    ingest(&p.tid, &p2.s, &Opener::KeyActor { member: d2t, seed: &d2seed }, &mut d2p, None).unwrap();
+    ingest(&p.tid, &p2.s, &Opener::KeyActor { holder: d2t, seed: &d2seed }, &mut d2p, None).unwrap();
     let mut d2tv = ActorEpochs::default();
-    ingest(&t.tid, &t2.s, &Opener::Actor { member: p.tid, epochs: &d2p }, &mut d2tv, None).unwrap();
+    ingest(&t.tid, &t2.s, &Opener::Actor { holder: p.tid, epochs: &d2p }, &mut d2tv, None).unwrap();
     let mut d2u = ActorEpochs::default();
-    ingest(&u.tid, &u2.s, &Opener::Actor { member: t.tid, epochs: &d2tv }, &mut d2u, None).unwrap();
+    ingest(&u.tid, &u2.s, &Opener::Actor { holder: t.tid, epochs: &d2tv }, &mut d2u, None).unwrap();
     assert!(d2u.read.secret(&u2.view.read.newest().unwrap()).is_some());
 }

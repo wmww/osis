@@ -2,7 +2,7 @@
 //! Implementation; notes/local-store.md). Local format, never on the wire. A saved walk is
 //! restored only over exactly the inputs it was walked from: the bytes carry a BLAKE3 tag over
 //! the format, the caller's salt (the rules), the walk's whole input (owner links, every
-//! membership commit and roster snapshot, frontiers by their sizes: a record's frontier is
+//! role commit and roster snapshot, frontiers by their sizes: a record's frontier is
 //! fixed by its commit ID, `HeldSet`) and the body, so anything else (other rules, other or
 //! changed inputs, damaged bytes) gives `None` and the caller evaluates from scratch. Commits
 //! added since go on through `Timeline::extend`, as at run time.
@@ -15,7 +15,7 @@
 use crate::graph::{Class, Edges, Owner, Owners};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Dots, Edge, Frontier, MembershipCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
+use crate::types::{Dots, Edge, Frontier, RoleCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -213,7 +213,7 @@ impl W {
 }
 
 /// Hashes the walk's whole input, as the tag covers it.
-fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<MembershipCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>) {
+fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>) {
     let mut w = W::default();
     let mut flush = |w: &mut W| {
         h.update(&w.out);
@@ -241,7 +241,7 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
         w.len(c.ops.len());
         for o in &c.ops {
             w.tid(&o.target);
-            w.tid(&o.member);
+            w.tid(&o.holder);
             w.opt(o.edge.as_ref(), W::edge);
             w.dots(&o.dots);
         }
@@ -262,7 +262,7 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
         }
         w.len(s.ledger.len());
         for t in &s.ledger {
-            w.tid(&t.member);
+            w.tid(&t.holder);
             w.role(t.role);
             w.opt(t.since.as_ref(), W::point);
             w.point(&t.until);
@@ -273,7 +273,7 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
     flush(&mut w);
 }
 
-fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<MembershipCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>, body: &[u8]) -> [u8; 32] {
+fn tag(salt: &[u8], owners: &Owners, commits: &BTreeMap<CommitId, Arc<RoleCommit>>, snaps: &BTreeMap<CommitId, Arc<RosterSnapshot>>, body: &[u8]) -> [u8; 32] {
     let mut h = osis_base::hash::Hasher::new();
     h.update(FORMAT).update(&(salt.len() as u64).to_le_bytes()).update(salt);
     put_input(&mut h, owners, commits, snaps);
@@ -355,7 +355,7 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
     w.len(wk.history.len());
     for c in &wk.history {
         w.point(&c.point);
-        w.tid(&c.member);
+        w.tid(&c.holder);
         w.tid(&c.target);
         w.opt(c.edge.as_ref(), W::edge);
         match &c.explicit {
@@ -698,7 +698,7 @@ impl HeldSet for Only<'_> {
     fn things(&self) -> Vec<Tid> {
         self.things.iter().copied().collect()
     }
-    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<MembershipCommit>> {
+    fn edge_commits(&self, thing: &Tid) -> Vec<Arc<RoleCommit>> {
         if !self.things.contains(thing) {
             return Vec::new();
         }
@@ -758,7 +758,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
     let edges = r.edges()?;
     let mut history = Vec::new();
     for _ in 0..r.len()? {
-        let (point, member, target) = (r.point()?, r.tid()?, r.tid()?);
+        let (point, holder, target) = (r.point()?, r.tid()?, r.tid()?);
         let edge = r.opt(R::edge)?;
         let explicit = match r.u8()? {
             0 => None,
@@ -766,7 +766,7 @@ fn walk(r: &mut R<'_>, input: &Input) -> Option<Outcome> {
             _ => return None,
         };
         let audited = r.opt(R::role)?;
-        history.push(Change { point, member, target, edge, explicit, audited });
+        history.push(Change { point, holder, target, edge, explicit, audited });
     }
     let applied = (0..r.len()?).map(|_| Some((r.wid()?, r.applied()?))).collect::<Option<BTreeMap<_, _>>>()?;
     let mut demotions = BTreeMap::new();

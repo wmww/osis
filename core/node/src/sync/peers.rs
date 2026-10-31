@@ -402,7 +402,7 @@ impl SyncEngine {
 
     /// Records the sharer node a followed link names (`peers`: its `peer://` addresses, from
     /// the link text only; spec/permissions.md §9). It is dialed like a co-reader (ephemeral key,
-    /// no member proof) for K's labels and the target's, and nothing else, until `forget_link`.
+    /// no co-reader proof) for K's labels and the target's, and nothing else, until `forget_link`.
     /// This node shows the sharer its IP, never its dialable key.
     pub fn follow_link_peer(&mut self, k: Tid, target: Tid, peers: Vec<Address>) {
         let peers: Vec<Address> = peers.into_iter().filter(is_peer).collect();
@@ -628,8 +628,8 @@ impl SyncEngine {
     /// Whether `/reach` goes under `g`'s labels: the policy set for `g`, else when everyone who
     /// reads it is this node's own or a contact (notes/sync.md: excluded by default from labels
     /// shared with non-contacts): its reader actor is this node's own (an actor this node is a
-    /// member of), or each member of it is this node's own, a contact, or a thing such an actor
-    /// owns whose own members pass the same test (a link's group holds a key actor: it fails).
+    /// holder of), or each holder of it is this node's own, a contact, or a thing such an actor
+    /// owns whose own holders pass the same test (a link's group holds a key actor: it fails).
     pub fn publishes_reach(&self, g: &Tid) -> bool {
         if let Some(p) = self.state.reach_policy.get(g) {
             return *p;
@@ -639,12 +639,12 @@ impl SyncEngine {
 
     fn contacts_only(&self, actor: &Tid, depth: u32) -> bool {
         let me = self.engine.tid();
-        let own = |x: &Tid| *x == me || self.engine.core.current_members(x).iter().any(|(t, _, _)| *t == me);
+        let own = |x: &Tid| *x == me || self.engine.core.current_holders(x).iter().any(|(t, _, _)| *t == me);
         if own(actor) {
             return true;
         }
         let owned = |t: &Tid| self.engine.owner_chain(t).skip(1).any(|x| own(&x));
-        self.engine.core.current_members(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && owned(m) && self.contacts_only(m, depth - 1))
+        self.engine.core.current_holders(actor).iter().all(|(m, _, _)| own(m) || self.state.contacts.contains(m) || depth > 0 && owned(m) && self.contacts_only(m, depth - 1))
     }
 
     /// This node's chain certificates and node card for `g` (`Engine::certificates`), without

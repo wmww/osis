@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A label a node syncs with no host (spec/sync.md §5, member peer): the node serves it as
+//! A label a node syncs with no host (spec/sync.md §5, co-reader peer): the node serves it as
 //! such a host would hold it after its sync, so what the label must no longer hold leaves the
 //! served state too, and a removal moves its head.
 
@@ -41,7 +41,7 @@ fn listed(net: &mut Net, n: usize, l: &LabelId) -> Vec<BlobId> {
     net.sync(n).entries(l).into_iter().map(|(id, _)| id).collect()
 }
 
-// spec/sync.md §5 (member peer: served complete), spec/commits.md §5 (a purge drops every body
+// spec/sync.md §5 (co-reader peer: served complete), spec/commits.md §5 (a purge drops every body
 // carrying the values, chunks included): a purged large value's chunks leave the served state
 // and the node.
 #[test]
@@ -71,14 +71,14 @@ fn purged_chunks_leave_local_label_spec_sync_5() {
 
 // spec/sync.md §5 (re-registration: an admin holding a newer established epoch issues a child of
 // the head), spec/permissions.md §3 (a removal rotates): removing a writer moves the head of the
-// label served with no host, so the removed member's old keys open nothing new.
+// label served with no host, so the removed holder's old keys open nothing new.
 #[test]
 fn removal_moves_local_head_spec_sync_5() {
     let (mut net, a, b, g, l) = setup();
     let steps = |net: &mut Net| net.engine(a).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap().steps.len();
     assert_eq!(steps(&mut net), 1);
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { member: bt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.advance(31_000);
@@ -177,7 +177,7 @@ fn one_step_per_rotation_without_host_spec_sync_5() {
     };
     assert_eq!(shape(&mut net, a), (1, 1));
     let ct = net.tid(c);
-    let done = net.engine(a).demote(&g, &Demotion { member: ct, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -188,7 +188,7 @@ fn one_step_per_rotation_without_host_spec_sync_5() {
     }
 }
 
-// spec/sync.md §3 (a certificate copy carries the blobs its parts link), §5 (member peer: what
+// spec/sync.md §3 (a certificate copy carries the blobs its parts link), §5 (co-reader peer: what
 // a host's sync would delete leaves the served state): once the copy has gone (here expired),
 // the entries of the blobs it linked go too.
 #[test]
@@ -319,7 +319,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     }
     // a removal: the head moves
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { member: bt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     step(&mut net);
@@ -329,7 +329,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     (steps, passes)
 }
 
-// spec/sync.md §5 (member peer: served as a host's sync would leave it), §6, §7: local passes
+// spec/sync.md §5 (co-reader peer: served as a host's sync would leave it), §6, §7: local passes
 // over work sets serve what local passes judging everything serve, at every step.
 #[test]
 fn local_work_sets_match_full_passes_spec_sync_5() {
@@ -376,7 +376,7 @@ fn local_inbox_run(full: bool, waits: &[u64]) -> Vec<Vec<String>> {
     steps
 }
 
-// spec/sync.md §3 (an inbox blob expires at its prefix's T), §5 (member peer: served as a
+// spec/sync.md §3 (an inbox blob expires at its prefix's T), §5 (co-reader peer: served as a
 // host's sync would leave it): an inbox blob logged under a label served with no host
 // goes at its expiry, with local passes over work sets as with passes judging everything.
 #[test]
@@ -394,7 +394,7 @@ fn local_inbox_blob_expires_spec_sync_5() {
 }
 
 // spec/sync.md §5 (a writer promotes a deposit it verified, completing the author's chain first;
-// member peer: served as a host's sync would leave it): a reader that dials the writer serving
+// co-reader peer: served as a host's sync would leave it): a reader that dials the writer serving
 // a label with no host (the writer cannot dial back: no `/reach`) deposits its node card; the
 // writer's local pass stamps it as a promotion would, never the reader's heartbeat.
 #[test]
@@ -513,8 +513,8 @@ fn expired_link_at_no_host_finalized_spec_permissions_9() {
 }
 
 // spec/permissions.md §3 (re-seal at the end of a complete pass; a label with no host and no
-// peer it was received from passes vacuously, once the peer wait after the membership change is
-// over), spec/sync.md §5 (member peer): admin `a` serves g's label alone; admin `b`'s rotation
+// peer it was received from passes vacuously, once the peer wait after the role change is
+// over), spec/sync.md §5 (co-reader peer): admin `a` serves g's label alone; admin `b`'s rotation
 // leaves reader `c` out and `b` goes away. `a` re-seals `c` after `peer_pass_wait_ms`, not
 // before, and only once (`c`'s stranded heartbeat included), and the box reaches `c`. When `a`
 // restarts after b's rotation reached it, the wait counts from the restart: it hears its peers
@@ -552,10 +552,10 @@ fn hostless_reseal(restart: bool) {
     let newest = |net: &mut Net, n: usize| net.engine(n).epochs(&g).and_then(|e| e.read.newest_held().map(|x| x.0));
     let e1 = newest(&mut net, a).unwrap();
     assert_ne!(newest(&mut net, c), Some(e1), "c has no box at b's epoch");
-    // a's membership commits naming c's boxes (`/secrets` of g): the re-seals
+    // a's role commits naming c's boxes (`/secrets` of g): the re-seals
     let reseals = |net: &mut Net| {
         let ids = net.engine(a).commit_ids();
-        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_membership() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/secrets"))).count()
+        ids.iter().filter(|id| net.engine(a).header(id).is_some_and(|h| h.author == ta && h.kind.is_role() && h.aspects.iter().any(|x| x.tid == g && x.ak.as_str() == "/secrets"))).count()
     };
     let before = reseals(&mut net);
     net.advance(60_000);

@@ -394,10 +394,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             stream_lines(ctx, &rx, count, timeout)
         }
-        Cmd::Via { t, member } => {
-            let p = db.member_path(ctx.tid(&t)?, ctx.tid(&member)?);
+        Cmd::Via { t, holder } => {
+            let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?);
             if p.is_empty() {
-                return Err(exit(3, "no such member"));
+                return Err(exit(3, "no such holder"));
             }
             ctx.emit(&p.iter().map(|(a, b)| format!("{} {}", a.to_uri(), b.to_uri())).collect::<Vec<_>>(), J::Arr(p.iter().map(|(a, b)| J::Arr(vec![J::tid(*a), J::tid(*b)])).collect()))
         }
@@ -409,18 +409,18 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?);
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, member, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&member)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
-        Cmd::Edge { t, member, role, until, invite } => {
-            let (t, m) = (ctx.tid(&t)?, ctx.tid(&member)?);
+        Cmd::Grant { t, holder, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
+        Cmd::Edge { t, holder, role, until, invite } => {
+            let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.roster(t).get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
             };
             Ok(db.change_edge(t, m, role, edge_opts(&until, &invite)?)?)
         }
-        Cmd::Demote { t, member, role, d } => {
+        Cmd::Demote { t, holder, role, d } => {
             let to = if role == "remove" { Lower::Remove } else { Lower::To(parse_role(&role)?) };
-            let (t, m, d) = (ctx.tid(&t)?, ctx.tid(&member)?, demotion(&d, ctx)?);
+            let (t, m, d) = (ctx.tid(&t)?, ctx.tid(&holder)?, demotion(&d, ctx)?);
             wait(ctx, db.demote(t, m, to, d))
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
@@ -830,10 +830,10 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
 }
 
 const KINDS: [(&str, CommitKind); 6] =
-    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("membership", CommitKind::Membership), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import), ("ephemeral", CommitKind::Ephemeral)];
+    [("change", CommitKind::Change), ("revert", CommitKind::Revert), ("role", CommitKind::Role), ("snapshot", CommitKind::Snapshot), ("import", CommitKind::Import), ("ephemeral", CommitKind::Ephemeral)];
 
 fn kind_of(s: &str) -> anyhow::Result<CommitKind> {
-    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, membership, snapshot or import")))
+    KINDS.iter().find(|k| k.0 == s).map(|k| k.1).ok_or_else(|| usage(format!("unknown commit kind {s:?}: change, revert, role, snapshot or import")))
 }
 
 fn kind_text(k: CommitKind) -> &'static str {
@@ -996,7 +996,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
                 lines.push(format!("group {}", g.to_uri()));
             }
             for (m, e) in db.roster(t) {
-                lines.push(format!("member {} {:?}", m.to_uri(), e));
+                lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }
         InspectCmd::Group { g } => {
@@ -1018,7 +1018,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
             let ep = db.engine(|e| e.epochs(&a));
             lines.push(format!("actor {} epochs {ep:?}", a.to_uri()));
             for (m, e) in db.roster(a) {
-                lines.push(format!("member {} {:?}", m.to_uri(), e));
+                lines.push(format!("holder {} {:?}", m.to_uri(), e));
             }
         }
         InspectCmd::Commit { id } => {

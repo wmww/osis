@@ -97,7 +97,7 @@ pub struct RegWrite {
     pub(crate) value: Option<Value>,
 }
 
-/// §5.1. Only an aspect root or a `Slots` member carries a reset.
+/// §5.1. Only an aspect root or a `Slots` slot carries a reset.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Register {
     pub(crate) reset: Option<Stamp>,
@@ -325,12 +325,12 @@ impl Map {
 }
 
 /// A position that has seen several encodings (§7): the register slot and one slot per other
-/// encoding, every slot holding the register's embedding. At least two members; never in a
+/// encoding, every slot holding the register's embedding. At least two slots; never in a
 /// writer's delta.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Slots {
     pub(crate) reg: Option<Register>,
-    pub(crate) members: BTreeMap<Encoding, Fragment>,
+    pub(crate) slots: BTreeMap<Encoding, Fragment>,
 }
 
 /// A fragment of an aspect state or delta (§3.2).
@@ -429,7 +429,7 @@ impl Fragment {
             Fragment::Enum(x) => x.meta.reset.is_some() || x.payloads.values().any(Fragment::has_any_reset),
             Fragment::Map(m) => m.meta.reset.is_some() || m.entries.values().any(|e| e.reset.is_some() || e.frag.as_deref().is_some_and(Fragment::has_any_reset)),
             Fragment::Seq(_) => true,
-            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.members.values().any(Fragment::has_any_reset),
+            Fragment::Slots(s) => s.reg.as_ref().is_some_and(|r| r.reset.is_some()) || s.slots.values().any(Fragment::has_any_reset),
         }
     }
 

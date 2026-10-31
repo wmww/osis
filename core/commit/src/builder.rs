@@ -21,7 +21,7 @@ pub struct AspectWrite {
     pub lo: u64,
     pub hi: u64,
     /// Canonical delta (or snapshot) bytes, encoded against [`crate::writer_ctx`]: exactly one
-    /// for every kind but membership and roster snapshots.
+    /// for every kind but role and roster snapshots.
     pub deltas: Vec<Vec<u8>>,
     /// Resolved retention ([`crate::retention`] helpers: fixed, override, schema default,
     /// untyped default; snapshot; an import's origin delta's).

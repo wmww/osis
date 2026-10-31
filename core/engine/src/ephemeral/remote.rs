@@ -28,7 +28,7 @@ use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, So
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
 use osis_perm::{Dots, Point, Validity};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{PLACED, is_membership_class};
+use osis_schema::core_types::{PLACED, is_role_class};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -779,12 +779,12 @@ impl Engine {
     }
 
     /// Whether part `ai` of ephemeral commit `h` is valid here (spec/permissions.md §5.2): judged
-    /// as its author's snapshot delta at its `ts`, by commit ID. Membership-class aspects and
+    /// as its author's snapshot delta at its `ts`, by commit ID. Role-class aspects and
     /// the other core aspects but `/group` (spec/data-model.md §8) take no ephemeral part.
     fn eph_part_valid(&self, h: &Header, id: &CommitId, ai: usize, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        if is_membership_class(ak) || (is_core_aspect(ak) && ak != PLACED.ak()) {
+        if is_role_class(ak) || (is_core_aspect(ak) && ak != PLACED.ak()) {
             return false;
         }
         self.eph_write_valid(&a.tid, ak, h.author, h.ts, id, carried)

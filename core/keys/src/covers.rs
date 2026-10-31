@@ -9,13 +9,13 @@ use osis_schema::core_types::{BoxKey, SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-/// A departure as seen from an actor A (spec/crypto.md §4): `member` left roles `from` and above
-/// of the last actor of `via`, or of A itself when `via` is empty. `via[0]` is a member (or the
-/// owner) of A, `via[1]` a member of `via[0]`, and so on: a departure inside a member.
+/// A departure as seen from an actor A (spec/crypto.md §4): `holder` left roles `from` and above
+/// of the last actor of `via`, or of A itself when `via` is empty. `via[0]` is a holder (or the
+/// owner) of A, `via[1]` a holder of `via[0]`, and so on: a departure inside a holder.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Departure {
     pub via: Via,
-    pub member: Tid,
+    pub holder: Tid,
     pub from: Role,
 }
 
@@ -168,29 +168,29 @@ impl std::fmt::Debug for Via {
 }
 
 impl Departure {
-    /// Member `member` of A removed, demoted below `from`, or past its `until`.
-    pub fn member(member: Tid, from: Role) -> Departure {
-        Departure { via: Via::default(), member, from }
+    /// Holder `holder` of A removed, demoted below `from`, or past its `until`.
+    pub fn holder(holder: Tid, from: Role) -> Departure {
+        Departure { via: Via::default(), holder, from }
     }
 
-    /// `inner`, a departure from actor X, seen from an actor X is a member (or the owner) of.
+    /// `inner`, a departure from actor X, seen from an actor X is a holder (or the owner) of.
     pub fn inside(x: Tid, inner: &Departure) -> Departure {
-        Departure { via: Via::prepend(x, &inner.via), member: inner.member, from: inner.from }
+        Departure { via: Via::prepend(x, &inner.via), holder: inner.holder, from: inner.from }
     }
 
-    /// The departure an edge change makes: `old` and `new` are the member's roles before and
+    /// The departure an edge change makes: `old` and `new` are the holder's roles before and
     /// after (none = no edge, or `until` passed).
-    pub fn of_change(member: Tid, old: Option<Role>, new: Option<Role>) -> Option<Departure> {
+    pub fn of_change(holder: Tid, old: Option<Role>, new: Option<Role>) -> Option<Departure> {
         let from = match new {
             None => Role::Read,
             Some(Role::Read) => Role::Write,
             Some(Role::Write) => Role::Admin,
             Some(Role::Admin) => return None,
         };
-        (old >= Some(from)).then_some(Departure::member(member, from))
+        (old >= Some(from)).then_some(Departure::holder(holder, from))
     }
 
-    /// The roles it concerns: a role-r box is sealed to role r of its member at every hop.
+    /// The roles it concerns: a role-r box is sealed to role r of its holder at every hop.
     pub fn roles(&self) -> BTreeSet<Role> {
         ROLES.into_iter().filter(|r| *r >= self.from).collect()
     }
@@ -243,14 +243,14 @@ impl HeldActors for MemoryHeldActors {
 /// cannot be opened to check. `None`: assume it does.
 pub type Carries<'a> = Option<&'a dyn Fn(&BoxKey, Role, &Epoch) -> bool>;
 
-/// The boxes of `member` that may carry role `r` at epoch `e`: its box at (r, e), and a
+/// The boxes of `holder` that may carry role `r` at epoch `e`: its box at (r, e), and a
 /// key-actor box (sealed, no keyset) keyed at a higher role's current epoch, which carries the
 /// roles below it (spec/crypto.md §4) where `carries` says so; with `stale`, also such a box at
 /// a superseded epoch of the higher role where `stale` says it carries (r, e).
-fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: &Epoch, carries: Carries, stale: Option<&dyn HeldActors>) -> bool {
-    let exact = box_key(*member, r, e);
+fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, e: &Epoch, carries: Carries, stale: Option<&dyn HeldActors>) -> bool {
+    let exact = box_key(*holder, r, e);
     secrets.boxes.iter().any(|(k, b)| {
-        k.member == *member
+        k.holder == *holder
             && (*k == exact
                 || (k.role > r
                     && matches!(b, SecretBox::Sealed(s) if s.keyset.is_none())
@@ -261,8 +261,8 @@ fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: 
 
 /// Does epoch `e` of role `r` of `actor` (whose `/secrets` and epochs are given) cover `d`?
 /// Not when `held` counts it as written by the departed party (`departed_wrote`), at this or
-/// any actor down the chain. Else a member's departure: `e` holds no box for it (a key actor's
-/// box keyed higher counts). A departure inside member M: M's box in `e` names the newest
+/// any actor down the chain. Else a holder's departure: `e` holds no box for it (a key actor's
+/// box keyed higher counts). A departure inside holder M: M's box in `e` names the newest
 /// keyset epoch of M for `r` the node holds, and that epoch of M covers the rest of the
 /// departure, and so on down the chain (a loop: chains have no depth bound). Missing knowledge
 /// of a chain actor counts as not covered.
@@ -272,7 +272,7 @@ pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: 
     }
     let (mut actor, mut secrets, mut epochs, mut e, mut via) = (*actor, secrets, epochs, *e, d.via.clone());
     loop {
-        if held.departed_wrote(&actor, r, &e, &Departure { via: via.clone(), member: d.member, from: d.from }) {
+        if held.departed_wrote(&actor, r, &e, &Departure { via: via.clone(), holder: d.holder, from: d.from }) {
             return false;
         }
         let Some((m, rest)) = via.split_first() else { break };
@@ -280,7 +280,7 @@ pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: 
         let named = match secrets.boxes.get(&box_key(m, r, &e)) {
             None => return true,
             Some(SecretBox::Sealed(s)) => match &s.keyset {
-                // A key actor has no members: nothing departs inside it.
+                // A key actor has no holders: nothing departs inside it.
                 None => return true,
                 Some(k) => from_schema(k),
             },
@@ -292,12 +292,12 @@ pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: 
         }
         (actor, secrets, epochs, e, via) = (m, ms, me, k, rest);
     }
-    !boxes_for(secrets, epochs, &d.member, r, &e, None, Some(held))
+    !boxes_for(secrets, epochs, &d.holder, r, &e, None, Some(held))
 }
 
 /// The known departures epoch `e` of role `r` does not cover. A node that may rotate `r`
 /// rotates first when this is non-empty (spec/crypto.md §4), after the intermediate actors of a
-/// departure inside a member where it may (`Plan::required` is top-down); the rotation commit's
+/// departure inside a holder where it may (`Plan::required` is top-down); the rotation commit's
 /// own wrap is the one exception (`Rotation::wrap_epoch`).
 pub fn uncovered<'a>(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn HeldActors) -> Vec<&'a Departure> {
     departures.iter().filter(|d| !covers(actor, secrets, epochs, r, e, d, held)).collect()
@@ -332,17 +332,17 @@ pub fn rotate_first(
         .collect()
 }
 
-/// A current member as a re-sealer sees it: role on the actor (an owner: admin) and `until`.
+/// A current holder as a re-sealer sees it: role on the actor (an owner: admin) and `until`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Member {
-    pub member: Tid,
+pub struct Holder {
+    pub holder: Tid,
     pub role: Role,
     pub until: Option<WallMs>,
 }
 
-/// Re-seal trigger (spec/permissions.md §3): members lacking a box at a current epoch of a role
+/// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
 /// they hold, established through its rotation commit (`Chain`, `Own`; not a snapshot alone, see
-/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_member`). Never a member whose `until` is within `MAX_DRIFT`.
+/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder whose `until` is within `MAX_DRIFT`.
 /// `carries(key, r, e)`: whether the commit that wrote a key actor's box keyed at a higher role
 /// knew epoch e of r (its `/secrets` write names e, or it is ordered after e's rotation); only
 /// then does that box count for (r, e). The caller decides after a sync pass of the actor's
@@ -350,12 +350,12 @@ pub struct Member {
 pub fn reseal_needed(
     secrets: &Secrets,
     epochs: &ActorEpochs,
-    members: &[Member],
+    holders: &[Holder],
     now: WallMs,
     carries: &dyn Fn(&BoxKey, Role, &Epoch) -> bool,
 ) -> Vec<(Tid, BTreeSet<Role>)> {
     let mut out = Vec::new();
-    for m in members {
+    for m in holders {
         if m.until.is_some_and(|u| u.0 <= now.0.saturating_add(MAX_DRIFT_MS)) {
             continue;
         }
@@ -367,11 +367,11 @@ pub fn reseal_needed(
                 re.current()
                     .iter()
                     .filter(|e| re.provenance(e).is_some_and(Provenance::reseals))
-                    .any(|e| !boxes_for(secrets, epochs, &m.member, *r, e, Some(carries), None))
+                    .any(|e| !boxes_for(secrets, epochs, &m.holder, *r, e, Some(carries), None))
             })
             .collect();
         if !roles.is_empty() {
-            out.push((m.member, roles));
+            out.push((m.holder, roles));
         }
     }
     out
@@ -385,13 +385,13 @@ mod tests {
     #[test]
     fn departures() {
         let m = Tid::from_bytes([1; 15]);
-        assert_eq!(Departure::of_change(m, Some(Role::Admin), Some(Role::Read)), Some(Departure::member(m, Role::Write)));
-        assert_eq!(Departure::of_change(m, Some(Role::Read), None), Some(Departure::member(m, Role::Read)));
+        assert_eq!(Departure::of_change(m, Some(Role::Admin), Some(Role::Read)), Some(Departure::holder(m, Role::Write)));
+        assert_eq!(Departure::of_change(m, Some(Role::Read), None), Some(Departure::holder(m, Role::Read)));
         assert_eq!(Departure::of_change(m, Some(Role::Read), Some(Role::Write)), None);
         assert_eq!(Departure::of_change(m, None, None), None);
-        assert_eq!(Departure::member(m, Role::Write).roles(), [Role::Write, Role::Admin].into_iter().collect());
+        assert_eq!(Departure::holder(m, Role::Write).roles(), [Role::Write, Role::Admin].into_iter().collect());
         let x = Tid::from_bytes([2; 15]);
-        let d = Departure::inside(x, &Departure::inside(m, &Departure::member(m, Role::Read)));
+        let d = Departure::inside(x, &Departure::inside(m, &Departure::holder(m, Role::Read)));
         assert_eq!(d.via, vec![x, m]);
         assert_eq!((d.via.first(), d.via.get(1), d.via.last(), d.via.len()), (Some(&x), Some(&m), Some(&m), 2));
     }
@@ -410,7 +410,7 @@ mod tests {
                 assert_eq!(va.last(), a.last());
             }
         }
-        let inner = Departure::inside(t(2), &Departure::member(t(9), Role::Read));
+        let inner = Departure::inside(t(2), &Departure::holder(t(9), Role::Read));
         let outer = Departure::inside(t(1), &inner);
         assert_eq!(outer.via.hop_ids().nth(1), inner.via.hop_ids().next());
         assert_eq!(outer.via.split_first().map(|(x, rest)| (*x, rest.clone())), Some((t(1), inner.via.clone())));

@@ -1,6 +1,6 @@
 [package]
 name = "osis-perm"
-description = "Membership validity rules as pure logic over an abstract held set"
+description = "Role validity rules as pure logic over an abstract held set"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -18,4 +18,4 @@ workspace = true
 osis-base.workspace = true
 
 [dev-dependencies]
-membership-model.workspace = true
+roles-model.workspace = true

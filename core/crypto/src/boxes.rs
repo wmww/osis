@@ -65,9 +65,9 @@ impl Epoch {
 /// Form fields of a box, as they enter its AD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoxForm {
-    /// To the member's KEM key of the keyset `keyset` (none for a key actor), under `suite`.
+    /// To the holder's KEM key of the keyset `keyset` (none for a key actor), under `suite`.
     Sealed { keyset: Option<Epoch>, suite: u64 },
-    /// Wrap under `kdf("box", s)`, s the member's own secret of epoch `epoch_s`.
+    /// Wrap under `kdf("box", s)`, s the holder's own secret of epoch `epoch_s`.
     Symmetric { epoch_s: Epoch },
 }
 
@@ -85,8 +85,8 @@ impl BoxForm {
 /// Where a box sits: the AD fields before the form (spec/wire.md §7).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoxSlot {
-    /// A `/secrets` box of `actor` to `member` for (role, epoch).
-    Secrets { actor: Tid, member: Tid, role: Role, epoch: Epoch },
+    /// A `/secrets` box of `actor` to `holder` for (role, epoch).
+    Secrets { actor: Tid, holder: Tid, role: Role, epoch: Epoch },
     /// An entry box of a label step; `group`, the label's group thing, is the actor whose epoch
     /// the payload names (not in the AD).
     Entry { label: LabelId, step_key: [u8; 32], group: Tid },
@@ -109,12 +109,12 @@ impl BoxSlot {
         }
     }
 
-    /// AD `[actor, member, role, n, nonce, form]` or `[label_id, step_key, form]`.
+    /// AD `[actor, holder, role, n, nonce, form]` or `[label_id, step_key, form]`.
     pub fn ad(&self, form: BoxForm) -> Result<Vec<u8>, Error> {
         let form = form.to_wire()?;
         Ok(encode(&Value::List(match self {
-            BoxSlot::Secrets { actor, member, role, epoch } => {
-                vec![tid(actor), tid(member), role_value(*role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec()), form]
+            BoxSlot::Secrets { actor, holder, role, epoch } => {
+                vec![tid(actor), tid(holder), role_value(*role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec()), form]
             }
             BoxSlot::Entry { label, step_key, .. } => vec![Value::Bytes(label.0.to_vec()), Value::Bytes(step_key.to_vec()), form],
         })))
@@ -348,8 +348,8 @@ mod tests {
         Epoch::derive(&actor(1), role, n, &sec(b)).unwrap()
     }
 
-    fn slot(a: u8, member: u8, role: Role, epoch: Epoch) -> BoxSlot {
-        BoxSlot::Secrets { actor: actor(a), member: actor(member), role, epoch }
+    fn slot(a: u8, holder: u8, role: Role, epoch: Epoch) -> BoxSlot {
+        BoxSlot::Secrets { actor: actor(a), holder: actor(holder), role, epoch }
     }
 
     // spec/crypto.md §4: the nonce rule binds the secret, actor, role and n.
@@ -369,7 +369,7 @@ mod tests {
         assert_eq!(Epoch::derive(&actor(1), Role::Read, u64::MAX, &sec(1)), Err(Error::TooLarge));
     }
 
-    // spec/wire.md §7: sealed /secrets box round trip; AD binds actor, member, role, epoch, form;
+    // spec/wire.md §7: sealed /secrets box round trip; AD binds actor, holder, role, epoch, form;
     // items name their epochs.
     #[test]
     fn sealed_box() {
@@ -422,7 +422,7 @@ mod tests {
         assert_eq!(got[0].epoch, Epoch::derive(&g, Role::Read, 4, &sec(7)).unwrap());
     }
 
-    // spec/wire.md §7: AD layout `[actor, member, role, n, nonce, [0, Opt(epoch), suite]]`;
+    // spec/wire.md §7: AD layout `[actor, holder, role, n, nonce, [0, Opt(epoch), suite]]`;
     // spec/wire.md §1: ints beyond i64 are not encodable.
     #[test]
     fn ad_layout() {

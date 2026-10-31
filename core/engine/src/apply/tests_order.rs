@@ -136,7 +136,7 @@ fn sample(seed: u64, shape: Shape) -> usize {
     }
     lp.advance(1_000);
     let as_of = marks[shape.at.min(shape.writes)];
-    let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([g]))]), content: BTreeMap::from([(b, BTreeSet::from([g, item, item2, sub]))]) };
     let f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
     edge(&mut lp, by, g, b, None, Some(f.to_value()));
     lp.advance(1_000);

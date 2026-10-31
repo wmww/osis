@@ -1,5 +1,5 @@
 //! Layer 2 (spec/permissions.md §5.2, §6 ledger; spec/commits.md §4 overlap): scenarios of
-//! core/test/membership-model `content` and `snapshot` records.
+//! core/test/roles-model `content` and `snapshot` records.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
@@ -51,7 +51,7 @@ fn frontier_decides_pre_revoke_edits() {
 }
 
 /// §5.2: `until` audits nothing: edits inside the edge's life stand, later ones do not; the
-/// next explicit demotion audits as if the member still held write.
+/// next explicit demotion audits as if the holder still held write.
 #[test]
 fn until_audits_nothing_until_explicit_demotion() {
     let (mut w, n, d) = doc();
@@ -173,18 +173,18 @@ fn node_form_overlap_voids_both() {
 /// spec/commits.md §4 in layer 1: two edge commits by one node with overlapping `/members`
 /// ranges are both ignored.
 #[test]
-fn overlapping_membership_commits_ignored() {
+fn overlapping_role_commits_ignored() {
     let (w, n, d) = doc();
     let mut held = w.held();
     let z = w.created.keys().copied().find(|t| !n.contains(t) && *t != d).unwrap_or(n[3]);
-    for (id, lo, hi, member) in [(cid(1), 1, 3, n[3]), (cid(2), 2, 4, z)] {
-        held.add_commit(osis_perm::MembershipCommit {
+    for (id, lo, hi, holder) in [(cid(1), 1, 3, n[3]), (cid(2), 2, 4, z)] {
+        held.add_commit(osis_perm::RoleCommit {
             id,
             ts: ts(5),
             author: n[1],
             actor: n[1],
             frontier: None,
-            ops: vec![osis_perm::EdgeOp { target: d, member, edge: edge(Write), dots: Dots::Node { lo, hi } }],
+            ops: vec![osis_perm::EdgeOp { target: d, holder, edge: edge(Write), dots: Dots::Node { lo, hi } }],
         });
     }
     let tl = Timeline::evaluate(&held);
@@ -209,7 +209,7 @@ fn pre_grant_write() {
     assert!(valid(&tl, gap, t, Write));
 }
 
-/// §5.2 with §5.1 "as if the member still held the role" (deliberate): a write after `until`
+/// §5.2 with §5.1 "as if the holder still held the role" (deliberate): a write after `until`
 /// is invalid until the next explicit demotion, whose frontier then decides it.
 #[test]
 fn until_gap_write_finalized_by_frontier() {
@@ -228,14 +228,14 @@ fn until_gap_write_finalized_by_frontier() {
 }
 
 /// Re-grant's first tenure (`first_held`, a replay of the node's roles over the history) is
-/// what a search at every change finds: random owner trees, actors as members, edges with
+/// what a search at every change finds: random owner trees, actors as holders, edges with
 /// `until` and invites, most writes by the target's key actor. Debug builds compare the two at
 /// every call.
 #[cfg(debug_assertions)]
 #[test]
 fn regrant_replay_equals_search() {
     use osis_base::Role::Read;
-    let mut rng = membership_model::Rng(0x5eed_0501);
+    let mut rng = roles_model::Rng(0x5eed_0501);
     for _ in 0..3000 {
         let mut w = World::new();
         let n = w.nodes(3);
@@ -248,14 +248,14 @@ fn regrant_replay_equals_search() {
             ents.push(t);
         }
         for k in 0..rng.below(40) as u64 {
-            let (target, member) = (ents[3 + rng.below(4)], ents[rng.below(ents.len())]);
+            let (target, holder) = (ents[3 + rng.below(4)], ents[rng.below(ents.len())]);
             let author = if rng.below(4) == 0 { n[rng.below(3)] } else { top[&target] };
             let role = [Read, Write, Admin][rng.below(3)];
             let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
             let until = (rng.below(3) == 0).then(|| osis_base::WallMs(k + rng.below(10) as u64));
             let e = (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: crate::common::tie_if(until.is_some() != invite.is_some()) });
-            if member != target {
-                w.set(author, target, member, e, 1 + k, &[]);
+            if holder != target {
+                w.set(author, target, holder, e, 1 + k, &[]);
             }
         }
         let tl = Timeline::evaluate(&w.held());

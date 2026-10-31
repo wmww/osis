@@ -1,4 +1,4 @@
-//! Inbox blobs (spec/wire.md §9, spec/crypto.md §5, spec/sync.md §3). The membership commit
+//! Inbox blobs (spec/wire.md §9, spec/crypto.md §5, spec/sync.md §3). The role commit
 //! travels as its `CommitBlobPlaintext` value; osis-commit parses it (the only coupling to the
 //! commit layout, kept here).
 
@@ -30,7 +30,7 @@ pub struct InboxThing {
 /// write_pk])]*]]`, things sorted by tid, distinct.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InboxPayload {
-    /// The membership commit's `CommitBlobPlaintext` value (header, signature, parts about the
+    /// The role commit's `CommitBlobPlaintext` value (header, signature, parts about the
     /// recipient).
     pub commit: Value,
     pub things: Vec<InboxThing>,

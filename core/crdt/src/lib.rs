@@ -75,7 +75,7 @@ pub use undo::{UndoBuffer, Undone, undo};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
 pub use access::Held;
-pub use state::MemberRef;
+pub use state::SlotRef;
 pub use seq::{Anchor, Seq, SeqContent, SeqElem};
 pub use seq_diff::{EditWindow, changes, edit_window};
 pub use seq_ops::cut_dots;

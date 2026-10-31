@@ -11,7 +11,7 @@ CONSTANTS
   Author, Deps,        \* Deps[c]: commits the author applied before writing c
   CD, Kills, Covers, Purges,
   Exp, LeastAbs, LeastRel, MostAbs, MostRel,  \* Inf = absent
-  PurgeKeep,           \* MEMBERSHIP_KEEP: a purge commit is kept this long
+  PurgeKeep,           \* ROLE_KEEP: a purge commit is kept this long
   MaxT, Vs, Budget, AdvDrops, AdvReplays, Offs, Inf
 
 \* commits §5: a commit carrying a purge request MUST NOT carry `expires`.
@@ -41,7 +41,7 @@ Deaths(A, b) == {DeathT(A, d) : d \in {e \in b.ds : Dead(A, e)}}
 \* commits §5: the later bound counts for at least, the earlier for at most;
 \* a body with no dead writes is past a relative at-least bound.
 \* commits §5: a commit carrying a purge request is kept at least until ts +
-\* MEMBERSHIP_KEEP, whatever its deltas' bounds (so it beats keep-at-most).
+\* ROLE_KEEP, whatever its deltas' bounds (so it beats keep-at-most).
 PurgeB(c) == IF Purges[c] = {} THEN 0 ELSE created[c] + PurgeKeep
 LeastB(A, b) == Max({IF LeastRel[b.c] = Inf \/ Deaths(A, b) = {} THEN 0
                      ELSE Max(Deaths(A, b)) + LeastRel[b.c],
@@ -351,7 +351,7 @@ NoLiveLoss == \A d \in Deltas :
 \* at the host (true by construction: nothing evicts state).
 LiveKept == \A d \in Deltas :
   GLive(d) => (\E n \in Nodes : d \in state[n]) \/ Carried(atHost, GA, d)
-\* sync §7 "a member serves current state from the bodies and snapshots it
+\* sync §7 "a holder serves current state from the bodies and snapshots it
 \* holds": eventually every live write in a node's state is carried by a body
 \* or snapshot it holds (in between, e.g. after a keep-at-most drop, it may not).
 Serves == <>[](\A n \in Nodes, d \in Deltas :

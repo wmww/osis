@@ -46,7 +46,7 @@ pub struct Writer {
     pub ts: Ts,
     pub lo: u64,
     pub next: u64,
-    /// Map removals carry the removed record's key (membership-class aspects, spec §5.6); else a removal
+    /// Map removals carry the removed record's key (role-class aspects, spec §5.6); else a removal
     /// is the dot's key-erased record.
     pub keyed: bool,
 }

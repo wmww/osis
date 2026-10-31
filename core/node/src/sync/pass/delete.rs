@@ -230,9 +230,9 @@ impl SyncEngine {
                 if settled && (self.stale_card(at, commit, &h, parts) || self.orphan(at, id, commit, &h, parts, note)?) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
-                // other certificates (membership-class, node cards, heartbeats) are not ours to judge
+                // other certificates (role-class, node cards, heartbeats) are not ours to judge
                 let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "/keys" | "/node" | "/reach" | "/seen" | "/created"));
-                if h.kind.is_membership() || card {
+                if h.kind.is_role() || card {
                     return Ok(None);
                 }
                 // only deltas this node holds can be judged outside the label
@@ -251,7 +251,7 @@ impl SyncEngine {
     }
 
     /// Unopened entries present at `host` under replaced label `l` that only content commits
-    /// list (their chunks, tree nodes and pages): no membership-class commit or certificate
+    /// list (their chunks, tree nodes and pages): no role-class commit or certificate
     /// kept there needs them (spec/sync.md §2). A blob no held commit lists stays.
     pub(crate) fn replaced_leftovers(&self, host: &HostKey, l: &LabelId) -> Vec<BlobId> {
         let unknown: BTreeSet<BlobId> = self.state.present_at(host, l).into_iter().filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown)).collect();
@@ -276,7 +276,7 @@ impl SyncEngine {
             .collect()
     }
 
-    /// Whether an entry of commit `c` holding `parts` is another node's card that no member
+    /// Whether an entry of commit `c` holding `parts` is another node's card that no holder
     /// needs (spec/permissions.md §4): every part is its author's `/node`, `/reach` or `/keys`,
     /// and each is superseded by a newer commit on that aspect present here under `l`, or, for
     /// `/node` and `/reach`, the node departed (a departed node is never dialed; its `/keys`
@@ -292,7 +292,7 @@ impl SyncEngine {
         // departed: it reads the actor no more, and an applied write removed an edge on its way
         // to the actor, or one there passed its `until`: its own, or that of an actor it reads
         // through (its person). A view lacking the node's chain holds no such write on its way
-        // and proves nothing ("reads no more" alone misjudged such members, spec/sync.md §6)
+        // and proves nothing ("reads no more" alone misjudged such holders, spec/sync.md §6)
         let actor = self.engine.group_actor(g);
         let core = &self.engine.core;
         let now = osis_base::Ts::make(WallMs(self.now()), 0).unwrap_or_default();
@@ -300,9 +300,9 @@ impl SyncEngine {
         let departed = !core.may_read(&author, &actor)
             && core.timelines.get(&author).is_some_and(|tl| {
                 tl.applied().keys().any(|w| match w {
-                    osis_perm::WriteId::Op(x, i) => tl.membership_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| {
+                    osis_perm::WriteId::Op(x, i) => tl.role_commit(x).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| {
                         let ended = op.edge.is_none_or(|e| !e.alive_at(Some(now)));
-                        let way = (op.member == author || core.may_read(&author, &op.member)) && (op.target == actor || core.may_read(&op.target, &actor));
+                        let way = (op.holder == author || core.may_read(&author, &op.holder)) && (op.target == actor || core.may_read(&op.target, &actor));
                         ended && way
                     }),
                     osis_perm::WriteId::Snapshot(_) => false,
@@ -413,7 +413,7 @@ impl SyncEngine {
             }
         }
         // under a replaced label the chunk and page entries of content commits go with them
-        // (spec/sync.md §2: only membership-class commits and certificates stay)
+        // (spec/sync.md §2: only role-class commits and certificates stay)
         if keys.delete.is_some() && self.is_replaced(g, &l) {
             for b in self.replaced_leftovers(&host, &l) {
                 if busy(self, &b) {
@@ -624,7 +624,7 @@ impl SyncEngine {
         }
         for (t, a) in aspects {
             // `/created` is kept forever and never compacted
-            if is_membership(a) || a.as_str() == "/created" || self.engine.role_on(t) < Some(Role::Write) {
+            if is_role(a) || a.as_str() == "/created" || self.engine.role_on(t) < Some(Role::Write) {
                 continue;
             }
             if self.carrier_of(body, t, a).is_some() {
@@ -743,6 +743,6 @@ impl SyncEngine {
     }
 }
 
-fn is_membership(a: &Ak) -> bool {
-    osis_schema::core_types::is_membership_class(a.as_str())
+fn is_role(a: &Ak) -> bool {
+    osis_schema::core_types::is_role_class(a.as_str())
 }

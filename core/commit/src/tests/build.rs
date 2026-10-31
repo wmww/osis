@@ -53,15 +53,15 @@ fn build_content() {
     assert_eq!(verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap().len(), 3);
 }
 
-// spec/commits.md §2, §6: a membership commit may carry several deltas on one aspect sharing
+// spec/commits.md §2, §6: a role commit may carry several deltas on one aspect sharing
 // its range, and `expires` there is refused; so is `expires` beside a purge request.
 #[test]
-fn build_membership_and_refusals() {
+fn build_role_commit_and_refusals() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Membership, at, t(1), t(2), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("/members").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
     a.deltas.push(register_delta(t(1), at, 1, "b"));
-    a.retention = retention::MEMBERSHIP_RETENTION;
+    a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     let mut sink = MemoryBlobs::default();
     let built = build(b.clone(), &mut sink).unwrap();
@@ -77,7 +77,7 @@ fn build_membership_and_refusals() {
     assert!(matches!(build(p.clone(), &mut sink), Err(Error::Build(_))));
     p.aspects[0].expires = None;
     let built = build(p, &mut sink).unwrap();
-    assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::MEMBERSHIP_KEEP_MS));
+    assert_eq!(retention::purge_keep_until(&built.commit.header), Some(at.wall_ms().0 + osis_base::format::ROLE_KEEP_MS));
 }
 
 // spec/wire.md §4, §6: a list above CHUNK_THRESHOLD goes by link to a chunk tree keyed by the

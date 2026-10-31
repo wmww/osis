@@ -26,7 +26,7 @@ import glob, os, re, sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "notes/testing-map.md")
 SOURCES = ["core", "cli"]
-MODELS = ("core/test/crdt-model/", "core/test/membership-model/")
+MODELS = ("core/test/crdt-model/", "core/test/roles-model/")
 # An anchor is a parenthesis right after the section holding no citation of its own; matched by
 # lookahead so citations inside other parentheses are still found.
 CITE = re.compile(r"(spec/[\w-]+\.md)?\s*§\s*(\d+(?:\.\d+)*)(?=\s*\(([^()§]*)\))?")
@@ -104,7 +104,7 @@ def spec_sections():
 # the others are refusal rules ("cannot", "refused", "only") checked by negative tests.
 RULES = [
     ("spec/commits.md", "1", "delta fits a blob", "Paging and chunking keep every delta and page within a blob"),
-    ("spec/commits.md", "2", "membership no expires", "Role commits MUST NOT carry `expires`"),
+    ("spec/commits.md", "2", "role commit no expires", "Role commits MUST NOT carry `expires`"),
     ("spec/commits.md", "2", "created one minting", "`/created` part MUST be exactly one minting of the record"),
     ("spec/commits.md", "3", "shared key commit form", "(link key, recovery key) MUST use it"),
     ("spec/commits.md", "3", "session form", "an ephemeral content commit MUST use it"),
@@ -112,16 +112,16 @@ RULES = [
     ("spec/commits.md", "5", "keep at least", "compaction MUST NOT drop it"),
     ("spec/commits.md", "5", "keep at most", "every node MUST drop the body"),
     ("spec/commits.md", "5", "covering copies", "Every write the covering snapshot holds under a dot the body holds a write of"),
-    ("spec/commits.md", "5", "purge not membership", "It MUST NOT name role-class deltas"),
+    ("spec/commits.md", "5", "purge not role-class", "It MUST NOT name role-class deltas"),
     ("spec/commits.md", "5", "purge no expires", "A commit carrying a purge request MUST NOT carry `expires`"),
     ("spec/crypto.md", "1", "batch verification", "Batch and single verification MUST agree"),
     ("spec/crypto.md", "4", "encrypt under covering epoch", "MUST NOT **encrypt under**"),
-    ("spec/crypto.md", "4", "removed member", "covers** a departure of M if it holds no box for M"),
+    ("spec/crypto.md", "4", "removed holder", "covers** a departure of M if it holds no box for M"),
     ("spec/crypto.md", "3", "fresh deposit seed", "MUST write a fresh one in each rotation of the read role"),
     ("spec/data-model.md", "5", "cbor profile", "A decoder MUST reject anything outside it"),
     ("spec/data-model.md", "6", "chunk threshold", "MUST be chunked; below it MUST NOT be"),
     ("spec/permissions.md", "1", "owner not removable", "cannot be removed by other admins"),
-    ("spec/permissions.md", "1", "membership-class by admins", "are written only by its admins"),
+    ("spec/permissions.md", "1", "role-class by admins", "are written only by its admins"),
     ("spec/permissions.md", "2", "invite scope", "Invite holders cannot change or remove any other edge"),
     ("spec/permissions.md", "2", "edge inbox delivery", "MUST also be delivered to G as an inbox blob"),
     ("spec/permissions.md", "6", "linked frontier bounds", "A linked frontier's tree blobs MUST be in the commit's chunk list"),
@@ -147,7 +147,7 @@ RULES = [
     ("spec/sync.md", "5", "delete keys", "a delete signature that verifies under the blob prefix's commitment"),
     ("spec/sync.md", "5", "download needs open", "only for labels opened on the connection"),
     ("spec/sync.md", "6", "flow control", "MUST NOT close a connection over unwritten bytes below"),
-    ("spec/sync.md", "5", "member peer", "A co-reader peer serving a label applies the same rule"),
+    ("spec/sync.md", "5", "co-reader peer", "A co-reader peer serving a label applies the same rule"),
     ("spec/sync.md", "5", "deposit budget", "reports the remaining budget only to a deposit"),
     ("spec/sync.md", "10", "lan replay", "other than the first it verified that announcement from"),
     ("spec/sync.md", "10", "host key check", "a client MUST check the host's key"),

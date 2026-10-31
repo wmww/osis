@@ -1,0 +1,4 @@
+# sweep-4-roles-code
+- A scripted rename that protects `/members` by plain substring also swallows `/membership…` paths (`core/test/membership-model`, `tla/membership`): protect `/members(?!\w)`. Caught only by the post-run census; rerun from a clean tree.
+- `let x` renames can shadow silently (two `holders` bindings in one test fn; a sim method `members` colliding with an existing `holders`): the compiler catches duplicate methods, not same-typed shadowing. Grep for files holding both the old and new word before running.
+- Vectors regenerate with `cargo run -p osis-vectors --bin gen-vectors`, codegen with `OSIS_REGEN_VECTORS=1 cargo test -p osis-schema --test it codegen`; neither is named in notes/build.md.

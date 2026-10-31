@@ -128,9 +128,9 @@ pub enum Direct<'a> {
     Loop([driver::LanConfig; 2]),
 }
 
-/// Two members of a group whose label names no host converge peer to peer under the tokio
+/// Two holders of a group whose label names no host converge peer to peer under the tokio
 /// driver: each listens on its endpoint with its dialable secret, publishes the listener's key
-/// in `/reach`, dials the other at `peer://` and serves the other's sessions (member peer).
+/// in `/reach`, dials the other at `peer://` and serves the other's sessions (co-reader peer).
 /// `/reach` carries `relays` and no address; `direct` says how else the nodes find each other
 /// (spec/sync.md §10).
 pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &str, relays: Vec<String>, direct: Direct<'_>) {
@@ -217,7 +217,7 @@ pub async fn converge_p2p<T: Transport>(a_ep: T, a_url: &str, b_ep: T, b_url: &s
     db.await.unwrap();
 }
 
-// spec/sync.md §5 (member peer), §10: two nodes sync a label with no host under the tokio
+// spec/sync.md §5 (co-reader peer), §10: two nodes sync a label with no host under the tokio
 // driver over in-process sessions, each dialing the other by its dialable key.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_p2p_in_process_spec_sync_5() {

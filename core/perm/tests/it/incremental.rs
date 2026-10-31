@@ -6,7 +6,7 @@
 use crate::common;
 
 use common::*;
-use membership_model::{edges, joint, snapshot, Rng};
+use roles_model::{edges, joint, snapshot, Rng};
 use osis_base::Tid;
 use osis_perm::{At, HeldSet, Timeline, Timelines, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
@@ -351,7 +351,7 @@ fn leaves_and_appends_extend() {
 /// §5.1, §5.2: a write arriving late in the middle of a history longer than the timeline's kept
 /// edge states rolls the walk back there (`extend`); the states and the re-grant answers
 /// (first tenures) kept from before it, and those rebuilt after, equal an evaluation from
-/// scratch. Member 1, admin at the end, has its first admin tenure moved earlier by the late
+/// scratch. Holder 1, admin at the end, has its first admin tenure moved earlier by the late
 /// write.
 #[test]
 fn late_write_mid_history_keeps_states_exact() {
@@ -608,24 +608,24 @@ fn append_declines_overlapping_ranges_spec_commits_4() {
     let (k, a) = (n[0], n[1]);
     let g = w.thing(k);
     w.set(k, g, a, edge(Admin), 1, &[]);
-    // members already known: a new node always takes the general path
+    // holders already known: a new node always takes the general path
     w.set(k, g, n[2], edge(Read), 2, &[]);
     w.set(k, g, n[3], edge(Read), 3, &[]);
     let mut held = w.held();
     let mut inc = Timelines::new();
     inc.update(&held);
-    // (member, role, range, appended alone)
+    // (holder, role, range, appended alone)
     let steps = [(n[2], Write, (0, 2), true), (n[3], Read, (2, 4), true), (n[2], Read, (3, 5), false), (n[3], Write, (4, 6), false), (n[2], Write, (6, 7), true)];
     for (i, (m, r, (lo, hi), alone)) in steps.into_iter().enumerate() {
-        let op = osis_perm::EdgeOp { target: g, member: m, edge: edge(r), dots: osis_perm::Dots::Node { lo, hi } };
+        let op = osis_perm::EdgeOp { target: g, holder: m, edge: edge(r), dots: osis_perm::Dots::Node { lo, hi } };
         let id = osis_base::CommitId([0x40 + i as u8; 32]);
-        held.add_commit(osis_perm::MembershipCommit { id, ts: ts(10 + i as u64), author: a, actor: a, frontier: None, ops: vec![op] });
+        held.add_commit(osis_perm::RoleCommit { id, ts: ts(10 + i as u64), author: a, actor: a, frontier: None, ops: vec![op] });
         inc.update_touched(&held, &BTreeSet::from([g]));
         assert_eq!(inc.appended() == 1, alone, "step {i}");
         assert!(check(&held, &inc, &n).is_none(), "step {i}: {:?}", check(&held, &inc, &n));
     }
     let full = Timeline::evaluate(&held);
-    assert!(full.membership_commit(&osis_base::CommitId([0x41; 32])).is_none(), "voided");
+    assert!(full.role_commit(&osis_base::CommitId([0x41; 32])).is_none(), "voided");
 }
 
 /// §5.1 steps 4-5: a write arriving late before a demotion whose audit dropped an earlier write
@@ -760,7 +760,7 @@ fn adversarial(samples: u64, seed: u64) -> usize {
         for _ in 0..10 + rng.below(10) {
             let author = if rng.below(10) == 0 { extra[rng.below(2)] } else { n[if rng.below(6) == 0 { 0 } else { 1 + rng.below(4) }] };
             let target = targets[rng.below(targets.len())];
-            let member = match rng.below(10) {
+            let holder = match rng.below(10) {
                 0 if target == g => team,
                 1 => extra[rng.below(2)],
                 _ => n[1 + rng.below(4)],
@@ -776,7 +776,7 @@ fn adversarial(samples: u64, seed: u64) -> usize {
             let t = 2 + rng.below(30) as u64;
             // a frontier covering some of what came before
             let recv: Vec<(Tid, u64)> = if rng.below(3) == 0 { Vec::new() } else { n.iter().map(|x| (*x, rng.below(32) as u64)).collect() };
-            let id = w.set(author, target, member, e, t, &[]);
+            let id = w.set(author, target, holder, e, t, &[]);
             if let Some(c) = w.commits.iter_mut().find(|c| c.id == id) {
                 for (x, r) in &recv {
                     c.recv.entry(*x).or_insert(*r);
@@ -820,8 +820,8 @@ fn append_adversarial_equals_from_scratch_large() {
 
 /// §5.1 steps 2-4: writes arriving late in the middle of a history that apply, by an admin
 /// with an earlier write there, are placed in the walk without walking again when no later
-/// item reads what they change (a read or write grant to a member no later write names);
-/// one that a later write on its edge reads, or an admin grant whose member writes later,
+/// item reads what they change (a read or write grant to a holder no later write names);
+/// one that a later write on its edge reads, or an admin grant whose holder writes later,
 /// goes on from it. Each equals an evaluation from scratch.
 #[test]
 fn late_writes_placed_in_walk_spec_permissions_5_1() {
@@ -872,7 +872,7 @@ fn late_writes_placed_in_walk_spec_permissions_5_1() {
 
 /// §5.1 steps 2-4: late writes placed in a history of many kept edge states: near its start,
 /// at its end, forty between the same two kept states (one ts, both authors), several in one
-/// update; then the removal of a placed write's member (an audit nothing later reads: placed)
+/// update; then the removal of a placed write's holder (an audit nothing later reads: placed)
 /// and a removal of their author, which walks again from kept states the placements moved.
 /// Each equals an evaluation from scratch.
 #[test]
@@ -924,13 +924,13 @@ fn late_writes_across_kept_states_spec_permissions_5_1() {
     }
 }
 
-/// §5.1: a member new to the group (a key actor whose `/created` alone is held, or no record
+/// §5.1: a holder new to the group (a key actor whose `/created` alone is held, or no record
 /// at all) granted late joins the group's walk by `Timelines::append` (a node no earlier write
 /// names reaches nothing before it), not by an evaluation from scratch, as does one whose
 /// `/created` arrives with the grant; then writes of its own. Each equals an evaluation from
 /// scratch.
 #[test]
-fn new_member_joins_walk_spec_permissions_5_1() {
+fn new_holder_joins_walk_spec_permissions_5_1() {
     use osis_base::Role::{Admin, Read, Write};
     let mut w = World::new();
     let n = w.nodes(4);
@@ -1029,7 +1029,7 @@ fn check_more(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -
 }
 
 /// Random histories over an owner chain (P owned by the key, Q by P, R by Q), two nested
-/// teams and a thing as member, with `until` on every role, invites of every level, removals,
+/// teams and a thing as holder, with `until` on every role, invites of every level, removals,
 /// widenings, two-op commits, sometimes a snapshot held from the start or arriving late; half
 /// the commits arrive late, one to three at a time, in random order through `update_touched`,
 /// with restarts from saved walks now and then; equal to an evaluation from scratch after every arrival. Returns (updates `append` did
@@ -1051,7 +1051,7 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
         let team2 = w.thing(p);
         let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
         let targets = [p, q, r, g, g, team, team2];
-        let members = [team, team2, p];
+        let holders = [team, team2, p];
         // everyone has a write on every target before the late ones (so they may be placed)
         w.set(k, p, n[1], edge(Admin), 1, &[]);
         w.set(k, p, n[2], edge(Admin), 1, &[]);
@@ -1075,8 +1075,8 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
         }
         let op = |rng: &mut Rng, n: &[Tid]| {
             let target = targets[rng.below(targets.len())];
-            let member = match rng.below(12) {
-                0 | 1 => members[rng.below(members.len())],
+            let holder = match rng.below(12) {
+                0 | 1 => holders[rng.below(holders.len())],
                 2 => extra[rng.below(2)],
                 _ => n[1 + rng.below(5)],
             };
@@ -1087,7 +1087,7 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
                 2 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
                 _ => edge_inv(role, None, until),
             };
-            (target, member, e)
+            (target, holder, e)
         };
         for _ in 0..12 + rng.below(12) {
             let author = if rng.below(12) == 0 { extra[rng.below(2)] } else { n[if rng.below(8) == 0 { 0 } else { 1 + rng.below(5) }] };
@@ -1215,7 +1215,7 @@ fn record_replaced_under_its_id_spec_permissions_6() {
 
 /// §5.1 steps 2-4: late writes in the middle that later items read, placed by walking those
 /// items again at their place (with the write and without; equal, nothing new dropped): an
-/// explicit removal (an audit: the member's demotion recorded at its point), a write by an
+/// explicit removal (an audit: the holder's demotion recorded at its point), a write by an
 /// admin with no earlier write on the doc whose class there falls later (the fall recorded,
 /// the write covered by the remover's frontier), an admin grant to an admin whose later write
 /// on the doc applies either way. One whose later reader does otherwise (an admin grant to a
@@ -1274,7 +1274,7 @@ fn late_writes_read_later_placed_spec_permissions_5_1() {
     assert!(!full.falls(&b, &d).is_empty(), "b's class on d falls");
 }
 
-/// §1, §5.1: a thing an earlier write names (as member) whose `/created` arrives late, and one
+/// §1, §5.1: a thing an earlier write names (as holder) whose `/created` arrives late, and one
 /// named as target: the walk goes on from the first item naming it (before it, a node's role on
 /// it is its role on its owner), not evaluated anew; equal to an evaluation from scratch.
 #[test]
@@ -1380,7 +1380,7 @@ fn saved_walk_under_old_root_deleted_after_restart() {
 /// Random histories built for the placement paths' corners (spec/permissions.md §5.1 steps
 /// 2-5, §6): no writes before the late ones (a late write is often its author's first on its
 /// target, so falls before the old first write appear), ties in ts, an owner chain through
-/// things (a doc owned by a team, a sub-doc by the doc) and things as members, invites,
+/// things (a doc owned by a team, a sub-doc by the doc) and things as holders, invites,
 /// `until`, removals, two-op commits, late writes by the key actor at the top, sometimes an
 /// epoch start with an audited ledger (virtual writes with a frontier) held from the start,
 /// and `/created` records of named things and of new nodes arriving late, with commits or
@@ -1401,7 +1401,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
         let sub = w.thing(doc);
         let extra = [w.nodes_salted(1, 0x77)[0], key_actors(1, 0x78)[0].0];
         let targets = [g, g, team, doc, sub];
-        let members = [team, doc];
+        let holders = [team, doc];
         w.set(k, g, n[1], edge(Admin), 1, &[]);
         w.set(k, g, n[2], edge(Admin), 1, &[]);
         w.set(k, team, n[3], edge(Admin), 1, &[]);
@@ -1424,8 +1424,8 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
         }
         let op = |rng: &mut Rng, n: &[Tid]| {
             let target = targets[rng.below(targets.len())];
-            let member = match rng.below(12) {
-                0 | 1 => members[rng.below(members.len())],
+            let holder = match rng.below(12) {
+                0 | 1 => holders[rng.below(holders.len())],
                 2 => extra[rng.below(2)],
                 _ => n[1 + rng.below(5)],
             };
@@ -1436,12 +1436,12 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
                 3 => edge_inv(role, Some([Read, Write, Admin][rng.below(3)].min(role)), until),
                 _ => edge_inv(role, None, until),
             };
-            (target, member, e)
+            (target, holder, e)
         };
         // admins and the team's admin edge removed and given back: classes fall and return
         let toggle = |rng: &mut Rng, n: &[Tid]| {
-            let (target, member) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
-            (target, member, [None, edge(Admin), edge(Write)][rng.below(3)])
+            let (target, holder) = [(g, n[1]), (g, n[2]), (team, n[3]), (g, team), (team, n[4]), (doc, n[5])][rng.below(6)];
+            (target, holder, [None, edge(Admin), edge(Write)][rng.below(3)])
         };
         for _ in 0..10 + rng.below(16) {
             let author = match rng.below(12) {
@@ -1554,7 +1554,7 @@ fn shadow_cost_guard_changes_no_outcome_spec_permissions_5_1() {
     assert!(placed[0] < placed[1], "{placed:?}");
 }
 
-/// §5.1 step 5: a late admin grant to a team whose members write on the thing in every later
+/// §5.1 step 5: a late admin grant to a team whose holders write on the thing in every later
 /// commit (each later item re-judged): with 520 later items the cost guard walks on from the
 /// write; with the guard off it is placed by re-judging them. Both equal an evaluation from
 /// scratch.
@@ -1626,15 +1626,15 @@ fn adversarial_falls(samples: u64, seed: u64) -> (usize, usize) {
             let id = if rng.below(5) < 3 {
                 // the key actor (or an admin) takes a class away or gives it back
                 let author = if rng.below(4) == 0 { n[1 + rng.below(2)] } else { k };
-                let (target, member) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
+                let (target, holder) = [(g, n[1]), (g, n[2]), (g, team), (team, n[3]), (team, n[4]), (doc, n[3])][rng.below(6)];
                 let e = [None, None, edge(Admin), edge(Write), edge_inv(Admin, None, Some(t + 1 + rng.below(6) as u64))][rng.below(5)];
-                w.set(author, target, member, e, t, &recv)
+                w.set(author, target, holder, e, t, &recv)
             } else {
                 let author = n[1 + rng.below(4)];
                 let target = [g, doc, doc, team][rng.below(4)];
-                let member = n[1 + rng.below(5)];
+                let holder = n[1 + rng.below(5)];
                 let e = [None, edge(Read), edge(Write), edge(Admin), edge_inv(Write, Some(Read), None)][rng.below(5)];
-                w.set(author, target, member, e, t, &recv)
+                w.set(author, target, holder, e, t, &recv)
             };
             if rng.below(2) == 0 {
                 late.push(id);
@@ -1682,7 +1682,7 @@ fn append_falls_equals_from_scratch_large() {
     assert!(appended > 0 && placed > 1_000, "{appended} {placed}");
 }
 
-/// §1, §5.1 step 4: a thing named as a member by a write that a later fall drops (a node
+/// §1, §5.1 step 4: a thing named as a holder by a write that a later fall drops (a node
 /// until its `/created` says it is owned) gets its `/created` late: the walk goes on from the
 /// dropped write, which is dropped again; and with a late write before it in the same update.
 /// Equal to an evaluation from scratch, not evaluated anew.
@@ -1812,7 +1812,7 @@ fn save_checked(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, disk: &mut
         }
         for c in held.edge_commits(&t) {
             all.insert(c.author);
-            all.extend(c.ops.iter().flat_map(|o| [o.member, o.target]));
+            all.extend(c.ops.iter().flat_map(|o| [o.holder, o.target]));
         }
         for x in held.roster_snapshots(&t) {
             all.insert(x.author);
@@ -1873,7 +1873,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
         for _ in 0..4 + rng.below(10) {
             let author = all_nodes[if rng.below(10) == 0 { 4 } else { rng.below(4) }];
             let target = if rng.below(3) == 0 { base[rng.below(3)] } else { named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[0]) };
-            let member = match rng.below(6) {
+            let holder = match rng.below(6) {
                 0 => named.get(rng.below(named.len().max(1))).copied().unwrap_or(base[2]),
                 1 => base[2],
                 _ => all_nodes[rng.below(5)],
@@ -1883,7 +1883,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
                 0 => None,
                 _ => edge_inv([Read, Write, Admin][rng.below(3)], None, until),
             };
-            w.commit(author, 2 + rng.below(40) as u64, &[(target, member, e)], &[]);
+            w.commit(author, 2 + rng.below(40) as u64, &[(target, holder, e)], &[]);
         }
         if rng.below(5) == 0 {
             let t = named.first().copied().unwrap_or(base[0]);
@@ -2009,7 +2009,7 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
     }
 }
 
-/// §1, §5.1: thing creation arriving among membership commits; the fast path equals the
+/// §1, §5.1: thing creation arriving among role commits; the fast path equals the
 /// general path and an evaluation from scratch.
 #[test]
 fn creation_fast_equals_general_spec_permissions_5_1() {

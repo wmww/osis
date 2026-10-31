@@ -27,7 +27,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `MAX_RUN` | 4096 (2^12) elements per sequence run (spec/crdt.md §3.3) |
 | `MAX_DRIFT` | 1 hour |
 | `MAX_RELAY_BLOB` | 64 KiB (65 536 bytes), whole relay-only blob (spec/sync.md §5, §9) |
-| `MEMBERSHIP_KEEP` | 90 days |
+| `ROLE_KEEP` | 90 days |
 | `AT_MOST_GRACE` | 1 hour: added to the relative keep-at-most bound of a body with a live write (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
@@ -189,7 +189,7 @@ mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
 ```
 Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canonical bytes as byte strings; blobs are byte strings; `wrap` 49 bytes; `sig`, `dsig`, `stamp` raw 64-byte Ed25519 signatures; `*_pk` raw 32-byte keys; `at` wall ms; `log_id` 16 bytes.
 
-- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 member open"` instead (co-reader peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
+- **Open** (spec/sync.md §5): `sig` under `"osis v1 label open"`, digest BLAKE3(canonical `[label_id, challenge, static_key]`) with the opened side's challenge and static key; proof 0 by a sync key, 1 by claim key `claim_pk` at step `step_id`, 2 by a key actor's signing key (its static entry), 3 by a node's dialable key under `"osis v1 co-reader open"` instead (co-reader peers only, spec/sync.md §5). Opened carries the head (without claim set) and, for proof 2, the head's entry box for that static entry. A match at a superseded step is answered by Step with that step's child (without claim set).
 - **Register**: replies Ok, or Error 9 when the step is not accepted, without the head (spec/sync.md §5). Error 12 when a genesis step for a new label does not fit a storage cap (a child step that does not fit is accepted without its claim set, and past the cap even so at most once per label per policy interval), Error 4 when registrations are rate-limited.
 - **Path** (opened labels): the registration path after step `after` (from the genesis step when absent) toward the head, without claim sets, at most 1024 steps per reply; `more` is true when steps remain.
 - **Upload** and the entries of Sync: `stamp` under `"osis v1 upload"`, digest BLAKE3(canonical `[label_id, blob_id, wrap]`). Status gives one code per entry in order. A relay-only entry (prefix class 2) is not stored: the receiver admits it (spec/sync.md §5), pushes it to the subscribers of the label on its other connections as a Push of one add event carrying the blob (the Push's cursor the subscription's current position) and answers 0; a repeat of a blob ID it pushed under that label before the blob's expiry is answered 0 and pushed to nobody.

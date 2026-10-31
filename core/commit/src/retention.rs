@@ -2,15 +2,15 @@
 
 use crate::header::{FOREVER, Header, Kind};
 use crate::Error;
-use osis_base::format::{AT_MOST_GRACE_MS, DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, MEMBERSHIP_KEEP_MS};
+use osis_base::format::{AT_MOST_GRACE_MS, DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER, ROLE_KEEP_MS};
 use osis_base::Ts;
-use osis_schema::core_types::is_membership_class;
+use osis_schema::core_types::is_role_class;
 use osis_schema::{AspectDefaults, Bound, PurgeBy, Retention};
 
-/// The fixed retention of membership deltas: `admin`, kept at least `MEMBERSHIP_KEEP` after
+/// The fixed retention of role-class deltas: `admin`, kept at least `ROLE_KEEP` after
 /// replaced.
-pub const MEMBERSHIP_RETENTION: Retention =
-    Retention { by: PurgeBy::Admin, at_least: Bound { abs: None, rel: Some(MEMBERSHIP_KEEP_MS) }, at_most: Bound { abs: None, rel: None } };
+pub const ROLE_RETENTION: Retention =
+    Retention { by: PurgeBy::Admin, at_least: Bound { abs: None, rel: Some(ROLE_KEEP_MS) }, at_most: Bound { abs: None, rel: None } };
 
 /// The fixed retention of `/created`: `nobody`, kept forever.
 pub const CREATED_RETENTION: Retention =
@@ -19,12 +19,12 @@ pub const CREATED_RETENTION: Retention =
 /// The AK of the creation record.
 pub const CREATED: &str = "/created";
 
-/// Fixed retention of an AK, if it has one (membership-class aspects, `/created`).
+/// Fixed retention of an AK, if it has one (role-class aspects, `/created`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == CREATED {
         Some(CREATED_RETENTION)
-    } else if is_membership_class(ak) {
-        Some(MEMBERSHIP_RETENTION)
+    } else if is_role_class(ak) {
+        Some(ROLE_RETENTION)
     } else {
         None
     }
@@ -125,9 +125,9 @@ pub(crate) fn keep_at_most(r: &Retention, first_death: Option<u64>) -> Option<u6
 }
 
 /// Floor on keeping the blobs of a commit carrying a purge request: `wall_ms(ts) +
-/// MEMBERSHIP_KEEP`, whatever its deltas' bounds.
+/// ROLE_KEEP`, whatever its deltas' bounds.
 pub(crate) fn purge_keep_until(h: &Header) -> Option<u64> {
-    (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(MEMBERSHIP_KEEP_MS))
+    (!h.purge.is_empty()).then(|| h.ts.wall_ms().0.saturating_add(ROLE_KEEP_MS))
 }
 
 /// What a node must do with a body of `h` holding deltas of retention `r`, given the first and

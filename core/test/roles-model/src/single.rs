@@ -1,5 +1,5 @@
 //! The single-actor model of the layer-1 rule and its rejected variants (spec/permissions.md
-//! §5.1; findings in notes/permissions.md, "Membership timeline"). One group actor G; actor i
+//! §5.1; findings in notes/permissions.md, "Role timeline"). One group actor G; actor i
 //! has exactly one node i; actor 0 is G's owner (always admin, unremovable). `Rule::Frontier`
 //! is the demoter-frontier rule the spec adopted; the others are the rejected as-written rule
 //! and its third-party-witness repairs.
@@ -56,17 +56,17 @@ struct Walk {
 /// Which rule variant to evaluate.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Rule {
-    /// As written: witnesses are judged by the end-of-walk membership.
+    /// As written: witnesses are judged by the end-of-walk roles.
     AsWritten,
     /// The write that removed an actor is not itself judged as that actor's write.
     ExemptOwnRevoke,
     /// One forward walk; each removal is judged with the state at its own point
     /// (`Hist::stratified`). Not a fixpoint, so no stable sets.
     Stratified,
-    /// Stratified, but write+ nodes witness membership writes (as the notes say today).
+    /// Stratified, but write+ nodes witness role writes (as the notes say today).
     StratifiedW,
     /// Demoter-frontier rule (`Hist::frontier`): the only testimony about an actor's
-    /// membership writes is the frontier embedded in the write that demotes it.
+    /// role writes is the frontier embedded in the write that demotes it.
     Frontier,
 }
 
@@ -199,7 +199,7 @@ impl Hist {
         Walk { roles, applied, adm_rev, wr_rev, att_valid: vec![] }
     }
 
-    /// Candidate rule. Walk membership writes once in (HLC, node) order; a write applies
+    /// Candidate rule. Walk role writes once in (HLC, node) order; a write applies
     /// iff its author is admin at that point. When write r at time T takes actors below
     /// admin (normally just its target), those actors' earlier writes and attestations
     /// stay only if received before T by a node that is admin just before r (excluding
@@ -274,7 +274,7 @@ impl Hist {
     /// T takes X from admin to below, every earlier applied write by X that A had not
     /// received before T (A's embedded frontier; A's own chain and R itself always count)
     /// is dropped for good and the walk restarts. No receipts of third parties, no
-    /// attestations: all testimony about membership writes is itself a membership write,
+    /// attestations: all testimony about role writes is itself a role write,
     /// audited the same way when its author is demoted. Terminates: drops only grow.
     fn frontier(&self) -> (Walk, usize) {
         let n = self.n();
@@ -422,7 +422,7 @@ impl Builder {
             },
         }
     }
-    /// Membership write; `recv` lists (node, time) receipts, others get LATE.
+    /// Role write; `recv` lists (node, time) receipts, others get LATE.
     fn set(&mut self, author: usize, target: usize, role: Role, t: u32, recv: &[(usize, u32)]) -> usize {
         let n = self.h.n();
         let mut r = vec![LATE; n];
@@ -601,7 +601,7 @@ fn check(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, rule: Rule) {
     if a != b {
         st.order_dep += 1;
     }
-    // Monotone receipt (layer 2 with membership fixed): an earlier receipt at an
+    // Monotone receipt (layer 2 with role fixed): an earlier receipt at an
     // authorized node never invalidates content.
     if let Ok((d, _, _)) = it {
         let w = h.walk(d);
@@ -618,7 +618,7 @@ fn check(h: &Hist, st: &mut Stats, rng: Option<&mut Rng>, rule: Rule) {
                 }
             }
         }
-        // Layer 1: same for membership writes (expected to fail: a newly valid revoke
+        // Layer 1: same for role writes (expected to fail: a newly valid revoke
         // invalidates its target's later writes).
         let i = rng.below(h.writes.len());
         let m = rng.below(h.n());
@@ -780,9 +780,9 @@ fn exhaustive(k: usize, roles: &[Role], recv_opts: &[u32], late_att: bool, rule:
 
 fn random_hist(rng: &mut Rng) -> Hist {
     let admins = 2 + rng.below(3);
-    let members = 1 + rng.below(2);
+    let holders = 1 + rng.below(2);
     let mut genesis = vec![Role::Admin; 1 + admins];
-    genesis.extend(std::iter::repeat(Role::Write).take(members));
+    genesis.extend(std::iter::repeat(Role::Write).take(holders));
     let n = genesis.len();
     let k = 2 + rng.below(7);
     let mut h = Hist { genesis, writes: vec![], recv: vec![], att_recv: vec![], content: vec![], recv_c: vec![] };
@@ -794,7 +794,7 @@ fn random_hist(rng: &mut Rng) -> Hist {
         }
     };
     while h.writes.len() < k {
-        // members occasionally try membership writes too (always skipped unless granted admin)
+        // holders occasionally try role writes too (always skipped unless granted admin)
         let author = if rng.below(8) == 0 { rng.below(n) } else { rng.below(1 + admins) };
         let target = 1 + rng.below(n - 1);
         let role = [Role::None, Role::None, Role::Write, Role::Admin][rng.below(4)];
@@ -908,7 +908,7 @@ mod tests {
 
     #[test]
     fn stolen_device_backdated_revoke_seen_by_writer_only() {
-        // Same, but only writer M received it: a witness for a membership write must be
+        // Same, but only writer M received it: a witness for a role write must be
         // an admin under Stratified; the write+ rules accept M.
         let mut b = Builder::new(&G);
         b.set(A1, A2, None, 2, &[(M, 5)]);
@@ -982,7 +982,7 @@ mod tests {
 
     /// Counterexample 2: A1 removes A2 and only A2 (the victim) receives it in time; the
     /// owner then removes A1. If the removal stands, A2 is removed and cannot witness; if
-    /// it is dropped, A2 is a member and witnessed it. No stable answer; the exempt rule
+    /// it is dropped, A2 is a holder and witnessed it. No stable answer; the exempt rule
     /// still loops.
     #[test]
     fn victim_as_only_witness_loops_as_written() {
@@ -1019,7 +1019,7 @@ mod tests {
     }
 
     /// Hole in every third-party-witness rule: an ex-admin's backdated grant whose only
-    /// receiver is its beneficiary. The beneficiary is a member at the end (and just
+    /// receiver is its beneficiary. The beneficiary is a holder at the end (and just
     /// before the removal), so it witnesses its own grant. Frontier: the owner never
     /// received the grant, so it is dropped.
     #[test]

@@ -100,14 +100,14 @@ pub fn edge(role: Role) -> ct::Edge {
     ct::Edge { role, until: None, invite: None, since: None, tied: None }
 }
 
-/// Peer `i` writes `member`'s edge on `thing` as remove + put (`None` removes it), with an
+/// Peer `i` writes `holder`'s edge on `thing` as remove + put (`None` removes it), with an
 /// optional frontier.
-pub fn set_edge(e: &mut Engine, thing: Tid, member: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
+pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, edge: Option<ct::Edge>, frontier: Option<Value>) -> CommitId {
     // an edge change is remove + put (spec/permissions.md §2)
     let mut m = Mutation::new();
-    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(member)) }).unwrap();
+    m.op(thing, &ct::MEMBERS, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     if let Some(x) = edge {
-        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(member))], op: Op::Set(x.to_value()) }).unwrap();
+        m.op(thing, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(x.to_value()) }).unwrap();
     }
     if let Some(f) = frontier {
         m.frontier(f);
@@ -124,8 +124,8 @@ pub fn packages(lp: &mut LocalPeer, from: usize) -> Vec<Package> {
     lp.packages(from).unwrap()
 }
 
-pub fn is_membership(e: &Engine, id: &CommitId) -> bool {
-    e.header(id).is_some_and(|h| h.kind == Kind::Membership)
+pub fn is_role(e: &Engine, id: &CommitId) -> bool {
+    e.header(id).is_some_and(|h| h.kind == Kind::Role)
 }
 
 /// Canonical bytes of every aspect state of `tids` (convergence check).

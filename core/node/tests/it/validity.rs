@@ -1,5 +1,5 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! Validity through perm at the engine level, with hand-fed membership commits: the Bob
+//! Validity through perm at the engine level, with hand-fed role commits: the Bob
 //! revocation scenario and the Carol variant (notes/permissions.md, Revocation), re-grant,
 //! overlapping counters.
 
@@ -28,11 +28,11 @@ fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) {
     lp.peers[i].commit(m).unwrap().unwrap();
 }
 
-fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, member: Tid) {
-    let scope = DemotionScope { membership: BTreeMap::from([(member, BTreeSet::from([t]))]), content: BTreeMap::from([(member, BTreeSet::from([t]))]) };
+fn revoke(lp: &mut LocalPeer, admin: usize, t: Tid, holder: Tid) {
+    let scope = DemotionScope { roles: BTreeMap::from([(holder, BTreeSet::from([t]))]), content: BTreeMap::from([(holder, BTreeSet::from([t]))]) };
     let now = lp.peers[admin].engine.now();
     let f = lp.peers[admin].engine.frontier(&scope, now).unwrap();
-    set_edge(&mut lp.peers[admin].engine, t, member, None, Some(f.to_value()));
+    set_edge(&mut lp.peers[admin].engine, t, holder, None, Some(f.to_value()));
 }
 
 /// Alice (0) owns D and grants Bob (1) and Carol (2) write.
@@ -183,7 +183,7 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
-// spec/commits.md §3, §4 (counter reuse): membership commits use commit form and a node-form one
+// spec/commits.md §3, §4 (counter reuse): role commits use commit form and a node-form one
 // is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
 // node-form ranges void both commits): Bob keeps the edge Alice gave him.
 #[test]
@@ -198,31 +198,31 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
     let h = lp.peers[0].engine.header(&g).unwrap();
-    assert_eq!(h.form, Form::Commit, "membership commits use commit form");
-    let members = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "/members").unwrap();
+    assert_eq!(h.form, Form::Commit, "role commits use commit form");
+    let holders = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "/members").unwrap();
     // Alice's key signs a node-form commit on d's /members with the grant's range
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
-    let mut batch = Batch::new(&empty, Writer::new(ts, Source::node(a), members.lo));
+    let mut batch = Batch::new(&empty, Writer::new(ts, Source::node(a), holders.lo));
     batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
     let (f, range) = batch.finish().unwrap();
-    assert!(range.lo < members.hi && members.lo < range.hi, "the ranges overlap");
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Membership, ts, a, range.lo, range.hi), None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Membership, ts, a, a, Form::Node);
-    let mut aw = AspectWrite::new(d, members.ak.clone(), range.lo, range.hi, bytes);
-    aw.retention = osis_commit::retention::MEMBERSHIP_RETENTION;
+    assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, Form::Node);
+    let mut aw = AspectWrite::new(d, holders.ak.clone(), range.lo, range.hi, bytes);
+    aw.retention = osis_commit::retention::ROLE_RETENTION;
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    // a node-form membership commit is refused when built and when received (spec/commits.md §4)
+    // a node-form role commit is refused when built and when received (spec/commits.md §4)
     let e = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap_err();
-    assert!(e.to_string().contains("node-form membership"), "{e}");
+    assert!(e.to_string().contains("node-form role commit"), "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
 
-// spec/commits.md §2: a membership commit changes at most
+// spec/commits.md §2: a role commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]
-fn membership_content_rules_spec_commits_2() {
+fn role_content_rules_spec_commits_2() {
     let (mut lp, d, b, c) = setup(47);
     let put = |x: Tid, r: Role| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(x))], op: osis_crdt::Op::Set(edge(r).to_value()) };
     let mut m = Mutation::new();
@@ -288,9 +288,9 @@ fn foreign_actor_claim_refused_spec_wire_4() {
     assert!(lp.peers[1].engine.commit(m).is_err(), "a write claiming an actor the node does not act for was signed");
 }
 
-/// A membership commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
+/// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
 /// the writer-side rules; its counters start at `lo`.
-fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
+fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     let author = lp.peers[by].engine.tid();
@@ -301,12 +301,12 @@ fn forge_membership(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v
     let mut w = Writer::new(ts, own.clone(), lo);
     let f = create(&mut w, &view, v).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Membership, ts, author, r.lo, r.hi);
+    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
     cx.own = own;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Membership, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
@@ -327,26 +327,26 @@ fn void_grant_by_leaver_keeps_no_secrets_spec_perm_3() {
     lp.peers[0].engine.grant(&d, &c, &edge(Role::Read)).unwrap();
     lp.sync_all().unwrap();
     lp.advance(1_000);
-    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { member: b, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.peers[1].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
     lp.advance(1_000);
     let grant = Value::Map(BTreeMap::from([(Value::Tid(c), edge(Role::Read).to_value())]));
-    let forged = forge_membership(&mut lp, 1, d, &ak("/members"), &grant, 1 << 40);
+    let forged = forge_role_commit(&mut lp, 1, d, &ak("/members"), &grant, 1 << 40);
     lp.sync_all().unwrap();
     lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap();
     assert!(!lp.peers[2].engine.roster(&d).contains_key(&b), "Bob left");
     lp.advance(1_000);
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { member: c, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();
     assert_eq!(lp.peers[2].engine.role_on(&d), None);
     lp.peers[2].engine.drop_lost_secrets().unwrap();
     assert!(lp.peers[2].engine.epochs(&d).is_none(), "Carol kept D's secrets");
 }
 
-// spec/permissions.md §1 (membership-class by admins): a writer's `/moved`, `/was` or `/label`
+// spec/permissions.md §1 (role-class by admins): a writer's `/moved`, `/was` or `/label`
 // write, forged past its own node's writer-side refusal, is invalid where it is received (the
 // same write by its author once an admin applies).
 #[test]
-fn forged_membership_class_unmerged_spec_perm_1() {
+fn forged_role_class_unmerged_spec_perm_1() {
     use osis_schema::{AspectKey, core_types as ct};
     let (mut lp, d, _, _) = setup(49);
     let other = new_thing(&mut lp, 0);
@@ -356,16 +356,16 @@ fn forged_membership_class_unmerged_spec_perm_1() {
     for (a, v) in &writes {
         let a = ak(a);
         let before = lp.peers[0].engine.get(&d, &a).unwrap();
-        let forged = forge_membership(&mut lp, 1, d, &a, v, 1);
+        let forged = forge_role_commit(&mut lp, 1, d, &a, v, 1);
         lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
-        assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "{a}: a writer's membership-class write applied");
+        assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), before, "{a}: a writer's role-class write applied");
     }
     // control: the same write by the same key applies once its author is an admin
     let b = lp.peers[1].engine.tid();
     set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
     lp.advance(1_000);
     let a = ak(ct::MOVED.ak());
-    let honest = forge_membership(&mut lp, 1, d, &a, &Value::Tid(other), 100);
+    let honest = forge_role_commit(&mut lp, 1, d, &a, &Value::Tid(other), 100);
     lp.peers[0].engine.ingest(&honest, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(Value::Tid(other)));
 }
@@ -521,7 +521,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     let snap = lp.peers[0].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
     // Dave: Alice's commits but the grant, then the grant
     let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.author != b)).collect();
-    let (members, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
+    let (holders, content): (Vec<_>, Vec<_>) = pks.into_iter().partition(|p| p.id == g);
     for pk in &content {
         lp.deliver(2, pk).unwrap();
     }
@@ -534,7 +534,7 @@ fn snapshot_before_grant_counts_spec_perm_5_2() {
     assert_eq!(e.index_digest(), before, "loaded from the persisted index");
     e.rebuild_index().unwrap();
     assert_eq!(e.index_digest(), before, "rebuilt from the commit records");
-    for pk in &members {
+    for pk in &holders {
         lp.deliver(2, pk).unwrap();
     }
     lp.peers[2].engine.reexamine().unwrap();
@@ -717,7 +717,7 @@ fn resnapshot_residue_heals_on_sync_spec_perm_6() {
     // n1 has c1 and c6, not W or G, when it lowers A1 to write on A0 (R)
     send(&mut lp, 0, 1, &[c1, c6]);
     step(&mut lp);
-    let scope = DemotionScope { membership: BTreeMap::from([(n0, BTreeSet::from([a0, a2]))]), content: BTreeMap::new() };
+    let scope = DemotionScope { roles: BTreeMap::from([(n0, BTreeSet::from([a0, a2]))]), content: BTreeMap::new() };
     let now = lp.peers[1].engine.now();
     let f = lp.peers[1].engine.frontier(&scope, now).unwrap();
     set_edge(&mut lp.peers[1].engine, a0, a1, Some(edge(Role::Write)), Some(f.to_value()));
@@ -815,10 +815,10 @@ fn owner_chain_depth_edge_chain_spec_perm_1() {
         chain.push(owner);
     }
     let (at_cap, past) = (chain[MAX_OWNER_DEPTH - 1], chain[MAX_OWNER_DEPTH]);
-    for (k, member) in [at_cap, past].into_iter().enumerate() {
+    for (k, holder) in [at_cap, past].into_iter().enumerate() {
         let c = new_thing(&mut lp, 1);
         lp.sync_all().unwrap();
-        set_edge(&mut lp.peers[1].engine, c, member, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[1].engine, c, holder, Some(edge(Role::Admin)), None);
         lp.sync_all().unwrap();
         write_reg(&mut lp, 0, c, "n0").unwrap().unwrap();
         sync(&mut lp, 0, 2);
@@ -863,7 +863,7 @@ fn index_of(e: &osis_node::Engine) -> osis_node::engine::IndexDigest {
     e.index_digest().without_held()
 }
 
-// spec/permissions.md §2 (an edge change is remove + put): a write inside a member's entry
+// spec/permissions.md §2 (an edge change is remove + put): a write inside a holder's entry
 // is refused, so field changes cannot compose (was: a change adding `until`, then one raising
 // the role, left an admin edge with no `until`); written as remove + put, each change is the
 // whole edge.
@@ -929,7 +929,7 @@ fn regrant_over_dropped_entry_spec_perm_2() {
         lp.advance(10);
         let g = lp.peers[2].engine.grant(&d, &pb, &edge(Role::Write)).unwrap().commits;
         lp.advance(10);
-        let done = lp.peers[0].engine.demote(&d, &Demotion { member: pc, new: None, presync: PreSync::Synced }).unwrap();
+        let done = lp.peers[0].engine.demote(&d, &Demotion { holder: pc, new: None, presync: PreSync::Synced }).unwrap();
         carry(&mut lp, 0, &done);
         lp.advance(10);
         // A holds the dropped grant; B never does
@@ -1053,7 +1053,7 @@ fn unmerge_paged(seed: u64) {
         }
         op(&mut lp, 0, &BIG, vec![PathSeg::Key(key(r(3000), "a"))], Op::Set(s("A")));
         // C revokes B unseen
-        let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+        let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
         let now = lp.peers[2].engine.now();
         let f = lp.peers[2].engine.frontier(&scope, now).unwrap();
         let rv = set_edge(&mut lp.peers[2].engine, d, b, None, Some(f.to_value()));
@@ -1065,7 +1065,7 @@ fn unmerge_paged(seed: u64) {
         assert_eq!((n("rejudge: unmerge"), n("rejudge: rebuild")), (5, 0), "seed {seed}: validity only fell");
         // the fresh node: B's writes last
         let pks = packages(&mut lp, 0);
-        let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_membership(&lp.peers[0].engine, id));
+        let is_b = |lp: &LocalPeer, id: &osis_base::CommitId| lp.peers[0].engine.header(id).is_some_and(|h| h.author == b && !is_role(&lp.peers[0].engine, id));
         let mut fresh = osis_node::local_peer::Peer::new(8000 + seed, lp.peers[0].engine.now()).unwrap();
         for p in pks.iter().filter(|p| !is_b(&lp, &p.id)).chain(pks.iter().filter(|p| is_b(&lp, &p.id))) {
             fresh.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
@@ -1242,7 +1242,7 @@ fn forged_copy_governs_held_original_alike_spec_perm_5_2() {
     lp.peers[3].restart(0x5fd0).unwrap();
     assert_eq!(lp.peers[3].engine.get(&d, &reg).unwrap(), Some(s("zzz forged")), "after a restart");
     // Carol removed, the snapshot not in the frontier: it gives nothing
-    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let at = lp.peers[0].engine.now();
     let mut fr = lp.peers[0].engine.frontier(&scope, at).unwrap();
     fr.commits.remove(&fid.unwrap());
@@ -1652,7 +1652,7 @@ fn demoted_compactor_snapshot_by_frontier_spec_perm_5_2() {
         sync(&mut lp, 2, 0);
         lp.advance(DAY);
         let rv = if covered {
-            let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+            let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
             let now = lp.peers[0].engine.now();
             let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
             assert!(f.commits.contains(&snap), "the frontier lists the snapshot");
@@ -1902,7 +1902,7 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
 // and at devices holding Bob's commits too, in every order of the snapshot, the revoke and "x"
 // and "y" themselves, and after a rebuild of the state and a restart.
 #[test]
-fn removed_member_write_compacted_earlier_stays_alike_spec_perm_5_2() {
+fn removed_holder_write_compacted_earlier_stays_alike_spec_perm_5_2() {
     let (mut lp, d, b, _) = setup(0x5f8a);
     let id_of = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.commit_ids().into_iter().filter(|c| lp.peers[i].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "/t/tags"))).max_by_key(|c| lp.peers[i].engine.header(c).unwrap().ts).unwrap();
     add_tag(&mut lp, 1, d, "mon");
@@ -2427,7 +2427,7 @@ fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
     sync(&mut lp, 2, 0);
     lp.advance(DAY);
     // Alice removes Carol without listing S
-    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let now = lp.peers[0].engine.now();
     let mut f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     f.commits.remove(&snap);
@@ -2436,7 +2436,7 @@ fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
     let pks: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !bob.contains(&p.id)).collect();
     let pk = |id| pks.iter().find(|p| p.id == id).unwrap().clone();
     let base: Vec<_> = pks.iter().filter(|p| p.id != snap && p.id != rv).cloned().collect();
-    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let mut got = Vec::new();
     for (n, order) in [[snap, rv], [rv, snap]].into_iter().enumerate() {
         let i = lp.peers.len();
@@ -2481,7 +2481,7 @@ fn listed_part_setup(seed: u64, commit_form: bool) -> (LocalPeer, Tid, Vec<osis_
     let snap = lp.peers[2].engine.snapshot(&d, &ak("/t/tags")).unwrap().unwrap();
     sync(&mut lp, 2, 0);
     lp.advance(DAY);
-    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let now = lp.peers[0].engine.now();
     let mut f = lp.peers[0].engine.frontier(&scope, now).unwrap();
     f.commits.remove(&snap);
@@ -2587,7 +2587,7 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     // Bob's headers (not his parts): S's frontier counts on them
     let got = deliver_stripped(&mut lp, 1, i, &bob, d, &ak("/t/tags"));
     assert!(got.iter().all(|g| matches!(g, Ingested::Applied(_))), "{got:?}");
-    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     assert_eq!(lp.peers[i].engine.frontier(&of_bob, before).unwrap(), osis_schema::core_types::Frontier::default(), "backdated before the part");
     let now = lp.peers[i].engine.now();
     assert_ne!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "now");
@@ -2618,7 +2618,7 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
             assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
         }
         lp.advance(DAY);
-        let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+        let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
         let now = lp.peers[0].engine.now();
         let f = lp.peers[0].engine.frontier(&of_bob, now).unwrap();
         assert_eq!(f.writes.get(&d).and_then(|w| w.get("/t/tags")).and_then(|w| w.get(&b)), Some(&1), "snap first {snap_first}: {f:?}");
@@ -2691,7 +2691,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     assert!(got.iter().all(|g| matches!(g, Ingested::Applied(_))), "{got:?}");
     let e = &mut lp.peers[i].engine;
     assert!(e.body_not_dropped(&snap, &d, &sm), "S held");
-    let of_bob = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = e.now();
     let held = e.frontier(&of_bob, now).unwrap();
     assert_ne!(held, osis_schema::core_types::Frontier::default(), "S counts while held");
@@ -2719,7 +2719,7 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     let late = e.frontier(&of_bob, e.now()).unwrap();
     assert_eq!(late, held, "dropped on arrival");
     // Alice removes Carol without listing S: S gives nothing, dropped or not
-    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let at = lp.peers[0].engine.now();
     let mut f = lp.peers[0].engine.frontier(&scope, at).unwrap();
     f.commits.remove(&snap);
@@ -2772,7 +2772,7 @@ fn bound_dropped_coverer_still_carries_spec_commits_5() {
     for p in new {
         lp.deliver(0, &p).unwrap();
     }
-    let scope = DemotionScope { membership: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(c, BTreeSet::from([d]))]), content: BTreeMap::from([(c, BTreeSet::from([d]))]) };
     let at = lp.peers[0].engine.now();
     let mut f = lp.peers[0].engine.frontier(&scope, at).unwrap();
     f.commits.remove(&s2);
@@ -2874,7 +2874,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     let want = BTreeSet::from(["mon".to_string(), "tue".to_string()]);
     assert_eq!(tags(&mut lp, 3, d), want);
     lp.advance(DAY);
-    let scope = DemotionScope { membership: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
+    let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = lp.peers[3].engine.now();
     assert_eq!(lp.peers[3].engine.frontier(&scope, now).unwrap().writes.get(&d).and_then(|w| w.get("/t/tags")).and_then(|w| w.get(&b)), None, "no held header of Bob's");
     revoke(&mut lp, 3, d, b);

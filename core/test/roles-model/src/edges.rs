@@ -18,7 +18,7 @@
 //! Links: L has (r, ∞, r) on K; redeem = L's commit adding the redeemer (single use: plus
 //! removing L's own edge).
 //!
-//! Checked (`cargo run --bin membership-model [samples] edges|edges-prov`, `cargo test`): exhaustive tiers
+//! Checked (`cargo run --bin roles-model [samples] edges|edges-prov`, `cargo test`): exhaustive tiers
 //! plus random histories for termination, order independence, nothing dropped with nobody
 //! offline, projected rosters (a node holding only the writes relevant to one actor, closed
 //! under authors, computes that actor's authority as the full node does), writes by actors
@@ -274,7 +274,7 @@ impl EHist {
                 let now = class(auth(new, w.t));
                 // Self-removal and invite grants audit nothing; `held` keeps the highest
                 // class since the last audit, so the next explicit demotion audits as if
-                // the member still held it.
+                // the holder still held it.
                 if x == w.author || matches!(at, Attr::Invite(_)) || now >= held[x] {
                     held[x] = held[x].max(now);
                     continue;
@@ -980,7 +980,7 @@ mod tests {
         }
     }
 
-    // Link: sharer 0 owns K; L = 1; joiners J = 2, Z = 3; Y = 4 an existing member.
+    // Link: sharer 0 owns K; L = 1; joiners J = 2, Z = 3; Y = 4 an existing holder.
     const L: usize = 1;
     const J: usize = 2;
     const Z: usize = 3;
@@ -1039,9 +1039,9 @@ mod tests {
     }
 
     /// Old link model (L admin of K, spec before invite power): the same finalization holds,
-    /// but any holder can remove an existing member. With an invite edge it cannot.
+    /// but any holder can remove an existing holder. With an invite edge it cannot.
     #[test]
-    fn link_holder_cannot_remove_members() {
+    fn link_holder_cannot_remove_holders() {
         for (edge, y_after) in [(eu(Admin, Admin, 5), NONE), (eu(Write, Write, 5), W)] {
             let mut b = B::new(&[None, edge, None, None, e(Write, NI)]);
             b.set(L, Y, None, 2, &[(0, 2)]);
@@ -1111,11 +1111,11 @@ mod tests {
         assert_eq!((o.auth(i), o.auth(Z)), (NONE, NONE));
     }
 
-    /// An inviter re-adding a member the owner removed: legitimate if the owner had seen it
+    /// An inviter re-adding a holder the owner removed: legitimate if the owner had seen it
     /// when revoking the inviter's invite, dropped otherwise; backdated before the removal
-    /// it is no add (the member still had an edge).
+    /// it is no add (the holder still had an edge).
     #[test]
-    fn inviter_readds_removed_member_while_revoked() {
+    fn inviter_readds_removed_holder_while_revoked() {
         let i = 1;
         for (readd_t, seen, expect) in [(5, false, NONE), (5, true, W), (3, true, NONE)] {
             let mut b = B::new(&[None, e(Write, Write), None, None, e(Write, NI)]);
