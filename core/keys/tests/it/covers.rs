@@ -54,18 +54,18 @@ fn lost_device_owner_rotation() {
     let all = roles_up_to(Role::Admin);
     for r in ROLES {
         let (e, _) = tview.role(r).newest_held().unwrap();
-        assert!(!may_encrypt_under(&ts, &tview, r, &e, &deps, &newest));
+        assert!(!may_encrypt_under(&tid(0), &ts, &tview, r, &e, &deps, &newest));
     }
-    assert_eq!(rotate_first(&ts, &tview, &all, &all, &deps, &newest), all);
+    assert_eq!(rotate_first(&tid(0), &ts, &tview, &all, &all, &deps, &newest), all);
     // A writer of T may rotate read and write only.
     let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
-    assert_eq!(rotate_first(&ts, &tview, &all, &rw, &deps, &newest), rw);
+    assert_eq!(rotate_first(&tid(0), &ts, &tview, &all, &rw, &deps, &newest), rw);
     // T rotates, boxing P under its new secrets: covered.
     let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &|_, _| true, &mut rng(2)).unwrap();
     let (mut tv2, mut ts2) = (tview.clone(), ts.clone());
     r.secrets.apply(&mut ts2);
     r.record(&mut tv2);
-    assert!(rotate_first(&ts2, &tv2, &all, &all, &deps, &newest).is_empty());
+    assert!(rotate_first(&tid(0), &ts2, &tv2, &all, &all, &deps, &newest).is_empty());
     // A plain thing U owned by P: its derived epoch is at P's newest's n.
     let u = ActorEpochs::derived(&pe2, &tid(3));
     let s = osis_crypto::thing_role_secret(pe2.read.secret(&ep(2, 0x21)).unwrap(), Role::Read, &tid(3));
@@ -120,15 +120,15 @@ fn rotation_held_before_the_removal() {
     eager.secrets.apply(&mut s);
     eager.record(&mut v);
     let e2 = eager.rotated[0].epoch;
-    assert!(may_encrypt_under(&s, &v, Role::Read, &e2, &[], &none));
+    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &[], &none));
     // The removal commit arrives with its rotation.
     removal.secrets.apply(&mut s);
     removal.record(&mut v);
     let e2r = removal.rotated[0].epoch;
     let deps = [Departure::member(m, Role::Read)];
-    assert!(!may_encrypt_under(&s, &v, Role::Read, &e2, &deps, &none));
-    assert!(may_encrypt_under(&s, &v, Role::Read, &e2r, &deps, &none));
-    let first = rotate_first(&s, &v, &read(), &read(), &deps, &none);
+    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &deps, &none));
+    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2r, &deps, &none));
+    let first = rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &none);
     assert_eq!(first.contains(&Role::Read), v.read.newest() == Some(e2));
     // Rotating past both forks excludes M.
     let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &|_, _| true, &mut rng(8)).unwrap();
@@ -136,7 +136,7 @@ fn rotation_held_before_the_removal() {
     heal.secrets.apply(&mut s);
     heal.record(&mut v);
     let e3 = heal.rotated[0].epoch;
-    assert!(may_encrypt_under(&s, &v, Role::Read, &e3, &deps, &none));
+    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &deps, &none));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { member: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
@@ -145,7 +145,7 @@ fn rotation_held_before_the_removal() {
     let w = box_member(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     w.apply(&mut s);
     let kdep = [Departure::member(k, Role::Read)];
-    assert!(!may_encrypt_under(&s, &v, Role::Read, &e3, &kdep, &none));
+    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &kdep, &none));
     assert!(reseal_needed(&s, &v, &[Member { member: k, role: Role::Write, until: None }], WallMs(0), &|_, _, _| true).is_empty());
 }
 
@@ -176,6 +176,6 @@ fn stale_key_actor_box_still_carries() {
     let mut held = MemoryHeldActors::default();
     let key = s.boxes.keys().find(|x| x.member == k).unwrap().clone();
     held.stale.insert((key, Role::Read, r0));
-    assert!(!may_encrypt_under(&s, &v, Role::Read, &r0, &deps, &held));
-    assert_eq!(rotate_first(&s, &v, &read(), &read(), &deps, &held), read());
+    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &r0, &deps, &held));
+    assert_eq!(rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &held), read());
 }

@@ -212,6 +212,11 @@ pub trait HeldActors {
     fn stale_box_carries(&self, _key: &BoxKey, _r: Role, _e: &Epoch) -> bool {
         false
     }
+    /// Whether epoch `e` of role `r` of `actor` counts as written by the party that departed in
+    /// `d` (seen from `actor`): then it does not cover `d` whatever its boxes (spec/crypto.md §4).
+    fn departed_wrote(&self, _actor: &Tid, _r: Role, _e: &Epoch, _d: &Departure) -> bool {
+        false
+    }
 }
 
 /// In-memory `HeldActors`.
@@ -254,18 +259,25 @@ fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, member: &Tid, r: Role, e: 
     })
 }
 
-/// Does epoch `e` of role `r` (of the actor whose `/secrets` and epochs are given) cover `d`?
-/// A member's departure: `e` holds no box for it (a key actor's box keyed higher counts). A
-/// departure inside member M: M's box in `e` names the newest keyset epoch of M for `r` the node
-/// holds, and that epoch of M covers the rest of the departure, and so on down the chain (a loop:
-/// chains have no depth bound). Missing knowledge of a chain actor counts as not covered.
-pub fn covers(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
+/// Does epoch `e` of role `r` of `actor` (whose `/secrets` and epochs are given) cover `d`?
+/// Not when `held` counts it as written by the departed party (`departed_wrote`), at this or
+/// any actor down the chain. Else a member's departure: `e` holds no box for it (a key actor's
+/// box keyed higher counts). A departure inside member M: M's box in `e` names the newest
+/// keyset epoch of M for `r` the node holds, and that epoch of M covers the rest of the
+/// departure, and so on down the chain (a loop: chains have no depth bound). Missing knowledge
+/// of a chain actor counts as not covered.
+pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
     if r < d.from {
         return true;
     }
-    let (mut secrets, mut epochs, mut e) = (secrets, epochs, *e);
-    for m in d.via.iter() {
-        let named = match secrets.boxes.get(&box_key(*m, r, &e)) {
+    let (mut actor, mut secrets, mut epochs, mut e, mut via) = (*actor, secrets, epochs, *e, d.via.clone());
+    loop {
+        if held.departed_wrote(&actor, r, &e, &Departure { via: via.clone(), member: d.member, from: d.from }) {
+            return false;
+        }
+        let Some((m, rest)) = via.split_first() else { break };
+        let (m, rest) = (*m, rest.clone());
+        let named = match secrets.boxes.get(&box_key(m, r, &e)) {
             None => return true,
             Some(SecretBox::Sealed(s)) => match &s.keyset {
                 // A key actor has no members: nothing departs inside it.
@@ -274,11 +286,11 @@ pub fn covers(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &D
             },
             Some(SecretBox::Symmetric(s)) => from_schema(&s.epoch),
         };
-        let (Ok(k), Some(me), Some(ms)) = (named, held.epochs(m), held.secrets(m)) else { return false };
+        let (Ok(k), Some(me), Some(ms)) = (named, held.epochs(&m), held.secrets(&m)) else { return false };
         if me.role(r).newest() != Some(k) {
             return false;
         }
-        (secrets, epochs, e) = (ms, me, k);
+        (actor, secrets, epochs, e, via) = (m, ms, me, k, rest);
     }
     !boxes_for(secrets, epochs, &d.member, r, &e, None, Some(held))
 }
@@ -287,20 +299,21 @@ pub fn covers(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &D
 /// rotates first when this is non-empty (spec/crypto.md §4), after the intermediate actors of a
 /// departure inside a member where it may (`Plan::required` is top-down); the rotation commit's
 /// own wrap is the one exception (`Rotation::wrap_epoch`).
-pub fn uncovered<'a>(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn HeldActors) -> Vec<&'a Departure> {
-    departures.iter().filter(|d| !covers(secrets, epochs, r, e, d, held)).collect()
+pub fn uncovered<'a>(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn HeldActors) -> Vec<&'a Departure> {
+    departures.iter().filter(|d| !covers(actor, secrets, epochs, r, e, d, held)).collect()
 }
 
 /// Whether a node that may rotate `r` may encrypt under `e`: established and current (an epoch
 /// whose rotation commit is not applied, pending or invalid never is), and covering every known
 /// departure. Opening a label and reading are not encrypting under (any held secret).
-pub fn may_encrypt_under(secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &[Departure], held: &dyn HeldActors) -> bool {
-    epochs.role(r).is_current(e) && uncovered(secrets, epochs, r, e, departures, held).is_empty()
+pub fn may_encrypt_under(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &[Departure], held: &dyn HeldActors) -> bool {
+    epochs.role(r).is_current(e) && uncovered(actor, secrets, epochs, r, e, departures, held).is_empty()
 }
 
 /// The roles of an actor a node must rotate before encrypting under each role's newest held
 /// epoch: those whose newest held current epoch is uncovered, among `may_rotate`.
 pub fn rotate_first(
+    actor: &Tid,
     secrets: &Secrets,
     epochs: &ActorEpochs,
     roles: &BTreeSet<Role>,
@@ -312,7 +325,7 @@ pub fn rotate_first(
         .iter()
         .filter(|r| may_rotate.contains(r))
         .filter(|r| match epochs.role(**r).newest_held() {
-            Some((e, _)) => !may_encrypt_under(secrets, epochs, **r, &e, departures, held),
+            Some((e, _)) => !may_encrypt_under(actor, secrets, epochs, **r, &e, departures, held),
             None => false,
         })
         .copied()
