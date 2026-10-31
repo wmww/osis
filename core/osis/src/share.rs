@@ -53,7 +53,8 @@ pub enum Lower {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LinkOpts {
     /// The link expires: a device of this person removes the link key once it passed and K's
-    /// label synced (spec/permissions.md §9).
+    /// label synced (spec/permissions.md §9). An expiring link closes when one of your devices
+    /// next syncs after `until`: until then anyone holding the link can still join.
     pub until: Option<WallMs>,
     /// The first redemption ends the link: the link says so (`flags`, spec/wire.md §10), the
     /// redeemer removes the link key in its redemption, and a device of this person finalizes
