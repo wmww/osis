@@ -25,3 +25,5 @@ Open for the discussion: separators (slashes may change), the reserved character
 - Core keys drop the leading slash (`name.0`, `keys.0`); `members` becomes `roles` with issues/rename-roles-members.md.
 
 Implementation: a format change everywhere AKs appear (spec, wire, DSL, codegen, schemas, vectors, tests, notes). Do it in the same sweep as issues/rename-roles-members.md and issues/one-node-kind.md (one churn), with a remnant-hunting review (owner completeness standard).
+
+Sweep plan (steps, order, remnant hunts): issues/one-node-kind.md, Sweep plan.
