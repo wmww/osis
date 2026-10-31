@@ -191,3 +191,45 @@ fn nested_tied_shares() {
     assert_eq!(carol.role_on(t), None);
 }
 
+
+// spec/permissions.md §2 (tied edge removed only once the placement is gone): Bob's laptop
+// shares his card into Alice's tag while it reaches Bob's server but not the tag's; Bob's phone
+// gets the tied edge from Bob's server and, after an unrelated write by Alice, passes the tag's
+// label, which lacks the placement. The placement is on its way, not gone: the edge must stay.
+// Fails today: issues/tied-edge-before-placement.md.
+#[test]
+#[ignore = "issues/tied-edge-before-placement.md"]
+fn repro_edge_before_placement_is_not_removed() {
+    let mut w = World::new();
+    let s1 = w.add_server().unwrap();
+    let s2 = w.add_server().unwrap();
+    let alice = person(&mut w, 1, s1);
+    let bob = person(&mut w, 2, s2);
+    let join = Osis::pair(w.cfg(3, &[]), &bob.pair_offer().unwrap()).unwrap();
+    let (_, reply) = bob.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    w.run();
+    let b = introduce(&mut w, &alice, &bob);
+    let g = new_tag(&alice, "Shared").unwrap();
+    alice.grant(g, b, Role::Write, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = card(&bob, "plan");
+    bob.write_with(|w| w.place(t, bob.home())).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    assert!(text(&phone, t).is_some() && phone.get(g, GROUP).unwrap().is_some(), "the phone holds the card and the tag");
+    w.set_reachable(&bob, s1, false);
+    assert_eq!(bob.share_into(t, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
+    w.advance(70_000);
+    assert!(phone.roster(t).get(&g).is_some_and(|e| e.tied) && !listed(&phone, g, t), "the phone has the edge, not the placement");
+    // other activity under the tag's label: the phone passes it again
+    alice.write_with(|w| w.at(g, osis::core::NAME).set(&"Shared!".to_string())).unwrap();
+    for _ in 0..3 {
+        w.advance(70_000);
+    }
+    w.set_reachable(&bob, s1, true);
+    w.advance(70_000);
+    assert!(listed(&alice, g, t));
+    assert_eq!(bob.roster(t).get(&g).map(|e| e.tied), Some(true), "the share stays");
+}
