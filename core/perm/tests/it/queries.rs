@@ -28,7 +28,7 @@ fn certificates_carry_demotions() {
     let held = w.held();
     let tl = Timeline::evaluate(&held);
     let at = Point { ts: ts(9), node: z, commit: cid(1) };
-    let certs = tl.certificates(&z, &g, at);
+    let certs = tl.certificates(&z, &g);
     assert!(certs.commits.contains(&grant) && certs.commits.contains(&rm), "{certs:?}");
     assert!(certs.created.contains(&g) && certs.created.contains(&p) && certs.created.contains(&k));
     let set = tl.certificate_set(&certs, &held);
@@ -39,7 +39,7 @@ fn certificates_carry_demotions() {
     assert!(verify(&set2, &z, &g, before, Write));
 }
 
-/// §4: a demotion goes along with its demoted author's chain at its point. X writes on G by
+/// §4: a demotion goes along with its demoted author's other paths. X writes on G by
 /// its admin edge; a later grant makes X an admin of G's owner P; removing X's G edge after
 /// that is no fall, so X's write unseen by the remover stands from certificates too.
 #[test]
@@ -157,29 +157,48 @@ fn cert_run_joint(samples: u64, seed: u64) {
         if let Some(d) = cert_check(&w) {
             panic!("seed {seed:#x} sample {s}: {d}\n{h}");
         }
+        // one actor compacted at a roster snapshot of the end: its history held only as
+        // roster and ledger tenures
+        let x = actors[s as usize % actors.len()];
+        let tl = Timeline::evaluate(&w.held());
+        let mut w2 = w.clone();
+        let snap = w2.snapshot_state(top[s as usize % actors.len()], x, tl.roster_state(&x), LATE / 2);
+        if let Some(d) = cert_check_held(&w2.compacted(x, snap)) {
+            panic!("seed {seed:#x} sample {s}, {x:?} compacted: {d}\n{h}");
+        }
     }
 }
 
 fn cert_check(w: &World) -> Option<String> {
-    let held = w.held();
-    let tl = Timeline::evaluate(&held);
+    cert_check_held(&w.held())
+}
+
+/// Every edge write and roster snapshot of `held`, judged from its certificates as from
+/// `held`.
+fn cert_check_held(held: &osis_perm::MemoryHeldSet) -> Option<String> {
+    let tl = Timeline::evaluate(held);
     // drops found in another order on a projection (sticky residue) need not agree
     if sticky_residue(&tl) {
         return None;
     }
-    for c in &w.commits {
+    let mut writes: BTreeMap<WriteId, (Point, Tid, Tid)> = BTreeMap::new();
+    for c in held.commits.values().flatten() {
         for (k, op) in c.ops.iter().enumerate() {
-            let id = WriteId::Op(c.id, k as u32);
-            let at = Point { ts: ts(c.t), node: c.author, commit: c.id };
-            let certs = tl.write_certificates(&id).unwrap();
-            let set = tl.certificate_set(&certs, &held);
-            let ct = Timeline::evaluate(&set);
-            let (fa, fd) = (tl.is_applied(&id), tl.dropped().contains_key(&id));
-            let (ca, cd) = (ct.is_applied(&id), ct.dropped().contains_key(&id));
-            let (fs, cs) = (tl.standing(&c.author, &op.0, At::before(at)), ct.standing(&c.author, &op.0, At::before(at)));
-            if (fa, fd, fs) != (ca, cd, cs) {
-                return Some(format!("write {id:?}: full applied {fa} dropped {fd} {fs:?}, certificates applied {ca} dropped {cd} {cs:?}"));
-            }
+            writes.insert(WriteId::Op(c.id, k as u32), (c.point(), c.author, op.target));
+        }
+    }
+    for s in held.snapshots.values().flatten() {
+        writes.insert(WriteId::Snapshot(s.id), (s.point(), s.author, s.thing));
+    }
+    for (id, (at, author, target)) in writes {
+        let certs = tl.write_certificates(&id).unwrap();
+        let set = tl.certificate_set(&certs, held);
+        let ct = Timeline::evaluate(&set);
+        let (fa, fd) = (tl.is_applied(&id), tl.dropped().contains_key(&id));
+        let (ca, cd) = (ct.is_applied(&id), ct.dropped().contains_key(&id));
+        let (fs, cs) = (tl.standing(&author, &target, At::before(at)), ct.standing(&author, &target, At::before(at)));
+        if (fa, fd, fs) != (ca, cd, cs) {
+            return Some(format!("write {id:?}: full applied {fa} dropped {fd} {fs:?}, certificates applied {ca} dropped {cd} {cs:?}"));
         }
     }
     None
@@ -327,7 +346,7 @@ fn certificates_project_joint() {
     cert_run_joint(80, 0x5eed_0201);
 }
 
-/// 64k samples: a missing later-demotion chain (cert.rs) fails about two seeds in three.
+/// 64k samples, each also with one actor compacted at a roster snapshot.
 #[test]
 #[ignore]
 fn certificates_project_joint_large() {

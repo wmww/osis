@@ -339,7 +339,6 @@ pub(crate) struct Dense {
     pub ids: BTreeMap<Tid, usize>,
     pub tids: Vec<Tid>,
     owned: Vec<Vec<usize>>,
-    owner: Vec<Option<usize>>,
     out: Vec<Vec<(usize, Edge)>>,
     inc: Vec<Vec<usize>>,
     /// Every edge set has both ends indexed (else callers search through `View`).
@@ -351,9 +350,8 @@ impl Dense {
         let tids: Vec<Tid> = all.into_iter().collect();
         let ids: BTreeMap<Tid, usize> = tids.iter().enumerate().map(|(i, t)| (*t, i)).collect();
         let owned = tids.iter().map(|t| owners.owned(t).iter().filter_map(|y| ids.get(y).copied()).collect()).collect();
-        let owner = tids.iter().map(|t| owners.owner_actor(t).and_then(|o| ids.get(&o).copied())).collect();
         let n = tids.len();
-        let mut g = Dense { out: vec![Vec::new(); n], inc: vec![Vec::new(); n], ids, tids, owned, owner, whole: true };
+        let mut g = Dense { out: vec![Vec::new(); n], inc: vec![Vec::new(); n], ids, tids, owned, whole: true };
         for (m, t, e) in edges.iter() {
             g.set(m, t, Some(*e));
         }
@@ -458,25 +456,6 @@ impl Dense {
             }
         }
         Some((raised, expires))
-    }
-
-    /// `View::reach_backward` of `start`: by index, whether each reaches it.
-    pub fn back(&self, start: &Tid) -> Option<Vec<bool>> {
-        let &si = self.ids.get(start).filter(|_| self.whole)?;
-        let mut seen = vec![false; self.tids.len()];
-        *seen.get_mut(si)? = true;
-        let mut stack = vec![si];
-        while let Some(e) = stack.pop() {
-            for &y in self.owner.get(e).into_iter().flatten().chain(self.inc.get(e).into_iter().flatten()) {
-                if let Some(s) = seen.get_mut(y)
-                    && !*s
-                {
-                    *s = true;
-                    stack.push(y);
-                }
-            }
-        }
-        Some(seen)
     }
 }
 
