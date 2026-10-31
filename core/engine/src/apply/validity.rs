@@ -1089,7 +1089,8 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f:
 /// other inputs changed (`stale_commits`: void, required roles, overreach), every one after a
 /// rebuild at open (`stale_all`); so the cost follows the change, not the held set. Rebuilds
 /// aspects whose validity flipped; returns them. Again while a rebuild left some stale (a part
-/// `retention::uncover` made missing loses what its body judged).
+/// `retention::uncover` made missing loses what its body judged). Ends: only `uncover` marks
+/// stale here, and it turns parts dropped as covered missing, never back.
 pub(crate) fn rejudge_all(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let _s = crate::costs::span("rejudge");
     let mut out: BTreeSet<(Tid, Ak)> = BTreeSet::new();
