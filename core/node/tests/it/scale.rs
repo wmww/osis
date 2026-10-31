@@ -1378,7 +1378,7 @@ fn big_map_apply_memory() {
     for i in [1, 2] {
         let w = lp.peers[i].engine.tid();
         let mut m = Mutation::new();
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
     }
     lp.sync_all().unwrap();
@@ -1434,7 +1434,7 @@ fn snapshot_join_cost_spec_permissions_5_2() {
         let w = lp.peers[1].engine.tid();
         let mut m = Mutation::new();
         let t = lp.peers[0].engine.new_thing(&mut m, me);
-        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None }.to_value()) }).unwrap();
+        m.op(t, &ct::MEMBERS, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: false }.to_value()) }).unwrap();
         lp.peers[0].commit(m).unwrap().unwrap();
         let t0 = Instant::now();
         let mut m = Mutation::new();
