@@ -54,6 +54,15 @@ fn demotion_unsynced() {
     ok("demotion_unsynced", 1);
 }
 
+// spec/permissions.md §5.1, §5.3, notes/sync.md Receipts-only reads: a phone holding part of the
+// tree removes a member after reading the rest for receipts; his unseen edits there stay and
+// nothing goes under the labels it reads.
+#[test]
+#[ignore = "tier 2"]
+fn demotion_receipts() {
+    ok("demotion_receipts", 1);
+}
+
 // spec/sync.md §6, spec/commits.md §4: sweep seed 72, two writers' pending commits stop each
 // other's uploads.
 #[test]

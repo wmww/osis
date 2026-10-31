@@ -49,6 +49,8 @@ const CONTACT: &[u8] = b"y/a";
 const LINK_PEER: &[u8] = b"y/l";
 /// Commits of invite requests the user declined (`SyncEngine::decline_invite`).
 const DECLINED: &[u8] = b"y/m";
+/// Groups this node holds none of (receipts-only, `SyncEngine::set_receipts_only`).
+const RECEIPTS_ONLY: &[u8] = b"y/w";
 
 /// A followed link's sharer node (spec/permissions.md §9): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
@@ -251,6 +253,8 @@ pub struct State {
     pub direct: BTreeMap<Tid, Vec<CommitId>>,
     /// `/reach` policy per group the app set (`y/n`).
     pub reach_policy: BTreeMap<Tid, bool>,
+    /// Groups this node holds none of (`y/w`): their labels are read only for receipts.
+    pub receipts_only: BTreeSet<Tid>,
     /// Persons marked as contacts (`y/a`).
     pub contacts: BTreeSet<Tid>,
     /// Commits of declined invite requests (`y/m`).
@@ -454,6 +458,9 @@ impl State {
                 }
                 b"n" => {
                     s.reach_policy.insert(r.tid()?, v.first() == Some(&1));
+                }
+                b"w" => {
+                    s.receipts_only.insert(r.tid()?);
                 }
                 b"a" => {
                     s.contacts.insert(r.tid()?);
@@ -763,6 +770,17 @@ impl State {
                 self.del(key(REACH_POLICY, &[g.as_bytes()]));
                 self.reach_policy.remove(&g);
             }
+        }
+    }
+
+    /// Marks (or unmarks) a group as held by this node for receipts only.
+    pub fn set_receipts_only(&mut self, g: Tid, on: bool) {
+        if on {
+            self.put(key(RECEIPTS_ONLY, &[g.as_bytes()]), Vec::new());
+            self.receipts_only.insert(g);
+        } else {
+            self.del(key(RECEIPTS_ONLY, &[g.as_bytes()]));
+            self.receipts_only.remove(&g);
         }
     }
 

@@ -11,8 +11,10 @@
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
-use osis_commit::{Decoded, Form, Header};
-use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
+use osis_commit::{CommitBlob, Decoded, Form, Header};
+use osis_crypto::VerifyingKey;
 use osis_crdt::Frontiers;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_membership_class};
@@ -216,18 +218,19 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
 /// carries counts through `received`).
 pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], received: WallMs) -> Result<()> {
     let held: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
-    for ai in held {
+    record_aspects(tx, h, id, held, received)
+}
+
+/// Records aspects `ais` of commit `id` as received at `received`: a node-form commit's own
+/// writes by counter range, anything else (commit form, imports, snapshots) by commit ID
+/// (spec/permissions.md §5.1 frontier coverage).
+fn record_aspects(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ais: impl IntoIterator<Item = usize>, received: WallMs) -> Result<()> {
+    for ai in ais {
         let Some(a) = h.aspects.get(ai) else { continue };
         let mut r = get(tx, &a.tid, &a.ak)?;
-        if h.kind.has_own_writes() {
-            match h.form {
-                Form::Node => r.add(h.author, a.lo, a.hi, received.0),
-                Form::Commit => {
-                    r.commits.insert(*id, (h.author, received.0));
-                }
-            }
+        if h.kind.has_own_writes() && h.form == Form::Node {
+            r.add(h.author, a.lo, a.hi, received.0);
         } else {
-            // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
             r.commits.insert(*id, (h.author, received.0));
         }
         put(tx, &a.tid, &a.ak, &r)?;
@@ -236,6 +239,32 @@ pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize
 }
 
 impl Engine {
+    /// Records what one commit's header shows this node received, keeping and applying nothing
+    /// (a receipts-only read of a label this node does not hold, notes/sync.md Receipts-only
+    /// reads): every aspect the header lists, received now (spec/permissions.md §5.1: received
+    /// means its header decrypted and its signature verified). Those aspects join
+    /// `Core::header_receipts`, which demotions' frontiers read. False, recording nothing, when
+    /// the header cannot be verified here: lists by link (their pages are not fetched), an
+    /// author whose creation record is not held, a bad signature or header, an ephemeral
+    /// commit (a frontier lists none, spec/permissions.md §5.2), a `ts` past the drift bound
+    /// (it would wait, spec/crdt.md §2.2).
+    pub fn record_header(&mut self, c: &CommitBlob) -> Result<bool> {
+        let h = &c.header;
+        if !h.is_resolved() || h.ephemeral.is_some() {
+            return Ok(false);
+        }
+        let Some(CreationRecord::KeyActor { public_key, .. }) = self.core.created(&h.author) else { return Ok(false) };
+        let Ok(vk) = VerifyingKey::from_slice(public_key) else { return Ok(false) };
+        let id = c.id();
+        let now = self.now();
+        if osis_commit::verify_signature(&id, &c.signature, &vk).is_err() || h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
+            return Ok(false);
+        }
+        self.run(|tx| record_aspects(tx, h, &id, 0..h.aspects.len(), now))?;
+        self.core.header_receipts.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+        Ok(true)
+    }
+
     /// What this node received of one aspect, held valid snapshots' frontiers included.
     pub fn receipt(&mut self, tid: &Tid, ak: &Ak) -> Result<Receipt> {
         let (tid, ak) = (*tid, ak.clone());
@@ -256,6 +285,15 @@ impl Engine {
         for (node, things) in &scope.content {
             for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)) {
                 aspects.push((*node, *t, ak.clone()));
+            }
+        }
+        // aspects known only from headers (receipts-only reads): this node cannot tell which
+        // the scope reaches, so each demoted node gets them all; an entry where its class did
+        // not fall is never consulted (spec/permissions.md §5.1)
+        for (tid, ak) in &self.core.header_receipts {
+            let membership = is_membership_class(ak.as_str());
+            for node in scope.content.keys().chain(scope.membership.keys().filter(|_| membership)) {
+                aspects.push((*node, *tid, ak.clone()));
             }
         }
         aspects.sort();

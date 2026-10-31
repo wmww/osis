@@ -414,7 +414,7 @@ impl SyncEngine {
     /// head's (a label synced with nobody, or served to peers).
     fn eph_stamp_key(&mut self, g: &Tid, l: &LabelId) -> Option<SigningSecret> {
         for c in self.conns.values() {
-            if let Some(x) = c.labels.get(l).filter(|x| x.phase == Phase::Open)
+            if let Some(x) = c.labels.get(l).filter(|x| x.phase == Phase::Open && !x.receipts)
                 && let Some(w) = &x.keys.write
             {
                 return Some(w.clone());
@@ -428,7 +428,7 @@ impl SyncEngine {
 
     /// Open connections with label `l` (connection, server key, keys).
     fn eph_conns(&self, l: &LabelId) -> Vec<(ConnId, ServerKey, HeadKeys)> {
-        self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && c.up).map(|x| (*id, c.server, x.keys.clone()))).collect()
+        self.conns.iter().filter_map(|(id, c)| c.labels.get(l).filter(|x| x.phase == Phase::Open && !x.receipts && c.up).map(|x| (*id, c.server, x.keys.clone()))).collect()
     }
 
     /// An open connection with label `l` to server `s`.

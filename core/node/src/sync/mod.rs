@@ -20,6 +20,7 @@ mod local;
 mod open;
 mod pass;
 pub mod peers;
+mod receipts;
 mod serve;
 pub(crate) mod state;
 mod work;
@@ -240,6 +241,8 @@ pub(crate) struct LConn {
     /// Write keys of a server path verified here (a label not recorded in `/label`): stamps
     /// under them vouch for an entry.
     pub writers: Vec<osis_crypto::VerifyingKey>,
+    /// Read for receipts only (`receipts`): no pass, nothing placed, nothing kept.
+    pub receipts: bool,
 }
 
 impl LConn {
@@ -485,6 +488,8 @@ pub struct SyncEngine {
     pub(crate) eph: ephemeral::Lane,
     /// Relay-only uploads served sessions made (spec/sync.md §5, as a server admits them).
     pub(crate) relay_gate: osis_proto::RelayGate,
+    /// Labels read for receipts only (`read_receipts`; memory only).
+    pub(crate) receipts: BTreeMap<LabelId, receipts::Read>,
 }
 
 impl SyncEngine {
@@ -566,6 +571,7 @@ impl SyncEngine {
             prefix_checked: BTreeSet::new(),
             eph: ephemeral::Lane::default(),
             relay_gate: osis_proto::RelayGate::default(),
+            receipts: BTreeMap::new(),
         })
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
@@ -975,7 +981,8 @@ impl SyncEngine {
         let me = self.engine.tid();
         let mut out = Vec::new();
         for g in self.engine.labeled_groups() {
-            if self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
+            // held for receipts only: read on demand (`read_receipts`), never synced
+            if self.state.receipts_only.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
             let admin = crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin);
@@ -1102,6 +1109,14 @@ impl SyncEngine {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
+        let reads: Vec<Tid> = self.receipts.values().map(|r| r.group).collect();
+        for g in reads {
+            for l in self.engine.labels_of(&g) {
+                for a in l.servers.iter().filter(|a| !peers::is_peer(a)) {
+                    m.entry(a.key).or_insert_with(|| (a.clone(), false));
+                }
+            }
+        }
         if self.cfg.peers {
             for (k, (a, _)) in self.peer_addresses() {
                 m.entry(k).or_insert((a, true));
@@ -1226,6 +1241,15 @@ impl SyncEngine {
 
     fn session_event(&mut self, conn: ConnId, e: ClientEvent, out: &mut Vec<Action>) -> Result<()> {
         use ClientEvent as E;
+        // a receipts-only label's data never reaches the entry records (`receipts`)
+        if self.receipts_event(conn, &e, out)? {
+            return Ok(());
+        }
+        if let E::Refused { label: Some(l), fetch, .. } = &e
+            && self.receipts_lc(conn, l)
+        {
+            self.receipts_refused(conn, l, fetch);
+        }
         match e {
             // Hellos done: every label this server holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
@@ -1328,6 +1352,12 @@ impl SyncEngine {
                 }
             }
         }
+        // receipts-only reads: at their servers only
+        for r in self.receipts_wanted() {
+            if !want.iter().any(|(_, x, _)| *x == r.1) {
+                want.push(r);
+            }
+        }
         want
     }
 
@@ -1363,7 +1393,7 @@ impl SyncEngine {
         let todo: Vec<(ConnId, LabelId)> = self
             .conns
             .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| !l.receipts && l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
             .collect();
         for (conn, label) in todo {
             if let Some(l) = self.lc_mut(conn, &label) {
@@ -1416,6 +1446,13 @@ impl SyncEngine {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
+            // a receipts-only label is listed once per connection
+            if let Some(l) = self.lc(conn, &label).filter(|l| l.receipts) {
+                if !l.synced {
+                    self.sync_label(conn, label, out)?;
+                }
+                continue;
+            }
             // a label not reconciled since a cap refusal made room (`eph_forget`) syncs again
             let unreconciled = self.conns.get(&conn).is_some_and(|c| !self.eph.reconciled.contains(&(c.server, label)) && self.state.cursors.contains_key(&(c.server, label)));
             if !self.cfg.subscribe || unreconciled || self.lc(conn, &label).is_some_and(|l| !l.synced) {
@@ -1505,6 +1542,9 @@ impl SyncEngine {
 
     /// Starts a cursor sync of an open label.
     pub(crate) fn sync_label(&mut self, conn: ConnId, label: LabelId, out: &mut Vec<Action>) -> Result<()> {
+        if self.receipts_lc(conn, &label) {
+            return self.receipts_sync(conn, label, out);
+        }
         let now = self.raw_now();
         let inline_limit = self.cfg.inline_limit;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
@@ -1592,7 +1632,7 @@ impl SyncEngine {
     /// Whether every open label on every connection has completed a pass and nothing is
     /// outstanding (tests, simulator quiescence).
     pub fn is_idle(&self) -> bool {
-        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.phase != Phase::Open || l.idle()))
+        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.receipts || l.phase != Phase::Open || l.idle()))
     }
 
     /// A one-line summary of each label on each connection (tests, diagnostics).

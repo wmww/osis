@@ -384,7 +384,7 @@ impl SyncEngine {
         self.vet_inbox_hints()
     }
 
-    fn secrets_count(&self) -> usize {
+    pub(crate) fn secrets_count(&self) -> usize {
         self.engine.core.ix.secrets.values().map(|e| e.read.held_newest_first().len() + e.write.held_newest_first().len() + e.admin.held_newest_first().len()).sum()
     }
 

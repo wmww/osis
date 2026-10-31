@@ -438,43 +438,54 @@ impl Osis {
         if d.sync == WaitForSync::Skip {
             return Ok(PreSync::Unsynced { proceed: true });
         }
-        let groups = self.locked(|l| {
+        // groups held here are synced; those held for receipts only are read for receipts
+        // (their commit headers, notes/sync.md Receipts-only reads)
+        let (groups, reads) = self.locked(|l| {
             let st = l.status.clone();
-            groups_holding(&mut l.sync, &st, &things)
+            (groups_holding(&mut l.sync, &st, &things), l.sync.receipts_groups(&things))
         });
-        if groups.is_empty() {
+        if groups.is_empty() && reads.is_empty() {
             return Ok(PreSync::Synced);
         }
+        self.act(|l| l.sync.read_receipts(&reads));
         self.sync_now()?;
         let wait = match d.sync {
             WaitForSync::Try(t) => t,
             _ => PRESYNC_WAIT,
         };
-        match (self.groups_synced(groups.clone(), wait, false).await, d.sync) {
+        let r = self.groups_synced(groups.clone(), reads.clone(), wait, false).await;
+        self.locked(|l| l.sync.end_receipts(&reads));
+        let mut all = groups;
+        all.extend(reads);
+        match (r, d.sync) {
             (Ok(()), _) => Ok(PreSync::Synced),
             (Err(_), WaitForSync::Try(_)) => {
-                self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: groups, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
+                self.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Unsynced, tids: all, commit: None, peer: None, detail: "demotion proceeded without its pre-sync".into() }));
                 Ok(PreSync::Unsynced { proceed: true })
             }
-            (Err(_), _) => Err(Error::Unsynced { groups }),
+            (Err(_), _) => Err(Error::Unsynced { groups: all }),
         }
     }
 
-    /// Resolves once every group in `groups` is `Synced` (with `deliveries`, also once no inbox
-    /// blob is unanswered); fails `Unsynced` when one is stranded or has no servers, `Network`
-    /// after `wait`.
-    fn groups_synced(&self, groups: Vec<Tid>, wait: Duration, deliveries: bool) -> crate::net::Pending<Result<()>> {
+    /// Resolves once every group in `groups` is `Synced` and the receipts-only reads of `reads`
+    /// are done (with `deliveries`, also once no inbox blob is unanswered); fails `Unsynced` when one is stranded or has no servers, `Network` after
+    /// `wait`.
+    fn groups_synced(&self, groups: Vec<Tid>, reads: Vec<Tid>, wait: Duration, deliveries: bool) -> crate::net::Pending<Result<()>> {
         self.wait_until(
             Some(wait),
             Box::new(move |sync, st| {
                 if deliveries && sync.deliveries_pending() > 0 {
                     return None;
                 }
-                let bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoServers))).collect();
+                let mut bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoServers))).collect();
+                let read = sync.receipts_read(&reads);
+                if let Some(Err(b)) = &read {
+                    bad.extend(b);
+                }
                 if !bad.is_empty() {
                     return Some(Err(Error::Unsynced { groups: bad }));
                 }
-                groups.iter().all(|g| st.groups.get(g).is_some_and(|s| s.state == SyncState::Synced)).then_some(Ok(()))
+                (read.is_some() && groups.iter().all(|g| st.groups.get(g).is_some_and(|s| s.state == SyncState::Synced))).then_some(Ok(()))
             }),
         )
     }
@@ -1050,7 +1061,7 @@ impl Osis {
             };
         }
         self.sync_now()?;
-        self.groups_synced(groups, timeout, true).await
+        self.groups_synced(groups, Vec::new(), timeout, true).await
     }
 
     /// Asks every server to sync every open label now.
