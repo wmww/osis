@@ -55,9 +55,10 @@ fn own_secrets_switch() {
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
     let e = |r: Role| rot.rotated.iter().find(|x| x.role == r).unwrap().epoch;
-    assert!(ROLES.iter().all(|r| e(*r).n() == 2));
+    // the thing's own chain starts at 1 (derived epochs are at 0, spec/crypto.md §3)
+    assert!(ROLES.iter().all(|r| e(*r).n() == 1));
     let derived_read = thing_role_secret(w.pe.read.secret(&ep(1, 0x20)).unwrap(), Role::Read, &w.a);
-    let de = Epoch::derive(&w.a, Role::Read, 1, &derived_read).unwrap();
+    let de = Epoch::derive(&w.a, Role::Read, 0, &derived_read).unwrap();
     assert_eq!(rot.wrap_epoch(), Some(de));
     // Owner: three symmetric boxes of 49 bytes (spec/wire.md §7).
     for r in ROLES {
@@ -134,7 +135,7 @@ fn fork_merge() {
     let x = rotate(&w.a, &read(), &view, &base, &w.members(), &|_, _| true, &mut rng(2)).unwrap();
     let y = rotate(&w.a, &read(), &view, &base, &w.members(), &|_, _| true, &mut rng(3)).unwrap();
     let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
-    assert_eq!((ex.n(), ey.n()), (3, 3));
+    assert_eq!((ex.n(), ey.n()), (2, 2));
     assert_ne!(ex, ey);
     // Only read boxes at the superseded epoch are removed.
     assert!(x.secrets.removed.iter().all(|k| k.role == Role::Read));
@@ -179,7 +180,7 @@ fn fork_merge() {
     y.record(&mut zview);
     let z = rotate(&w.a, &read(), &zview, &s1, &w.members(), &|_, _| true, &mut rng(4)).unwrap();
     assert_eq!(z.rotated[0].supersedes, [ex, ey].into_iter().collect());
-    assert_eq!(z.rotated[0].epoch.n(), 4);
+    assert_eq!(z.rotated[0].epoch.n(), 3);
     let mut s3 = s1.clone();
     z.secrets.apply(&mut s3);
     assert!(!s3.boxes.keys().any(|k| k.role == Role::Read && (k.epoch == osis_keys::aspects::to_schema(&ex) || k.epoch == osis_keys::aspects::to_schema(&ey))));

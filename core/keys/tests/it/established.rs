@@ -303,6 +303,39 @@ fn jumped_epochs_keep_rotation_possible() {
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
+// spec/crypto.md §3, §4 (headroom): a writer of the owner jumped its epochs past `MAX_FREE_N`;
+// a thing switching to secrets of its own still starts its chain at 1 (derived epochs are at 0,
+// not the owner's n), so a member holding no secret of the owner establishes the switch from the
+// rotation commit alone and the headroom rule needs nothing it cannot check.
+#[test]
+fn switch_under_jumped_owner_establishes_at_members() {
+    let (a, p, m) = (tid(1), tid(2), tid(3));
+    let high = osis_keys::MAX_FREE_N + 5;
+    let mut pe = ActorEpochs::default();
+    for (i, r) in osis_keys::ROLES.into_iter().enumerate() {
+        pe.role_mut(r).set_secret(ep(high, 0x20), osis_crypto::Secret32::from_bytes([0x20 + i as u8; 32]));
+        pe.role_mut(r).set_established(ep(high, 0x20), Provenance::Own);
+    }
+    let me = person(0x30);
+    let owner = Recipient { member: p, role: Role::Admin, keys: osis_keys::MemberKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let members = [owner, actor_rcpt(m, Role::Write, &me)];
+    let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &members, &|_, _| true, &mut rng(1)).unwrap();
+    let mut s = Secrets::default();
+    rot.secrets.apply(&mut s);
+    for (who, opener) in [(m, Opener::Actor { member: m, epochs: &me }), (p, Opener::Actor { member: p, epochs: &pe })] {
+        let mut v = ActorEpochs::default();
+        ingest(&a, &s, &opener, &mut v, None).unwrap();
+        rot.secrets.applied(&mut v, cid(1), (&rot.keys, &Keys::default())).unwrap();
+        for x in &rot.rotated {
+            assert_eq!(x.epoch.n(), 1);
+            if who == p || x.role != Role::Admin {
+                assert!(v.role(x.role).is_established(&x.epoch), "{who:?} {:?}", x.role);
+                assert_eq!(v.role(x.role).newest(), Some(x.epoch));
+            }
+        }
+    }
+}
+
 // spec/crypto.md §4 (a secret learned only from a pending commit is kept for reading): a pending
 // commit's history box at an epoch the node holds checked (forgeable by any ex-holder of it)
 // lists epochs that stay reading-only (bounded), supersede nothing, and leave with the commit.
