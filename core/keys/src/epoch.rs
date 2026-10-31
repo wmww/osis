@@ -1,10 +1,11 @@
 //! Per-role epochs of one actor as a node holds them (spec/crypto.md §4): forks kept,
 //! established (own, fixed, derived, chain of applied rotation commits, snapshot), current =
-//! established and not superseded by an established rotation, newest = greatest n, ties by lowest
-//! nonce.
+//! established and not superseded by an established rotation, newest = greatest order n, ties by
+//! lowest nonce.
 
 use osis_base::{CommitId, Role, Tid};
 use osis_crypto::{Epoch, Secret32, key_actor_role_secret, thing_role_secret};
+use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Suite 1, the only suite (spec/crypto.md §8).
@@ -12,17 +13,19 @@ pub const SUITE: u64 = 1;
 
 pub const ROLES: [Role; 3] = [Role::Read, Role::Write, Role::Admin];
 
-/// Is `a` newer than `b`: greater n, or equal n and lower nonce.
-pub fn is_newer(a: &Epoch, b: &Epoch) -> bool {
-    a.n() > b.n() || (a.n() == b.n() && a.nonce() < b.nonce())
+/// Sorts as `e` by age: greater n, then lower nonce, is newer.
+fn by_n(e: &Epoch) -> (u64, Reverse<[u8; 32]>) {
+    (e.n(), Reverse(*e.nonce()))
 }
 
-/// The newest of `epochs`.
+/// Is `a` newer than `b` by n: greater n, or equal n and lower nonce.
+pub fn is_newer(a: &Epoch, b: &Epoch) -> bool {
+    by_n(a) > by_n(b)
+}
+
+/// The newest of `epochs` by n.
 pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoch> {
-    epochs.into_iter().fold(None, |best: Option<Epoch>, e| match best {
-        Some(b) if !is_newer(e, &b) => Some(b),
-        _ => Some(*e),
-    })
+    epochs.into_iter().max_by_key(|e| by_n(e)).copied()
 }
 
 /// How an epoch got established at this node (spec/crypto.md §4). `Own`, `Fixed` and `Derived`
@@ -340,7 +343,7 @@ impl RoleEpochs {
 
     /// Current epochs: established and not superseded, ascending.
     pub fn current(&self) -> Vec<Epoch> {
-        self.map.iter().filter(|(e, i)| i.established.is_some() && !self.superseded(e)).map(|(e, _)| *e).collect()
+        self.map.keys().filter(|e| self.is_current(e)).copied().collect()
     }
 
     pub fn is_current(&self, e: &Epoch) -> bool {
@@ -353,37 +356,36 @@ impl RoleEpochs {
         self.map.get(e).and_then(|i| i.order).unwrap_or(e.n())
     }
 
+    /// Sorts as `e` by age (spec/crypto.md §4): greater order n, then `by_n`, is newer.
+    fn by_order(&self, e: &Epoch) -> (u64, (u64, Reverse<[u8; 32]>)) {
+        (self.order(e), by_n(e))
+    }
+
     /// Whether `a` is newer than `b` (spec/crypto.md §4): greater order n, then lower nonce.
     /// `is_newer` where no derived epoch sits past the cap.
     pub fn is_newer(&self, a: &Epoch, b: &Epoch) -> bool {
-        let (x, y) = (self.order(a), self.order(b));
-        x > y || (x == y && is_newer(a, b))
+        self.by_order(a) > self.by_order(b)
     }
 
-    fn newest_of<'a>(&self, epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoch> {
-        epochs.into_iter().fold(None, |best: Option<Epoch>, e| match best {
-            Some(b) if !self.is_newer(e, &b) => Some(b),
-            _ => Some(*e),
-        })
+    /// The newest of `held` (epochs of this role, with their secrets).
+    fn newest_with<'a>(&self, held: impl Iterator<Item = (Epoch, &'a Secret32)>) -> Option<(Epoch, &'a Secret32)> {
+        held.max_by_key(|(e, _)| self.by_order(e))
     }
 
     /// The newest current epoch.
     pub fn newest(&self) -> Option<Epoch> {
-        self.newest_of(&self.current())
+        self.current().into_iter().max_by_key(|e| self.by_order(e))
     }
 
     /// The newest current epoch whose secret is held.
     pub fn newest_held(&self) -> Option<(Epoch, &Secret32)> {
-        let cur: Vec<Epoch> = self.current().into_iter().filter(|e| self.secret(e).is_some()).collect();
-        let e = self.newest_of(&cur)?;
-        self.secret(&e).map(|s| (e, s))
+        self.newest_with(self.held().filter(|(e, _)| self.is_current(e)))
     }
 
     /// The newest established epoch whose secret is held, current or not (a stranded node's
     /// heartbeat, spec/permissions.md §4).
     pub fn newest_secret(&self) -> Option<(Epoch, &Secret32)> {
-        let e = self.newest_of(&self.held_established().map(|(e, _)| e).collect::<Vec<_>>())?;
-        self.secret(&e).map(|s| (e, s))
+        self.newest_with(self.held_established())
     }
 
     /// Whether the newest current epoch is established by a snapshot alone: a re-sealer does not
@@ -402,8 +404,7 @@ impl RoleEpochs {
     /// reading-only ones included.
     pub fn held_newest_first(&self) -> Vec<(Epoch, &Secret32)> {
         let mut v: Vec<(Epoch, &Secret32)> = self.map.iter().filter_map(|(e, i)| i.secret.as_ref().map(|s| (*e, s))).collect();
-        // newest first: greater order n, then lower nonce (`is_newer`; one order n is one n)
-        v.sort_by_key(|(e, _)| (std::cmp::Reverse(self.order(e)), *e.nonce()));
+        v.sort_by_key(|(e, _)| Reverse(self.by_order(e)));
         v
     }
 }
