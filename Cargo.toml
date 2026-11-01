@@ -40,7 +40,7 @@ zeroize = { version = "1.8", features = ["std", "zeroize_derive"] }
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 subtle = { version = "2.6", default-features = false }
 redb = { version = "2.6", default-features = false }
-tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "signal"] }
+tokio = { version = "1.53", default-features = false, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net"] }
 clap = { version = "4.5", default-features = false, features = ["std", "derive", "help", "usage", "error-context", "suggestions", "env"] }
 anyhow = "1.0"
 # Feature pins only (notes/build.md, Feature unification): default features, as quinn-proto and

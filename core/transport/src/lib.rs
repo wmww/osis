@@ -146,6 +146,21 @@ pub trait Transport: Send + Sync + 'static {
     fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send;
 }
 
+/// A shared transport (the node's driver and the host it runs dial and listen on one).
+impl<T: Transport> Transport for std::sync::Arc<T> {
+    type Conn = T::Conn;
+    type Listener = T::Listener;
+    fn dial(&self, addr: &Address) -> impl Future<Output = Result<Self::Conn, Error>> + Send {
+        (**self).dial(addr)
+    }
+    fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> impl Future<Output = Result<Self::Conn, Error>> + Send {
+        (**self).dial_as(addr, secret)
+    }
+    fn listen(&self, cfg: ListenConfig) -> impl Future<Output = Result<Self::Listener, Error>> + Send {
+        (**self).listen(cfg)
+    }
+}
+
 /// Incoming connections.
 pub trait Listener: Send + 'static {
     type Conn: Connection;

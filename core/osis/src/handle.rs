@@ -32,6 +32,8 @@ pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     backend: MemoryBackend,
     root: MemoryRoot,
+    /// The store of the node's host, while it hosts (`set_hosting`).
+    pub(crate) host: MemoryBackend,
 }
 
 impl MemStore {
@@ -44,7 +46,7 @@ impl MemStore {
 #[derive(Clone, Debug)]
 pub enum StoreAt {
     Memory(MemStore),
-    /// A directory: `db.redb` and the key root `root`.
+    /// A directory: `db.redb`, the key root `root` and, while it hosts, `host.redb`.
     Dir(std::path::PathBuf),
 }
 
@@ -349,7 +351,7 @@ impl Osis {
         let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
-            inner.net.spawn_driver(ctl, cfg.transport.clone(), cfg.peers, cfg.relays.clone(), clock, WeakOsis(Arc::downgrade(&inner)))?;
+            inner.net.spawn_driver(ctl, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
         }
         let db = Osis::user(inner);
         if let Runtime::Manual(m) = &cfg.runtime {

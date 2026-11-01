@@ -115,16 +115,18 @@ pub enum Cmd {
     /// Hosts this store syncs through
     #[command(subcommand)]
     Hosts(HostsCmd),
-    /// Run a host (prints its address first)
+    /// Keep the store open: sync, host as `host.0^` says (the flags write it; the host address
+    /// prints first), print diagnostics
     Serve {
-        #[arg(long, value_name = "FILE")]
-        config: Option<PathBuf>,
+        /// Listen for hosted sessions at this transport URL (repeatable; replaces the list)
         #[arg(long, value_name = "URL")]
-        listen: Option<String>,
-        #[arg(long, value_name = "DIR")]
-        data: Option<PathBuf>,
-        #[arg(long, value_name = "FILE")]
-        key: Option<PathBuf>,
+        listen: Vec<String>,
+        /// Which labels this node takes: those of its own groups naming its host address, or any
+        #[arg(long, value_enum)]
+        admit: Option<AdmitArg>,
+        /// A label ID (32 hex digits) admitted besides (repeatable; replaces the set)
+        #[arg(long, value_name = "ID")]
+        label: Vec<String>,
     },
     /// Create a thing, optionally setting aspects: create --owner me --in home note:title.0 '"x"'
     Create(CreateArgs),
@@ -356,8 +358,6 @@ pub enum Cmd {
         #[arg(long)]
         follow: bool,
     },
-    /// Keep the store open: sync, print diagnostics
-    Daemon,
     /// Schemas registered with this store
     #[command(subcommand)]
     Schema(SchemaCmd),
@@ -550,4 +550,11 @@ pub enum ScriptCmd {
     #[command(subcommand)]
     Sub(SubCmd),
     Delete { t: String },
+}
+
+/// `serve --admit`.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdmitArg {
+    Own,
+    Open,
 }

@@ -200,6 +200,25 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Seen { 0 ts: WallMs, 1 stranded: bool }
 }
+codec_enum! {
+    /// `host.0^` admission: `own` takes the labels of groups this node reads that name its host
+    /// address, `open` any label within the caps.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub enum Admit { #[default] 0 Own, 1 Open }
+}
+codec_struct! {
+    /// A label's caps in place of the host policy's.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct HostCaps { 0 entries: u64, 1 bytes: u64 }
+}
+codec_struct! {
+    /// `host.0^`: this node hosts (spec/data-model.md §9).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct Host {
+        0 listen: Vec<String>, 1 admit: Admit, 2 labels: BTreeSet<LabelId>, 3 replicate: Vec<Address>,
+        4 policy: BTreeMap<String, u64>, 5 caps: BTreeMap<LabelId, HostCaps>,
+    }
+}
 codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
@@ -242,6 +261,7 @@ pub const WAS: Aspect<Tid> = Aspect::new("was.0", &CORE);
 pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
+pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 /// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
 pub const PLACED: Aspect<Group> = Aspect::new("placed.0~", &CORE);

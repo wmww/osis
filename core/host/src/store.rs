@@ -26,6 +26,7 @@ use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
 use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
+use crate::{Admission, LabelCaps};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -118,6 +119,47 @@ impl Default for HostPolicy {
 }
 
 impl HostPolicy {
+    /// Sets the knob named like its field (the `policy` map of `host.0^`); an unknown name or a
+    /// value out of the knob's range is an error, the policy unchanged.
+    pub fn set(&mut self, name: &str, v: u64) -> Result<(), String> {
+        let n32 = || u32::try_from(v).map_err(|_| format!("{name}: {v} is too large"));
+        let nz = || usize::try_from(v).map_err(|_| format!("{name}: {v} is too large"));
+        match name {
+            "cap_entries" => self.cap_entries = v,
+            "cap_bytes" => self.cap_bytes = v,
+            "deposit_factor" => self.deposit_factor = v,
+            "claim_keep_ms" => self.claim_keep_ms = v,
+            "tombstone_ms" => self.tombstone_ms = v,
+            "log_keep" => self.log_keep = v,
+            "window_ms" => self.window_ms = v,
+            "deletes" => self.deletes = n32()?,
+            "replacements" => self.replacements = n32()?,
+            "deposits" => self.deposits = n32()?,
+            "registers" => self.registers = n32()?,
+            "over_cap_step_ms" => self.over_cap_step_ms = v,
+            "ephemeral_bytes" => self.ephemeral_bytes = v,
+            "ephemeral_total" => self.ephemeral_total = v,
+            "entry_replacements" => self.entry_replacements = n32()?,
+            "relays" => self.relays = n32()?,
+            "relay_bytes" => self.relay_bytes = v,
+            "max_labels" => self.max_labels = v,
+            "max_entries" => self.max_entries = v,
+            "max_bytes" => self.max_bytes = v,
+            "max_connections" => self.max_connections = nz()?,
+            "hello_ms" => self.hello_ms = v,
+            "max_queued_bytes" => {
+                let q = nz()?;
+                if q < osis_proto::serving::SEND_QUEUE {
+                    return Err(format!("{name}: below {} (a client's window plus a reply and a push, spec/sync.md §6)", osis_proto::serving::SEND_QUEUE));
+                }
+                self.max_queued_bytes = q;
+            }
+            "max_buffered_bytes" => self.max_buffered_bytes = nz()?,
+            _ => return Err(format!("unknown host policy knob {name}")),
+        }
+        Ok(())
+    }
+
     /// No limits beyond the spec's minimum budget (tests comparing with `MemoryLabelStore`).
     pub fn unlimited() -> HostPolicy {
         HostPolicy {
@@ -596,6 +638,8 @@ pub struct HostStore<B: Backend> {
     /// Commits are lazy until `durable` (`defer_durability`); one was made since.
     lazy: bool,
     unsynced: bool,
+    admission: Admission,
+    caps: BTreeMap<LabelId, LabelCaps>,
 }
 
 impl<B: Backend> HostStore<B> {
@@ -613,10 +657,30 @@ impl<B: Backend> HostStore<B> {
                 s
             }
         };
+        let relays = osis_proto::RelayGate::default();
+        let mut s = HostStore { backend, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false, admission: Admission::Open, caps: BTreeMap::new() };
+        s.set_policy(policy);
+        Ok(s)
+    }
+
+    /// Replaces the policy (rate windows restart).
+    pub fn set_policy(&mut self, policy: HostPolicy) {
         let mut policy = policy;
         policy.tombstone_ms = policy.tombstone_ms.max(TOMBSTONE_LIFETIME_MS);
-        let relays = osis_proto::RelayGate::new(osis_proto::RelayLimits { count: policy.relays, bytes: policy.relay_bytes, window_ms: policy.window_ms });
-        Ok(HostStore { backend, seed, clock, policy, rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false })
+        self.relays = osis_proto::RelayGate::new(osis_proto::RelayLimits { count: policy.relays, bytes: policy.relay_bytes, window_ms: policy.window_ms });
+        self.policy = policy;
+    }
+
+    /// Which labels new registrations are taken for, and per-label caps in place of the
+    /// policy's (`HostConfig`).
+    pub fn set_admission(&mut self, admission: Admission, caps: BTreeMap<LabelId, LabelCaps>) {
+        self.admission = admission;
+        self.caps = caps;
+    }
+
+    /// `label`'s entry and byte caps.
+    fn label_caps(&self, label: &LabelId) -> (u64, u64) {
+        self.caps.get(label).map_or((self.policy.cap_entries, self.policy.cap_bytes), |c| (c.entries, c.bytes))
     }
 
     pub fn backend(&self) -> &B {
@@ -882,7 +946,8 @@ impl<B: Backend> HostStore<B> {
             None => {
                 let m = &tx.meta;
                 let (entries, bytes) = (m.entries.saturating_sub(plan.entries), m.bytes.saturating_sub(plan.bytes));
-                if entries.saturating_add(1) > p.cap_entries || bytes.saturating_add(size) > p.cap_bytes {
+                let (cap_entries, cap_bytes) = self.label_caps(label);
+                if entries.saturating_add(1) > cap_entries || bytes.saturating_add(size) > cap_bytes {
                     return Ok(Code::STORAGE_CAP);
                 }
                 let t = self.totals()?;
@@ -1302,7 +1367,10 @@ impl<B: Backend> LabelStore for HostStore<B> {
         self.step_row(key(b'W', &[&label.0, step.map_or(&[][..], |s| &s.0[..])]))
     }
 
-    fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
+    fn admit_label(&self, label: &LabelId) -> Result<Code, StoreError> {
+        if !self.admission.admits(label) {
+            return Ok(Code::STORAGE_CAP);
+        }
         let t = self.totals()?;
         let p = &self.policy;
         Ok(if t.labels >= p.max_labels || t.entries >= p.max_entries || t.bytes >= p.max_bytes { Code::STORAGE_CAP } else { Code::OK })
@@ -1327,7 +1395,8 @@ impl<B: Backend> LabelStore for HostStore<B> {
         let step_bytes = step.to_bytes();
         let id = step.id();
         let mut set_rows = claim_set.as_ref().map(|c| set_rows(label, &id, c));
-        let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= self.policy.cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
+        let cap_bytes = self.label_caps(label).1;
+        let fits = |n: u64, total: u64| meta.bytes.saturating_add(n) <= cap_bytes && total.saturating_add(n) <= self.policy.max_bytes;
         let total = self.totals()?.bytes;
         let mut size = step_bytes.len() as u64 + set_rows.as_ref().map_or(0, rows_bytes);
         let mut over = false;

@@ -91,8 +91,8 @@ impl Host {
         let secret = osis_transport::StaticSecret::from_bytes([seed; 32]);
         let listener = transport.listen(osis_transport::ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
         let a = listener.address();
-        let ep = osis_host::Endpoint { transport, listener, secret };
-        let hub = osis_host::Hub::new(store, ep.key(), Box::new(osis_crypto::SeededRng::from_seed([1; 32])));
+        let hub = osis_host::Hub::new(store, a.key, Box::new(osis_crypto::SeededRng::from_seed([1; 32])));
+        let ep = osis_host::Endpoint { transport, listeners: vec![listener], secret };
         let (control, rx) = tokio::sync::mpsc::channel(4);
         let task = tokio::spawn(osis_host::run(hub, ep, peers, clock, rx, std::sync::Arc::new(|m: &str| eprintln!("{m}"))));
         Host { addr: osis_label::Address { url: a.url, key: a.key }, control, task }

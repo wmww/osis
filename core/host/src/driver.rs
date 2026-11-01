@@ -1,6 +1,7 @@
-//! The async driver over any `T: Transport` (notes/architecture.md §2): one task owns the `Hub`
-//! (and so the store); sessions arrive as osis-transport `Link`s (`link::serve`: one per stream a
-//! dialer opens, peer key as the transport authenticated it); per link a reader task hands the
+//! The async driver over any `T: Transport` (notes/architecture.md §2), run by the node's driver
+//! while it hosts: one task owns the `Hub` (and so the store); sessions arrive as osis-transport
+//! `Link`s (`link::serve` on each listener: one per stream a dialer opens, peer key as the
+//! transport authenticated it; the node's own sessions as `Control::Accept`); per link a reader task hands the
 //! hub its reads one at a time (the next once the hub took the last), served in turns
 //! round-robin by source (`Turns`); writes go to the link's queue (more than `max_queued_bytes`
 //! the transport has not taken drops the session); per configured peer a dial task (`dial_as` with this host's static
@@ -9,11 +10,13 @@
 //! multi-thread runtime. The only async code of the crate.
 
 use crate::hub::{ConnId, Hub, HubOutput};
+use crate::{Admission, LabelCaps};
+use osis_base::LabelId;
 use osis_base::Clock;
 use osis_label::Address;
 use osis_store::Backend;
 use osis_transport::link::{self, Link, LinkRx, LinkTx, blocking};
-use osis_transport::{Backoff, Listener, Source, StaticSecret, Transport};
+use osis_transport::{Backoff, Source, StaticSecret, Transport};
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Duration;
@@ -28,26 +31,24 @@ const BACKOFF_MAX: u64 = 60_000;
 /// How long a session's end waits for the peer to take our last bytes.
 pub const FINISH_WAIT: Duration = Duration::from_secs(10);
 
-/// What the driver serves on: a transport, its listener and the static secret it listens with
-/// (also used to dial peer hosts).
+/// What the driver serves on: a transport, its listeners and the static secret they listen
+/// with (also used to dial peer hosts).
 pub struct Endpoint<T: Transport> {
     pub transport: T,
-    pub listener: T::Listener,
+    pub listeners: Vec<T::Listener>,
     pub secret: StaticSecret,
 }
 
-impl<T: Transport> Endpoint<T> {
-    /// The key this node is reached under (the hub's static key).
-    pub fn key(&self) -> [u8; 32] {
-        self.listener.address().key
-    }
-}
-
 /// Commands to a running driver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Control {
     /// Run due sweeps and timers now.
     Tick,
+    /// New admission and per-label caps (`HostStore::set_admission`).
+    Admit(Admission, BTreeMap<LabelId, LabelCaps>),
+    /// A session that reached the host without a listener (the node's own, over an in-process
+    /// link pair).
+    Accept(Link),
     /// Close every connection and return the hub.
     Shutdown,
 }
@@ -148,6 +149,15 @@ impl<B: Backend> Driver<B> {
         let reader = tokio::spawn(read(id, rx, self.ev_tx.clone(), turn.clone()));
         self.conns.insert(id, ConnState { tx, reader, source, input: None, turn, done, taken: u64::MAX });
         id
+    }
+
+    /// A client's session.
+    fn accept(&mut self, link: Link) {
+        let (key, source) = (link.peer_key, link.source);
+        let id = self.add(link, None);
+        let now = self.now();
+        let out = blocking(|| self.hub.accept_from(now, id, key, source));
+        self.apply(out);
     }
 
     fn event(&mut self, ev: Ev) {
@@ -274,32 +284,27 @@ async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Addre
 }
 
 /// Runs the host until `Control::Shutdown` (or the control sender is dropped): serves
-/// sessions on `ep`, keeps a replication session to each of `peers`, and returns the hub. The
-/// hub's static key must be `ep.key()`.
+/// sessions on `ep`'s listeners and those handed in, keeps a replication session to each of
+/// `peers`, and returns the hub. The hub's static key must be the listeners' key.
 pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T>, peers: Vec<Address>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub<B> {
     // unbounded, yet at most a read and an end per connection and a link per dial task
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
-    let Endpoint { transport, listener, secret } = ep;
+    let Endpoint { transport, listeners, secret } = ep;
     let transport = Arc::new(transport);
     let dials: Vec<JoinHandle<()>> = peers.into_iter().map(|a| tokio::spawn(keep_dialing(transport.clone(), secret.clone(), a, ev_tx.clone(), log.clone()))).collect();
     let (in_tx, mut incoming) = mpsc::channel(64);
     let idle = Duration::from_millis(hub.store().policy().hello_ms);
     // transport connections capped like sessions (each connection may carry several)
     let max = hub.store().policy().max_connections;
-    let host = tokio::spawn(link::serve(listener, idle, FINISH_WAIT, in_tx, max));
+    let serving: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), max))).collect();
+    drop(in_tx);
     let mut d = Driver { hub, clock, log, conns: HashMap::new(), turns: Turns::default(), next: 1, ev_tx };
     let mut listening = true;
     loop {
         let idle = d.idle();
         tokio::select! {
             link = incoming.recv(), if listening => match link {
-                Some(link) => {
-                    let (key, source) = (link.peer_key, link.source);
-                    let id = d.add(link, None);
-                    let now = d.now();
-                    let out = blocking(|| d.hub.accept_from(now, id, key, source));
-                    d.apply(out);
-                }
+                Some(link) => d.accept(link),
                 None => listening = false,
             },
             Some(ev) = ev_rx.recv() => d.event(ev),
@@ -312,12 +317,16 @@ pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T
             }
             c = control.recv() => match c {
                 Some(Control::Tick) => d.tick(),
+                Some(Control::Admit(a, caps)) => d.hub.store_mut().set_admission(a, caps),
+                Some(Control::Accept(link)) => d.accept(link),
                 Some(Control::Shutdown) | None => break,
             },
             _ = tokio::time::sleep(idle) => d.tick(),
         }
     }
-    host.abort();
+    for t in serving {
+        t.abort();
+    }
     for t in dials {
         t.abort();
     }

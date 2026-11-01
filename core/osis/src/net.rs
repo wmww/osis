@@ -195,13 +195,14 @@ impl Net {
         }
     }
 
-    /// Starts the driver task over one transport for hosts and co-readers (`Multi`). With
-    /// `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
+    /// Starts the driver task over one transport for hosts and co-readers (`Multi`; its host's
+    /// store beside the database). With `p2p` (`Config.peers`) and a co-reader transport, it listens with the dialable secret
     /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
-    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, transport: Option<Transport>, p2p: bool, relays: Vec<String>, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
+    pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
         let Net::Driver { handle, ctl, stop } = self else { return Ok(()) };
-        let shared = OsisShared(db);
+        let shared = OsisShared(db, cfg.store.clone());
+        let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.clone());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         let mut multi = osis_transport::Multi::default();
         // where the dialable-key listener goes, and whether the LAN loop runs
@@ -275,14 +276,22 @@ fn log_line(m: &str) {
     }
 }
 
-/// The driver's view of the handle: the sync engine behind the database lock.
-struct OsisShared(WeakOsis);
+/// The driver's view of the handle: the sync engine behind the database lock, and where the
+/// database lives (the host's store goes beside it).
+struct OsisShared(WeakOsis, crate::StoreAt);
 
 impl Shared for OsisShared {
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>> {
         let db = self.0.hold()?;
         db.handled(|l| f(&mut l.sync));
         Some(Vec::new())
+    }
+
+    fn host_backend(&self) -> std::result::Result<Box<dyn osis_store::Backend>, String> {
+        match &self.1 {
+            crate::StoreAt::Memory(m) => Ok(Box::new(m.host.clone())),
+            crate::StoreAt::Dir(p) => osis_store::RedbBackend::open(&p.join("host.redb")).map(|b| Box::new(b) as Box<dyn osis_store::Backend>).map_err(|e| e.to_string()),
+        }
     }
 }
 

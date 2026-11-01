@@ -147,7 +147,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
    - `~` (ephemeral) and `*` (signal) come from the key; the `ephemeral` and `signal` schema flags leave the DSL and the `flag` enum.
    - `^` admin-only is judged by validity: a write of a `^` aspect needs admin on the thing. This replaces notes/permissions.md "Admin-only aspects (accepted)" and adds a spec/permissions.md rule.
    - Hunt: `G 'Flag::(Ephemeral|Signal)|\b(ephemeral|signal)\b' -- core/schema schema` (DSL docs, flag lists); read spec/data-model.md §2 and §10 and notes/versioning.md.
-8. **Hosting in the node (a; L, about 2k lines added, 700 removed).**
+8. **Hosting in the node (a; L, about 2k lines added, 700 removed).** Built (notes/sync.md Hosting in the node).
    - `host.0` core aspect; `Action::Host`; the node driver runs the host task, host secret and loopback; `own`/`open` admission; the osis API `hosting`/`set_hosting`/`host_address`.
    - `osis serve` as in §3, with `daemon` and osis-host's `serve.rs`/`config.rs` deleted; the policy.py `host_blind` check; tests as in §1 plus own-mode admission, a node hosting a group it reads (a remote client is served from the host store, and the node's own copy is placed through the loopback), and the CLI `serve`.
    - Sim: a world node may host (the sim steps its `Hub`).
