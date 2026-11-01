@@ -926,7 +926,7 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let lines = s
         .groups
         .iter()
-        .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",")))
+        .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") }))
         .collect::<Vec<_>>();
     let j = J::Arr(
         s.groups

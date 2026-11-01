@@ -1,12 +1,12 @@
 //! Hosting (notes/sync.md Hosting): the node reads its own `host.0^` (spec/data-model.md §9)
 //! and hands its driver a `HostConfig` (`Action::Host`), public data only: the host key, listen
-//! URLs, the admitted label IDs (`own`: the labels of groups this node's person owns whose
-//! hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is
+//! URLs, the admitted label IDs (`own`: the labels of groups whose owner chain reaches this
+//! node or its person and whose hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is
 //! a local record, made when hosting starts and shredded when it stops; the driver listens
 //! with it.
 
 use super::{Action, SyncEngine};
-use osis_base::{LabelId, Role, Tid};
+use osis_base::{LabelId, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_host::{Admission, HostConfig, HostPolicy, LabelCaps};
 use osis_label::Address;
@@ -31,6 +31,8 @@ pub(crate) struct Hosting {
     emitted: Option<HostConfig>,
     generation: Option<u64>,
     pub status: HostStatus,
+    /// This node's person (`SyncEngine::set_person`), for `own`.
+    person: Option<Tid>,
 }
 
 /// The host policy of `host.0^`'s knobs (by `HostPolicy` field name) over the defaults.
@@ -79,18 +81,23 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
-    /// Whether this node's person owns group `g` for `own` admission (spec/data-model.md §9):
-    /// `g` is the node or its person (an actor the node holds admin on), or an owner up its
-    /// chain is that, or an actor whose admins include it. Invariant: reading a group, or
-    /// holding admin on it alone, never qualifies; only an owner chain through the person
-    /// does, so a stranger's grant cannot make this node spend its storage (the inbox accept
-    /// step's principle).
+    /// Sets this node's person (the app's, e.g. osis's `me`): `own` admits groups it owns.
+    pub fn set_person(&mut self, person: Option<Tid>) {
+        self.hosting.person = person;
+        self.hosting.generation = None;
+    }
+
+    /// Whether group `g` is this node's own for `own` admission (spec/data-model.md §9): its
+    /// owner chain reaches the node or its person (`set_person`). Invariant: no role edge
+    /// counts, on `g` or on any owner above it, held by the node or the person: a stranger may
+    /// grant either one admin without consent, and must not make this node spend its storage
+    /// that way (the inbox accept step's principle). Owner links are fixed by the creation
+    /// record (the tid commits to it); anyone may mint a record naming the person as owner,
+    /// but the group's `label.0` takes admin on it, which that chain gives only the person's
+    /// admins (or whom they granted).
     fn owns(&self, g: &Tid) -> bool {
         let node = self.engine.tid();
-        let core = &self.engine.core;
-        let admin_of = |h: &Tid, x: &Tid| core.current_holders(x).iter().any(|(t, r, _)| t == h && *r == Role::Admin);
-        let mine = |x: &Tid| *x == node || admin_of(&node, x);
-        self.engine.owner_chain(g).enumerate().any(|(i, x)| mine(&x) || i > 0 && core.current_holders(&x).iter().any(|(h, r, _)| *r == Role::Admin && mine(h)))
+        self.engine.owner_chain(g).any(|x| x == node || Some(x) == self.hosting.person)
     }
 
     /// What the host runs with now: from `host.0^` (none: not hosting).
