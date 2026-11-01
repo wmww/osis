@@ -1,0 +1,7 @@
+# A held secrets.0 snapshot passes s without the removal it covers
+> Summary: Settled (spec/crypto.md §4) passes a listed epoch s when a held `secrets.0` compaction snapshot keys s. An honest admin compacting `secrets.0` after R_s (M's removal, rotating to s) and then rotating to e (listing s: {R_s}) lets a node X given the snapshot but withheld R_s settle e and re-seal it to M. `roles.0` is compacted only by roster snapshots, so X does not know M departed.
+> Tags: security, keys
+
+No malicious member but the withholder (M or a host). Not a regression: main establishes s from the snapshot and accepts the same shape. Reproduced (review of forged-valid-claim, osis-engine `rotation::tests`): owner 0 grants 1 write, 2 read, 3 admin; 0 demotes 2 (R_s), `compaction_snapshot(&g, "secrets.0")`, demotes 1 (e); peer 3 ingests all of 0's packages but R_s: e established, `reseal_candidates` lists M.
+
+The snapshot clause stands in for claims compacted away, but a removal's commit is not dropped while its `roles.0` delta is needed, so the snapshot never proves the departure is held. Fix direction (not tried): the snapshot clause passes s only where the node also holds a roster state reflecting every departure the snapshot's writer held, e.g. the `secrets.0` snapshot names the departure commits (or roster snapshot) it covers and they must be held. Related: issues/writer-rotation-list-skips-removal.md, issues/snapshot-rotator-lists-forged-claim.md.
