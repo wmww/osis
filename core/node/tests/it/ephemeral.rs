@@ -702,6 +702,45 @@ fn ephemeral_expiry_everywhere_spec_crdt_4_7() {
     assert!(net.hosts[host].hub.store().ephemeral_bytes(&l) < before, "the host dropped it unattended");
 }
 
+// spec/crdt.md §4.7 (ephemeral data: an expired write vanishes whole): B removes A's note with
+// an expiry; at its time the removal goes too and the note reads again at B (its author), at A
+// (held the removal then) and at C (offline meanwhile, never held it): two nodes holding the
+// same ephemeral commits read the same, whatever expired when
+#[test]
+fn expired_removal_vanishes_everywhere_spec_crdt_4_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, a, w, "k", "v");
+    net.run();
+    let v = Some(Value::Map([(s("k"), s("v"))].into()));
+    for n in [a, b, c] {
+        assert_eq!(net.eph_read(n, w, NOTES), v, "node {n} has the note");
+    }
+    net.set_online(c, false);
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    net.run();
+    let none = Some(Value::Map(BTreeMap::new()));
+    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (none.clone(), none), "removed until its expiry");
+    net.advance(6_000);
+    assert_eq!((net.eph_read(a, w, NOTES), net.eph_read(b, w, NOTES)), (v.clone(), v.clone()), "the removal vanished with its expiry");
+    net.set_online(c, true);
+    net.advance(30_000);
+    for n in [a, b, c] {
+        assert_eq!(net.eph_read(n, w, NOTES), v, "node {n} reads the note again");
+    }
+}
+
 // spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
 // author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
 // its author rewrites every 15 s stays up at B without a gap, the host holding at most a few
@@ -2977,7 +3016,7 @@ fn superseding_part_expires_spec_sync_9() {
 // spec/sync.md §9 (only a later write expiring no earlier, none of whose writes is into a record
 // it did not create, supersedes): a move expiring sooner than the one before leaves that one
 // held, so it reads again once the sooner one expires; a `Set` into the entry a move created
-// supersedes nothing (it goes with that entry); holders read as the author throughout
+// supersedes nothing (it outlives that entry); holders read as the author throughout
 #[test]
 fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     let mut net = Net::new();
@@ -3006,9 +3045,12 @@ fn superseding_needs_later_expiry_and_own_records_spec_sync_9() {
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("long"), want("long")), "the earlier move reads again");
     write(&mut net, Op::Set(s("into")), 60_000);
     assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")));
+    // the entry's creation vanishes at its expiry, the `Set` stays (spec/crdt.md §4.7,
+    // ephemeral data: as if the move had never been applied, its record repeats the key)
     net.advance(30_000);
-    let gone = Some(Value::Map(BTreeMap::new()));
-    assert_eq!((at(&mut net, a), at(&mut net, b)), (gone.clone(), gone), "gone with the entry it wrote into");
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (want("into"), want("into")), "the set outlives the entry it wrote into");
+    net.advance(31_000);
+    assert_eq!((at(&mut net, a), at(&mut net, b)), (None, None), "every write gone: the aspect as never written");
 }
 
 // spec/sync.md §9: signals are never held back or merged: each signal write sent while a plain
