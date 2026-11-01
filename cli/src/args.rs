@@ -32,7 +32,7 @@ pub struct Global {
     /// Only errors
     #[arg(short, long, global = true)]
     pub quiet: bool,
-    /// Engine logs on stderr (-vv: more)
+    /// Diagnostics on stderr while a command that syncs runs (as `diag --follow`)
     #[arg(short, long, global = true, action = clap::ArgAction::Count)]
     pub verbose: u8,
     /// Materialization bound in bytes

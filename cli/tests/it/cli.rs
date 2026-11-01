@@ -492,7 +492,8 @@ fn every_api_method_has_a_command_plan_cli_tests() {
     assert!(missing.is_empty(), "API methods without a command (notes/cli.md table): {missing:?}");
 }
 
-// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown, stopped; a
+// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown (with the host
+// address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its labels (as `status` lists them), a label ID works too, `''` clears a field.
 #[test]
 fn hosting_commands_plan_cli_4() {
@@ -503,14 +504,21 @@ fn hosting_commands_plan_cli_4() {
     let home_label = st.split("\"labels\":[\"").nth(1).unwrap().split('"').next().unwrap().to_string();
     assert_eq!(home_label.len(), 32, "{st}");
     let show = s.ok(&["hosting", "show"]).out;
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\nadmit own\nlabel {home_label}\npolicy cap_entries 10\ncap {home_label} 5 500\n"));
+    let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
+    let key = addr.strip_prefix("quic://0.0.0.0:7400#").unwrap_or_else(|| panic!("{addr}"));
+    assert_eq!(key.len(), 43, "a base64url 32-byte key: {addr}");
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit own\nlabel {home_label}\npolicy cap_entries 10\ncap {home_label} 5 500\n"));
+    // the address works as a host to add (`hosts add` on the host device itself)
+    s.ok(&["hosts", "add", &addr]);
+    assert_eq!(s.ok(&["hosts", "ls"]).out, format!("{addr}\n"));
+    s.ok(&["hosts", "rm", &addr]);
     // one flag replaces its field, the rest kept; '' clears
     let other = "00112233445566778899aabbccddeeff";
     s.ok(&["hosting", "set", "--admit", "open", "--label", other, "--policy", ""]);
     let show = s.ok(&["hosting", "show"]).out;
-    assert_eq!(show, format!("listen quic://0.0.0.0:7400\nadmit open\nlabel {other}\ncap {home_label} 5 500\n"));
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\naddress {addr}\nadmit open\nlabel {other}\ncap {home_label} 5 500\n"), "the key kept");
     let j = s.ok(&["--json", "hosting", "show"]).out;
-    assert!(j.contains(&format!("\"labels\":[\"{other}\"]")) && j.contains("\"admit\":\"open\""), "{j}");
+    assert!(j.contains(&format!("\"labels\":[\"{other}\"]")) && j.contains("\"admit\":\"open\"") && j.contains(&format!("\"addresses\":[\"{addr}\"]")), "{j}");
     // bad input: an unknown knob (Invalid), a group not synced here, not a label
     assert_eq!(s.code(&["hosting", "set", "--policy", "no_such_knob=1"]), 7);
     let t = s.thing();
@@ -519,4 +527,31 @@ fn hosting_commands_plan_cli_4() {
     assert_eq!(s.code(&["hosting", "set", "--cap", "home=5"]), 2);
     s.ok(&["hosting", "off"]);
     assert_eq!(s.code(&["hosting", "show"]), 3);
+    // stopping shreds the host secret: a new start has a new address; no listen URL, no address
+    s.ok(&["hosting", "set"]);
+    assert_eq!(s.ok(&["hosting", "show"]).out, "admit own\n");
+    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400"]);
+    let again = s.ok(&["hosting", "show"]).out;
+    assert!(again.contains("address quic://0.0.0.0:7400#") && !again.contains(&addr), "{again}");
+}
+
+// notes/cli.md Deviations `-v`: a command that syncs prints the node's diagnostics on stderr
+// (as `diag --follow`); without `-v`, or on a local command, none. The diagnostic: a thing
+// placed only in groups no synced group holds (`NotSynced`), by `share-into` (it syncs) and by
+// `place` (local).
+#[test]
+fn verbose_prints_diagnostics_plan_cli_4() {
+    let s = S::mem();
+    let group = || s.ok(&["create", "--owner", "me", "--group", "t:made.0", "true"]).line().to_string();
+    let (g, g2, g3, g4, g5) = (group(), group(), group(), group(), group());
+    let t = s.ok(&["create", "--owner", "me", "--in", &g, "t:x.0", "1"]).line().to_string();
+    let line = format!("NotSynced {t} placed only in groups no synced group holds: it stays on this device");
+    let o = s.ok(&["-v", "share-into", &t, &g2, "read"]);
+    assert_eq!(o.err.lines().filter(|l| *l == line).count(), 1, "{}", o.err);
+    let o = s.ok(&["share-into", &t, &g3, "read"]);
+    assert_eq!(o.err, "");
+    let o = s.ok(&["-v", "place", &t, &g4]);
+    assert_eq!(o.err, "", "a local command");
+    let o = s.ok(&["-v", "--json", "share-into", &t, &g5, "read"]);
+    assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
 }

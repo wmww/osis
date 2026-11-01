@@ -71,13 +71,14 @@ pub enum StoreSel {
 pub struct Io<'a> {
     pub stdin: &'a mut dyn BufRead,
     pub stdout: &'a mut dyn Write,
-    pub stderr: &'a mut dyn Write,
+    /// Sent to the thread that prints `-v` diagnostics.
+    pub stderr: &'a mut (dyn Write + Send),
     /// stdin is a terminal (`edit` opens `$EDITOR`).
     pub tty: bool,
 }
 
 /// Runs one invocation (args include the binary name); returns the exit code.
-pub fn main_with<I, T>(args: I, stdin: &mut dyn BufRead, stdout: &mut dyn Write, stderr: &mut dyn Write) -> i32
+pub fn main_with<I, T>(args: I, stdin: &mut dyn BufRead, stdout: &mut dyn Write, stderr: &mut (dyn Write + Send)) -> i32
 where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
@@ -102,7 +103,7 @@ where
     };
     let json = cli.g.json;
     let Io { stdin, stdout, stderr, tty } = io;
-    let r = cmd::dispatch(cli, store, stdin, stdout, tty);
+    let r = cmd::dispatch(cli, store, stdin, stdout, &mut *stderr, tty);
     let _ = stdout.flush();
     match r {
         Ok(()) => 0,

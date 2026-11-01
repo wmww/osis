@@ -81,4 +81,11 @@ impl Osis {
             HostStatus::Failed(e) => Err(Error::Network(e)),
         }
     }
+
+    /// The key of this node's host address (the transport key of its host secret), known
+    /// without listening: made when `host.0^` is first set, kept until hosting stops. With a
+    /// fixed listen URL, `HostAddr::new(url, key)` is the address `host_address` will report.
+    pub fn host_key(&self) -> Option<[u8; 32]> {
+        self.locked(|l| l.sync.host_key())
+    }
 }
