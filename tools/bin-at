@@ -1,6 +1,7 @@
 #!/bin/sh
-# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME] [--patch FILE]... [--take PATH]...:
-# REV's test binary (default osis-node's `it`, dev profile), built in this worktree and copied to
+# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]...:
+# REV's test binary (default osis-node's `it`, dev profile; `--lib CRATE`: that crate's lib unit
+# tests, e.g. osis-engine's `rotation::tests`), built in this worktree and copied to
 # OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
 # against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
 # PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
@@ -13,11 +14,11 @@
 # fail to link with undefined symbols: delete the newest target/debug/incremental/{it,osis_node,
 # osis_engine}-* dirs.
 set -eu
-usage="usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME] [--patch FILE]... [--take PATH]..."
+usage="usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME | --lib CRATE] [--patch FILE]... [--take PATH]..."
 [ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
-profile="" crate=osis-node test=it patches="" takes=""
+profile="" crate=osis-node test=it lib="" patches="" takes=""
 nl='
 '
 while [ $# -gt 0 ]; do
@@ -25,6 +26,7 @@ while [ $# -gt 0 ]; do
         --release) profile=--release ;;
         -p) crate=$2; shift ;;
         --test) test=$2; shift ;;
+        --lib) crate=$2 lib=1; shift ;;
         --patch) [ -f "$2" ] || { echo "bin-at: no patch file $2" >&2; exit 2; }
             patches="$patches$(cd "$(dirname "$2")" && pwd)/$(basename "$2")$nl"; shift ;;
         --take) takes="$takes$2$nl"; shift ;;
@@ -52,10 +54,15 @@ for f in $patches; do git apply --index "$f" || { echo "bin-at: $f does not appl
 for f in $takes; do git checkout -q "$start" -- "$f" || exit 1; done
 unset IFS
 [ -n "$patches$takes" ] || dirty=
+if [ -n "$lib" ]; then
+    target="--lib" pick='.profile.test and (.target.kind | index("lib"))'
+else
+    target="--test $test" pick='.target.name == "'"$test"'"'
+fi
 # shellcheck disable=SC2086
-exe=$(cargo test $profile -p "$crate" --test "$test" --no-run --message-format=json-render-diagnostics \
-    | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.name == "'"$test"'") | .executable' | tail -n 1)
-[ -n "$exe" ] || { echo "bin-at: no executable for $crate --test $test" >&2; exit 1; }
+exe=$(cargo test $profile -p "$crate" $target --no-run --message-format=json-render-diagnostics \
+    | jq -r 'select(.reason == "compiler-artifact" and .executable != null and '"$pick"') | .executable' | tail -n 1)
+[ -n "$exe" ] || { echo "bin-at: no executable for $crate $target" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"
 cp "$exe" "$out"
 echo "bin-at: $(git log -1 --format='%h %s' "$sha")${patches:+ + patches}${takes:+ + taken files} -> $out" >&2

@@ -851,94 +851,101 @@ fn leaks_judged_covered(lp: &mut LocalPeer, gs: &[(Tid, usize)], d: Tid, start: 
 // it; then nothing stays uncovered and every holder holds a box at the newest epoch.
 #[test]
 fn cycle_removals_leak_nothing_random() {
-    cycle_removals(0..6);
+    cycle_stats(osis_base::testenv::run_seeds("rotation::tests::cycle_removals_leak_nothing_random", &[0, 1, 2, 3, 4, 5], false, cycle_replay, cycle_removals));
 }
 
-/// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS.
+/// Seeds: OSIS_CYCLE_START, OSIS_CYCLE_SEEDS (default 1000..1200).
 #[test]
 #[ignore = "tier 2"]
 fn cycle_removals_leak_nothing_random_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_CYCLE_START", "OSIS_CYCLE_SEEDS", 1_000..1_200);
-    s.announce("cycle_removals_leak_nothing_random_large");
-    cycle_removals(s.range);
+    cycle_stats(s.run("rotation::tests::cycle_removals_leak_nothing_random_large", cycle_replay, cycle_removals));
 }
 
-/// `cycle_removals_leak_nothing_random` over `seeds`; peers: 0 and 2 admins, 1 the party D.
-fn cycle_removals(seeds: std::ops::Range<u64>) {
+fn cycle_replay(s: u64) -> String {
+    format!("OSIS_CYCLE_START={s} OSIS_CYCLE_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::cycle_removals_leak_nothing_random_large -- --ignored --exact")
+}
+
+fn cycle_stats(runs: Vec<(usize, bool, bool)>) {
+    let rounds = runs.iter().map(|r| r.0).max().unwrap_or(0);
+    let lonely = runs.iter().filter(|r| r.1).count();
+    let wrote = runs.iter().filter(|r| r.2).count();
+    eprintln!("cycle removals: {} runs, {lonely} with disjoint admins, {wrote} written by D, at most {rounds} rounds to settle", runs.len());
+}
+
+/// One seed of `cycle_removals_leak_nothing_random*`: rounds to settle, whether its admins were
+/// disjoint, whether D wrote; peers: 0 and 2 admins, 1 the party D.
+fn cycle_removals(seed: u64) -> (usize, bool, bool) {
     let roles = [Role::Read, Role::Write, Role::Admin];
-    let (mut rounds, mut runs, mut lonely, mut wrote) = (0, 0, 0, 0);
-    for seed in seeds {
-        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let [d, c] = [1, 2].map(|i| lp.peers[i].engine.tid());
-        let two = rng.next(2) == 0;
-        let common = two && rng.next(2) == 0;
-        let k = 2 + rng.next(3) as usize;
-        let gs: Vec<(Tid, usize)> = (0..k)
-            .map(|_| {
-                let o = if two && rng.next(2) == 0 { 2 } else { 0 };
-                (group(&mut lp, o), o)
-            })
-            .collect();
-        lp.sync_all().unwrap();
-        if common {
-            // peer 2 an admin of every actor of peer 0's
-            for &(t, o) in &gs {
-                if o == 0 {
-                    lp.peers[0].engine.grant(&t, &c, &edge(Role::Admin)).unwrap();
-                }
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut lp = LocalPeer::new(3, 1_300 + seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let [d, c] = [1, 2].map(|i| lp.peers[i].engine.tid());
+    let two = rng.next(2) == 0;
+    let common = two && rng.next(2) == 0;
+    let k = 2 + rng.next(3) as usize;
+    let gs: Vec<(Tid, usize)> = (0..k)
+        .map(|_| {
+            let o = if two && rng.next(2) == 0 { 2 } else { 0 };
+            (group(&mut lp, o), o)
+        })
+        .collect();
+    lp.sync_all().unwrap();
+    if common {
+        // peer 2 an admin of every actor of peer 0's
+        for &(t, o) in &gs {
+            if o == 0 {
+                lp.peers[0].engine.grant(&t, &c, &edge(Role::Admin)).unwrap();
             }
         }
-        for i in 0..k {
-            for j in 0..k {
-                if i != j && (j == (i + 1) % k || rng.next(3) == 0) {
-                    let (t, o) = gs[i];
-                    let _ = lp.peers[o].engine.grant(&t, &gs[j].0, &edge(roles[rng.next(3) as usize]));
-                }
-            }
-        }
-        let mut held_by_d = Vec::new();
-        for _ in 0..1 + rng.next(2) {
-            let (t, o) = gs[rng.next(k as u64) as usize];
-            let r = roles[rng.next(3) as usize];
-            if lp.peers[o].engine.grant(&t, &d, &edge(r)).is_ok() {
-                held_by_d.push((t, o, r));
-            }
-        }
-        lp.sync_all().unwrap();
-        let all: Vec<Tid> = gs.iter().map(|g| g.0).collect();
-        let (t, o, r) = held_by_d[rng.next(held_by_d.len() as u64) as usize];
-        let new = match (r, rng.next(2)) {
-            (Role::Admin, 0) => Some(edge(Role::Write)),
-            (Role::Admin | Role::Write, 1) => Some(edge(Role::Read)),
-            _ => None,
-        };
-        // sometimes D, before leaving by itself, rotates the roles of `t` it leaves without
-        // boxing itself at them (spec/crypto.md §4: written by a departed party)
-        let by_d = rng.next(2) == 0;
-        let keep = new.as_ref().map(|e| e.role);
-        if by_d && r >= Role::Write {
-            let rot: Vec<Role> = roles.into_iter().filter(|x| Some(*x) > keep && *x <= r).collect();
-            rotate_unboxed(&mut lp, 1, t, &rot, keep);
-            lp.sync_all().unwrap();
-            wrote += 1;
-        }
-        let start = held_by(&lp, 1, &all);
-        lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { holder: d, new, presync: PreSync::Synced }).unwrap();
-        lp.sync_all().unwrap();
-        assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
-        let admins: &[usize] = if two { &[0, 2] } else { &[0] };
-        rounds = rounds.max(settle(&mut lp, admins, &all));
-        assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade and re-seals");
-        for &(x, i) in &gs {
-            assert!(uncovered_at(&mut lp, i, x).is_empty(), "seed {seed}: each admin alone covers every cycle");
-        }
-        assert!(gs.iter().all(|&(x, i)| all_boxed(&mut lp, i, &[x])), "seed {seed}: every holder re-sealed");
-        runs += 1;
-        lonely += usize::from(two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2));
     }
-    eprintln!("cycle removals: {runs} runs, {lonely} with disjoint admins, {wrote} written by D, at most {rounds} rounds to settle");
+    for i in 0..k {
+        for j in 0..k {
+            if i != j && (j == (i + 1) % k || rng.next(3) == 0) {
+                let (t, o) = gs[i];
+                let _ = lp.peers[o].engine.grant(&t, &gs[j].0, &edge(roles[rng.next(3) as usize]));
+            }
+        }
+    }
+    let mut held_by_d = Vec::new();
+    for _ in 0..1 + rng.next(2) {
+        let (t, o) = gs[rng.next(k as u64) as usize];
+        let r = roles[rng.next(3) as usize];
+        if lp.peers[o].engine.grant(&t, &d, &edge(r)).is_ok() {
+            held_by_d.push((t, o, r));
+        }
+    }
+    lp.sync_all().unwrap();
+    let all: Vec<Tid> = gs.iter().map(|g| g.0).collect();
+    let (t, o, r) = held_by_d[rng.next(held_by_d.len() as u64) as usize];
+    let new = match (r, rng.next(2)) {
+        (Role::Admin, 0) => Some(edge(Role::Write)),
+        (Role::Admin | Role::Write, 1) => Some(edge(Role::Read)),
+        _ => None,
+    };
+    // sometimes D, before leaving by itself, rotates the roles of `t` it leaves without
+    // boxing itself at them (spec/crypto.md §4: written by a departed party)
+    let by_d = rng.next(2) == 0;
+    let keep = new.as_ref().map(|e| e.role);
+    let wrote = by_d && r >= Role::Write;
+    if wrote {
+        let rot: Vec<Role> = roles.into_iter().filter(|x| Some(*x) > keep && *x <= r).collect();
+        rotate_unboxed(&mut lp, 1, t, &rot, keep);
+        lp.sync_all().unwrap();
+    }
+    let start = held_by(&lp, 1, &all);
+    lp.peers[if by_d { 1 } else { o }].engine.demote(&t, &Demotion { holder: d, new, presync: PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the removal");
+    let admins: &[usize] = if two { &[0, 2] } else { &[0] };
+    let rounds = settle(&mut lp, admins, &all);
+    assert_eq!(leaks_judged_covered(&mut lp, &gs, d, &start), vec![], "seed {seed}: after the cascade and re-seals");
+    for &(x, i) in &gs {
+        assert!(uncovered_at(&mut lp, i, x).is_empty(), "seed {seed}: each admin alone covers every cycle");
+    }
+    assert!(gs.iter().all(|&(x, i)| all_boxed(&mut lp, i, &[x])), "seed {seed}: every holder re-sealed");
+    let lonely = two && !common && gs.iter().any(|g| g.1 == 0) && gs.iter().any(|g| g.1 == 2);
+    (rounds, lonely, wrote)
 }
 
 // A lattice 4 wide and 10 deep, each actor a holder of all 4 above it (4^9 chains from the
@@ -1094,15 +1101,13 @@ fn rotator_lacking_write_resealed_spec_permissions_3() {
     lacking_write_resealed(960);
 }
 
-/// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS.
+/// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS (default 955..975).
 #[test]
 #[ignore = "tier 2"]
 fn rotator_lacking_write_resealed_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", 955..975);
-    s.announce("rotator_lacking_write_resealed_large");
-    for seed in s.range {
-        lacking_write_resealed(seed);
-    }
+    let replay = |s: u64| format!("OSIS_LACKING_START={s} OSIS_LACKING_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::rotator_lacking_write_resealed_large -- --ignored --exact");
+    s.run("rotation::tests::rotator_lacking_write_resealed_large", replay, lacking_write_resealed);
 }
 
 fn lacking_write_resealed(seed: u64) {
@@ -1239,7 +1244,7 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
 // and every holder of a role holds every current epoch of it that any node holds.
 #[test]
 fn forked_reseals_settle_spec_permissions_3() {
-    forked_reseals(0..3);
+    forked_stats(osis_base::testenv::run_seeds("rotation::tests::forked_reseals_settle_spec_permissions_3", &[0, 1, 2], false, forked_replay, forked_reseals));
 }
 
 // Seed 3: peer 0 rotates admin while peer 2 rotates read leaving peer 0 out, so peer 0 is
@@ -1247,99 +1252,105 @@ fn forked_reseals_settle_spec_permissions_3() {
 // admin fork, which stays current at every node and is re-sealed to peer 0.
 #[test]
 fn forked_reseals_settle_issue_seeds_spec_permissions_3() {
-    forked_reseals(3..4);
-    forked_reseals(75..76);
+    forked_reseals(3);
+    forked_reseals(75);
 }
 
-/// Seeds: OSIS_FORKS_START, OSIS_FORKS_SEEDS.
+/// Seeds: OSIS_FORKS_START, OSIS_FORKS_SEEDS (default 0..100).
 #[test]
 #[ignore = "tier 2"]
 fn forked_reseals_settle_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", 0..100);
-    s.announce("forked_reseals_settle_large");
-    forked_reseals(s.range);
+    forked_stats(s.run("rotation::tests::forked_reseals_settle_large", forked_replay, forked_reseals));
 }
 
-fn forked_reseals(seeds: std::ops::Range<u64>) {
+fn forked_replay(s: u64) -> String {
+    format!("OSIS_FORKS_START={s} OSIS_FORKS_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::forked_reseals_settle_large -- --ignored --exact")
+}
+
+fn forked_stats(runs: Vec<(bool, usize)>) {
+    let forked = runs.iter().filter(|r| r.0).count();
+    let rounds = runs.iter().map(|r| r.1).max().unwrap_or(0);
+    eprintln!("forked re-seals: {forked} runs forked, at most {} rounds to settle", rounds + 1);
+}
+
+/// One seed of `forked_reseals_settle_*`: whether it forked, and the re-seal rounds to settle.
+fn forked_reseals(seed: u64) -> (bool, usize) {
     const N: usize = 4;
     let roles = [Role::Read, Role::Write, Role::Admin];
-    let (mut forked, mut max_rounds) = (0, 0);
-    for seed in seeds {
-        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let mut lp = LocalPeer::new(N, 2_000 + seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
-        let g = group(&mut lp, 0);
-        let mut role = [Role::Admin; N];
-        for i in 1..N {
-            role[i] = roles[rng.next(3) as usize];
-            lp.peers[0].engine.grant(&g, &tids[i], &edge(role[i])).unwrap();
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut lp = LocalPeer::new(N, 2_000 + seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    let mut role = [Role::Admin; N];
+    for i in 1..N {
+        role[i] = roles[rng.next(3) as usize];
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(role[i])).unwrap();
+    }
+    lp.sync_all().unwrap();
+    for _ in 0..2 + rng.next(4) {
+        // a few rotators act on the same state: their rotations fork
+        for (i, &ri) in role.iter().enumerate() {
+            if ri < Role::Write || rng.next(2) == 0 {
+                continue;
+            }
+            let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
+            if rot.is_empty() {
+                continue;
+            }
+            let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
+            // refused (a rotated role's secret not held) changes nothing
+            let _ = lp.peers[i].engine.run(|tx| {
+                let held = tx.core.epochs(&g).unwrap();
+                let holders = super::recipients(tx, &g, &skip)?;
+                let mut m = Mutation::new();
+                let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
+                crate::engine::Engine::commit_tx(tx, m)?;
+                super::record(tx, g, &r)
+            });
         }
-        lp.sync_all().unwrap();
-        for _ in 0..2 + rng.next(4) {
-            // a few rotators act on the same state: their rotations fork
-            for (i, &ri) in role.iter().enumerate() {
-                if ri < Role::Write || rng.next(2) == 0 {
-                    continue;
-                }
-                let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
-                if rot.is_empty() {
-                    continue;
-                }
-                let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
-                // refused (a rotated role's secret not held) changes nothing
-                let _ = lp.peers[i].engine.run(|tx| {
-                    let held = tx.core.epochs(&g).unwrap();
-                    let holders = super::recipients(tx, &g, &skip)?;
-                    let mut m = Mutation::new();
-                    let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
-                    crate::engine::Engine::commit_tx(tx, m)?;
-                    super::record(tx, g, &r)
-                });
-            }
-            if rng.next(2) == 0 {
-                lp.sync_all().unwrap();
-            } else {
-                for _ in 0..3 {
-                    let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
-                    if a != b {
-                        lp.sync(a, b).unwrap();
-                    }
-                }
-            }
-        }
-        lp.sync_all().unwrap();
-        let e0 = lp.peers[0].engine.epochs(&g).unwrap();
-        forked += usize::from(roles.iter().any(|r| e0.role(*r).current().len() > 1));
-        let mut settled = None;
-        for round in 0..12 {
-            let mut n = 0;
-            let concurrent = rng.next(2) == 0;
-            for p in 0..N {
-                n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
-                if !concurrent {
-                    lp.sync_all().unwrap();
-                }
-            }
+        if rng.next(2) == 0 {
             lp.sync_all().unwrap();
-            if n == 0 {
-                settled = Some(round);
-                break;
-            }
-        }
-        let Some(rounds) = settled else { panic!("seed {seed}: no re-seal fixpoint in 12 rounds") };
-        max_rounds = max_rounds.max(rounds);
-        for r in roles {
-            let current: Vec<Vec<osis_crypto::Epoch>> = (0..N).map(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).current()).collect();
-            assert!(current.iter().all(|c| *c == current[0]), "seed {seed}: {r:?}: nodes count different current epochs: {current:?}");
-            for e in &current[0] {
-                let any = (0..N).any(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).secret(e).is_some());
-                let lacking: Vec<usize> = (0..N).filter(|h| role[*h] >= r && lp.peers[*h].engine.epochs(&g).unwrap().role(r).secret(e).is_none()).collect();
-                assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+        } else {
+            for _ in 0..3 {
+                let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
+                if a != b {
+                    lp.sync(a, b).unwrap();
+                }
             }
         }
     }
-    eprintln!("forked re-seals: {forked} runs forked, at most {} rounds to settle", max_rounds + 1);
+    lp.sync_all().unwrap();
+    let e0 = lp.peers[0].engine.epochs(&g).unwrap();
+    let forked = roles.iter().any(|r| e0.role(*r).current().len() > 1);
+    let mut settled = None;
+    for round in 0..12 {
+        let mut n = 0;
+        let concurrent = rng.next(2) == 0;
+        for p in 0..N {
+            n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+            if !concurrent {
+                lp.sync_all().unwrap();
+            }
+        }
+        lp.sync_all().unwrap();
+        if n == 0 {
+            settled = Some(round);
+            break;
+        }
+    }
+    let Some(rounds) = settled else { panic!("seed {seed}: no re-seal fixpoint in 12 rounds") };
+    for r in roles {
+        let current: Vec<Vec<osis_crypto::Epoch>> = (0..N).map(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).current()).collect();
+        assert!(current.iter().all(|c| *c == current[0]), "seed {seed}: {r:?}: nodes count different current epochs: {current:?}");
+        for e in &current[0] {
+            let any = (0..N).any(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).secret(e).is_some());
+            let lacking: Vec<usize> = (0..N).filter(|h| role[*h] >= r && lp.peers[*h].engine.epochs(&g).unwrap().role(r).secret(e).is_none()).collect();
+            assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+        }
+    }
+    (forked, rounds)
 }
 
 // spec/permissions.md §3 (re-seal, removal), spec/crypto.md §4 (supersession, history boxes,
@@ -1354,7 +1365,7 @@ fn forked_reseals(seeds: std::ops::Range<u64>) {
 // Seed 1: an admin epoch that boxed nobody, superseded through the next one's history box.
 #[test]
 fn forks_with_departures_settle_spec_permissions_3() {
-    forks_with_departures(1..2);
+    forks_with_departures(1);
 }
 
 // spec/crypto.md §4 (settled rotation commits): rotation commits turned invalid, their rotator
@@ -1365,163 +1376,161 @@ fn forks_with_departures_settle_spec_permissions_3() {
 // writer held it); 336 settles only by passing through the invalid one.
 #[test]
 fn invalid_own_rotation_falls_spec_crypto_4() {
-    forks_with_departures([23]);
+    forks_with_departures(23);
 }
 
 #[test]
 fn invalid_own_rotation_falls_25_spec_crypto_4() {
-    forks_with_departures([25]);
+    forks_with_departures(25);
 }
 
 #[test]
 fn chain_passes_invalid_rotation_51_spec_crypto_4() {
-    forks_with_departures([51]);
+    forks_with_departures(51);
 }
 
 #[test]
 fn chain_passes_invalid_rotation_243_spec_crypto_4() {
-    forks_with_departures([243]);
+    forks_with_departures(243);
 }
 
 #[test]
 fn chain_passes_invalid_rotation_336_spec_crypto_4() {
-    forks_with_departures([336]);
+    forks_with_departures(336);
 }
 
-/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS.
+/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS (default 0..100).
 #[test]
 #[ignore = "tier 2"]
 fn forks_with_departures_settle_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
-    s.announce("forks_with_departures_settle_large");
-    forks_with_departures(s.range);
+    let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::forks_with_departures_settle_large -- --ignored --exact");
+    s.run("rotation::tests::forks_with_departures_settle_large", replay, forks_with_departures);
 }
 
-fn forks_with_departures(seeds: impl IntoIterator<Item = u64>) {
+fn forks_with_departures(seed: u64) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
-    for seed in seeds {
-        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
-        let mut lp = LocalPeer::new(N, 3_000 + seed, WallMs(1_700_000_000_000)).unwrap();
-        lp.sync_all().unwrap();
-        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
-        let g = group(&mut lp, 0);
-        let mut role = [Some(Role::Admin); N];
-        for i in 1..N {
-            let r = roles[rng.next(3) as usize];
-            role[i] = Some(r);
-            lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
-        }
-        lp.sync_all().unwrap();
-        // the highest role each peer held
-        let was = role;
-        let mut boxless = false;
-        for _ in 0..2 + rng.next(4) {
-            // a peer acts on the role it held when the round began: one demoted in it does not
-            // know yet, and its rotation there is invalid at the others
-            let acting = role;
-            for (i, ri) in acting.into_iter().enumerate() {
-                let Some(ri) = ri else { continue };
-                if ri < Role::Write || rng.next(2) == 0 {
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut lp = LocalPeer::new(N, 3_000 + seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    let mut role = [Some(Role::Admin); N];
+    for i in 1..N {
+        let r = roles[rng.next(3) as usize];
+        role[i] = Some(r);
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    // the highest role each peer held
+    let was = role;
+    let mut boxless = false;
+    for _ in 0..2 + rng.next(4) {
+        // a peer acts on the role it held when the round began: one demoted in it does not
+        // know yet, and its rotation there is invalid at the others
+        let acting = role;
+        for (i, ri) in acting.into_iter().enumerate() {
+            let Some(ri) = ri else { continue };
+            if ri < Role::Write || rng.next(2) == 0 {
+                continue;
+            }
+            let pick = rng.next(6);
+            if pick == 0 && ri == Role::Admin {
+                let j = 1 + rng.next(N as u64 - 1) as usize;
+                let new = (rng.next(2) == 0).then_some(Role::Read);
+                if j == i || role[j] <= new {
                     continue;
                 }
-                let pick = rng.next(6);
-                if pick == 0 && ri == Role::Admin {
-                    let j = 1 + rng.next(N as u64 - 1) as usize;
-                    let new = (rng.next(2) == 0).then_some(Role::Read);
-                    if j == i || role[j] <= new {
-                        continue;
-                    }
-                    // refused (a rotated role's secret not held) changes nothing
-                    if lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced }).is_ok() {
-                        role[j] = new;
-                    }
-                    continue;
+                // refused (a rotated role's secret not held) changes nothing
+                if lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced }).is_ok() {
+                    role[j] = new;
                 }
-                let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
-                if rot.is_empty() {
-                    continue;
-                }
-                let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| pick == 1 || *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
-                boxless |= pick == 1;
-                let _ = lp.peers[i].engine.run(|tx| {
-                    let held = tx.core.epochs(&g).unwrap();
-                    let holders = super::recipients(tx, &g, &skip)?;
-                    let mut m = Mutation::new();
-                    let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
-                    crate::engine::Engine::commit_tx(tx, m)?;
-                    super::record(tx, g, &r)
-                });
+                continue;
             }
-            if rng.next(2) == 0 {
-                lp.sync_all().unwrap();
-            } else {
-                for _ in 0..4 {
-                    let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
-                    if a != b {
-                        lp.sync(a, b).unwrap();
-                    }
-                }
+            let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
+            if rot.is_empty() {
+                continue;
             }
+            let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| pick == 1 || *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
+            boxless |= pick == 1;
+            let _ = lp.peers[i].engine.run(|tx| {
+                let held = tx.core.epochs(&g).unwrap();
+                let holders = super::recipients(tx, &g, &skip)?;
+                let mut m = Mutation::new();
+                let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
+                crate::engine::Engine::commit_tx(tx, m)?;
+                super::record(tx, g, &r)
+            });
         }
-        lp.sync_all().unwrap();
-        // what the demotions came to: one by an admin demoted concurrently is invalid
-        let now: BTreeMap<Tid, Role> = lp.peers[0].engine.core.current_holders(&g).into_iter().map(|(h, r, _)| (h, r)).collect();
-        for p in 1..N {
-            role[p] = now.get(&tids[p]).copied();
-        }
-        let stay: Vec<usize> = (0..N).filter(|p| role[*p].is_some()).collect();
-        let mut settled = false;
-        for _ in 0..16 {
-            let mut n = 0;
-            let concurrent = rng.next(2) == 0;
-            for &p in &stay {
-                n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
-                n += lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len();
-                if !concurrent {
-                    lp.sync_all().unwrap();
-                }
-            }
+        if rng.next(2) == 0 {
             lp.sync_all().unwrap();
-            if n == 0 {
-                settled = true;
-                break;
+        } else {
+            for _ in 0..4 {
+                let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
+                if a != b {
+                    lp.sync(a, b).unwrap();
+                }
             }
         }
-        assert!(settled, "seed {seed}: no fixpoint in 16 rounds");
-        for r in roles {
-            let ep = |p: usize| lp.peers[p].engine.epochs(&g).unwrap().role(r).clone();
-            // peer 0, G's owner, holds every role and is never demoted
-            let at0 = ep(0).current();
-            for &p in &stay {
-                let e = ep(p);
-                let c = e.current();
-                // peer 0's rotations are all valid: an epoch current elsewhere and unestablished
-                // there is an invalid rotation's (a demoted admin's own, made unaware)
-                assert!(c.iter().all(|x| ep(0).is_established(x)), "seed {seed}: {r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
-                if boxless {
-                    // An epoch that had no box when the rotation superseding it was made is
-                    // superseded only through that rotation's history box, at the nodes holding
-                    // its secret; such an epoch is below that rotation, so never newest.
-                    assert_eq!(osis_keys::newest_of(&c), osis_keys::newest_of(&at0), "seed {seed}: {r:?}: peer {p} counts {c:?}, peer 0 {at0:?}");
-                } else {
-                    assert_eq!(c, at0, "seed {seed}: {r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
-                }
+    }
+    lp.sync_all().unwrap();
+    // what the demotions came to: one by an admin demoted concurrently is invalid
+    let now: BTreeMap<Tid, Role> = lp.peers[0].engine.core.current_holders(&g).into_iter().map(|(h, r, _)| (h, r)).collect();
+    for p in 1..N {
+        role[p] = now.get(&tids[p]).copied();
+    }
+    let stay: Vec<usize> = (0..N).filter(|p| role[*p].is_some()).collect();
+    let mut settled = false;
+    for _ in 0..16 {
+        let mut n = 0;
+        let concurrent = rng.next(2) == 0;
+        for &p in &stay {
+            n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+            n += lp.peers[p].engine.ensure_rotated(&g).unwrap().0.commits.len();
+            if !concurrent {
+                lp.sync_all().unwrap();
             }
-            for e in &at0 {
-                // re-sealed by a node that may rotate `r` (one that may not, as a writer demoted
-                // after a rotation that boxed only itself, cannot: issues/fork-held-by-non-rotators.md)
-                let any = stay.iter().any(|&p| role[p] >= Some(r.max(Role::Write)) && ep(p).secret(e).is_some());
-                let lacking: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_none()).collect();
-                assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+        }
+        lp.sync_all().unwrap();
+        if n == 0 {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "seed {seed}: no fixpoint in 16 rounds");
+    for r in roles {
+        let ep = |p: usize| lp.peers[p].engine.epochs(&g).unwrap().role(r).clone();
+        // peer 0, G's owner, holds every role and is never demoted
+        let at0 = ep(0).current();
+        for &p in &stay {
+            let e = ep(p);
+            let c = e.current();
+            // peer 0's rotations are all valid: an epoch current elsewhere and unestablished
+            // there is an invalid rotation's (a demoted admin's own, made unaware)
+            assert!(c.iter().all(|x| ep(0).is_established(x)), "seed {seed}: {r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
+            if boxless {
+                // An epoch that had no box when the rotation superseding it was made is
+                // superseded only through that rotation's history box, at the nodes holding
+                // its secret; such an epoch is below that rotation, so never newest.
+                assert_eq!(osis_keys::newest_of(&c), osis_keys::newest_of(&at0), "seed {seed}: {r:?}: peer {p} counts {c:?}, peer 0 {at0:?}");
+            } else {
+                assert_eq!(c, at0, "seed {seed}: {r:?}: peers 0 and {p} count different current epochs (roles {role:?})");
             }
-            // what the remaining holders encrypt under: a fork boxed to a departed peer by a
-            // rotation unaware of its departure may stay current beside it, never newest
-            for h in stay.iter().copied().filter(|h| role[*h] >= Some(r)) {
-                let Some(e) = ep(h).newest_held().map(|x| x.0) else { continue };
-                for d in (0..N).filter(|d| was[*d] >= Some(r) && role[*d] < Some(r)) {
-                    assert!(ep(d).reading_secret(&e).is_none(), "seed {seed}: peer {d}, {:?} now, holds {r:?} epoch {e:?} peer {h} encrypts under", role[d]);
-                }
+        }
+        for e in &at0 {
+            // re-sealed by a node that may rotate `r` (one that may not, as a writer demoted
+            // after a rotation that boxed only itself, cannot: issues/fork-held-by-non-rotators.md)
+            let any = stay.iter().any(|&p| role[p] >= Some(r.max(Role::Write)) && ep(p).secret(e).is_some());
+            let lacking: Vec<usize> = stay.iter().copied().filter(|h| role[*h] >= Some(r) && ep(*h).secret(e).is_none()).collect();
+            assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
+        }
+        // what the remaining holders encrypt under: a fork boxed to a departed peer by a
+        // rotation unaware of its departure may stay current beside it, never newest
+        for h in stay.iter().copied().filter(|h| role[*h] >= Some(r)) {
+            let Some(e) = ep(h).newest_held().map(|x| x.0) else { continue };
+            for d in (0..N).filter(|d| was[*d] >= Some(r) && role[*d] < Some(r)) {
+                assert!(ep(d).reading_secret(&e).is_none(), "seed {seed}: peer {d}, {:?} now, holds {r:?} epoch {e:?} peer {h} encrypts under", role[d]);
             }
         }
     }

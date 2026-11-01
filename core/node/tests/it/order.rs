@@ -15,6 +15,7 @@
 
 use crate::common;
 use common::*;
+use osis_base::testenv::{caught, par_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;

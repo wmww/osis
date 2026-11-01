@@ -279,23 +279,8 @@ fn paged_apply_matches_whole_spec_crdt_8() {
 #[ignore = "tier 2"]
 fn paged_apply_matches_whole_large_spec_crdt_8() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_PAGED_APPLY_START", "OSIS_PAGED_APPLY_SEEDS", 1..25);
-    seeds.announce("paged apply");
-    // a thread per core, each taking the next seed
-    let next = std::sync::atomic::AtomicU64::new(seeds.range.start);
-    let threads = std::thread::available_parallelism().map_or(4, |n| n.get());
-    std::thread::scope(|sc| {
-        for _ in 0..threads {
-            sc.spawn(|| {
-                loop {
-                    let seed = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    if seed >= seeds.range.end {
-                        break;
-                    }
-                    differential(seed, 30);
-                }
-            });
-        }
-    });
+    let replay = |s: u64| format!("OSIS_PAGED_APPLY_START={s} OSIS_PAGED_APPLY_SEEDS=1 cargo test -p osis-engine --lib apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 -- --ignored --exact");
+    seeds.run("apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8", replay, |seed| differential(seed, 30));
 }
 
 /// Runs `script` in a world applying page by page and in one applying whole, then compares

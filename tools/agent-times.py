@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 """Where a coordinator session's agents spent their time, from the Bash tool's task transcripts.
 
-  tools/agent-times.py [TASKS_DIR] [--since HH:MM] [--long N]
+  tools/agent-times.py [TASKS_DIR] [--since HH:MM | --since YYYY-MM-DDTHH:MM+HH:MM] [--long N]
 
 TASKS_DIR is the session's tasks directory (/tmp/claude-<uid>/<project>/<session>/tasks); the
 default is the most recently modified one. Per agent: wall time, model time (gaps between a tool
 result and the next call: thinking and editing), time in cargo commands, in `claudewait`, in other
 shell commands; calls moved to the background at the harness's 180 s subagent cap, calls that hit
 their timeout, shell wait loops (until/while + sleep, pgrep), and the longest calls (--long N,
-default 3). The watchdog (notes/coordination.md) reads this first.
+default 3). --since HH:MM is the last such local time (yesterday if later than now); an ISO
+date-time must carry its UTC offset, so a date or DST change cannot drop agents. The watchdog (notes/coordination.md) reads this first.
 """
 import datetime as dt, glob, json, os, re, sys
 
@@ -23,10 +24,19 @@ long_n = int(opts.get("long", 3))
 tasks = args[0] if args else max(glob.glob(f"/tmp/claude-{os.getuid()}/*/*/tasks"), key=os.path.getmtime)
 since = None
 if "since" in opts:
-    h, m = map(int, str(opts["since"]).split(":"))
-    since = dt.datetime.now().astimezone().replace(hour=h, minute=m, second=0, microsecond=0)
-    if since > dt.datetime.now().astimezone():  # a time later than now means yesterday
-        since -= dt.timedelta(days=1)
+    v = str(opts["since"])
+    if re.fullmatch(r"\d{1,2}:\d{2}", v):
+        h, m = map(int, v.split(":"))
+        since = dt.datetime.now().astimezone().replace(hour=h, minute=m, second=0, microsecond=0)
+        if since > dt.datetime.now().astimezone():  # a time later than now means yesterday
+            since -= dt.timedelta(days=1)
+    else:
+        try:
+            since = dt.datetime.fromisoformat(v.replace("Z", "+00:00"))
+        except ValueError:
+            sys.exit(f"--since {v!r}: expected HH:MM or an ISO date-time with offset")
+        if since.tzinfo is None:
+            sys.exit(f"--since {v!r}: give the UTC offset (e.g. {v}+01:00)")
 
 
 def ts(o):

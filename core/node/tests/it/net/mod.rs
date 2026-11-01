@@ -573,6 +573,7 @@ impl Net {
 
     /// Every online node looks at its engine, then everything settles.
     pub fn run(&mut self) {
+        osis_base::testenv::checkpoint();
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Local);
         }

@@ -259,6 +259,7 @@ impl LocalPeer {
 
     /// Sends everything `from` holds to `to` (in `ts` order).
     pub fn sync(&mut self, from: usize, to: usize) -> Result<()> {
+        osis_base::testenv::checkpoint();
         for pk in self.packages(from)? {
             self.deliver(to, &pk)?;
         }

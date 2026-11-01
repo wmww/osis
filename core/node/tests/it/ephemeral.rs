@@ -2026,13 +2026,17 @@ fn random_window_one_capped_host_spec_sync_9() {
     }
 }
 
-/// A tier-2 random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0), a
-/// thread per core (OSIS_EPH_THREADS); every failing seed is reported with its replay command.
+/// A tier-2 random-window run: OSIS_EPH_SEEDS (default 200) from OSIS_EPH_START (default 0).
 fn eph_large(name: &str, single: bool, inflight: bool) {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200);
-    let seeds: Vec<u64> = s.range.clone().collect();
-    let replay = |seed: u64| format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact");
-    crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, |seed| random_window_run_on(seed, single, inflight));
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| random_window_run_on(seed, single, inflight));
+}
+
+fn eph_seeds() -> osis_base::testenv::Seeds {
+    osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200)
+}
+
+fn eph_replay(name: &str, seed: u64) -> String {
+    format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact")
 }
 
 // the same with one capped host: holders converge through what it holds, or an entry stays out
@@ -2309,10 +2313,7 @@ fn random_churn_converges_spec_sync_9() {
 #[ignore]
 fn random_churn_converges_large() {
     let name = "ephemeral::random_churn_converges_large";
-    let s = osis_base::testenv::Seeds::from_env("OSIS_EPH_START", "OSIS_EPH_SEEDS", 0..200);
-    let seeds: Vec<u64> = s.range.clone().collect();
-    let replay = |seed: u64| format!("OSIS_EPH_START={seed} OSIS_EPH_SEEDS=1 cargo test --workspace --test it {name} -- --ignored --exact");
-    crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, random_churn_run);
+    eph_seeds().run(name, |seed| eph_replay(name, seed), random_churn_run);
 }
 
 // spec/sync.md §6 (a writer stamps every ephemeral entry it uploads; held at a host only as
