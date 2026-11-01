@@ -281,10 +281,11 @@ pub(crate) struct Lane {
     pub deletes: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, VerifyingKey)>,
     /// Lane deletes to send again (`Redo`).
     pub redelete: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, Redo)>,
-    /// Own entries in flight on a connection, with the write key that stamped them.
+    /// Entries in flight on a connection that this node stamped, with the write key.
     pub stamped: BTreeMap<(ConnId, LabelId, BlobId), VerifyingKey>,
-    /// Own entries a connection's head refused as stamped under another write key (code 9),
-    /// or that had no write key to go under there, with the key tried (`None`): stamped again
+    /// Entries this node stamped that a connection's head refused as stamped under another write
+    /// key (code 9), or own or unstamped ones that had no write key to go under there, with the
+    /// key tried (`None`): stamped again
     /// and sent once the connection's keys give another (`eph_restamp`), dropped once this node
     /// is no longer a writer of the label.
     pub restamp: BTreeMap<(ConnId, LabelId, BlobId), Option<VerifyingKey>>,
@@ -556,7 +557,7 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Own entries waiting for another write key on a connection (`Lane::restamp`): sent
+    /// Entries waiting for another write key on a connection (`Lane::restamp`): sent
     /// stamped under it once the label is open there with one; dropped (reported) once this
     /// node is no longer a writer of the label, or the entry is gone.
     fn eph_restamp(&mut self, out: &mut Vec<Action>) -> Result<()> {
@@ -572,7 +573,9 @@ impl SyncEngine {
             }
             if !self.eph_writes(&l) {
                 self.eph.restamp.remove(&(conn, l, b));
-                lost.insert(l);
+                if self.eph.entries.get(&(l, b)).is_some_and(|e| e.own) {
+                    lost.insert(l);
+                }
                 continue;
             }
             let Some(lc) = self.lc(conn, &l).filter(|x| x.phase == Phase::Open) else { continue };
@@ -939,8 +942,8 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Uploads lane entries `ids` of `l` on `conn`: stamped ones as they are, own unstamped ones
-    /// stamped under the connection's write key.
+    /// Uploads lane entries `ids` of `l` on `conn`, stamped under the connection's write key
+    /// (a reader: others' stamped ones as they are).
     fn eph_upload(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], keys: &HeadKeys, out: &mut Vec<Action>) -> Result<()> {
         let mut entries = Vec::new();
         let mut room = osis_proto::msg::MAX_ITEMS;
@@ -950,14 +953,14 @@ impl SyncEngine {
             if self.eph.uploads.contains(&(conn, l, *b)) {
                 continue;
             }
-            let Some(own) = self.eph.entries.get(&(l, *b)).map(|e| e.own) else { continue };
+            let Some((own, stamped)) = self.eph.entries.get(&(l, *b)).map(|e| (e.own, e.stamp.is_some())) else { continue };
             // a writer stamps whatever it uploads under this connection's head, its own entries
             // and others' alike: one stamped before a rotation (built offline, for another
             // host, or another's stamped before a demotion and promotion) is refused under it
-            // (code 9), and only a writer can put it back (spec/sync.md §9). An own entry with
-            // no write key there waits for one (`eph_restamp`), unless this node does not write
-            // the label (a thing also under a group it only reads): never sent there
-            if own && keys.write.is_none() {
+            // (code 9), and only a writer can put it back (spec/sync.md §9). An own or unstamped
+            // entry with no write key there waits for one (`eph_restamp`), unless this node does
+            // not write the label (a thing also under a group it only reads): never sent there
+            if (own || !stamped) && keys.write.is_none() {
                 if self.eph_writes(&l) {
                     self.eph.restamp.insert((conn, l, *b), None);
                 }
