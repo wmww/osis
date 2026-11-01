@@ -178,11 +178,11 @@ fn wrap_epochs() {
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), WrapEpoch::None);
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
-    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &mut rng(1)).unwrap();
+    let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(1)).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
     view = r.preview(&view).unwrap();
     assert_eq!(wrap_epoch(&view.read), WrapEpoch::Current(r.rotated[0].epoch));
-    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &mut rng(2)).unwrap();
+    let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     assert_eq!(w.wrap_epoch(), None);
 }
 
@@ -234,7 +234,7 @@ fn jumped_owner_rotation_steps_plain_group() {
         let head = registration_epochs(&before).unwrap().map(|(e, _)| Some(e));
         assert!(!newer_than_head(&before, head));
         // k2 removed: the rotation boxes k1 only
-        let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &mut rng(b.into())).unwrap();
+        let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &osis_keys::Names::default(), &mut rng(b.into())).unwrap();
         pe = r.preview(&pe).unwrap();
         let after = ActorEpochs::derived(&pe, &u);
         assert!(newer_than_head(&after, head), "seed {b}");
@@ -252,11 +252,11 @@ fn jumped_owner_forks_derive_owner_newest() {
         // fork A: two rotations (n + 2); fork B: one (n + 1); both current
         let mut a = base.clone();
         for i in 0..2u64 {
-            let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &a, &Default::default(), &[], &mut rng(u64::from(b) << 8 | i)).unwrap();
+            let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &a, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(u64::from(b) << 8 | i)).unwrap();
             a = r.preview(&a).unwrap();
         }
         let mut pe = a.clone();
-        let rb = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &base, &Default::default(), &[], &mut rng(u64::from(b) << 8 | 9)).unwrap();
+        let rb = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &base, &Default::default(), &[], &osis_keys::Names::default(), &mut rng(u64::from(b) << 8 | 9)).unwrap();
         pe = rb.preview(&pe).unwrap();
         let want = a.read.newest().unwrap();
         assert_eq!(pe.read.current().len(), 2);

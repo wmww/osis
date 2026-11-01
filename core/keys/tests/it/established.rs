@@ -3,13 +3,14 @@
 //! core/test/tla/rotation/AMBIGUITIES.md (R9, `MC_reorder`), snapshot establishment, the `secrets.0`
 //! compaction gate.
 
+use crate::common::Applied;
 use crate::common;
 use common::*;
 use osis_base::{Role, Tid, WallMs};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
-    ActorEpochs, Departure, Error, KeysWrite, Holder, MemoryHeldActors, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
-    may_compact_secrets, may_encrypt_under, reseal_holder, reseal_needed, roles_up_to, rotate, snapshot_keyed,
+    ActorEpochs, Departure, KeysWrite, Holder, MemoryHeldActors, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
+    may_compact_secrets, may_encrypt_under, reseal_needed, roles_up_to, rotate, snapshot_keyed,
 };
 use osis_crypto::Epoch;
 use osis_schema::core_types::Secrets;
@@ -21,6 +22,23 @@ fn cid(b: u8) -> osis_base::CommitId {
 
 fn read() -> BTreeSet<Role> {
     [Role::Read].into_iter().collect()
+}
+
+/// The name of a1's removal of m1 (`World::remove_m1`, commit `cid(4)`).
+fn r1_name(w: &World) -> osis_keys::Name {
+    osis_keys::Name { thing: w.a, key: osis_keys::Key { ts: 4, node: tid(9), commit: cid(4) } }
+}
+
+/// Holds the commits listed (a departing commit by its `ts` as its ID's byte), and no epoch start.
+struct Holding(BTreeSet<osis_base::CommitId>);
+
+impl osis_keys::Held for Holding {
+    fn met(&self, n: &osis_keys::Name) -> bool {
+        self.0.contains(&n.key.commit)
+    }
+    fn departed(&self, own: &osis_keys::Own) -> bool {
+        u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
+    }
 }
 
 /// Actor A owned by P; holders a2 (admin, a co-admin's actor) and m1 (read). Node a1 (P's
@@ -48,16 +66,16 @@ impl World {
         let (pe, a2e, m1e) = (person(0x20), person(0x30), person(0x40));
         let derived = ActorEpochs::derived(&pe, &a);
         let holders = [actor_rcpt(p, Role::Admin, &pe), actor_rcpt(a2, Role::Admin, &a2e), actor_rcpt(m1, Role::Read, &m1e)];
-        let r0 = rotate(&a, &roles_up_to(Role::Admin), &derived, &Secrets::default(), &holders, &mut rng(1)).unwrap();
+        let r0 = rotate(&a, &roles_up_to(Role::Admin), &derived, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
         let (mut s0, mut a1v) = (Secrets::default(), derived);
         r0.secrets.apply(&mut s0);
         a1v = applied(&r0, &a1v, 1);
         let mut a2v = ActorEpochs::default();
         ingest(&a, &s0, &Opener::Actor { holder: a2, epochs: &a2e }, &mut a2v, None).unwrap();
-        assert!(r0.secrets.claimed(&mut a2v, cid(1), &r0.keys, true).unwrap());
+        assert!(r0.secrets.applied(&mut a2v, cid(1), &r0.keys).unwrap());
         let e0 = r0.rotated[0].epoch;
         assert_eq!(a2v.read.current(), vec![e0]);
-        assert_eq!(a2v.read.provenance(&e0), Some(Provenance::Chain));
+        assert_eq!(a2v.read.provenance(&e0), Some(Provenance::Rotated));
         World { a, p, a2, m1, pe, a2e, m1e, a1v, s0, a2v, e0, seed: 10 }
     }
 
@@ -69,17 +87,23 @@ impl World {
         }
     }
 
-    /// A read rotation from `view` over `s` boxing `holders`.
-    fn rotate(&mut self, view: &ActorEpochs, s: &Secrets, holders: &[Tid]) -> Rotation {
+    /// A read rotation from `view` over `s` boxing `holders`, naming `names`.
+    fn rotate_naming(&mut self, view: &ActorEpochs, s: &Secrets, holders: &[Tid], names: &Names) -> Rotation {
         self.seed += 1;
         let rc: Vec<Recipient> = holders.iter().map(|m| self.rcpt(*m)).collect();
-        rotate(&self.a, &read(), view, s, &rc, &mut rng(self.seed)).unwrap()
+        rotate(&self.a, &read(), view, s, &rc, names, &mut rng(self.seed)).unwrap()
     }
 
-    /// a1 removes m1: the removal commit's rotation (no box for m1), held by a1 only.
+    /// A read rotation naming nothing.
+    fn rotate(&mut self, view: &ActorEpochs, s: &Secrets, holders: &[Tid]) -> Rotation {
+        self.rotate_naming(view, s, holders, &Names::default())
+    }
+
+    /// a1 removes m1 (commit `cid(4)`): the removal commit's rotation (no box for m1, its names'
+    /// departs flag set), held by a1 only.
     fn remove_m1(&mut self) -> (Rotation, ActorEpochs, Secrets) {
         let (v0, s0) = (self.a1v.clone(), self.s0.clone());
-        let r1 = self.rotate(&v0, &s0, &[self.p, self.a2]);
+        let r1 = self.rotate_naming(&v0, &s0, &[self.p, self.a2], &Names { departs: Some(osis_keys::Own { ts: 4, node: tid(9) }), ..Names::default() });
         let (mut v, mut s) = (v0, s0);
         r1.secrets.apply(&mut s);
         v = applied(&r1, &v, 4);
@@ -97,12 +121,12 @@ fn r9_reseal_before_rotation_commit() {
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.rotated[0].epoch;
     // a2 is stranded at the head (e1 registered, its commit not uploaded); a1 re-seals it.
-    let reseal = reseal_holder(&w.a, &a1v1, &s1, &w.rcpt(w.a2), &read(), &mut rng(2)).unwrap().unwrap();
+    let reseal = box_holder(&w.a, &a1v1, &s1, &w.rcpt(w.a2), &read(), &mut rng(2)).unwrap().unwrap();
     assert!(reseal.history.contains_key(&history_key(Role::Read, &e1)));
     let mut s2 = w.s0.clone();
     reseal.apply(&mut s2);
     let mut a2v = w.a2v.clone();
-    assert!(!reseal.claimed(&mut a2v, cid(3), &KeysWrite::default(), true).unwrap());
+    assert!(!reseal.applied(&mut a2v, cid(3), &KeysWrite::default()).unwrap());
     ingest(&w.a, &s2, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert!(a2v.read.secret(&e1).is_some());
     assert!(!a2v.read.is_established(&e1));
@@ -111,7 +135,7 @@ fn r9_reseal_before_rotation_commit() {
 
     // In the window a2 re-seals and grants at e0 only.
     let g = actor_rcpt(tid(5), Role::Read, &person(0x50));
-    for out in [reseal_holder(&w.a, &a2v, &s2, &g, &read(), &mut rng(3)), box_holder(&w.a, &a2v, &s2, &g, &read(), &mut rng(4))] {
+    for out in [box_holder(&w.a, &a2v, &s2, &g, &read(), &mut rng(3)), box_holder(&w.a, &a2v, &s2, &g, &read(), &mut rng(4))] {
         let out = out.unwrap().unwrap();
         assert!(out.boxes.keys().all(|k| k.epoch == to_schema(&w.e0)));
         assert!(!out.history.contains_key(&history_key(Role::Read, &e1)));
@@ -131,39 +155,43 @@ fn r9_reseal_before_rotation_commit() {
     assert!(m1v.read.secret(&e1).is_none(), "e2's history box carries e1");
 
     // e1's commit reaches a2: established, and e2 (boxing m1) no longer covers the departure.
-    assert!(r1.secrets.claimed(&mut a2v, cid(4), &r1.keys, true).unwrap());
+    assert!(r1.secrets.applied(&mut a2v, cid(4), &r1.keys).unwrap());
     r1.secrets.apply(&mut s3);
-    assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
+    assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
     let deps = [Departure::holder(w.m1, Role::Read)];
     let none = MemoryHeldActors::default();
     assert!(!may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e2, &deps, &none));
     assert!(may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e1, &deps, &none));
 }
 
-// spec/crypto.md §4, spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1) and rotates
-// again (e2), registering before uploading; a1 re-seals stranded a2 at e2, so a2 holds e1's
-// secret by e2's history box. a2 gets e2's commit from a peer, not e1's: neither is established,
-// a complete pass reports no re-seal of m1 and none can box e2. Once e1 arrives, both are.
+// spec/crypto.md §4 (names), spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1, commit
+// R1) and rotates again (e2, naming R1), registering before uploading; a1 re-seals stranded a2 at
+// e2, so a2 holds e1's secret by e2's history box. a2 gets e2's commit from a peer, not R1:
+// neither is established (e2's names unmet), a complete pass reports no re-seal of m1 and none
+// can box e2. Once R1 arrives, both are.
 #[test]
 fn reorder_holding_e2_without_e1() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.rotated[0].epoch;
-    let r2 = w.rotate(&a1v1, &s1, &[w.p, w.a2]);
+    let names = Names { list: [r1_name(&w)].into(), departs: None };
+    let r2 = w.rotate_naming(&a1v1, &s1, &[w.p, w.a2], &names);
     let e2 = r2.rotated[0].epoch;
     let (mut a1v2, mut s1b) = (a1v1.clone(), s1.clone());
     r2.secrets.apply(&mut s1b);
     a1v2 = r2.preview(&a1v2).unwrap();
-    let reseal = reseal_holder(&w.a, &a1v2, &s1b, &w.rcpt(w.a2), &read(), &mut rng(2)).unwrap().unwrap();
+    let reseal = box_holder(&w.a, &a1v2, &s1b, &w.rcpt(w.a2), &read(), &mut rng(2)).unwrap().unwrap();
 
     // a2: the re-seal, then e2's commit from peer a1.
     let mut s2 = w.s0.clone();
     reseal.apply(&mut s2);
     r2.secrets.apply(&mut s2);
     let mut a2v = w.a2v.clone();
-    reseal.claimed(&mut a2v, cid(3), &KeysWrite::default(), true).unwrap();
-    r2.secrets.claimed(&mut a2v, cid(5), &r2.keys, true).unwrap();
+    let without_r1 = Holding([cid(1), cid(3), cid(5)].into());
+    reseal.rotated(&mut a2v, cid(3), &KeysWrite::default()).unwrap();
+    r2.secrets.rotated(&mut a2v, cid(5), &r2.keys).unwrap();
     ingest(&w.a, &s2, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
+    a2v.establish(&without_r1);
     // e1's secret from the history box e2's applied rotation commit wrote
     assert!(a2v.read.secret(&e1).is_some() && a2v.read.secret(&e2).is_some());
     assert!(!a2v.read.is_established(&e1) && !a2v.read.is_established(&e2));
@@ -177,29 +205,30 @@ fn reorder_holding_e2_without_e1() {
         Holder { holder: w.m1, role: Role::Read, until: None },
     ];
     assert!(reseal_needed(&s2, &a2v, &holders, WallMs(0)).is_empty());
-    let out = reseal_holder(&w.a, &a2v, &s2, &w.rcpt(w.m1), &read(), &mut rng(3)).unwrap().unwrap();
+    let out = box_holder(&w.a, &a2v, &s2, &w.rcpt(w.m1), &read(), &mut rng(3)).unwrap().unwrap();
     assert!(!out.boxes.contains_key(&box_key(w.m1, Role::Read, &e2)));
     assert!(!out.history.contains_key(&history_key(Role::Read, &e2)));
 
-    // e1 arrives (with the removal): both established, e2 current.
-    assert!(r1.secrets.claimed(&mut a2v, cid(4), &r1.keys, true).unwrap());
-    assert_eq!(a2v.read.secret(&e1), a1v1.read.secret(&e1));
-    assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Chain));
-    assert_eq!(a2v.read.provenance(&e2), Some(Provenance::Chain));
-    assert_eq!(a2v.read.current(), vec![e2]);
+    // R1 arrives (the removal, with e1's history box): both established, e2 current.
     let mut s3 = w.s0.clone();
     for x in [&reseal, &r1.secrets, &r2.secrets] {
         x.apply(&mut s3);
     }
+    ingest(&w.a, &s3, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
+    assert!(r1.secrets.applied(&mut a2v, cid(4), &r1.keys).unwrap());
+    assert_eq!(a2v.read.secret(&e1), a1v1.read.secret(&e1));
+    assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
+    assert_eq!(a2v.read.provenance(&e2), Some(Provenance::Rotated));
+    assert_eq!(a2v.read.current(), vec![e2]);
     assert!(may_compact_secrets(&s3, &a2v).unwrap());
 }
 
-// spec/crypto.md §4 (snapshot establishment), spec/permissions.md §3: a node holding only a
-// compaction snapshot after m1's removal does not re-seal a raced grantee at the
-// snapshot-established epoch (it may rotate instead); a grant there is allowed. Once the rotation
-// commit is applied the epoch is chain-established and the re-seal is due.
+// spec/crypto.md §4 (snapshot establishment; names: the departing commit), spec/permissions.md
+// §3: a node holding only a compaction snapshot keying e1, made by m1's removal R1, does not use
+// e1 while it does not hold R1. Once it does, e1 is established and a raced grantee is re-sealed
+// at it like at any other.
 #[test]
-fn snapshot_established_no_reseal() {
+fn snapshot_established_needs_departure() {
     let mut w = World::new();
     let (r1, _, s1) = w.remove_m1();
     let e1 = r1.rotated[0].epoch;
@@ -208,21 +237,22 @@ fn snapshot_established_no_reseal() {
     ingest(&w.a, &s1, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut v, None).unwrap();
     assert!(v.read.current().is_empty());
     assert!(snapshot_keyed(&s1, &mut v).unwrap());
-    assert_eq!(v.read.current(), vec![e1]);
-    assert!(v.read.newest_is_snapshot());
-    assert!(may_compact_secrets(&s1, &v).unwrap());
     let holders = [Holder { holder: g, role: Role::Read, until: None }];
-    assert!(reseal_needed(&s1, &v, &holders, WallMs(0)).is_empty());
     let rc = actor_rcpt(g, Role::Read, &ge);
-    assert!(matches!(reseal_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(2)), Err(Error::NoSecret(Role::Read))));
-    assert!(box_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(3)).unwrap().is_some());
-    // The rotation commit applied: e0 (keyed by its history box in the snapshot) is established,
-    // so e1 is chain-established.
-    assert!(r1.secrets.claimed(&mut v, cid(4), &r1.keys, true).unwrap());
-    assert_eq!(v.read.provenance(&e1), Some(Provenance::Chain));
-    assert!(!v.read.newest_is_snapshot());
+    v.establish(&Holding(BTreeSet::new()));
+    assert!(!v.read.is_established(&e1), "the removal not held");
+    assert!(!may_compact_secrets(&s1, &v).unwrap());
+    // e0 (keyed by its history box, its names met) is current: boxed there only
+    assert_eq!(v.read.current(), vec![w.e0]);
+    let out = box_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(2)).unwrap().unwrap();
+    assert!(out.boxes.keys().all(|k| k.epoch == to_schema(&w.e0)));
+    // the removal held (its edge write: its secrets.0 body may be compacted away)
+    v.establish(&Holding([cid(4)].into()));
+    assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
+    assert_eq!(v.read.current(), vec![e1]);
+    assert!(may_compact_secrets(&s1, &v).unwrap());
     assert_eq!(reseal_needed(&s1, &v, &holders, WallMs(0)), vec![(g, read())]);
-    assert!(reseal_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(4)).unwrap().is_some());
+    assert!(box_holder(&w.a, &v, &s1, &rc, &read(), &mut rng(3)).unwrap().is_some());
 }
 
 const TOP: u64 = i64::MAX as u64;
@@ -281,23 +311,23 @@ fn jumped_epochs_keep_rotation_possible() {
     let mut w = World::new();
     let mut v = w.a2v.clone();
     let top = Epoch::new(TOP, [1; 32]).unwrap();
-    v.read.set_claim(top, cid(7), true, [w.e0].into_iter().map(|e| (e, Default::default())).collect());
+    v.read.set_rotation(top, cid(7), [w.e0].into());
     v.read.set_snapshot(Epoch::new(TOP - 1, [1; 32]).unwrap());
-    v.establish();
+    v.establish(&osis_keys::AllHeld);
     assert!(!v.read.is_established(&top));
     assert_eq!(v.read.current(), vec![w.e0]);
     let r = w.rotate(&v, &w.s0.clone(), &[w.p, w.a2]);
     assert_eq!(r.rotated[0].epoch.n(), w.e0.n() + 1);
     // within the headroom: established, and the chain goes on above it
     let free = Epoch::new(osis_keys::MAX_FREE_N, [1; 32]).unwrap();
-    v.read.set_claim(free, cid(8), true, [w.e0].into_iter().map(|e| (e, Default::default())).collect());
-    v.establish();
+    v.read.set_rotation(free, cid(8), [w.e0].into());
+    v.establish(&osis_keys::AllHeld);
     assert_eq!(v.read.current(), vec![free]);
     let next = Epoch::new(osis_keys::MAX_FREE_N + 1, [1; 32]).unwrap();
     let skip = Epoch::new(osis_keys::MAX_FREE_N + 3, [1; 32]).unwrap();
-    v.read.set_claim(next, cid(9), true, [free].into_iter().map(|e| (e, Default::default())).collect());
-    v.read.set_claim(skip, cid(10), true, [free].into_iter().map(|e| (e, Default::default())).collect());
-    v.establish();
+    v.read.set_rotation(next, cid(9), [free].into());
+    v.read.set_rotation(skip, cid(10), [free].into());
+    v.establish(&osis_keys::AllHeld);
     assert!(v.read.is_established(&next) && !v.read.is_established(&skip));
 }
 
@@ -317,13 +347,13 @@ fn switch_under_jumped_owner_establishes_at_holders() {
     let me = person(0x30);
     let owner = Recipient { holder: p, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let holders = [owner, actor_rcpt(m, Role::Write, &me)];
-    let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &mut rng(1)).unwrap();
+    let rot = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
     for (who, opener) in [(m, Opener::Actor { holder: m, epochs: &me }), (p, Opener::Actor { holder: p, epochs: &pe })] {
         let mut v = ActorEpochs::default();
         ingest(&a, &s, &opener, &mut v, None).unwrap();
-        rot.secrets.claimed(&mut v, cid(1), &rot.keys, true).unwrap();
+        rot.secrets.applied(&mut v, cid(1), &rot.keys).unwrap();
         for x in &rot.rotated {
             assert_eq!(x.epoch.n(), osis_keys::MAX_FREE_N);
             if who == p || x.role != Role::Admin {
@@ -345,7 +375,7 @@ fn pending_history_box_plants_nothing() {
     // (a history box lists only epochs below its own)
     let planted = osis_crypto::Secret32::from_bytes([0xee; 32]);
     let top = Epoch::derive(&w.a, Role::Read, w.e0.n() - 1, &planted).unwrap();
-    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, planted)]).unwrap();
+    let ct = osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[(top, planted)], &osis_keys::Names::default().to_value()).unwrap();
     let mut s = Secrets::default();
     s.history.insert(history_key(Role::Read, &w.e0), ct);
     let from = osis_keys::Unchecked { author: osis_keys::UNKNOWN_AUTHOR, commit: osis_base::CommitId([9; 32]) };
@@ -356,25 +386,25 @@ fn pending_history_box_plants_nothing() {
     assert!(v.read.get(&top).is_none());
 }
 
-// spec/crypto.md §4 (established by an applied valid rotation commit): a holder re-claiming e0
-// in a later valid commit (e0's keyset and a history box of its own) that is then found invalid
+// spec/crypto.md §4 (established by an applied valid rotation commit): a holder writing e0's
+// keyset again in a later valid commit (with a history box of its own) that is then found invalid
 // leaves e0 established by its genuine rotation commit.
 #[test]
-fn reclaim_then_invalidated_keeps_chain() {
+fn rewrite_then_invalidated_keeps_rotation() {
     let w = World::new();
     let mut v = w.a2v.clone();
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
-    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[]).unwrap());
+    again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[], &osis_keys::Names::default().to_value()).unwrap());
     let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default()))].into_iter().collect() };
-    assert!(again.claimed(&mut v, cid(2), &ks, true).unwrap());
-    assert_eq!(v.read.get(&w.e0).unwrap().claims.len(), 2);
+    assert!(again.applied(&mut v, cid(2), &ks).unwrap());
+    assert_eq!(v.read.get(&w.e0).unwrap().rotations.len(), 2);
     v.invalidate(&cid(2));
-    v.establish();
-    assert_eq!(v.read.provenance(&w.e0), Some(Provenance::Chain));
+    v.establish(&osis_keys::AllHeld);
+    assert_eq!(v.read.provenance(&w.e0), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![w.e0]);
-    // the genuine one invalidated too: e0 is no longer established by chain
+    // the genuine one invalidated too: e0 is no longer established
     v.invalidate(&cid(1));
-    v.establish();
+    v.establish(&osis_keys::AllHeld);
     assert!(!v.read.is_established(&w.e0));
 }

@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Epochs, rotations, forks and the `secrets.0` delta rules (spec/crypto.md §3, §4).
 
+use crate::common::Applied;
 use crate::common;
 use common::*;
 use osis_base::Role;
@@ -50,7 +51,7 @@ impl World {
 fn own_secrets_switch() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &mut rng(1)).unwrap();
+    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut rng(1)).unwrap();
     assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
@@ -89,7 +90,7 @@ fn own_secrets_switch() {
     assert!(errs.is_empty(), "{errs:?}");
     // Opening establishes nothing; applying the rotation commit does (spec/crypto.md §4).
     assert!(ma.read.current().is_empty());
-    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.claimed(v, osis_base::CommitId([1; 32]), &rot.keys, true).unwrap());
+    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, osis_base::CommitId([1; 32]), &rot.keys).unwrap());
     applied(&mut ma);
     // the history box hands M the derived secret at the epoch it names (unestablished here: M
     // holds no secret of the owner)
@@ -125,13 +126,13 @@ fn own_secrets_switch() {
 fn fork_merge() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &mut rng(1)).unwrap();
+    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
     let view = applied(&r1, &derived, 1);
 
-    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(2)).unwrap();
-    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(3)).unwrap();
+    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &osis_keys::Names::default(), &mut rng(3)).unwrap();
     let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
@@ -158,10 +159,10 @@ fn fork_merge() {
     // A holder's view after both deltas: both current, newest by lowest nonce; both secrets held.
     let mut ma = ActorEpochs::default();
     let mut k1 = Keys::default();
-    r1.secrets.claimed(&mut ma, osis_base::CommitId([1; 32]), &r1.keys, true).unwrap();
+    r1.secrets.applied(&mut ma, osis_base::CommitId([1; 32]), &r1.keys).unwrap();
     r1.keys.apply(&mut k1);
     for (i, rot) in [&x, &y].into_iter().enumerate() {
-        rot.secrets.claimed(&mut ma, osis_base::CommitId([2 + i as u8; 32]), &rot.keys, true).unwrap();
+        rot.secrets.applied(&mut ma, osis_base::CommitId([2 + i as u8; 32]), &rot.keys).unwrap();
     }
     ingest(&w.a, &s1, &Opener::Actor { holder: w.m, epochs: &w.me }, &mut ma, None).unwrap();
     let mut cur = vec![ex, ey];
@@ -175,7 +176,7 @@ fn fork_merge() {
     let mut zview = view.clone();
     zview = x.preview(&zview).unwrap();
     zview = y.preview(&zview).unwrap();
-    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &mut rng(4)).unwrap();
+    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &osis_keys::Names::default(), &mut rng(4)).unwrap();
     let history: std::collections::BTreeSet<_> = zview.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&ex) && history.contains(&ey));
     assert_eq!(z.rotated[0].supersedes, history);
@@ -188,6 +189,7 @@ fn fork_merge() {
     ingest(&w.a, &s3, &Opener::Actor { holder: w.m, epochs: &w.me }, &mut fresh, None).unwrap();
     // Holding s3 as a compaction snapshot establishes what it keys; history supersedes the rest.
     assert!(osis_keys::snapshot_keyed(&s3, &mut fresh).unwrap());
+    fresh.establish(&osis_keys::AllHeld);
     // every earlier secret is held at the epoch it names, no keyset needed
     let de = derived.read.current()[0];
     for e in [ex, ey, r1.rotated[0].epoch, de] {

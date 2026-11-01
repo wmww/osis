@@ -47,6 +47,74 @@ fn departure_of(tl: &Timeline, t: &Tid, mc: &RoleCommit, op: &EdgeOp) -> Option<
     Departure::of_change(op.holder, old, new)
 }
 
+/// The key (spec/permissions.md §6) of point `p`.
+fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
+    osis_keys::Key { ts: p.ts.to_u64(), node: p.node, commit: p.commit }
+}
+
+/// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timeline: `a`'s
+/// epoch start, then every applied commit ordered after it with an edge write on `a` lowering an
+/// edge (`departure_of`) or setting an `until` passed by now, and every applied commit ordered
+/// after it whose demotion's audit dropped an edge write on `a` (once per thing its edge writes
+/// target: that thing's epoch start may stand in for it). A superset of the departures from `a`
+/// this node knows of: a missed kind of departure would be a missed name. `departs`: the
+/// rotation commit itself, when it makes a departure from `a` (it cannot name its own ID).
+pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
+    let mut out = osis_keys::Names { list: BTreeSet::new(), departs };
+    let Some(tl) = core.timelines.get(a) else { return out };
+    let now = now_ts(core);
+    let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
+    let start = tl.epoch_start(a).and_then(|id| core.ix.commits.get(&id).map(|m| osis_perm::Point { ts: m.view.ts, node: m.view.author, commit: id }));
+    let after = |p: &osis_perm::Point| start.is_none_or(|s| key_of(p) > key_of(&s));
+    if let Some(s) = start {
+        out.list.insert(osis_keys::Name { thing: *a, key: key_of(&s) });
+    }
+    for (mc, op) in edge_writes(tl, a) {
+        let p = mc.point();
+        let lowers = departure_of(tl, a, mc, op).is_some() || op.edge.is_some_and(|e| !e.alive_at(Some(now)));
+        if lowers && after(&p) && held(&p.commit) {
+            out.list.insert(osis_keys::Name { thing: *a, key: key_of(&p) });
+        }
+    }
+    for (w, p) in tl.dropped() {
+        let on_a = match w {
+            WriteId::Op(c, i) => tl.role_commit(c).and_then(|mc| mc.ops.get(*i as usize)).is_some_and(|op| op.target == *a),
+            WriteId::Snapshot(_) => false,
+        };
+        if !on_a || !after(p) || !held(&p.commit) {
+            continue;
+        }
+        let things: BTreeSet<Tid> = tl.role_commit(&p.commit).map(|mc| mc.ops.iter().map(|op| op.target).collect()).unwrap_or_else(|| BTreeSet::from([*a]));
+        for t in things {
+            out.list.insert(osis_keys::Name { thing: t, key: key_of(p) });
+        }
+    }
+    out
+}
+
+/// The names of the keysets a rotation's boxes to holder actors name (spec/crypto.md §4): per
+/// boxed actor and rotated role it holds, the commit that introduced the epoch of the actor its
+/// box names (`epoch_intro`, when held). A departure inside a holder actor rides in the
+/// actor's rotation that wrote that keyset: a node lacking it would box the actor at an older
+/// keyset a departed holder of it opens, and the new epoch's history box would carry this one.
+pub(crate) fn keyset_names(core: &Core, boxed: &[osis_keys::Recipient], roles: &BTreeSet<Role>) -> BTreeSet<osis_keys::Name> {
+    let mut out = BTreeSet::new();
+    for rc in boxed {
+        let osis_keys::HolderKeys::Actor { keysets, own } = &rc.keys else { continue };
+        for r in roles.iter().filter(|r| **r <= rc.role) {
+            let ks = keysets.get(r).map(|x| x.0);
+            let named = match own.get(r) {
+                Some((es, _)) if osis_keys::symmetric_box(es, ks.as_ref()) => Some(*es),
+                _ => ks,
+            };
+            if let Some((ts, au, _, id)) = named.and_then(|e| core.ix.epoch_intro.get(&(rc.holder, *r, e))) {
+                out.insert(osis_keys::Name { thing: rc.holder, key: osis_keys::Key { ts: ts.to_u64(), node: *au, commit: *id } });
+            }
+        }
+    }
+    out
+}
+
 /// Each holder's role on `a` at `now`, from `a`'s timeline `tl`.
 fn roles_now(tl: &Timeline, a: &Tid, now: Ts) -> BTreeMap<Tid, Role> {
     tl.roster(a, At::now(now)).into_iter().map(|(m, e)| (m, e.role)).collect()
@@ -286,7 +354,7 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
     let actors: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
     for a in actors {
         // a plain thing's leftover epochs (an invalid rotation's) are no secrets of its own
-        let Some(e) = tx.core.own_epochs(&a).cloned() else { continue };
+        let Some(e) = tx.core.own_epochs(&a) else { continue };
         let held = ROLES.iter().any(|r| e.role(*r).newest_held().is_some());
         if !held && tx.core.ix.own_keys.contains(&a) {
             continue;

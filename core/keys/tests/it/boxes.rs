@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Grants, re-seals, history re-writes, box checks and sizes (spec/crypto.md §4, spec/wire.md §7).
 
+use crate::common::Applied;
 use crate::common;
 use common::*;
 use osis_base::{Role, WallMs};
@@ -29,12 +30,12 @@ fn forked() -> Forked {
     let owner = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
     let mut view = ActorEpochs::derived(&pe, &a);
     let mut s = Secrets::default();
-    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &mut rng(1)).unwrap();
+    let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(1)).unwrap();
     r1.secrets.apply(&mut s);
     view = r1.preview(&view).unwrap();
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
-    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(2)).unwrap();
-    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(3)).unwrap();
+    let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(2)).unwrap();
+    let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &osis_keys::Names::default(), &mut rng(3)).unwrap();
     x.secrets.apply(&mut s);
     y.secrets.apply(&mut s);
     view = x.preview(&view).unwrap();
@@ -89,6 +90,7 @@ fn grant_to_key_actor() {
     ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     // Establishment from the state as a snapshot (the grantee's commits elided).
     osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
+    kv.establish(&osis_keys::AllHeld);
     assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
     assert!(f.view.read.current().iter().all(|e| kv.read.secret(e).is_some()), "every read fork held");
     // Its seed holder writes symmetric boxes instead.
@@ -114,7 +116,7 @@ fn rotation_keeps_other_roles_boxes() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let mut s = f.s.clone();
     box_holder(&f.a, &f.view, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(8)).unwrap().unwrap().apply(&mut s);
-    let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[owner, key_rcpt(k, Role::Write, &seed)], &mut rng(9)).unwrap();
+    let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[owner, key_rcpt(k, Role::Write, &seed)], &osis_keys::Names::default(), &mut rng(9)).unwrap();
     let mut v = f.view.clone();
     rot.secrets.apply(&mut s);
     v = rot.preview(&v).unwrap();
@@ -245,7 +247,7 @@ fn unchecked_boxes_are_reading_only() {
     for e in f.forks {
         assert_eq!(gv.read.reading_secret(&e), f.view.read.secret(&e));
         assert!(gv.read.secret(&e).is_none() && gv.read.is_reading_only(&e));
-        gv.read.set_established(e, osis_keys::Provenance::Chain);
+        gv.read.set_established(e, osis_keys::Provenance::Rotated);
     }
     assert!(gv.read.newest_held().is_none() && gv.read.newest_secret().is_none() && gv.read.held_established().next().is_none());
     assert_eq!(osis_keys::wrap_epoch(&gv.read), osis_keys::WrapEpoch::None);
@@ -407,7 +409,7 @@ fn poisoned(f: &Forked) -> (osis_base::Tid, ActorEpochs, Secrets, osis_keys::His
     let mut alts = osis_keys::HistoryAlts::new();
     for e in f.forks {
         let k = history_key(Role::Read, &e);
-        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &garbage).unwrap();
+        let lie = osis_crypto::seal_history(f.view.read.secret(&e).unwrap(), &f.a, Role::Read, &e, &garbage, &osis_keys::Names::default().to_value()).unwrap();
         let genuine = std::mem::replace(s.history.get_mut(&k).unwrap(), lie.clone());
         alts.insert(k, vec![lie, genuine]);
     }
@@ -441,6 +443,7 @@ fn history_box_poison_refused_spec_crypto_4() {
     assert_eq!(gv, gv2);
     // the planted epochs: held, never established, never in a history box
     osis_keys::snapshot_keyed(&s, &mut gv).unwrap();
+    gv.establish(&osis_keys::AllHeld);
     for e in &planted {
         assert!(gv.read.reading_secret(e).is_some() && !gv.read.is_established(e));
     }
@@ -463,11 +466,11 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
     let opener = Opener::Actor { holder: g, epochs: &ge };
     let commit = osis_base::CommitId([0x77; 32]);
     let mut first = ActorEpochs::default();
-    osis_keys::SecretsWrite::default().claimed(&mut first, commit, &bogus, true).unwrap();
+    osis_keys::SecretsWrite::default().applied(&mut first, commit, &bogus).unwrap();
     ingest(&f.a, &s, &opener, &mut first, None).unwrap();
     let mut last = ActorEpochs::default();
     ingest(&f.a, &s, &opener, &mut last, None).unwrap();
-    osis_keys::SecretsWrite::default().claimed(&mut last, commit, &bogus, true).unwrap();
+    osis_keys::SecretsWrite::default().applied(&mut last, commit, &bogus).unwrap();
     for v in [&first, &last] {
         assert_eq!(v.read.secret(&e), f.view.read.secret(&e));
     }

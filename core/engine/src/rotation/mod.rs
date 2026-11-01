@@ -183,9 +183,12 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
     roles.contains(&Role::Read) && may_rotate(core, who, a).contains(&Role::Admin)
 }
 
-/// The rotation of `roles` of `a` (boxes for `holders`), written into `m`. The superseded
-/// epochs' secrets must be held: `held` is this node's view (derived epochs for the switch to
-/// secrets of its own). `pending`: departures from `a` the same commit makes (a removal's).
+/// The rotation of `roles` of `a` (boxes for `holders`), written into `m`, its history boxes
+/// carrying the names of the departures from `a` this node holds (`departures::names`) and of the
+/// keysets its boxes to holder actors name (`departures::keyset_names`). The
+/// superseded epochs' secrets must be held: `held` is this node's view (derived epochs for the
+/// switch to secrets of its own). `pending`: departures from `a` the same commit makes (a
+/// removal's: the names' departs flag).
 /// A holder actor is boxed only the roles up to the first its newest epoch does not cover
 /// (`holder_covers`): left out, it is re-sealed once it rotates (spec/permissions.md §3).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
@@ -198,7 +201,16 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
             boxed.push(rc);
         }
     }
-    let rot = rotate(&a, roles, held, &secrets, &boxed, &mut *tx.rng)?;
+    // a departing commit names itself by its `ts`, fixed here, and signer (set before this)
+    let departs = if pending.is_empty() {
+        None
+    } else {
+        let ts = *m.ts.get_or_insert_with(|| tx.core.hlc.next());
+        Some(osis_keys::Own { ts: ts.to_u64(), node: m.signer.unwrap_or(tx.core.id.tid()) })
+    };
+    let mut names = departures::names(tx.core, &a, departs);
+    names.list.extend(departures::keyset_names(tx.core, &boxed, roles));
+    let rot = rotate(&a, roles, held, &secrets, &boxed, &names, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
@@ -235,10 +247,9 @@ pub(crate) fn record(tx: &mut Tx<'_>, a: Tid, rot: &Rotation) -> Result<()> {
     tx.core.touch();
     // a plain thing's: derived from its owner, with what an invalid rotation gave it for reading
     let base = tx.core.epochs(&a).or_else(|| tx.core.ix.secrets.get(&a).cloned()).unwrap_or_default();
-    tx.core.ix.secrets.insert(a, base);
+    tx.core.ix.secrets.insert(a, base.into_record());
     let e = tx.core.ix.secrets.entry_or_default(a);
     rot.record(e);
-    e.establish();
     save_epochs(tx, &a)
 }
 
@@ -248,14 +259,14 @@ pub(crate) fn rotate_now(tx: &mut Tx<'_>, who: Tid, a: Tid, roles: &BTreeSet<Rol
     let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let holders = recipients(tx, &a, &[])?;
     let mut m = Mutation::new();
+    if who != tx.core.id.tid() {
+        m.sign_as(who);
+    }
     let rot = rotation_into(tx, &mut m, a, roles, &held, &holders, &[])?;
     if refreshes_deposit(tx.core, &who, &a, roles) {
         fresh_deposit_seed(tx, &mut m, a)?;
     }
     let unreached = unreached(tx, &a, &rot)?;
-    if who != tx.core.id.tid() {
-        m.sign_as(who);
-    }
     let c = Engine::commit_tx(tx, m)?;
     let mut done = Done::default();
     recorded(tx, a, c, &rot, &unreached, &mut done)?;
@@ -270,9 +281,16 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
     done.add(c);
     done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
     if let Some(c) = c {
-        done.deliveries.push(Delivery::First { commits: vec![c], under: above(tx.core, &a) });
+        done.deliveries.push(Delivery::First { commits: placed_with(c, Some(rot)), under: above(tx.core, &a) });
     }
     Ok(())
+}
+
+/// Rotation commit `c` and the commits its names name (`rot`'s): placed together, first, under
+/// each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there can meet them.
+pub(crate) fn placed_with(c: osis_base::CommitId, rot: Option<&Rotation>) -> Vec<osis_base::CommitId> {
+    let named: BTreeSet<osis_base::CommitId> = rot.into_iter().flat_map(|r| r.names.list.iter().map(|n| n.key.commit)).filter(|x| *x != c).collect();
+    std::iter::once(c).chain(named).collect()
 }
 
 /// Things whose labels must learn a rotated actor's new `keys.0`: what it is a holder of and
@@ -400,8 +418,8 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 }
 
 /// The re-seal trigger for `a` (spec/permissions.md §3): current holders lacking a box at a
-/// chain-established current epoch of a role this node may rotate, never at an epoch
-/// established by a snapshot alone, never for an edge whose `until` is within `MAX_DRIFT`.
+/// current epoch of a role this node may rotate, never for an edge whose `until` is within
+/// `MAX_DRIFT`.
 ///
 /// Invariant: once re-seals settle (every node holding the same commits finds no holder to
 /// re-seal), every node counts the same current epochs of each role, since what a rotation
@@ -438,7 +456,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
             let re = epochs.role(r);
             let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
-            if may.contains(&r) && holds && !re.newest_is_snapshot() && holder_covers(tx, &held, &deps, &m, r)? {
+            if may.contains(&r) && holds && holder_covers(tx, &held, &deps, &m, r)? {
                 keep.insert(r);
             }
         }
@@ -449,8 +467,8 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     Ok(out)
 }
 
-/// A re-seal of `holder` for `roles` of `a` (spec/permissions.md §3): its boxes at the
-/// chain-established current epochs, with history boxes, delivered by inbox (a node: over a
+/// A re-seal of `holder` for `roles` of `a` (spec/permissions.md §3): its boxes at the current
+/// epochs, with history boxes, delivered by inbox (a node: over a
 /// direct connection) and placed under the actor's labels like any role commit (later
 /// removals reset its box entries: every node must hold them, or the removal waits for good).
 pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<Role>) -> Result<Done> {
@@ -462,7 +480,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.current_holders(&a).into_iter().find(|(m, _, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
     let rcpt = recipient(tx, holder, role)?;
-    let Some(w) = osis_keys::reseal_holder(&a, &epochs, &secrets, &rcpt, roles, &mut *tx.rng)? else {
+    let Some(w) = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, roles, &mut *tx.rng)? else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };
     let mut m = Mutation::new();
@@ -554,8 +572,7 @@ impl Engine {
             let role = tx.core.current_holders(&a).into_iter().find(|(x, _, _)| *x == m).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
             let me = tx.core.id.tid();
             let may = may_rotate(tx.core, &me, &a);
-            let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-            let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r) && !epochs.role(*r).newest_is_snapshot()).collect();
+            let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= role && may.contains(r)).collect();
             if roles.is_empty() {
                 return Err(Error::Misuse("this node may not re-seal that holder"));
             }

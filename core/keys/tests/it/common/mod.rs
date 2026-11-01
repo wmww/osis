@@ -64,6 +64,20 @@ pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
 pub fn applied(rot: &osis_keys::Rotation, view: &ActorEpochs, id: u8) -> ActorEpochs {
     let mut a = view.clone();
     rot.record(&mut a);
-    rot.secrets.claimed(&mut a, osis_base::CommitId([id; 32]), &rot.keys, true).unwrap();
+    rot.secrets.applied(&mut a, osis_base::CommitId([id; 32]), &rot.keys).unwrap();
     a
 }
+
+/// A held valid rotation commit applied, then the view established with every name held (the
+/// fixtures hold every departure).
+pub trait Applied {
+    fn applied(&self, v: &mut ActorEpochs, commit: osis_base::CommitId, keys: &osis_keys::KeysWrite) -> Result<bool, osis_keys::Error>;
+}
+
+impl Applied for osis_keys::SecretsWrite {
+    fn applied(&self, v: &mut ActorEpochs, commit: osis_base::CommitId, keys: &osis_keys::KeysWrite) -> Result<bool, osis_keys::Error> {
+        let new = self.rotated(v, commit, keys)?;
+        Ok(v.establish(&osis_keys::AllHeld) | new)
+    }
+}
+

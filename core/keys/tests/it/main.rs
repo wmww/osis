@@ -7,7 +7,7 @@ mod chain;
 mod covers;
 mod epochs;
 mod established;
+mod names;
 mod planner;
 mod props;
 mod rotation;
-mod settled;

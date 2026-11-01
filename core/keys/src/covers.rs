@@ -1,7 +1,7 @@
 //! Departures and the covers rule (spec/crypto.md §4), re-seal triggers (spec/permissions.md §3).
 
 use crate::aspects::{box_key, from_schema};
-use crate::epoch::{ActorEpochs, Provenance, ROLES};
+use crate::epoch::{ActorEpochs, ROLES};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Epoch;
@@ -309,8 +309,7 @@ pub struct Holder {
 }
 
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
-/// they hold, established through its rotation commit (`Chain`; not a snapshot alone, see
-/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder
+/// they hold, with the roles to re-seal (`box_holder`). Never a holder
 /// whose `until` is within `MAX_DRIFT`. The caller decides after a sync pass of the actor's
 /// labels that fetched everything, and only for roles it may rotate.
 pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder], now: WallMs) -> Vec<(Tid, BTreeSet<Role>)> {
@@ -327,11 +326,10 @@ pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder]
     out
 }
 
-/// The epochs of `r` at which the re-seal trigger finds `holder` without a box (`reseal_needed`):
-/// current ones established through their rotation commits.
+/// The current epochs of `r` at which the re-seal trigger finds `holder` without a box
+/// (`reseal_needed`).
 pub fn reseal_missing(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role) -> Vec<Epoch> {
-    let re = epochs.role(r);
-    re.current().into_iter().filter(|e| re.provenance(e).is_some_and(Provenance::reseals)).filter(|e| !secrets.boxes.contains_key(&box_key(*holder, r, e))).collect()
+    epochs.role(r).current().into_iter().filter(|e| !secrets.boxes.contains_key(&box_key(*holder, r, e))).collect()
 }
 
 #[cfg(test)]

@@ -230,7 +230,7 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
         (false, Some(k)) => {
             let mk = HolderKeys::from_keys(&Keys { key: None, ..k })?;
             match tx.core.own_epochs(&holder) {
-                Some(e) => mk.with_own(e),
+                Some(e) => mk.with_own(&e),
                 None => mk,
             }
         }

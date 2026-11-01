@@ -512,7 +512,7 @@ mod tests {
         let s = Secret32::from_bytes([5; 32]);
         let mut a = ActorEpochs::default();
         a.write.set_reading_secret(e, s.clone(), osis_keys::Unchecked { author: Tid::from_bytes([1; 15]), commit: CommitId([1; 32]) });
-        a.write.set_established(e, osis_keys::Provenance::Chain);
+        a.write.set_established(e, osis_keys::Provenance::Rotated);
         let pk = label_role_key(osis_keys::label_role(Role::Write), &s, 0).verifying_key();
         let (ep, got, checked) = matching(&a, Role::Write, 0, &pk).unwrap();
         assert_eq!((ep, &got, checked), (e, &s, false));
