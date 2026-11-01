@@ -182,7 +182,12 @@ impl SyncEngine {
                 continue;
             }
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
-            for b in self.engine.partial_bodies(c, aspects)? {
+            // nothing to place once its parts are dropped here (`State::sweep_certs`)
+            let bodies = self.engine.partial_bodies(c, aspects)?;
+            if bodies.is_empty() {
+                continue;
+            }
+            for b in bodies {
                 // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
                 // holders take it as the body's entry
                 let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };

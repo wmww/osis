@@ -315,7 +315,7 @@ impl SyncEngine {
         self.pull(Some(conn), &g, l, &mut scope, w);
         sends.extend(self.cert_sends(l, &scope));
         // a replaced label with everything to hold already there (`retire_at`)
-        let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.gone.contains(&(host, l, o.id)));
+        let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id));
         self.send(conn, p, sends, &mut left, out)?;
         let settled = unsettled.is_empty();
         self.pull(Some(conn), &g, l, &mut scope, w);
@@ -363,7 +363,7 @@ impl SyncEngine {
         let mut deposits = Vec::new();
         let mut queue = Vec::new();
         for o in sends {
-            let settled = self.state.is_present(&host, &l, &o.id) || self.state.gone.contains(&(host, l, o.id));
+            let settled = self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id);
             if !settled {
                 // judged again next pass until the host has it
                 match o.of {
@@ -1352,7 +1352,7 @@ impl SyncEngine {
     /// uploading another encryption (this node's own, whose upload was lost) would only add a
     /// duplicate for the tiebreak of §7 to delete. `None`: any entry (this node's served state).
     fn entry_for(&mut self, host: Option<&HostKey>, l: &LabelId, b: &Body) -> Option<BlobId> {
-        let mut ids: Vec<BlobId> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && host.is_none_or(|s| !self.state.gone.contains(&(*s, *l, *id)))).map(|(id, _)| id).collect();
+        let mut ids: Vec<BlobId> = self.state.entries_of(l, &b.commit).filter(|(id, e)| matches!(&e.kind, Kind::Commit { parts, .. } if *parts == b.parts) && host.is_none_or(|s| !self.state.is_gone_at(s, l, id))).map(|(id, _)| id).collect();
         if let Some(host) = host {
             ids.sort_by_key(|id| !self.state.is_present(host, l, id));
         }
@@ -1579,7 +1579,12 @@ impl SyncEngine {
                 self.settle_by(at);
                 continue;
             }
-            for b in self.engine.part_bodies(&c, &missing)? {
+            // nothing to place once its parts are dropped here (`State::sweep_certs`)
+            let bodies = self.engine.part_bodies(&c, &missing)?;
+            if bodies.is_empty() {
+                continue;
+            }
+            for b in bodies {
                 self.place(g, l, &b, true)?;
             }
             self.place_linked(l, &c, &missing)?;

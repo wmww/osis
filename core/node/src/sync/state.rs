@@ -186,6 +186,14 @@ impl Kind {
     }
 }
 
+/// A dropped body's carriers (`State::carriers`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Carriers {
+    pub by: Vec<CommitId>,
+    /// Corrected wall ms of the last change.
+    pub at: u64,
+}
+
 #[derive(Default)]
 pub struct State {
     pub entries: BTreeMap<(LabelId, BlobId), Entry>,
@@ -215,13 +223,15 @@ pub struct State {
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     pub certs: BTreeSet<(LabelId, CommitId)>,
     pub beats: BTreeMap<LabelId, u64>,
-    pub gone: BTreeSet<(HostKey, LabelId, BlobId)>,
+    /// Uploads a host refused as tombstoned, by when (corrected wall ms): forgotten after
+    /// `TOMBSTONE_LIFETIME`, when the host's tombstone is gone too.
+    pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
     pub hints: BTreeMap<LabelId, Hint>,
-    /// Timed deletes sent (spec/sync.md §5).
+    /// Timed deletes a host took (spec/sync.md §5), until the entry leaves that host.
     pub timed: BTreeSet<(HostKey, LabelId, BlobId)>,
     /// The snapshots carrying a body's live writes once it was dropped, one per aspect at most
-    /// (spec/sync.md §7).
-    pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
+    /// (spec/sync.md §7), with when they were last set (`sweep_carriers`).
+    pub carriers: BTreeMap<CommitId, Carriers>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
     /// The transport secret its host listens with, while it hosts.
@@ -423,10 +433,11 @@ impl State {
                     s.beats.insert(LabelId(r.arr()?), Rd::new(&v).u64()?);
                 }
                 b"g" => {
-                    s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)));
+                    s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"s" => {
-                    s.carriers.insert(CommitId(r.arr()?), decode_commits(&v)?);
+                    let at = Rd::new(&v).u64()?;
+                    s.carriers.insert(CommitId(r.arr()?), Carriers { by: decode_commits(v.get(8..).unwrap_or_default())?, at });
                 }
                 b"x" => {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
@@ -503,7 +514,7 @@ impl State {
         }
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
-        s.gone_by = s.gone.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
+        s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit), *t))).collect();
         Ok(s)
     }
@@ -661,8 +672,16 @@ impl State {
         self.drop_entry(l, b);
     }
 
-    /// Forgets tombstones past their lifetime.
+    /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
+        let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
+        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|(_, t)| t.saturating_add(lifetime) <= now).map(|(k, _)| *k).collect();
+        for (s, l, b) in old {
+            self.gone.remove(&(s, l, b));
+            self.gone_by.remove(&(l, b, s));
+            self.touch(l, b);
+            self.del(key(GONE, &[&s, &l.0, &b.0]));
+        }
         let old: Vec<(LabelId, BlobId)> = self.tombs.iter().filter(|(_, t)| t.saturating_add(osis_base::format::TOMBSTONE_LIFETIME_MS) <= now).map(|(k, _)| *k).collect();
         for (l, b) in old {
             self.tombs.remove(&(l, b));
@@ -700,6 +719,10 @@ impl State {
             self.version += 1;
             self.deposited.remove(&(s, l, b));
             self.del(k);
+            // a timed delete is done once the entry left that host
+            if self.timed.remove(&(s, l, b)) {
+                self.del(key(TIMED, &[&s, &l.0, &b.0]));
+            }
         }
     }
 
@@ -915,11 +938,16 @@ impl State {
     }
 
     pub fn set_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
-        if self.gone.insert((s, l, b)) {
+        if !self.gone.contains_key(&(s, l, b)) {
+            self.gone.insert((s, l, b), self.now);
             self.gone_by.insert((l, b, s));
             self.touch(l, b);
-            self.put(key(GONE, &[&s, &l.0, &b.0]), Vec::new());
+            self.put(key(GONE, &[&s, &l.0, &b.0]), Wr::new().u64(self.now).take());
         }
+    }
+
+    pub fn is_gone_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+        self.gone.contains_key(&(*s, *l, *b))
     }
 
     pub fn is_gone(&self, l: &LabelId, b: &BlobId) -> bool {
@@ -929,12 +957,51 @@ impl State {
     /// Adds a carrier of `body` (a snapshot of one of its aspects).
     pub fn set_carrier(&mut self, body: CommitId, snapshot: CommitId) {
         self.touched_commits.insert(body);
-        let list = self.carriers.entry(body).or_default();
-        if !list.contains(&snapshot) {
-            list.push(snapshot);
+        let now = self.now;
+        let c = self.carriers.entry(body).or_insert(Carriers { by: Vec::new(), at: now });
+        if !c.by.contains(&snapshot) {
+            c.by.push(snapshot);
         }
-        let v = encode_commits(list);
+        c.at = now;
+        let v = [Wr::new().u64(now).take(), encode_commits(&c.by)].concat();
         self.put(key(CARRIER, &[&body.0]), v);
+    }
+
+    /// Forgets the carriers no body needs any more (spec/sync.md §7: they decide whether a
+    /// dropped body's entry may go): kept for a body with an entry under some label or deleted
+    /// from one within `TOMBSTONE_LIFETIME`, for one set within that time (an entry of the body
+    /// may still be learned), and for every carrier those reach (`carrier_of` follows dropped
+    /// carriers to theirs). One the sweep forgot costs at most a fresh covering snapshot when an
+    /// entry of its body turns up later (`snapshot_first`). The wait is `TOMBSTONE_LIFETIME`:
+    /// past it an entry comes back only by a stale relay or bundle; at 0 a body dropped before
+    /// its entries are learned would cost that snapshot, at infinity carriers stay for good.
+    pub fn sweep_carriers(&mut self, now: u64) {
+        let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
+        let mut keep: BTreeSet<CommitId> = self.by_label_commit.keys().map(|(_, c)| *c).chain(self.deleted.keys().map(|(_, c)| *c)).collect();
+        keep.extend(self.carriers.iter().filter(|(_, c)| c.at.saturating_add(lifetime) > now).map(|(b, _)| *b));
+        let mut todo: Vec<CommitId> = keep.iter().copied().collect();
+        while let Some(b) = todo.pop() {
+            for c in self.carriers.get(&b).map(|c| c.by.clone()).unwrap_or_default() {
+                if keep.insert(c) {
+                    todo.push(c);
+                }
+            }
+        }
+        let gone: Vec<CommitId> = self.carriers.keys().filter(|b| !keep.contains(b)).copied().collect();
+        for b in gone {
+            self.carriers.remove(&b);
+            self.del(key(CARRIER, &[&b.0]));
+        }
+    }
+
+    /// Forgets the certificate placements of commits `held` says this node holds no part of
+    /// any more: nothing is left to place again (`add_cert` keeps a deleted copy from coming back).
+    pub fn sweep_certs(&mut self, held: impl Fn(&CommitId) -> bool) {
+        let gone: Vec<(LabelId, CommitId)> = self.certs.iter().filter(|(_, c)| !held(c)).copied().collect();
+        for (l, c) in gone {
+            self.certs.remove(&(l, c));
+            self.del(key(CERT, &[&l.0, &c.0]));
+        }
     }
 
     pub fn set_timed(&mut self, s: HostKey, l: LabelId, b: BlobId) {
@@ -1226,5 +1293,64 @@ mod tests {
         s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: Some(k), inbox: None });
         s.add_hint(l, Hint { thing: t, index: 0, hosts: Vec::new(), via: None, inbox: None });
         assert_eq!(s.hints.get(&l).and_then(|h| h.via), Some(k));
+    }
+
+    fn rows(e: &mut Engine, p: &[u8]) -> usize {
+        let mut n = 0;
+        e.run(|tx| {
+            tx.scan(p, |_, _| {
+                n += 1;
+                Ok(())
+            })
+        })
+        .unwrap();
+        n
+    }
+
+    // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten
+    // after `TOMBSTONE_LIFETIME`, a timed delete when its entry leaves that host, a dropped
+    // body's carriers once no entry of it (or of a body they carry) is left and they are that
+    // old, a certificate placement once its commit's parts are all dropped; each round trips
+    // until then.
+    #[test]
+    fn records_dropped_after_their_lifecycle_spec_sync_7() {
+        let mut lp = crate::local_peer::LocalPeer::new(1, 965, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let life = osis_base::format::TOMBSTONE_LIFETIME_MS;
+        let (h, l, b) = ([7u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let (body, mid, snap, other) = (CommitId([3; 32]), CommitId([4; 32]), CommitId([5; 32]), CommitId([6; 32]));
+        let mut s = State { now: 1_000, ..State::default() };
+        s.set_gone(h, l, b);
+        s.set_present(h, l, b, true);
+        s.set_timed(h, l, b);
+        // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
+        s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], salt: [0; 16] } });
+        s.set_carrier(body, mid);
+        s.set_carrier(mid, snap);
+        s.set_carrier(other, snap);
+        s.add_cert(l, body);
+        s.add_cert(l, other);
+        s.flush(e).unwrap();
+        let mut s = State::load(e).unwrap();
+        assert_eq!(s.gone.get(&(h, l, b)), Some(&1_000));
+        assert_eq!(s.carriers.get(&body).map(|c| (c.by.clone(), c.at)), Some((vec![mid], 1_000)));
+        s.expire_tombs(1_000 + life - 1);
+        s.sweep_carriers(1_000 + life - 1);
+        s.set_present(h, l, b, false);
+        s.flush(e).unwrap();
+        assert_eq!((rows(e, GONE), rows(e, TIMED), rows(e, CARRIER)), (1, 0, 3));
+        s.expire_tombs(1_000 + life);
+        s.sweep_carriers(1_000 + life);
+        s.sweep_certs(|c| *c == body);
+        s.flush(e).unwrap();
+        assert_eq!((rows(e, GONE), rows(e, CARRIER), rows(e, CERT)), (0, 2, 1), "body's chain kept, other's carrier and certificate gone");
+        assert!(s.carriers.contains_key(&body) && s.carriers.contains_key(&mid));
+        s.drop_entry(l, BlobId([9; 32]));
+        s.sweep_carriers(1_000 + life);
+        s.sweep_certs(|_| false);
+        s.flush(e).unwrap();
+        assert_eq!((rows(e, CARRIER), rows(e, CERT)), (0, 0));
+        let back = State::load(e).unwrap();
+        assert!(back.gone.is_empty() && back.timed.is_empty() && back.carriers.is_empty() && back.certs.is_empty());
     }
 }

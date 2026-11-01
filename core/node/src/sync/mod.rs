@@ -1651,7 +1651,10 @@ impl SyncEngine {
         for ((l, b), e) in &s.entries {
             h.update(format!("e{l:?}{b:?}{:?}{:?}{}{:?}", e.wrap, e.stamp.map(|x| x.0), e.cert, e.kind).as_bytes());
         }
-        let sets = [("p", &s.present), ("d", &s.deposited), ("g", &s.gone), ("t", &s.timed)];
+        for x in &s.gone {
+            h.update(format!("g{x:?}").as_bytes());
+        }
+        let sets = [("p", &s.present), ("d", &s.deposited), ("t", &s.timed)];
         for (k, set) in sets {
             for x in set {
                 h.update(format!("{k}{x:?}").as_bytes());
@@ -1721,6 +1724,20 @@ impl SyncEngine {
     #[doc(hidden)]
     pub fn entry_meta(&self, l: &LabelId, b: &osis_base::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
         self.state.entries.get(&(*l, *b)).map(|e| (e.wrap, e.stamp))
+    }
+
+    /// Sync records stored under `y/<tag>` (tests: growth after a lifecycle).
+    #[doc(hidden)]
+    pub fn sync_rows(&mut self, tag: u8) -> usize {
+        let _ = self.state.flush(&mut self.engine);
+        let mut n = 0;
+        let _ = self.engine.run(|tx| {
+            tx.scan(&[b'y', b'/', tag], |_, _| {
+                n += 1;
+                Ok(())
+            })
+        });
+        n
     }
 
     /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body

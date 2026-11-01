@@ -42,7 +42,8 @@ fn thing_leaving_deleted_by_delete_key_spec_sync_5() {
 }
 
 // spec/sync.md §7, spec/commits.md §5: compaction uploads the snapshot first, then drops and
-// deletes the covered bodies; a holder joining later reads the live value from the snapshot.
+// deletes the covered bodies; a holder joining later reads the live value from the snapshot; the
+// carriers go `TOMBSTONE_LIFETIME` after the deletions.
 #[test]
 fn compaction_then_deletion_spec_sync_7() {
     let mut net = Net::new();
@@ -69,6 +70,14 @@ fn compaction_then_deletion_spec_sync_7() {
     net.advance(10_000);
     net.trace(&[c]);
     assert_eq!(net.read(c, t), Some(s("v3")), "the live value is served from the snapshot");
+    // the dropped bodies' carriers go once their entries and tombstones have (growth:
+    // notes/growth.md)
+    // (the item's creation commit keeps its entry for `created.0`, so its carrier stays)
+    assert_eq!(net.sync(a).sync_rows(b's'), 3, "carriers recorded");
+    net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
+    net.advance(60_000);
+    assert_eq!(net.sync(a).sync_rows(b's'), 1, "only the carrier of a body with an entry left");
+    assert_eq!(net.read(a, t), Some(s("v3")));
 }
 
 // spec/sync.md §5 Register: at a host past its byte caps a child step is still taken, once per

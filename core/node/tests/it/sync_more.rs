@@ -162,6 +162,31 @@ fn reconciliation_fallback_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v39")));
 }
 
+// spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it
+// placed goes once it holds no part of the commit any more (nothing left to place again).
+#[test]
+fn certificate_records_go_with_their_commit_spec_permissions_4() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let w = net.node(2, &[host]);
+    let _g = net.group(a, &[(w, Role::Write)], &[host]);
+    net.run();
+    let l = net.label(a);
+    let me = net.tid(w);
+    let before = net.sync(w).sync_rows(b'k');
+    let mine: BTreeSet<osis_base::CommitId> = net.sync(w).entries(&l).into_iter().filter_map(|(_, k)| if let EntryKind::Commit { commit, .. } = k { Some(commit) } else { None }).filter(|c| net.engine(w).header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|x| x.ak.as_str() == "node.0"))).collect();
+    assert!(before >= 1 && !mine.is_empty(), "w placed its card: {before} records");
+    for c in &mine {
+        let h = net.engine(w).header(c).unwrap();
+        for x in &h.aspects {
+            net.engine(w).drop_body(c, &x.tid, &x.ak).unwrap();
+        }
+    }
+    net.advance(1_000);
+    assert_eq!(net.sync(w).sync_rows(b'k') + mine.len(), before, "the dropped card's records went");
+}
+
 // spec/sync.md §2-§3, spec/crypto.md §5: an inbox blob sealed to an actor's read key and
 // deposited under its inbox (its home label) is opened by a holder device and applied.
 #[test]
