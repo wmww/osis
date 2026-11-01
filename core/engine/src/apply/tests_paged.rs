@@ -368,7 +368,7 @@ fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'s
     let mut seen = |pretty: bool| worlds.iter_mut().map(|w| [w.seen(!pretty, pretty), w.log.clone()].concat()).collect::<Vec<_>>();
     if seen(false).windows(2).any(|x| x[0] != x[1]) {
         let v = seen(true);
-        let (x, y) = v[0].iter().zip(&v[1]).find(|(x, y)| x != y).unwrap();
+        let (x, y) = v[0].iter().zip(&v[1]).find(|(x, y)| x != y).expect("page-by-page apply differs from whole in length");
         panic!("page-by-page apply differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
     }
     (counts, outs)
