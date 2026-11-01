@@ -95,7 +95,7 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -
 }
 
 /// The superseder of `d`.
-fn killer(d: &Death) -> Stamp {
+pub(super) fn killer(d: &Death) -> Stamp {
     Stamp { ts: d.at, dot: d.by.clone() }
 }
 
@@ -103,18 +103,17 @@ fn killer(d: &Death) -> Stamp {
 /// a write of its stamp but not its superseder (a stamp names several writes: a map entry's
 /// creation outlives its value write, and a state's write superseded by one of `f` shares its
 /// stamp with `f`'s creation of the entry).
-fn dies_in(f: &Fragment, d: &Death) -> bool {
+pub(super) fn dies_in(f: &Fragment, d: &Death) -> bool {
     f.holds_stamp(&d.stamp) && !f.holds_stamp(&killer(d))
 }
 
 /// Per snapshot read by `carriers` and source of superseders (a held body, or the state), the
 /// writes of its part that a superseder from there supersedes, as (dead stamp, superseder):
 /// the source joined into a copy of the part (the state: the part into a copy of the state),
-/// per transaction step; and the snapshot parts read whole, with their stamps (`holds`).
+/// per transaction step; and the stamps of the snapshot parts read (`holds`).
 #[derive(Default)]
 struct Parts {
     killed: BTreeMap<(CommitId, Option<CommitId>), Killed>,
-    read: BTreeMap<CommitId, Vec<Fragment>>,
     stamps: BTreeMap<CommitId, Vec<Stamps>>,
 }
 
@@ -122,21 +121,16 @@ struct Parts {
 type Killed = BTreeSet<(Stamp, Stamp)>;
 
 impl Parts {
-    /// Part `ai` of `c`, decoded once per step.
-    fn part(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<&[Fragment]> {
-        if !self.read.contains_key(c) {
-            let fs = crate::apply::held_fragments(tx, c, ai)?;
-            self.read.insert(*c, fs);
-        }
-        Ok(self.read.get(c).map(Vec::as_slice).unwrap_or_default())
-    }
-
     /// Whether part `ai` of snapshot `c` holds a write stamped `s` (so its author had applied
-    /// that write's commit, spec/crdt.md §8). Cost: the part walked once per step (many deaths
-    /// ask of one part), then a lookup.
+    /// that write's commit, spec/crdt.md §8). Cost: the part's stamps indexed once per step, a
+    /// piece at a time (many deaths ask of one part), then a lookup.
     fn holds(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize, s: &Stamp) -> Result<bool> {
         if !self.stamps.contains_key(c) {
-            let ix = self.part(tx, c, ai)?.iter().map(Fragment::stamps).collect();
+            let mut ix = Vec::new();
+            crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+                ix.push(f.stamps());
+                Ok(())
+            })?;
             self.stamps.insert(*c, ix);
         }
         Ok(self.stamps.get(c).is_some_and(|v| v.iter().any(|x| x.holds(s))))
@@ -185,33 +179,34 @@ impl Parts {
         self.kills(tx, tid, ak, (c, ai), None, &want)
     }
 
-    /// Whether a source supersedes `want` (dead stamp, superseder) in part `ai` of `c`: part
-    /// `kai` of `k` joined into a copy of the part, or for `None` the part joined into a copy of
-    /// the state. Cached per (part, source).
+    /// Whether a source supersedes `want` (dead stamp, superseder) in part `ai` of `c`, a piece
+    /// `f` of the part at a time: part `kai` of `k` joined into a copy of `f` (of each of its
+    /// pieces the part at `f`'s positions, `Fragment::part_at`: all a join there meets), or for
+    /// `None` `f` joined into a copy of the state's part it meets (`Tx::state_at`). Cached per
+    /// (part, source). Cost: with a source, its part decoded once per piece of `c`'s (rare: a
+    /// snapshot whose author had not seen a superseder, `carries`).
     fn kills(&mut self, tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (c, ai): (&CommitId, usize), src: Option<(CommitId, usize)>, want: &(Stamp, Stamp)) -> Result<bool> {
         let key = (*c, src.map(|x| x.0));
         if let Some(k) = self.killed.get(&key) {
             return Ok(k.contains(want));
         }
         let mut dead = BTreeSet::new();
-        let fs = self.part(tx, c, ai)?.to_vec();
-        let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(f, d)).map(|d| (d.stamp.clone(), killer(&d))));
-        if let Some((k, kai)) = src {
-            let ks = crate::apply::held_fragments(tx, &k, kai)?;
-            for f in &fs {
-                let (mut g, mut ch) = (f.clone(), Changes::new());
-                for x in &ks {
-                    g.join_into(x.clone(), None, &mut ch);
-                }
-                keep(f, ch);
-            }
-        } else if let Some(st) = tx.state(tid, ak)?.cloned() {
-            for f in &fs {
-                let (mut st, mut ch) = (st.clone(), Changes::new());
+        crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+            let mut ch = Changes::new();
+            if let Some((k, kai)) = src {
+                let mut g = f.clone();
+                crate::apply::each_held_piece(tx, &k, kai, &mut |_, x| {
+                    g.join_into(x.part_at(&f), None, &mut ch);
+                    Ok(())
+                })?;
+            } else if let Some(mut st) = tx.state_at(tid, ak, &f)? {
                 st.join_into(f.clone(), None, &mut ch);
-                keep(f, ch);
             }
-        }
+            dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(&f, d)).map(|d| (d.stamp.clone(), killer(&d))));
+            Ok(())
+        })?;
+        #[cfg(test)]
+        assert_eq!(dead, super::oracle::kills(tx, tid, ak, (c, ai), src)?, "kills streamed vs whole");
         let hit = dead.contains(want);
         self.killed.insert(key, dead);
         Ok(hit)
@@ -253,22 +248,28 @@ pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death])
 /// superseded die for it at the superseder's `ts`, or at the snapshot's when that is later and
 /// its author had not seen the superseder (as `carriers`), its copies of writes whose own delta
 /// is held (left out of its join) included.
-/// Cost: the snapshot's part and the aspect's state, only for a bounded part.
+/// Cost: only for a bounded part, the snapshot's part a piece at a time, each joined into a copy
+/// of the state's part it meets (`Tx::state_at`).
 pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
     let Some(ai) = bounded_part(tx.core, c, tid, ak) else { return Ok(()) };
     let Some(ts) = tx.core.ix.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
     let (fr, abs) = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().find(|x| x.1 == *c).map(|x| (x.2.clone(), x.3.clone())).unwrap_or_default();
-    let Some(st) = tx.state(tid, ak)?.cloned() else { return Ok(()) };
-    let mut deaths = Vec::new();
+    // the dates (a write a page's path repeats, such as the entry it lies under, dies once)
+    let mut deaths = BTreeSet::new();
     // a valid snapshot vouches for every write it carries (spec/permissions.md §5.2)
-    let fs = crate::apply::held_fragments(tx, c, ai)?;
-    let core = &*tx.core;
-    let saw = |d: &Death| took(core, tid, &fr, &abs, &d.by);
-    for f in fs {
-        let mut st = st.clone();
+    crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+        let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
-        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !saw(d) && dies_in(&f, d))).map(|d| d.at.max(ts)));
+        let core = &*tx.core;
+        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(core, tid, &fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
+        Ok(())
+    })?;
+    #[cfg(test)]
+    {
+        let a: Vec<Ts> = deaths.iter().copied().collect();
+        let w = super::oracle::copies_deaths(tx, c, ai, tid, ak, ts, &|core, d| took(core, tid, &fr, &abs, &d.by))?;
+        assert_eq!(a, w, "note_copies streamed vs whole");
     }
     if deaths.is_empty() {
         return Ok(());
@@ -364,7 +365,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
 /// superseded dies at a later one here. Cost: the aspect's held bodies and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-    let un = crate::apply::Unmerge::of(tx, tid, ak, &BTreeMap::new())?;
+    let un = crate::apply::Unmerge::of(tx, tid, ak)?;
     let mut st = Fragment::default();
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
@@ -373,24 +374,21 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         if crate::apply::validity::invalid_snapshot(tx.core, c, tid, ak) {
             continue;
         }
-        let parts: Vec<Fragment> = {
-            let _s = crate::costs::span("deaths: read bodies");
-            crate::apply::held_fragments(tx, c, ai)?
-        };
-        let _s = crate::costs::span("deaths: join");
+        let _s = crate::costs::span("deaths: join bodies");
         let kind = tx.core.ix.commits.get(c).map(|m| m.header.kind);
         let cp = kind.is_none_or(|k| !k.has_own_writes());
         // a snapshot's copies of an import's writes play at the import (its dot names the
         // origin); an import's are not removed for another import of the same origin
         let snap = kind.is_some_and(|k| k.is_compaction());
-        for mut f in parts {
+        crate::apply::each_held_piece(tx, c, ai, &mut |tx, mut f| {
             let core = &*tx.core;
             f.remove_dots(&|d| un.bad(d));
             if cp {
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, _)| x != c) } else { core.commit_of(tid, ak, d).is_some_and(|x| x != *c && held_part(core, &x, tid, ak).is_some()) });
             }
             join(&mut st, f, cp, &mut deaths, &mut dead);
-        }
+            Ok(())
+        })?;
     }
     {
         let _s = crate::costs::span("deaths: state");

@@ -16,13 +16,6 @@ use std::sync::Arc;
 
 use crate::engine::Gives;
 
-fn fragment(d: Decoded) -> (Fragment, Option<Gives>) {
-    match d {
-        Decoded::Delta(x) => (x.fragment, None),
-        Decoded::Snapshot(x) => (x.fragment, Some((x.frontiers, x.absorbed.into_iter().collect()))),
-    }
-}
-
 /// Notes a held compaction snapshot of `(tid, ak)` with its frontiers and `Absorbed`.
 pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::Ts, id: &CommitId, (fr, abs): Gives) {
     // kept in (`ts`, ID) order, so arrival order (a rebuild's is the store's) does not show
@@ -199,20 +192,27 @@ impl osis_crdt::PageSource for SharedPages<'_, '_, '_> {
 const STOPPED: osis_crdt::Error = osis_crdt::Error::Malformed("stopped");
 
 /// Hands `f` a part's delta: a whole one at once, a streamed one a piece at a time as it decodes
-/// again, the skeleton first, then its pages in wire order (`osis_commit::stream_part`; joining
-/// the pieces is joining the whole, spec/crdt.md §8). A streamed part failing now, after
-/// `examine` accepted it, means its bytes or pages changed since: a local error.
+/// again (`stream_stored`). A streamed part failing now, after `examine` accepted it, means its
+/// bytes or pages changed since: a local error.
 pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, part: PartRef<'_>, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<()> {
     let s = match part {
         PartRef::Whole(d) => return f(tx, d.fragment().clone()),
         PartRef::Streamed(s) => s,
     };
     let p = blob.parts.iter().find(|p| p.ai == s.ai && p.di == s.di).ok_or(Error::Corrupt("streamed part"))?;
+    stream_stored(tx, h, id, p, &s.dedup, f).map(|_| ())
+}
+
+/// Decodes a verified part `p` of commit `id` (header `h`, its thing's `dedup` secret) again and
+/// hands `f` its pieces, the skeleton first, then its pages in wire order
+/// (`osis_commit::stream_part`; joining the pieces is joining the whole, spec/crdt.md §8): the
+/// transaction is shared between the page source and `f`. A snapshot's frontiers and `Absorbed`.
+pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part, dedup: &osis_crypto::Secret32, f: &mut dyn FnMut(&mut Tx<'_>, Fragment) -> Result<()>) -> Result<Option<Gives>> {
     let cell = RefCell::new(tx);
     let mut failed = None;
-    let mut pages = SharedPages { tx: &cell, dedup: &s.dedup };
+    let mut pages = SharedPages { tx: &cell, dedup };
     let mut interner = osis_crdt::Interner::new();
-    let r = osis_commit::stream_part(h, id, p, &s.dedup, &mut interner, Some(&mut pages), &mut |piece| {
+    let r = osis_commit::stream_part(h, id, p, dedup, &mut interner, Some(&mut pages), &mut |piece| {
         // counted: tests read how many pieces streamed
         let _s = crate::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;
@@ -232,7 +232,8 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
     if let Some(e) = failed {
         return Err(e);
     }
-    r.map(|_| ()).map_err(|_| Error::Corrupt("a delta examined failed to decode again"))
+    let head = r.map_err(|_| Error::Corrupt("a verified delta failed to decode again"))?;
+    Ok(head.map(|x| (x.frontiers, x.absorbed.into_iter().collect())))
 }
 
 /// What the joins of a commit's parts, and the rebuilds after them, leave for the rest of apply.
@@ -382,11 +383,10 @@ pub(crate) struct Unmerge {
 }
 
 impl Unmerge {
-    /// From the held set, reading the valid snapshots' writes (`have`: fragments of some of them
-    /// already read, by commit) when a delta is invalid.
-    pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, have: &BTreeMap<CommitId, &Fragment>) -> Result<Unmerge> {
+    /// From the held set, reading the valid snapshots' writes when a delta is invalid.
+    pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
-        let vouched = validity::vouched(tx, tid, ak, &owned, have)?;
+        let vouched = validity::vouched(tx, tid, ak, &owned)?;
         Ok(Unmerge { owned, vouched })
     }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
@@ -396,7 +396,7 @@ impl Unmerge {
         if owned.is_empty() || !f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
             return Ok(Unmerge { owned: Vec::new(), vouched: BTreeSet::new() });
         }
-        Unmerge::of(tx, tid, ak, &BTreeMap::new())
+        Unmerge::of(tx, tid, ak)
     }
     pub(crate) fn is_empty(&self) -> bool {
         self.owned.is_empty()
@@ -1006,12 +1006,32 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
     Ok(changed)
 }
 
+/// `unmerge_fell` of the held deltas `parts` that turned invalid on `(tid, ak)`: a piece of
+/// their bodies at a time (the pages holding its dots, then dropped), or the whole state when
+/// one is not held whole (dropped, partly received).
+pub(crate) fn unmerge_fallen(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, parts: &[(CommitId, usize)]) -> Result<()> {
+    let mut whole = parts.is_empty();
+    for (id, ai) in parts {
+        let n = tx.core.ix.commits.get(id).filter(|m| !m.dropped.contains_key(ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
+        let got = super::each_held_piece(tx, id, *ai, &mut |tx, f| {
+            unmerge_part(tx, tid, ak, Some(f))?;
+            tx.evict_pages(tid, ak);
+            Ok(())
+        })?;
+        whole |= got.is_empty() || n != Some(got.len());
+    }
+    if whole {
+        unmerge_part(tx, tid, ak, None)?;
+    }
+    unmerged_as_rebuilt(tx, tid, ak)
+}
+
 /// `unmerge_fell` without its check: an invalid delta streamed a piece at a time un-merges after
 /// each piece's join, and only once its last piece joined is the state what a rebuild gives
 /// (the rebuild drops at once every write under the delta's creations, those in pages a later
 /// piece loads too).
 fn unmerge_part(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<bool> {
-    let un = Unmerge::of(tx, tid, ak, &BTreeMap::new())?;
+    let un = Unmerge::of(tx, tid, ak)?;
     let bad = |d: &osis_crdt::Dot| un.bad(d);
     tx.load_lazy(tid, ak)?;
     let k = (*tid, ak.clone());
@@ -1105,60 +1125,58 @@ fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
 /// held bodies give them again.
 fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
-    // bodies (with the delta owning each, by commit and aspect), and of each valid snapshot its
-    // fragment (what it vouches for); invalid snapshots apart (they join nothing)
-    let mut bodies: Vec<(Fragment, Option<CommitId>, Option<CommitId>)> = Vec::new();
-    let mut invalid: Vec<(CommitId, Fragment)> = Vec::new();
+    // the bodies that join (with their aspect index), the held snapshots (valid or not: an
+    // invalid one joins nothing, spec/permissions.md §5.2) and the held deltas
+    let mut bodies: Vec<(CommitId, usize)> = Vec::new();
+    let mut snaps: Vec<(CommitId, bool)> = Vec::new();
     let mut deltas: Vec<(CommitId, usize, Header)> = Vec::new();
     for (_, c) in held {
-        let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-        let Some(ai) = m.aspect(tid, ak) else { continue };
-        // an invalid snapshot's body joins nothing (spec/permissions.md §5.2)
-        let snap_invalid = m.header.kind.is_compaction() && !m.valid_at(ai);
+        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)) else { continue };
+        // stored: a commit being applied joins once stored
+        if !super::stores_part(tx, &c, ai)? {
+            continue;
+        }
+        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
         // nor does a void import's (spec/permissions.md §7)
         if m.header.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(&c) {
             continue;
         }
-        let mut any = false;
-        for d in super::held_parts(tx, &c, ai)? {
-            let (f, fr) = fragment(d);
-            if fr.is_some() && snap_invalid {
-                invalid.push((c, f));
+        if m.header.kind.is_compaction() {
+            snaps.push((c, m.valid_at(ai)));
+            if !m.valid_at(ai) {
                 continue;
             }
-            any |= fr.is_none();
-            bodies.push((f, fr.is_some().then_some(c), fr.is_none().then_some(c)));
-        }
-        if any {
+        } else {
             deltas.push((c, ai, (*m.header).clone()));
         }
+        bodies.push((c, ai));
     }
-    let un = {
-        let have: BTreeMap<CommitId, &Fragment> = bodies.iter().filter_map(|(f, s, _)| s.map(|s| (s, f))).collect();
-        Unmerge::of(tx, tid, ak, &have)?
-    };
+    let un = Unmerge::of(tx, tid, ak)?;
     // misstated writes: per held delta, against every held snapshot
     let mut strip_state: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
     let mut strip_own: BTreeMap<CommitId, BTreeSet<osis_crdt::Dot>> = BTreeMap::new();
     let mut misstating = BTreeSet::new();
     if !deltas.is_empty() {
-        let mut snaps: Vec<(CommitId, bool)> = bodies.iter().filter_map(|(_, s, _)| s.map(|s| (s, true))).collect();
-        snaps.extend(invalid.iter().map(|(s, _)| (*s, false)));
+        let mut ixs = Vec::new();
         for (s, valid) in snaps {
-            let f = bodies.iter().find(|b| b.1 == Some(s)).map(|b| &b.0).or_else(|| invalid.iter().find(|x| x.0 == s).map(|x| &x.1));
-            let Some(ix) = validity::copy_index(tx, &s, tid, ak, f)? else { continue };
-            for (c, ai, h) in &deltas {
-                let own: Vec<&Fragment> = bodies.iter().filter(|b| b.2 == Some(*c)).map(|b| &b.0).collect();
-                let dots = validity::misstated_in(&ix, h, c, *ai, &own);
+            if let Some(ix) = validity::copy_index(tx, &s, tid, ak)? {
+                ixs.push((s, valid, ix));
+            }
+        }
+        for (c, ai, h) in &deltas {
+            // the delta's writes, indexed once it is compared
+            let mut own = None;
+            for (s, valid, ix) in &ixs {
+                let dots = validity::misstated_in(tx, ix, h, c, *ai, &mut own)?;
                 if dots.is_empty() {
                     continue;
                 }
                 strip_state.extend(dots.iter().cloned());
-                if valid {
+                if *valid {
                     // reported unless only value-less: an honest snapshot taken after a purge
                     // this node has not seen yet (its copy governs all the same)
-                    if !ix.misstated(&validity::owned_ranges(h, c, *ai), &own, true).is_empty() {
-                        misstating.insert(s);
+                    if !ix.misstated(&validity::owned_ranges(h, c, *ai), validity::held_copies(tx, c, *ai, &mut own)?, true).is_empty() {
+                        misstating.insert(*s);
                     }
                     strip_own.entry(*c).or_default().extend(dots);
                 }
@@ -1177,16 +1195,23 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
             c.strip_copies(&|d| gone.iter().any(|o| o.owns(d)));
         }
     }
-    for (f, _, c) in bodies.iter_mut() {
-        if let Some(dots) = c.and_then(|c| strip_own.get(&c)) {
-            f.strip_forged(&|d| dots.contains(d));
-        }
-    }
     let mut st = Fragment::default();
     let mut ch = Changes::new();
-    for mut b in kept.into_iter().chain(bodies.into_iter().map(|b| b.0)) {
+    for mut b in kept {
         b.remove_dots(&|d| un.bad(d));
         st.join_into(b, None, &mut ch);
+    }
+    // the bodies a piece at a time
+    for (c, ai) in bodies {
+        let own = strip_own.get(&c);
+        super::each_held_piece(tx, &c, ai, &mut |_, mut f| {
+            if let Some(dots) = own {
+                f.strip_forged(&|d| dots.contains(d));
+            }
+            f.remove_dots(&|d| un.bad(d));
+            st.join_into(f, None, &mut ch);
+            Ok(())
+        })?;
     }
     strip_valueless(tx.core, tid, ak, &mut st);
     Ok(((!st.is_empty()).then_some(st), misstating))

@@ -299,7 +299,7 @@ fn forged_copies_differ_spec_perm_5_2() {
     // misstatement (a valid snapshot against a held delta): a value-less copy only where the
     // delta expires
     let ranges = [(x.clone(), 0, 10)];
-    let lax = |f: &Fragment, l: bool| f.copy_index().misstated(&ranges, &[&delta], l);
+    let lax = |f: &Fragment, l: bool| f.copy_index().misstated(&ranges, &crate::CopySet::of(&[&delta]), l);
     assert!(lax(&state, false).is_empty(), "honest");
     assert!(lax(&vl, true).is_empty(), "value-less, expiring");
     assert!(!lax(&vl, false).is_empty(), "value-less, not expiring");

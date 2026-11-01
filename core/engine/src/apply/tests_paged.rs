@@ -947,3 +947,45 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
     });
     assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
 }
+
+/// Retention reads a paged body a piece at a time (issues/durable-decode-bound.md step 4): node
+/// 3 holds a fill of a map in a map entry (its creation in the skeleton, its writes in pages)
+/// and node 0's snapshot of it, drops the fill as covered, then gets node 0's purge of it: the
+/// snapshot carrying purged values drops, and the fill's residue comes from the coverer's
+/// pieces. By pieces and whole alike, the streamed readers checked against the whole ones on
+/// the way (`retention::oracle`: `covered`, `body_live`, the residue).
+#[test]
+fn covered_paged_fill_purged_spec_commits_5() {
+    let a = aks()[1].clone();
+    let mut seen = Vec::new();
+    for whole in [false, true] {
+        let mut w = world(44, whole);
+        let t = w.t;
+        let mut m = Mutation::new();
+        m.set(t, &a, &fill_value(1, &mut Rng(75), 0)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let snap = w.lp.peers[0].engine.snapshot(&t, &a).unwrap().unwrap();
+        let pks = packages(&mut w, 0, &[fill, snap]);
+        let mut m = Mutation::new();
+        m.set(t, &aks()[3], &Value::Int(9)).unwrap();
+        m.purge(osis_commit::PurgeItem::Commit { commit: fill, tid: t, ak: a.clone() });
+        let purge = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let purge = packages(&mut w, 0, &[purge]);
+        for pk in pks.iter().chain(&purge) {
+            if pk.id == purge[0].id {
+                let e = &mut w.lp.peers[3].engine;
+                w.log.push(format!("covered {:?} min {:?}", e.covered(&snap, &fill, &t, &a), e.body_min_ts(&snap, &t, &a)));
+                w.log.push(format!("drop {:?}", e.drop_body(&fill, &t, &a)));
+            }
+            let out = w.lp.deliver(3, pk);
+            w.log.push(format!("{:?}: {out:?}", pk.id));
+        }
+        let mut v = w.seen(true, true);
+        v.extend(w.log.clone());
+        seen.push(v);
+    }
+    if let Some((x, y)) = seen[0].iter().zip(&seen[1]).find(|(x, y)| x != y) {
+        panic!("page-by-page differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
+    }
+    assert!(seen[0].iter().any(|l| l.starts_with("covered Ok(Some(true))")) && seen[0].iter().any(|l| l == "drop Ok(())"), "the snapshot covers the fill: {:?}", &seen[0][seen[0].len() - 5..]);
+}

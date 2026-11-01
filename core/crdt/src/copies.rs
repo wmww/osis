@@ -211,11 +211,9 @@ impl Fragment {
 
     /// Its writes by owner dot, for `CopyIndex::outside` against many deltas in turn.
     pub fn copy_index(&self) -> CopyIndex {
-        let mut m: BTreeMap<Dot, Vec<(Key, Option<Val>)>> = BTreeMap::new();
-        for (k, v) in self.copies(&|_| true) {
-            m.entry(k.2.dot.clone()).or_default().push((k, v));
-        }
-        CopyIndex(m)
+        let mut ix = CopyIndex::default();
+        ix.add(self);
+        ix
     }
 
     /// Removes every write whose owner dot `pred` accepts, element and entry creations with
@@ -283,9 +281,19 @@ pub struct CopySet {
 
 impl CopySet {
     pub fn of(fs: &[&Fragment]) -> CopySet {
-        let copies: BTreeMap<Key, Option<Val>> = fs.iter().flat_map(|o| o.copies(&|_| true)).collect();
-        let dots = copies.keys().map(|k| k.2.dot.clone()).collect();
-        CopySet { copies, dots }
+        let mut out = CopySet::default();
+        for f in fs {
+            out.add(f);
+        }
+        out
+    }
+    /// Adds the writes of `f` (a piece of a streamed fragment: the set of a fragment is the
+    /// union of its pieces').
+    pub fn add(&mut self, f: &Fragment) {
+        for (k, v) in f.copies(&|_| true) {
+            self.dots.insert(k.2.dot.clone());
+            self.copies.insert(k, v);
+        }
     }
 }
 
@@ -294,6 +302,17 @@ impl CopySet {
 pub struct CopyIndex(BTreeMap<Dot, Vec<(Key, Option<Val>)>>);
 
 impl CopyIndex {
+    /// Adds the writes of `f` (a piece of a streamed fragment: the index of a fragment is the
+    /// union of its pieces'; a write two pieces repeat, such as the creation of the entry a
+    /// page lies under, counts once).
+    pub fn add(&mut self, f: &Fragment) {
+        for (k, v) in f.copies(&|_| true) {
+            let ws = self.0.entry(k.2.dot.clone()).or_default();
+            if !ws.iter().any(|w| w.0 == k && w.1 == v) {
+                ws.push((k, v));
+            }
+        }
+    }
     /// Writes indexed.
     pub fn len(&self) -> usize {
         self.0.values().map(Vec::len).sum()
@@ -309,30 +328,27 @@ impl CopyIndex {
     pub fn dots(&self) -> impl Iterator<Item = &Dot> {
         self.0.keys()
     }
-    /// The dots in `ranges` whose writes here a held delta `own` holds otherwise
+    /// Whether a write is indexed under a dot in `ranges` (source, counters `lo..hi`): else
+    /// `misstated` and `outside` find nothing, whatever they compare with.
+    pub fn any_in(&self, ranges: &[(Source, u64, u64)]) -> bool {
+        ranges.iter().any(|(src, lo, hi)| self.dots_in(src, *lo, *hi).next().is_some())
+    }
+    /// The dots in `ranges` whose writes here a held delta (its writes `own`) holds otherwise
     /// (`Fragment::misstated`; `lax`: the delta expires, so a value-less copy matches).
-    pub fn misstated(&self, ranges: &[(Source, u64, u64)], own: &[&Fragment], lax: bool) -> BTreeSet<Dot> {
-        let mut out = BTreeSet::new();
-        let mut theirs: Option<BTreeMap<Key, Option<Val>>> = None;
-        for (src, lo, hi) in ranges {
-            for (d, ws) in self.0.range(Dot::new(src.clone(), *lo)..Dot::new(src.clone(), *hi)) {
-                let t = theirs.get_or_insert_with(|| own.iter().flat_map(|o| o.copies(&|_| true)).collect());
-                if ws.iter().any(|(k, v)| !t.get(k).is_some_and(|x| agrees(&k.1, v, x, lax))) {
-                    out.insert(d.clone());
-                }
-            }
-        }
-        out
+    pub fn misstated(&self, ranges: &[(Source, u64, u64)], own: &CopySet, lax: bool) -> BTreeSet<Dot> {
+        self.failing(ranges, &|k, v| own.copies.get(k).is_some_and(|x| agrees(&k.1, v, x, lax)))
     }
     /// The dots in `ranges` (source, counters `lo..hi`) whose writes here are not all in
     /// `others` as `Fragment::copies_within` compares them.
-    pub fn outside(&self, ranges: &[(Source, u64, u64)], others: &[&Fragment]) -> BTreeSet<Dot> {
+    pub fn outside(&self, ranges: &[(Source, u64, u64)], others: &CopySet) -> BTreeSet<Dot> {
+        self.failing(ranges, &|k, v| others.copies.get(k).is_some_and(|x| v.is_none() || x.is_none() || v == x))
+    }
+    /// The dots in `ranges` with a write here that `ok` refuses.
+    fn failing(&self, ranges: &[(Source, u64, u64)], ok: &dyn Fn(&Key, &Option<Val>) -> bool) -> BTreeSet<Dot> {
         let mut out = BTreeSet::new();
-        let mut theirs: Option<BTreeMap<Key, Option<Val>>> = None;
         for (src, lo, hi) in ranges {
             for (d, ws) in self.0.range(Dot::new(src.clone(), *lo)..Dot::new(src.clone(), *hi)) {
-                let t = theirs.get_or_insert_with(|| others.iter().flat_map(|o| o.copies(&|_| true)).collect());
-                if ws.iter().any(|(k, v)| !t.get(k).is_some_and(|x| v.is_none() || x.is_none() || v == x)) {
+                if ws.iter().any(|(k, v)| !ok(k, v)) {
                     out.insert(d.clone());
                 }
             }

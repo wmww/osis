@@ -23,6 +23,8 @@ use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod deaths;
+#[cfg(test)]
+mod oracle;
 pub(crate) mod forget;
 
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
@@ -117,12 +119,17 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
 /// Drops held snapshot part `(s, sai)` if it carries a value of a write of `owned` (purged,
 /// spec/commits.md §5).
 fn drop_carrying(tx: &mut Tx<'_>, s: &CommitId, sai: usize, owned: &[Owned]) -> Result<()> {
-    for f in crate::apply::held_fragments(tx, s, sai)? {
-        let mut g = f.clone();
-        g.strip(&|x| owned.iter().any(|o| o.owns(x)));
-        if g != f {
-            return drop_part(tx, s, sai);
+    let mut carries = false;
+    crate::apply::each_held_piece(tx, s, sai, &mut |_, f| {
+        if !carries {
+            let mut g = f.clone();
+            g.strip(&|x| owned.iter().any(|o| o.owns(x)));
+            carries = g != f;
         }
+        Ok(())
+    })?;
+    if carries {
+        return drop_part(tx, s, sai);
     }
     Ok(())
 }
@@ -255,13 +262,23 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
     // a covered one's coverers reach them
     let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
-    // the dropped deltas, to find what of the state holds copies of their writes
-    let bodies: Vec<Fragment> = crate::apply::held_fragments(tx, c, ai)?;
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
-    let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak, bodies.first())? } else { BTreeSet::new() };
+    let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
-    let intros = crate::apply::keys::intro_epochs(&m.header, ai, &bodies);
+    // a role-class body whole: what keys noted from it (`keys::intro_epochs`, `forget_dropped`)
+    let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
+    let intros = crate::apply::keys::intro_epochs(&m.header, ai, &role_bodies);
+    // what of the state holds copies of the dropped deltas' writes, shredded a piece at a time
+    // while the part is still stored (none held: the state alone)
+    let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
+        tx.shred_bodies(&a.tid, &a.ak, &[f])?;
+        tx.evict_pages(&a.tid, &a.ak);
+        Ok(())
+    })?;
+    if held.is_empty() {
+        tx.shred_bodies(&a.tid, &a.ak, &[])?;
+    }
     m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, intros });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
@@ -281,8 +298,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[k])?;
-    tx.shred_bodies(&a.tid, &a.ak, &bodies)?;
-    crate::apply::keys::forget_dropped(tx, &header, ai, &bodies)?;
+    crate::apply::keys::forget_dropped(tx, &header, ai, &role_bodies)?;
     // a valid snapshot dropped vouches no more for invalid deltas' writes it carried
     // (spec/permissions.md §5.2)
     if vouched && !crate::apply::invalid_of(tx.core, &a.tid, &a.ak).is_empty() && crate::apply::unmerge_fell(tx, &a.tid, &a.ak, None)? {
@@ -379,10 +395,15 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     if !owned.is_empty() {
         for s in snapshots_of(tx.core, tid, ak) {
             let Some(sai) = aspect_index(tx.core, &s, tid, ak) else { continue };
-            for d in crate::apply::held_parts(tx, &s, sai)? {
-                if let Decoded::Snapshot(sn) = d {
-                    crate::apply::validity::note_carried(tx.core, tid, ak, &s, &sn.fragment);
+            let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+            let held = crate::apply::each_held_piece(tx, &s, sai, &mut |tx, f| {
+                for (src, ctrs) in crate::apply::validity::carried_of(tx.core, tid, ak, &f) {
+                    carried.entry(src).or_default().extend(ctrs);
                 }
+                Ok(())
+            })?;
+            if !held.is_empty() {
+                crate::apply::validity::note_carried_of(tx.core, tid, ak, &s, carried);
             }
         }
     }
@@ -458,35 +479,47 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     }
     let enc = encode_owned(list);
     tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
-    // the delta's writes lie where it touched the state (a page of a paged state)
-    let mut bodies: Vec<Fragment> = crate::apply::held_fragments(tx, c, ai)?;
-    if bodies.is_empty() && m.dropped.get(&ai).is_some_and(|d| d.as_cover) {
+    // the delta's writes lie where it touched the state (a page of a paged state): per piece of
+    // its body, stripped there (stripping commutes with join, spec/crdt.md §4.7) and its residue
+    // joined
+    #[cfg(test)]
+    let whole = oracle::residue(tx, &m, c, ai, &o)?;
+    let mut residue: Option<Fragment> = None;
+    let mut strip = |tx: &mut Tx<'_>, f: Fragment| -> Result<()> {
+        let mut r = f.clone();
+        r.strip(&|d| o.owns(d));
+        residue.get_or_insert_default().join(r);
+        tx.strip_bodies(&a.tid, &a.ak, &[f], &o)?;
+        tx.evict_pages(&a.tid, &a.ak);
+        Ok(())
+    };
+    let held = crate::apply::each_held_piece(tx, c, ai, &mut strip)?;
+    if held.is_empty() && m.dropped.get(&ai).is_some_and(|d| d.as_cover) {
         // a covered body's live writes are in its coverers (a purge drops them next)
         for s in coverers(tx.core, c, ai) {
             let Some(sai) = held_part(tx.core, &s, &a.tid, &a.ak) else { continue };
             if !crate::apply::validity::snapshot_valid(tx.core, &s, &a.tid, &a.ak) {
                 continue;
             }
-            for mut f in crate::apply::held_fragments(tx, &s, sai)? {
+            crate::apply::each_held_piece(tx, &s, sai, &mut |tx, mut f| {
                 f.remove_writes(&|d| !o.owns(d));
-                bodies.push(f);
-            }
+                strip(tx, f)
+            })?;
         }
     }
     // its residue outlives the body: in the state a later write may supersede it, and when that
     // write is un-merged the residue must supersede again (`apply::atomic::rebuilt`); kept even
-    // empty, so a late copy is not taken again (`takes_late`)
-    if !bodies.is_empty() {
-        let mut residue = Fragment::default();
-        for b in &bodies {
-            residue.join(b.clone());
-        }
-        residue.strip(&|d| o.owns(d));
+    // empty, so a late copy is not taken again (`takes_late`). No body: the state alone.
+    #[cfg(test)]
+    assert_eq!(residue.as_ref().map(crate::engine::state::encode).transpose()?, whole.as_ref().map(crate::engine::state::encode).transpose()?, "make_valueless residue streamed vs whole");
+    if residue.is_none() {
+        tx.strip_bodies(&a.tid, &a.ak, &[], &o)?;
+    }
+    if let Some(residue) = residue {
         let memory = tx.txn.is_memory_aspect(&a.tid, &a.ak);
         let (key, enc) = (records::residue_key(&a.tid, &a.ak, c, ai), crate::engine::state::encode(&residue)?);
         tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::No)?))?;
     }
-    tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
     Ok(Some(k))
 }
 
@@ -563,14 +596,15 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
     for (c, r) in &snapshots {
         let Some(ai) = aspect_index(tx.core, c, tid, ak) else { continue };
         let mut carries = false;
-        for f in crate::apply::held_fragments(tx, c, ai)? {
+        crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
             for (d, _) in f.live_writes() {
                 if unknown.contains(&d) {
                     carries = true;
                     carried.insert(d);
                 }
             }
-        }
+            Ok(())
+        })?;
         if carries {
             out.push(*r);
         }
@@ -938,7 +972,12 @@ impl Engine {
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
         let live = self.run(|tx| match aspect_index(tx.core, &c, &tid, &ak) {
-            Some(ai) => live(tx, &c, ai).map(Some),
+            Some(ai) => {
+                let r = live(tx, &c, ai)?;
+                #[cfg(test)]
+                assert_eq!(r, oracle::live(tx, &c, ai)?, "live streamed vs whole");
+                Ok(Some(r))
+            }
             None => Ok(None),
         })?;
         // an unknown commit counts live, uncached (its apply may change nothing here)
@@ -955,7 +994,12 @@ impl Engine {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
             let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
-            Ok(crate::apply::held_fragments(tx, &c, ai)?.iter().flat_map(Fragment::writes).filter_map(|(_, t)| t).min())
+            let mut min = None;
+            crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+                min = f.writes().into_iter().filter_map(|(_, t)| t).chain(min).min();
+                Ok(())
+            })?;
+            Ok(min)
         })
     }
 
@@ -1059,7 +1103,15 @@ impl Engine {
     /// `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
-        self.run(|tx| covered(tx, &s, &c, &tid, &ak))
+        self.run(|tx| {
+            let r = covered(tx, &s, &c, &tid, &ak)?;
+            #[cfg(test)]
+            {
+                let w = oracle::covered(tx, &s, &c, &tid, &ak)?;
+                assert_eq!(r, w, "covered streamed vs whole");
+            }
+            Ok(r)
+        })
     }
 }
 
@@ -1069,7 +1121,11 @@ fn by_id(kind: Kind, form: Form) -> bool {
     kind == Kind::Import || (form == Form::Commit && kind.has_own_writes())
 }
 
-/// `Engine::covered` in `tx`.
+/// `Engine::covered` in `tx`: the body whole, the snapshot a piece at a time (its part at the
+/// body's positions, `Fragment::part_at`, and each piece's copies of the body's writes against
+/// the body's part at the piece's positions: a copy lies where its write does). Cost: the body
+/// and the snapshot's part at its positions, about twice the body; both whole only with a
+/// pull decoder walking them side by side (issues/durable-decode-bound.md).
 fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
@@ -1081,30 +1137,12 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
         return Ok(None);
     }
-    let parts = crate::apply::held_parts(tx, s, sai)?;
-    if let (Some(m), [Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(c), parts.as_slice()) {
-        let h = &m.header;
-        let by_frontier = h.form == Form::Node && h.kind.has_own_writes();
-        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| sn.frontiers.nodes.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
-        if unseen || (by_id(h.kind, h.form) && !sn.absorbed.contains_key(c)) {
-            return Ok(Some(false));
-        }
-    }
-    let held = crate::apply::held_parts(tx, c, cai)?;
-    // a snapshot covers another only if its frontiers hold the other's too: otherwise a
-    // holder of it alone does not count what the other's frontier gave as received
-    if let ([osis_commit::Decoded::Snapshot(sn)], [osis_commit::Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-        && (other.frontiers.sources().any(|(s, f)| sn.frontiers.of(&s) < f) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
-    {
-        return Ok(Some(false));
-    }
-    let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
-    let [snap] = snap.as_slice() else { return Ok(None) };
-    // a body this node holds no delta of joins nothing: covered
-    if held.is_empty() {
-        return Ok(Some(true));
-    }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let held = crate::apply::held_parts(tx, c, cai)?;
+    let other = match held.as_slice() {
+        [Decoded::Snapshot(o)] => Some((o.frontiers.clone(), o.absorbed.clone())),
+        _ => None,
+    };
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
     // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
@@ -1115,14 +1153,6 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
         for b in &mut body {
             b.strip_copies(&|d| crate::apply::validity::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
         }
-    }
-    let before = crate::engine::state::encode(snap)?;
-    let mut j = snap.clone();
-    for b in &body {
-        j.join(b.clone());
-    }
-    if crate::engine::state::encode(&j)? != before {
-        return Ok(Some(false));
     }
     // the snapshot's copies of the body's writes are the body's (a copy at another
     // value, `ts` or position, or under a dot the body owns but lacks, joins as
@@ -1135,9 +1165,48 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     };
     ranges.sort();
     ranges.dedup();
-    let body: Vec<&Fragment> = body.iter().collect();
-    let Some(ix) = crate::apply::validity::copy_index(tx, s, tid, ak, Some(snap))? else { return Ok(None) };
-    Ok(Some(ix.outside(&ranges, &body).is_empty()))
+    let held = !body.is_empty();
+    let mut joined = Fragment::default();
+    for b in body {
+        joined.join(b);
+    }
+    let mut part = Fragment::default();
+    let mut outside = false;
+    let gives = crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
+        // a copy in `p` is compared with the body's write at its position
+        outside = outside || !p.copy_index().outside(&ranges, &osis_crdt::CopySet::of(&[&joined.part_at(&p)])).is_empty();
+        part.join(p.part_at(&joined));
+        Ok(())
+    })?;
+    // the snapshot not held: nothing is established
+    let [g] = gives.as_slice() else { return Ok(None) };
+    if let Some((fr, abs)) = g {
+        let h = &m.header;
+        let by_frontier = h.form == Form::Node && h.kind.has_own_writes();
+        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| fr.nodes.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
+        if unseen || (by_id(h.kind, h.form) && !abs.iter().any(|x| x.0 == *c)) {
+            return Ok(Some(false));
+        }
+        // a snapshot covers another only if its frontiers hold the other's too: otherwise a
+        // holder of it alone does not count what the other's frontier gave as received
+        if let Some((ofr, oabs)) = &other
+            && (ofr.sources().any(|(s, f)| fr.of(&s) < f) || oabs.keys().any(|c| !abs.iter().any(|x| x.0 == *c)))
+        {
+            return Ok(Some(false));
+        }
+    }
+    // a body this node holds no delta of joins nothing: covered
+    if !held {
+        return Ok(Some(true));
+    }
+    // joining the body changes the snapshot's canonical bytes, judged on its part at the
+    // body's positions (the rest is left as it is)
+    let before = crate::engine::state::encode(&part)?;
+    part.join(joined);
+    if crate::engine::state::encode(&part)? != before {
+        return Ok(Some(false));
+    }
+    Ok(Some(!outside))
 }
 
 /// `Engine::body_live` of the body holding aspect `ai` of `c`, judged against the state in
@@ -1152,25 +1221,20 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     for x in holders {
         let Some(a) = h.aspects.get(x) else { continue };
         let Some(o) = Owned::of(&h, c, x) else { return Ok(true) };
-        // the pages holding the dots of every delta of the body (all pages when one is not
-        // held or not a delta)
-        tx.load_lazy(&a.tid, &a.ak)?;
-        let parts = crate::apply::held_parts(tx, c, x)?;
-        let mut touches = Vec::new();
-        for d in &parts {
-            match d {
-                osis_commit::Decoded::Delta(d) => touches.push(crate::engine::pages::touch_of(&d.fragment, tx.core.pages.get(&(a.tid, a.ak.clone())))),
-                osis_commit::Decoded::Snapshot(_) => touches.push(None),
+        let owns = |st: &Fragment| st.holds_owned_write(&|src, lo, hi| o.owns_range(src, lo, hi));
+        // per piece of each delta of the body, the state's part it meets (all of it when none
+        // is held)
+        let mut live = false;
+        let held = crate::apply::each_held_piece(tx, c, x, &mut |tx, f| {
+            if !live {
+                live = tx.state_at(&a.tid, &a.ak, &f)?.as_ref().is_some_and(owns);
             }
+            Ok(())
+        })?;
+        if held.is_empty() {
+            live = tx.state(&a.tid, &a.ak)?.is_some_and(owns);
         }
-        if touches.is_empty() {
-            touches.push(None);
-        }
-        for t in &touches {
-            tx.ensure_touch(&a.tid, &a.ak, t)?;
-        }
-        let Some(Some(st)) = tx.core.states.get(&(a.tid, a.ak.clone())) else { continue };
-        if st.holds_owned_write(&|src, lo, hi| o.owns_range(src, lo, hi)) {
+        if live {
             return Ok(true);
         }
     }
@@ -1179,7 +1243,8 @@ fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 
 /// Whether a compaction snapshot carries a write still live in this node's state (`body_live`;
 /// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
-/// write it carries (by dot) is there. Dropped, which writes it carried went with the body
+/// write it carries (by dot) is there, judged a piece of it at a time against the state's part
+/// it meets. Dropped, which writes it carried went with the body
 /// (spec/commits.md §5; kept frontiers, `Dropped::gives`, reach dead writes too), so whether it
 /// was live then is kept (`Dropped::live`): dropped dead it stays dead (undo and redo write
 /// new dots; a write a validity flip brings back comes from a held body,
@@ -1193,25 +1258,25 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     let dropped: BTreeMap<usize, bool> = tx.core.ix.commits.get(c).map(|m| m.dropped.iter().map(|(ai, d)| (*ai, d.live)).collect()).unwrap_or_default();
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
-        let parts = crate::apply::held_fragments(tx, c, *x)?;
-        if parts.is_empty() && dropped.get(x) == Some(&false) {
+        // by dot: bare anchors and other writes without a `ts` count too
+        let mut live = false;
+        let held = crate::apply::each_held_piece(tx, c, *x, &mut |tx, f| {
+            let carried: BTreeSet<osis_crdt::Dot> = f.live_writes().into_iter().map(|(d, _)| d).collect();
+            if !live && !carried.is_empty() {
+                live = tx.state_at(&a.tid, &a.ak, &f)?.is_some_and(|st| st.live_writes().into_iter().any(|(d, _)| carried.contains(&d)));
+            }
+            Ok(())
+        })?;
+        if live {
+            return Ok(true);
+        }
+        if !held.is_empty() || dropped.get(x) == Some(&false) {
             continue;
         }
         let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
-        let writes = st.live_writes();
-        if parts.is_empty() {
-            let tsless = dropped.contains_key(x);
-            if writes.iter().any(|(_, t)| t.map_or(tsless, |t| t <= h.ts)) {
-                return Ok(true);
-            }
-            continue;
-        }
-        // by dot: bare anchors and other writes without a `ts` count too
-        let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
-        for f in parts {
-            if f.live_writes().into_iter().any(|(d, _)| live.contains(&d)) {
-                return Ok(true);
-            }
+        let tsless = dropped.contains_key(x);
+        if st.live_writes().iter().any(|(_, t)| t.map_or(tsless, |t| t <= h.ts)) {
+            return Ok(true);
         }
     }
     Ok(false)

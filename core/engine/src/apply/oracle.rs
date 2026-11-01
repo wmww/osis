@@ -52,7 +52,8 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
 
 fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: Gives, valid: bool) -> bool {
     note_snapshot(tx.core, &a.tid, &a.ak, ts, id, fr);
-    validity::note_carried(tx.core, &a.tid, &a.ak, id, f);
+    let c = validity::carried_of(tx.core, &a.tid, &a.ak, f);
+    validity::note_carried_of(tx.core, &a.tid, &a.ak, id, c);
     if !valid {
         return false;
     }
