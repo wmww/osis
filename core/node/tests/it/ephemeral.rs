@@ -2171,6 +2171,70 @@ fn random_churn_converges_large() {
     crate::common::run_seeds_noted(name, &seeds, s.overridden, "OSIS_EPH_THREADS", replay, random_churn_run);
 }
 
+// spec/sync.md §6 (a writer stamps every ephemeral entry it uploads; held at a host only as
+// learned on the current connection; random churn seed 154 shrunk): a restarted author's
+// commit, invalid while it is demoted, is fetched back by the holders to wait apart; the hosts
+// restart and lose it, the admin too; once the author is promoted the holders hold it valid
+// again under a stamp of a write key from before, and must put it back (not marked present at
+// the host it waited on, stamped under the current key), so a node offline all along and
+// restarted gets it at the end
+#[test]
+fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let nodes: Vec<usize> = (0..4).map(|i| net.node(1 + i, &hosts)).collect();
+    let (a, b, d) = (nodes[0], nodes[1], nodes[3]);
+    let g = net.group(a, &[(b, Role::Write), (nodes[2], Role::Write), (d, Role::Write)], &hosts);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(w, &eph(FLAG), &s("kept")).unwrap();
+    net.engine(b).write(m).unwrap();
+    net.feed(b, Event::Local);
+    net.run();
+    assert_eq!(net.eph_read(d, w, FLAG), Some(s("kept")));
+    // the author holds it as an earlier session's commit
+    net.restart(b, 50);
+    net.set_online(d, false);
+    // from here every node reaches host 0 only, where the holders wait on it
+    for n in &nodes {
+        net.blocked.insert((*n, hosts[1]));
+        net.drop_link(*n, hosts[1]);
+    }
+    net.advance(15_000);
+    let tb = net.tid(b);
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None };
+    let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(a).demote(&g, &demote).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(a, w, FLAG), None, "invalid while its author is demoted");
+    for h in &hosts {
+        net.restart_host(*h);
+    }
+    // the admin forgets it: only the waiting holders can put it back
+    net.restart(a, 52);
+    net.advance(15_000);
+    let done = net.engine(a).grant(&g, &tb, &edge(Role::Write)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(nodes[2], w, FLAG), Some(s("kept")), "valid again");
+    // memory lost: only the hosts can give it back
+    net.restart(d, 51);
+    net.set_online(d, true);
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(d, w, FLAG), Some(s("kept")), "back at the hosts");
+}
+
 // the harness: a node restarted while its host's Hello is still on the way gets nothing of
 // the old connection on the new one of the same number (`random_window_inflight_large` seed
 // 3300065: the stale Hello's challenge made every Open there refused, so the restarted node never
