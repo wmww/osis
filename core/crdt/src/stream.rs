@@ -11,7 +11,7 @@
 //! counter). Memory: the skeleton, one decoded page, its encoding, and trackers sized by the
 //! input (the tables, the leaf links, a writer's claimed counters).
 
-use crate::codec::{absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, link_groups, links, nonce_of, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, link_groups, links, nonce, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -103,7 +103,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
         Some((fr, ab)) => snapshot_tail(&dec, fr, ab)?,
         None => Default::default(),
     };
-    let nonce = nonce_of(n)?;
+    let nonce = nonce(n)?;
 
     // the root with the input's tables, streamed positions as written
     let mut enc = dec.checker(cx, found.iter().map(|(p, d)| (p.clone(), d.top.clone())).collect());

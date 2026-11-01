@@ -341,6 +341,81 @@ fn stream_seams_spec_8() {
 }
 
 
+/// A page's items: an array's elements, or a field map's entries as pairs.
+fn page_items(b: &[u8]) -> Option<(bool, Vec<osis_base::Value>)> {
+    use osis_base::Value as V;
+    match osis_base::decode(b, &osis_base::Limits::DEFAULT).ok()? {
+        V::List(a) if !a.iter().any(|x| matches!(x, V::Link(_))) => Some((false, a)),
+        V::Map(m) => Some((true, m.into_iter().map(|(k, v)| V::List(vec![k, v])).collect())),
+        _ => None,
+    }
+}
+
+fn page_bytes(map: bool, items: Vec<osis_base::Value>) -> Vec<u8> {
+    use osis_base::Value as V;
+    if !map {
+        return osis_base::encode(&V::List(items));
+    }
+    let pairs = items.into_iter().filter_map(|x| match x {
+        V::List(mut kv) if kv.len() == 2 => {
+            let v = kv.pop()?;
+            Some((kv.pop()?, v))
+        }
+        _ => None,
+    });
+    osis_base::encode(&V::Map(pairs.collect()))
+}
+
+/// §8 seams: leaf pages re-cut at random (items moved across a seam either way, copied across
+/// it, a page emptied, two pages' contents swapped, a leaf turned into a link page): both
+/// decoders decide alike.
+#[test]
+fn stream_recut_pages_spec_8() {
+    use osis_base::Value as V;
+    let mut n = (0, 0);
+    for seed in 0..24u64 {
+        let mut r = crate::testutil::rng(seed ^ 0x5ea3);
+        let params = if seed % 2 == 0 { TINY } else { SMALL };
+        for i in inputs(seed, &types(seed), Some(params)).0 {
+            let Some(p) = &i.pages else { continue };
+            if p.pages.len() < 2 {
+                continue;
+            }
+            for _ in 0..12 {
+                let mut q = p.clone();
+                let k = 1 + r.below(q.pages.len() - 1);
+                let (Some((ma, mut a)), Some((mb, mut b))) = (page_items(&q.pages[k - 1]), page_items(&q.pages[k])) else { continue };
+                match r.below(6) {
+                    0 if !b.is_empty() => {
+                        let t = 1 + r.below(b.len());
+                        a.extend(b.drain(..t));
+                    }
+                    1 if !a.is_empty() => {
+                        let t = 1 + r.below(a.len());
+                        let tail = a.split_off(a.len() - t);
+                        b.splice(0..0, tail);
+                    }
+                    2 if !a.is_empty() => b.insert(0, a[a.len() - 1].clone()),
+                    3 => b.clear(),
+                    4 => std::mem::swap(&mut a, &mut b),
+                    _ => {
+                        let l = Link { hash: osis_base::hash::hash(&q.pages[k]), blob: BlobId([0; 32]), suite: 1, key: [0; 32] };
+                        q.pages[k - 1] = osis_base::encode(&V::List(vec![V::Link(l)]));
+                        let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
+                        if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
+                        continue;
+                    }
+                }
+                q.pages[k - 1] = page_bytes(ma, a);
+                q.pages[k] = page_bytes(mb, b);
+                let m = Input { root: i.root.clone(), pages: Some(q), cx: i.cx.clone(), snapshot: i.snapshot };
+                if m.agree().unwrap() { n.0 += 1 } else { n.1 += 1 }
+            }
+        }
+    }
+    assert!(n.1 > 100, "accepted, rejected {n:?}");
+}
+
 /// §3.3 rule 1: a `Commits` entry no stamp uses is refused, whatever its `base` (the check's
 /// "none seen" mark, `u64::MAX`, lies above every counter a `Value` holds).
 #[test]

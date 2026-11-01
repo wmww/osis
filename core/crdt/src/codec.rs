@@ -699,7 +699,7 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
     })
 }
 
-fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
+pub(crate) fn nonce(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
     v.as_array().ok_or(Error::Malformed("nonce"))
 }
 
@@ -793,10 +793,6 @@ pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Fronti
 /// The absorbed table as written (§8).
 pub(crate) fn absorbed_value(absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>) -> Value {
     Value::List(absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect())
-}
-
-pub(crate) fn nonce_of(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
-    nonce(v)
 }
 
 /// The whole-delta decoder before streaming: decodes every page into one fragment, then
