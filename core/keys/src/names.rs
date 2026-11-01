@@ -1,4 +1,4 @@
-//! A rotation's names (spec/crypto.md §4): the departures from the actor and the actors below it
+//! A rotation's names (spec/crypto.md §4): the departures from the actor and the things below it
 //! its rotator held, read from its own role timeline and carried in every history box the
 //! rotation writes. An epoch
 //! whose secret a node holds is established there only once some history entry of it has its

@@ -2561,6 +2561,67 @@ fn repro_later_admin_path_forgery_meets_keyset_name_spec_crypto_4() {
     assert!(got.read.reading_secret(&e).is_none(), "D opens e through Y's rotation");
 }
 
+// spec/crypto.md §4 (names of departures from every thing below, owners included, secrets of
+// their own or not): D (2) is admin of P; P owns plain thing T (no secrets of its own), which owns
+// X (secrets of its own, reads G). P's owner removes D (R_P). A (0) rotates G to e; D's admin
+// path into X runs through T, so R_P is named. Y (3), lacking R_P, holds D's forged keyset of X
+// valid (listing X's boxed epoch), but e is not established there and Y's rotation of G hands D
+// nothing.
+#[test]
+fn keyset_name_owner_chain_through_plain_thing_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_993, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let p = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&p, &tids[2], &edge(Role::Admin)).unwrap();
+    let mut m = Mutation::new();
+    let t = lp.peers[1].engine.new_thing(&mut m, p);
+    lp.peers[1].commit(m).unwrap();
+    let mut m = Mutation::new();
+    let x = lp.peers[1].engine.new_thing(&mut m, t);
+    lp.peers[1].commit(m).unwrap();
+    lp.peers[1].engine.give_own_secrets(&x).unwrap();
+    assert!(!lp.peers[1].engine.core.has_own_secrets(&t));
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.demote(&p, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let _ = lp.peers[1].engine.ensure_rotated(&p);
+    let _ = lp.peers[1].engine.ensure_rotated(&x);
+    let r_p: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    let x_s = lp.peers[1].engine.epochs(&x).unwrap().read.newest_held().unwrap().0;
+    lp.sync(1, 0).unwrap();
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    let s_d = osis_crypto::Secret32::from_bytes([78; 32]);
+    let x_d = osis_crypto::Epoch::derive(&x, Role::Read, x_s.n() + 1, &s_d).unwrap();
+    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([x_s]));
+    let mut mu = Mutation::new();
+    mu.op(x, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
+    mu.unchecked();
+    lp.peers[2].engine.core.skip_writer_rules = true;
+    lp.peers[2].commit(mu).unwrap().unwrap();
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    all.extend(lp.packages(2).unwrap());
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(lp.peers[3].engine.core.ix.keyset_epochs.get(&x).is_some_and(|s| s.contains(&(Role::Read, x_d))), "D's keyset valid at Y");
+    assert!(!lp.peers[3].engine.epochs(&g).unwrap().read.is_established(&e), "e established at Y without R_P");
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let mut d_x = osis_keys::ActorEpochs::default();
+    d_x.read.set_secret(x_d, s_d);
+    d_x.read.set_established(x_d, osis_keys::Provenance::Derived);
+    let state = lp.peers[3].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    let mut got = osis_keys::ActorEpochs::default();
+    osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &d_x }, &mut got, None).unwrap();
+    assert!(got.read.reading_secret(&e).is_none(), "D opens e through Y's rotation");
+}
+
 // spec/crypto.md §4 (covers rule; TLA `MC_keyset_forge_write`): X (peer 1's) has admin D (2) and
 // reads G (owner A = 0). X's owner removes D (R_P) and rotates X again (K2); A gets K2, not R_P,
 // and rotates G to e1 boxing X at K2. D forges X's keyset X_d listing K2; A, still lacking R_P,
