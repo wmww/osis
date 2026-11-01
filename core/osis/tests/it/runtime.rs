@@ -574,3 +574,40 @@ fn tokio_runtime_close_then_shutdown_no_timer_panic() {
     std::thread::sleep(Duration::from_millis(200));
     assert_eq!(shutdown_panics("tk-close"), 0);
 }
+
+// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting (a dedicated host device): a
+// device paired to Alice's person hosts under `own` on the handle's driver (the person set
+// before the driver starts), the only host either device knows: her home, a group she makes
+// afterwards and a link to it all reach it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn own_host_device_in_process_spec_data_model_9() {
+    let net = osis_transport::Net::new(6);
+    let alice = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let j = Osis::pair(cfg(2, vec![], Transport::InProcess(net.endpoint("h"))), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(j.request()).unwrap();
+    let dev = j.finish(&reply).unwrap();
+    assert_eq!(dev.me(), alice.me());
+    dev.set_hosting(Some(osis::Hosting { listen: vec!["mem://h".into()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
+    let ha = tokio::time::timeout(GUARD, async {
+        loop {
+            if let Some(a) = dev.host_address().unwrap() {
+                return a;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    dev.add_host(&ha).unwrap();
+    alice.add_host(&ha).unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
+
+    let mut w = alice.write();
+    let g = w.create_in(alice.me(), &[alice.home()]).unwrap();
+    w.make_group(g).unwrap();
+    w.commit().unwrap();
+    alice.sync(g, &[]).unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
+    alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
+    tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
+}

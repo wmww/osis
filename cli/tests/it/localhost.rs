@@ -48,13 +48,14 @@ fn field<'a>(json: &'a str, key: &str) -> &'a str {
 }
 
 /// Pairs `new` (an empty store) to the person of `old`: the offer and request/reply lines are
-/// carried between the two processes, as a person would by QR code.
-fn pair(old: &Path, new: &Path, host: &str) {
+/// carried between the two processes, as a person would by QR code. `host`: the new store's.
+fn pair(old: &Path, new: &Path, host: Option<&str>) {
     let mut offer = Command::new(OSIS).arg("-s").arg(old).args(["--timeout", "60s", "pair", "offer"]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut offer_out = BufReader::new(offer.stdout.take().unwrap());
     let mut line = String::new();
     offer_out.read_line(&mut line).unwrap();
-    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join", "--host", host, line.trim()]).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+    let host = host.map(|h| vec!["--host", h]).unwrap_or_default();
+    let mut join = Command::new(OSIS).arg("-s").arg(new).args(["--timeout", "60s", "pair", "join"]).args(host).arg(line.trim()).stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     let mut join_out = BufReader::new(join.stdout.take().unwrap());
     let mut req = String::new();
     join_out.read_line(&mut req).unwrap();
@@ -75,17 +76,13 @@ fn two_people_three_devices_one_host_localhost() {
     // a fresh box: `init`, then `serve` hosting any label (`host.0^` written by the flags)
     let sd = dir("host");
     osis(&sd, &["init"]);
-    let mut serve = Command::new(OSIS).arg("-s").arg(&sd).args(["serve", "--listen", "quic://127.0.0.1:0", "--admit", "open"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    let mut addr = String::new();
-    BufReader::new(serve.stdout.take().unwrap()).read_line(&mut addr).unwrap();
-    let _host = Host(serve);
-    let addr = addr.trim().to_string();
+    let (_host, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     assert!(addr.starts_with("quic://127.0.0.1:"), "{addr}");
 
     let (a1, a2, b) = (dir("alice1"), dir("alice2"), dir("bob"));
     osis(&a1, &["init", "--host", &addr]);
     osis(&b, &["init", "--host", &addr]);
-    pair(&a1, &a2, &addr);
+    pair(&a1, &a2, Some(&addr));
     let me1 = osis(&a1, &["--json", "whoami"]);
     let me2 = osis(&a2, &["--json", "whoami"]);
     assert_eq!(field(&me1, "me"), field(&me2, "me"), "one person, two devices");
@@ -133,4 +130,46 @@ fn two_people_three_devices_one_host_localhost() {
     osis_in(&a2, &["bundle", "import"], &bundle);
     assert_eq!(osis(&a2, &["get", &n, "t:x.0"]), "\"by hand\"");
     assert!(osis(&a2, &["inspect", "thing", &n]).contains("t:x.0"));
+}
+
+/// Runs `osis -s STORE serve ARGS` until dropped; returns it and the host address it prints.
+fn serve(store: &Path, args: &[&str]) -> (Host, String) {
+    let mut c = Command::new(OSIS).arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut out = BufReader::new(c.stdout.take().unwrap());
+    let mut addr = String::new();
+    out.read_line(&mut addr).unwrap();
+    // its diagnostics follow on stdout: drained, else a closed pipe ends it
+    std::thread::spawn(move || std::io::copy(&mut out, &mut std::io::sink()));
+    (Host(c), addr.trim().to_string())
+}
+
+// spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
+// Alice's, paired and then hosting under `own` (its address learned from a first `serve`, so
+// one port picked up front), the only host she has: her home, a group made afterwards and a
+// link to it reach it; Bob, on that host only, redeems the link (his own home it refuses).
+#[test]
+#[ignore]
+fn own_host_device_localhost() {
+    let (a, h, b) = (dir("own-alice"), dir("own-host"), dir("own-bob"));
+    osis(&a, &["init"]);
+    pair(&a, &h, None);
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let url = format!("quic://127.0.0.1:{port}");
+    // a first run that ends by itself (`--timeout`), as a person would stop it
+    let (mut first, addr) = serve(&h, &["--timeout", "2s", "--listen", &url, "--admit", "own"]);
+    assert!(first.0.wait().unwrap().success());
+    assert!(addr.starts_with(&url), "{addr}");
+    osis(&h, &["hosts", "add", &addr]);
+    osis(&a, &["hosts", "add", &addr]);
+    let (_host, again) = serve(&h, &[]);
+    assert_eq!(again, addr, "the same address");
+
+    let g = osis(&a, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+    osis(&a, &["group", "sync", &g]);
+    let t = osis(&a, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"hello\""]);
+    let link = osis(&a, &["link", "make", &g, "write"]);
+    osis(&a, &["sync"]);
+    osis(&b, &["init", "--host", &addr]);
+    assert_eq!(osis(&b, &["link", "redeem", &link]), g);
+    assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
 }

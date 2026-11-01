@@ -493,6 +493,14 @@ impl SyncEngine {
                 self.diag(format!("label {l:?}: step refused for now (code {})", code.0));
                 Ok(())
             }
+            // registering a path refused for now (not admitted: a host learns what it admits by
+            // syncing, spec/data-model.md §9): reopening at once would meet the same answer
+            (Request::Register, Some(Phase::Registering)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) => {
+                self.refused_for_now(conn, l, code);
+                Ok(())
+            }
+            // the rest of that path's steps
+            (Request::Register, Some(Phase::Refused { .. })) => Ok(()),
             (Request::Register, _) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
@@ -516,6 +524,22 @@ impl SyncEngine {
                 Ok(())
             }
         }
+    }
+
+    /// The host refused registering `l` for now: opened again after a back-off, `retry_ms`
+    /// doubling per refusal on this connection up to `resync_ms`.
+    fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
+        let now = self.raw_now();
+        let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
+        let Some(c) = self.conns.get_mut(&conn) else { return };
+        let n = c.req.refusals.entry(l).or_insert(0);
+        let wait = first.saturating_mul(1u64 << (*n).min(63)).min(cap);
+        *n = n.saturating_add(1);
+        c.req.reopens.remove(&l);
+        if let Some(lc) = c.labels.get_mut(&l) {
+            lc.phase = Phase::Refused { retry_at: now.saturating_add(wait) };
+        }
+        self.diag(format!("label {l:?}: registration refused for now (code {}), again in {} s", code.0, wait / 1000));
     }
 
     /// Starts opening `l` on `conn` again from scratch.
