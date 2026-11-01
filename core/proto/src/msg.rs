@@ -343,7 +343,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         _ => return Err(Error::UnknownKind(kind)),
     };
     // Push has no reply (id 0); every request and reply has a real id; an Error answering a
-    // broken frame may carry 0. Kind 24 (the old signal) is retired.
+    // broken frame may carry 0.
     match (kind, id) {
         (23, 0) | (0, _) => {}
         (23, _) => return Err(Error::Malformed("id of a message without reply")),

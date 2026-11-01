@@ -93,6 +93,7 @@ One label per synced group, overlaps between labels (shared content blobs; certi
 - `TOMBSTONE_LIFETIME` 30 days.
 - Through a blind relay a client cannot prioritize permission commits before decrypting, so it downloads everything and applies role commits first.
 - Clients may batch uploads to blur timing.
+- Client ordering and diagnostics (moved from spec/sync.md, where they were policy): deposits go certificates, edge writes and revokes first, heartbeats last, and heartbeats are skipped when the budget is tight; a clock offset of more than a few seconds against peers is reported as a diagnostic; so is an ephemeral commit not applied for the node's cap (§9) and an ephemeral upload a host refused for its cap. Repair of a deleted chunk (§1) runs at most once per aspect per back-off interval, doubling. Handshakes: the transport handshake has no deadline beyond the idle timeout and a listener bounds the handshakes in progress (oldest dropped past the bound, notes/networking.md); a host closes a connection with no Hello after `hello_ms` (below). LAN: an announced address is a candidate route until a connection through it is up, never replacing a working route before that; a candidate whose dial fails is not dialed again for a while; a node connected off the LAN (relay) that hears the peer on the LAN dials the candidate beside that connection and closes the other once it is up (a proven LAN route is preferred).
 
 ## Rejected
 - Owner actor as sync unit (above).
