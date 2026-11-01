@@ -67,7 +67,7 @@ Header fields by position:
 9. `undoes`: `Opt(commit_id)`.
 10. `blind`: 16 random bytes (spec/crypto.md §7).
 11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.
-12. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit demotion (spec/permissions.md §5).
+12. `frontier`: `Opt(frontier)`, the frontier value (spec/data-model.md §9); present iff the commit is a role commit carrying an explicit demotion (spec/permissions.md §5; a writer rule: a receiver checks only that it sits on a role commit). A value that does not decode as a `frontier` is bad input.
 13. `origins`: `[Origin*]` sorted by commit ID, distinct; non-empty iff `kind` is 4 (spec/permissions.md §7).
 14. `ephemeral`: `Opt(uint)`, the ephemeral marker (spec/commits.md §2): 0 an ephemeral commit, 1 a relay-only one. Present only with `kind` 2 and `form` 1, or `kind` 0 and session form (session form only with the marker), no `chunks`, no `purge`, no `undoes`, no list by link and no `created.0` aspect; with `kind` 2 every aspect's retention `by` is writer with the levels it calls for; a relay-only commit has no `expires`. Anything else is bad input.
 
