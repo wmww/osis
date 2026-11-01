@@ -887,13 +887,15 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
     }
 }
 
-/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta was never received here,
-/// or was dropped as covered with every coverer still giving its writes from a held body: they
-/// go from the state when it turns invalid (spec/permissions.md §5.2), all of them, also those
-/// another held valid snapshot carries (its body gives its own copy back in the rebuild; the
-/// state may hold this one's differing copy, which would otherwise stay), and the coverers give
-/// the dropped delta's writes back the same way. A write of a delta dropped otherwise, or under
-/// a coverer dropped for its bounds (whose writes the state alone holds), stays.
+/// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta is held, was never
+/// received here, or was dropped as covered with every coverer still giving its writes from a
+/// held body: they go from the state when it turns invalid (spec/permissions.md §5.2), all of
+/// them, also those another held valid snapshot carries (its body gives its own copy back in the
+/// rebuild; the state may hold this one's differing copy, which would otherwise stay: a nested
+/// write copied into its entry's key-erased record, §4.7, where the own body has it keyed), and
+/// the own body or the coverers give the delta's writes back the same way. A write of a delta
+/// dropped otherwise, or under a coverer dropped for its bounds (whose writes the state alone
+/// holds), stays.
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
     let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.view.aspects.iter().position(|x| x.tid == *tid && x.ak == *ak)) else { return Ok(Vec::new()) };
     let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
@@ -908,11 +910,20 @@ pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> 
 }
 
 /// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):
-/// its owning delta never received, or dropped as covered where no coverer is a snapshot body
-/// dropped other than as covered (its writes live only in the state).
+/// its owning delta held, never received, or dropped as covered where no coverer is a snapshot
+/// body dropped other than as covered (its writes live only in the state). Invariant: a turned-
+/// invalid snapshot's copy stays in the state only where nothing held gives the write back, so
+/// the rebuild equals the join of what is held whether the snapshot was ever valid here.
 fn regiven(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
-    !owner_received(core, tid, ak, d) || any_owner(core, tid, ak, d, &|c, m, ai| m.dropped.get(&ai).is_some_and(|x| x.as_cover && !crate::retention::any_coverer(core, c, ai, &residue)))
+    !owner_received(core, tid, ak, d)
+        || any_owner(core, tid, ak, d, &|c, m, ai| {
+            !m.missing.contains(&ai)
+                && match m.dropped.get(&ai) {
+                    None => true,
+                    Some(x) => x.as_cover && !crate::retention::any_coverer(core, c, ai, &residue),
+                }
+        })
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):

@@ -1787,13 +1787,20 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     assert_eq!(got, vec![None, None]);
 }
 
-// issues/valueless-key-records.md (order seed 27039, pre-existing): another's writes nested in
-// an expired map put's entry, repeating its key, keep a keyed record in one order and also a
-// key-erased one in the other.
+// Order seed 27039: a snapshot carries another's writes nested in an expiring put's entry in the
+// entry's key-erased record (§4.7), their own delta keyed. When the snapshot turns invalid (its
+// author revoked) its copies go though their own delta is held (`validity::regiven`), so the
+// state is the keyed record alone, as when the snapshot was invalid on arrival.
 #[test]
-#[ignore]
-fn repro_valueless_entry_key_records_by_order() {
+fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
     use Step::*;
     let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }, Compact { by: 1, t: 4, op: 5 }, Write { by: 0, t: 2, op: 7, k: 1, v: 9 }, Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }, Roster { by: 0, t: 6 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Write { by: 0, t: 3, op: 1, k: 0, v: 4 }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 0, t: 7, op: 5, k: 2, v: 3 }, Edge { by: 0, t: 0, holder: 1, role: None }];
-    check(27039, &h, LARGE).unwrap();
+    let played = play(27039, &h);
+    // the held set `check` failed on: neither the put (11) nor its author's nested write (13)
+    let held = [0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 12, 14, 15, 16, 17, 19, 21, 23];
+    let reversed: Vec<usize> = held.iter().rev().copied().collect();
+    let map = |order: &[usize]| deliver(&played, order).engine.state(&played.things[0], &ak("t:map.0")).unwrap();
+    let (made, rev) = (map(&held), map(&reversed));
+    assert!(format!("{made:?}").contains("k1"), "the nested writes' own delta keeps them keyed");
+    assert_eq!(made, rev);
 }
