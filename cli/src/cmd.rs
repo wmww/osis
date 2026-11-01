@@ -254,8 +254,10 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     if let Some(c) = card {
         writeln!(out, "{c}")?;
     }
-    // -v on a command that syncs: diagnostics to stderr while it runs, best effort
-    let verbose = (g.verbose > 0 && needs_net(&cli.cmd)).then(|| Verbose::start(&db, g.json));
+    // -v on a command that syncs: diagnostics to stderr while it runs, best effort (not for
+    // those that already print them on stdout)
+    let streams = matches!(cli.cmd, Cmd::Serve { .. } | Cmd::Diag { follow: true });
+    let verbose = (g.verbose > 0 && needs_net(&cli.cmd) && !streams).then(|| Verbose::start(&db, g.json));
     std::thread::scope(|s| {
         let verbose = verbose.map(|(v, rx)| {
             s.spawn(move || {
@@ -1174,7 +1176,7 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
     Ok(db.set_hosting(Some(h))?)
 }
 
-/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL, `admit own|open`, `label ID`, `replicate ADDR`,
+/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `label ID`, `replicate ADDR`,
 /// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
 fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.hosting().ok_or_else(|| exit(3, "not hosting"))?;
@@ -1183,8 +1185,11 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         osis::Admit::Open => "open",
     };
     let hex = |l: &osis::LabelId| osis_schema::osis_base::hex::encode(&l.0);
-    // the address each listen URL will have (a port 0 is picked only when it listens)
-    let addrs: Vec<String> = ctx.db.host_key().map(|k| h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).collect()).unwrap_or_default();
+    // the address each listen URL will have; none for a port 0 (picked only when it listens)
+    let addrs: Vec<String> = match ctx.db.host_key() {
+        Some(k) => h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).filter(|a| !a.split('#').next().is_some_and(|u| u.ends_with(":0"))).collect(),
+        None => vec![],
+    };
     let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
     lines.extend(addrs.iter().map(|a| format!("address {a}")));
     lines.push(format!("admit {admit}"));

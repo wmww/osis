@@ -533,6 +533,11 @@ fn hosting_commands_plan_cli_4() {
     s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400"]);
     let again = s.ok(&["hosting", "show"]).out;
     assert!(again.contains("address quic://0.0.0.0:7400#") && !again.contains(&addr), "{again}");
+    // a port 0 is picked when it listens: no address printed for it
+    s.ok(&["hosting", "set", "--listen", "quic://127.0.0.1:0", "--listen", "quic://0.0.0.0:7400"]);
+    let two = s.ok(&["hosting", "show"]).out;
+    assert_eq!(two.lines().filter(|l| l.starts_with("address ")).collect::<Vec<_>>().len(), 1, "{two}");
+    assert!(two.contains("address quic://0.0.0.0:7400#"), "{two}");
 }
 
 // notes/cli.md Deviations `-v`: a command that syncs prints the node's diagnostics on stderr
