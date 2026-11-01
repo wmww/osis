@@ -410,7 +410,9 @@ fn host6(s: &HostKey) -> String {
 impl SyncEngine {
     /// One stderr line per lane event of a traced commit (`eph_trace_filter`): `EPH node <tid>
     /// commit <c> blob <b> label <l>: <what>`. The commit is `c`, else the lane's entry's (held
-    /// or waiting), else unknown (`-`: a blob not opened yet, matched by its ID).
+    /// or waiting), else unknown (`-`: a blob not opened yet, matched by its ID). Off, it costs one
+    /// load: callers compute nothing for it (a commit ID to hash goes through `eph_trace_filter`).
+    /// IDs, sizes and outcomes only, never keys or plaintext.
     fn eph_trace(&self, l: &LabelId, b: &BlobId, c: Option<&CommitId>, what: impl FnOnce() -> String) {
         let Some(f) = eph_trace_filter() else { return };
         let c = c.copied().or_else(|| self.eph.entries.get(&(*l, *b)).or_else(|| self.eph.pending.get(&(*l, *b)).map(|x| &x.0)).map(|e| e.commit));
@@ -1213,14 +1215,14 @@ impl SyncEngine {
         let cap = self.cfg.ephemeral_bytes;
         let (bound, part) = crate::Engine::ephemeral_bound(&cb);
         if size > cap || part > cap {
-            self.eph_trace(&l, &b, Some(&cb.id()), || format!("dropped: unfit ({size} B, part {part}, cap {cap})"));
+            self.eph_trace(&l, &b, eph_trace_filter().map(|_| cb.id()).as_ref(), || format!("dropped: unfit ({size} B, part {part}, cap {cap})"));
             self.eph_unfit(l, b);
             return Ok(());
         }
         let used = self.eph.bytes.get(&l).copied().unwrap_or(0);
         let room = cap.saturating_sub(used);
         if promoted.is_none() && size > room {
-            self.eph_trace(&l, &b, Some(&cb.id()), || format!("dropped: capped ({size} B, room {room})"));
+            self.eph_trace(&l, &b, eph_trace_filter().map(|_| cb.id()).as_ref(), || format!("dropped: capped ({size} B, room {room})"));
             self.eph_capped(l);
             return Ok(());
         }

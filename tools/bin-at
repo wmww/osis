@@ -43,7 +43,7 @@ dirty=
 # a patch or take changed the tree at REV: drop it (tracked and index-added files) first
 restore() { [ -z "$dirty" ] || git reset -q --hard; git checkout -q "$back"; }
 trap restore EXIT
-trap 'exit 1' INT TERM
+trap 'exit 1' HUP INT TERM
 echo "bin-at: building $sha detached; returns to $back (if killed: git checkout $back)" >&2
 git checkout -q --detach "$sha"
 dirty=1
