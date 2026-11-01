@@ -52,18 +52,16 @@ pub(crate) fn perm_ak(ak: &str) -> bool {
     edge_ak(ak) || ak == "created.0"
 }
 
-fn dots_of(h: &Header, ai: usize) -> Dots {
-    match (h.form, h.aspects.get(ai)) {
-        (Form::Node, Some(a)) if a.lo < a.hi => Dots::Node { lo: a.lo, hi: a.hi },
+/// The dots perm reads a part's writes under: its node-form counters `lo..hi`, else by commit.
+fn dots_of(form: Form, range: Option<(u64, u64)>) -> Dots {
+    match (form, range) {
+        (Form::Node, Some((lo, hi))) if lo < hi => Dots::Node { lo, hi },
         _ => Dots::Commit,
     }
 }
 
 fn dots_of_view(v: &View, ai: usize) -> Dots {
-    match (v.form, v.aspects.get(ai)) {
-        (Form::Node, Some(a)) if a.lo < a.hi => Dots::Node { lo: a.lo, hi: a.hi },
-        _ => Dots::Commit,
-    }
+    dots_of(v.form, v.aspects.get(ai).map(|a| (a.lo, a.hi)))
 }
 
 
@@ -763,7 +761,7 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
             return true;
         }
     }
-    let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h, ai) };
+    let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h.form, h.aspects.get(ai).map(|a| (a.lo, a.hi))) };
     let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
     tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
 }
@@ -1005,7 +1003,7 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have
         Some(f) => Arc::new(f.copy_index()),
         None => {
             let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
-            let Some(f) = super::held_parts(tx, s, sai)?.into_iter().next().map(Decoded::into_fragment) else { return Ok(None) };
+            let Some(f) = super::held_fragments(tx, s, sai)?.into_iter().next() else { return Ok(None) };
             Arc::new(f.copy_index())
         }
     };

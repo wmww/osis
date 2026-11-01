@@ -106,6 +106,13 @@ impl PageIndex {
     fn nested(&self, p: &[Step]) -> Paths {
         Paths { here: false, next: self.paths.below(p).map(|x| x.next.clone()).unwrap_or_default() }
     }
+    /// Notes no page loaded (the state reduced to its skeleton).
+    fn unload(&mut self) {
+        for set in self.sets.values_mut() {
+            set.loaded.clear();
+            set.whole = false;
+        }
+    }
     /// Whether every page is loaded.
     pub fn whole(&self) -> bool {
         self.sets.values().all(|s| s.whole)
@@ -472,7 +479,7 @@ fn prefetch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, set: &mut P
 /// from it, spec/commits.md §5). The pages holding the bodies' dots are loaded.
 pub fn unindex(txn: &mut Transaction<'_>, idx: &PageIndex, tid: &Tid, ak: &Ak, f: &Fragment, bodies: &[Fragment]) -> Result<()> {
     let Some(kt) = txn.table(tid, ak, KEY_TABLE)? else { return Ok(()) };
-    for (p, set) in idx.sets.iter().filter(|(_, s)| matches!(s.enc, Encoding::Map | Encoding::Set)) {
+    for (p, set) in idx.sets.iter().filter(|(_, s)| is_keyed(s)) {
         let c = f.at_steps(p);
         for b in bodies {
             let Some(bc) = b.at_steps(p).filter(|x| x.encoding() == set.enc) else { continue };
@@ -542,7 +549,7 @@ fn walk(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, t: Table, idx: &mut PageI
                 ensure_first(txn, t, set, f)?;
                 match seg {
                     // a key of a map; a value of a set (`op_paths` of an op by value)
-                    PathSeg::Key(k) if matches!(set.enc, Encoding::Map | Encoding::Set) => {
+                    PathSeg::Key(k) if is_keyed(set) => {
                         let ds = key_dots(txn, tid, ak, set, k)?;
                         for d in &ds {
                             ensure_dot(txn, t, set, f, d)?;
@@ -641,6 +648,11 @@ fn page_bytes(set: &PageSet) -> usize {
 
 fn is_seq(set: &PageSet) -> bool {
     matches!(set.enc, Encoding::List | Encoding::Text)
+}
+
+/// Whether `set` pages a map or set: its keys or values are indexed (`KEY_TABLE`).
+fn is_keyed(set: &PageSet) -> bool {
+    matches!(set.enc, Encoding::Map | Encoding::Set)
 }
 
 /// A paged sequence's stored placement, as far as this session knows it.
@@ -1296,7 +1308,7 @@ fn keyed(f: &Fragment, p: &[Step]) -> KeyedPath {
 /// Adds the index rows of the map entries or set elements `dots` of `c` (`fresh`: the table is
 /// new, no row exists).
 fn index_keys(txn: &mut Transaction<'_>, kt: Table, set: &PageSet, c: &Fragment, dots: &mut dyn Iterator<Item = &Dot>, fresh: bool) -> Result<()> {
-    if !matches!(set.enc, Encoding::Map | Encoding::Set) {
+    if !is_keyed(set) {
         return Ok(());
     }
     for d in dots {
@@ -1544,10 +1556,7 @@ pub fn evict(idx: &mut PageIndex, f: &mut Fragment) {
         return;
     }
     *f = f.reduced(&idx.paths);
-    for set in idx.sets.values_mut() {
-        set.loaded.clear();
-        set.whole = false;
-    }
+    idx.unload();
 }
 
 /// What `join_reset` did.
@@ -1567,6 +1576,17 @@ type DeathKey = (osis_crdt::Stamp, osis_base::Ts, Dot);
 
 fn death_key(d: &osis_crdt::Death) -> DeathKey {
     (d.stamp.clone(), d.at, d.by.clone())
+}
+
+/// The pages of a paged collection, in order.
+fn set_pages(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Fragment>> {
+    let mut out = Vec::new();
+    for key in set_rows(txn, t, set)? {
+        if let Some(row) = txn.table_get(t, &key)? {
+            out.push(parse_page_row(&row)?.1);
+        }
+    }
+    Ok(out)
 }
 
 /// The row keys of a paged collection's pages, in order.
@@ -1658,10 +1678,7 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             set.path = path;
         }
     }
-    for set in idx.sets.values_mut() {
-        set.loaded.clear();
-        set.whole = false;
-    }
+    idx.unload();
     // a collection now under another encoding (a `Slots` leaf, or gone into a register's
     // embedding) is no longer paged there
     relay |= !idx.sets.iter().all(|(p, set)| j.at_steps(p).is_none_or(|x| x.encoding() == set.enc));
@@ -1670,10 +1687,8 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
     if relay || unit.len() > PAGE_TARGET || all && !kept && skeleton.is_empty() {
         let mut m = j;
         for set in idx.sets.values() {
-            for key in set_rows(txn, t, set)? {
-                if let Some(row) = txn.table_get(t, &key)? {
-                    m.join(Fragment::wrap(&set.path, parse_page_row(&row)?.1));
-                }
+            for pg in set_pages(txn, t, set)? {
+                m.join(Fragment::wrap(&set.path, pg));
             }
         }
         return Ok(Reset::Laid { state: (!m.is_empty()).then_some(m), changes });
@@ -1692,10 +1707,9 @@ pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageI
     let mut n = 0;
     for (p, set) in &idx.sets {
         let spine = s0.spine(p, None);
-        for key in set_rows(txn, t, set)? {
-            let Some(row) = txn.table_get(t, &key)? else { continue };
+        for pg in set_pages(txn, t, set)? {
             let mut g = spine.clone();
-            n += g.join(Fragment::wrap(&set.path, parse_page_row(&row)?.1)).deaths().len();
+            n += g.join(Fragment::wrap(&set.path, pg)).deaths().len();
         }
     }
     Ok(n)
