@@ -79,6 +79,24 @@ impl Engine {
         })
     }
 
+    /// The state of `(tid, ak)` loaded afresh from the store, the cache left as it was. Tests:
+    /// a cached state the store does not hold.
+    #[cfg(test)]
+    pub fn stored_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
+        let k = (*tid, ak.clone());
+        let (st, idx) = (self.core.states.remove(&k), self.core.pages.remove(&k));
+        let out = self.state(tid, ak);
+        self.core.states.remove(&k);
+        self.core.pages.remove(&k);
+        if let Some(st) = st {
+            self.core.states.insert(k.clone(), st);
+        }
+        if let Some(idx) = idx {
+            self.core.pages.insert(k, idx);
+        }
+        out
+    }
+
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
     /// dropped parts' frontiers (`Dropped::gives`). Tests: what a random history reached.
     #[doc(hidden)]

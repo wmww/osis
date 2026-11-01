@@ -47,6 +47,11 @@ struct PageSet {
     id: u32,
     /// The index's hash key (`Core::key_salt`).
     salt: [u8; 32],
+    /// Invariant: equals `keyed(state, steps)` of the whole state. The skeleton drops a record
+    /// reduced to nothing (`Fragment::reduced`), so a record on the path holding only paged
+    /// content keeps its creation here alone (`Fragment::wrap` gives it back to each page):
+    /// every write of this set's pages takes it again from the joined state (`write_touched`,
+    /// `join_reset`), else a creation arriving after the content is lost to the store.
     path: KeyedPath,
     enc: Encoding,
     /// Pages in the in-memory state: row key -> range.
@@ -1443,11 +1448,17 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     }
     let t = table(txn, tid, ak)?;
     let kt = txn.create_table(tid, ak, KEY_TABLE)?;
+    let mut path_changed = false;
     for (p, dots) in &touch.elems {
         let nested = idx.nested(p);
         let (Some(set), Some(c)) = (idx.sets.get_mut(p), f.at_steps(p)) else { return Ok(None) };
         if !rewrite_set(txn, t, kt, set, c, &nested, dots, shred)? {
             return Ok(None);
+        }
+        let path = keyed(f, p);
+        if path != set.path {
+            set.path = path;
+            path_changed = true;
         }
         if is_seq(set) {
             // the placement the sequence followed through the join (attached, or cached when
@@ -1468,7 +1479,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             set.pending = false;
         }
     }
-    if !touch.skeleton {
+    if !touch.skeleton && !path_changed {
         return Ok(Some(None));
     }
     let unit = unit_state(&f.reduced(&idx.paths), idx)?;
@@ -1593,6 +1604,9 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             continue;
         }
         let spine = s0.spine(p, None);
+        // the path's creations as joined: every page's join holds the same resets on the path,
+        // and `d`'s creations where it has elements in the page's range
+        let mut path: Option<KeyedPath> = None;
         for key in set_rows(txn, t, set)? {
             let Some(row) = txn.table_get(t, &key)? else { continue };
             let (r, pg) = parse_page_row(&row)?;
@@ -1601,6 +1615,13 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
             g.join(Fragment::wrap(&set.path, pg.clone()));
             let before = held_only.then(|| g.stamps());
             let mut ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
+            if g.at_steps(p).is_some() {
+                let k = keyed(&g, p);
+                path = Some(match path {
+                    Some(q) => q.into_iter().zip(k).map(|((s, key, a), (_, _, b))| (s, key, a.max(b))).collect(),
+                    None => k,
+                });
+            }
             ch.retain_deaths(|x| !seen.contains(&death_key(x)) && before.as_ref().is_none_or(|b| b.holds(&x.stamp)));
             let empty = pg.emptied().ok_or(Error::Corrupt("state page"))?;
             let c = match g.at_steps(p).and_then(|x| x.slot(set.enc)) {
@@ -1623,6 +1644,9 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
                 set.loaded.clear();
             }
             changes.merge(ch);
+        }
+        if let Some(path) = path {
+            set.path = path;
         }
     }
     for set in idx.sets.values_mut() {
