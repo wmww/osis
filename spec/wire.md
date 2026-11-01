@@ -114,6 +114,7 @@ A blob is `prefix || ciphertext`, at most `MAX_BLOB` bytes. The prefix is a fixe
   - Sealed payload: `[role, n, secret]`, secret 32 bytes, naming the epoch (n, nonce of the secret under the actor's tid and the role, spec/crypto.md §4); a `secrets.0` box's names its key's (role, epoch).
   - Symmetric `wrap`: XChaCha20-Poly1305 under `kdf("box", s)`, nonce = first 24 bytes of BLAKE3(AD), plaintext `suite (1) || secret (32)`: 49 bytes.
 - **Entry box** (spec/sync.md §2): a `box` value in the sealed form with no keyset epoch, AD = `[label_id, step_key, form]`, payload as above with the read role; its epoch is the label's group thing's. A claim set holding a box of another form is malformed.
+- **Superseded list** (spec/crypto.md §4): a keyset's field 4 `supersedes` (spec/data-model.md §9), `map<epoch, set<blob>>`: each epoch `[n, nonce]` the rotation lists to the 32-byte IDs of the valid rotation commits of it the rotator applied (an empty set when none). A rotation commit writes the whole keyset (a replace), so the list is read from its `keys.0` delta.
 - **History box** (role r, epoch e): XChaCha20-Poly1305 under `kdf("history", secret_r[e])`, nonce 24 zero bytes, AD = `[actor, role, n, nonce]`, plaintext `[[n, secret]*]` ascending by the epochs they name (spec/crypto.md §4); the `secrets.0` history map holds the ciphertext.
 - Suite 1 is the only suite: `suite` fields and suite bytes are 1.
 

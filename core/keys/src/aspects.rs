@@ -25,23 +25,28 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 }
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
-/// (spec/crypto.md §3, §7).
-pub fn keyset(epoch: &Epoch, secret: &Secret32) -> Keyset {
+/// (spec/crypto.md §3, §7), superseding `supersedes` (§4: each epoch with the valid rotation
+/// commits of it the rotator applied).
+pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &Superseded) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
         kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
         suite: SUITE,
         delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
+        supersedes: supersedes.iter().map(|(e, by)| (to_schema(e), by.clone())).collect(),
     }
+}
+
+/// What the rotation writing keyset `ks` supersedes, as its keyset lists it (spec/crypto.md §4).
+fn superseded_of(ks: &Keyset) -> Result<Superseded, Error> {
+    ks.supersedes.iter().map(|(e, by)| Ok((from_schema(e)?, by.clone()))).collect()
 }
 
 /// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SecretsWrite {
     pub boxes: BTreeMap<BoxKey, SecretBox>,
-    /// Each removed box with the commits that wrote the records removed (their dots, in a
-    /// received delta; empty in a write being made).
-    pub removed: BTreeMap<BoxKey, BTreeSet<CommitId>>,
+    pub removed: BTreeSet<BoxKey>,
     pub history: BTreeMap<HistoryKey, Vec<u8>>,
 }
 
@@ -50,7 +55,7 @@ impl SecretsWrite {
     /// Two concurrent writes apply in either order to the same state, since each removes only
     /// boxes keyed at epochs it superseded, never the other's new ones.
     pub fn apply(&self, s: &mut Secrets) {
-        for k in self.removed.keys() {
+        for k in &self.removed {
             s.boxes.remove(k);
         }
         s.boxes.extend(self.boxes.iter().map(|(k, v)| (k.clone(), v.clone())));
@@ -62,13 +67,11 @@ impl SecretsWrite {
         for k in &other.boxes {
             self.removed.remove(k.0);
         }
-        for k in other.removed.keys() {
+        for k in &other.removed {
             self.boxes.remove(k);
         }
         self.boxes.extend(other.boxes);
-        for (k, by) in other.removed {
-            self.removed.entry(k).or_default().extend(by);
-        }
+        self.removed.extend(other.removed);
         self.history.extend(other.history);
     }
 
@@ -76,31 +79,11 @@ impl SecretsWrite {
         self.boxes.is_empty() && self.removed.is_empty() && self.history.is_empty()
     }
 
-    /// The epochs this write introduces per role and what each supersedes as the write itself
-    /// says, the same at every node (spec/crypto.md §4): a history box written for (r, e) with
-    /// the epochs of the boxes of r it removes, each with the commits that wrote the records
-    /// removed there. A grant or re-seal re-writes history boxes and
-    /// removes nothing, so it supersedes nothing. What e's history box lists supersedes too, for
-    /// a node that opens it (`open_histories`). Superseded epochs not below e are kept here;
-    /// `RoleEpochs` drops them.
-    pub fn rotations(&self) -> Result<Vec<(Role, Epoch, Superseded)>, Error> {
-        let mut out = Vec::new();
-        for k in self.history.keys() {
-            let e = from_schema(&k.epoch)?;
-            let mut sup = Superseded::new();
-            for (b, by) in self.removed.iter().filter(|(b, _)| b.role == k.role) {
-                sup.entry(from_schema(&b.epoch)?).or_default().extend(by.iter().copied());
-            }
-            out.push((k.role, e, sup));
-        }
-        Ok(out)
-    }
-
-    /// Records the epochs the write names in `epochs` (a received commit's delta). What its
-    /// rotations supersede is the commit's claims' (`claimed`). Establishes nothing.
+    /// Records the epochs the write names in `epochs` (a received commit's delta): its box and
+    /// history keys. What a rotation supersedes is its claim's (`claimed`). Establishes nothing.
     pub fn observe(&self, epochs: &mut ActorEpochs) -> Result<(), Error> {
-        for (r, e, _) in self.rotations()? {
-            epochs.role_mut(r).observe(e);
+        for k in self.history.keys() {
+            epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
         }
         for k in self.boxes.keys() {
             epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
@@ -108,11 +91,19 @@ impl SecretsWrite {
         Ok(())
     }
 
-    /// The rotations this write makes as part of a rotation commit: its history boxes at the
-    /// epochs whose keyset the commit's `keys.0` write `keys` sets. A grant or re-seal re-writes
-    /// history boxes but writes no keyset, so it makes none (spec/crypto.md §4).
+    /// The rotations this write makes as part of a rotation commit (spec/crypto.md §4): each
+    /// keyset the commit's `keys.0` write `keys` sets whose epoch this write puts a history box
+    /// at, with what that keyset lists as superseded. A grant or re-seal re-writes history boxes
+    /// but writes no keyset, so it makes none. Superseded epochs not below e are kept here;
+    /// `RoleEpochs` drops them.
     pub fn rotation_commit(&self, keys: &KeysWrite) -> Result<Vec<(Role, Epoch, Superseded)>, Error> {
-        Ok(self.rotations()?.into_iter().filter(|(r, e, _)| keys.keysets.get(r).is_some_and(|ks| ks.epoch == to_schema(e))).collect())
+        let mut out = Vec::new();
+        for (r, ks) in &keys.keysets {
+            if self.history.contains_key(&HistoryKey { role: *r, epoch: ks.epoch.clone() }) {
+                out.push((*r, from_schema(&ks.epoch)?, superseded_of(ks)?));
+            }
+        }
+        Ok(out)
     }
 
     /// The held commit `commit` carrying this write (and `keys.0` write `keys`) is applied and

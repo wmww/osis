@@ -366,7 +366,7 @@ fn reclaim_then_invalidated_keeps_chain() {
     let s0 = v.read.secret(&w.e0).unwrap().clone();
     let mut again = osis_keys::SecretsWrite::default();
     again.history.insert(history_key(Role::Read, &w.e0), osis_crypto::seal_history(&s0, &w.a, Role::Read, &w.e0, &[]).unwrap());
-    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0))].into_iter().collect() };
+    let ks = KeysWrite { keysets: [(Role::Read, osis_keys::keyset(&w.e0, &s0, &Default::default()))].into_iter().collect() };
     assert!(again.claimed(&mut v, cid(2), &ks, true).unwrap());
     assert_eq!(v.read.get(&w.e0).unwrap().claims.len(), 2);
     v.invalidate(&cid(2));

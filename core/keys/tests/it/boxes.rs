@@ -57,7 +57,8 @@ fn grant_boxes_every_current_epoch() {
     for (r, e) in [(Role::Read, f.forks[0]), (Role::Read, f.forks[1]), (Role::Write, ew)] {
         assert_eq!(w.history[&history_key(r, &e)], f.s.history[&history_key(r, &e)]);
     }
-    assert!(w.removed.is_empty() && w.rotations().unwrap().iter().all(|(_, _, sup)| sup.is_empty()));
+    // removes nothing; supersedes nothing (it writes no keyset)
+    assert!(w.removed.is_empty());
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut gv = ActorEpochs::default();
@@ -457,7 +458,7 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
     let mut s = f.s.clone();
     grant.apply(&mut s);
     // the writer's commit: E's keyset with another epoch's keys, and nothing else
-    let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]));
+    let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default());
     let bogus = osis_keys::KeysWrite { keysets: [(Role::Read, junk)].into_iter().collect() };
     let opener = Opener::Actor { holder: g, epochs: &ge };
     let commit = osis_base::CommitId([0x77; 32]);

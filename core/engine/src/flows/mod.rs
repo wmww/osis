@@ -128,7 +128,7 @@ pub(crate) fn put_secrets(m: &mut Mutation, actor: Tid, w: &SecretsWrite, invite
     for (k, b) in &w.boxes {
         put(m, 0, k.to_value(), b.to_value())?;
     }
-    for k in w.removed.keys() {
+    for k in &w.removed {
         m.op(actor, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) })?;
     }
     for (k, h) in &w.history {

@@ -56,8 +56,8 @@ impl Provenance {
     }
 }
 
-/// What a rotation supersedes: each epoch with the commits that wrote the boxes it removes there
-/// (the removed records' dots; empty in a write being made).
+/// What a rotation supersedes, as its keyset lists it (spec/crypto.md §4): each epoch with the
+/// valid rotation commits of it the rotator applied.
 pub type Superseded = BTreeMap<Epoch, BTreeSet<CommitId>>;
 
 /// A held rotation commit claiming an epoch (writing its keyset and history box): whether it is
@@ -109,7 +109,7 @@ impl Default for EpochInfo {
 }
 
 impl EpochInfo {
-    /// What it supersedes (spec/crypto.md §4): the epochs its valid claims remove boxes at, and
+    /// What it supersedes (spec/crypto.md §4): the epochs its valid claims' keysets list, and
     /// those its opened history box lists. A function of the held claims and their verdicts, so a
     /// claim found invalid leaves nothing behind.
     pub fn superseded_epochs(&self) -> BTreeSet<Epoch> {
@@ -244,10 +244,9 @@ impl RoleEpochs {
         self.observe(e).established = Some(p);
     }
 
-    /// Records that held rotation commit `commit` claims `e`, superseding `supersedes` (epoch to
-    /// the commits whose boxes it removes there, `SecretsWrite::rotations`); `valid`: applied
-    /// and valid. Only a valid claim supersedes for `current`. Call `establish` after. Returns
-    /// whether it is new.
+    /// Records that held rotation commit `commit` claims `e`, superseding `supersedes` (its
+    /// keyset's list, `SecretsWrite::rotation_commit`); `valid`: applied and valid. Only a valid
+    /// claim supersedes for `current`. Call `establish` after. Returns whether it is new.
     pub fn set_claim(&mut self, e: Epoch, commit: CommitId, valid: bool, supersedes: Superseded) -> bool {
         let claim = Claim { valid, supersedes: supersedes.into_iter().filter(|(s, _)| s.n() < e.n()).collect() };
         self.observe(e).claims.insert(commit, claim.clone()) != Some(claim)
@@ -270,10 +269,10 @@ impl RoleEpochs {
     }
 
     /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint over the
-    /// held claims. A claim is settled when every epoch s it supersedes is established, or is
-    /// passed through: no valid claim of s is held, and the claim's removal at s names a held
-    /// invalid claim of s that is settled (an invalid rotation carries no departure; what it
-    /// superseded still must settle, and only a claim the superseding commit names counts, so a
+    /// held claims. A claim is settled when every epoch s it lists is established, or is passed
+    /// through: its list for s is non-empty, every commit listed is a held invalid claim of s
+    /// that is settled, and no valid claim of s is held (an invalid rotation carries no
+    /// departure; what it superseded still must settle; and only the rotator lists commits, so a
     /// made-up invalid claim of s passes nothing). An epoch with a settled valid claim is `Chain`;
     /// else `Snapshot` when a held snapshot keys it. Either only within headroom
     /// (`within_headroom`). Sticky provenances stay. Returns whether anything changed.
@@ -289,7 +288,8 @@ impl RoleEpochs {
         loop {
             let settled = |c: &Claim| {
                 c.supersedes.iter().all(|(s, named)| {
-                    self.is_established(s) || self.map.get(s).is_some_and(|si| si.claims.values().all(|x| !x.valid) && named.iter().any(|n| passed.contains(&(*s, *n))))
+                    self.is_established(s)
+                        || (!named.is_empty() && named.iter().all(|n| passed.contains(&(*s, *n))) && self.map.get(s).is_some_and(|si| si.claims.values().all(|x| !x.valid)))
                 })
             };
             let pass: Vec<(Epoch, CommitId)> = self
@@ -675,9 +675,9 @@ mod tests {
         assert_eq!(s.provenance(&ep(6, 0)), Some(Provenance::Chain));
     }
 
-    // spec/crypto.md §4: a chain passes through a superseded epoch whose rotation commit, named
-    // by the superseding commit's removal there, is held and invalid, when nothing valid claims
-    // it and what that commit superseded is established in turn.
+    // spec/crypto.md §4: a chain passes through a superseded epoch whose rotation commits, as the
+    // superseding commit's keyset lists them, are all held and invalid, when nothing valid claims
+    // it and what those commits superseded is established in turn.
     #[test]
     fn chain_passes_invalid_rotation() {
         let named = |c: u8| BTreeSet::from([cid(c)]);
@@ -694,12 +694,26 @@ mod tests {
         assert!(!r.is_established(&ep(2, 0)));
         assert_eq!(r.provenance(&ep(3, 0)), Some(Provenance::Chain));
         assert_eq!(r.current(), vec![ep(1, 0), ep(3, 0)]);
-        // not when e3's removal names another commit than e2's invalid one (e2's genuine commit
-        // not held: a made-up invalid claim of e2 passes nothing)
+        // not when e3 lists another commit than e2's invalid one (e2's genuine commit not held: a
+        // made-up invalid claim of e2 passes nothing)
         let mut x = RoleEpochs::default();
         x.set_established(ep(1, 0), Provenance::Fixed);
         x.set_claim(ep(3, 0), cid(3), true, BTreeMap::from([(ep(2, 0), named(2))]));
         x.set_claim(ep(2, 0), cid(9), false, sup([]));
+        x.establish();
+        assert!(!x.is_established(&ep(3, 0)));
+        // not when only some listed commit is held, invalid (the other one not held), nor when
+        // the list is empty
+        let mut x = RoleEpochs::default();
+        x.set_established(ep(1, 0), Provenance::Fixed);
+        x.set_claim(ep(2, 0), cid(2), false, sup([ep(1, 0)]));
+        x.set_claim(ep(3, 0), cid(3), true, BTreeMap::from([(ep(2, 0), BTreeSet::from([cid(2), cid(7)]))]));
+        x.establish();
+        assert!(!x.is_established(&ep(3, 0)));
+        x.set_claim(ep(2, 0), cid(7), false, sup([ep(1, 0)]));
+        x.establish();
+        assert!(x.is_established(&ep(3, 0)));
+        x.set_claim(ep(3, 0), cid(3), true, sup([ep(2, 0)]));
         x.establish();
         assert!(!x.is_established(&ep(3, 0)));
         // not while a valid claim of e2 is held, unsettled

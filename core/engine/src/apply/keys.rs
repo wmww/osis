@@ -220,7 +220,7 @@ pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: o
 pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     let mut w = SecretsWrite::default();
     if let Some(m) = map(field(delta, 0)) {
-        for (dot, r, k, f) in m.entries() {
+        for (_, r, k, f) in m.entries() {
             let Some(k) = k.and_then(|k| typed(k, "box_key")).and_then(|k| BoxKey::from_value(&k).ok()) else { continue };
             match (r, f.and_then(Fragment::read)) {
                 (_, Some(v)) => {
@@ -229,11 +229,7 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
                     }
                 }
                 (Some(_), None) => {
-                    // the commit that wrote the record removed (role commits write commit-form dots)
-                    let by = w.removed.entry(k).or_default();
-                    if let osis_crdt::SourceKind::Commit(c) = dot.src.kind() {
-                        by.insert(*c);
-                    }
+                    w.removed.insert(k);
                 }
                 (None, None) => {}
             }
@@ -845,7 +841,7 @@ mod tests {
             let genuine = e0.read.secret(&e).cloned().unwrap();
             lp.sync(0, 1).unwrap();
             // the writer's `keys.0`: E's keyset with another secret's keys
-            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]));
+            let junk = osis_keys::keyset(&e, &Secret32::from_bytes([0x66; 32]), &Default::default());
             let mut mu = Mutation::new();
             mu.op(t, &ct::KEYS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Set(Some(junk.clone()).to_value()) }).unwrap();
             mu.unchecked();

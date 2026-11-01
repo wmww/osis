@@ -94,7 +94,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `aspects.0` | set<string> | synthetic, guaranteed: AKs present on the thing |
 | `created.0` | struct | guaranteed: the creation record; carried by the thing's first commit, retention `nobody` (spec/commits.md §2, §5) |
 | `roles.0` | map<tid, struct { role, until: option<timestamp>, invite: option<role>, since: option<edge_key>, tied: option<tie> }> | role grants (`since` only in roster snapshots, spec/permissions.md §6; `tied`: the placement the edge goes with, spec/permissions.md §2); read as the role timeline's roster (spec/permissions.md §5) |
-| `keys.0` | struct { read, write, admin: { epoch, kem_key, delete_key }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
+| `keys.0` | struct { read, write, admin: { epoch, kem_key, delete_key, supersedes }, inbox, deposit seed } | an actor's current keysets per role, inbox and deposit seed (spec/crypto.md §3, spec/sync.md §2) |
 | `secrets.0` | struct { boxes: map<(holder, role, epoch), box>, history: map<(role, epoch), history box> } | spec/crypto.md §4 |
 | `tenures.0` | set<struct { holder: tid, role, since, until, frontier }> | tenure ledger, written only by roster snapshots (spec/permissions.md §6; an audit-only entry has `since` = `until`); a large frontier is a link |
 | `label.0` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
@@ -121,7 +121,7 @@ type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, aut
 type source = enum { 0 node(tid), 1 commit(blob) };             // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
 type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
-type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7
+type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: map<epoch, set<blob>> };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epoch -> 32-byte commit IDs (spec/crypto.md §4)
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
 type box = enum {

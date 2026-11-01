@@ -3,7 +3,7 @@
 //! (`covers`), except for the epochs a rotation creates.
 
 use crate::aspects::{KeysWrite, SecretsWrite, box_key, from_schema, history_key, keyset, keyset_of, to_schema};
-use crate::epoch::{ActorEpochs, Provenance, ROLES, SUITE, is_newer, newest_of};
+use crate::epoch::{ActorEpochs, Provenance, ROLES, RoleEpochs, SUITE, Superseded, is_newer, newest_of};
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{
@@ -118,9 +118,8 @@ pub struct Rotated {
     pub role: Role,
     pub epoch: Epoch,
     pub secret: Secret32,
-    /// The epochs it supersedes, as a node holding its secret reads them from its commit
-    /// (`SecretsWrite::rotations`): those of the boxes of its role it removes, and those its
-    /// history box lists.
+    /// The epochs it supersedes, as a node holding its secret reads them from its commit: those
+    /// its keyset lists (`SecretsWrite::rotation_commit`) and those its history box lists.
     pub supersedes: BTreeSet<Epoch>,
 }
 
@@ -179,6 +178,18 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
     Ok(out)
 }
 
+/// What a rotation of a role whose current epochs are `current` lists as superseded in its
+/// keyset (spec/crypto.md §4): each current epoch not derived from the owner (a derived epoch,
+/// held only where the owner's secret is, is superseded through the history box), with the
+/// valid rotation commits of it applied here.
+fn superseded_list(re: &RoleEpochs, current: &[Epoch]) -> Superseded {
+    current
+        .iter()
+        .filter(|e| re.provenance(e) != Some(Provenance::Derived))
+        .map(|e| (*e, re.get(e).map(|i| i.claims.iter().filter(|(_, c)| c.valid).map(|(id, _)| *id).collect()).unwrap_or_default()))
+        .collect()
+}
+
 /// Rotates `roles` of `actor` (spec/crypto.md §4, spec/permissions.md §3): per role a fresh
 /// secret at n+1 (n = greatest n of its current epochs; epochs merely seen, unestablished, never
 /// count), boxes for every holder holding the role (owner included, as a recipient with admin),
@@ -189,7 +200,7 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     let removed = removals(roles, held, held_secrets)?;
     let mut rotated = Vec::new();
-    let mut secrets = SecretsWrite { removed: removed.into_iter().map(|k| (k, BTreeSet::new())).collect(), ..SecretsWrite::default() };
+    let mut secrets = SecretsWrite { removed, ..SecretsWrite::default() };
     let mut keys = KeysWrite::default();
     let mut wrap = None;
     for &r in roles {
@@ -205,8 +216,9 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         }
         let earlier: Vec<(Epoch, Secret32)> = re.held_established().map(|(e, s)| (e, s.clone())).collect();
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier)?);
-        keys.keysets.insert(r, keyset(&epoch, &secret));
-        let supersedes = secrets.removed.keys().filter(|k| k.role == r).map(|k| from_schema(&k.epoch)).chain(earlier.iter().map(|(e, _)| Ok(*e))).collect::<Result<_, Error>>()?;
+        let listed = superseded_list(re, &current);
+        keys.keysets.insert(r, keyset(&epoch, &secret, &listed));
+        let supersedes = listed.keys().copied().chain(earlier.iter().map(|(e, _)| *e)).collect();
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }
     let mut unboxed = Vec::new();
