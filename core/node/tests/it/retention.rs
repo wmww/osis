@@ -1003,3 +1003,137 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
     e.replay_deaths(&t, &k).unwrap();
     assert_eq!(e.deaths(&s1, &t, &k).unwrap(), Some((tk, tk)), "recompute");
 }
+
+// spec/crdt.md §4.6 Expiry, §4.7 (an undo never extends a value's lifetime past its original
+// expiry): random histories of three writers on a map, a set, a list, a text, a register and
+// a map of structs (puts, removes, nested edits, inserts, deletes; most with a random expiry),
+// undos and redos of any held commit by any node (its own from the undo buffer, others' from
+// held bodies), syncs and time passing. Every written value is unique; after each step no node
+// reads one past the expiry of the write that first wrote it. Seeds: OSIS_UNDOEXP_START,
+// OSIS_UNDOEXP_SEEDS, a thread per core (OSIS_UNDOEXP_THREADS).
+#[test]
+fn undo_never_outlives_expiry_random_spec_crdt_4_6() {
+    let range = osis_base::testenv::Seeds::from_env("OSIS_UNDOEXP_START", "OSIS_UNDOEXP_SEEDS", 0..24);
+    let seeds: Vec<u64> = range.range.clone().collect();
+    let name = "retention::undo_never_outlives_expiry_random_spec_crdt_4_6";
+    let replay = |s: u64| format!("OSIS_UNDOEXP_START={s} OSIS_UNDOEXP_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
+    run_seeds_noted(name, &seeds, range.overridden, "OSIS_UNDOEXP_THREADS", replay, undo_expiry_history);
+}
+
+/// One history of `undo_never_outlives_expiry_random_*`.
+fn undo_expiry_history(seed: u64) {
+    use osis_crdt::PathSeg;
+    use std::collections::BTreeMap;
+    let mut r = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut below = |n: u64| {
+        r ^= r << 13;
+        r ^= r >> 7;
+        r ^= r << 17;
+        r % n
+    };
+    let mut lp = net(3, 2000 + seed);
+    let t = new_thing(&mut lp, 0);
+    for i in 1..3 {
+        let p = lp.peers[i].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+    }
+    for i in 1..3 {
+        sync(&mut lp, 0, i);
+    }
+    let aks = [ak("t:big.0"), ak("t:tags.0"), ak("t:list.0"), ak("t:text.0"), ak("t:reg.0"), ak("t:map.0")];
+    // each value written (`m<n>`, a text's char `<n>`) and its write's expiry
+    let mut expiry: BTreeMap<String, Option<u64>> = BTreeMap::new();
+    let mut commits = Vec::new();
+    let mut n = 0u32;
+    // the tracked values a read shows
+    fn values(v: &Value, text: bool, out: &mut Vec<String>) {
+        match v {
+            Value::Str(x) if text => out.extend(x.chars().map(String::from)),
+            Value::Str(x) => out.push(x.clone()),
+            Value::Map(m) => m.values().for_each(|v| values(v, text, out)),
+            Value::List(l) => l.iter().for_each(|v| values(v, text, out)),
+            Value::Set(s) => s.iter().for_each(|v| values(v, text, out)),
+            _ => {}
+        }
+    }
+    let mut log = Vec::new();
+    for step in 0..100 {
+        let x = below(100);
+        let i = below(3) as usize;
+        if x < 50 {
+            let now = lp.peers[i].engine.now().0;
+            let exp = (below(10) < 6).then(|| now + 1 + below(8_000));
+            n += 1;
+            let a = below(aks.len() as u64) as usize;
+            let mark = if a == 3 { char::from_u32(0x4e00 + n).unwrap().to_string() } else { format!("m{n}") };
+            let cur = lp.peers[i].engine.get(&t, &aks[a]).unwrap();
+            let len = match &cur {
+                Some(Value::List(l)) => l.len(),
+                Some(Value::Str(x)) => x.chars().count(),
+                _ => 0,
+            };
+            let key = s(&format!("k{}", below(3)));
+            let rm = below(3) == 0;
+            let op = |path: Vec<PathSeg>, op: Op| PathOp { path, op };
+            let (k, po) = match a {
+                0 if rm => (&BIG, op(vec![], Op::Remove(key))),
+                0 => (&BIG, op(vec![PathSeg::Key(key)], Op::Put(s(&mark)))),
+                1 if rm => {
+                    let mut vs = Vec::new();
+                    if let Some(v) = &cur {
+                        values(v, false, &mut vs);
+                    }
+                    let Some(v) = vs.get(below(vs.len().max(1) as u64) as usize) else { continue };
+                    (&TAGS, op(vec![], Op::Remove(s(v))))
+                }
+                1 => (&TAGS, op(vec![], Op::Add(s(&mark)))),
+                2 | 3 if rm && len > 0 => (if a == 2 { &LIST } else { &TEXT }, op(vec![], Op::Delete { at: below(len as u64) as usize, len: 1 })),
+                2 => (&LIST, op(vec![], Op::Insert { at: below(len as u64 + 1) as usize, items: vec![s(&mark)] })),
+                3 => (&TEXT, op(vec![], Op::Insert { at: below(len as u64 + 1) as usize, items: vec![s(&mark)] })),
+                4 => (&REG, op(vec![], Op::Set(s(&mark)))),
+                _ if rm => (&MAP, op(vec![], Op::Remove(key))),
+                _ if below(2) == 0 && matches!(&cur, Some(Value::Map(m)) if m.contains_key(&key)) => (&MAP, op(vec![PathSeg::Key(key), PathSeg::Field(0)], Op::Set(s(&mark)))),
+                _ => (&MAP, op(vec![PathSeg::Key(key)], Op::Put(item(&mark, 0)))),
+            };
+            let mut m = Mutation::new();
+            m.op(t, k, po.clone()).unwrap();
+            if let Some(e) = exp {
+                m.expires(t, k, WallMs(e)).unwrap();
+            }
+            expiry.insert(mark.clone(), exp);
+            if let Ok(Some(c)) = lp.peers[i].commit(m) {
+                log.push(format!("{step}: node {i} {po:?} expires {exp:?} at {now}: {c:?}"));
+                commits.push(c);
+            }
+        } else if x < 70 {
+            let Some(&c) = commits.get(below(commits.len().max(1) as u64) as usize) else { continue };
+            if let Ok(Some(u)) = lp.peers[i].engine.revert(&c) {
+                log.push(format!("{step}: node {i} undoes {c:?} at {}: {u:?}", lp.peers[i].engine.now().0));
+                commits.push(u);
+            }
+        } else if x < 85 {
+            let j = below(3) as usize;
+            if j != i {
+                sync(&mut lp, i, j);
+            }
+        } else {
+            lp.advance(below(3_000));
+        }
+        for p in 0..3 {
+            let e = &mut lp.peers[p].engine;
+            e.tick().unwrap();
+            let now = e.now().0;
+            for (ai, a) in aks.iter().enumerate() {
+                let mut vs = Vec::new();
+                if let Some(v) = e.get(&t, a).unwrap() {
+                    values(&v, ai == 3, &mut vs);
+                }
+                for v in vs {
+                    if let Some(Some(at)) = expiry.get(&v) {
+                        assert!(now < *at, "seed {seed} step {step}: node {p} reads {v} in {a:?} at {now}, past its expiry {at}\n{}", log.join("\n"));
+                    }
+                }
+            }
+        }
+    }
+}
