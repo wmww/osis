@@ -10,8 +10,8 @@ use osis_commit::{Decoded, Header, Kind};
 use osis_base::{CommitId, Role, Tid, Value};
 use osis_crdt::{Encoding, Fragment, SlotRef};
 use osis_keys::{KeysWrite, ROLES, SecretsWrite};
-use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, Keys, SecretBox};
-use osis_schema::{AspectKey, Codec, Type, typed_read};
+use osis_schema::core_types::{self as ct, BoxKey, HistoryKey, SecretBox};
+use osis_schema::{Codec, Type, typed_read};
 use osis_store::Shred;
 
 fn typed(v: &Value, name: &str) -> Option<Value> {
@@ -32,18 +32,8 @@ fn map(f: Option<&Fragment>) -> Option<&osis_crdt::Map> {
     }
 }
 
-/// Records for each box a `secrets.0` delta writes the commit's time: the earliest write of the
-/// box. A box introduces no epoch (a grant or re-seal boxes an epoch it did not make;
-/// `note_keysets`).
-pub(crate) fn note_box_keys(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
-    for (bk, k) in written_boxes(delta) {
-        core.ix.boxes_to.insert(bk.holder, (*actor, k.clone()));
-        core.ix.box_written.upsert((*actor, bk), || h.ts, |w| *w = (*w).min(h.ts));
-    }
-}
-
-/// Notes `boxes_to` alone for a `secrets.0` delta of any validity (the boxes keyed to each holder,
-/// for `flows::reopen_dependents`; a load notes every held part alike).
+/// Notes `boxes_to` for a `secrets.0` delta of any validity (the boxes keyed to each holder, for
+/// `flows::reopen_dependents`; a load notes every held part alike).
 pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     for (bk, k) in written_boxes(delta) {
         core.ix.boxes_to.insert(bk.holder, (*actor, k.clone()));
@@ -72,8 +62,7 @@ fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
 
 /// A role commit's `secrets.0` or `keys.0` part dropped its body (`bodies`, its deltas):
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
-/// still held: `box_written`, and the `boxes_to` entries of the boxes it wrote that no held body
-/// writes (an unknown first write costs a rotation or a re-seal, never a leak). `epoch_intro`
+/// still held: the `boxes_to` entries of the boxes it wrote that no held body writes. `epoch_intro`
 /// keeps a `keys.0` part's epochs (`Dropped::intros`): the rotation stays known.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
@@ -118,40 +107,33 @@ pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fra
     }
 }
 
-/// Re-derives `epoch_intro` and `box_written` of `actors` from their valid role-kind
-/// `secrets.0` and `keys.0` parts (after validity flips, and at load once validity is judged):
-/// an invalid write (a removed admin's backdated rotation) never introduces an epoch.
+/// Re-derives `epoch_intro` of `actors` from their valid role-kind `keys.0` parts (after
+/// validity flips, and at load once validity is judged): an invalid write (a removed admin's
+/// backdated rotation) never introduces an epoch.
 pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
     if actors.is_empty() {
         return Ok(());
     }
     tx.core.touch();
     tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
-    tx.core.ix.box_written.retain(|(a, _), _| !actors.contains(a));
+    let ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
     for a in actors {
-        for ak in ["secrets.0", "keys.0"] {
-            let ak = osis_base::Ak::new(ak).map_err(|_| crate::Error::Misuse("ak"))?;
-            let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
-            for id in ids {
-                let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-                if m.header.kind != Kind::Role {
-                    continue;
-                }
-                let Some(ai) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak == ak) else { continue };
-                if !m.valid.get(ai).copied().unwrap_or(false) {
-                    continue;
-                }
-                for (r, e) in m.dropped.get(&ai).map(|d| d.intros.clone()).unwrap_or_default() {
-                    note_intro(tx.core, &m.header, a, r, e);
-                }
-                for d in super::held_parts(tx, &id, ai)? {
-                    if let Decoded::Delta(d) = d {
-                        if ak.as_str() == "keys.0" {
-                            note_keysets(tx.core, &m.header, a, &d.fragment);
-                        } else {
-                            note_box_keys(tx.core, &m.header, a, &d.fragment);
-                        }
-                    }
+        let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+        for id in ids {
+            let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
+            if m.header.kind != Kind::Role {
+                continue;
+            }
+            let Some(ai) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak == ak) else { continue };
+            if !m.valid.get(ai).copied().unwrap_or(false) {
+                continue;
+            }
+            for (r, e) in m.dropped.get(&ai).map(|d| d.intros.clone()).unwrap_or_default() {
+                note_intro(tx.core, &m.header, a, r, e);
+            }
+            for d in super::held_parts(tx, &id, ai)? {
+                if let Decoded::Delta(d) = d {
+                    note_keysets(tx.core, &m.header, a, &d.fragment);
                 }
             }
         }
@@ -285,14 +267,13 @@ fn keyset_of_value(v: &Value) -> Option<ct::Keyset> {
     ct::Keyset::from_value(&typed(inner, "keyset")?).ok()
 }
 
-/// Inputs gathered before a commit's deltas join: per actor, its `secrets.0` write, `keys.0`
-/// write and the keysets held before.
+/// Inputs gathered before a commit's deltas join: per actor, its `secrets.0` part and `keys.0`
+/// write.
 pub(crate) struct Pending {
     id: CommitId,
     ai: usize,
     actor: Tid,
     keys: KeysWrite,
-    before: Keys,
 }
 
 pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
@@ -310,11 +291,10 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
             continue;
         }
         let Decoded::Delta(d) = d else { continue };
+        note_boxes_to(tx.core, &a.tid, &d.fragment);
         if !valid.get(*ai).copied().unwrap_or(false) {
-            note_boxes_to(tx.core, &a.tid, &d.fragment);
             continue;
         }
-        note_box_keys(tx.core, h, &a.tid, &d.fragment);
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
@@ -322,9 +302,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
                 _ => None,
             })
             .unwrap_or_default();
-        let keys_ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
-        let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
-        out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys, before });
+        out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys });
     }
     Ok(out)
 }
@@ -358,7 +336,7 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
         // persisted whenever it changed: `applied` also records epochs and supersessions it
         // reports no change for
         let before = e.clone();
-        let changed = w.applied(e, p.id, (&p.keys, &p.before)).unwrap_or(false);
+        let changed = w.applied(e, p.id, &p.keys).unwrap_or(false);
         if changed || *e != before {
             save(tx, &actor)?;
         }
@@ -402,9 +380,7 @@ pub(crate) fn may_compact(core: &Core, actor: &Tid, state: &Fragment) -> bool {
     osis_keys::may_compact_secrets(&s, &e).unwrap_or(false)
 }
 
-/// A held commit's `secrets.0` delta became valid again (re-grant): applied as received, with
-/// the current `keys.0` as the keysets before it (an approximation: a keyset it replaced is no
-/// longer known).
+/// A held commit's `secrets.0` delta became valid again (re-grant): applied as received.
 pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) else { return Ok(()) };
     let Some(a) = h.aspects.get(ai).cloned() else { return Ok(()) };
@@ -422,11 +398,9 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
             }
         }
     }
-    let keys_ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
-    let before = tx.state(&a.tid, &keys_ak)?.and_then(Fragment::read).and_then(|v| ct::KEYS.decode(&v).ok()).unwrap_or_default();
     tx.core.touch();
     let e = tx.core.ix.secrets.entry_or_default(a.tid);
-    if secrets.applied(e, *c, (&keys, &before)).unwrap_or(false) {
+    if secrets.applied(e, *c, &keys).unwrap_or(false) {
         save(tx, &a.tid)?;
     }
     Ok(())
@@ -732,7 +706,7 @@ mod tests {
                 held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Own);
                 let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: kem.clone(), seed: None } };
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
-                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut rng).unwrap();
+                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v, None);
                 assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
@@ -794,7 +768,7 @@ mod tests {
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Own);
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let bytes = forge_role_commit(lp, by, t, &rec, &v, also);
         assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
@@ -1028,7 +1002,7 @@ mod tests {
         let rcpt = osis_keys::Recipient { holder: lp.peers[1].engine.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Own);
-        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &|_, _| true, &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
         let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let mut forged = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 2, t, &rec, &boxed, None)).unwrap();
         forged.header.author = lp.peers[0].engine.tid();

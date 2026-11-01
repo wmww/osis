@@ -5,7 +5,7 @@ use crate::epoch::{ActorEpochs, Provenance, ROLES};
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Epoch;
-use osis_schema::core_types::{BoxKey, SecretBox, Secrets};
+use osis_schema::core_types::{SecretBox, Secrets};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -206,12 +206,6 @@ pub fn expired(until: Option<WallMs>, now: WallMs) -> bool {
 pub trait HeldActors {
     fn secrets(&self, actor: &Tid) -> Option<&Secrets>;
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs>;
-    /// Whether a key-actor box keyed at a higher role whose key epoch is no longer current (a
-    /// grant raced by a rotation of that role only) carries role `r` at epoch `e`: the commit that
-    /// wrote it knew `e` (`Carries`). Such a box still hands its holder the lower role's secret.
-    fn stale_box_carries(&self, _key: &BoxKey, _r: Role, _e: &Epoch) -> bool {
-        false
-    }
     /// Whether epoch `e` of role `r` of `actor` counts as written by the party that departed in
     /// `d` (seen from `actor`): then it does not cover `d` whatever its boxes (spec/crypto.md §4).
     fn departed_wrote(&self, _actor: &Tid, _r: Role, _e: &Epoch, _d: &Departure) -> bool {
@@ -223,8 +217,6 @@ pub trait HeldActors {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryHeldActors {
     pub map: BTreeMap<Tid, (Secrets, ActorEpochs)>,
-    /// `HeldActors::stale_box_carries` answers: (box key, role, epoch) it carries.
-    pub stale: BTreeSet<(BoxKey, Role, Epoch)>,
 }
 
 impl HeldActors for MemoryHeldActors {
@@ -234,45 +226,19 @@ impl HeldActors for MemoryHeldActors {
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs> {
         self.map.get(actor).map(|x| &x.1)
     }
-    fn stale_box_carries(&self, key: &BoxKey, r: Role, e: &Epoch) -> bool {
-        self.stale.contains(&(key.clone(), r, *e))
-    }
 }
 
-/// Whether a key-actor box keyed at a higher role (`key`) carries role `r` at epoch `e`; it
-/// cannot be opened to check. `None`: assume it does.
-pub type Carries<'a> = Option<&'a dyn Fn(&BoxKey, Role, &Epoch) -> bool>;
-
-/// The boxes of `holder` that may carry role `r` at epoch `e`: its box at (r, e), and a
-/// key-actor box (sealed, no keyset) keyed at a higher role's current epoch, which carries the
-/// roles below it (spec/crypto.md §4) where `carries` says so (the re-seal trigger: and only at
-/// r's newest epoch, the one such a box carries; another fork's gets a box of its own, so one
-/// the higher box never carried is not counted as held); with `stale`, also such a box at
-/// a superseded epoch of the higher role where `stale` says it carries (r, e).
-fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, e: &Epoch, carries: Carries, stale: Option<&dyn HeldActors>) -> bool {
-    let exact = box_key(*holder, r, e);
-    secrets.boxes.iter().any(|(k, b)| {
-        k.holder == *holder
-            && (*k == exact
-                || (k.role > r
-                    && matches!(b, SecretBox::Sealed(s) if s.keyset.is_none())
-                    && (from_schema(&k.epoch).is_ok_and(|ke| epochs.role(k.role).is_current(&ke)) && carries.is_none_or(|f| epochs.role(r).newest() == Some(*e) && f(k, r, e))
-                        || stale.is_some_and(|h| h.stale_box_carries(k, r, e)))))
-    })
-}
-
-/// Does epoch `e` of role `r` of `actor` (whose `secrets.0` and epochs are given) cover `d`?
-/// Not when `held` counts it as written by the departed party (`departed_wrote`), at this or
-/// any actor down the chain. Else a holder's departure: `e` holds no box for it (a key actor's
-/// box keyed higher counts). A departure inside holder M: M's box in `e` names the newest
-/// keyset epoch of M for `r` the node holds, and that epoch of M covers the rest of the
+/// Does epoch `e` of role `r` of `actor` (whose `secrets.0` is given) cover `d`? Not when
+/// `held` counts it as written by the departed party (`departed_wrote`), at this or any actor
+/// down the chain. Else a holder's departure: `e` holds no box for it. A departure inside
+/// holder M: M's box in `e` names the newest keyset epoch of M for `r` the node holds, and that epoch of M covers the rest of the
 /// departure, and so on down the chain (a loop: chains have no depth bound). Missing knowledge
 /// of a chain actor counts as not covered.
-pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
+pub fn covers(actor: &Tid, secrets: &Secrets, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
     if r < d.from {
         return true;
     }
-    let (mut actor, mut secrets, mut epochs, mut e, mut via) = (*actor, secrets, epochs, *e, d.via.clone());
+    let (mut actor, mut secrets, mut e, mut via) = (*actor, secrets, *e, d.via.clone());
     loop {
         if held.departed_wrote(&actor, r, &e, &Departure { via: via.clone(), holder: d.holder, from: d.from }) {
             return false;
@@ -292,24 +258,24 @@ pub fn covers(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: 
         if me.role(r).newest() != Some(k) {
             return false;
         }
-        (actor, secrets, epochs, e, via) = (m, ms, me, k, rest);
+        (actor, secrets, e, via) = (m, ms, k, rest);
     }
-    !boxes_for(secrets, epochs, &d.holder, r, &e, None, Some(held))
+    !secrets.boxes.contains_key(&box_key(d.holder, r, &e))
 }
 
 /// The known departures epoch `e` of role `r` does not cover. A node that may rotate `r`
 /// rotates first when this is non-empty (spec/crypto.md §4), after the intermediate actors of a
 /// departure inside a holder where it may (`Plan::required` is top-down); the rotation commit's
 /// own wrap is the one exception (`Rotation::wrap_epoch`).
-pub fn uncovered<'a>(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn HeldActors) -> Vec<&'a Departure> {
-    departures.iter().filter(|d| !covers(actor, secrets, epochs, r, e, d, held)).collect()
+pub fn uncovered<'a>(actor: &Tid, secrets: &Secrets, r: Role, e: &Epoch, departures: &'a [Departure], held: &dyn HeldActors) -> Vec<&'a Departure> {
+    departures.iter().filter(|d| !covers(actor, secrets, r, e, d, held)).collect()
 }
 
 /// Whether a node that may rotate `r` may encrypt under `e`: established and current (an epoch
 /// whose rotation commit is not applied, pending or invalid never is), and covering every known
 /// departure. Opening a label and reading are not encrypting under (any held secret).
 pub fn may_encrypt_under(actor: &Tid, secrets: &Secrets, epochs: &ActorEpochs, r: Role, e: &Epoch, departures: &[Departure], held: &dyn HeldActors) -> bool {
-    epochs.role(r).is_current(e) && uncovered(actor, secrets, epochs, r, e, departures, held).is_empty()
+    epochs.role(r).is_current(e) && uncovered(actor, secrets, r, e, departures, held).is_empty()
 }
 
 /// The roles of an actor a node must rotate before encrypting under each role's newest held
@@ -344,24 +310,16 @@ pub struct Holder {
 
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
 /// they hold, established through its rotation commit (`Chain`, `Own`; not a snapshot alone, see
-/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder whose `until` is within `MAX_DRIFT`.
-/// `carries(key, r, e)`: whether the commit that wrote a key actor's box keyed at a higher role
-/// knew epoch e of r (its `secrets.0` write names e, or it is ordered after e's rotation); only
-/// then does that box count for (r, e). The caller decides after a sync pass of the actor's
+/// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder
+/// whose `until` is within `MAX_DRIFT`. The caller decides after a sync pass of the actor's
 /// labels that fetched everything, and only for roles it may rotate.
-pub fn reseal_needed(
-    secrets: &Secrets,
-    epochs: &ActorEpochs,
-    holders: &[Holder],
-    now: WallMs,
-    carries: &dyn Fn(&BoxKey, Role, &Epoch) -> bool,
-) -> Vec<(Tid, BTreeSet<Role>)> {
+pub fn reseal_needed(secrets: &Secrets, epochs: &ActorEpochs, holders: &[Holder], now: WallMs) -> Vec<(Tid, BTreeSet<Role>)> {
     let mut out = Vec::new();
     for m in holders {
         if m.until.is_some_and(|u| u.0 <= now.0.saturating_add(MAX_DRIFT_MS)) {
             continue;
         }
-        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(secrets, epochs, &m.holder, *r, carries).is_empty()).collect();
+        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(secrets, epochs, &m.holder, *r).is_empty()).collect();
         if !roles.is_empty() {
             out.push((m.holder, roles));
         }
@@ -371,9 +329,9 @@ pub fn reseal_needed(
 
 /// The epochs of `r` at which the re-seal trigger finds `holder` without a box (`reseal_needed`):
 /// current ones established through their rotation commits.
-pub fn reseal_missing(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, carries: &dyn Fn(&BoxKey, Role, &Epoch) -> bool) -> Vec<Epoch> {
+pub fn reseal_missing(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role) -> Vec<Epoch> {
     let re = epochs.role(r);
-    re.current().into_iter().filter(|e| re.provenance(e).is_some_and(Provenance::reseals)).filter(|e| !boxes_for(secrets, epochs, holder, r, e, Some(carries), None)).collect()
+    re.current().into_iter().filter(|e| re.provenance(e).is_some_and(Provenance::reseals)).filter(|e| !secrets.boxes.contains_key(&box_key(*holder, r, e))).collect()
 }
 
 #[cfg(test)]

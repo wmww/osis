@@ -942,7 +942,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 for (ai, _, d) in &parts {
                     if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                         match a.ak.as_str() {
-                            "secrets.0" => keys::note_box_keys(tx.core, &b.header, &a.tid, &d.fragment),
+                            "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
                             "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
                             _ => {}
                         }

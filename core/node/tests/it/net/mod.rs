@@ -809,7 +809,7 @@ fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipien
     let roles = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, recipients, &|_, _| true, &mut SeededRng::from_u64(rng)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, recipients, &mut SeededRng::from_u64(rng)).unwrap();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
     }

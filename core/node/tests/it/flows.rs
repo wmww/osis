@@ -1317,9 +1317,9 @@ fn reseal_raced_grant_spec_perm_3() {
 }
 
 // spec/permissions.md §3 (re-seal), spec/crypto.md §4: a person actor's holders are all key
-// actors (its devices, its recovery key), boxed once each keyed at their top role; after a
-// device removal rotates every role, the read and write epochs are found introduced by the
-// rotation's keysets, so nobody is "seen without a box" and nothing is re-sealed.
+// actors (its devices, its recovery key), boxed per role; after a device removal rotates every
+// role, every remaining holder has a box at each new epoch, so nobody is "seen without a box"
+// and nothing is re-sealed.
 #[test]
 fn key_actor_holders_not_resealed_spec_perm_3() {
     struct Pass;
@@ -1955,13 +1955,12 @@ fn move_labels_copy_spec_perm_7() {
     assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }
 
-// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M"; a
-// key actor's box keyed at a higher role carries the roles below it. A node granted write with
-// `until` while another admin rotated write only (a demotion it had not seen with the grant)
-// keeps its box at the superseded write epoch, which still carries the read epoch. Once `until`
-// passes, the next writer rotates read before encrypting, and the key actor holds none of it.
+// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M". A
+// node granted write with `until` while another admin rotated write only (a demotion it had not
+// seen with the grant) keeps its box at the current read epoch. Once `until` passes, the next
+// writer rotates read before encrypting, and the key actor holds none of it.
 #[test]
-fn stale_key_actor_box_after_until_spec_crypto_4() {
+fn raced_grant_read_box_after_until_spec_crypto_4() {
     let (mut lp, ps) = people(4, 521);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let n3 = lp.peers[3].engine.tid();

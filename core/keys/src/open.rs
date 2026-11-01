@@ -40,7 +40,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
     let mut failed = Vec::new();
     for (k, b) in secrets.boxes.iter().filter(|(k, _)| k.holder == holder) {
         match open_one(actor, k, b, opener, &mut kem_cache) {
-            Ok(Some(items)) => out.extend(items),
+            Ok(Some(o)) => out.push(o),
             Ok(None) => {}
             Err(e) => failed.push((k.clone(), e)),
         }
@@ -49,7 +49,7 @@ pub fn open_boxes(actor: &Tid, secrets: &Secrets, opener: &Opener) -> (Vec<Opene
 }
 
 /// `Ok(None)`: the opener holds no key for this box.
-fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: &mut Option<KemSecret>) -> Result<Option<Vec<Opened>>, Error> {
+fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: &mut Option<KemSecret>) -> Result<Option<Opened>, Error> {
     let epoch = from_schema(&k.epoch)?;
     let slot = BoxSlot::Secrets { actor: *actor, holder: k.holder, role: k.role, epoch };
     match b {
@@ -64,17 +64,9 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
                 _ => return Err(Error::Mismatch("sealed form does not fit the holder kind")),
             };
             let Sealed::X25519MlKem768(bytes) = &sb.sealed;
-            let items = open_box(&kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
-            let key_actor = keyset.is_none();
-            // An actor's box carries its key's (role, epoch) only; a key actor's, one secret per
-            // role at or below its key's role, the key's role at the key's epoch.
-            let fits = items.iter().any(|i| i.role == k.role && i.epoch == epoch)
-                && items.iter().all(|i| i.role <= k.role)
-                && (key_actor || items.len() == 1);
-            if !fits {
-                return Err(Error::Mismatch("box items"));
-            }
-            Ok(Some(items.into_iter().map(|i| Opened { role: i.role, epoch: i.epoch, secret: i.secret }).collect()))
+            // osis-crypto checks the item is the key's (role, epoch)
+            let i = open_box(&kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, bytes)?;
+            Ok(Some(Opened { role: i.role, epoch: i.epoch, secret: i.secret }))
         }
         SecretBox::Symmetric(sym) => {
             let epoch_s = from_schema(&sym.epoch)?;
@@ -87,7 +79,7 @@ fn open_one(actor: &Tid, k: &BoxKey, b: &SecretBox, opener: &Opener, kem_cache: 
                 },
             };
             let secret = open_symmetric_box(&s, &slot, epoch_s, &sym.wrap)?;
-            Ok(Some(vec![Opened { role: k.role, epoch, secret }]))
+            Ok(Some(Opened { role: k.role, epoch, secret }))
         }
     }
 }

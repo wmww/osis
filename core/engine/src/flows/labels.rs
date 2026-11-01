@@ -30,21 +30,17 @@ fn kem_of(k: &KemKey) -> Result<KemPublicKey> {
     Ok(KemPublicKey::from_slice(b)?)
 }
 
-/// The readers of `group`'s read epoch `e` (spec/sync.md §2): holders of read boxes at `e`
-/// (and key actors boxed at a higher role, whose box carries read), the owner included; a node
-/// by its KEM key, another key actor by static entry, an actor by its newest read keyset.
+/// The readers of `group`'s read epoch `e` (spec/sync.md §2): holders of read boxes at `e`, the
+/// owner included; a node by its KEM key, another key actor by static entry, an actor by its
+/// newest read keyset.
 pub(crate) fn readers(tx: &mut Tx<'_>, group: &Tid, e: &Epoch) -> Result<Vec<ReaderKey>> {
     let mut holders: Vec<Tid> = Vec::new();
     if let Some(o) = tx.core.owner(group) {
         holders.push(o);
     }
     let secrets = super::secrets_in(tx, group)?;
-    let epochs = tx.core.epochs(group).unwrap_or_default();
     for k in secrets.boxes.keys() {
-        let Ok(ke) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
-        let read_at_e = k.role == Role::Read && ke == *e;
-        let carried = k.role > Role::Read && epochs.role(k.role).is_current(&ke) && tx.core.is_key_actor(&k.holder);
-        if read_at_e || carried {
+        if k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|ke| ke == *e) {
             holders.push(k.holder);
         }
     }

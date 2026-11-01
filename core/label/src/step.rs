@@ -388,7 +388,7 @@ fn shuffle<T>(v: &mut [T], rng: &mut dyn CryptoRngCore) {
 
 fn seal_entry(slot: &BoxSlot, kem: &KemPublicKey, epoch: Epoch, secret: &Secret32, rng: &mut dyn CryptoRngCore) -> Result<SecretBox, Error> {
     let item = BoxItem { role: Role::Read, epoch, secret: secret.clone() };
-    let sealed = seal_box(kem, slot, None, &[item], rng)?;
+    let sealed = seal_box(kem, slot, None, &item, rng)?;
     Ok(SecretBox::Sealed(SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: Sealed::X25519MlKem768(sealed) }))
 }
 
@@ -399,9 +399,8 @@ pub fn open_entry_box(b: &SecretBox, step: &Step, kem: &KemSecret, group: &Tid) 
     let SecretBox::Sealed(sb) = b else { return Err(Error::Malformed("entry box form")) };
     let keyset = sb.keyset.as_ref().map(|e| Epoch::new(e.n, e.nonce)).transpose()?;
     let Sealed::X25519MlKem768(sealed) = &sb.sealed;
-    let items = open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, sealed)?;
-    match items.as_slice() {
-        [BoxItem { role: Role::Read, epoch, secret }] => Ok((*epoch, secret.clone())),
+    match open_box(kem, &slot, BoxForm::Sealed { keyset, suite: sb.suite }, sealed)? {
+        BoxItem { role: Role::Read, epoch, secret } => Ok((epoch, secret)),
         _ => Err(Error::Malformed("entry box carries other than the read secret")),
     }
 }

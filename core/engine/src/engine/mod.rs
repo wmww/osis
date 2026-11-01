@@ -437,8 +437,6 @@ indexes! {
     /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
     /// introducer is unknown (`rotation`).
     pub epoch_intro: EpochIntro,
-    /// The earliest noted commit writing a box: (actor, box key) -> its `ts`.
-    pub box_written: JMap<(Tid, osis_schema::core_types::BoxKey), Ts>,
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`).
     pub lost_due: JSet<Tid>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
