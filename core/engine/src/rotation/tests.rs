@@ -1389,8 +1389,8 @@ fn forks_with_departures(seeds: std::ops::Range<u64>) {
             // a peer acts on the role it held when the round began: one demoted in it does not
             // know yet, and its rotation there is invalid at the others
             let acting = role;
-            for i in 0..N {
-                let Some(ri) = acting[i] else { continue };
+            for (i, ri) in acting.into_iter().enumerate() {
+                let Some(ri) = ri else { continue };
                 if ri < Role::Write || rng.next(2) == 0 {
                     continue;
                 }
