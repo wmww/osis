@@ -1,3 +1,4 @@
 - A scripted strip of `.ephemeral()` from test keys also turned a deliberately mismatched key (`ak("group.0").ephemeral()`) into a different test; tier 1 caught it. Grep the removed calls for unmarked keys after such a rewrite.
 - A commit forged at the same wall ms as the grant it relies on is invalid (`Ts::make(now, 0)` sorts before the grant's HLC): `lp.advance` before forging, and keep a control write that must apply, or the probe with the fix disabled still passes.
 - `Engine::has_durable` is true for any held header naming the aspect, even when its part was dropped: not a check that a delta applied.
+- Review: `cargo test ... --no-run | grep -o` for the Executable path picks up the relative `target/debug/deps/it-*` only; copy it from the worktree root.
