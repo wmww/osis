@@ -359,10 +359,6 @@ byte_id!(
     /// First 16 bytes of BLAKE3 over the label's genesis delete key (spec/sync.md §2).
     LabelId, 16
 );
-byte_id!(
-    /// 128 random bits, minted once per schema (spec/data-model.md §10).
-    SchemaId, 16
-);
 
 /// Link to a chunk-tree node or page (spec/data-model.md §6, spec/crypto.md §6): 97 bytes of
 /// payload. `Debug` hides the blob key.

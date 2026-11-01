@@ -10,7 +10,7 @@ use osis::{ChangeId, Config, Error, Lifetimes, MemStore, Osis, Role, Source, Sto
 use std::sync::mpsc::channel;
 use std::time::Duration;
 
-const SCHEMA: &str = "schema 0x0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e;\nrevision 1;\n\
+const SCHEMA: &str = "revision 1;\n\
 type win = struct { 0 title: string, 1 notes: list<string> };\n\
 aspect win:state.0~: win [ephemeral];\n\
 aspect win:typing.0~: bool [ephemeral, expires: 5s];\n\

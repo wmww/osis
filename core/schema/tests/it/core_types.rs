@@ -2,8 +2,8 @@
 //! Core aspect Rust types and typed keys (spec/data-model.md §9, spec/wire.md §3). Canonical
 //! encodings are core/test/vectors/schema/core.vec (osis-vectors).
 
-use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, ROLE_KEEP_MS};
-use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::format::ROLE_KEEP_MS;
+use osis_base::{Ak, Classified, CommitId, CreationRecord, ErrorClass, LabelId, Limits, Link, BlobId, Role, Tid, Ts, Value, WallMs};
 use osis_schema::core_types::*;
 use osis_schema::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -59,7 +59,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("label", "label.0", LABEL.encode(&labels)),
         ("moved", "moved.0", MOVED.encode(&tid(25))),
         ("was", "was.0", WAS.encode(&tid(26))),
-        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
+        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
         ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
@@ -156,9 +156,10 @@ fn key_defaults_and_identity_spec_commits_5() {
     assert!(!is_role_class("group.0"));
     assert_eq!(CREATED.defaults().retention.by, PurgeBy::Nobody);
     assert_eq!(SEEN.defaults(), AspectDefaults::default());
-    assert_eq!(GROUP.schema_ref(), Some((CORE_SCHEMA_ID, CORE_SCHEMA_REVISION)));
+    assert!(GROUP.schema().is_some_and(Schema::declares_core));
     let untyped = Ak::new("x:y.0").unwrap();
-    assert_eq!((untyped.schema_ref(), untyped.defaults()), (None, AspectDefaults::default()));
+    assert!(untyped.schema().is_none());
+    assert_eq!(untyped.defaults(), AspectDefaults::default());
     assert_eq!(AspectKey::decode(&untyped, &Value::Int(3)).unwrap(), Value::Int(3));
     assert!(core_schema().aspects["tid.0"].flags.contains(&Flag::Synthetic));
     assert!(core_schema().aspects["created.0"].flags.contains(&Flag::Guaranteed));

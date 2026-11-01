@@ -19,7 +19,6 @@ use std::collections::BTreeMap;
 pub static SKEW1: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-schema 0x51a0000000000000000000000000005b;
 revision 1;
 type rec = struct { 0 a: string };
 aspect k:rec.0: rec;
@@ -30,7 +29,6 @@ aspect k:rec.0: rec;
 pub static SKEW2: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-schema 0x51a0000000000000000000000000005b;
 revision 2;
 type rec = struct { 0 a: string, 1 b: string = "" };
 aspect k:rec.0: rec;

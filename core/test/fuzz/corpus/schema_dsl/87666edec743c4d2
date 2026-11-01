@@ -1,5 +1,4 @@
 //! Core schema (spec/data-model.md §9). Agility enums and the creation record: spec/wire.md §3.
-schema 0x00000000000000000000000000000000;
 revision 2;
 
 type signing_key = enum { 1 ed25519(blob) };          // 32 bytes

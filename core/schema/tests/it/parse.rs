@@ -2,15 +2,15 @@
 //! DSL parser, validation and the encoding mapping (spec/data-model.md §2, §3, §9;
 //! spec/crdt.md §3.1).
 
-use osis_base::format::{CORE_SCHEMA_ID, CORE_SCHEMA_REVISION, ROLE_KEEP_MS};
-use osis_base::{SchemaId, Value};
+use osis_base::format::ROLE_KEEP_MS;
+use osis_base::Value;
 use osis_crdt::Encoding;
 use osis_schema::*;
 
 const NOTES: &str = include_str!("../../schemas/notes.osis");
 
 fn app(body: &str) -> Result<Schema, ParseError> {
-    parse("t.osis", &format!("schema 0x0102030405060708090a0b0c0d0e0f10;\nrevision 1;\n{body}"))
+    parse("t.osis", &format!("revision 1;\n{body}"))
 }
 
 fn err(body: &str) -> ParseError {
@@ -21,8 +21,7 @@ fn err(body: &str) -> ParseError {
 fn core_schema_parses_spec_data_model_9() {
     let s = core_schema();
     assert!(core_static().error().is_none(), "{:?}", core_static().error());
-    assert_eq!(s.id, CORE_SCHEMA_ID);
-    assert_eq!(s.revision, CORE_SCHEMA_REVISION);
+    assert!(s.declares_core());
     let aks: Vec<&str> = s.aspects.keys().map(String::as_str).collect();
     for ak in [
         "tid.0", "aspects.0", "created.0", "roles.0", "keys.0", "secrets.0", "tenures.0", "label.0", "moved.0", "was.0", "node.0",
@@ -44,7 +43,6 @@ fn core_schema_parses_spec_data_model_9() {
 fn notes_schema_parses_items_spec_data_model_2() {
     let s = parse("notes.osis", NOTES).unwrap();
     assert_eq!(s.revision, 4);
-    assert_eq!(s.id.0[0], 0x7f);
     assert_eq!(s.doc.as_deref(), Some("Notes app schema (example; notes/data-model.md)."));
     let Type::Struct(task) = &s.types["task"].body else { panic!() };
     assert_eq!(s.types["task"].doc.as_deref(), Some("A task inside a note."));
@@ -130,17 +128,18 @@ fn defaults_typed_by_field_type() {
 
 #[test]
 fn errors_carry_line_and_column() {
-    let e = parse("f.osis", "schema 0x0102030405060708090a0b0c0d0e0f10;\nrevision 1;\ntype x = struct { 0 a int };").unwrap_err();
-    assert_eq!((e.file.as_str(), e.line, e.col), ("f.osis", 3, 23));
-    assert!(e.to_string().starts_with("f.osis:3:23: expected `:`"), "{e}");
+    let e = parse("f.osis", "revision 1;\ntype x = struct { 0 a int };").unwrap_err();
+    assert_eq!((e.file.as_str(), e.line, e.col), ("f.osis", 2, 23));
+    assert!(e.to_string().starts_with("f.osis:2:23: expected `:`"), "{e}");
     let e = err("aspect x:y.0: nope;");
-    assert_eq!((e.line, e.col), (3, 1));
+    assert_eq!((e.line, e.col), (2, 1));
     assert!(e.msg.contains("unknown type nope"), "{e}");
-    let e = parse("f.osis", "revision 1;").unwrap_err();
-    assert!(e.msg.contains("missing `schema"), "{e}");
+    let e = parse("f.osis", "type x = int;").unwrap_err();
+    assert!(e.msg.contains("missing `revision"), "{e}");
+    // no schema ID item: a schema is not identified on the wire (spec/versioning.md §3)
     let e = parse("f.osis", "schema 0x01;").unwrap_err();
-    assert!(e.msg.contains("16 bytes"), "{e}");
-    let e = parse("f.osis", "schema 0x0102030405060708090a0b0c0d0e0f10;\nrevision 1;\ntype x = struct { 0 a: string = \"unterminated };").unwrap_err();
+    assert!(e.msg.contains("unknown item `schema`"), "{e}");
+    let e = parse("f.osis", "revision 1;\ntype x = struct { 0 a: string = \"unterminated };").unwrap_err();
     assert!(e.msg.contains("unterminated"), "{e}");
 }
 
@@ -164,7 +163,7 @@ fn validation_rules_spec_data_model_3() {
         ("type x = enum { 0 a } ; type y = struct { 0 f: x = b };", "unknown case b"),
         ("type option = int;", "invalid type name"),
         ("aspect x:a.0: int [keep_at_most: 1d];", "needs by: writer"),
-        ("aspect x.0: int;", "core AKs"),
+        ("aspect x.0: int; aspect x:a.0: int;", "core AKs"),
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("aspect x:a.0: int [frob];", "unknown attribute"),
         ("aspect x:a.0: int [by: everyone];", "expected nobody"),
@@ -208,10 +207,10 @@ fn deep_nesting_is_an_error_not_a_crash() {
 
 #[test]
 fn core_aspects_only_in_core_schema() {
-    let e = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect a:b.0: int;").unwrap_err();
+    let e = parse("c.osis", "revision 1;\naspect a.0: int;\naspect a:b.0: int;").unwrap_err();
     assert!(e.msg.contains("core AKs"), "{e}");
-    let s = parse("c.osis", "schema 0x00000000000000000000000000000000;\nrevision 1;\naspect a.0: int;").unwrap();
-    assert_eq!(s.id, SchemaId([0; 16]));
+    assert!(parse("c.osis", "revision 1;\naspect a.0: int;").unwrap().declares_core());
+    assert!(!parse("c.osis", "revision 1;\naspect a:b.0: int;").unwrap().declares_core());
 }
 
 proptest::proptest! {

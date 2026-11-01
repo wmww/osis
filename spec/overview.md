@@ -6,7 +6,7 @@ osis (Open Structured Information System) is a decentralized, reactive data laye
 ## Documents
 - spec/requirements.md: hard requirements, goals, the limits the design accepts, and what is out of scope.
 - spec/data-model.md: things, tids, aspects, types, values and their canonical CBOR encoding, large values, groups, core aspects.
-- spec/versioning.md: format version, extension points, the parking rule, schema identity and evolution rules.
+- spec/versioning.md: format version, extension points, the parking rule, schemas as local knowledge, evolution rules.
 - spec/crdt.md: merge encodings: state, delta grammar, join, read, ops, slots, paging, structural diff.
 - spec/commits.md: commits: header, kinds, dot forms, atomic apply, retention, purge, expiry, undo.
 - spec/crypto.md: primitives, key derivations, sealed boxes, wraps, links, delete keys, agility.

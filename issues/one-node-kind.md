@@ -139,7 +139,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
      - `G '"/[a-z]'` and `G '^aspect /' -- '*.osis'`: only non-AK paths remain (file paths, URLs).
      - `G 'namespace|is_core\b'` and `G '/members'` return nothing.
      - Read: CLI AK argument syntax and notes/cli.md examples, `osis://` URI forms, schema/README.md, notes/std.md, notes/data-model.md (namespaces), app/ and kit/ keys.
-6. **No schema ID or revision on the wire (c; M).**
+6. **No schema ID or revision on the wire (c; M).** Built (the `revision` keyword stays as the human version).
    - The header's schema table and per-aspect schema index go (spec/data-model.md §10, spec/commits.md, spec/wire.md), as do `SchemaId`, `CORE_SCHEMA_ID`/`REVISION` and the `schema 0x...;` line.
    - Schema files keep a human `version`. The node picks a local schema for an AK from the schemas it has, never from the wire. Vectors are regenerated.
    - Hunt: `G 'SchemaId|schema_id|CORE_SCHEMA|schema table|schema index'` returns nothing; `G -w revision` matches only the human version. Read the commit header layout in spec/wire.md against osis-commit's encoder.

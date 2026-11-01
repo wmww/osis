@@ -540,12 +540,16 @@ impl Osis {
 
     /// Registers a schema: typed views for its AKs (`key`, this session), undo and large-value
     /// write-back (the engine keeps those in the store). Generated keys carry their schema and
-    /// need no registration.
+    /// need no registration. The newest registration of an AK types it; an app schema declares
+    /// no core AK.
     pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
+        if s.declares_core() {
+            return Err(Error::Invalid("an app schema declares no core AK".into()));
+        }
         let s = Arc::new(s);
         self.engine(|e| e.register_schema(s.clone()))?;
         let mut v = lock(&self.inner.schemas);
-        v.retain(|x| x.id != s.id);
+        v.retain(|x| x.aspects.keys().any(|k| !s.aspects.contains_key(k)));
         v.push(s.clone());
         Ok(s)
     }
@@ -571,7 +575,7 @@ impl Osis {
         let schema = if core.aspects.contains_key(ak.as_str()) {
             Some(core.clone())
         } else {
-            lock(&self.inner.schemas).iter().find(|s| s.aspects.contains_key(ak.as_str())).cloned()
+            lock(&self.inner.schemas).iter().rev().find(|s| s.aspects.contains_key(ak.as_str())).cloned()
         };
         Ok(crate::Key { ak, schema })
     }

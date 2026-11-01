@@ -1,5 +1,5 @@
 # Versioning
-> Summary: The format version and the other extension points, the parking rule for data a node cannot interpret, schema identity in commit headers, the additive evolution rules a schema must follow, open structs, reader defaults and typed-read failures.
+> Summary: The format version and the other extension points, the parking rule for data a node cannot interpret, schemas as local knowledge (nothing about them on the wire), the additive evolution rules a schema must follow, open structs, reader defaults and typed-read failures.
 
 ## 1. Extension points
 Four independent extension points, each parked separately so a node with one unknown item still reads everything else:
@@ -16,10 +16,9 @@ Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negot
 - A role-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.
 - Malformed data (non-canonical bytes, out-of-range indices, a violated grammar rule) is bad input and MUST be rejected, never parked.
 
-## 3. Schema identity
+## 3. Schemas and AKs
 - Each AK belongs to exactly one schema. Only that schema extends the AK's type closure or allocates IDs under it.
-- A commit header carries a **schema table** `[(schema ID, revision)]` and, per delta, an index into it, or none for an untyped write (spec/commits.md §1).
-- A reader whose schema claims an AK and sees a delta on it under a different schema ID reports an AK collision diagnostic. Merge is unaffected: the writes merge like any concurrent writes (spec/crdt.md §7).
+- Nothing on the wire names a schema or a revision: a node types an AK by a schema it holds that declares the AK, never by anything a commit carries. Writes under two schemas claiming one AK merge like any concurrent writes (spec/crdt.md §7); a reader sees what its schema cannot type as a typed-read failure (§5).
 
 ## 4. Evolution rules
 A published revision MUST be an additive superset of every earlier one. Relative to the last published revision, a new revision MUST NOT:
@@ -27,7 +26,7 @@ A published revision MUST be an additive superset of every earlier one. Relative
 - change the type of an existing ID, or change an encoding except along a register embedding edge (`T` to `counter<T>`, `max<T>`, `min<T>`; `string` to `text`; spec/crdt.md §7);
 - add a field without a default to an existing struct;
 - change or remove a default, or add one to a formerly required field unless explicitly marked;
-- change the schema ID, or publish without bumping the revision.
+- publish without bumping the revision.
 An aspect's wire type never changes; a different type is a new AK, normally the successor version (spec/data-model.md §2). Enum cases are never removed.
 
 ## 5. Reads and writes across revisions

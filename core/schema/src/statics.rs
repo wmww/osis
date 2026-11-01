@@ -3,7 +3,6 @@
 use crate::error::ParseError;
 use crate::parse::parse;
 use crate::schema::Schema;
-use osis_base::SchemaId;
 use std::sync::OnceLock;
 
 /// A schema source compiled into the binary. The source was checked when it was embedded
@@ -27,7 +26,7 @@ impl StaticSchema {
     pub fn get(&self) -> &Schema {
         match self.parsed() {
             Ok(s) => s,
-            Err(_) => BROKEN.get_or_init(|| Schema::new(SchemaId([0xff; 16]), 0)),
+            Err(_) => BROKEN.get_or_init(|| Schema::new(0)),
         }
     }
     /// The parse error, if the embedded source is broken.
@@ -43,7 +42,7 @@ impl StaticSchema {
 pub const CORE_SRC: &str = include_str!("../schemas/core.osis");
 pub(crate) static CORE: StaticSchema = StaticSchema::new("core.osis", CORE_SRC);
 
-/// The core schema (spec/data-model.md §9): ID 16 zero bytes, revision 1.
+/// The core schema (spec/data-model.md §9).
 pub fn core_schema() -> &'static Schema {
     CORE.get()
 }

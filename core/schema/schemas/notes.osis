@@ -1,5 +1,4 @@
 //! Notes app schema (example; notes/data-model.md).
-schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // random, minted once, never changes
 revision 4;                                   // bumped on every publish
 
 type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int) };

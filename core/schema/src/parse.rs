@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! file    := innerdoc* item*
-//! item    := doc* ( "schema" HEX ";" | "revision" INT ";"
+//! item    := doc* ( "revision" INT ";"
 //!                 | "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | "aspect" AK ":" type succeeds? attrs? ";"
 //!  )
@@ -24,7 +24,7 @@ use crate::error::ParseError;
 use crate::lex::{Tok, Token, lex};
 use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef};
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_base::{SchemaId, Tid, Value};
+use osis_base::{Tid, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Deepest nesting of types and literals in a source file.
@@ -149,9 +149,8 @@ impl<'a> Parser<'a> {
             doc.push(d.clone());
             self.pos += 1;
         }
-        let mut id = None;
         let mut revision = None;
-        let mut s = Schema::new(SchemaId([0; 16]), 0);
+        let mut s = Schema::new(0);
         let mut locs = Locs::new();
         loop {
             let item_doc = self.docs();
@@ -160,22 +159,15 @@ impl<'a> Parser<'a> {
                 Tok::Eof => break,
                 Tok::Ident(k) => k,
                 Tok::InnerDoc(_) => return self.err_at(at, "`//!` docs belong at the top of the file"),
-                _ => return self.err_at(at, "expected an item (schema, revision, type, aspect)"),
+                _ => return self.err_at(at, "expected an item (revision, type, aspect)"),
             };
             match kw.as_str() {
-                "schema" => {
-                    let Tok::Hex(b) = self.next() else { return self.err_at(at, "expected a 16-byte hex schema ID") };
-                    let b: [u8; 16] = b.try_into().or_else(|_| self.err_at(at, "schema ID must be 16 bytes"))?;
-                    if id.replace(SchemaId(b)).is_some() {
-                        return self.err_at(at, "duplicate schema item");
-                    }
-                    locs.insert("schema".into(), at);
-                }
                 "revision" => {
                     let r = self.int("a revision number")?;
                     if revision.replace(r).is_some() {
                         return self.err_at(at, "duplicate revision item");
                     }
+                    locs.insert("schema".into(), at);
                 }
                 "type" => {
                     let name = self.ident("a type name")?;
@@ -218,10 +210,6 @@ impl<'a> Parser<'a> {
             }
             self.expect(';')?;
         }
-        s.id = match id {
-            Some(id) => id,
-            None => return self.err("missing `schema <id>;`"),
-        };
         s.revision = match revision {
             Some(r) => r,
             None => return self.err("missing `revision <n>;`"),

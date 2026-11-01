@@ -629,14 +629,8 @@ impl Engine {
         if a.expires.is_some_and(|t| t <= now) {
             return Ok(None);
         }
-        // the schema it was written with: an unregistered typed one cannot be written back
-        let schema: Option<Arc<Schema>> = match a.schema {
-            None => None,
-            Some(i) => match self.core.ix.commits.get(&c).and_then(|m| m.header.schemas.get(i)).and_then(|(s, _)| self.core.schemas.get(s)) {
-                Some(s) => Some(s.clone()),
-                None => return Ok(None),
-            },
-        };
+        // the local schema of the AK, if any (none writes back untyped)
+        let schema: Option<Arc<Schema>> = self.core.schemas.get(ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(ak.as_str()).then(|| Arc::new(osis_schema::core_schema().clone())));
         let Some(state) = self.state(tid, ak)? else { return Ok(None) };
         let Some(v) = state.read() else { return Ok(None) };
         let core = osis_schema::core_schema();

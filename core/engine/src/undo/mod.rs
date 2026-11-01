@@ -148,7 +148,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
         let mut w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
-        let schema = a.schema.and_then(|i| h.schemas.get(i)).and_then(|(id, _)| tx.core.schemas.get(id).cloned()).or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
+        let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
         let buf: &dyn UndoBuffer = &pre;
         // a write of an undo commit in effect, with every later change of the aspect undone:
@@ -166,7 +166,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         };
         if let Some(f) = out {
             let r = w.range();
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
         }
     }
     unmake(tx, &made, ts, node, &mut deltas)?;
@@ -247,7 +247,7 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
                 d.fragment.join(f);
                 d.hi = r.hi;
             }
-            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, schema_ref: None, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
+            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
         }
     }
     Ok(())

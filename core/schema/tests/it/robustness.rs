@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 fn src(body: &str) -> String {
-    format!("schema 0x0102030405060708090a0b0c0d0e0f10;\nrevision 1;\n{body}")
+    format!("revision 1;\n{body}")
 }
 
 fn err(body: &str) -> ParseError {

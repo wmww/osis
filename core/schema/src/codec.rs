@@ -5,7 +5,7 @@
 //! missing field is an error here; typed keys run the typed read first.
 
 use crate::path::{PathError, PathErrorKind, Step};
-use osis_base::{BlobId, CommitId, Float, LabelId, Link, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{BlobId, CommitId, Float, LabelId, Link, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub trait Codec: Sized {
@@ -128,7 +128,6 @@ macro_rules! byte_id {
     };
 }
 byte_id!(LabelId);
-byte_id!(SchemaId);
 byte_id!(CommitId);
 byte_id!(BlobId);
 

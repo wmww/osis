@@ -52,8 +52,7 @@ fn value() -> impl Strategy<Value = Value> {
     })
 }
 
-const SRC: &str = "schema 0x0123456789abcdef0123456789abcdef;
-revision 1;
+const SRC: &str = "revision 1;
 type prio = enum { 0 low, 1 high(int), 2 tagged(list<string>) };
 type rec = struct { 0 title: string, 1 done: bool, 2 when: timestamp, 3 tags: set<string>, 4 prio: prio,
   5 waits: map<int, duration>, 6 score: option<float>, 7 extra: any, 8 owner: tid, 9 body: markdown,

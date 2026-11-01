@@ -18,9 +18,6 @@ fn validate_layout() {
     x.keys.swap(0, 1);
     assert!(matches!(invalid(&x), Error::Malformed(_)));
     let mut x = h.clone();
-    x.aspects[0].schema = Some(1);
-    assert!(matches!(invalid(&x), Error::Malformed(_)));
-    let mut x = h.clone();
     x.keys.push(dkey(3, 3));
     assert!(matches!(invalid(&x), Error::Malformed(_)), "unused delete key");
     let mut x = h.clone();
@@ -77,12 +74,10 @@ pub(crate) fn role_header(ak: &str) -> Header {
     let mut h = sample_header();
     h.kind = Kind::Role;
     h.form = crate::header::Form::Commit;
-    h.schemas.clear();
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
     a.retention = retention::ROLE_RETENTION;
     a.expires = None;
-    a.schema = None;
     a.keys = vec![0];
     a.hashes = vec![[1; 32], [2; 32]];
     h.keys.truncate(1);

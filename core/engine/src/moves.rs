@@ -15,7 +15,7 @@ use crate::engine::{Core, Engine, Owned, Tx};
 use crate::error::{Error, Result};
 use crate::Mutation;
 use osis_commit::{Decoded, Form, Header, Kind, Origin};
-use osis_base::{Ak, CommitId, SchemaId, Tid, Ts};
+use osis_base::{Ak, CommitId, Tid, Ts};
 use osis_crdt::{Dot, Fragment, Shown, Source, SourceKind};
 use osis_schema::core_types as ct;
 use osis_schema::core_types::is_role_class;
@@ -85,11 +85,6 @@ fn from_own(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     let Some(k) = core.commit_of(tid, ak, d) else { return false };
     let Some(m) = core.ix.commits.get(&k) else { return false };
     m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false) && !m.dropped.contains_key(&ai))
-}
-
-/// The schema table entry of aspect `ai` of a header.
-fn schema_of(h: &Header, ai: usize) -> Option<(SchemaId, u64)> {
-    h.aspects.get(ai)?.schema.and_then(|i| h.schemas.get(i)).copied()
 }
 
 /// Writes the importer does not import from a valid snapshot (spec/permissions.md §7): values
@@ -188,7 +183,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         if f.is_empty() {
             continue;
         }
-        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
+        deltas.push(Resolved { tid: *m, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
     }
     if deltas.is_empty() {
         return Ok(None);
@@ -327,7 +322,7 @@ mod tests {
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
                 let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-                let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, schema_ref: schema_of(&h, ai), retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
+                let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })
             .unwrap();

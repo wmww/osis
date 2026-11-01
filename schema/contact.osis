@@ -1,7 +1,6 @@
 //! Contacts (notes/std.md). A contact is a thing with any of these aspects, owned by whoever keeps it;
 //! a profile is the same aspects on a person's profile thing, written by that person. Display name: `name.0`;
 //! notes: `body.0`; groups: tags.
-schema 0x5b1d4c0e9a7f4e2bb3c6d8a1f0e2c4b6;
 revision 1;
 
 /// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.

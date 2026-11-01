@@ -840,14 +840,25 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     for (t, c) in parts {
         tx.core.ix.keyset_parts.insert(t, c);
     }
-    let mut schemas = Vec::new();
-    tx.scan(records::SCHEMAS, |_, v| {
-        let bad = |_| Error::Corrupt("schema");
-        let v = osis_base::decode(&v, &osis_base::Limits::default()).map_err(bad)?;
-        schemas.push(osis_schema::Schema::from_value(&v).map_err(|_| Error::Corrupt("schema"))?);
+    // one record per AK; a schema's AKs share one `Arc`
+    let mut schemas = BTreeMap::new();
+    let mut parsed: BTreeMap<Vec<u8>, std::sync::Arc<osis_schema::Schema>> = BTreeMap::new();
+    tx.scan(records::SCHEMAS, |k, v| {
+        let ak = std::str::from_utf8(k).map_err(|_| Error::Corrupt("schema key"))?.to_string();
+        let s = match parsed.get(&v) {
+            Some(s) => s.clone(),
+            None => {
+                let bad = |_| Error::Corrupt("schema");
+                let value = osis_base::decode(&v, &osis_base::Limits::default()).map_err(bad)?;
+                let s = std::sync::Arc::new(osis_schema::Schema::from_value(&value).map_err(|_| Error::Corrupt("schema"))?);
+                parsed.insert(v, s.clone());
+                s
+            }
+        };
+        schemas.insert(ak, s);
         Ok(())
     })?;
-    tx.core.schemas.extend(schemas.into_iter().map(|s| (s.id, std::sync::Arc::new(s))));
+    tx.core.schemas.extend(schemas);
     let fast = !rebuild && crate::engine::index::current(tx)?;
     let old = if fast { None } else { crate::engine::index::old_judgments(tx) };
     if fast {

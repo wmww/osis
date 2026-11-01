@@ -578,7 +578,7 @@ fn disappearing_message_spec_commits_6() {
     assert_eq!(x(bob, m), None);
 }
 
-const TEXT_SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcd01;\nrevision 1;\naspect n:body.0: text;\n";
+const TEXT_SCHEMA: &str = "revision 1;\naspect n:body.0: text;\n";
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
 // pause): two devices edit one text concurrently in sessions; each commit is one edit, the

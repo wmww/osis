@@ -8,13 +8,13 @@ use crate::schema::{AspectDefaults, Lifetime, Schema};
 use crate::statics::StaticSchema;
 use crate::typed::{typed_read, validate_write};
 use crate::types::Type;
-use osis_base::{Ak, SchemaId, Value};
+use osis_base::{Ak, Value};
 use std::marker::PhantomData;
 
 pub trait AspectKey {
     type T;
     fn ak(&self) -> &str;
-    /// The writer's schema; `None` for an untyped write (no schema index, untyped defaults).
+    /// The writer's schema; `None` for an untyped write (untyped defaults).
     fn schema(&self) -> Option<&Schema>;
     /// Typed read (reader defaults, open structs), then into `T`.
     fn decode(&self, v: &Value) -> Result<Self::T, PathError>;
@@ -23,10 +23,6 @@ pub trait AspectKey {
     /// The aspect's type in its schema.
     fn ty(&self) -> Option<&Type> {
         self.schema()?.aspects.get(self.ak()).map(|a| &a.ty)
-    }
-    /// (schema ID, revision) for the commit's schema table.
-    fn schema_ref(&self) -> Option<(SchemaId, u64)> {
-        self.schema().map(|s| (s.id, s.revision))
     }
     /// Retention and expiry a write puts into its delta (untyped: `author`, no bounds, no expiry).
     fn defaults(&self) -> AspectDefaults {

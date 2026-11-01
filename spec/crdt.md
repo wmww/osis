@@ -40,7 +40,7 @@ A reader checks that every own-source **write** (stamp) in a delta lies in `[lo,
 
 ### 2.4 What the commit header provides
 - `ts` of the commit.
-- Per aspect: `(tid, ak, counter range [lo, hi), delta hashes)` as in §2.3. Encoding IDs and the sources table are inside the delta (§3.2), not in the header. The header also carries a schema table `[(schema ID, revision)]` and per aspect an index into it, absent for untyped writes (spec/versioning.md §3); merge ignores them. A content commit carries one delta per `(tid, ak)`; a roster snapshot (spec/permissions.md §6) carries one `roles.0` delta per edge, and the aspect's delta is the join of all of them that the node holds.
+- Per aspect: `(tid, ak, counter range [lo, hi), delta hashes)` as in §2.3. Encoding IDs and the sources table are inside the delta (§3.2), not in the header. A content commit carries one delta per `(tid, ak)`; a roster snapshot (spec/permissions.md §6) carries one `roles.0` delta per edge, and the aspect's delta is the join of all of them that the node holds.
 - Dot form flag (node or commit).
 - Snapshot marker (§8): a snapshot commit carries only foreign writes and consumes no counters (empty ranges). Import marker (spec/permissions.md §7): likewise, with re-sourced foreign stamps.
 - `expires: T` (wall ms) per aspect, optional (§4.7).

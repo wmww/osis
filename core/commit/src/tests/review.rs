@@ -46,10 +46,8 @@ fn created_rejects_expires() {
     a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
-    a.schema = None;
     a.expires = None;
     h.keys.clear();
-    h.schemas.clear();
     h.validate().unwrap();
     h.aspects[0].expires = Some(h.ts.wall_ms().0 + 1);
     assert!(h.validate().unwrap_err().to_string().contains("fixed-retention"));
@@ -63,12 +61,10 @@ fn created_only_in_commits_with_own_writes() {
     a.ak = Ak::new("created.0").unwrap();
     a.retention = retention::CREATED_RETENTION;
     a.keys.clear();
-    a.schema = None;
     a.expires = None;
     a.lo = 0;
     a.hi = 0;
     h.keys.clear();
-    h.schemas.clear();
     for k in [Kind::ContentSnapshot, Kind::Import] {
         let mut x = h.clone();
         x.kind = k;

@@ -230,18 +230,17 @@ fn more_accepted() -> Vec<Record> {
     use osis_base::BlobId;
     use osis_schema::Bound;
     let mut out = Vec::new();
-    // commit form, typed, expiring, absolute bounds, chunks, undoes
+    // commit form, expiring, absolute bounds, chunks, undoes
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("typed".into()), 6));
-    a.schema = Some((osis_base::SchemaId([0x27; 16]), 2));
     a.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
     a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
     b.aspects.push(a);
     b.undoes = Some(CommitId([0x2c; 32]));
     let c = built(b);
-    out.push(record("commit form, schema index, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
+    out.push(record("commit form, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
     // purge request, created.0 kept forever
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
@@ -298,7 +297,6 @@ fn more_accepted() -> Vec<Record> {
 }
 
 fn more_rejected(content: &Header) -> Vec<Record> {
-    use osis_base::SchemaId;
     let mut out = Vec::new();
     let m = role_commit().header;
     let mut x = m.clone();
@@ -327,9 +325,6 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.validate().unwrap();
     x.frontier = frontier;
     out.push(reject("frontier on a roster snapshot", "spec/wire.md §4", &x, "frontier"));
-    let mut x = content.clone();
-    x.schemas = vec![(SchemaId([9; 16]), 1), (SchemaId([1; 16]), 1)];
-    out.push(reject("schemas out of order", "spec/wire.md §4", &x, "order"));
     let mut x = content.clone();
     x.chunks.push(ChunkEntry { blob: osis_base::BlobId([1; 32]), keys: vec![1, 0] });
     out.push(reject("chunk delete keys out of order", "spec/wire.md §4", &x, "chunk-keys"));

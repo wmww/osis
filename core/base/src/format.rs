@@ -1,8 +1,6 @@
 //! Format constants (spec/wire.md §2, §13; spec/versioning.md §1). All are fixed by format version
 //! 1 unless marked otherwise.
 
-use crate::SchemaId;
-
 /// Format version this build writes and the newest it reads (spec/wire.md §2). fixed.
 pub const FORMAT_VERSION: u64 = 1;
 
@@ -101,10 +99,6 @@ pub const MAX_OWNER_DEPTH: usize = 64;
 /// Canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/wire.md
 /// §2, spec/permissions.md §6). fixed.
 pub const MAX_LINKED_FRONTIERS: usize = 64 * MIB;
-/// Core schema ID (spec/wire.md §2, spec/data-model.md §9). fixed.
-pub const CORE_SCHEMA_ID: SchemaId = SchemaId([0; 16]);
-/// Core schema revision (spec/wire.md §2, spec/data-model.md §9).
-pub const CORE_SCHEMA_REVISION: u64 = 1;
 
 /// Host policy default, not a format constant (spec/wire.md §2).
 pub const TOMBSTONE_LIFETIME_MS: u64 = 30 * DAY_MS;

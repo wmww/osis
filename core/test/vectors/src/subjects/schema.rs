@@ -4,7 +4,7 @@
 use super::generated_header;
 use crate::file::{Record, VecFile};
 use crate::hex;
-use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs, encode};
+use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs, encode};
 use osis_schema::core_types::*;
 use osis_schema::{AspectKey, Chunked, core_schema};
 use std::collections::{BTreeMap, BTreeSet};
@@ -66,7 +66,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("label", "label.0", LABEL.encode(&labels)),
         ("moved", "moved.0", MOVED.encode(&tid(25))),
         ("was", "was.0", WAS.encode(&tid(26))),
-        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into(), schemas: BTreeMap::from([(SchemaId([0; 16]), 1)]) })),
+        ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
         ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
@@ -83,7 +83,6 @@ pub fn core() -> VecFile {
         Record::new()
             .with("case", "core schema")
             .with("spec", "spec/data-model.md §10")
-            .with("id", hex(&s.id.0))
             .with("revision", s.revision.to_string())
             .with("value", hex(&s.canonical_bytes()))
             .with("hash", hex(&s.hash())),
