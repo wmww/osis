@@ -188,6 +188,9 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     let got = admitted(&alice);
     assert!(got.contains(&label_of(&alice, mine)), "own: Alice's own group");
     assert!(got.contains(&label_of(&alice, under)), "own: under an actor Alice's person owns");
+    // a driver's start (`host_restart`; the World's runtime never restarts one) keeps the person
+    alice.sync_engine(|s| s.host_restart());
+    assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: the person kept across a driver restart");
 }
 
 // spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random ownership and grant graphs: Alice

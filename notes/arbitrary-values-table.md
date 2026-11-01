@@ -91,7 +91,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears |
 | `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and placement (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
-| registration refused for now: back-off `retry_ms` doubling per refusal on a connection, at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | re-registers every tick / a label the host admits later never syncs on that connection |
+| registration refused for now: back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | re-registers every tick / a label the host admits later never syncs on that connection |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
 | `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
