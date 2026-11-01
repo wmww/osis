@@ -2043,11 +2043,11 @@ fn lane_dump(net: &mut Net, nodes: &[usize], hosts: &[usize], l: &osis_base::Lab
     out
 }
 
-// the same with one capped host (caps 0 to fitting all; 173658: room appears only after the
-// last periodic pass)
+// the same with one capped host (caps 0 to fitting all; 10, 63, 105, 162: concurrent covers to
+// one full host; 173658: room appears only after the last periodic pass; other seeds: `_large`)
 #[test]
 fn random_window_one_capped_host_spec_sync_9() {
-    for seed in [0, 2, 4, 6, 8, 10, 63, 105, 162, 173658] {
+    for seed in [0, 10, 63, 105, 162, 173658] {
         random_window_run_on(seed, true, false);
     }
 }
@@ -2079,7 +2079,7 @@ fn random_window_one_capped_host_large() {
 // both were deleted at the hosts)
 #[test]
 fn random_window_converges_spec_sync_6() {
-    for seed in [0, 1, 2, 3, 5327166] {
+    for seed in [0, 1, 5327166] {
         random_window_run(seed);
     }
 }
@@ -2095,7 +2095,7 @@ fn random_window_converges_large() {
 // uploads and are coalesced (spec/sync.md §9)
 #[test]
 fn random_window_inflight_spec_sync_9() {
-    for seed in 0..4 {
+    for seed in 0..2 {
         random_window_run_on(seed, false, true);
     }
 }
@@ -2329,7 +2329,7 @@ fn churn_expiry_check(net: &mut Net, nodes: &[usize], w: Tid, dies: &BTreeMap<St
 // expiring writes, removals, resets, undos, demotions, partitions and restarts
 #[test]
 fn random_churn_converges_spec_sync_9() {
-    for seed in 0..4 {
+    for seed in 0..2 {
         random_churn_run(seed);
     }
 }

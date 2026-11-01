@@ -109,28 +109,33 @@ impl Engine {
         Ok(self.labels_of(g).iter().map(|l| (**l).clone()).collect())
     }
 
-    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`).
+    /// `group_labels`, shared: decoded once per write of the `label.0` (`Core::labels`, which
+    /// keeps the records it parsed: debug builds check them against the store on every hit).
     pub fn labels_of(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
         if self.core.created(g).is_none() {
             return Vec::new();
         }
-        if let Some(v) = self.core.labels.get(g).cloned() {
+        if let Some((v, _records)) = self.core.labels.get(g) {
+            let v = v.clone();
             #[cfg(debug_assertions)]
-            assert_eq!(format!("{:?}", self.decode_labels(g)), format!("{v:?}"), "labels_of({g}) cached");
+            {
+                let cached = _records.clone();
+                assert!(self.label_records(g) == cached, "labels_of({g}) cached");
+            }
             return v;
         }
-        let out = self.decode_labels(g);
-        self.core.labels.insert(*g, out.clone());
+        let records = self.label_records(g);
+        let mut out = Vec::new();
+        for (id, l) in &records {
+            let Ok(steps) = osis_label::label_steps(l) else { continue };
+            out.push(Arc::new(GroupLabel { group: *g, id: *id, index: l.index, steps, hosts: l.hosts.clone(), replaced: l.replaced }));
+        }
+        self.core.labels.insert(*g, (out.clone(), records));
         out
     }
 
-    fn decode_labels(&mut self, g: &Tid) -> Vec<Arc<GroupLabel>> {
-        let Ok(Some(labels)) = self.get_typed(g, &ct::LABEL) else { return Vec::new() };
-        let mut out = Vec::new();
-        for (id, l) in labels {
-            let Ok(steps) = osis_label::label_steps(&l) else { continue };
-            out.push(Arc::new(GroupLabel { group: *g, id, index: l.index, steps, hosts: l.hosts, replaced: l.replaced }));
-        }
-        out
+    /// The `label.0` records of `g` (none if unreadable).
+    fn label_records(&mut self, g: &Tid) -> ct::Labels {
+        self.get_typed(g, &ct::LABEL).ok().flatten().unwrap_or_default()
     }
 }
