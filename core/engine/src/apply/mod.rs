@@ -787,8 +787,8 @@ impl Engine {
         let ak = osis_base::Ak::new("created.0").ok()?;
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {
             let m = self.core.ix.commits.get(id)?;
-            let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == ak)?;
-            (m.valid.get(ai).copied().unwrap_or(false)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
+            let ai = m.aspect(tid, &ak)?;
+            (m.valid_at(ai)).then(|| Creation { commit: Some(*id), ts: m.header.ts, node: m.header.author, actor: m.header.actor, received: m.received })
         })
     }
 
@@ -812,7 +812,7 @@ impl Engine {
                     break;
                 }
                 let Some(m) = self.core.ix.commits.get(id) else { continue };
-                let valid = m.header.aspects.iter().enumerate().any(|(ai, x)| x.tid == *tid && x.ak == *ak && m.valid.get(ai).copied().unwrap_or(false));
+                let valid = m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai));
                 if !matches!(m.header.kind, Kind::Content | Kind::Import) || !valid {
                     continue;
                 }
@@ -1086,7 +1086,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     let mut stale: BTreeSet<(Tid, osis_base::Ak)> = BTreeSet::new();
     for (id, m) in tx.core.ix.commits.iter() {
         for (ai, a) in m.view.aspects.iter().enumerate() {
-            let now = m.valid.get(ai).copied().unwrap_or(false);
+            let now = m.valid_at(ai);
             let was = old.as_ref().map(|o| o.get(id).and_then(|v| v.get(ai)).copied().unwrap_or(true));
             if was.map_or(!now, |w| w != now) {
                 stale.insert((a.tid, a.ak.clone()));

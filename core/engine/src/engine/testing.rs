@@ -53,7 +53,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn body_valid(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<bool> {
         let m = self.core.ix.commits.get(c)?;
-        let ai = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        let ai = m.aspect(tid, ak)?;
         Some(m.valid.get(ai).copied().unwrap_or(true))
     }
 
@@ -177,7 +177,7 @@ impl Engine {
                     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
                     let mut st = osis_crdt::Fragment::default();
                     for c in held {
-                        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)) else { continue };
+                        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { continue };
                         for d in crate::apply::held_parts(tx, &c, ai)? {
                             st.join(d.into_fragment());
                         }
@@ -328,7 +328,7 @@ impl Engine {
         use std::fmt::Write;
         let mut out = String::new();
         for (c, m) in self.core.ix.commits.iter() {
-            let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+            let Some(ai) = m.aspect(tid, ak) else { continue };
             let h = &m.header;
             let dropped = m.dropped.get(&ai);
             let missing = m.missing.contains(&ai);

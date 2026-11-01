@@ -84,7 +84,7 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
 fn from_own(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     let Some(k) = core.commit_of(tid, ak, d) else { return false };
     let Some(m) = core.ix.commits.get(&k) else { return false };
-    m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false) && !m.dropped.contains_key(&ai))
+    m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai) && !m.dropped.contains_key(&ai))
 }
 
 /// Writes the importer does not import from a valid snapshot (spec/permissions.md §7): values
@@ -93,7 +93,7 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     let mut out: Vec<Owned> = tx.core.ix.valueless.get(&(*tid, ak.clone())).into_iter().flatten().cloned().collect();
     for (_, c) in tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
         if m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some())
             && let Some(o) = Owned::of(&m.header, c, ai)
         {
@@ -120,7 +120,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "created.0" || a.expires.is_some() || !meta.valid.get(ai).copied().unwrap_or(false) || meta.dropped.contains_key(&ai) {
+        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "created.0" || a.expires.is_some() || !meta.valid_at(ai) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);
@@ -209,8 +209,8 @@ fn carriers(tx: &mut Tx<'_>, t: &Tid) -> Result<BTreeMap<Ak, Carrier>> {
         snaps.sort();
         for (ts, id) in snaps.into_iter().rev() {
             let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-            let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *t && a.ak == ak) else { continue };
-            if m.header.kind != Kind::ContentSnapshot || m.dropped.contains_key(&ai) || !m.valid.get(ai).copied().unwrap_or(false) {
+            let Some(ai) = m.aspect(t, &ak) else { continue };
+            if m.header.kind != Kind::ContentSnapshot || m.dropped.contains_key(&ai) || !m.valid_at(ai) {
                 continue;
             }
             let Some(Decoded::Snapshot(s)) = crate::apply::held_parts(tx, &id, ai)?.into_iter().next() else { continue };
@@ -238,7 +238,7 @@ fn copies_held(tx: &mut Tx<'_>, t: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> 
         if m.header.kind.is_compaction() {
             continue;
         }
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *t && a.ak == *ak) else { continue };
+        let Some(ai) = m.aspect(t, ak) else { continue };
         own.extend(crate::apply::held_parts(tx, &c, ai)?.into_iter().map(Decoded::into_fragment));
     }
     let own: Vec<&Fragment> = own.iter().collect();
