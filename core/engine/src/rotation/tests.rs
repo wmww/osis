@@ -1089,10 +1089,9 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
 // (at about a third of seeds) until the fork was rotated away first.
 #[test]
 fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
-    // seeds that forked so (each run costs seconds: six peers)
-    for seed in [960, 962] {
-        lacking_write_resealed(seed);
-    }
+    // a seed that forked so (960 did too; each run costs seconds: six peers, so one seed
+    // here and the range in `_large`)
+    lacking_write_resealed(962);
 }
 
 /// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS.
@@ -1133,5 +1132,3 @@ fn removal_lacking_carried_secret_refused_spec_permissions_3() {
     assert!(format!("{err}").contains("re-seal"), "{err}");
     assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
 }
-
-
