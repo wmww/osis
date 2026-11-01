@@ -976,9 +976,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     tx.core.ix.grant_overreach.insert((id, *ai));
                 }
                 if let Some(a) = h.aspects.get(*ai) {
-                    for (r, e) in &d.intros {
-                        keys::note_intro(tx.core, &h, &a.tid, *r, *e);
-                    }
+                    keys::note_keysets(tx.core, &h, &a.tid, &d.keysets);
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
@@ -1001,7 +999,11 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             for ai in ais {
                 let Some(a) = blob.header.aspects.get(ai) else { continue };
                 let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+                let keys = a.ak.as_str() == "keys.0";
                 for g in each_held_piece(tx, &id, ai, &mut |tx, f| {
+                    if keys {
+                        keys::note_keysets(tx.core, &blob.header, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
+                    }
                     for (src, ctrs) in validity::carried_of(tx.core, &a.tid, &a.ak, &f) {
                         carried.entry(src).or_default().extend(ctrs);
                     }
@@ -1026,7 +1028,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                     match a.ak.as_str() {
                         "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
-                        "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
+                        "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &keys::keysets_of(&b.header, *ai, std::slice::from_ref(&d.fragment))),
                         _ => {}
                     }
                 }

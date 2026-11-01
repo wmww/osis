@@ -4,7 +4,7 @@
 //! invalid no longer counts, valid again is recorded again. `Core::own_epochs` establishes from
 //! these and the held commits and epoch starts (the names).
 
-use crate::engine::{Core, Tx};
+use crate::engine::{Core, KeysetRec, Tx};
 use crate::error::Result;
 use osis_commit::{Decoded, Header, Kind};
 use osis_base::{CommitId, Role, Tid, Value};
@@ -40,18 +40,29 @@ pub(crate) fn note_boxes_to(core: &mut Core, actor: &Tid, delta: &Fragment) {
     }
 }
 
-/// The epochs role part `ai` of `h` keys in `bodies` (its `keys.0` deltas): what it noted
-/// in `epoch_intro`, kept in its record when it drops (`Dropped::intros`).
-pub(crate) fn intro_epochs(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<(Role, osis_crypto::Epoch)> {
+/// The keysets part `ai` of `h` writes in `bodies` (its `keys.0` deltas or snapshot): what it
+/// noted (`note_keysets`), kept in its record when it drops (`Dropped::keysets`).
+pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<KeysetRec> {
+    if !h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
+        return Vec::new();
+    }
     let mut out = std::collections::BTreeSet::new();
-    if h.kind == Kind::Role && h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "keys.0") {
-        for (r, ks) in bodies.iter().flat_map(|b| keys_write(b).keysets) {
-            if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
-                out.insert((r, e));
-            }
-        }
+    for b in bodies {
+        out.extend(keyset_recs(b));
     }
     out.into_iter().collect()
+}
+
+/// Each keyset a `keys.0` body writes: its role, epoch and listed epochs.
+fn keyset_recs(body: &Fragment) -> Vec<KeysetRec> {
+    keys_write(body)
+        .keysets
+        .into_iter()
+        .filter_map(|(r, ks)| {
+            let e = osis_keys::aspects::from_schema(&ks.epoch).ok()?;
+            Some((r, e, ks.supersedes.iter().filter_map(|x| osis_keys::aspects::from_schema(x).ok()).collect()))
+        })
+        .collect()
 }
 
 /// The boxes a `secrets.0` delta writes (removals aside): typed key and key value.
@@ -60,18 +71,18 @@ fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
     m.entries().filter(|(_, _, _, f)| f.is_some()).filter_map(|(_, _, k, _)| Some((typed(k?, "box_key").and_then(|t| BoxKey::from_value(&t).ok())?, k?))).collect()
 }
 
-/// A role commit's `secrets.0` or `keys.0` part dropped its body (`bodies`, its deltas):
+/// A role commit's `secrets.0` or any `keys.0` part dropped its body (`bodies`):
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
 /// still held: a `secrets.0` part's `boxes_to` entries of the boxes it wrote that no held body
-/// writes; a `keys.0` part's `epoch_intro` keeps its epochs (`Dropped::intros`): the rotation
-/// stays known.
+/// writes; a `keys.0` part keeps its keysets (`Dropped::keysets`): the rotation and the keyset
+/// epochs stay known.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
-    if h.kind != Kind::Role || !matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
-        return Ok(());
-    }
     if a.ak.as_str() == "keys.0" {
-        return rebuild_intro(tx, &std::collections::BTreeSet::from([a.tid]));
+        return rebuild_keysets(tx, &std::collections::BTreeSet::from([a.tid]));
+    }
+    if h.kind != Kind::Role || a.ak.as_str() != "secrets.0" {
+        return Ok(());
     }
     let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder, k.clone())).collect();
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
@@ -95,46 +106,54 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     Ok(())
 }
 
-/// Records for each keyset a `keys.0` delta writes the commit's time as the epoch's introduction
-/// if earliest: a rotation writes the rotated roles' keysets, nothing else does, so the epoch's
-/// introducer (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is
-/// not held (synced after a compaction, or missing again after `retention::uncover`).
-pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, delta: &Fragment) {
-    for (r, ks) in keys_write(delta).keysets {
-        if let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) {
-            note_intro(core, h, actor, r, e);
+/// Notes the keysets a valid `keys.0` body of `actor` writes (`keyset_recs`, or a dropped part's
+/// record): each epoch and the epochs it lists are held keyset epochs (`keyset_epochs`); a role
+/// commit's also record the commit's time as the epoch's introduction if earliest: a rotation
+/// writes the rotated roles' keysets, nothing else does, so the epoch's introducer
+/// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
+/// (synced after a compaction, or missing again after `retention::uncover`).
+pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[KeysetRec]) {
+    for (r, e, listed) in keysets {
+        if h.kind == Kind::Role {
+            note_intro(core, h, actor, *r, *e);
+        }
+        for x in std::iter::once(e).chain(listed) {
+            if core.ix.keyset_epochs.insert(*actor, (*r, *x)) {
+                core.touch();
+            }
         }
     }
 }
 
-/// Re-derives `epoch_intro` of `actors` from their valid role-kind `keys.0` parts (after
-/// validity flips, and at load once validity is judged): an invalid write (a removed admin's
-/// backdated rotation) never introduces an epoch.
-pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
+/// Re-derives `epoch_intro` and `keyset_epochs` of `actors` from their valid `keys.0` parts
+/// (after validity flips, drops, and at load once validity is judged): an invalid write (a
+/// removed admin's backdated rotation) never introduces an epoch nor makes one held.
+pub(crate) fn rebuild_keysets(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet<Tid>) -> Result<()> {
     if actors.is_empty() {
         return Ok(());
     }
     tx.core.touch();
     tx.core.ix.epoch_intro.retain(|(a, _, _), _| !actors.contains(a));
+    for a in actors {
+        let held: Vec<(Role, osis_crypto::Epoch)> = tx.core.ix.keyset_epochs.get(a).into_iter().flatten().copied().collect();
+        for x in held {
+            tx.core.ix.keyset_epochs.remove(a, &x);
+        }
+    }
     let ak = osis_base::Ak::new("keys.0").map_err(|_| crate::Error::Misuse("ak"))?;
     for a in actors {
         let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*a, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
         for id in ids {
             let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-            if m.header.kind != Kind::Role {
-                continue;
-            }
             let Some(ai) = m.aspect(a, &ak) else { continue };
             if !m.valid_at(ai) {
                 continue;
             }
-            for (r, e) in m.dropped.get(&ai).map(|d| d.intros.clone()).unwrap_or_default() {
-                note_intro(tx.core, &m.header, a, r, e);
+            if let Some(d) = m.dropped.get(&ai) {
+                note_keysets(tx.core, &m.header, a, &d.keysets);
             }
             for d in super::held_parts(tx, &id, ai)? {
-                if let Decoded::Delta(d) = d {
-                    note_keysets(tx.core, &m.header, a, &d.fragment);
-                }
+                note_keysets(tx.core, &m.header, a, &keyset_recs(d.fragment()));
             }
         }
     }
@@ -278,14 +297,19 @@ pub(crate) struct Pending {
 pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
     note_keyset_parts(tx, h, parts)?;
     let mut out = Vec::new();
+    for (ai, _, d) in parts {
+        if let Some(a) = h.aspects.get(*ai)
+            && a.ak.as_str() == "keys.0"
+            && valid.get(*ai).copied().unwrap_or(false)
+        {
+            note_keysets(tx.core, h, &a.tid, &keyset_recs(d.fragment()));
+        }
+    }
     if h.kind != Kind::Role {
         return Ok(out);
     }
     for (ai, _, d) in parts {
         let Some(a) = h.aspects.get(*ai) else { continue };
-        if let (Decoded::Delta(d), "keys.0", true) = (d, a.ak.as_str(), valid.get(*ai).copied().unwrap_or(false)) {
-            note_keysets(tx.core, h, &a.tid, &d.fragment);
-        }
         if a.ak.as_str() != "secrets.0" {
             continue;
         }

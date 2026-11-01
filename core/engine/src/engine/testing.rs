@@ -168,6 +168,7 @@ impl Engine {
             ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
             ("boxes_to", format!("{:?}", *ix.boxes_to)),
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
+            ("keyset_epochs", format!("{:?}", *ix.keyset_epochs)),
             ("own_keys", format!("{:?}", *ix.own_keys)),
             ("keyset_parts", format!("{:?}", *ix.keyset_parts)),
             ("holder_keys", format!("{:?}", *ix.holder_keys)),
