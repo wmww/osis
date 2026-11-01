@@ -47,11 +47,15 @@ struct PageSet {
     id: u32,
     /// The index's hash key (`Core::key_salt`).
     salt: [u8; 32],
-    /// Invariant: equals `keyed(state, steps)` of the whole state. The skeleton drops a record
-    /// reduced to nothing (`Fragment::reduced`), so a record on the path holding only paged
-    /// content keeps its creation here alone (`Fragment::wrap` gives it back to each page):
-    /// every write of this set's pages takes it again from the joined state (`write_touched`,
-    /// `join_reset`), else a creation arriving after the content is lost to the store.
+    /// Invariant: `keyed(state, steps)` of the whole state as of this set's last write. The
+    /// skeleton drops a record reduced to nothing (`Fragment::reduced`), so a record on the path
+    /// holding only paged content keeps its creation here alone (`Fragment::wrap` gives it back
+    /// to each page): every write of this set takes it again from the joined state, which holds
+    /// it through a loaded page (`ensure_touch` loads one for each set touched; `write_touched`,
+    /// `join_reset`), else a creation arriving after the content is lost to the store. Another
+    /// set below the same record may lag a creation a later write brought: loading joins every
+    /// set's path, and a creation leaves the state only by a reset the skeleton keeps (loading
+    /// prunes it again) or with its record (a whole rewrite).
     path: KeyedPath,
     enc: Encoding,
     /// Pages in the in-memory state: row key -> range.
