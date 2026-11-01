@@ -376,3 +376,40 @@ fn complete_pass_survives_disconnect_spec_permissions_3() {
     net.settle(100_000);
     assert!(net.sync(b).complete_pass(&g), "a pass after reconnecting completes it");
 }
+
+// spec/commits.md §5 (purge drops every copy), spec/requirements.md Deletion (purge is prompt):
+// a crash after the purging commit lands and before node-sync forgets the purged body's blob
+// key and ciphertext leaves neither behind once the node restarts, online or not.
+#[test]
+fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
+    for crash in [false, true] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "x");
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s("secret")).unwrap();
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        let l = net.label(a);
+        let ids = blobs_of(&mut net, b, &l, &c);
+        assert!(!ids.is_empty() && ids.iter().all(|id| net.sync(b).holds_blob(id)));
+        net.set_online(b, false);
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(GONE.ak()).unwrap() });
+        m.remove_aspect(t, &GONE).unwrap();
+        net.engine(b).commit(m).unwrap();
+        if crash {
+            net.restart(b, 77);
+        }
+        for _ in 0..3 {
+            net.sync(b).handle(Event::Local);
+            net.sync(b).handle(Event::Tick);
+        }
+        for id in &ids {
+            assert!(!net.sync(b).holds_blob(id), "crash {crash}: the purger keeps the purged body's key or ciphertext");
+        }
+    }
+}

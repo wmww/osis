@@ -595,6 +595,9 @@ impl SyncEngine {
             // a forgetting a crash interrupted before its inbox check
             s.forget_inbox()?;
             s.reopen_undropped(None);
+            // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
+            // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
+            s.forget_dropped(None)?;
             Ok(s)
         })
     }
