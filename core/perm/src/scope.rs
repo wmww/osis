@@ -1,6 +1,6 @@
 //! What a demotion's frontier must cover (spec/permissions.md §5.1, "Frontier"): for each node
-//! the change demotes, the things whose role-class aspects it puts in question (any
-//! fall) and the things whose every aspect it puts in question (a fall below write). The node
+//! the change demotes, the things whose role-class and admin-only (`^`) aspects it puts in
+//! question (any fall) and the things whose every aspect it puts in question (a fall below write). The node
 //! fills the counters from its receipt record (§5.1: what it had received as of T).
 
 use crate::graph::View;
@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// The aspects a demotion puts in question, per demoted node.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct DemotionScope {
-    /// Node -> things whose role-class aspects need its counters.
+    /// Node -> things whose role-class and admin-only aspects need its counters.
     pub roles: BTreeMap<Tid, BTreeSet<Tid>>,
     /// Node -> things whose every aspect needs its counters.
     pub content: BTreeMap<Tid, BTreeSet<Tid>>,

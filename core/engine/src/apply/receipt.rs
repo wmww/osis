@@ -289,9 +289,11 @@ impl Engine {
     /// of `as_of`, plus that node's commit-form commits received by then. This node's own
     /// receipts only; `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
+        // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
+        let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
         for (node, things) in &scope.roles {
-            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| is_role_class(ak.as_str())) {
+            for ((t, ak), _) in things.iter().flat_map(|t| self.core.aspects_of(t)).filter(|((_, ak), _)| admin_class(ak)) {
                 aspects.push((*node, *t, ak.clone()));
             }
         }
@@ -304,8 +306,8 @@ impl Engine {
         // the scope reaches, so each demoted node's commits on them are listed by ID; one
         // where its class did not fall is never consulted (spec/permissions.md §5.1)
         for (tid, ak) in &self.core.header_receipts {
-            let role_commit = is_role_class(ak.as_str());
-            for node in scope.content.keys().chain(scope.roles.keys().filter(|_| role_commit)) {
+            let admin = admin_class(ak);
+            for node in scope.content.keys().chain(scope.roles.keys().filter(|_| admin)) {
                 aspects.push((*node, *tid, ak.clone()));
             }
         }
