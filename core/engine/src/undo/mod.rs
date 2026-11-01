@@ -181,11 +181,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.ix.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, undoers))
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
-        // a copied write's expiry: its delta's (its commit's header, kept past the body)
-        let expiry = |d: &Dot| {
-            let m = core.ix.commits.get(&core.commit_of(&a.tid, &a.ak, d)?)?;
-            m.header.aspects.iter().zip(&m.valid).find(|(x, v)| **v && x.tid == a.tid && x.ak == a.ak).and_then(|(x, _)| x.expires)
-        };
+        let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
         if let Some((f, r, expires)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
         }
