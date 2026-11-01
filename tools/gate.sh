@@ -80,8 +80,8 @@ step() { printf '== %s\n' "$*"; s=$(date +%s); "$@"; printf '   (%ss)\n' $(( $(d
 # The GUI workspace: its own target (kit/target), lock and deny config.
 gui_steps() {
   step python3 tools/policy.py kit
-  ( cd kit && step cargo test --workspace --locked )
   ( cd kit && step cargo clippy --workspace --all-targets --locked -- -D warnings )
+  ( cd kit && step cargo test --workspace --locked )
   ( cd kit && step cargo deny check )
 }
 if [ -z "$core" ]; then
@@ -108,10 +108,11 @@ if [ "$core" = docs ]; then
   echo "== gate passed, docs-only change: tier 1, lints, deny and sweep skipped ($(( $(date +%s) - t0 ))s)"
   exit 0
 fi
-step cargo test --workspace --locked
-step unification_check
+# lints before tier 1: a lint failure found after minutes of tests wasted them (watchdog 13h)
 step cargo clippy --workspace --all-targets --locked -- -D warnings
 step cargo clippy-net --locked -- -D warnings
+step cargo test --workspace --locked
+step unification_check
 step sh -c 'for f in schema/*.osis; do printf "%s: " "$f"; cargo run --locked --quiet --bin osis -- schema check "$f" || exit 1; done'
 step cargo deny check
 if [ "$seeds" -gt 0 ]; then
