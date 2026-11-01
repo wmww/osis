@@ -447,9 +447,10 @@ pub struct SyncEngine {
     pub(crate) tied: deliver::TiedWork,
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
-    /// A self-removal was carried out: its lost secrets are dropped once every label is idle
-    /// (it is uploaded by then).
-    pub(crate) drop_when_idle: bool,
+    /// Lost access may wait for this node's own self-removal to be placed (`drop_left`): set
+    /// at start and by a self-removal, with the (sync state version, engine generation) last
+    /// checked at; cleared once nothing lost waits.
+    pub(crate) left_check: Option<(u64, u64)>,
     /// Sessions of forgotten labels whose pushes the host is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
@@ -554,7 +555,8 @@ impl SyncEngine {
             diagnostics: Vec::new(),
             outbox,
             local_inbox: Vec::new(),
-            drop_when_idle: false,
+            left_check: Some((u64::MAX, u64::MAX)),
+            first: BTreeSet::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
             inbox_opened: BTreeMap::new(),
@@ -562,7 +564,6 @@ impl SyncEngine {
             relink_pending: BTreeSet::new(),
             relink_at: 0,
             retired_at: BTreeSet::new(),
-            first: BTreeSet::new(),
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
             settle_at: None,
@@ -744,11 +745,8 @@ impl SyncEngine {
             self.diag(format!("dropping lost secrets: {e}"));
         }
         // a self-removal is up: drop what was lost
-        if self.drop_when_idle && self.is_idle() && self.conns.values().any(|c| c.up) {
-            self.drop_when_idle = false;
-            if let Err(e) = self.drop_lost() {
-                self.diag(format!("dropping lost secrets: {e}"));
-            }
+        if let Err(e) = self.drop_left() {
+            self.diag(format!("dropping lost secrets: {e}"));
         }
         self.stop_pushes(&mut out);
         self.host_step(&mut out);
