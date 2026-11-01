@@ -1055,7 +1055,7 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
 /// (an un-merge) gives it back after a later write that superseded it in the state goes: the
 /// state stays the join of what is held, whatever the order the expiry, that write and its
 /// revocation came in. Held: a body dropped as covered gives its residue from its coverers'
-/// copies (`retention::make_valueless`); a part missing at expiry or purge gives none and joins
+/// copies (`retention::make_valueless`) while one carries it (`retention::uncover` drops it); a part missing at expiry or purge gives none and joins
 /// when a late copy comes (`retention::takes_late`). Known gap (a keep-at-most drop before
 /// the delta went value-less): issues/valueless-gaps.md.
 fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {

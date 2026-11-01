@@ -993,6 +993,8 @@ impl Engine {
                     self.wait_apart(id, blob, waits, room);
                     return Ok(EphIngest::Pending);
                 }
+                let mut blob = blob;
+                blob.parts = self.keep_unexpired(&id, &h, std::mem::take(&mut blob.parts), now);
                 match self.eph.remote.invalid.get_mut(&id) {
                     Some(x) => {
                         let mut more = blob.parts;
@@ -1080,7 +1082,9 @@ impl Engine {
     /// the other copies of the commit waiting (a commit past a blob splits; a junk copy may come
     /// first): its signature and parts not held yet, but parts that fail their delta hash.
     fn wait_apart(&mut self, id: CommitId, blob: CommitBlob, needs: BTreeSet<Tid>, room: u64) {
+        let now = self.now().0;
         let parts: Vec<osis_commit::Part> = blob.parts.into_iter().filter(|p| self.part_matches(&blob.header, p) != Some(false)).collect();
+        let parts = self.keep_unexpired(&id, &blob.header, parts, now);
         let w = self.eph.remote.pending.entry(id).or_insert_with(|| Waiting { header: blob.header, sigs: Vec::new(), parts: Vec::new(), needs: BTreeSet::new(), room: 0 });
         w.room = w.room.max(room);
         if !w.sigs.contains(&blob.signature) {
@@ -1092,6 +1096,44 @@ impl Engine {
             }
         }
         w.needs.extend(needs);
+    }
+
+    /// The parts of commit `id` (header `h`) kept apart (`pending`, `invalid`) but those past
+    /// their T, each expiring one with a timer at its T that drops it (`tick_remote`).
+    /// Invariant (no waiting copy past T, spec/crdt.md §4.7): no part a commit keeps apart is
+    /// past its T once its timer ran.
+    fn keep_unexpired(&mut self, id: &CommitId, h: &Header, parts: Vec<osis_commit::Part>, now: u64) -> Vec<osis_commit::Part> {
+        let mut kept = Vec::new();
+        for p in parts {
+            match h.aspects.get(p.ai).and_then(|a| a.expires) {
+                Some(t) if t <= now => continue,
+                Some(t) => {
+                    self.eph.remote.timers.entry(t).or_default().insert((*id, p.ai));
+                }
+                None => {}
+            }
+            kept.push(p);
+        }
+        kept
+    }
+
+    /// Drops the parts of aspect `ai` of commit `id` kept apart (`pending`, `invalid`), at their
+    /// T; a commit left with no part goes.
+    fn expire_apart(&mut self, id: &CommitId, ai: usize) {
+        let r = &mut self.eph.remote;
+        if let Some(w) = r.pending.get_mut(id) {
+            w.parts.retain(|p| p.ai != ai);
+            if w.parts.is_empty() {
+                r.pending.remove(id);
+            }
+        }
+        if let Some(x) = r.invalid.get_mut(id) {
+            x.blob.parts.retain(|p| p.ai != ai);
+            x.ais.retain(|a| *a != ai);
+            if x.blob.parts.is_empty() {
+                r.invalid.remove(id);
+            }
+        }
     }
 
     /// Whether part `p` of ephemeral commit `h` matches its delta hash; `None` while its thing's
@@ -1531,6 +1573,7 @@ impl Engine {
             }
             let (_, parts) = entry.remove_entry();
             for (id, ai) in parts {
+                self.expire_apart(&id, ai);
                 self.eph.remote.unindex_lists(&id);
                 let Some(h) = self.eph.remote.held.get_mut(&id) else { continue };
                 let Some(k) = h.parts.iter().position(|p| p.ai == ai) else {

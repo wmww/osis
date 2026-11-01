@@ -354,6 +354,14 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
         // the epochs it introduced go too (`keys::rebuild_intro` below)
         let Some(m) = reopen(tx, &c, ai)? else { continue };
+        // its residue, if it went value-less while dropped, came from its coverers' copies
+        // (`make_valueless`) and goes with them. Invariant: a part dropped as covered has a
+        // residue only while some coverer carries it; missing, it gives nothing (a late copy
+        // joins and rebuilds the residue from its body, `on_late`).
+        if let Some(a) = m.view.aspects.get(ai) {
+            let key = records::residue_key(&a.tid, &a.ak, &c, ai);
+            tx.txn.remove_local(&key, Shred::Yes)?;
+        }
         if m.view.kind.has_own_writes() {
             owned.extend(Owned::of_view(&m.view, &c, ai));
         }
