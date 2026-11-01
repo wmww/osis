@@ -21,7 +21,7 @@
 //! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
 //! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop, with its `H` rows);
-//! `Q peer label` replication position; `N` node-wide totals (labels, entries, bytes).
+//! `Q peer label` replication position; `N` host-wide totals (labels, entries, bytes).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
 //! entry, blob, log records and tombstones; a restart loses them. Their log records take
@@ -80,7 +80,7 @@ pub struct HostPolicy {
     /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
     pub relays: u32,
     pub relay_bytes: u64,
-    /// Node-wide caps: new entries beyond them get code 12, new labels and steps Error 12.
+    /// Host-wide caps: new entries beyond them get code 12, new labels and steps Error 12.
     pub max_labels: u64,
     pub max_entries: u64,
     pub max_bytes: u64,
@@ -540,12 +540,12 @@ struct EphLabel {
     horizon: u64,
     /// Memory charged to the label's cap: blobs, per-entry and per-record overhead.
     bytes: u64,
-    /// Memory of its tombstones (charged to the node-wide total only).
+    /// Memory of its tombstones (charged to the host-wide total only).
     tombs: u64,
 }
 
 impl EphLabel {
-    /// Everything charged to the label (the node-wide cap's eviction order).
+    /// Everything charged to the label (the host-wide cap's eviction order).
     fn all(&self) -> u64 {
         self.bytes.saturating_add(self.tombs)
     }
@@ -595,7 +595,7 @@ struct Ephemeral {
 }
 
 impl Ephemeral {
-    /// Charges `n` bytes to label `l`: to its cap, or for tombstones to the node-wide total only
+    /// Charges `n` bytes to label `l`: to its cap, or for tombstones to the host-wide total only
     /// (a writer's deletes must not fill the label it compacts: the total bounds them, the label
     /// charged most giving way).
     fn charge(&mut self, l: &LabelId, n: u64, kind: Charge) {
@@ -674,7 +674,7 @@ impl Rates {
 struct Tx {
     label: LabelId,
     meta: Meta,
-    /// Entries and bytes before this mutation, and whether the label is new (node totals).
+    /// Entries and bytes before this mutation, and whether the label is new (host totals).
     before: (u64, u64, bool),
     batch: Writes,
     grew: bool,
@@ -690,7 +690,7 @@ impl Tx {
     }
 }
 
-/// Node-wide totals.
+/// Host-wide totals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
     pub labels: u64,
@@ -937,7 +937,7 @@ impl HostStore {
     }
 
     /// Removes an ephemeral entry: silently (expiry), with a tombstone and a log record (a
-    /// delete), or with a log record only (evicted for the node-wide cap: holders may bring it
+    /// delete), or with a log record only (evicted for the host-wide cap: holders may bring it
     /// back).
     fn eph_remove(&mut self, label: &LabelId, blob: &BlobId, how: EphRemove) -> Result<bool, StoreError> {
         let Some(e) = self.eph.labels.get_mut(label) else { return Ok(false) };
@@ -972,7 +972,7 @@ impl HostStore {
         Ok(true)
     }
 
-    /// Frees ephemeral memory for the node-wide cap from the label charged most (M4 of the
+    /// Frees ephemeral memory for the host-wide cap from the label charged most (M4 of the
     /// ephemeral security review: a stranger's labels cannot lock others out): its oldest log
     /// record, else its oldest entry, else its oldest tombstone. Whether anything was freed.
     fn eph_evict(&mut self) -> Result<bool, StoreError> {
@@ -1391,7 +1391,7 @@ impl HostStore {
             b.delete(k);
         }
         // a dropped claim set's bytes, its index rows' included, leave the label's and the
-        // node's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
+        // host's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
         // keys), so a set may go over several sweeps, its `Z` row kept until the last
         for (k, rest) in self.due(b'Z', now, left)? {
             if left == 0 {
@@ -1520,7 +1520,7 @@ impl LabelStore for HostStore {
         Ok(if t.labels >= p.max_labels || t.entries >= p.max_entries || t.bytes >= p.max_bytes { Code::STORAGE_CAP } else { Code::OK })
     }
 
-    /// The step's and its claim set's bytes count toward the label's and the node's byte caps
+    /// The step's and its claim set's bytes count toward the label's and the host's byte caps
     /// (the claim set's until the sweep drops it): past them a genesis step is refused, a child
     /// step kept without its set (past them even so: once per `over_cap_step_ms`);
     /// registrations are rate-limited per label.

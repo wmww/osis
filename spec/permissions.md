@@ -7,7 +7,7 @@
 - **Ownership**: every thing has exactly one owner actor, fixed by its creation record. An actor is a thing, so it has an owner too; owner chains end at a key actor, within `MAX_OWNER_DEPTH` (64) owner links: a delta written on a thing further below its key actor (judged from the creation records alone) is invalid, its `created.0` excepted; the rest of its commit is judged as usual.
 - **Role grant**: an edge (holder actor, target, role), stored in the target's `roles.0`. On an actor it grants the role on everything the actor owns; on a plain thing, on that thing only.
 - **Effective role** of a node on a thing at time t: the maximum over paths from the node to the thing of the minimum role along the path, where a path climbs role grants and owner links (an owner holds admin on what it owns). Evaluated with the timeline (§5.1) at t.
-- **Admin** = write + change role grants + purge (§8) + write admin-only (`^`) aspects (spec/data-model.md §2, §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
+- **Admin** = write + change role grants + purge (§8) + write admin-only (`^`) aspects (spec/data-model.md §2; §5.2). An admin edge on a plain thing grants changing its role grants and purge on that thing.
 - An actor's owner is implicitly its admin and cannot be removed by other admins. Other admins are equal and may remove each other.
 - The role-class aspects of a thing (spec/data-model.md §9) are written only by its admins, whatever other role a node holds, except invite grants and self-removals (§2), and what rotations and re-seals write into `secrets.0` and `keys.0` (§3).
 - Membership of a group (`group.0`) grants no rights; an edge may be tied to a placement (§2).

@@ -19,7 +19,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-// spec/sync.md §4, spec/requirements.md Untrusted nodes: no tid, AK or author key reaches the node's storage
+// spec/sync.md §4, spec/requirements.md Untrusted nodes: no tid, AK or author key reaches the host's storage
 #[test]
 fn stored_bytes_hold_no_plaintext_identifiers() {
     let mut w = World::new();

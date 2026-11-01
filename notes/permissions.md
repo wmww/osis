@@ -5,6 +5,7 @@
 A small set of concepts that compose; hierarchical; keys for nodes, actors and other scopes; private keys wrapped to a target to grant access; a set of things shared with a changing set of actors managed in one place; nested actors (tess -> tess-human, tess-agent) possible but not baked in. UX vocabulary stays familiar: owner, admins, editors, viewers.
 
 ## Concepts
+- **Terms** (owner, round 13; spec/permissions.md §1): rights are roles given by role grants, and an actor with a role is a holder ("Dana holds write on X"); member and membership mean only placement in a group ("this note is a member of Work"), which grants no rights. One word per sense, so code, API, CLI and spec never use member for a right; a CRDT set's value is an element, a `Slots` entry a slot.
 - Any thing becomes an actor when it needs holders of its own: people, agents, teams, shared documents, a single shared note. Identity is the tid, so keys rotate freely.
 - A role on an actor covers both editing the actor thing and acting as it: only the role-class aspects would differ, and they are admin-gated anyway. Split only if an example needs writers who may act as the actor but not edit its profile.
 - Admins are equals; seniority ranking was rejected (unintuitive, leaks into UX). A hostile admin is out of scope; the owner is the recourse. So a person actor's owner should be an offline recovery key, with devices as admins (app policy). Consequence: only the recovery key can roster-snapshot the person actor, so its role history (device churn, tiny) is bounded only when the key is used.
