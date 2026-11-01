@@ -149,8 +149,10 @@ pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
 /// CPU time cannot be read (not Linux), once it has run this many seconds of wall time.
 /// `OSIS_SEED_TIMEOUT_SECS` overrides; 0 is refused. CPU time, not wall time: a seed starved by
 /// load (a `nice 19` run beside others at load 30-50 took 701 s for a 5 CPU-s seed) is not
-/// hung. Minor consequence, test-only: near 0 every seed is hung; at infinity a hung seed hangs
-/// the run silently. 600 is far past any seed's cost (the slowest take seconds).
+/// hung. Only the seed's thread counts: a seed waiting on threads it spawned reads as blocked
+/// (seeds are single-threaded). Minor consequence, test-only: near 0 every seed is hung; at
+/// infinity a hung seed hangs the run silently. 600 is far past any seed's cost (the slowest
+/// take seconds).
 pub const SEED_TIMEOUT_SECS: u64 = 600;
 
 /// The calling thread's CPU clock: its `/proc` schedstat file, `None` where there is none.
