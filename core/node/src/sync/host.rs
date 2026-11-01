@@ -151,9 +151,10 @@ impl SyncEngine {
         }
     }
 
-    /// The driver starts afresh: the next step hands it the host config again.
+    /// The driver starts afresh: the next step hands it the host config again. The person
+    /// stays (the app set it before the driver started).
     pub fn host_restart(&mut self) {
-        self.hosting = Hosting::default();
+        self.hosting = Hosting { person: self.hosting.person, ..Hosting::default() };
     }
 
     /// The driver's report of its host.

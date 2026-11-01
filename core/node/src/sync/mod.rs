@@ -200,6 +200,9 @@ pub(crate) enum Phase {
     Open,
     /// No key opens it here.
     Failed,
+    /// The host refused registering it for now (not admitted, full, the rate): opened again
+    /// from scratch at `retry_at` (raw ms).
+    Refused { retry_at: u64 },
 }
 
 /// Counters of the work passes did (`SyncEngine::pass_stats`; scale checks).
@@ -298,6 +301,8 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
+    /// Registrations refused for now per label (the back-off doubles per refusal).
+    pub refusals: BTreeMap<LabelId, u32>,
 }
 
 impl Requests {
@@ -325,6 +330,8 @@ pub struct LabelStatus {
     pub idle: usize,
     /// Some host refused every key this node holds (waits for a re-seal).
     pub stranded: bool,
+    /// Some host refused registering it for now (tried again after a back-off).
+    pub refused: bool,
     pub last_sync: Option<u64>,
 }
 
@@ -1057,7 +1064,7 @@ impl SyncEngine {
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         for (g, l) in self.labels() {
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, last_sync: None };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, last_sync: None };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
@@ -1065,6 +1072,7 @@ impl SyncEngine {
                 let Some(x) = c.labels.get(&l.id) else { continue };
                 match x.phase {
                     Phase::Failed => st.stranded = true,
+                    Phase::Refused { .. } => st.refused = true,
                     Phase::Open => {
                         st.open += 1;
                         if x.idle() && c.session.outstanding() == 0 {
@@ -1489,7 +1497,13 @@ impl SyncEngine {
             .iter()
             .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Failed && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, l)| (*id, *lid, l.group)))
             .collect();
-        for (conn, label, g) in failed {
+        // registrations refused for now: try again once their back-off passed
+        let refused: Vec<(ConnId, LabelId, Tid)> = self
+            .conns
+            .iter()
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| matches!(l.phase, Phase::Refused { retry_at } if retry_at <= now)).map(move |(lid, l)| (*id, *lid, l.group)))
+            .collect();
+        for (conn, label, g) in failed.into_iter().chain(refused) {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.reopens.remove(&label);
             }
@@ -1538,6 +1552,9 @@ impl SyncEngine {
                 // a label waiting for a reply re-syncs after it
                 if (l.phase == Phase::Open && !l.syncing) || l.phase == Phase::Failed {
                     at(l.last_sync.saturating_add(self.cfg.resync_ms));
+                }
+                if let Phase::Refused { retry_at } = l.phase {
+                    at(retry_at);
                 }
             }
         }

@@ -255,6 +255,8 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
             SyncState::NoHosts
         } else if s.stranded {
             SyncState::Stranded
+        } else if s.refused && s.open == 0 {
+            SyncState::Unreachable
         } else if s.open > 0 && s.idle == s.open {
             SyncState::Synced
         } else if s.connected > 0 || s.open > 0 {
