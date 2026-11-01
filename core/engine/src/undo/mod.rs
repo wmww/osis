@@ -95,8 +95,8 @@ impl UndoBuffer for Before {
 /// undo never extends a value's lifetime past its original expiry. What it writes back from
 /// `pre` (`Writer::copied`) takes the earliest expiry among the writes it copies (`expiry` of
 /// an owner dot: `Some(0)` for one gone, expired or no longer held); content whose expiry is at
-/// or before `wall` (the undo's `ts`) is stripped from `pre` and the undo run again, so none of
-/// it comes back.
+/// or before `wall` (the undo's `ts`) is stripped from `pre` and the undo run again, until it
+/// copies no gone write not yet stripped, so none of it comes back.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Before, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Option<u64>)>> {
     let view = schema.and_then(|s| s.view(ak.as_str()));
@@ -108,10 +108,18 @@ pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mu
         })
     };
     let mut out = run(&mut w, &pre)?;
-    let gone: BTreeSet<Dot> = w.copied().iter().filter(|d| expiry(d).is_some_and(|t| t <= wall)).cloned().collect();
-    if !gone.is_empty() {
+    // a rerun may copy other content in place of what was stripped (another entry at the key):
+    // repeat while it copies a gone dot not yet stripped (a stripped one may still be copied:
+    // `strip` takes values, `copy_from` notes every owner dot); `pre`'s dots are finite
+    let mut gone: BTreeSet<Dot> = BTreeSet::new();
+    loop {
+        let before = gone.len();
+        gone.extend(w.copied().iter().filter(|d| expiry(d).is_some_and(|t| t <= wall)).cloned());
+        if gone.len() == before {
+            break;
+        }
         pre.state.strip(&|d| gone.contains(d));
-        w = start;
+        w = start.clone();
         out = run(&mut w, &pre)?;
     }
     let expires = w.copied().iter().filter_map(expiry).filter(|t| *t > wall).min();

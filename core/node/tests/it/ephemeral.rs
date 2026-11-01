@@ -820,6 +820,45 @@ fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
     }
 }
 
+// spec/crdt.md §4.6, §4.7 (random churn seed 79 shrunk): A's `Set` into B's entry at a key
+// shadowing A's own older entry there, both expiring; past both, undoing the `Set` strips B's
+// value from what it restores, which then finds A's, also gone: neither comes back (the `Set`
+// stays, reading alone: nothing before to restore, and a nested register takes no reset)
+#[test]
+fn undo_of_set_past_expiry_restores_no_shadowed_entry_spec_crdt_4_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let t = net.now() + 5_000;
+    for (n, v) in [(a, "v1"), (b, "v2")] {
+        let mut m = Mutation::new();
+        m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s(v)) }).unwrap();
+        m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
+        net.engine(n).write(m).unwrap();
+        local(&mut net, n);
+        net.run();
+    }
+    assert_eq!(notes(&mut net, a, w), map(&[("k", "v2")]));
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("v3")) }).unwrap();
+    let set = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    net.advance(t + 1_000 - net.now());
+    let me = net.tid(a);
+    let _ = net.engine(a).revert_change(set, me).unwrap();
+    local(&mut net, a);
+    net.run();
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), map(&[("k", "v3")]), "node {n}: no expired value came back");
+    }
+}
+
 // spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
 // author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
 // its author rewrites every 15 s stays up at B without a gap, the host holding at most a few
