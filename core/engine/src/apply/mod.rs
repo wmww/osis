@@ -1132,6 +1132,11 @@ pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Ve
     Ok(held_parts_at(tx, id, &|x| x == ai)?.into_iter().map(|x| x.2).collect())
 }
 
+/// The fragments of a held commit's parts on aspect `ai`.
+pub(crate) fn held_fragments(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<osis_crdt::Fragment>> {
+    Ok(held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect())
+}
+
 /// Decoded parts of a held commit on the aspects `keep` selects, with their indexes.
 pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize) -> bool) -> Result<Vec<(usize, usize, Decoded)>> {
     let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };

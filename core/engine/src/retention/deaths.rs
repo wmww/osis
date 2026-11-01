@@ -12,7 +12,6 @@ use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_commit::Decoded;
 use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -126,7 +125,7 @@ impl Parts {
     /// Part `ai` of `c`, decoded once per step.
     fn part(&mut self, tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<&[Fragment]> {
         if !self.read.contains_key(c) {
-            let fs = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+            let fs = crate::apply::held_fragments(tx, c, ai)?;
             self.read.insert(*c, fs);
         }
         Ok(self.read.get(c).map(Vec::as_slice).unwrap_or_default())
@@ -194,33 +193,28 @@ impl Parts {
         if let Some(k) = self.killed.get(&key) {
             return Ok(k.contains(want));
         }
-        {
-            let mut dead = BTreeSet::new();
-            let fs = self.part(tx, c, ai)?.to_vec();
-            let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(f, d)).map(|d| (d.stamp.clone(), killer(&d))));
-            if let Some((k, kai)) = src {
-                let ks: Vec<Fragment> = crate::apply::held_parts(tx, &k, kai)?.into_iter().map(Decoded::into_fragment).collect();
-                for f in &fs {
-                    let (mut g, mut ch) = (f.clone(), Changes::new());
-                    for x in &ks {
-                        g.join_into(x.clone(), None, &mut ch);
-                    }
-                    keep(f, ch);
+        let mut dead = BTreeSet::new();
+        let fs = self.part(tx, c, ai)?.to_vec();
+        let mut keep = |f: &Fragment, ch: Changes| dead.extend(ch.into_deaths().into_iter().filter(|d| dies_in(f, d)).map(|d| (d.stamp.clone(), killer(&d))));
+        if let Some((k, kai)) = src {
+            let ks = crate::apply::held_fragments(tx, &k, kai)?;
+            for f in &fs {
+                let (mut g, mut ch) = (f.clone(), Changes::new());
+                for x in &ks {
+                    g.join_into(x.clone(), None, &mut ch);
                 }
-            } else {
-                tx.load(tid, ak)?;
-                if let Some(Some(st)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
-                    for f in &fs {
-                        let (mut st, mut ch) = (st.clone(), Changes::new());
-                        st.join_into(f.clone(), None, &mut ch);
-                        keep(f, ch);
-                    }
-                }
+                keep(f, ch);
             }
-            let hit = dead.contains(want);
-            self.killed.insert(key, dead);
-            Ok(hit)
+        } else if let Some(st) = tx.state(tid, ak)?.cloned() {
+            for f in &fs {
+                let (mut st, mut ch) = (st.clone(), Changes::new());
+                st.join_into(f.clone(), None, &mut ch);
+                keep(f, ch);
+            }
         }
+        let hit = dead.contains(want);
+        self.killed.insert(key, dead);
+        Ok(hit)
     }
 }
 
@@ -264,11 +258,10 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
     let Some(ai) = bounded_part(tx.core, c, tid, ak) else { return Ok(()) };
     let Some(ts) = tx.core.ix.commits.get(c).map(|m| m.header.ts) else { return Ok(()) };
     let (fr, abs) = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().find(|x| x.1 == *c).map(|x| (x.2.clone(), x.3.clone())).unwrap_or_default();
-    tx.load(tid, ak)?;
-    let Some(Some(st)) = tx.core.states.get(&(*tid, ak.clone())).cloned() else { return Ok(()) };
+    let Some(st) = tx.state(tid, ak)?.cloned() else { return Ok(()) };
     let mut deaths = Vec::new();
     // a valid snapshot vouches for every write it carries (spec/permissions.md §5.2)
-    let fs: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    let fs = crate::apply::held_fragments(tx, c, ai)?;
     let core = &*tx.core;
     let saw = |d: &Death| took(core, tid, &fr, &abs, &d.by);
     for f in fs {
@@ -382,7 +375,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         }
         let parts: Vec<Fragment> = {
             let _s = crate::costs::span("deaths: read bodies");
-            crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect()
+            crate::apply::held_fragments(tx, c, ai)?
         };
         let _s = crate::costs::span("deaths: join");
         let kind = tx.core.ix.commits.get(c).map(|m| m.header.kind);
@@ -401,8 +394,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     }
     {
         let _s = crate::costs::span("deaths: state");
-        tx.load(tid, ak)?;
-        if let Some(Some(cur)) = tx.core.states.get(&(*tid, ak.clone())).cloned() {
+        if let Some(cur) = tx.state(tid, ak)?.cloned() {
             join(&mut st, cur, false, &mut deaths, &mut dead);
         }
     }

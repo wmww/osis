@@ -1036,7 +1036,7 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have
 pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, snaps: &BTreeSet<CommitId>) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
     let Some(a) = h.aspects.get(ai) else { return Ok(out) };
-    let own: Vec<Fragment> = super::held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    let own: Vec<Fragment> = super::held_fragments(tx, id, ai)?;
     let own: Vec<&Fragment> = own.iter().collect();
     for s in snaps {
         if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak, None)? {
@@ -1081,7 +1081,7 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f:
     };
     for (c, ai) in owners {
         let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-        let own: Vec<Fragment> = super::held_parts(tx, &c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+        let own: Vec<Fragment> = super::held_fragments(tx, &c, ai)?;
         let own: Vec<&Fragment> = own.iter().collect();
         out.extend(misstated_in(&ix, &h, &c, ai, &own));
     }

@@ -109,8 +109,7 @@ fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
 
 /// Whether held part `ai` of `c` holds a write `owns` matches.
 fn holds_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owns: &dyn Fn(&osis_crdt::Dot) -> bool) -> Result<bool> {
-    for d in crate::apply::held_parts(tx, c, ai)? {
-        let f = d.into_fragment();
+    for f in crate::apply::held_fragments(tx, c, ai)? {
         let mut g = f.clone();
         g.strip(owns);
         if g != f {
@@ -249,7 +248,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // a covered one's coverers reach them
     let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
     // the dropped deltas, to find what of the state holds copies of their writes
-    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    let bodies: Vec<Fragment> = crate::apply::held_fragments(tx, c, ai)?;
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak, bodies.first())? } else { BTreeSet::new() };
@@ -294,27 +293,30 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     Ok(())
 }
 
-/// Whether `f` holds for a snapshot that covered dropped part `ai` of `c` when it dropped, or
-/// covered such a coverer dropped in turn, and so on (`Dropped::covered_by`); stops at the first.
-pub(crate) fn any_coverer(core: &Core, c: &CommitId, ai: usize, f: &dyn Fn(&CommitId) -> bool) -> bool {
-    let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return false };
+/// The snapshots that covered dropped part `ai` of `c` when it dropped, or covered such a
+/// coverer dropped in turn, and so on (`Dropped::covered_by`).
+fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
+    let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Vec::new() };
     let (tid, ak) = (a.tid, a.ak.clone());
     let direct = |x: &CommitId| -> Vec<CommitId> {
         let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
-        let xai = m.aspect(&tid, &ak);
-        xai.and_then(|xai| m.dropped.get(&xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default()
+        m.aspect(&tid, &ak).and_then(|xai| m.dropped.get(&xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default()
     };
     let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
     let mut todo = direct(c);
     while let Some(x) = todo.pop() {
-        if f(&x) {
-            return true;
-        }
+        out.push(x);
         if seen.insert(x) {
             todo.extend(direct(&x));
         }
     }
-    false
+    out
+}
+
+/// Whether `f` holds for one of the `coverers` of dropped part `ai` of `c`.
+pub(crate) fn any_coverer(core: &Core, c: &CommitId, ai: usize, f: &dyn Fn(&CommitId) -> bool) -> bool {
+    coverers(core, c, ai).iter().any(f)
 }
 
 /// Parts on `(tid, ak)` dropped as covered that no coverer carries any more (`any_coverer`: each
@@ -454,21 +456,15 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let enc = encode_owned(list);
     tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
     // the delta's writes lie where it touched the state (a page of a paged state)
-    let mut bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    let mut bodies: Vec<Fragment> = crate::apply::held_fragments(tx, c, ai)?;
     if bodies.is_empty() && m.dropped.get(&ai).is_some_and(|d| d.as_cover) {
         // a covered body's live writes are in its coverers (a purge drops them next)
-        let found = std::cell::RefCell::new(Vec::new());
-        any_coverer(tx.core, c, ai, &|s| {
-            found.borrow_mut().push(*s);
-            false
-        });
-        for s in found.into_inner() {
+        for s in coverers(tx.core, c, ai) {
             let Some(sai) = held_part(tx.core, &s, &a.tid, &a.ak) else { continue };
             if !crate::apply::validity::snapshot_valid(tx.core, &s, &a.tid, &a.ak) {
                 continue;
             }
-            for p in crate::apply::held_parts(tx, &s, sai)? {
-                let mut f = p.into_fragment();
+            for mut f in crate::apply::held_fragments(tx, &s, sai)? {
                 f.remove_writes(&|d| !o.owns(d));
                 bodies.push(f);
             }
@@ -491,6 +487,8 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     Ok(Some(k))
 }
 
+/// Holds delta `ai` of `c` value-less (`make_valueless`) and drops its body: at expiry, or
+/// purged.
 fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if let Some(k) = make_valueless(tx, c, ai)? {
         changed.insert(k);
@@ -562,8 +560,8 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
     for (c, r) in &snapshots {
         let Some(ai) = aspect_index(tx.core, c, tid, ak) else { continue };
         let mut carries = false;
-        for p in crate::apply::held_parts(tx, c, ai)? {
-            for (d, _) in p.into_fragment().live_writes() {
+        for f in crate::apply::held_fragments(tx, c, ai)? {
+            for (d, _) in f.live_writes() {
                 if unknown.contains(&d) {
                     carries = true;
                     carried.insert(d);
@@ -639,10 +637,7 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
         return Ok(());
     }
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    if let Some(k) = make_valueless(tx, c, ai)? {
-        changed.insert(k);
-    }
-    drop_part(tx, c, ai)?;
+    expire(tx, c, ai, changed)?;
     // snapshots carrying the purged values (spec/commits.md §5)
     if let Some(o) = Owned::of(&m.header, c, ai) {
         for s in snapshots_of(tx.core, &a.tid, &a.ak) {
@@ -696,8 +691,7 @@ pub(crate) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize) ->
 /// After a commit applied: its expiry (now or by timer), its purge request against held
 /// deltas, and earlier purge requests against its deltas.
 pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(()) };
-    let h = m.header.clone();
+    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged)?;
     for item in &h.purge {
@@ -772,7 +766,6 @@ fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BT
 /// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_AT_MOST`).
 type Due = (Vec<u8>, CommitId, usize, u8);
 
-/// The expiry and keep-at-most timers due by the corrected clock.
 /// The timers due by the corrected clock, and when the first of the others is (`u64::MAX`: none).
 fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     let now = tx.now().0;
@@ -966,8 +959,7 @@ impl Engine {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
             let Some(ai) = aspect_index(tx.core, &c, &tid, &ak) else { return Ok(None) };
-            let parts = crate::apply::held_parts(tx, &c, ai)?;
-            Ok(parts.into_iter().flat_map(|p| p.into_fragment().writes()).filter_map(|(_, t)| t).min())
+            Ok(crate::apply::held_fragments(tx, &c, ai)?.iter().flat_map(Fragment::writes).filter_map(|(_, t)| t).min())
         })
     }
 
@@ -1006,8 +998,7 @@ impl Engine {
             // one a receiver judges invalid)
             let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
             crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
-            tx.load(&tid, &ak)?;
-            let Some(mut st) = tx.core.states.get(&(tid, ak.clone())).cloned().flatten() else { return Ok(None) };
+            let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
             if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
                 return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
             }
@@ -1206,13 +1197,11 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
     let dropped: BTreeMap<usize, bool> = tx.core.ix.commits.get(c).map(|m| m.dropped.iter().map(|(ai, d)| (*ai, d.live)).collect()).unwrap_or_default();
     for x in holders {
         let Some(a) = h.aspects.get(*x) else { continue };
-        let k = (a.tid, a.ak.clone());
-        let parts = crate::apply::held_parts(tx, c, *x)?;
+        let parts = crate::apply::held_fragments(tx, c, *x)?;
         if parts.is_empty() && dropped.get(x) == Some(&false) {
             continue;
         }
-        tx.load(&a.tid, &a.ak)?;
-        let Some(Some(st)) = tx.core.states.get(&k) else { continue };
+        let Some(st) = tx.state(&a.tid, &a.ak)? else { continue };
         let writes = st.live_writes();
         if parts.is_empty() {
             let tsless = dropped.contains_key(x);
@@ -1223,8 +1212,8 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
         }
         // by dot: bare anchors and other writes without a `ts` count too
         let live: BTreeSet<osis_crdt::Dot> = writes.into_iter().map(|(d, _)| d).collect();
-        for p in parts {
-            if p.into_fragment().live_writes().into_iter().any(|(d, _)| live.contains(&d)) {
+        for f in parts {
+            if f.live_writes().into_iter().any(|(d, _)| live.contains(&d)) {
                 return Ok(true);
             }
         }
