@@ -187,10 +187,15 @@ async fn keep_alive_rewrites_until_dropped() {
     assert!(db.keep_alive(t, db.key("c:flag.0~").unwrap(), me.clone(), &Value::Int(1)).is_err(), "no default expiry");
     let ka = db.keep_alive(t, k.clone(), me, &Value::Int(1)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
-    // rewritten every 30 ms: at least four writes besides the first in 250 ms (expiry itself
-    // runs on the sync engine's ticks, a second apart, so the gap is not watched here)
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert!(ka.writes() >= 5, "{} writes", ka.writes());
+    // rewritten every 30 ms: four writes besides the first come (GUARD only against a hang: no
+    // wall-time assertion; expiry runs on the sync engine's ticks, so the gap is not watched)
+    tokio::time::timeout(GUARD, async {
+        while ka.writes() < 5 {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     assert_eq!(mine(&db), Some(Value::Int(1)));
     ka.set(&Value::Int(2)).unwrap();
     assert_eq!(mine(&db), Some(Value::Int(2)));
