@@ -1976,12 +1976,12 @@ fn holder_actor_keyset_named_spec_crypto_4() {
     withheld_arrives(&mut lp, 3, g, e, &all, &r_p);
 }
 
-/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS (default 0..100).
+/// Seeds: OSIS_WITHHELD_START, OSIS_WITHHELD_SEEDS (default 0..100).
 #[test]
 #[ignore = "tier 2"]
 fn withheld_departures_leak_nothing_large() {
-    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
-    let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::withheld_departures_leak_nothing_large -- --ignored --exact");
+    let s = osis_base::testenv::Seeds::from_env("OSIS_WITHHELD_START", "OSIS_WITHHELD_SEEDS", 0..100);
+    let replay = |s: u64| format!("OSIS_WITHHELD_START={s} OSIS_WITHHELD_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::withheld_departures_leak_nothing_large -- --ignored --exact");
     s.run("rotation::tests::withheld_departures_leak_nothing_large", replay, |seed| {
         withheld_departures(seed, false);
         withheld_departures(seed, true);
