@@ -8,6 +8,7 @@ use crate::common;
 use common::*;
 use osis_base::BlobId;
 use osis_proto::*;
+use osis_proto::msg::DeleteItem;
 use osis_host::{HostPolicy, HubOutput};
 use osis_store::Fault;
 
@@ -90,8 +91,8 @@ fn partial_frames_bounded() {
 }
 
 // spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk
-// in one store commit (one durable backend write, or two around the root write when it shreds),
-// not one per entry
+// in one store commit, not one per entry: at most three durable writes (rows, root, cleanup when
+// it shreds: a removal, or a table page split) for 1024 uploads or 1024 deletes
 #[test]
 fn one_commit_per_message() {
     let mut w = World::new();
@@ -99,16 +100,24 @@ fn one_commit_per_message() {
     let c = w.connect(h);
     let l = Label::new(3);
     w.setup(c, &l);
-    let before = w.backends[h].syncs();
+    let before = w.faults[h].writes();
     let ev = w.run(c, Command::Upload { label: l.id, entries: (0..1024).map(|n| l.entry(blob(n))).collect() });
     assert_eq!(statuses(&ev), vec![Code::OK; 1024]);
-    assert!(w.backends[h].syncs() - before <= 2, "{} durable writes", w.backends[h].syncs() - before);
+    assert!(w.faults[h].writes() - before <= 3, "{} durable writes of an upload", w.faults[h].writes() - before);
     assert_eq!(live(&w, h, &l).len(), 1024);
+    let before = w.faults[h].writes();
+    let key = l.head_keys().delete.clone();
+    let items = (0..1024).map(|n| DeleteItem::sign(&key, &l.id, osis_label::blob_id(&blob(n)), None).unwrap()).collect();
+    assert_eq!(statuses(&w.run(c, Command::Delete { label: l.id, items })), vec![Code::OK; 1024]);
+    assert!(w.faults[h].writes() - before <= 3, "{} durable writes of a delete", w.faults[h].writes() - before);
+    assert!(live(&w, h, &l).is_empty());
 }
 
 // spec/requirements.md (durability): nothing is acknowledged or pushed before its input's commit:
 // when the commit fails, the uploader gets no status and the subscriber no push, both are
-// closed, nothing of it is kept, and the uploader's retry is taken once writes work again
+// closed, nothing of it is kept, and the uploader's retry is taken once writes work again. A
+// delete's shredding commit failing at any of its writes (rows, root, cleanup) acknowledges
+// nothing either, and leaves its entries all deleted or all live
 #[test]
 fn failed_commit_sends_nothing() {
     let mut w = World::new();
@@ -130,6 +139,24 @@ fn failed_commit_sends_nothing() {
     w.open(a2, &l);
     assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] })), vec![Code::OK]);
     assert_eq!(live(&w, h, &l), vec![osis_label::blob_id(&blob(1))]);
+    let key = l.head_keys().delete.clone();
+    for (n, at) in (10u64..).step_by(2).zip(0..3) {
+        let ids = [osis_label::blob_id(&blob(n)), osis_label::blob_id(&blob(n + 1))];
+        let a = w.connect(h);
+        w.open(a, &l);
+        assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(n)), l.entry(blob(n + 1))] })), vec![Code::OK; 2]);
+        w.faults[h].at(at, Fault::Fail);
+        let items = ids.iter().map(|id| DeleteItem::sign(&key, &l.id, *id, None).unwrap()).collect();
+        let ev = w.run(a, Command::Delete { label: l.id, items });
+        assert!(statuses(&ev).is_empty(), "write {at}: {ev:?}");
+        assert!(!w.link_open(a));
+        let held = live(&w, h, &l).iter().filter(|id| ids.contains(id)).count();
+        // the rows and the root are the commit point: the cleanup's failure comes after it
+        assert_eq!(held, if at < 2 { 2 } else { 0 }, "write {at}");
+    }
+    let a3 = w.connect(h);
+    w.open(a3, &l);
+    assert_eq!(statuses(&w.run(a3, Command::Upload { label: l.id, entries: vec![l.entry(blob(2))] })), vec![Code::OK]);
 }
 
 // spec/wire.md §11.2 Register, spec/sync.md §5: node-wide caps refuse new labels (Error 12) and new entries (code 12)

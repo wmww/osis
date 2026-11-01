@@ -759,13 +759,13 @@ fn claim_lookup_reads_no_set() {
     let (holder, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
     let lookups = [(holder, Some(set.entries.get(&holder).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
     for (k, want) in &lookups {
-        // cold caches: a lookup reads one path of table pages and key-tree nodes (each at most
-        // about 11 KB), never the set's unit
+        // cold caches: a lookup reads one path of table pages and key-tree nodes (about 9 KB
+        // here), never the set's 2 MiB unit
         drop(store);
         store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 1);
         reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
-        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 128 << 10, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 32 << 10, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
     }
     // superseded and swept: the index rows go over several budgeted sweeps, then the set
     let step = f.genesis.to_bytes().len() as u64;

@@ -420,13 +420,13 @@ fn suspended_transaction_is_one() {
     let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
-    let mut held = t.suspend();
+    let mut held = t.suspend().unwrap();
     for i in 0..20u32 {
         let mut t = s.resume(held, &mut rng);
         t.table_put(tb, &i.to_be_bytes(), vec![1; 30], Shred::No).unwrap();
         t.put_blob(&BlobId([i as u8; 32]), vec![i as u8; 40]).unwrap();
         assert_eq!(t.table_len(tb).unwrap(), u64::from(i) + 1);
-        held = t.suspend();
+        held = t.suspend().unwrap();
     }
     // dropped while set aside: aborted, the spills rolled back by the next transaction
     drop(held);
@@ -434,11 +434,11 @@ fn suspended_transaction_is_one() {
     assert_eq!(t.table(&tid(1), &ak("t.0"), 0).unwrap(), None);
     assert_eq!(t.get_blob(&BlobId([3; 32])).unwrap(), None);
     let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
-    let mut held = t.suspend();
+    let mut held = t.suspend().unwrap();
     for i in 0..20u32 {
         let mut t = s.resume(held, &mut rng);
         t.table_put(tb, &i.to_be_bytes(), vec![2; 30], Shred::No).unwrap();
-        held = t.suspend();
+        held = t.suspend().unwrap();
     }
     s.resume(held, &mut rng).commit().unwrap();
     assert!(s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "no journal left");
@@ -448,6 +448,26 @@ fn suspended_transaction_is_one() {
     let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
     assert_eq!(t.table_len(tb).unwrap(), 20);
     assert_eq!(t.table_get(tb, &7u32.to_be_bytes()).unwrap(), Some(vec![2; 30]));
+    // a crash while set aside, spills on disk: the next open rolls them back
+    let mut held = t.suspend().unwrap();
+    for i in 0..20u32 {
+        let mut t = s.resume(held, &mut rng);
+        t.table_put(tb, &(100 + i).to_be_bytes(), vec![3; 30], Shred::No).unwrap();
+        held = t.suspend().unwrap();
+    }
+    assert!(!s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "spilled");
+    drop((held, s));
+    let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    assert!(s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "no journal left");
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    assert_eq!(t.table_len(tb).unwrap(), 20);
+    // memory rows cannot be set aside: refused, and the transaction aborted
+    t.set_memory(true);
+    t.create_table(&tid(2), &ak("m.0"), 0).unwrap();
+    assert_eq!(t.suspend().err(), Some(Error::Misuse("suspend with memory rows")));
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.table(&tid(2), &ak("m.0"), 0).unwrap(), None);
 }
 
 // spec/commits.md §4: after a failed commit the store recovers in place (`reopen`): the failed
