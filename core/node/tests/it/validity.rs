@@ -2997,3 +2997,31 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     }
     assert!(!lp.peers[0].engine.roster(&d).contains_key(&b));
 }
+
+// spec/crdt.md §2.1: a writer's valid snapshot claiming this node's counters up to the wire's
+// limit raises its next counter there; node form above it could not be encoded, so its later
+// writes on the aspect go in commit form instead of failing.
+#[test]
+fn lying_frontier_leaves_writes_spec_crdt_2_1() {
+    let mut lp = net(2, 0x5f06);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("real")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.advance(1_000);
+    let reg = ak("t:reg.0");
+    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let f = lp.peers[1].engine.core.states.get(&(t, reg.clone())).cloned().flatten().unwrap();
+    let forged = forge_snapshot_with(&mut lp, 1, t, &reg, now, f, osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, i64::MAX as u64 - 1)])));
+    assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("after")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
+    assert_eq!(lp.peers[0].engine.get_typed(&t, &REG).unwrap(), Some(s("after")));
+}

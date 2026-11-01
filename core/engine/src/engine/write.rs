@@ -386,6 +386,24 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
 
 /// The writer's own source: the author node or session, or for commit form a placeholder
 /// commit that sorts below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
+/// Past this next counter an aspect is written in commit form (spec/crdt.md §2.1): a writer's
+/// snapshot frontier may claim any counter of this node up to the wire's 2^63 - 1, which this
+/// node then skips (`raise_counter`), and node form above it could not be encoded. Honest
+/// writing never nears it; a lie leaves at least 2^62 counters or none.
+const MAX_NODE_COUNTER: u64 = 1 << 62;
+
+/// Whether this node may write node form on every aspect of `keys` (spec/crdt.md §2.1): it is
+/// sure of the thing's counters (`Core::counters_sure`; a thing `creates` holds has no counters
+/// elsewhere) and has not passed `MAX_NODE_COUNTER`.
+pub(crate) fn node_form_ok<'a>(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = &'a (Tid, Ak)>, creates: &Creates) -> Result<bool> {
+    for (t, ak) in keys {
+        if (!creates.contains_key(t) && !tx.core.counters_sure(t)) || tx.txn.counter(t, ak)? > MAX_NODE_COUNTER {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn own_source(form: Form, node: Tid) -> Source {
     form.own_source(node, osis_base::CommitId([0; 32]))
 }
@@ -578,8 +596,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if kind != Kind::Content {
         m.form = Form::Commit;
     }
-    // a thing created here has no counters elsewhere
-    if m.form == Form::Node && m.aspects.keys().any(|(t, _)| !m.creates.contains_key(t) && !tx.core.counters_sure(t)) {
+    if m.form == Form::Node && !node_form_ok(tx, m.aspects.keys(), &m.creates)? {
         m.form = Form::Commit;
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
