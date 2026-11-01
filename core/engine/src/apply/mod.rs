@@ -13,6 +13,10 @@ pub(crate) mod validity;
 mod tests_linked;
 #[cfg(test)]
 mod tests_order;
+#[cfg(test)]
+mod oracle;
+#[cfg(test)]
+mod tests_paged;
 
 pub(crate) use waits::Waits;
 pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, unmerge_fell};
@@ -62,9 +66,45 @@ pub enum Ingested {
 }
 
 pub(crate) enum Exam {
-    Ready(Vec<(usize, usize, Decoded)>),
+    Ready(Parts),
     Pending(Reason),
     Parked,
+}
+
+/// A part `examine` checked and keeps no content of: apply streams it again, one page at a
+/// time (issues/durable-decode-bound.md).
+pub(crate) struct Streamed {
+    pub ai: usize,
+    pub di: usize,
+    /// Its thing's dedup secret (its hash, its pages' keys).
+    pub dedup: osis_crypto::Secret32,
+    /// A snapshot's frontiers and `Absorbed`.
+    pub gives: Option<crate::engine::Gives>,
+}
+
+/// A commit's examined parts. Those of role-class aspects and `created.0` are decoded whole:
+/// their readers (perm's edges, rotations, creation records) read them whole, and they hold
+/// rosters of thousands, not millions; the rest are streamed.
+#[derive(Default)]
+pub(crate) struct Parts {
+    pub whole: Vec<(usize, usize, Decoded)>,
+    pub streamed: Vec<Streamed>,
+}
+
+impl Parts {
+    /// Whether a part of aspect `ai` is held.
+    pub(crate) fn has(&self, ai: usize) -> bool {
+        self.whole.iter().any(|p| p.0 == ai) || self.streamed.iter().any(|p| p.ai == ai)
+    }
+    /// The aspects with a part.
+    pub(crate) fn ais(&self) -> BTreeSet<usize> {
+        self.whole.iter().map(|p| p.0).chain(self.streamed.iter().map(|p| p.ai)).collect()
+    }
+}
+
+/// Whether a part of aspect `ak` is decoded whole (`Parts`).
+fn whole_part(ak: &str) -> bool {
+    osis_schema::core_types::is_role_class(ak) || ak == osis_commit::retention::CREATED
 }
 
 /// Commit ID of a blob whose header this build cannot decode: BLAKE3 of the header value.
@@ -249,8 +289,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if !projection && waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
         return Ok(Exam::Pending(Reason::WaitDeltas));
     }
-    let mut out = Vec::with_capacity(blob.parts.len());
+    let mut out = Parts::default();
     let mut interner = Interner::new();
+    // a snapshot's or an import's carried writes stamped after the commit (spec/crdt.md §8, §7:
+    // a node's next stamp exceeds every stamp it holds, §2.2)
+    let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
+    let mut late = false;
     for p in &blob.parts {
         if skip.contains(&(p.ai, p.di)) {
             continue;
@@ -259,8 +303,27 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
         let mut blobs = TxBlobs::new(&mut tx.txn);
         let mut reader = BlobReader::new(&dedup, &mut blobs);
-        match verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)) {
-            Ok(d) => out.push((p.ai, p.di, d)),
+        #[cfg(test)]
+        let whole = whole_part(a.ak.as_str()) || tx.core.whole_apply;
+        #[cfg(not(test))]
+        let whole = whole_part(a.ak.as_str());
+        let r = if whole {
+            verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)).map(|d| {
+                late |= carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);
+                out.whole.push((p.ai, p.di, d));
+            })
+        } else {
+            // the full check, keeping nothing: apply streams it again
+            let mut each = |f: osis_crdt::Fragment| {
+                late |= carries && f.max_ts().is_some_and(|t| t > h.ts);
+                Ok(())
+            };
+            osis_commit::stream_part(&h, id, p, &dedup, &mut interner, Some(&mut reader), &mut each).map(|gives| {
+                out.streamed.push(Streamed { ai: p.ai, di: p.di, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) });
+            })
+        };
+        match r {
+            Ok(()) => {}
             Err(e) if e.class() == ErrorClass::Parked => return Ok(Exam::Parked),
             Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
             Err(e) => return Err(e.into()),
@@ -269,11 +332,14 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a roster snapshot's tenures are judged by their frontiers: linked ones are fetched first
     // (tests let a local writer break these rules, to test receivers)
     if !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
-        validity::check_roster_parts(&h, &out)?;
-        validity::check_holders_parts(&h, id, &out)?;
-        if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out))?.waiting.is_empty() {
+        validity::check_roster_parts(&h, &out.whole)?;
+        validity::check_holders_parts(&h, id, &out.whole)?;
+        if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out.whole))?.waiting.is_empty() {
             return Ok(Exam::Pending(Reason::WaitBlobs));
         }
+    }
+    if late {
+        return Err(Error::BadInput("carried write stamped after its commit"));
     }
     Ok(Exam::Ready(out))
 }
@@ -405,7 +471,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
         Exam::Ready(parts) => {
             // writer-side rules: a received commit is judged by perm instead
             if !tx.core.skip_writer_rules {
-                validity::check_content_rules(tx.core, &b.header, &parts)?;
+                validity::check_content_rules(tx.core, &b.header, &parts.whole)?;
             }
             apply_verified(tx, &b, parts, Origin::Local, received)?;
             // never emit a delta others would un-merge
@@ -908,7 +974,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
-            validity::note_imports(tx.core, &id, &h, &[]).map_err(|_| Error::Corrupt("commit imports"))?;
+            validity::note_imports(tx.core, &id, &h);
             tx.core.ix.commits.insert(id, m);
             atomic::note_gives(tx.core, &id);
             if blob.header.kind.is_compaction() {
@@ -922,13 +988,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         // the writes they carry whose own delta was never received
         for blob in snaps {
             let id = blob.id();
-            let mut b = blob.clone();
-            if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
-                for (ai, _, d) in parts {
-                    if let (Some(a), Decoded::Snapshot(s)) = (b.header.aspects.get(ai), d) {
-                        validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
-                        atomic::note_snapshot(tx.core, &a.tid, &a.ak, b.header.ts, &id, (s.frontiers, s.absorbed.into_iter().collect()));
-                    }
+            for (ai, _, d) in examine_stored(tx, &blob, &id)? {
+                if let (Some(a), Decoded::Snapshot(s)) = (blob.header.aspects.get(ai), d) {
+                    validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
+                    atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, (s.frontiers, s.absorbed.into_iter().collect()));
                 }
             }
         }
@@ -936,21 +999,20 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         bodies.sort_by_key(|b| b.header.ts);
         for blob in bodies {
             let id = blob.id();
-            let mut b = blob.clone();
-            if let Exam::Ready(parts) = examine_stored(tx, &mut b, &id)? {
-                validity::note_required(tx.core, &b.header, &id, &parts);
-                for (ai, _, d) in &parts {
-                    if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
-                        match a.ak.as_str() {
-                            "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
-                            "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
-                            _ => {}
-                        }
+            let b = blob;
+            let parts = examine_stored(tx, &b, &id)?;
+            validity::note_required(tx.core, &b.header, &id, &parts);
+            for (ai, _, d) in &parts {
+                if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
+                    match a.ak.as_str() {
+                        "secrets.0" => keys::note_boxes_to(tx.core, &a.tid, &d.fragment),
+                        "keys.0" => keys::note_keysets(tx.core, &b.header, &a.tid, &d.fragment),
+                        _ => {}
                     }
                 }
-                let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
-                validity::add_role_commit(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
             }
+            let v = tx.core.ix.commits.get(&id).map(|m| m.view.clone()).ok_or(Error::Corrupt("commit meta"))?;
+            validity::add_role_commit(tx, &v, Some(&b.header), &id, &validity::EdgeParts::of(&b.header, &parts))?;
         }
     }
     // a commit read before the record it needs (a nested edge write `ts`-ordered before its
@@ -1030,8 +1092,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     Ok(Some(stale.into_iter().collect()))
 }
 
-/// Decodes a stored (already verified) commit's parts.
-fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Result<Exam> {
+/// Decodes a stored (already verified) commit's parts whole.
+fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<Vec<(usize, usize, Decoded)>> {
     let h = blob.header.clone();
     let mut out = Vec::new();
     let mut interner = Interner::new();
@@ -1042,7 +1104,7 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId) -> Resu
         let mut reader = BlobReader::new(&dedup, &mut blobs);
         out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
-    Ok(Exam::Ready(out))
+    Ok(out)
 }
 
 /// What perm's adaptation reads of a held role commit: its held `roles.0` and `tenures.0`
@@ -1057,10 +1119,7 @@ pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::Edg
 pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob: CommitBlob) -> Result<validity::EdgeParts> {
     blob.header = h.clone();
     blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
-    match examine_stored(tx, &mut blob, id)? {
-        Exam::Ready(v) => Ok(validity::EdgeParts::of(h, &v)),
-        _ => Ok(validity::EdgeParts::default()),
-    }
+    Ok(validity::EdgeParts::of(h, &examine_stored(tx, &blob, id)?))
 }
 
 /// Decoded parts of a held commit on aspect `ai`.
@@ -1075,10 +1134,7 @@ pub(crate) fn held_parts_at(tx: &mut Tx<'_>, id: &CommitId, keep: &dyn Fn(usize)
         blob.header = (*m.header).clone();
     }
     blob.parts.retain(|p| keep(p.ai));
-    match examine_stored(tx, &mut blob, id)? {
-        Exam::Ready(v) => Ok(v),
-        _ => Ok(Vec::new()),
-    }
+    examine_stored(tx, &blob, id)
 }
 
 /// A commit as a thing's time (`Engine::creation`, `Engine::changed`).

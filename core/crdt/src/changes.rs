@@ -35,6 +35,15 @@ impl Changes {
     pub fn into_deaths(self) -> Vec<Death> {
         self.deaths
     }
+    /// Adds what another join did (a join done in pieces, spec/crdt.md §8).
+    pub fn merge(&mut self, o: Changes) {
+        self.changed |= o.changed;
+        self.deaths.extend(o.deaths);
+    }
+    /// Keeps the deaths `keep` accepts.
+    pub fn retain_deaths(&mut self, keep: impl FnMut(&Death) -> bool) {
+        self.deaths.retain(keep);
+    }
     /// Records that a write landed or went, so the read may have changed.
     pub(crate) fn touch(&mut self) {
         self.changed = true;

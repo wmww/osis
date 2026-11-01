@@ -74,6 +74,87 @@ impl Fragment {
         })
     }
 
+    /// The same collection with no element and no reset or `W`; `None` for other encodings.
+    pub fn emptied(&self) -> Option<Fragment> {
+        self.elem_part(None, false)
+    }
+
+    /// What a join along `path` meets of this fragment (a paged state joined a page at a time,
+    /// spec/crdt.md §8): each position's own reset and `W` (an enum's case too) on the way, at
+    /// an entry step every record of that dot with its reset (the creation and content only on
+    /// the path's record), and the position at the end, a collection holding only its elements
+    /// in `range` (`None`: all). A join's pruning of a position depends on these alone (§4.2,
+    /// §5.6). Empty where the path leaves the fragment; a position the next step cannot enter
+    /// (another encoding) is kept whole.
+    pub fn spine(&self, path: &[Step], range: Option<(Option<&Dot>, Option<&Dot>)>) -> Fragment {
+        let Some((s, rest)) = path.split_first() else {
+            return match range {
+                Some(r) => self.elem_part(Some(r), true).unwrap_or_else(|| self.clone()),
+                None => self.clone(),
+            };
+        };
+        match (s, self) {
+            (Step::Field(id), Fragment::Struct(x)) => Fragment::Struct(Struct { meta: x.meta.clone(), fields: x.fields.get(id).map(|f| (*id, f.spine(rest, range))).filter(|(_, f)| !f.is_empty()).into_iter().collect() }),
+            (Step::Case(id), Fragment::Enum(x)) => Fragment::Enum(crate::fragment::Enum {
+                meta: x.meta.clone(),
+                case: x.case.clone(),
+                payloads: x.payloads.get(id).map(|f| (*id, f.spine(rest, range))).filter(|(_, f)| !f.is_empty()).into_iter().collect(),
+            }),
+            (Step::Entry(eid), Fragment::Map(m)) => {
+                let entries = m
+                    .of_dot(&eid.dot)
+                    .filter_map(|(x, e)| {
+                        let on = x == eid;
+                        let frag = if on { e.frag.as_ref().map(|f| Box::new(f.spine(rest, range))).filter(|f| !f.is_empty()) } else { None };
+                        let created = if on && frag.is_some() { e.created.clone() } else { None };
+                        (e.reset.is_some() || frag.is_some()).then(|| (x.clone(), crate::fragment::Entry { reset: e.reset.clone(), frag, created }))
+                    })
+                    .collect();
+                Fragment::Map(Map::new(m.meta.clone(), entries))
+            }
+            _ => self.clone(),
+        }
+    }
+
+    /// Whether a join of this fragment can change the elements of a collection at `path`: a
+    /// reset on the way (a position's, or a record's of an entry step's dot) or a position at
+    /// its end.
+    pub fn reaches(&self, path: &[Step]) -> bool {
+        if self.has_reset() {
+            return true;
+        }
+        let Some((s, rest)) = path.split_first() else { return true };
+        if let (Step::Entry(eid), Fragment::Map(m)) = (s, self)
+            && m.of_dot(&eid.dot).any(|(_, e)| e.reset.is_some())
+        {
+            return true;
+        }
+        match self.step(s) {
+            Some(f) => f.reaches(rest),
+            // another encoding on the way: a join there may prune what is below
+            None => !self.is_empty() && !self.steps(s),
+        }
+    }
+
+    /// Whether every position of this fragment on `path` (before its end) has the encoding
+    /// its next step enters (a struct for a field, an enum for a payload, a map for an entry)
+    /// or is absent.
+    pub fn steps_through(&self, path: &[Step]) -> bool {
+        let Some((s, rest)) = path.split_first() else { return true };
+        if self.is_empty() {
+            return true;
+        }
+        if !self.steps(s) {
+            return false;
+        }
+        self.step(s).is_none_or(|f| f.steps_through(rest))
+    }
+
+    /// Whether step `s` enters this fragment's encoding.
+    fn steps(&self, s: &Step) -> bool {
+        matches!((s, self), (Step::Field(_), Fragment::Struct(_)) | (Step::Case(_), Fragment::Enum(_)) | (Step::Entry(_), Fragment::Map(_)))
+    }
+
     /// The root elements' records: first dot and how many consecutive dots each holds (a
     /// sequence's range records hold several, any other element one), ascending.
     pub fn elem_spans(&self) -> Vec<(Dot, u64)> {

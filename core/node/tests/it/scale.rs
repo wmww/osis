@@ -1360,30 +1360,46 @@ fn reset_peak() {
     let _ = std::fs::write("/proc/self/clear_refs", "5");
 }
 
+/// Packages as bytes (`big_map_apply_memory` hands them to a child process).
+fn encode_packages(pks: &[osis_node::local_peer::Package]) -> Vec<u8> {
+    let b = |x: &[u8]| Value::Bytes(x.to_vec());
+    osis_base::encode(&Value::List(pks.iter().map(|p| Value::List(vec![b(&p.id.0), b(&p.bytes), Value::List(p.blobs.iter().map(|(i, x)| Value::List(vec![b(&i.0), b(x)])).collect())])).collect()))
+}
+
+fn decode_packages(bytes: &[u8]) -> Vec<osis_node::local_peer::Package> {
+    let lim = osis_base::Limits { max_depth: 8, max_bytes: bytes.len() };
+    let bytes_of = |v: &Value| match v {
+        Value::Bytes(x) => x.clone(),
+        _ => panic!("package file"),
+    };
+    let arr = |v: &Value| -> [u8; 32] { bytes_of(v).try_into().unwrap() };
+    let Value::List(pks) = osis_base::decode(bytes, &lim).unwrap() else { panic!("package file") };
+    pks.iter()
+        .map(|p| {
+            let Value::List(f) = p else { panic!("package file") };
+            let Value::List(blobs) = &f[2] else { panic!("package file") };
+            let blobs = blobs
+                .iter()
+                .map(|x| {
+                    let Value::List(x) = x else { panic!("package file") };
+                    (BlobId(arr(&x[0])), bytes_of(&x[1]))
+                })
+                .collect();
+            osis_node::local_peer::Package { id: osis_base::CommitId(arr(&f[0])), bytes: bytes_of(&f[1]), blobs }
+        })
+        .collect()
+}
+
 // spec/requirements.md, Scale (a value needs not be whole in memory), spec/crdt.md §8 (pages),
 // issues/durable-decode-bound.md:
 // peak memory above the resident set before each step, while one node writes an N-key map in one
-// commit and snapshots it, a holder applies that commit, and a third node starts from the
-// snapshot alone. The stores are in memory, so what a step stores stays resident too (`kept`).
-// `OSIS_SCALE_N` sets N (default 10^6 in release: the process peaks at about 14 GB, run it alone).
+// commit and snapshots it, then, each in a fresh process (so no step reuses memory an earlier one
+// freed), a node holding the thing applies that commit, and one starts from the snapshot alone.
+// The stores are in memory, so what a step stores stays resident too (`kept`).
+// `OSIS_SCALE_N` sets N (default 10^6 in release: the writer peaks at about 10 GB, run it alone).
 #[test]
 #[ignore]
 fn big_map_apply_memory() {
-    let n = size("OSIS_SCALE_N", 1_000_000, 10_000);
-    let mut lp = osis_node::local_peer::LocalPeer::new(3, 49, WallMs(1_700_000_000_000)).unwrap();
-    let me = lp.peers[0].engine.tid();
-    let mut m = Mutation::new();
-    let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap().unwrap();
-    for i in [1, 2] {
-        let w = lp.peers[i].engine.tid();
-        let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(w))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None }.to_value()) }).unwrap();
-        lp.peers[0].commit(m).unwrap().unwrap();
-    }
-    lp.sync_all().unwrap();
-    let a = ak("app:big.0");
-    let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let step = |what: &str, f: &mut dyn FnMut()| {
         let rss0 = rss_kib();
         reset_peak();
@@ -1391,33 +1407,76 @@ fn big_map_apply_memory() {
         f();
         let wall = t0.elapsed();
         let (peak, rss1) = (peak_kib(), rss_kib());
-        println!("n={n} {what}: {wall:?}, peak +{} MiB, kept +{} MiB", peak.saturating_sub(rss0) / 1024, rss1.saturating_sub(rss0) / 1024);
+        println!("{what}: {wall:?}, peak +{} MiB, kept +{} MiB", peak.saturating_sub(rss0) / 1024, rss1.saturating_sub(rss0) / 1024);
     };
+    let n = size("OSIS_SCALE_N", 1_000_000, 10_000);
+    let a = ak("app:big.0");
+    // the child: a fresh node takes the thing's commits, then the one measured
+    if let Ok(file) = std::env::var("OSIS_SCALE_APPLY_FILE") {
+        let bytes = std::fs::read(&file).unwrap();
+        let mut pks = decode_packages(&bytes);
+        let (target, t) = (pks.pop().unwrap(), pks.pop().unwrap());
+        let Value::List(t) = osis_base::decode(&t.bytes, &osis_base::Limits { max_depth: 4, max_bytes: t.bytes.len() }).unwrap() else { panic!() };
+        let (Value::Tid(t), Value::Int(now)) = (&t[0], &t[1]) else { panic!() };
+        let mut p = osis_node::local_peer::Peer::new(5, WallMs(*now as u64)).unwrap();
+        for pk in &pks {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        drop(bytes);
+        let what = std::env::var("OSIS_SCALE_APPLY").unwrap_or_default();
+        step(&format!("n={n} apply the {what}"), &mut || {
+            p.engine.ingest(&target.bytes, target.blobs.clone()).unwrap();
+        });
+        assert_eq!(p.engine.get_at(t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
+        step(&format!("n={n} reopen and read one key"), &mut || {
+            p.restart(6).unwrap();
+            assert_eq!(p.engine.get_at(t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
+        });
+        return;
+    }
+    let mut lp = osis_node::local_peer::LocalPeer::new(1, 49, WallMs(1_700_000_000_000)).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let setup = lp.packages(0).unwrap();
+    let kv: BTreeMap<Value, Value> = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
     let mut fill = None;
-    step("write the commit", &mut || {
+    step(&format!("n={n} write the commit"), &mut || {
         let mut m = Mutation::new();
         m.set(t, &a, &Value::Map(kv.clone())).unwrap();
         fill = lp.peers[0].commit(m).unwrap();
     });
+    drop(kv);
     let mut snap = None;
-    step("snapshot", &mut || snap = lp.peers[0].engine.snapshot(&t, &a).unwrap());
-    let pks = lp.packages(0).unwrap();
-    let size_of = |id: &osis_base::CommitId| pks.iter().find(|p| p.id == *id).map(|p| p.bytes.len() + p.blobs.iter().map(|b| b.1.len()).sum::<usize>()).unwrap();
+    step(&format!("n={n} snapshot"), &mut || snap = lp.peers[0].engine.snapshot(&t, &a).unwrap());
     let (fill, snap) = (fill.unwrap(), snap.unwrap());
+    let fill = lp.peers[0].engine.package(&fill).unwrap().unwrap();
+    let snap = lp.peers[0].engine.package(&snap).unwrap().unwrap();
+    let size_of = |p: &osis_node::local_peer::Package| p.bytes.len() + p.blobs.iter().map(|b| b.1.len()).sum::<usize>();
     println!("n={n}: commit {} KiB, snapshot {} KiB with pages", size_of(&fill) / 1024, size_of(&snap) / 1024);
-    let fill_pk = pks.iter().find(|p| p.id == fill).unwrap().clone();
-    let snap_pk = pks.iter().find(|p| p.id == snap).unwrap().clone();
-    step("apply the commit", &mut || {
-        lp.deliver(1, &fill_pk).unwrap();
-    });
-    step("apply the snapshot", &mut || {
-        lp.deliver(2, &snap_pk).unwrap();
-    });
-    assert_eq!(lp.peers[2].engine.get_at(&t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
-    step("reopen and read one key", &mut || {
-        lp.peers[1].restart(5).unwrap();
-        assert_eq!(lp.peers[1].engine.get_at(&t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
-    });
+    // the thing and the clock, as a package for the child
+    let now = lp.peers[0].clock.now_wall_ms().0 as i64;
+    let meta = osis_node::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Tid(t), Value::Int(now)])), blobs: Vec::new() };
+    drop(lp);
+    for (what, pk) in [("commit", fill), ("snapshot", snap)] {
+        let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("big-map-apply-{}.bin", std::process::id()));
+        let mut pks = setup.clone();
+        pks.extend([meta.clone(), pk]);
+        std::fs::write(&file, encode_packages(&pks)).unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--ignored", "--exact", "scale::big_map_apply_memory", "--nocapture", "--test-threads", "1"])
+            .env("OSIS_SCALE_APPLY_FILE", &file)
+            .env("OSIS_SCALE_APPLY", what)
+            .output()
+            .unwrap();
+        let _ = std::fs::remove_file(&file);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success(), "{what}: {text}\n{}", String::from_utf8_lossy(&out.stderr));
+        for l in text.lines().filter(|l| l.contains("n=")) {
+            println!("{}", l.trim_start_matches("test scale::big_map_apply_memory ... "));
+        }
+    }
 }
 
 // spec/permissions.md §5.2 (a valid snapshot's copies govern a held original), notes/testing.md

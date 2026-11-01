@@ -198,10 +198,15 @@ impl Fragment {
     /// matches, as for an expiring write's): where `self` is a valid snapshot and `others` a held
     /// delta, a misstatement (spec/permissions.md §5.2).
     pub fn misstated(&self, others: &[&Fragment], pick: &dyn Fn(&Dot) -> bool, lax: &dyn Fn(&Dot) -> bool) -> BTreeSet<Dot> {
-        let theirs: BTreeMap<Key, Option<Val>> = others.iter().flat_map(|o| o.copies(&|_| true)).collect();
-        let dots: BTreeSet<&Dot> = theirs.keys().map(|k| &k.2.dot).collect();
-        let mine = self.copies(&|d| dots.contains(d) && pick(d));
-        mine.into_iter().filter(|(k, v)| !theirs.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
+        self.misstated_in(&CopySet::of(others), pick, lax)
+    }
+
+    /// `misstated` against `others` indexed once (`CopySet::of`): the misstatements of a
+    /// fragment are those of its parts (a write's copy is compared at its own position), so a
+    /// fragment streamed page by page is judged a page at a time.
+    pub fn misstated_in(&self, others: &CopySet, pick: &dyn Fn(&Dot) -> bool, lax: &dyn Fn(&Dot) -> bool) -> BTreeSet<Dot> {
+        let mine = self.copies(&|d| others.dots.contains(d) && pick(d));
+        mine.into_iter().filter(|(k, v)| !others.copies.get(k).is_some_and(|t| agrees(&k.1, v, t, lax(&k.2.dot)))).map(|(k, _)| k.2.dot).collect()
     }
 
     /// Its writes by owner dot, for `CopyIndex::outside` against many deltas in turn.
@@ -266,6 +271,22 @@ impl Fragment {
 /// text element's char (§3.3 rule 5), or anything when `lax`.
 fn agrees(k: &Kind, mine: &Option<Val>, theirs: &Option<Val>, lax: bool) -> bool {
     theirs.is_none() || mine == theirs || mine.is_none() && (lax || matches!(k, Kind::Created(_)))
+}
+
+/// Fragments' writes by position, kind and stamp, and the dots they hold writes under
+/// (`Fragment::misstated_in`).
+#[derive(Debug, Default)]
+pub struct CopySet {
+    copies: BTreeMap<Key, Option<Val>>,
+    dots: BTreeSet<Dot>,
+}
+
+impl CopySet {
+    pub fn of(fs: &[&Fragment]) -> CopySet {
+        let copies: BTreeMap<Key, Option<Val>> = fs.iter().flat_map(|o| o.copies(&|_| true)).collect();
+        let dots = copies.keys().map(|k| k.2.dot.clone()).collect();
+        CopySet { copies, dots }
+    }
 }
 
 /// A fragment's writes by owner dot (`Fragment::copy_index`).
