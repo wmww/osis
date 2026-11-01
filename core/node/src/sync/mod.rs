@@ -183,7 +183,7 @@ pub enum Action {
     /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
     /// transport key.
     Reach,
-    /// Run the host with this config (`host.0^`; listening with `host_secret()`, reporting with
+    /// Run the host with this config (`host.0^`; listening with `host_secret_for`, reporting with
     /// `set_host_status`), or stop it (none). Dials of its address reach it in-process.
     Host(Option<Box<osis_host::HostConfig>>),
 }

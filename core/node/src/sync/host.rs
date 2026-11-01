@@ -44,7 +44,7 @@ pub fn host_policy(knobs: &BTreeMap<String, u64>) -> Result<HostPolicy, String> 
 impl SyncEngine {
     /// The secret this node's host listens with, made on first use (only while `host.0^` is
     /// set: `host_step` shreds it otherwise).
-    pub fn host_secret(&mut self) -> Secret32 {
+    fn host_secret(&mut self) -> Secret32 {
         if let Some(s) = &self.state.host_secret {
             return s.clone();
         }
@@ -62,6 +62,14 @@ impl SyncEngine {
     /// it hosts.
     pub fn host_key(&self) -> Option<[u8; 32]> {
         self.state.host_secret.as_ref().map(|s| SigningSecret::from_seed(s).verifying_key().to_bytes())
+    }
+
+    /// The host secret the driver listens with for a config naming `key`; none when that is not
+    /// the current one (hosting stopped, and maybe started again with a new secret, before the
+    /// driver took the config). Never makes one: a stale config must not bring back a secret
+    /// `host_step` shredded.
+    pub fn host_secret_for(&self, key: &[u8; 32]) -> Option<Secret32> {
+        self.state.host_secret.clone().filter(|_| self.host_key().as_ref() == Some(key))
     }
 
     /// This node's `host.0^`, if set.

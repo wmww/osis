@@ -121,6 +121,42 @@ async fn driver_quic_localhost_spec_sync_10() {
     converge(&format!("quic://127.0.0.1:{port}"), Quic::new(), Quic::new(), || {}).await;
 }
 
+// spec/requirements.md Deletion, notes/sync.md Hosting in the node: the host secret lives only
+// while `host.0^` is set. Removing it shreds the secret, and the driver taking the earlier
+// config late gets no secret for it: a stale `Action::Host` cannot bring a shredded secret back
+// (nor listen with a key other than the config's), and a new start has a new key.
+#[test]
+fn host_secret_not_revived_by_stale_config_spec_sync_10() {
+    use osis_node::sync::Action;
+    let mut net = Net::new();
+    let a = net.add_node(1, Default::default());
+    let me = net.tid(a);
+    let host = ct::Host { listen: vec!["mem://s".into()], ..Default::default() };
+    let set = |net: &mut Net, on: bool| {
+        let mut m = osis_node::Mutation::new();
+        if on {
+            m.replace(me, &ct::HOST, &host).unwrap();
+        } else {
+            m.remove_aspect(me, &ct::HOST).unwrap();
+        }
+        net.engine(a).commit(m).unwrap();
+        net.sync(a).handle(Event::Local).into_iter().find_map(|x| match x {
+            Action::Host(c) => Some(c),
+            _ => None,
+        })
+    };
+    let k1 = set(&mut net, true).flatten().expect("a host config").key;
+    assert_eq!(net.sync(a).host_key(), Some(k1));
+    assert!(net.sync(a).host_secret_for(&k1).is_some());
+    assert_eq!(set(&mut net, false), Some(None), "stop");
+    assert_eq!(net.sync(a).host_key(), None, "shredded");
+    assert!(net.sync(a).host_secret_for(&k1).is_none());
+    assert_eq!(net.sync(a).host_key(), None, "a stale config made no secret");
+    let k2 = set(&mut net, true).flatten().expect("a host config").key;
+    assert_ne!(k1, k2, "a new start has a new key");
+    assert!(net.sync(a).host_secret_for(&k1).is_none(), "the stale config's key is not the secret's");
+}
+
 fn s_(x: &str) -> Value {
     Value::Str(x.into())
 }

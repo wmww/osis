@@ -655,6 +655,9 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             h.cfg = cfg;
             return;
         }
+        // a config whose key is no longer the node's (hosting stopped and maybe started again
+        // since it was emitted): the newer `Action::Host` is on its way
+        let Some(Some(secret)) = self.read(|s| s.host_secret_for(&cfg.key).map(|x| transport_secret(&x))) else { return };
         let hub = match self.host.take() {
             Some(h) => {
                 let _ = h.ctl.send(host::Control::Shutdown).await;
@@ -663,11 +666,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             None => None,
         };
         let hub = match hub {
-            Some(mut hub) => {
+            Some(mut hub) if hub.static_key() == cfg.key => {
                 hub.store_mut().set_policy(cfg.policy.clone());
                 hub
             }
-            None => {
+            _ => {
                 let shared = &self.shared;
                 let opened = blocking(|| shared.host_backend().and_then(|b| osis_host::HostStore::open(b, self.clock.clone(), cfg.policy.clone(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())));
                 match opened {
@@ -678,7 +681,6 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         };
         let mut hub = hub;
         hub.store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
-        let Some(secret) = self.read(|s| transport_secret(&s.host_secret())) else { return };
         let mut listeners = Vec::new();
         let mut addrs = Vec::new();
         for url in &cfg.listen {

@@ -146,6 +146,7 @@ def paths_of(text, crate):
 HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store", "osis-transport", "tokio"}
 HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore"}
 HOST_LABEL = {"blob_id", "Prefix", "MAX_PREFIX_LEN", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
+HOST_PROTO_DENY = {"examples"}
 NODE_HOST = {"driver", "Hub", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps"}
 
 def allowed(path, allow):
@@ -166,6 +167,11 @@ def host_blind():
         text = open(src).read()
         if "OpenKey" in text:
             yield f"{rel}: names OpenKey"
+        # osis-proto's client engine (replication pushes with it) opens a label only with an
+        # `OpenKey` (refused above); its examples hold secrets; a glob would hide both
+        for p in paths_of(text, "osis_proto"):
+            if p in ("*", "as") or p.endswith("::*") or p.split("::")[0] in HOST_PROTO_DENY:
+                yield f"{rel}: osis_proto::{p} is not for the host (glob, alias or examples)"
         for crate, allow in (("osis_crypto", HOST_CRYPTO), ("osis_label", HOST_LABEL)):
             for p in paths_of(text, crate):
                 if p in ("*", "as") or p.endswith("::*"):
