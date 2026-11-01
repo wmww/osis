@@ -3,10 +3,10 @@
 
 use crate::common;
 use common::*;
-use osis_base::Role;
+use osis_base::{Role, WallMs};
 use osis_crypto::{BoxItem, BoxSlot, Secret32, seal_box};
 use osis_keys::aspects::{box_key, history_key, to_schema};
-use osis_keys::{ActorEpochs, Error, HolderKeys, Opener, Recipient, ROLES, box_holder, ingest, open_boxes, roles_up_to, rotate};
+use osis_keys::{ActorEpochs, Error, Holder, HolderKeys, Opener, Recipient, ROLES, box_holder, ingest, open_boxes, reseal_missing, reseal_needed, roles_up_to, rotate};
 use osis_schema::core_types::{Sealed, SealedBox, SecretBox, Secrets};
 use std::collections::BTreeSet;
 
@@ -102,6 +102,34 @@ fn grant_to_key_actor() {
     let mut kv = ActorEpochs::default();
     ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
     assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()));
+}
+
+// spec/permissions.md §3 (re-seal trigger), spec/crypto.md §4: a key actor's box keyed at a
+// higher role carries each lower role's newest epoch only, so the trigger counts it for that
+// one: a writer whose write rotation's box carried the newest read fork, and that never got the
+// other, is re-sealed at it (before, the box counted for both forks and it never was).
+#[test]
+fn key_actor_box_keyed_higher_counts_for_newest_fork_only() {
+    let f = forked();
+    let (p, pe) = (tid(2), person(0x20));
+    let owner = Recipient { holder: p, role: Role::Admin, keys: HolderKeys::from_keys(&keys_of(&pe)).unwrap().with_own(&pe) };
+    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
+    let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &f.s, &[owner, key_rcpt(k, Role::Write, &seed)], &|_, _| true, &mut rng(9)).unwrap();
+    let (mut s, mut v) = (f.s.clone(), f.view.clone());
+    rot.secrets.apply(&mut s);
+    rot.record(&mut v);
+    assert_eq!(s.boxes.keys().filter(|b| b.holder == k).count(), 1, "one box, keyed at write");
+    let other = *f.forks.iter().find(|e| Some(**e) != v.read.newest()).unwrap();
+    let holders = [Holder { holder: k, role: Role::Write, until: None }];
+    let any = |_: &osis_schema::core_types::BoxKey, _: Role, _: &osis_crypto::Epoch| true;
+    assert_eq!(reseal_missing(&s, &v, &k, Role::Read, &any), vec![other]);
+    assert_eq!(reseal_needed(&s, &v, &holders, WallMs(0), &any), vec![(k, [Role::Read].into_iter().collect())]);
+    let w = box_holder(&f.a, &v, &s, &key_rcpt(k, Role::Write, &seed), &[Role::Read].into_iter().collect(), &mut rng(10)).unwrap().unwrap();
+    w.apply(&mut s);
+    assert!(reseal_needed(&s, &v, &holders, WallMs(0), &any).is_empty());
+    let mut kv = ActorEpochs::default();
+    ingest(&f.a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
+    assert!(f.forks.iter().all(|e| kv.read.secret(e).is_some()), "both read forks held");
 }
 
 // spec/permissions.md §3: a re-seal goes to the holder's newest keyset the node holds.
