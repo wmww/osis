@@ -70,14 +70,19 @@ fn grant_boxes_every_current_epoch() {
 }
 
 // spec/crypto.md §4: a key-actor grantee gets one box keyed at its highest role carrying each
-// role's newest epoch.
+// role's newest epoch, and a box of its own at each other current epoch (read's forks).
 #[test]
 fn grant_to_key_actor() {
     let f = forked();
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let w = box_holder(&f.a, &f.view, &f.s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Admin), &mut rng(9)).unwrap().unwrap();
     let ew = f.view.write.newest().unwrap();
-    assert_eq!(w.boxes.keys().cloned().collect::<Vec<_>>(), vec![box_key(k, Role::Write, &ew)]);
+    let er = f.view.read.newest().unwrap();
+    let mut want: Vec<_> = f.view.read.current().iter().filter(|e| **e != er).map(|e| box_key(k, Role::Read, e)).collect();
+    assert!(!want.is_empty(), "read forked");
+    want.push(box_key(k, Role::Write, &ew));
+    want.sort();
+    assert_eq!(w.boxes.keys().cloned().collect::<Vec<_>>(), want);
     let mut s = f.s.clone();
     w.apply(&mut s);
     let mut kv = ActorEpochs::default();
@@ -86,6 +91,7 @@ fn grant_to_key_actor() {
     osis_keys::snapshot_keyed(&s, &mut kv).unwrap();
     assert_eq!(kv.read.newest_held().map(|x| x.0), f.view.read.newest());
     assert_eq!(kv.write.newest_held().map(|x| x.0), Some(ew));
+    assert!(f.view.read.current().iter().all(|e| kv.read.secret(e).is_some()), "every read fork held");
     // Its seed holder writes symmetric boxes instead, one per (role, epoch).
     let sym = Recipient { holder: k, role: Role::Read, keys: HolderKeys::KeyActor { kem: osis_crypto::KeyActorKeys::from_seed(&seed).kem.public().clone(), seed: Some(seed.clone()) } };
     let w = box_holder(&f.a, &f.view, &f.s, &sym, &roles_up_to(Role::Read), &mut rng(9)).unwrap().unwrap();

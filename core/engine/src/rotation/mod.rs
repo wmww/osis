@@ -443,10 +443,14 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     for (m, roles) in due {
         let mut keep = BTreeSet::new();
         for r in roles {
-            // not without the secret (this node may reach the actor through a holder actor left
-            // out); a holder actor left out waits until its newest epoch covers
+            // Fixpoint (the re-seal is written on every pass otherwise): a re-seal is made only
+            // when it changes what `reseal_needed` judges, and once made it satisfies it. So only
+            // by a node holding the secret of every epoch the trigger asks a box at (`box_at`
+            // boxes just those held; a node may lack a fork's, or reach the actor through a
+            // holder actor left out); another holder of them re-seals. A holder actor left out
+            // waits until its newest epoch covers.
             let re = epochs.role(r);
-            let holds = re.current().iter().any(|e| re.provenance(e).is_some_and(osis_keys::Provenance::reseals) && re.secret(e).is_some());
+            let holds = re.current().iter().filter(|e| re.provenance(e).is_some_and(osis_keys::Provenance::reseals)).all(|e| re.secret(e).is_some());
             if may.contains(&r) && holds && !re.newest_is_snapshot() && holder_covers(tx, &held, &deps, &m, r)? {
                 keep.insert(r);
             }
