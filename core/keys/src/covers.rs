@@ -231,8 +231,8 @@ impl HeldActors for MemoryHeldActors {
 /// Does epoch `e` of role `r` of `actor` (whose `secrets.0` is given) cover `d`? Not when
 /// `held` counts it as written by the departed party (`departed_wrote`), at this or any actor
 /// down the chain. Else a holder's departure: `e` holds no box for it. A departure inside
-/// holder M: M's box in `e` names the newest keyset epoch of M for `r` the node holds, and that epoch of M covers the rest of the
-/// departure, and so on down the chain (a loop: chains have no depth bound). Missing knowledge
+/// holder M: M's box in `e` names the newest keyset epoch of M for `r` the node holds, and that
+/// epoch of M covers the rest of the departure, and so on down the chain (a loop: chains have no depth bound). Missing knowledge
 /// of a chain actor counts as not covered.
 pub fn covers(actor: &Tid, secrets: &Secrets, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
     if r < d.from {

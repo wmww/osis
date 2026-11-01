@@ -62,16 +62,16 @@ fn written_boxes(delta: &Fragment) -> Vec<(BoxKey, &Value)> {
 
 /// A role commit's `secrets.0` or `keys.0` part dropped its body (`bodies`, its deltas):
 /// what was noted from them goes with them (spec/commits.md §5), re-derived from the bodies
-/// still held: the `boxes_to` entries of the boxes it wrote that no held body writes. `epoch_intro`
-/// keeps a `keys.0` part's epochs (`Dropped::intros`): the rotation stays known.
+/// still held: a `secrets.0` part's `boxes_to` entries of the boxes it wrote that no held body
+/// writes; a `keys.0` part's `epoch_intro` keeps its epochs (`Dropped::intros`): the rotation
+/// stays known.
 pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[Fragment]) -> Result<()> {
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
     if h.kind != Kind::Role || !matches!(a.ak.as_str(), "secrets.0" | "keys.0") {
         return Ok(());
     }
-    rebuild_intro(tx, &std::collections::BTreeSet::from([a.tid]))?;
-    if a.ak.as_str() != "secrets.0" {
-        return Ok(());
+    if a.ak.as_str() == "keys.0" {
+        return rebuild_intro(tx, &std::collections::BTreeSet::from([a.tid]));
     }
     let mut gone: std::collections::BTreeSet<(Tid, Value)> = bodies.iter().flat_map(written_boxes).map(|(bk, k)| (bk.holder, k.clone())).collect();
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();

@@ -1183,7 +1183,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 if x.ak.as_str() == "secrets.0" {
                     secrets_flips.push((id, ai, *b));
                 }
-                if matches!(x.ak.as_str(), "secrets.0" | "keys.0") {
+                if x.ak.as_str() == "keys.0" {
                     intro_flips.insert(x.tid);
                 }
                 // a snapshot's frontiers count as received while it is valid (`receipt::received`)
