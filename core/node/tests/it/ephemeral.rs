@@ -8,7 +8,6 @@ use osis_base::{Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
 use osis_node::sync::{Event, SyncConfig};
-use osis_schema::Lifetime;
 use osis_schema::core_types as ct;
 use osis_store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
@@ -65,8 +64,8 @@ const STATE: &str = "win:state.0~";
 const NOTES: &str = "win:notes.0~";
 const CURSOR: &str = "win:cursor.0~";
 
-fn eph(ak: &str) -> osis_schema::Untyped {
-    ukey(ak, Lifetime::Ephemeral)
+fn eph(ak: &str) -> osis_base::Ak {
+    crate::common::ak(ak)
 }
 
 fn local(net: &mut Net, n: usize) {
@@ -589,6 +588,26 @@ fn reader_cannot_write_ephemeral_spec_permissions_1() {
     assert_eq!(net.eph_read(a, w, STATE), Some(s("mine")));
 }
 
+// spec/commits.md §2 (class from the key): an ephemeral commit's part on an
+// unmarked key is invalid at the receiver; the same forged write on a `~` key joins
+#[test]
+fn ephemeral_part_on_unmarked_key_invalid_spec_commits_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "mine");
+    net.run();
+    for (k, joins) in [("win:plain.0", false), ("win:other.0~", true)] {
+        let ak = osis_base::Ak::new(k).unwrap();
+        let forged = net.engine(b).forge_ephemeral(w, &ak, s("forged")).unwrap().unwrap();
+        net.engine(a).ingest_ephemeral(forged.blob).unwrap();
+        assert_eq!(net.eph_read(a, w, k), joins.then(|| s("forged")), "{k}");
+    }
+}
+
 // notes/ephemeral.md Signals: a signal reaches each device connected now once, also over two
 // hosts (no duplicate); a device connecting later never gets it; no host holds an entry; a
 // restarted node does not see it again
@@ -605,7 +624,7 @@ fn signal_once_to_connected_devices_spec_sync_5() {
     net.run();
     let held = (rows(&net.hosts[s1].backend), rows(&net.hosts[s2].backend));
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s("ding"));
+    net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s("ding"));
     net.run();
     assert_eq!(fired(&rb).len(), 1, "once, though both hosts pushed it");
     assert_eq!(fired(&ra).len(), 1, "once at the sender (no echo)");
@@ -634,8 +653,8 @@ fn signal_commit_in_several_blobs_all_delivered_spec_sync_5() {
     let t2 = net.item(a, g, g, "y");
     net.run();
     let mut m = Mutation::new();
-    m.set(t1, &ukey("t:ring.0*", Lifetime::Signal), &s("one")).unwrap();
-    m.set(t2, &ukey("t:ring.0*", Lifetime::Signal), &s("two")).unwrap();
+    m.set(t1, &crate::common::ak("t:ring.0*"), &s("one")).unwrap();
+    m.set(t2, &crate::common::ak("t:ring.0*"), &s("two")).unwrap();
     net.engine(a).write(m).unwrap();
     let cs = net.engine(a).take_ephemeral().unwrap();
     let blob = cs.iter().find(|c| c.class == osis_commit::EphClass::Relay).unwrap().blob.clone();
@@ -1104,7 +1123,7 @@ fn promoted_waiting_blob_counted_spec_sync_9() {
     assert!(net.sync(b).ephemeral_pending_bytes(&l) > 0, "waits apart");
     // the label fills with small commits of a's until one is refused
     for i in 0..1000 {
-        let ak = osis_base::Ak::new(format!("doc:f{i}.0")).unwrap();
+        let ak = osis_base::Ak::new(format!("doc:f{i}.0~")).unwrap();
         let c = net.engine(a).forge_ephemeral(t, &ak, s("ffff")).unwrap().unwrap().blob;
         let before = net.sync(b).ephemeral_bytes(&l);
         let (_, ev) = sealed(&mut net, b, g, &c, Some(&wk), 10 + i);
@@ -1173,7 +1192,7 @@ fn never_fitting_blob_not_fetched_again_spec_sync_9() {
     net.run();
     assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
     let v = Value::Map((0..2000).map(|i| (Value::Int(i), Value::Int(1))).collect());
-    net.eph_write(a, t, &ukey("doc:tiny.0~", Lifetime::Ephemeral), v);
+    net.eph_write(a, t, &crate::common::ak("doc:tiny.0~"), v);
     net.run();
     assert_eq!(net.eph_read(b, t, "doc:tiny.0~"), None, "refused for the cap");
     net.fetched.insert(b, Vec::new());
@@ -2443,7 +2462,7 @@ fn capped_label_reconciles_once_room_spec_sync_9() {
     net.eph_write_expiring(x, t, &eph("doc:cursor.0~"), s(&"c".repeat(50_000)), Some(5_000));
     net.run();
     assert!(net.eph_read(b, t, "doc:cursor.0~").is_some());
-    net.eph_write(a, t, &ukey("doc:big.0~", Lifetime::Ephemeral), s(&"b".repeat(40_000)));
+    net.eph_write(a, t, &crate::common::ak("doc:big.0~"), s(&"b".repeat(40_000)));
     net.run();
     assert_eq!(net.eph_read(b, t, "doc:big.0~"), None, "refused for the cap");
     net.advance(5_000);
@@ -2491,11 +2510,11 @@ fn signals_through_co_reader_peer_spec_sync_5() {
     net.restart(c, 33);
     net.advance(10_000);
     let (ra, rb, rc) = (net.listen(a), net.listen(b), net.listen(c));
-    net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s("from a"));
+    net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s("from a"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&rc).len(), 1, "through the co-reader peer, once");
-    net.eph_write(c, t, &ukey("t:ring.0*", Lifetime::Signal), s("from c"));
+    net.eph_write(c, t, &crate::common::ak("t:ring.0*"), s("from c"));
     net.run();
     assert_eq!(fired(&rb).len(), 1);
     assert_eq!(fired(&ra).iter().filter(|x| x.2 == s("from c")).count(), 1, "the peer passes it to the host, once");
@@ -2943,7 +2962,7 @@ fn signals_not_held_back_spec_sync_9() {
     let up = uploads_sent(&net);
     let rb = net.listen(b);
     for i in 0..5 {
-        net.eph_write(a, t, &ukey("t:ring.0*", Lifetime::Signal), s(&format!("ding {i}")));
+        net.eph_write(a, t, &crate::common::ak("t:ring.0*"), s(&format!("ding {i}")));
     }
     assert_eq!(uploads_sent(&net) - up, 5, "one relay-only upload per signal, none waits");
     net.run();
@@ -3694,14 +3713,14 @@ fn bench_local_writes() {
     let n: u32 = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(2000);
     let mode = std::env::var("OSIS_BENCH_MODE").unwrap_or_else(|_| "memory".into());
     let mut lp = crate::common::net(1, 5);
-    // a thing whose `t:reg.0` holds no durable row
+    // `t:reg.0~` for the memory modes, `t:reg.0` durable
     let mut m = Mutation::new();
     let me = lp.peers[0].engine.tid();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
     m.set(t, &crate::common::TAGS, &Value::Set(Default::default())).unwrap();
     lp.peers[0].commit(m).unwrap();
-    let reg = crate::common::ak("t:reg.0");
-    let eph = osis_schema::Untyped::new(reg.clone(), Lifetime::Ephemeral);
+    let eph = crate::common::ak("t:reg.0~");
+    let reg = if matches!(mode.as_str(), "ephemeral" | "memory") { eph.clone() } else { crate::common::ak("t:reg.0") };
     osis_node::costs::take();
     let start = std::time::Instant::now();
     for i in 0..n {
@@ -3968,11 +3987,17 @@ fn durable_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> 
     lp.peers[i].engine.get(&t, &crate::common::ak("t:tags.0")).unwrap()
 }
 
-/// `memory_write` on the durable key `t:tags.0`: a writer breaking the marker rule.
+/// `memory_write` on the durable key `t:tags.0`: a writer breaking the marker rule (forged past
+/// its own node's refusal).
 fn memory_write_unmarked(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
-    m.op(t, &eph("t:tags.0"), PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
-    lp.peers[i].engine.commit_in_memory(m).unwrap().unwrap()
+    m.op(t, &crate::common::TAGS, PathOp { path: Vec::new(), op: Op::Add(s(v)) }).unwrap();
+    let e = &mut lp.peers[i].engine;
+    assert!(matches!(e.commit_in_memory(m.clone()), Err(osis_node::Error::Misuse(_))), "the writer refuses it");
+    e.core.skip_writer_rules = true;
+    let id = e.commit_in_memory(m).unwrap().unwrap();
+    e.core.skip_writer_rules = false;
+    id
 }
 
 fn memory_tags(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> Option<Value> {
@@ -4056,21 +4081,71 @@ fn assert_no_durable_trace(e: &mut osis_node::Engine, ids: &[osis_base::CommitId
     assert!(hits.is_empty(), "durable rows naming a memory commit: {hits:?}");
 }
 
-// spec/data-model.md §1 (one storage class per aspect): a received memory part on an aspect of
-// durable deltas here is dropped alone, never shadowing the durable state
+/// Peers 0, 1 and 2, durable state synced; 0 owns `d` and grants 1 and 2 write. Returns `d`.
+fn memory_trio(seed: u64) -> (osis_node::local_peer::LocalPeer, Tid) {
+    let mut lp = crate::common::net(3, seed);
+    lp.sync_all().unwrap();
+    let d = crate::common::new_thing(&mut lp, 0);
+    for i in [1, 2] {
+        let n = lp.peers[i].engine.tid();
+        crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    (lp, d)
+}
+
+// spec/commits.md §2 (class from the key): an aspect's storage class is its AK's lifetime marker,
+// alike at every node: a memory part on an unmarked key is dropped alone whatever the receiver holds, at a node
+// holding the aspect's durable deltas and at one holding none, which then writes the aspect
+// durably and keeps it across a restart (was `repro_durable_write_on_memory_marked_aspect_lost`:
+// the held-state rule kept the part there, and the later durable write went to memory)
 #[test]
-fn received_memory_part_on_durable_aspect_dropped_spec_data_model_1() {
-    let (mut lp, d) = memory_pair(33);
+fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
+    let (mut lp, d) = memory_trio(33);
+    let tags = crate::common::ak("t:tags.0");
+    // 1 holds a durable delta of `t:tags.0`, 0 none
     let mut m = Mutation::new();
     m.set(d, &crate::common::TAGS, &Value::Set([s("durable")].into())).unwrap();
-    lp.peers[1].commit(m).unwrap();
-    // 0 has not seen 1's durable write: writes the aspect as memory
-    let id = memory_write_unmarked(&mut lp, 0, d, "memory");
-    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    let id = memory_write_unmarked(&mut lp, 2, d, "memory");
+    let pk = lp.peers[2].engine.package(&id).unwrap().unwrap();
+    for i in [0, 1] {
+        lp.peers[i].engine.ingest_memory(&pk.bytes).unwrap();
+        assert!(!lp.peers[i].engine.run(|tx| Ok(tx.txn.is_memory_aspect(&d, &tags))).unwrap(), "{i}: the aspect turned memory class");
+    }
+    assert_eq!(durable_tags(&mut lp, 0, d), None);
     assert_eq!(durable_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
-    lp.peers[1].restart(34).unwrap();
+    let mut m = Mutation::new();
+    m.set(d, &crate::common::TAGS, &Value::Set([s("zero")].into())).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for i in [0, 1] {
+        lp.peers[i].restart(34 + i as u64).unwrap();
+    }
+    assert_eq!(durable_tags(&mut lp, 0, d), Some(Value::Set([s("zero")].into())), "the durable write survives a restart");
     assert_eq!(durable_tags(&mut lp, 1, d), Some(Value::Set([s("durable")].into())));
+}
+
+// spec/commits.md §2 (class from the key): the writer refuses a durable commit
+// writing a `~` key; one forged past that has its part dropped alone at every receiver, the rest
+// of the commit applies
+#[test]
+fn durable_part_on_ephemeral_key_dropped_spec_commits_2() {
+    let (mut lp, d) = memory_trio(39);
+    let key = crate::common::ak("t:tags.0~");
+    let mut m = Mutation::new();
+    m.op(d, &key, PathOp { path: Vec::new(), op: Op::Add(s("durable")) }).unwrap();
+    m.set(d, &crate::common::REG, &s("kept")).unwrap();
+    let e = &mut lp.peers[2].engine;
+    assert!(matches!(e.commit(m.clone()), Err(osis_node::Error::Misuse(_))), "the writer refuses it");
+    e.core.skip_writer_rules = true;
+    e.commit(m).unwrap().unwrap();
+    e.core.skip_writer_rules = false;
+    lp.sync_all().unwrap();
+    for i in [0, 1] {
+        let e = &mut lp.peers[i].engine;
+        assert_eq!(e.get(&d, &key).unwrap(), None, "{i}: a durable delta of a `~` key applied");
+        assert_eq!(e.get(&d, &crate::common::ak("t:reg.0")).unwrap(), Some(s("kept")), "{i}");
+    }
 }
 
 // issues/eph-unify.md step 3 (freeing): a thing freed while a received memory commit on it is
@@ -4120,25 +4195,6 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     // the un-merge, done in the removal's durable transaction, wrote nothing durable about it
     lp.peers[0].restart(38).unwrap();
     assert_no_durable_trace(&mut lp.peers[0].engine, &[id]);
-}
-
-// issues/eph-unify.md (Left: class by AK): a memory commit on an aspect with no durable delta here
-// yet marks it memory; a later durable write on it then routes to memory and is lost at restart,
-// and sync never brings it back (the node holds the commit). Reachable once received memory
-// commits get a production caller; the receiver rule needs the class from the key, not local state
-#[test]
-#[ignore = "issues/eph-unify.md: durable write on a memory-marked aspect lost at restart"]
-fn repro_durable_write_on_memory_marked_aspect_lost() {
-    let (mut lp, d) = memory_pair(41);
-    let id = memory_write_unmarked(&mut lp, 1, d, "memory");
-    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap();
-    let mut m = Mutation::new();
-    m.set(d, &crate::common::TAGS, &Value::Set([s("durable")].into())).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    lp.peers[0].restart(42).unwrap();
-    lp.sync_all().unwrap();
-    assert_eq!(durable_tags(&mut lp, 0, d), Some(Value::Set([s("durable")].into())));
 }
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and

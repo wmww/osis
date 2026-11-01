@@ -85,7 +85,7 @@ fn signals_relay_only_spec_sync_5() {
     net.run();
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
     let rows = osis_store::Backend::scan(&net.hosts[host].backend, &[], None, usize::MAX).unwrap().len();
-    let ring = ukey("t:typing.0*", osis_schema::Lifetime::Signal);
+    let ring = crate::common::ak("t:typing.0*");
     net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
     let got: Vec<_> = rx.iter().map(fired).collect();

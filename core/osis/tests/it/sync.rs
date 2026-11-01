@@ -539,7 +539,7 @@ fn remote_signal_spec_sync_5() {
     let g = group(&alice);
     alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
-    let ring = osis::Lifetimes::signal(ak("t:typing.0*"));
+    let ring = ak("t:typing.0*");
     let (tx, rx) = std::sync::mpsc::channel();
     let tx2 = tx.clone();
     let _a = alice.at(g, ring.clone()).on_change(move |_, c| tx.send(("alice", c)).unwrap()).unwrap();

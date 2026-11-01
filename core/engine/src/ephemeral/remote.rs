@@ -22,13 +22,13 @@ use crate::engine::write::{Creates, required_role, run_ops};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::{MAX_DRIFT_MS, MAX_OWNER_DEPTH};
-use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, Value};
+use osis_base::{Ak, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, DELTA_PAST_BLOB, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
 use osis_perm::{Dots, Point, Validity};
 use osis_schema::AspectKey;
-use osis_schema::core_types::{PLACED, is_role_class};
+use osis_schema::core_types::PLACED;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -779,15 +779,16 @@ impl Engine {
     }
 
     /// Whether part `ai` of ephemeral commit `h` is valid here (spec/permissions.md §5.2): judged
-    /// as its author's snapshot delta at its `ts`, by commit ID. Role-class aspects and
-    /// the other core aspects but `group.0` (spec/data-model.md §8) take no ephemeral part.
+    /// as its author's snapshot delta at its `ts`, by commit ID. Its key's lifetime marker is its
+    /// commit's class (spec/commits.md §2): `*` in a relay-only commit, else `~` (so no core
+    /// aspect but `placed.0~`).
     fn eph_part_valid(&self, h: &Header, id: &CommitId, ai: usize, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
         let Some(a) = h.aspects.get(ai) else { return false };
-        let ak = a.ak.as_str();
-        if is_role_class(ak) || (osis_schema::core_types::is_core_key(ak) && ak != PLACED.ak()) {
+        let class = if h.ephemeral == Some(EphClass::Relay) { Lifetime::Signal } else { Lifetime::Ephemeral };
+        if a.ak.lifetime() != class {
             return false;
         }
-        self.eph_write_valid(&a.tid, ak, h.author, h.ts, id, carried)
+        self.eph_write_valid(&a.tid, a.ak.as_str(), h.author, h.ts, id, carried)
     }
 
     /// Whether a write on `(tid, ak)` by `node` at `ts`, judged by commit ID `commit`, is valid

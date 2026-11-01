@@ -14,7 +14,7 @@ use crate::error::{Error, Result};
 use osis_base::{Ak, Tid, Ts, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_schema::core_types::{GROUP, Group, PLACED};
-use osis_schema::{AspectKey, Lifetime};
+use osis_schema::AspectKey;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -182,7 +182,7 @@ impl Engine {
                 }
             }
             if !e.is_empty() {
-                out.eph.push(EphOp { tid: g, ak: pak.clone(), am: AspectMut { ops: e, lifetime: Lifetime::Ephemeral, retention: None, schema: core_schema(), ..am.clone() } });
+                out.eph.push(EphOp { tid: g, ak: pak.clone(), am: AspectMut { ops: e, retention: None, schema: core_schema(), ..am.clone() } });
             }
             if !d.is_empty() {
                 out.durable.insert(g, AspectMut { ops: d, ..am });
@@ -199,7 +199,7 @@ impl Engine {
                     }
                     continue;
                 }
-                let reset = EphOp { tid: g, ak: pak.clone(), am: AspectMut { ops: vec![group_op(field, *t, false)], schema: core_schema(), lifetime: Lifetime::Ephemeral, ..AspectMut::default() } };
+                let reset = EphOp { tid: g, ak: pak.clone(), am: AspectMut { ops: vec![group_op(field, *t, false)], schema: core_schema(), ..AspectMut::default() } };
                 let Some(exp) = exp else {
                     out.eph.push(reset);
                     continue;

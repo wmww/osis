@@ -46,7 +46,7 @@ fn list_struct_warning() {
 // item in the generated module.
 #[test]
 fn colliding_constant_names_refused() {
-    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("x:y.0: int", "x:y.0~: int [ephemeral]"), ("t:schema.0", "t:z.0")] {
+    for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("x:y.0: int", "x:y.0~: int"), ("t:schema.0", "t:z.0")] {
         let d = |k: &str| if k.contains(": ") { k.to_string() } else { format!("{k}: int") };
         let src = format!("version 1;\naspect {};\naspect {};\n", d(a), d(b));
         let s = parse("c.osis", &src).unwrap();

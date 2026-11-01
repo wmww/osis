@@ -206,13 +206,8 @@ impl<'d> Write<'d> {
         let t = self.known(tid)?;
         let aks = self.db.aspects(t)?;
         for ak in aks.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
-            // the side that holds it (an aspect held on both sides, by keys that disagree on
-            // its lifetime, loses its durable side here)
-            if self.db.engine(|e| e.has_durable(&t, ak)) {
-                self.m.remove_aspect(t, ak)?;
-            } else {
-                self.m.remove_aspect(t, &osis_schema::Untyped::new(ak.clone(), osis_schema::Lifetime::Ephemeral))?;
-            }
+            // the key decides the side that holds it
+            self.m.remove_aspect(t, ak)?;
         }
         let gs = self.db.groups_of(t);
         let writable = |g: &Tid| matches!(self.db.role_on(*g), Some(Role::Write | Role::Admin));
@@ -365,7 +360,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// Drops the aspect's whole history wherever the author may purge it (spec/commits.md §5,
     /// spec/permissions.md §8) and removes the aspect, in this commit.
     pub fn purge(&mut self) -> Result<()> {
-        if !self.key.defaults().lifetime.is_durable() {
+        if !self.key.lifetime().is_durable() {
             return Err(Error::Invalid("purge applies to durable aspects only".into()));
         }
         self.remove()?;

@@ -12,7 +12,7 @@ aspect osis_app:view.0: enum { 0 calendar, 1 people, 2 tags, 3 recent };
 /// A thing's own display colour (`#rrggbb`) where no first-party aspect holds one (a tag's is `tag.0` color).
 aspect osis_app:color.0: string;
 /// On the app group: the thing each device (its node tid) has open; absent: home.
-aspect osis_app:open.0~: map<tid, tid> [ephemeral];
+aspect osis_app:open.0~: map<tid, tid>;
 /// On the app group: demo data was added.
 aspect osis_app:demo.0: bool;
 /// On the app group: the person's theme (a built-in theme's id).

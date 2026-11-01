@@ -176,13 +176,13 @@
 //! ```
 //!
 //! # Signals
-//! A `signal` aspect holds nothing: each set fires every callback on it once, here and on the
+//! A signal aspect (key marker `*`) holds nothing: each set fires every callback on it once, here and on the
 //! devices connected now that read the thing.
 //! ```
-//! # use osis::{Config, Osis, Ak, Value, Lifetimes};
+//! # use osis::{Config, Osis, Ak, Value};
 //! let db = Osis::create(Config::memory())?.0;
 //! let t = db.write_with(|w| w.create(db.me()))?;
-//! let ring = Ak::new("app:ring.0*").unwrap().signal();
+//! let ring = Ak::new("app:ring.0*").unwrap();
 //! let (tx, rx) = std::sync::mpsc::channel();
 //! let _sub = db.at(t, ring.clone()).on_change(move |_, c| { let _ = tx.send(c.value); })?;
 //! assert_eq!(rx.recv().unwrap(), Ok(None));
@@ -279,7 +279,7 @@ pub use write::{AspectWrite, Committed, PathWrite, Write};
 
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
-pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Lifetimes, Retention, Schema, Step, Untyped, p};
+pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Retention, Schema, Step, p};
 
 /// The schema layer, for generated code (`use osis::schema as osis_schema;`).
 pub use osis_schema as schema;

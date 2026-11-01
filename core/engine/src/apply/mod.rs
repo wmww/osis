@@ -222,15 +222,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         })
         .map(|p| (p.ai, p.di))
         .collect();
-    // a memory part goes only to a memory-class aspect: one on an aspect of durable deltas here
-    // (schemas disagree, or a writer broke the rule) or on a core aspect but `placed.0~` is dropped
-    // alone, as its rows would shadow durable ones (spec/data-model.md §1)
+    // an aspect's storage class is its key's lifetime marker, alike at every node (spec/commits.md
+    // §2): a memory commit's part on a key without `~`, or a durable commit's on a key with `~` or
+    // `*`, is dropped alone (core keys are unmarked but `placed.0~`)
+    let class = if memory { osis_base::Lifetime::Ephemeral } else { osis_base::Lifetime::Durable };
     let mut bad = bad;
-    if memory {
-        let placed = osis_schema::AspectKey::ak(&osis_schema::core_types::PLACED);
-        let core = |ak: &str| osis_schema::core_types::is_core_key(ak) && ak != placed;
-        bad.extend(blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| core(a.ak.as_str()) || durable_class(tx, &a.tid, &a.ak))).map(|p| (p.ai, p.di)));
-    }
+    bad.extend(blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.lifetime() != class)).map(|p| (p.ai, p.di)));
     if !bad.is_empty() {
         blob.parts.retain(|p| !bad.contains(&(p.ai, p.di)));
         let now = tx.now();
@@ -279,12 +276,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
     }
     Ok(Exam::Ready(out))
-}
-
-/// Whether `(tid, ak)` holds durable rows here: deltas held and the aspect not memory class (a
-/// memory commit's rows mark it memory).
-fn durable_class(tx: &Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> bool {
-    !tx.txn.is_memory_aspect(tid, ak) && tx.core.ix.by_aspect.get(&(*tid, ak.clone())).is_some_and(|s| !s.is_empty())
 }
 
 /// Applies or stores one decoded commit blob.

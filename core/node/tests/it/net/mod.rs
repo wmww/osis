@@ -661,12 +661,12 @@ impl Net {
 
     /// Node `n` writes `v` to the ephemeral (or signal) key `key` of `t`, then lets its sync
     /// engine see it.
-    pub fn eph_write(&mut self, n: usize, t: Tid, key: &osis_schema::Untyped, v: Value) {
+    pub fn eph_write(&mut self, n: usize, t: Tid, key: &osis_base::Ak, v: Value) {
         self.eph_write_expiring(n, t, key, v, None);
     }
 
     /// `eph_write` whose write expires `ms` from now (`None`: never).
-    pub fn eph_write_expiring(&mut self, n: usize, t: Tid, key: &osis_schema::Untyped, v: Value, ms: Option<u64>) {
+    pub fn eph_write_expiring(&mut self, n: usize, t: Tid, key: &osis_base::Ak, v: Value, ms: Option<u64>) {
         let mut m = Mutation::new();
         m.set(t, key, &v).unwrap();
         if let Some(ms) = ms {
@@ -755,10 +755,6 @@ pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, Stri
     out
 }
 
-/// An untyped key of `ak` with the given lifetime.
-pub fn ukey(ak: &str, l: osis_schema::Lifetime) -> osis_schema::Untyped {
-    osis_schema::Untyped::new(osis_base::Ak::new(ak).unwrap(), l)
-}
 
 pub fn s(x: &str) -> Value {
     Value::Str(x.into())

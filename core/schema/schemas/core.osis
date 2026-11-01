@@ -53,7 +53,7 @@ aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret:
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 /// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
-aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> } [ephemeral];
+aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 
 /// What humans call the thing.

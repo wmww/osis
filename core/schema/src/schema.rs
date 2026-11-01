@@ -39,42 +39,24 @@ pub struct AspectDef {
     pub doc: Option<String>,
 }
 
-impl AspectDef {
-    /// The lifetime its flags declare (validation allows at most one lifetime flag).
-    pub fn lifetime(&self) -> Lifetime {
-        if self.flags.contains(&Flag::Signal) {
-            Lifetime::Signal
-        } else if self.flags.contains(&Flag::Ephemeral) {
-            Lifetime::Ephemeral
-        } else {
-            Lifetime::Durable
-        }
-    }
-}
-
-
-/// Aspect flags (spec/data-model.md §2). `ephemeral` and `signal` decide where a
-/// write goes (its lifetime); nothing on the wire enforces the others.
+/// Aspect flags (spec/data-model.md §2): local, nothing on the wire enforces them. Where a
+/// write goes (its lifetime) is the AK's marker, not a flag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Flag {
     Ro = 0,
     Synthetic = 1,
     Guaranteed = 2,
     Indexed = 3,
-    Ephemeral = 4,
-    Signal = 5,
 }
 
 impl Flag {
-    pub const ALL: [Flag; 6] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed, Flag::Ephemeral, Flag::Signal];
+    pub const ALL: [Flag; 4] = [Flag::Ro, Flag::Synthetic, Flag::Guaranteed, Flag::Indexed];
     pub fn name(self) -> &'static str {
         match self {
             Flag::Ro => "ro",
             Flag::Synthetic => "synthetic",
             Flag::Guaranteed => "guaranteed",
             Flag::Indexed => "indexed",
-            Flag::Ephemeral => "ephemeral",
-            Flag::Signal => "signal",
         }
     }
     pub fn from_id(id: u64) -> Option<Flag> {
@@ -137,7 +119,6 @@ pub struct Retention {
 pub struct AspectDefaults {
     pub retention: Retention,
     pub expires: Option<u64>,
-    pub lifetime: Lifetime,
 }
 
 /// A validation failure: the item (`type NAME`, `aspect AK`, `schema`) and why.
@@ -160,7 +141,7 @@ impl Schema {
 
     /// Write defaults for an AK this schema declares.
     pub fn defaults(&self, ak: &str) -> Option<AspectDefaults> {
-        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires, lifetime: a.lifetime() })
+        self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
     }
 
     /// One expansion step of a named type (standard or declared).
@@ -265,14 +246,17 @@ impl Schema {
         let core = self.declares_core();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
-            match Ak::new(ak.as_str()) {
+            let lifetime = match Ak::new(ak.as_str()) {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
-                    bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into())
+                    bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into());
+                    Lifetime::Durable
                 }
-                Ok(a) if a.lifetime() != def.lifetime() => bad(&item, "the AK's lifetime marker must match its flags: `~` ephemeral, `*` signal".into()),
-                Ok(_) => {}
-                Err(_) => bad(&item, "invalid AK".into()),
-            }
+                Ok(a) => a.lifetime(),
+                Err(_) => {
+                    bad(&item, "invalid AK".into());
+                    Lifetime::Durable
+                }
+            };
             self.check_syntax(&def.ty, &[], &mut |m| bad(&item, m));
             if def.retention.at_most.rel.is_some() && def.retention.by != PurgeBy::Writer {
                 bad(&item, "a relative keep_at_most needs by: writer (spec/commits.md §5)".into());
@@ -284,19 +268,15 @@ impl Schema {
             if def.expires == Some(0) {
                 bad(&item, "expires must be positive".into());
             }
-            let lifetimes = def.flags.iter().filter(|f| matches!(f, Flag::Ephemeral | Flag::Signal)).count();
-            if lifetimes > 1 {
-                bad(&item, "at most one of ephemeral, signal".into());
-            }
             // `placed.0~`, the ephemeral placements (spec/data-model.md §8), is the one core aspect
             // that is not durable
-            if core && (def.lifetime() != Lifetime::Durable) != (ak.as_str() == "placed.0~") {
+            if core && !lifetime.is_durable() && ak.as_str() != "placed.0~" {
                 bad(&item, "core aspects are durable, placed.0~ ephemeral".into());
             }
-            if lifetimes > 0 && def.retention != Retention::default() {
+            if !lifetime.is_durable() && def.retention != Retention::default() {
                 bad(&item, "retention applies to durable aspects only".into());
             }
-            if def.lifetime() == Lifetime::Signal && def.expires.is_some() {
+            if lifetime == Lifetime::Signal && def.expires.is_some() {
                 bad(&item, "a signal has no value to expire".into());
             }
             for s in &def.succeeds {

@@ -1224,7 +1224,7 @@ fn eph_net() -> (crate::net::Net, usize, usize, Tid) {
 /// Node `x`'s ephemeral commits setting `per` keys of `doc:notes.0` of `t` each, `commits` times
 /// (fresh keys every time), as blobs.
 fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, per: usize, value: &Value) -> Vec<osis_commit::CommitBlob> {
-    let notes = crate::net::ukey("doc:notes.0~", osis_schema::Lifetime::Ephemeral);
+    let notes = crate::common::ak("doc:notes.0~");
     let mut blobs = Vec::new();
     for c in 0..commits {
         let mut m = Mutation::new();
@@ -1246,7 +1246,7 @@ fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, 
 fn eph_absorb_lists_cost() {
     let n = size("OSIS_EPH_N", 8000, 400);
     let (mut net, b, x, t) = eph_net();
-    let cur = crate::net::ukey("doc:cursor.0~", osis_schema::Lifetime::Ephemeral);
+    let cur = crate::common::ak("doc:cursor.0~");
     let ca = ak("doc:cursor.0~");
     let t0 = Instant::now();
     let mut blobs = Vec::with_capacity(n);
@@ -1295,7 +1295,7 @@ fn eph_decoded_memory() {
         for c in 0..commits {
             let mut m = Mutation::new();
             for e in 0..per {
-                m.set(t, &crate::net::ukey(&format!("x:a{:06}.0~", c * per + e), osis_schema::Lifetime::Ephemeral), &value).unwrap();
+                m.set(t, &crate::common::ak(&format!("x:a{:06}.0~", c * per + e)), &value).unwrap();
             }
             net.engine(x).write(m).unwrap();
             blobs.extend(net.engine(x).take_ephemeral().unwrap().into_iter().map(|c| c.blob));
