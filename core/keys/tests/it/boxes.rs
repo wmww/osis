@@ -31,14 +31,14 @@ fn forked() -> Forked {
     let mut s = Secrets::default();
     let r1 = rotate(&a, &roles_up_to(Role::Admin), &view, &s, std::slice::from_ref(&owner), &mut rng(1)).unwrap();
     r1.secrets.apply(&mut s);
-    r1.record(&mut view);
+    view = r1.preview(&view).unwrap();
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
     let x = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(2)).unwrap();
     let y = rotate(&a, &read, &view, &s, std::slice::from_ref(&owner), &mut rng(3)).unwrap();
     x.secrets.apply(&mut s);
     y.secrets.apply(&mut s);
-    x.record(&mut view);
-    y.record(&mut view);
+    view = x.preview(&view).unwrap();
+    view = y.preview(&view).unwrap();
     Forked { a, view, s, forks: [x.rotated[0].epoch, y.rotated[0].epoch] }
 }
 
@@ -116,7 +116,7 @@ fn rotation_keeps_other_roles_boxes() {
     let rot = rotate(&f.a, &[Role::Write].into_iter().collect(), &f.view, &s, &[owner, key_rcpt(k, Role::Write, &seed)], &mut rng(9)).unwrap();
     let mut v = f.view.clone();
     rot.secrets.apply(&mut s);
-    rot.record(&mut v);
+    v = rot.preview(&v).unwrap();
     let mut want: Vec<_> = f.forks.iter().map(|e| box_key(k, Role::Read, e)).collect();
     want.push(box_key(k, Role::Write, &rot.rotated[0].epoch));
     want.sort();
@@ -137,7 +137,7 @@ fn reseal_to_newest_keyset() {
     let mut me = person(0x30);
     for (i, r) in ROLES.into_iter().enumerate() {
         me.role_mut(r).rotation(ep(2, 0x31), [ep(1, 0x30)]);
-        me.role_mut(r).set_established(ep(2, 0x31), osis_keys::Provenance::Own);
+        me.role_mut(r).set_established(ep(2, 0x31), osis_keys::Provenance::Fixed);
         me.role_mut(r).set_secret(ep(2, 0x31), Secret32::from_bytes([0x70 + i as u8; 32]));
     }
     let read: BTreeSet<Role> = [Role::Read].into_iter().collect();
@@ -462,11 +462,11 @@ fn bogus_keyset_drops_nothing_spec_crypto_4() {
     let opener = Opener::Actor { holder: g, epochs: &ge };
     let commit = osis_base::CommitId([0x77; 32]);
     let mut first = ActorEpochs::default();
-    osis_keys::SecretsWrite::default().applied(&mut first, commit, &bogus).unwrap();
+    osis_keys::SecretsWrite::default().claimed(&mut first, commit, &bogus, true).unwrap();
     ingest(&f.a, &s, &opener, &mut first, None).unwrap();
     let mut last = ActorEpochs::default();
     ingest(&f.a, &s, &opener, &mut last, None).unwrap();
-    osis_keys::SecretsWrite::default().applied(&mut last, commit, &bogus).unwrap();
+    osis_keys::SecretsWrite::default().claimed(&mut last, commit, &bogus, true).unwrap();
     for v in [&first, &last] {
         assert_eq!(v.read.secret(&e), f.view.read.secret(&e));
     }

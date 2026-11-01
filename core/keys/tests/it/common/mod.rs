@@ -24,7 +24,7 @@ pub fn person(b: u8) -> ActorEpochs {
     let mut a = ActorEpochs::default();
     for (i, r) in ROLES.into_iter().enumerate() {
         a.role_mut(r).set_secret(ep(1, b), Secret32::from_bytes([b.wrapping_add(i as u8); 32]));
-        a.role_mut(r).set_established(ep(1, b), Provenance::Own);
+        a.role_mut(r).set_established(ep(1, b), Provenance::Fixed);
     }
     a
 }

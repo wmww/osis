@@ -27,7 +27,7 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
     let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
-    r.record(&mut view);
+    view = r.preview(&view).unwrap();
     (view, s)
 }
 
@@ -44,7 +44,7 @@ fn lost_device_owner_rotation() {
     let mut pe2 = pe.clone();
     for (i, r) in ROLES.into_iter().enumerate() {
         pe2.role_mut(r).rotation(ep(2, 0x21), [ep(1, 0x20)]);
-        pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Own);
+        pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Fixed);
         pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
     }
     // P's own secrets.0 after the rotation hold no box for the device.
@@ -64,7 +64,7 @@ fn lost_device_owner_rotation() {
     let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &mut rng(2)).unwrap();
     let (mut tv2, mut ts2) = (tview.clone(), ts.clone());
     r.secrets.apply(&mut ts2);
-    r.record(&mut tv2);
+    tv2 = r.preview(&tv2).unwrap();
     assert!(rotate_first(&tid(0), &ts2, &tv2, &all, &all, &deps, &newest).is_empty());
     // A plain thing U owned by P: its derived epoch is at P's newest's n.
     let u = ActorEpochs::derived(&pe2, &tid(3));
@@ -86,7 +86,7 @@ fn grant_raced_by_rotation() {
     rot.secrets.apply(&mut s);
     grant.apply(&mut s);
     let mut v = view.clone();
-    rot.record(&mut v);
+    v = rot.preview(&v).unwrap();
     let now = WallMs(1_000_000_000);
     let holders = [Holder { holder: p, role: Role::Admin, until: None }, Holder { holder: g, role: Role::Read, until: None }];
     assert_eq!(reseal_needed(&s, &v, &holders, now), vec![(g, read())]);
@@ -118,12 +118,12 @@ fn rotation_held_before_the_removal() {
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
-    eager.record(&mut v);
+    v = eager.preview(&v).unwrap();
     let e2 = eager.rotated[0].epoch;
     assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &[], &none));
     // The removal commit arrives with its rotation.
     removal.secrets.apply(&mut s);
-    removal.record(&mut v);
+    v = removal.preview(&v).unwrap();
     let e2r = removal.rotated[0].epoch;
     let deps = [Departure::holder(m, Role::Read)];
     assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &deps, &none));
@@ -136,7 +136,7 @@ fn rotation_held_before_the_removal() {
     assert!(history.contains(&e2) && history.contains(&e2r));
     assert_eq!(heal.rotated[0].supersedes, history);
     heal.secrets.apply(&mut s);
-    heal.record(&mut v);
+    v = heal.preview(&v).unwrap();
     let e3 = heal.rotated[0].epoch;
     assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &deps, &none));
     let mut mv = ActorEpochs::default();
@@ -167,7 +167,7 @@ fn raced_grant_box_still_uncovers() {
     let (mut s, mut v) = (base.clone(), view.clone());
     grant.apply(&mut s);
     rot.secrets.apply(&mut s);
-    rot.record(&mut v);
+    v = rot.preview(&v).unwrap();
     let r0 = v.read.newest().unwrap();
     let mut kv = ActorEpochs::default();
     ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();

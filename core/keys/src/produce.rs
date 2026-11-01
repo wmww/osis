@@ -136,14 +136,28 @@ pub struct Rotation {
 }
 
 impl Rotation {
-    /// Records the new epochs and secrets in the rotator's own view.
+    /// Records the new epochs and secrets in the rotator's own view. Their establishment comes
+    /// from the rotation commit, applied (spec/crypto.md §4).
     pub fn record(&self, epochs: &mut ActorEpochs) {
         for r in &self.rotated {
             let re = epochs.role_mut(r.role);
             re.rotation(r.epoch, r.supersedes.iter().copied());
             re.set_secret(r.epoch, r.secret.clone());
-            re.set_established(r.epoch, Provenance::Own);
         }
+    }
+
+    /// `held` as the rotation commit being made sees it, before it has an ID: the rotation
+    /// recorded and its epochs established as that commit, applied, establishes them (claimed by
+    /// a placeholder ID; a scratch view, never kept). What the commit itself writes under them
+    /// (spec/crypto.md §4: the rotation commit's own writes).
+    pub fn preview(&self, held: &ActorEpochs) -> Result<ActorEpochs, Error> {
+        let mut a = held.clone();
+        self.record(&mut a);
+        for (r, e, sup) in self.secrets.rotation_commit(&self.keys)? {
+            a.role_mut(r).set_claim(e, osis_base::CommitId([0; 32]), true, sup);
+        }
+        a.establish();
+        Ok(a)
     }
 
     /// The newest read epoch it supersedes whose secret the rotator holds: what the rotation
@@ -175,7 +189,7 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets, holders: &[Recipient], rng: &mut dyn CryptoRngCore) -> Result<Rotation, Error> {
     let removed = removals(roles, held, held_secrets)?;
     let mut rotated = Vec::new();
-    let mut secrets = SecretsWrite { removed, ..SecretsWrite::default() };
+    let mut secrets = SecretsWrite { removed: removed.into_iter().map(|k| (k, BTreeSet::new())).collect(), ..SecretsWrite::default() };
     let mut keys = KeysWrite::default();
     let mut wrap = None;
     for &r in roles {
@@ -192,7 +206,7 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
         let earlier: Vec<(Epoch, Secret32)> = re.held_established().map(|(e, s)| (e, s.clone())).collect();
         secrets.history.insert(history_key(r, &epoch), seal_history(&secret, actor, r, &epoch, &earlier)?);
         keys.keysets.insert(r, keyset(&epoch, &secret));
-        let supersedes = secrets.removed.iter().filter(|k| k.role == r).map(|k| from_schema(&k.epoch)).chain(earlier.iter().map(|(e, _)| Ok(*e))).collect::<Result<_, Error>>()?;
+        let supersedes = secrets.removed.keys().filter(|k| k.role == r).map(|k| from_schema(&k.epoch)).chain(earlier.iter().map(|(e, _)| Ok(*e))).collect::<Result<_, Error>>()?;
         rotated.push(Rotated { role: r, epoch, secret, supersedes });
     }
     let mut unboxed = Vec::new();

@@ -145,8 +145,7 @@ fn create_person_in(tx: &mut Tx<'_>, r: Tid, seed: &Secret32, hosts: &[Address])
         Recipient { holder: me, role: Role::Admin, keys: HolderKeys::KeyActor { kem: node_kem.clone(), seed: None } },
     ];
     let rot = rotation::rotation_into(tx, &mut m, p, &ROLES.into_iter().collect(), &held, &holders, &[])?;
-    let mut after = held.clone();
-    rot.record(&mut after);
+    let after = rot.preview(&held)?;
     let mut dep = [0u8; 32];
     tx.rng.fill_bytes(&mut dep);
     let deposit = Secret32::from_bytes(dep);

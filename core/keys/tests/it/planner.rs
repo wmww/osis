@@ -173,14 +173,14 @@ fn wrap_epochs() {
     let mut a = person(0x20);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Current(ep(1, 0x20)));
     a.read.rotation(ep(2, 5), [ep(1, 0x20)]);
-    a.read.set_established(ep(2, 5), osis_keys::Provenance::Own);
+    a.read.set_established(ep(2, 5), osis_keys::Provenance::Fixed);
     assert_eq!(wrap_epoch(&a.read), WrapEpoch::Stranded(ep(1, 0x20)));
     assert_eq!(wrap_epoch(&ActorEpochs::default().read), WrapEpoch::None);
     let pe = person(0x20);
     let mut view = ActorEpochs::derived(&pe, &tid(1));
     let r = osis_keys::rotate(&tid(1), &roles_up_to(Role::Admin), &view, &Default::default(), &[], &mut rng(1)).unwrap();
     assert_eq!(r.wrap_epoch(), ActorEpochs::derived(&pe, &tid(1)).read.newest());
-    r.record(&mut view);
+    view = r.preview(&view).unwrap();
     assert_eq!(wrap_epoch(&view.read), WrapEpoch::Current(r.rotated[0].epoch));
     let w = osis_keys::rotate(&tid(1), &set(&[Role::Write]), &view, &Default::default(), &[], &mut rng(2)).unwrap();
     assert_eq!(w.wrap_epoch(), None);
@@ -195,7 +195,7 @@ fn label_epochs() {
     assert_eq!((r.0, w.0, ad.0), (ep(1, 0x20), ep(1, 0x20), ep(1, 0x20)));
     let key = label_role_key(label_role(Role::Read), r.1, 3).verifying_key();
     a.read.rotation(ep(2, 1), [ep(1, 0x20)]);
-    a.read.set_established(ep(2, 1), osis_keys::Provenance::Own);
+    a.read.set_established(ep(2, 1), osis_keys::Provenance::Fixed);
     a.read.set_secret(ep(2, 1), Secret32::from_bytes([9; 32]));
     assert_eq!(registered_epoch(&a.read, Role::Read, 3, &key), Some(ep(1, 0x20)));
     assert_eq!(registered_epoch(&a.read, Role::Read, 4, &key), None);
@@ -205,7 +205,7 @@ fn label_epochs() {
     assert!(!newer_than_head(&a, [None, Some(ep(1, 0x20)), Some(ep(1, 0x20))]));
     a.admin.observe(ep(2, 2));
     a.admin.rotation(ep(2, 2), [ep(1, 0x20)]);
-    a.admin.set_established(ep(2, 2), osis_keys::Provenance::Own);
+    a.admin.set_established(ep(2, 2), osis_keys::Provenance::Fixed);
     assert!(registration_epochs(&a).is_none());
 }
 
@@ -216,7 +216,7 @@ fn jumped_person(b: u8) -> ActorEpochs {
     for (i, r) in osis_keys::ROLES.into_iter().enumerate() {
         let e = Epoch::derive(&tid(2), r, osis_keys::MAX_FREE_N + 5, &Secret32::from_bytes([b ^ (i as u8) << 6; 32])).unwrap();
         pe.role_mut(r).set_secret(e, Secret32::from_bytes([b ^ (i as u8) << 6; 32]));
-        pe.role_mut(r).set_established(e, osis_keys::Provenance::Own);
+        pe.role_mut(r).set_established(e, osis_keys::Provenance::Fixed);
     }
     pe
 }
@@ -235,7 +235,7 @@ fn jumped_owner_rotation_steps_plain_group() {
         assert!(!newer_than_head(&before, head));
         // k2 removed: the rotation boxes k1 only
         let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &pe, &Default::default(), &[key_rcpt(tid(3), Role::Admin, &s1)], &mut rng(b.into())).unwrap();
-        r.record(&mut pe);
+        pe = r.preview(&pe).unwrap();
         let after = ActorEpochs::derived(&pe, &u);
         assert!(newer_than_head(&after, head), "seed {b}");
         assert_eq!(after.read.newest().unwrap().n(), osis_keys::MAX_FREE_N - 1);
@@ -253,11 +253,11 @@ fn jumped_owner_forks_derive_owner_newest() {
         let mut a = base.clone();
         for i in 0..2u64 {
             let r = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &a, &Default::default(), &[], &mut rng(u64::from(b) << 8 | i)).unwrap();
-            r.record(&mut a);
+            a = r.preview(&a).unwrap();
         }
         let mut pe = a.clone();
         let rb = osis_keys::rotate(&p, &roles_up_to(Role::Admin), &base, &Default::default(), &[], &mut rng(u64::from(b) << 8 | 9)).unwrap();
-        rb.record(&mut pe);
+        pe = rb.preview(&pe).unwrap();
         let want = a.read.newest().unwrap();
         assert_eq!(pe.read.current().len(), 2);
         assert_eq!(pe.read.newest(), Some(want));
@@ -287,7 +287,7 @@ fn delete_keys() {
     let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap());
     assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
     thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
-    thing.write.set_established(ep(2, 0), osis_keys::Provenance::Own);
+    thing.write.set_established(ep(2, 0), osis_keys::Provenance::Fixed);
     thing.write.set_secret(ep(2, 0), Secret32::from_bytes([5; 32]));
     assert_eq!(delete_key(3, &thing, None), Some(dk(&Secret32::from_bytes([5; 32]))));
     let c: Vec<_> = delete_candidates(3, &thing, None).into_iter().map(|x| x.0).collect();

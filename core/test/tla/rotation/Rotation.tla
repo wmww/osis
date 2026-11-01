@@ -55,9 +55,10 @@ ep_n(e) == ep[e].n
 \* crypto §4: newest = greatest n, ties by lowest nonce (here: lowest id).
 Newer(e, f) == ep_n(e) > ep_n(f) \/ (ep_n(e) = ep_n(f) /\ e < f)
 NewestOf(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
-\* crypto §4: an epoch is established at x when it is x's own rotation, or x
-\* applied its rotation commit and every epoch it supersedes is established
-\* (own rotations are in kn at once and supersede established epochs only).
+\* crypto §4: an epoch is established at x when x applied its rotation commit
+\* and every epoch it supersedes is established (own rotations are in kn at
+\* once and supersede established epochs only; no rotation commit is invalid
+\* here, ASSUMPTIONS.md).
 \* Epoch 0 is the derived epoch. No secrets.0 snapshots (ASSUMPTIONS.md). A
 \* rotation supersedes lower ids only, so one pass in id order is the fixpoint.
 Est(x) == LET f[i \in Ids] == IF i = 0 THEN TRUE
