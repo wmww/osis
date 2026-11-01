@@ -222,5 +222,5 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
-- Blob `MAX_BLOB`; frame `MAX_MESSAGE`; AK 1024 bytes; URL 256 bytes.
+- Blob `MAX_BLOB`; frame `MAX_MESSAGE`; a message at most 2^20 CBOR data items in all; AK 1024 bytes; URL 256 bytes.
 - Header: each inline list at most `CHUNK_THRESHOLD` bytes. Prefix: 3 commitments. Claim set: `MAX_CLAIMS` keys; a claim set with its entry boxes is at most `MAX_MESSAGE` − 64 KiB. Tree node and link page: 512 links (a tree node one length per link); tree level 48. Sequence run: `MAX_RUN` elements, a list run's `Content` closing at `CHUNK_MAX` bytes; runs without `Content` in a writer or import delta: `MAX_DELTA_BARE` elements in all (spec/crdt.md §3.3). Link and card: §10. Messages: §11.2.

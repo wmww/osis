@@ -32,6 +32,12 @@ pub type Id = u32;
 
 /// Deepest array nesting of any v1 message (FetchReply).
 const MESSAGE_DEPTH: usize = 6;
+/// CBOR data items in one message, counted before any is decoded (spec/wire.md §13). Resource
+/// bound: a decoded item costs about 100 bytes (`Value`), so a frame of one-byte items would
+/// otherwise cost about 2 GB; the densest message an engine sends (a reply of deletion or pending
+/// events, paged by `event_size`) holds under 800 000. 0: no message decodes; infinity: about
+/// 200 bytes of memory per frame byte from any peer that sent a Hello.
+pub const MAX_MESSAGE_ITEMS: usize = 1 << 20;
 
 /// Status codes (spec/wire.md §11.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -306,7 +312,13 @@ impl Message {
 
     /// Decodes a frame body, enforcing every layout rule and cap of spec/wire.md §11.2, §13.
     pub fn decode(body: &[u8]) -> Result<Message, Rejected> {
-        let v = cbor::decode(body, &Limits { max_depth: MESSAGE_DEPTH, max_bytes: MAX_MESSAGE }).map_err(|e| Rejected { kind: 0, id: 0, error: e.into() })?;
+        let limits = Limits { max_depth: MESSAGE_DEPTH, max_bytes: MAX_MESSAGE };
+        let mut items = 0usize;
+        cbor::visit_items(body, &limits, &mut |_, _, _| items += 1).map_err(|e| Rejected { kind: 0, id: 0, error: e.into() })?;
+        if items > MAX_MESSAGE_ITEMS {
+            return Err(Rejected { kind: 0, id: 0, error: Error::Cap("message items") });
+        }
+        let v = cbor::decode(body, &limits).map_err(|e| Rejected { kind: 0, id: 0, error: e.into() })?;
         let (kind, id) = match &v {
             Value::List(items) => match (items.first(), items.get(1)) {
                 (Some(Value::Int(k)), Some(Value::Int(i))) if *k >= 0 && *i >= 0 && *i < (1i64 << 32) => (*k as u64, *i as u32),
