@@ -377,7 +377,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
             ch.undropped.insert(c);
         }
     }
-    if any && matches!(ak.as_str(), "secrets.0" | "keys.0") {
+    if any && ak.as_str() == "keys.0" {
         crate::apply::keys::rebuild_intro(tx, &BTreeSet::from([*tid]))?;
     }
     // held snapshots' copies of the writes of deltas now never received are carried writes

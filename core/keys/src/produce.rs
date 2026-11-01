@@ -118,7 +118,7 @@ pub struct Rotated {
     pub role: Role,
     pub epoch: Epoch,
     pub secret: Secret32,
-    /// The epochs it supersedes, as every node reads them from its commit
+    /// The epochs it supersedes, as a node holding its secret reads them from its commit
     /// (`SecretsWrite::rotations`): those of the boxes of its role it removes, and those its
     /// history box lists.
     pub supersedes: BTreeSet<Epoch>,

@@ -205,10 +205,9 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
 }
 
 /// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
-/// commit is wrapped
-/// under that epoch, so they cannot open it from the label (a grant this node learned of after
-/// an epoch that left it out, the single-use link race's winner). They get it by inbox
-/// (spec/permissions.md §3). Called before the rotation is committed.
+/// commit is wrapped under that epoch, so they cannot open it from the label (a grant this node
+/// learned of after an epoch that left it out, the single-use link race's winner). They get it
+/// by inbox (spec/permissions.md §3). Called before the rotation is committed.
 pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<Tid>> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Vec::new()) };
     let secrets = secrets_in(tx, a)?;
@@ -407,9 +406,13 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// Invariant: once re-seals settle (every node holding the same commits finds no holder to
 /// re-seal), every node counts the same current epochs of each role, since what a rotation
 /// supersedes is read from its commit alone (`osis_keys::SecretsWrite::rotations`), and every
-/// holder of a role holds every current epoch of it that any node holds, since a holder lacking
-/// one lacks its box there (one box per (holder, role, epoch)), and a node holding it re-seals.
-/// `tests::forked_reseals_settle_*` check it.
+/// holder of a role holds every current epoch of it that a node that may rotate the role holds,
+/// since a holder lacking one lacks its box there (one box per (holder, role, epoch)), and such
+/// a node holding it re-seals (issues/fork-held-by-non-rotators.md: one that may not, cannot).
+/// The exception: an epoch that had no box when the rotation superseding it was made is
+/// superseded only at the nodes that open that rotation's history box; it is never newest
+/// anywhere. `tests::forked_reseals_settle_*` and `tests::forks_with_departures_settle_*`
+/// check it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let me = tx.core.id.tid();
     let may = may_rotate(tx.core, &me, a);
@@ -429,11 +432,11 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
         for r in roles {
             // Fixpoint (the re-seal is written on every pass otherwise): a re-seal is made only
             // when it adds a box the trigger asks for, each at its own key: so only by a node
-            // holding the secret of an epoch the holder lacks a box at (`box_at` boxes just those held; a node may lack a fork's, or reach
-            // the actor through a holder actor left out). Every re-seal adds a box until the
-            // forks end, so the trigger settles; requiring every fork's secret instead stranded
-            // a holder when no rotator held them all. A holder actor left out waits until its
-            // newest epoch covers.
+            // holding the secret of an epoch the holder lacks a box at (`box_at` boxes just those
+            // held; a node may lack a fork's, or reach the actor through a holder actor left
+            // out). Every re-seal adds a box until the forks end, so the trigger settles;
+            // requiring every fork's secret instead stranded a holder when no rotator held them
+            // all. A holder actor left out waits until its newest epoch covers.
             let re = epochs.role(r);
             let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
