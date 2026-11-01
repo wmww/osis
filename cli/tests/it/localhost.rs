@@ -133,19 +133,20 @@ fn two_people_three_devices_one_host_localhost() {
 }
 
 /// Runs `osis -s STORE serve ARGS` until dropped; returns it and the host address it prints.
+/// Only that first line is read, then stdout is closed: the diagnostics `serve` prints after it
+/// are best effort (notes/cli.md serve), so the host goes on (the tests below need it).
 fn serve(store: &Path, args: &[&str]) -> (Host, String) {
     let mut c = Command::new(OSIS).arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());
     let mut addr = String::new();
     out.read_line(&mut addr).unwrap();
-    // its diagnostics follow on stdout: drained, else a closed pipe ends it
-    std::thread::spawn(move || std::io::copy(&mut out, &mut std::io::sink()));
+    drop(out);
     (Host(c), addr.trim().to_string())
 }
 
 // spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
-// Alice's, paired and then hosting under `own` (its address learned from a first `serve`, so
-// one port picked up front), the only host she has: her home, a group made afterwards and a
+// Alice's, paired and then hosting under `own` (its address from `hosting show`, before it
+// serves, so one port picked up front), the only host she has: her home, a group made afterwards and a
 // link to it reach it; Bob, on that host only, redeems the link (his own home it refuses).
 #[test]
 #[ignore]
@@ -155,14 +156,14 @@ fn own_host_device_localhost() {
     pair(&a, &h, None);
     let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
     let url = format!("quic://127.0.0.1:{port}");
-    // a first run that ends by itself (`--timeout`), as a person would stop it
-    let (mut first, addr) = serve(&h, &["--timeout", "2s", "--listen", &url, "--admit", "own"]);
-    assert!(first.0.wait().unwrap().success());
-    assert!(addr.starts_with(&url), "{addr}");
+    osis(&h, &["hosting", "set", "--listen", &url, "--admit", "own"]);
+    let show = osis(&h, &["hosting", "show"]);
+    let addr = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
+    assert!(addr.starts_with(&format!("{url}#")), "{addr}");
     osis(&h, &["hosts", "add", &addr]);
     osis(&a, &["hosts", "add", &addr]);
-    let (_host, again) = serve(&h, &[]);
-    assert_eq!(again, addr, "the same address");
+    let (_host, served) = serve(&h, &[]);
+    assert_eq!(served, addr, "the address `hosting show` said");
 
     let g = osis(&a, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
     osis(&a, &["group", "sync", &g]);

@@ -201,7 +201,7 @@ fn deliver(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 /// Runs one parsed command.
-pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, tty: bool) -> anyhow::Result<()> {
+pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out: &mut dyn std::io::Write, err: &mut (dyn std::io::Write + Send), tty: bool) -> anyhow::Result<()> {
     let g = cli.g.clone();
     let sel = crate::store_sel(&g, store)?;
     // Commands that do not open a store.
@@ -254,17 +254,30 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     if let Some(c) = card {
         writeln!(out, "{c}")?;
     }
-    let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
-    let flush = delivers(&cli.cmd);
-    let mut r = run(&mut ctx, cli.cmd);
-    if r.is_ok() && flush && !ctx.db.hosts().is_empty() {
-        r = deliver(&mut ctx);
-    }
-    ctx.db.settle();
-    let db = ctx.db.clone();
-    drop(ctx);
-    let closed = db.close();
-    r.and(closed.map_err(Into::into))
+    // -v on a command that syncs: diagnostics to stderr while it runs, best effort
+    let verbose = (g.verbose > 0 && needs_net(&cli.cmd)).then(|| Verbose::start(&db, g.json));
+    std::thread::scope(|s| {
+        let verbose = verbose.map(|(v, rx)| {
+            s.spawn(move || {
+                for l in rx {
+                    let _ = writeln!(err, "{l}").and_then(|()| err.flush());
+                }
+            });
+            v
+        });
+        let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
+        let flush = delivers(&cli.cmd);
+        let mut r = run(&mut ctx, cli.cmd);
+        if r.is_ok() && flush && !ctx.db.hosts().is_empty() {
+            r = deliver(&mut ctx);
+        }
+        ctx.db.settle();
+        drop(verbose);
+        let db = ctx.db.clone();
+        drop(ctx);
+        let closed = db.close();
+        r.and(closed.map_err(Into::into))
+    })
 }
 
 /// Runs one write command as its own commit; prints the commit id (and a created tid).
@@ -398,7 +411,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 let _ = tx.send((l, !std::mem::take(&mut initial)));
             });
             let timeout = ctx.timeout_or(None)?;
-            stream(ctx, &rx, count, timeout, "change", |_, (l, counts)| (l, counts))
+            stream(ctx, &rx, count, timeout, "change", false, |_, (l, counts)| (l, counts))
         }
         Cmd::Via { t, holder } => {
             let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?);
@@ -530,7 +543,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Bundle(BundleCmd::Import) => Ok(db.import_bundle(&mut *ctx.stdin)?),
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => {
-            diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) })
+            diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) }, false)
         }
     }
 }
@@ -786,12 +799,13 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
 fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
-    stream(ctx, rx, count, timeout, "line", |_, l| (l, true))
+    stream(ctx, rx, count, timeout, "line", false, |_, l| (l, true))
 }
 
 /// `stream_lines` over items printed by `line`, which also says whether the item counts
-/// toward `count` (an initial value does not).
-fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
+/// toward `count` (an initial value does not). `best_effort`: write errors are ignored (the
+/// lines are diagnostics, not what the command is run for).
+fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, best_effort: bool, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
     let end = deadline(timeout);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
@@ -802,8 +816,10 @@ fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, ti
         match r {
             Ok(x) => {
                 let (l, counts) = line(ctx, x);
-                ctx.line(&l)?;
-                ctx.out.flush()?;
+                let w = ctx.line(&l).and_then(|()| Ok(ctx.out.flush()?));
+                if !best_effort {
+                    w?;
+                }
                 n += usize::from(counts);
             }
             Err(mpsc::RecvTimeoutError::Timeout) if count.is_some() => return Err(exit(6, format!("timed out after {n} {what}(s)"))),
@@ -829,7 +845,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
         }),
     };
     let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, "change", |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
+    stream(ctx, &rx, count, timeout, "change", false, |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
 }
 
 const KINDS: [(&str, CommitKind); 6] =
@@ -940,25 +956,31 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>) -> anyhow::Result<()> {
+/// One diagnostic as `diag` prints it (text or a JSON line).
+fn diag_line(d: &osis::Diagnostic, json: bool) -> String {
+    if json {
+        J::obj([
+            ("kind", J::str(format!("{:?}", d.kind))),
+            ("tids", J::Arr(d.tids.iter().map(|t| J::tid(*t)).collect())),
+            ("commit", J::opt(d.commit.as_ref().map(|c| J::str(commit_text(c))))),
+            ("peer", J::opt(d.peer.map(J::tid))),
+            ("detail", J::str(d.detail.clone())),
+        ])
+        .text()
+    } else {
+        let tids: Vec<String> = d.tids.iter().map(Tid::to_uri).collect();
+        format!("{:?} {} {}", d.kind, tids.join(","), d.detail)
+    }
+}
+
+/// Prints diagnostics until `timeout` (`Some(0)`: those so far). `best_effort` (`serve`): a
+/// failed write (a closed stdout) is ignored, the command goes on.
+fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     let json_out = ctx.g.json;
     let (tx, rx) = mpsc::channel::<String>();
     let _sub = db.on_diagnostic(move |_, d| {
-        let l = if json_out {
-            J::obj([
-                ("kind", J::str(format!("{:?}", d.kind))),
-                ("tids", J::Arr(d.tids.iter().map(|t| J::tid(*t)).collect())),
-                ("commit", J::opt(d.commit.as_ref().map(|c| J::str(commit_text(c))))),
-                ("peer", J::opt(d.peer.map(J::tid))),
-                ("detail", J::str(d.detail.clone())),
-            ])
-            .text()
-        } else {
-            let tids: Vec<String> = d.tids.iter().map(Tid::to_uri).collect();
-            format!("{:?} {} {}", d.kind, tids.join(","), d.detail)
-        };
-        let _ = tx.send(l);
+        let _ = tx.send(diag_line(&d, json_out));
     });
     db.settle();
     if timeout == Some(Duration::ZERO) {
@@ -967,7 +989,37 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>) -> anyhow::Result<()> {
         }
         return Ok(());
     }
-    stream_lines(ctx, &rx, None, timeout)
+    stream(ctx, &rx, None, timeout, "line", best_effort, |_, l| (l, true))
+}
+
+/// Copies diagnostics to `err` while it lives (`-v` on a command that syncs): best effort.
+struct Verbose {
+    tx: Arc<std::sync::Mutex<Option<mpsc::Sender<String>>>>,
+    _sub: osis::Subscription,
+}
+
+impl Verbose {
+    /// Subscribes; the lines go to the receiver, drained by the caller's thread.
+    fn start(db: &Osis, json: bool) -> (Verbose, mpsc::Receiver<String>) {
+        let (tx, rx) = mpsc::channel();
+        let tx = Arc::new(std::sync::Mutex::new(Some(tx)));
+        let t = tx.clone();
+        let sub = db.on_diagnostic(move |_, d| {
+            if let Some(tx) = t.lock().ok().as_ref().and_then(|g| g.as_ref()) {
+                let _ = tx.send(diag_line(&d, json));
+            }
+        });
+        (Verbose { tx, _sub: sub }, rx)
+    }
+}
+
+impl Drop for Verbose {
+    /// Ends the receiver's stream (the subscription may outlive this in the dispatcher).
+    fn drop(&mut self) {
+        if let Ok(mut g) = self.tx.lock() {
+            g.take();
+        }
+    }
 }
 
 fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
@@ -1069,8 +1121,10 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
         ctx.emit(&[a.to_string()], J::obj([("host", J::str(a.to_string()))]))?;
         ctx.out.flush()?;
     }
+    // the address line above is a hard failure; the diagnostics after it are best effort (a
+    // caller that read only the address and closed the pipe does not end the host)
     let t = ctx.timeout_or(None)?;
-    diag(ctx, t)
+    diag(ctx, t, true)
 }
 
 /// Writes `host.0^`: each flag given replaces its field (one `''` clears it), the rest kept;
@@ -1120,7 +1174,7 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
     Ok(db.set_hosting(Some(h))?)
 }
 
-/// `host.0^` as lines (`listen URL`, `admit own|open`, `label ID`, `replicate ADDR`,
+/// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL, `admit own|open`, `label ID`, `replicate ADDR`,
 /// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
 fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let h = ctx.db.hosting().ok_or_else(|| exit(3, "not hosting"))?;
@@ -1129,7 +1183,10 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
         osis::Admit::Open => "open",
     };
     let hex = |l: &osis::LabelId| osis_schema::osis_base::hex::encode(&l.0);
+    // the address each listen URL will have (a port 0 is picked only when it listens)
+    let addrs: Vec<String> = ctx.db.host_key().map(|k| h.listen.iter().map(|u| osis::HostAddr::new(u, k).to_string()).collect()).unwrap_or_default();
     let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
+    lines.extend(addrs.iter().map(|a| format!("address {a}")));
     lines.push(format!("admit {admit}"));
     lines.extend(h.labels.iter().map(|l| format!("label {}", hex(l))));
     lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
@@ -1137,6 +1194,7 @@ fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     lines.extend(h.caps.iter().map(|(l, c)| format!("cap {} {} {}", hex(l), c.entries, c.bytes)));
     let j = J::obj([
         ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.clone())).collect())),
+        ("addresses", J::Arr(addrs.iter().map(|a| J::str(a.clone())).collect())),
         ("admit", J::str(admit)),
         ("labels", J::Arr(h.labels.iter().map(|l| J::str(hex(l))).collect())),
         ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),

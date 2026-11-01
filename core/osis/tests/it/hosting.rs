@@ -33,7 +33,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 // spec/sync.md §5 (an unadmitted genesis step gets code 12), notes/sync.md Hosting, spec/requirements.md
-// Untrusted nodes: Alice hosts with `own` admission: her home label, once its hosts name her
+// Untrusted nodes: Alice hosts with `own` admission (its key known before it listens): her home label, once its hosts name her
 // host address, is admitted and served from her host store (her own copy placed there like
 // anyone's); Bob's is refused until she opens admission, then hosted blind (she holds none of
 // its keys) and served to Bob's restored device. Her host store holds no tid or AK of either
@@ -46,9 +46,12 @@ fn hosting_own_then_open_spec_sync_5() {
     let (bob, bob_card) = w.person(2, &[base]);
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
+    assert_eq!(alice.host_key(), None);
     alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".into()], admit: Admit::Own, ..Default::default() })).unwrap();
+    let key = alice.host_key().expect("known before it listens");
     w.run();
     let ha = alice.host_address().unwrap().expect("listening");
+    assert_eq!(HostAddr::new("quic://alice:1", key), ha, "the key it listens with");
     assert_eq!(alice.hosting().unwrap().admit, Admit::Own);
     let ai = w.index(&alice).unwrap();
     let s = w.host_of(ai).unwrap();
@@ -97,6 +100,7 @@ fn hosting_own_then_open_spec_sync_5() {
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
     assert!(alice.sync_engine(|e| e.host_key()).is_none());
+    assert_eq!(alice.host_key(), None);
 }
 
 /// A group owned by `owner` (held by `db`), placed in `within`, synced on `hosts`.
