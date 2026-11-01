@@ -1,0 +1,1 @@
+- tools/bin-at builds only `--test NAME` binaries, not a crate's lib unit tests (osis-engine `rotation::tests`): compared against main by checking out main's sources over a wip commit instead.

@@ -1227,3 +1227,107 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
         assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed at both forks");
     }
 }
+
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (forks; a node holder's one box keyed at
+// the highest role): random concurrent rotations of G by random holders, each leaving out a
+// random subset of the others, give random fork shapes and random subsets of secrets per node;
+// rounds of every node's re-seal trigger (all on one state, or synced after each node) then
+// reach a fixpoint within a bound (main before reseal-livelock: no fixpoint at 62 of 300
+// seeds). Holders still lacking a fork some node holds are counted, not asserted: two known
+// causes remain (issues/reseal-stranded-forks.md); make it an assertion once they are fixed.
+#[test]
+fn forked_reseals_settle_spec_permissions_3() {
+    forked_reseals(0..3);
+}
+
+/// Seeds: OSIS_FORKS_START, OSIS_FORKS_SEEDS.
+#[test]
+#[ignore = "tier 2"]
+fn forked_reseals_settle_large() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_FORKS_START", "OSIS_FORKS_SEEDS", 0..100);
+    s.announce("forked_reseals_settle_large");
+    forked_reseals(s.range);
+}
+
+fn forked_reseals(seeds: std::ops::Range<u64>) {
+    const N: usize = 4;
+    let roles = [Role::Read, Role::Write, Role::Admin];
+    let (mut forked, mut max_rounds, mut stranded) = (0, 0, Vec::new());
+    for seed in seeds {
+        let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+        let mut lp = LocalPeer::new(N, 2_000 + seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+        let g = group(&mut lp, 0);
+        let mut role = [Role::Admin; N];
+        for i in 1..N {
+            role[i] = roles[rng.next(3) as usize];
+            lp.peers[0].engine.grant(&g, &tids[i], &edge(role[i])).unwrap();
+        }
+        lp.sync_all().unwrap();
+        for _ in 0..2 + rng.next(4) {
+            // a few rotators act on the same state: their rotations fork
+            for (i, &ri) in role.iter().enumerate() {
+                if ri < Role::Write || rng.next(2) == 0 {
+                    continue;
+                }
+                let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
+                if rot.is_empty() {
+                    continue;
+                }
+                let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
+                // refused (a carried secret not held) changes nothing
+                let _ = lp.peers[i].engine.run(|tx| {
+                    let held = tx.core.epochs(&g).unwrap();
+                    let holders = super::recipients(tx, &g, &skip)?;
+                    let mut m = Mutation::new();
+                    let r = super::rotation_into(tx, &mut m, g, &rot, &held, &holders, &[])?;
+                    crate::engine::Engine::commit_tx(tx, m)?;
+                    super::record(tx, g, &r)
+                });
+            }
+            if rng.next(2) == 0 {
+                lp.sync_all().unwrap();
+            } else {
+                for _ in 0..3 {
+                    let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
+                    if a != b {
+                        lp.sync(a, b).unwrap();
+                    }
+                }
+            }
+        }
+        lp.sync_all().unwrap();
+        let e0 = lp.peers[0].engine.epochs(&g).unwrap();
+        forked += usize::from(roles.iter().any(|r| e0.role(*r).current().len() > 1));
+        let mut settled = None;
+        for round in 0..12 {
+            let mut n = 0;
+            let concurrent = rng.next(2) == 0;
+            for p in 0..N {
+                n += lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.len();
+                if !concurrent {
+                    lp.sync_all().unwrap();
+                }
+            }
+            lp.sync_all().unwrap();
+            if n == 0 {
+                settled = Some(round);
+                break;
+            }
+        }
+        let Some(rounds) = settled else { panic!("seed {seed}: no re-seal fixpoint in 12 rounds") };
+        max_rounds = max_rounds.max(rounds);
+        for r in roles {
+            for e in e0.role(r).current() {
+                let any = (0..N).any(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).secret(&e).is_some());
+                for h in (0..N).filter(|h| role[*h] >= r) {
+                    if any && lp.peers[h].engine.epochs(&g).unwrap().role(r).secret(&e).is_none() {
+                        stranded.push((seed, h, r));
+                    }
+                }
+            }
+        }
+    }
+    eprintln!("forked re-seals: {forked} runs forked, at most {} rounds to settle; holders lacking a held fork: {stranded:?}", max_rounds + 1);
+}
