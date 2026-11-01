@@ -169,6 +169,17 @@ fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl It
     Ok(false)
 }
 
+/// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
+/// more) or still unreadable by this build.
+fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
+    let Some((_, bytes)) = tx.txn.get_pending(id)? else {
+        tx.core.ix.pending.remove(id);
+        tx.core.waits.unpended(id);
+        return Ok(None);
+    };
+    Ok(CommitBlob::decode(&bytes).ok())
+}
+
 /// A pending commit in `Engine::reexamine`: read and decoded, or still waiting for deltas
 /// when last examined (`Core::waits`).
 enum Turn {
@@ -252,7 +263,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         }
     }
     // a part that does not hash to its header entry is dropped alone (spec/commits.md §4)
-    let bad: Vec<(usize, usize)> = blob
+    let mut bad: Vec<(usize, usize)> = blob
         .parts
         .iter()
         .filter(|p| {
@@ -266,7 +277,6 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // §2): a memory commit's part on a key without `~`, or a durable commit's on a key with `~` or
     // `*`, is dropped alone (core keys are unmarked but `placed.0~`)
     let class = if memory { osis_base::Lifetime::Ephemeral } else { osis_base::Lifetime::Durable };
-    let mut bad = bad;
     bad.extend(blob.parts.iter().filter(|p| h.aspects.get(p.ai).is_some_and(|a| a.ak.lifetime() != class)).map(|p| (p.ai, p.di)));
     if !bad.is_empty() {
         blob.parts.retain(|p| !bad.contains(&(p.ai, p.di)));
@@ -362,23 +372,13 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     if tx.core.ix.commits.contains_key(&id) {
         return late_parts(tx, &id, blob);
     }
-    if tx.core.ix.pending.contains_key(&id)
-        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(&id)?
-        && let Ok(old) = CommitBlob::decode(&old)
-    {
-        blob = merge_parts(old, blob);
-    }
+    blob = with_pending(tx, &id, blob)?;
     let received = tx.now();
     let inline = blob.header.is_resolved();
     let _s = crate::costs::span("examine");
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
         Exam::Ready(parts) => {
-            tx.core.touch();
-            let was_pending = tx.core.ix.pending.remove(&id).is_some();
-            tx.core.waits.unpended(&id);
-            if was_pending {
-                tx.txn.remove_pending(&id, Shred::Yes)?;
-            }
+            let was_pending = unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
             if was_pending {
                 keys::forget_unchecked(tx, &id)?;
@@ -386,23 +386,48 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ok(Ingested::Applied(id))
         }
         Exam::Pending(r) => {
-            tx.core.touch();
-            tx.txn.put_pending(&id, PendingKind::Pending, &blob.encode())?;
-            tx.core.ix.pending.insert(id, r.clone());
-            tx.core.waits.pended(&id);
+            pend(tx, &id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, &id)?;
             let now = tx.now().0;
             waits::note(tx.core, id, &blob, inline, &r, now);
             Ok(Ingested::Pending(id, r))
         }
         Exam::Parked => {
-            tx.core.touch();
-            tx.txn.put_pending(&id, PendingKind::Parked, &blob.encode())?;
-            tx.core.ix.pending.insert(id, Reason::Parked);
-            tx.core.waits.pended(&id);
+            pend(tx, &id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
             Ok(Ingested::Parked(id))
         }
     }
+}
+
+/// Keeps commit `id` pending (`bytes` as stored) for `reason`.
+fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason: Reason) -> Result<()> {
+    tx.core.touch();
+    tx.txn.put_pending(id, kind, bytes)?;
+    tx.core.ix.pending.insert(*id, reason);
+    tx.core.waits.pended(id);
+    Ok(())
+}
+
+/// Commit `id` pends no more: its stored bytes go. Whether it was pending.
+fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
+    tx.core.waits.unpended(id);
+    let was = tx.core.ix.pending.remove(id).is_some();
+    if was {
+        tx.core.touch();
+        tx.txn.remove_pending(id, Shred::Yes)?;
+    }
+    Ok(was)
+}
+
+/// `blob` with the parts the stored pending copy of `id` holds.
+fn with_pending(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob) -> Result<CommitBlob> {
+    if tx.core.ix.pending.contains_key(id)
+        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
+        && let Ok(old) = CommitBlob::decode(&old)
+    {
+        return Ok(merge_parts(old, blob));
+    }
+    Ok(blob)
 }
 
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
@@ -428,19 +453,10 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
         }
     }
-    if tx.core.ix.pending.contains_key(id)
-        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
-        && let Ok(old) = CommitBlob::decode(&old)
-    {
-        blob = merge_parts(old, blob);
-    }
+    blob = with_pending(tx, id, blob)?;
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
-        tx.core.waits.unpended(id);
-        if tx.core.ix.pending.remove(id).is_some() {
-            tx.core.touch();
-            tx.txn.remove_pending(id, Shred::Yes)?;
-        }
+        unpend(tx, id)?;
         return Ok(Ingested::Duplicate(*id));
     }
     let mut merged = merge_parts(held, blob.clone());
@@ -448,20 +464,13 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     let _s = crate::costs::span("examine");
     match examine(tx, &mut merged, id, &skip)? {
         Exam::Ready(parts) => {
-            tx.core.waits.unpended(id);
-            if tx.core.ix.pending.remove(id).is_some() {
-                tx.core.touch();
-                tx.txn.remove_pending(id, Shred::Yes)?;
-            }
+            unpend(tx, id)?;
             crate::retention::reopen_late(tx, id, &parts.ais())?;
             atomic::join_late(tx, id, &merged, parts)?;
             Ok(Ingested::Applied(*id))
         }
         Exam::Pending(r) => {
-            tx.core.touch();
-            tx.txn.put_pending(id, PendingKind::Pending, &blob.encode())?;
-            tx.core.ix.pending.insert(*id, r.clone());
-            tx.core.waits.pended(id);
+            pend(tx, id, PendingKind::Pending, &blob.encode(), r.clone())?;
             Ok(Ingested::Pending(*id, r))
         }
         Exam::Parked => Ok(Ingested::Parked(*id)),
@@ -564,10 +573,7 @@ impl Engine {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
                 Err(e) if e.class() == ErrorClass::Parked => {
                     let id = raw_id(bytes)?;
-                    tx.core.touch();
-                    tx.txn.put_pending(&id, PendingKind::Parked, bytes)?;
-                    tx.core.ix.pending.insert(id, Reason::Parked);
-                    tx.core.waits.pended(&id);
+                    pend(tx, &id, PendingKind::Parked, bytes, Reason::Parked)?;
                     Ok(Ingested::Parked(id))
                 }
                 Err(e) => Err(e.into()),
@@ -611,14 +617,8 @@ impl Engine {
                         blobs.push((id, Turn::Waiting(w.key)));
                         continue;
                     }
-                    let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
-                        tx.core.ix.pending.remove(&id);
-                        tx.core.waits.unpended(&id);
-                        continue;
-                    };
-                    match CommitBlob::decode(&bytes) {
-                        Ok(b) => blobs.push((id, Turn::Read(Box::new(b)))),
-                        Err(_) => continue, // still unreadable by this build
+                    if let Some(b) = read_pending(tx, &id)? {
+                        blobs.push((id, Turn::Read(Box::new(b))));
                     }
                 }
                 blobs.sort_by_key(|(_, x)| match x {
@@ -631,17 +631,10 @@ impl Engine {
                     let b = match b {
                         Turn::Read(b) => *b,
                         Turn::Waiting(_) if waits::still_waits(tx, &id)? => continue,
-                        Turn::Waiting(_) => {
-                            let Some((_, bytes)) = tx.txn.get_pending(&id)? else {
-                                tx.core.ix.pending.remove(&id);
-                                tx.core.waits.unpended(&id);
-                                continue;
-                            };
-                            match CommitBlob::decode(&bytes) {
-                                Ok(b) => b,
-                                Err(_) => continue,
-                            }
-                        }
+                        Turn::Waiting(_) => match read_pending(tx, &id)? {
+                            Some(b) => b,
+                            None => continue,
+                        },
                     };
                     let things: Vec<Tid> = if b.header.kind.is_role() { b.header.aspects.iter().map(|a| a.tid).collect() } else { Vec::new() };
                     match ingest_blob(tx, b, Origin::Remote) {
@@ -826,21 +819,19 @@ impl Engine {
     }
 }
 
-/// Rebuilds the engine's indexes from the store (open, and after forgetting): from the persisted
-/// index when this build wrote it (`engine::index`: commit metas with their validity, the
-/// indexes derived from role bodies, perm's reading of each role commit; no part is
-/// decoded), else from every commit record, re-judging every delta. Returns whether it rebuilt
-/// (the persisted index is then to be written).
 /// Rebuilds `(tid, ak)` from its held bodies under the current judgments, and what it derives.
 pub(crate) fn rejoin(tx: &mut Tx<'_>, tid: &Tid, ak: &osis_base::Ak) -> Result<()> {
     atomic::rebuild(tx, tid, ak)?;
     atomic::observe_state(tx, tid, ak)
 }
 
-/// Loads the in-memory indexes; `Some(aspects)` when they were rebuilt from the commit records:
-/// the aspects whose judgments differ from what the replaced index held (their states follow
-/// the old judgments until rebuilt; every aspect with something invalid when that index does
-/// not decode).
+/// Loads the in-memory indexes from the store (open, and after forgetting): from the persisted
+/// index when this build wrote it (`engine::index`: commit metas with their validity, the
+/// indexes derived from role bodies, perm's reading of each role commit; no part is decoded),
+/// else from every commit record, re-judging every delta. `Some(aspects)` when they were
+/// rebuilt from the commit records: the aspects whose judgments differ from what the replaced
+/// index held (their states follow the old judgments until rebuilt; every aspect with something
+/// invalid when that index does not decode).
 pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, osis_base::Ak)>>> {
     if let Some(b) = tx.txn.get_local(records::HLC)?
         && let Ok(a) = <[u8; 8]>::try_from(b.as_slice())
