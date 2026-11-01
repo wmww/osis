@@ -1,8 +1,11 @@
 #!/bin/sh
-# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]: REV's test binary (default osis-node's
-# `it`, dev profile), built in this worktree and copied to OUT, for old-vs-new runs and
-# `tools/icount` comparisons (notes/build.md). Needs a clean tree (wip-commit first): checks out
-# REV detached, builds, checks the starting branch or commit out again (also on failure). The
+# tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME] [--patch FILE]... [--take PATH]...:
+# REV's test binary (default osis-node's `it`, dev profile), built in this worktree and copied to
+# OUT, for old-vs-new runs and `tools/icount` comparisons (notes/build.md). To build a new test
+# against an old REV: `--patch FILE` applies a diff (`git apply --index`) on top of REV, `--take
+# PATH` (a file or directory) copies PATH as the starting commit holds it (`git checkout <start>
+# -- PATH`, root-relative); both undone before returning (`git reset --hard`). Needs a clean tree
+# (wip-commit first): checks out REV detached, builds, checks the starting branch or commit out again (also on failure). The
 # next build here recompiles what REV changed back. The binary keeps this worktree's manifest
 # dirs: a test reading fixtures reads the checked-out ones. Refuses the main checkout (build only
 # in task worktrees). Killed hard (SIGKILL) mid-build, it leaves HEAD detached at REV: check the
@@ -10,15 +13,21 @@
 # fail to link with undefined symbols: delete the newest target/debug/incremental/{it,osis_node,
 # osis_engine}-* dirs.
 set -eu
-[ $# -ge 2 ] || { echo "usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME]" >&2; exit 2; }
+usage="usage: tools/bin-at REV OUT [--release] [-p CRATE] [--test NAME] [--patch FILE]... [--take PATH]..."
+[ $# -ge 2 ] || { echo "$usage" >&2; exit 2; }
 rev=$1 out=$2
 shift 2
-profile="" crate=osis-node test=it
+profile="" crate=osis-node test=it patches="" takes=""
+nl='
+'
 while [ $# -gt 0 ]; do
     case $1 in
         --release) profile=--release ;;
         -p) crate=$2; shift ;;
         --test) test=$2; shift ;;
+        --patch) [ -f "$2" ] || { echo "bin-at: no patch file $2" >&2; exit 2; }
+            patches="$patches$(cd "$(dirname "$2")" && pwd)/$(basename "$2")$nl"; shift ;;
+        --take) takes="$takes$2$nl"; shift ;;
         *) echo "bin-at: unknown argument $1" >&2; exit 2 ;;
     esac
     shift
@@ -29,15 +38,24 @@ cd "$root"
 [ -z "$(git status --porcelain --untracked-files=no)" ] || { echo "bin-at: uncommitted changes; wip-commit them first" >&2; exit 1; }
 sha=$(git rev-parse --verify "$rev^{commit}")
 back=$(git symbolic-ref -q --short HEAD || git rev-parse HEAD)
-restore() { git checkout -q "$back"; }
+start=$(git rev-parse HEAD)
+dirty=
+# a patch or take changed the tree at REV: drop it (tracked and index-added files) first
+restore() { [ -z "$dirty" ] || git reset -q --hard; git checkout -q "$back"; }
 trap restore EXIT
 trap 'exit 1' INT TERM
 echo "bin-at: building $sha detached; returns to $back (if killed: git checkout $back)" >&2
 git checkout -q --detach "$sha"
+dirty=1
+IFS=$nl
+for f in $patches; do git apply --index "$f" || { echo "bin-at: $f does not apply to $sha" >&2; exit 1; }; done
+for f in $takes; do git checkout -q "$start" -- "$f" || exit 1; done
+unset IFS
+[ -n "$patches$takes" ] || dirty=
 # shellcheck disable=SC2086
 exe=$(cargo test $profile -p "$crate" --test "$test" --no-run --message-format=json-render-diagnostics \
     | jq -r 'select(.reason == "compiler-artifact" and .executable != null and .target.name == "'"$test"'") | .executable' | tail -n 1)
 [ -n "$exe" ] || { echo "bin-at: no executable for $crate --test $test" >&2; exit 1; }
 mkdir -p "$(dirname "$out")"
 cp "$exe" "$out"
-echo "bin-at: $(git log -1 --format='%h %s' "$sha") -> $out" >&2
+echo "bin-at: $(git log -1 --format='%h %s' "$sha")${patches:+ + patches}${takes:+ + taken files} -> $out" >&2
