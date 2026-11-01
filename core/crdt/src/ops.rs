@@ -8,7 +8,7 @@ use crate::seq;
 use crate::stamp::{CounterRange, Dot, Source, Stamp};
 use crate::view::View;
 use osis_base::{Float, Value};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// One writer's counters for one aspect's delta in one commit (§2.3). Commit-level writes share
 /// the delta stamp `(ts, source, lo)`; creations and position writes take `lo, lo+1, ..` in op
@@ -23,19 +23,33 @@ pub struct Writer {
     lo: u64,
     next: u64,
     keyed: bool,
+    copied: BTreeSet<Dot>,
 }
 
 impl Writer {
     /// `lo` is the first unused counter of `src` for this aspect (≥ 1). Map removals are keyless.
     pub fn new(ts: osis_base::Ts, src: Source, lo: u64) -> Writer {
         let lo = lo.max(1);
-        Writer { ts, src, lo, next: lo, keyed: false }
+        Writer { ts, src, lo, next: lo, keyed: false, copied: BTreeSet::new() }
     }
     /// Whether map removals carry the removed record's key (role-class aspects only,
     /// §5.6); else a removal is the dot's key-erased record.
     pub fn keyed_removals(mut self, on: bool) -> Writer {
         self.keyed = on;
         self
+    }
+    /// The owner dots of the writes whose content an undo wrote back (§4.6: from the undo
+    /// buffer, or a text undelete's char): the undo takes the earliest expiry among them (§4.7).
+    pub fn copied(&self) -> &BTreeSet<Dot> {
+        &self.copied
+    }
+    /// Notes that the undo writes back the content of `f`'s writes.
+    pub(crate) fn copy_from(&mut self, f: &Fragment) {
+        f.owner_dots(&mut self.copied);
+    }
+    /// Notes that the undo writes back the content of the write dotted `d`.
+    pub(crate) fn copy_dot(&mut self, d: &Dot) {
+        self.copied.insert(d.owner().clone());
     }
     /// The record a removal of entry record `id` writes (§5.6).
     pub(crate) fn removal(&self, id: &Eid) -> Eid {

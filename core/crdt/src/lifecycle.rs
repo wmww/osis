@@ -190,9 +190,60 @@ impl Fragment {
         walk(&mut KeyedResets, self)
     }
 
+    /// Adds the owner dot of every write and live record here to `out` (a range record's first).
+    pub(crate) fn owner_dots(&self, out: &mut std::collections::BTreeSet<Dot>) {
+        walk(&mut OwnerDots(out), self);
+    }
+
+    /// Whether a write of the delta owning dot `d` is here: a write stamped with its dot or a
+    /// record's creation; unlike `holds_dots`, a tombstone keyed by `d` (the remover's) is not.
+    pub fn holds_write(&self, d: &Dot) -> bool {
+        walk(&mut HoldsWrite(d), self)
+    }
+
     /// `holds_dots` with `holds`, else `dots_supersede`.
     pub(crate) fn dots_in(&self, pred: &dyn Fn(&Dot) -> bool, holds: bool) -> bool {
         walk(&mut DotsIn { pred, holds }, self)
+    }
+}
+
+/// `Fragment::owner_dots`.
+struct OwnerDots<'a>(&'a mut std::collections::BTreeSet<Dot>);
+
+impl Visit for OwnerDots<'_> {
+    fn stamp(&mut self, s: &Stamp) -> bool {
+        self.0.insert(s.dot.owner().clone());
+        false
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        // a tombstone or deleted element is not read: its creation's content is not copied
+        let (d, live) = match r {
+            Rec::Elem(d, x) => (d, x.frag.is_some()),
+            Rec::Entry(id, e) => (&id.dot, e.created.is_some() || e.frag.is_some()),
+            Rec::Seq(d, el) => (d, !el.deleted.as_ref().is_some_and(|x| x.1)),
+        };
+        if !live {
+            return Next::NoContent;
+        }
+        self.0.insert(d.owner().clone());
+        Next::On
+    }
+}
+
+/// `Fragment::holds_write`.
+struct HoldsWrite<'a>(&'a Dot);
+
+impl Visit for HoldsWrite<'_> {
+    fn stamp(&mut self, s: &Stamp) -> bool {
+        s.dot.owner() == self.0
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        let hit = match r {
+            Rec::Elem(d, x) => x.frag.is_some() && d.owner() == self.0,
+            Rec::Entry(id, e) => e.created.is_some() && id.dot.owner() == self.0,
+            Rec::Seq(d, el) => el.created.is_some() && d.owner() == self.0,
+        };
+        if hit { Next::Stop } else { Next::On }
     }
 }
 

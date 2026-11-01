@@ -389,12 +389,17 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
             Some((_, true)) if text && was_visible(dot) => {
                 // delete: undelete carrying the content
                 let c = [pre, now].into_iter().flatten().map(|e| e.content.clone()).find(|c| matches!(c, SeqContent::Char(_)));
+                if c.is_some() {
+                    w.copy_dot(dot);
+                }
                 out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), content: c.unwrap_or(SeqContent::None), ..SeqElem::bare() });
             }
             Some((_, true)) if !text => {
                 // list delete: re-insert the value with a fresh dot after the old element
-                let v = pre.and_then(|e| if let SeqContent::Frag(f) = &e.content { f.read() } else { None });
-                if let Some(v) = v {
+                let f = pre.and_then(|e| if let SeqContent::Frag(f) = &e.content { Some(&**f) } else { None });
+                if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
+                    w.copy_dot(dot);
+                    w.copy_from(f);
                     reinsert.push((dot.clone(), v));
                 }
             }

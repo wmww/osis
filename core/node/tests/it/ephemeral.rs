@@ -741,6 +741,85 @@ fn expired_removal_vanishes_everywhere_spec_crdt_4_7() {
     }
 }
 
+// spec/crdt.md §4.6, §4.7 (an undo never extends a value's lifetime past its original expiry):
+// A undoes its removal of its expiring note; the note comes back at A and at B, expiring at the
+// note's time, not the undo's or never
+#[test]
+fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let t = net.now() + 5_000;
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(t)).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
+    let rm = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    net.advance(1_000);
+    let me = net.tid(a);
+    net.engine(a).revert_change(rm, me).unwrap();
+    local(&mut net, a);
+    net.run();
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), map(&[("k", "v")]), "node {n}: the note is back");
+    }
+    net.advance(t + 1_000 - net.now());
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), BTreeMap::new(), "node {n}: gone at the note's expiry");
+    }
+}
+
+// spec/crdt.md §4.6, §4.7: past the note's expiry, undoing its removal brings nothing back
+#[test]
+fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    // B's note, removed by A: a remote write, its part dropped at its time
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Put(s("v")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(b).write(m).unwrap();
+    local(&mut net, b);
+    // and A's own
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("j"))], op: Op::Put(s("u")) }).unwrap();
+    m.expires(w, &eph(NOTES), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(notes(&mut net, a, w).len(), 2);
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("k")) }).unwrap();
+    m.op(w, &eph(NOTES), PathOp { path: vec![], op: Op::Remove(s("j")) }).unwrap();
+    let rm = net.engine(a).write(m).unwrap().unwrap().id;
+    local(&mut net, a);
+    net.run();
+    net.advance(6_000);
+    let me = net.tid(a);
+    let _ = net.engine(a).revert_change(rm, me).unwrap();
+    local(&mut net, a);
+    net.run();
+    for n in [a, b] {
+        assert_eq!(notes(&mut net, n, w), BTreeMap::new(), "node {n}: nothing came back");
+    }
+}
+
 // spec/crdt.md §4.7 (expiry), spec/sync.md §9 (notes/ephemeral.md Values that live while their
 // author is there): a cursor (a map entry under the author's key, expiring 30 s after each write)
 // its author rewrites every 15 s stays up at B without a gap, the host holding at most a few

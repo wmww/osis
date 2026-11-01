@@ -12,7 +12,8 @@ use crate::error::{Error, Result};
 use crate::events::{ChangeId, EphemeralId};
 use crate::undo::in_effect;
 use osis_base::{Ak, Tid, Ts, WallMs};
-use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Stamp, Undone, Writer};
+use crate::undo::{Before, undo_expiring};
+use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, Stamp, Undone, Writer};
 use osis_schema::core_types::{CREATED, PLACED, is_role_class};
 use osis_schema::{AspectKey, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
@@ -278,22 +279,50 @@ impl Engine {
                 Some(s) => s,
                 None => self.durable_state(&la.tid, &la.ak)?.unwrap_or_default(),
             };
-            let mut w = Writer::new(ts, src.clone(), self.eph.ctr(&la.tid, &la.ak));
+            let w = Writer::new(ts, src.clone(), self.eph.ctr(&la.tid, &la.ak));
             let log = &self.eph.log;
             let restored = |s: &Stamp| log.restored(s, &src, &la.tid, &la.ak, at, &undoers);
             let undone = Undone { delta: &la.delta, source: &src, range: la.range, restored: &restored };
-            let view = la.schema.as_ref().and_then(|s| s.view(la.ak.as_str()));
-            let delta = match &view {
-                Some(v) => osis_crdt::undo(&mut w, &undone, &state, &la.pre, v)?,
-                None => osis_crdt::undo(&mut w, &undone, &state, &la.pre, &AnyView)?,
-            };
-            if let Some(delta) = delta {
-                let r = w.range();
+            let expiry = |d: &Dot| self.copied_expiry(&la.tid, &la.ak, d);
+            let before = Before { state: la.pre, complete: true };
+            if let Some((delta, r, expires)) = undo_expiring(w, &undone, &state, before, la.schema.as_deref(), &la.ak, ts.wall_ms().0, &expiry)? {
                 let pre = state.footprint(&delta);
-                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires: None, log: Some((pre, la.schema)) });
+                out.push(Resolved { tid: la.tid, ak: la.ak, delta, range: (r.lo, r.hi), expires, log: Some((pre, la.schema)) });
             }
         }
         Ok(out)
+    }
+
+    /// The expiry of the write dotted `d` in ephemeral `(tid, ak)`, for an undo copying its
+    /// content (`undo_expiring`): an own write's expiry class, a durable write's delta's, or the
+    /// earliest of the held parts holding it; `Some(0)` when it is gone (expired, or a
+    /// session's write held nowhere: an expired part is dropped at its time).
+    fn copied_expiry(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<u64> {
+        let a = self.eph.aspects.get(tid).and_then(|m| m.get(ak));
+        if d.src == self.eph.src {
+            let a = a?;
+            if super::in_ranges(d, &d.src, &a.expired) {
+                return Some(0);
+            }
+            return a.expiring.iter().find(|(_, r)| super::in_ranges(d, &d.src, r)).map(|(t, _)| *t);
+        }
+        if let Some(m) = self.core.commit_of(tid, ak, d).and_then(|c| self.core.ix.commits.get(&c)) {
+            return m.header.aspects.iter().zip(&m.valid).find(|(x, v)| **v && x.tid == *tid && x.ak == *ak).and_then(|(x, _)| x.expires);
+        }
+        let mut held = false;
+        let mut t: Option<u64> = None;
+        for (c, ai) in a.map(|a| &a.parts).into_iter().flatten() {
+            let Some(h) = self.eph.remote.held.get(c) else { continue };
+            if h.parts.iter().any(|p| p.ai == *ai && p.valid && p.fragment.holds_write(d)) {
+                held = true;
+                if let Some(e) = h.header.aspects.get(*ai).and_then(|x| x.expires) {
+                    t = Some(t.map_or(e, |t| t.min(e)));
+                }
+            }
+        }
+        // an ephemeral write (a session's) held nowhere is gone; another (durable, from a
+        // snapshot) has no expiry this node can tell
+        if held || !matches!(d.src.kind(), osis_crdt::SourceKind::Session(_)) { t } else { Some(0) }
     }
 
     /// `delete`'s ephemeral writes for each of `del` (spec/crdt.md §4.6 Undoing a creation):
