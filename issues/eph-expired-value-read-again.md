@@ -1,5 +1,0 @@
-# An expired ephemeral value is read again after a removal
-> Summary: in `ephemeral::random_churn_converges_large` seed 7134 (main too), node 1 reads `v5` (node 2's 90 s Put) at step 53, 392 ms past its expiry, though it read nothing of it at step 52, already past it; step 53 is node 2's `Remove(k1)`. Expiry is the hard upper bound (spec/crdt.md §4.7): likely a rebuild after a removal (`remote::rebuild_aspect`) or an arrival joining a held part past its `expires` before its timer drops it.
-> Tags: ephemeral, crdt
-
-Found in review of undo-expiry (not caused by it: same on main 8fcdb2b1, no undo touches `v5`). Repro: add to `random_churn_run` a per-step check, after `net.clock.advance(..)`: record each successful write's values (`v{step}`, `f{step}`, `r{step}`) with `net.now() + e`; then per node `engine.tick()`, read `CURSOR` and `FLAG`, assert no recorded value is read at or past its time. Seeds 7000..7200: only 7134 fails; 0..100 pass. Worth keeping that check in the churn oracle once fixed.

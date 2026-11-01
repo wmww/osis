@@ -654,6 +654,34 @@ impl SyncEngine {
         self.engine.core.events.flush();
     }
 
+    /// Runs the engine's timers now if one is due (`Engine::timers_due`), as a Tick does.
+    /// Expiry is a hard bound (spec/crdt.md §4.7) but a Tick comes late (`MIN_WAKE_MS`, a
+    /// suspended or offline process), so the API calls this before every call: no call sees a
+    /// write at or past its expiry. Its changes go out with the next event.
+    pub fn expire_due(&mut self) {
+        if !self.engine.timers_due() {
+            return;
+        }
+        self.engine.core.defer_deaths = true;
+        let r = self.run_engine_timers();
+        let settled = self.engine.defer_deaths(false);
+        for e in [r.err(), settled.err()].into_iter().flatten() {
+            self.diag(format!("sync: {e}"));
+        }
+    }
+
+    /// The engine's due expiry and keep-at-most timers, durable and ephemeral.
+    fn run_engine_timers(&mut self) -> Result<()> {
+        // the carrier of a live write goes before its body (spec/commits.md §5)
+        for (c, aspects) in self.engine.due_live_drops()? {
+            self.snapshot_first(&aspects, &c)?;
+        }
+        // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
+        self.engine.tick()?;
+        self.engine.tick_ephemeral();
+        self.engine_events()
+    }
+
     /// Feeds one input; returns what the driver must do.
     pub fn handle(&mut self, ev: Event) -> Vec<Action> {
         let mut out = Vec::new();
@@ -712,14 +740,7 @@ impl SyncEngine {
         self.retire_replaced();
         match ev {
             Event::Tick => {
-                // the carrier of a live write goes before its body (spec/commits.md §5)
-                for (c, aspects) in self.engine.due_live_drops()? {
-                    self.snapshot_first(&aspects, &c)?;
-                }
-                // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
-                self.engine.tick()?;
-                self.engine.tick_ephemeral();
-                self.engine_events()?;
+                self.run_engine_timers()?;
                 self.timers(out)?;
                 self.serve_timers(out);
                 self.relink_lost()?;

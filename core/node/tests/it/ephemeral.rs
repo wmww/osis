@@ -2110,6 +2110,8 @@ fn random_churn_run(seed: u64) {
     let mut last: BTreeMap<usize, osis_node::ChangeId> = BTreeMap::new();
     let mut restarts = 100;
     let mut log = Vec::new();
+    // when each expiring value dies (`v{step}`, `f{step}`, `r{step}`): no node reads one at or past it
+    let mut dies: BTreeMap<String, u64> = BTreeMap::new();
     for step in 0..60 {
         let i = rnd(4) as usize;
         let n = nodes[i];
@@ -2205,6 +2207,7 @@ fn random_churn_run(seed: u64) {
             _ => {
                 log.push("advance".into());
                 net.advance(500 + rnd(10_000));
+                churn_expiry_check(&mut net, &nodes, w, &dies, seed, step, &log);
                 continue;
             }
         };
@@ -2220,6 +2223,11 @@ fn random_churn_run(seed: u64) {
             if let Ok(Some(wr)) = r {
                 last.insert(n, wr.id);
             }
+            if let (Ok(_), Some(e)) = (&r, exp) {
+                for v in ["v", "f", "r"] {
+                    dies.insert(format!("{v}{step}"), net.now() + e);
+                }
+            }
         }
         if rnd(2) == 0 {
             net.feed(n, Event::Local);
@@ -2228,6 +2236,7 @@ fn random_churn_run(seed: u64) {
             net.run();
         }
         net.clock.advance(1 + rnd(40));
+        churn_expiry_check(&mut net, &nodes, w, &dies, seed, step, &log);
     }
     // every writer may write again, the network heals
     for i in std::mem::take(&mut demoted) {
@@ -2265,6 +2274,23 @@ fn random_churn_run(seed: u64) {
                 log.join("\n"),
                 lane_dump(&mut net, &nodes, &hosts, &l, w)
             );
+        }
+    }
+}
+
+/// Expiry is a hard upper bound on visibility (spec/crdt.md §4.7): read as the API reads (after
+/// `expire_due`), no node shows a value at or past its write's expiry, online or not.
+fn churn_expiry_check(net: &mut Net, nodes: &[usize], w: Tid, dies: &BTreeMap<String, u64>, seed: u64, step: u64, log: &[String]) {
+    let now = net.now();
+    for &n in nodes {
+        net.sync(n).expire_due();
+        for ak in [CURSOR, FLAG] {
+            let read = format!("{:?}", net.eph_read(n, w, ak));
+            for (v, at) in dies {
+                if *at <= now && read.contains(&format!("{v:?}")) {
+                    panic!("seed {seed} step {step}: node {n} reads {v} {} ms past its expiry: {read}\n{}", now - at, log.join("\n"));
+                }
+            }
         }
     }
 }

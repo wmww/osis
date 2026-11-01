@@ -453,6 +453,8 @@ impl Osis {
         let mut g = lock(&self.inner.eng);
         let holder = &self.inner.dispatch.shared.holder;
         *lock(holder) = Some(std::thread::current().id());
+        // nothing past its expiry is seen, however late the driver's Tick
+        g.sync.expire_due();
         let r = f(&mut g);
         self.after(&mut g, handled);
         *lock(holder) = None;
