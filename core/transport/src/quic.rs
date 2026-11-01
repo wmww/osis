@@ -279,6 +279,15 @@ fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
 /// The port of a `quic://` URL that names none (spec/sync.md §10).
 pub const DEFAULT_PORT: u16 = 4040;
 
+/// `url` with `:DEFAULT_PORT` appended when it is a `quic://` URL naming no port (one host,
+/// one address text); any other URL unchanged.
+pub fn explicit_port(url: &str) -> String {
+    match url.strip_prefix("quic://") {
+        Some(hp) if !hp.is_empty() && (hp.ends_with(']') || !hp.contains(':')) => format!("{url}:{DEFAULT_PORT}"),
+        _ => url.to_owned(),
+    }
+}
+
 /// `host:port` of a `quic://` URL: port `DEFAULT_PORT` when absent, IPv6 addresses in brackets.
 fn host_port(url: &str) -> Result<String, Error> {
     crate::check_url(url)?;
@@ -677,5 +686,10 @@ mod tests {
         assert!(host_port("quic://example.org:x").is_err());
         assert!(host_port("quic://example.org:4433/x").is_err());
         assert!(host_port(&format!("quic://{}:1", "a".repeat(300))).is_err());
+        assert_eq!(explicit_port("quic://example.org"), "quic://example.org:4040");
+        assert_eq!(explicit_port("quic://[::1]"), "quic://[::1]:4040");
+        for u in ["quic://example.org:4433", "quic://[::1]:1", "mem://x", "quic://"] {
+            assert_eq!(explicit_port(u), u);
+        }
     }
 }

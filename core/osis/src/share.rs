@@ -175,8 +175,15 @@ pub struct HostAddr(pub(crate) osis_label::Address);
 
 impl std::str::FromStr for HostAddr {
     type Err = Error;
+    /// A `quic://` URL without a port gets `:4040` spelled out, so one host has one address
+    /// (`hosts rm` matches what `hosts add` stored).
     fn from_str(s: &str) -> Result<HostAddr> {
-        osis_label::address_from_text(s.trim()).map(HostAddr).map_err(bad("host address"))
+        let mut a = osis_label::address_from_text(s.trim()).map_err(bad("host address"))?;
+        a.url = osis_transport::quic::explicit_port(&a.url);
+        if a.url.len() > osis_base::format::MAX_URL_BYTES {
+            return Err(Error::Invalid(format!("host address: URL over {} bytes", osis_base::format::MAX_URL_BYTES)));
+        }
+        Ok(HostAddr(a))
     }
 }
 
@@ -188,8 +195,10 @@ impl std::fmt::Display for HostAddr {
 
 impl HostAddr {
     /// From a transport URL and the host's 32-byte key.
+    /// From a transport URL and the host's 32-byte key (a `quic://` URL's port spelled out,
+    /// as `FromStr`).
     pub fn new(url: &str, key: [u8; 32]) -> HostAddr {
-        HostAddr(osis_label::Address { url: url.into(), key })
+        HostAddr(osis_label::Address { url: osis_transport::quic::explicit_port(url), key })
     }
 }
 
@@ -205,9 +214,10 @@ pub enum SyncState {
     Synced,
     Syncing,
     Unreachable,
-    /// Waiting for a re-seal (spec/permissions.md §3).
-    Stranded,
     NoHosts,
+    /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
+    /// its worst label's state): `wait_synced(All)` skips `NoHosts` groups, never stranded ones.
+    Stranded,
     /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
     ReceiptsOnly,
 }
