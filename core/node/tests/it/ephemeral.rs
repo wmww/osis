@@ -2154,9 +2154,9 @@ fn random_churn_run(seed: u64) {
             _ if !has => "",
             0..=4 => {
                 for _ in 0..1 + rnd(2) {
-                    // no `Set` into an entry: one into an entry that expired or was superseded
-                    // reads only where the entry was never held (issues/eph-set-into-dead-entry.md)
-                    let op = Op::Put(s(&format!("v{step}")));
+                    // a `Set` writes into the entry at the key, another writer's included
+                    let v = s(&format!("v{step}"));
+                    let op = if rnd(3) == 0 { Op::Set(v) } else { Op::Put(v) };
                     let k = key(rnd(3));
                     log.push(format!("  {k:?} {op:?}"));
                     m.op(w, &eph(CURSOR), PathOp { path: vec![PathSeg::Key(k)], op }).unwrap();
@@ -4477,11 +4477,11 @@ fn moving_cursor_one_entry_per_author_spec_sync_9() {
     assert_eq!(entries(&net), base);
 }
 
-// issues/eph-set-into-dead-entry.md: b's `Set` into a's entry outlives the entry's expiry; a and
-// b, which held the entry, read the key absent, c restarted after the expiry reads b's value
+// spec/crdt.md §4.7 (ephemeral data: an expired delta vanishes whole): b's `Set` into a's entry
+// outlives the entry; once the entry expires a and b, which held it, read b's value as c does,
+// restarted after the expiry and never holding the entry (was issues/eph-set-into-dead-entry.md)
 #[test]
-#[ignore]
-fn repro_set_into_expired_entry_differs() {
+fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     let mut net = Net::new();
     let host = net.add_host();
     let a = net.node(1, &[host]);
@@ -4505,6 +4505,11 @@ fn repro_set_into_expired_entry_differs() {
     net.advance(6_000);
     net.restart(c, 77);
     net.advance(10_000);
+    let want = Some(Value::Map([(s("k"), s("s"))].into()));
     let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
-    assert!(reads.iter().all(|r| *r == reads[0]), "alike: {reads:?}");
+    assert_eq!(reads, vec![want.clone(), want.clone(), want], "b's write reads everywhere");
+    // and goes at its own expiry
+    net.advance(600_000);
+    let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
+    assert_eq!(reads, vec![None, None, None]);
 }
