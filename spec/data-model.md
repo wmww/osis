@@ -103,7 +103,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `node.0` | struct { software version } | on a node thing |
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
-| `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not. `admit` `own`: it takes registrations of the labels of groups it reads whose hosts name its host address, and of `labels`; `open`: of any label. `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
+| `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not. `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`; a group its person owns: the group, or an owner up its owner chain, is the node or an actor the node holds an admin edge on (its person), or an owner up the chain holds an admin edge from one of those; a read or admin edge on the group alone does not qualify; `open`: of any label. `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `placed.0~` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
 | `groups.0` | set<tid> | synthetic, guaranteed, local |

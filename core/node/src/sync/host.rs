@@ -1,11 +1,12 @@
 //! Hosting (notes/sync.md Hosting): the node reads its own `host.0^` (spec/data-model.md §9)
 //! and hands its driver a `HostConfig` (`Action::Host`), public data only: the host key, listen
-//! URLs, the admitted label IDs (`own`: the labels of groups this node reads whose hosts name
-//! that key, plus `labels`), replication peers, policy and caps. The host secret is a local
-//! record, made when hosting starts and shredded when it stops; the driver listens with it.
+//! URLs, the admitted label IDs (`own`: the labels of groups this node's person owns whose
+//! hosts name that key, plus `labels`), replication peers, policy and caps. The host secret is
+//! a local record, made when hosting starts and shredded when it stops; the driver listens
+//! with it.
 
 use super::{Action, SyncEngine};
-use osis_base::LabelId;
+use osis_base::{LabelId, Role, Tid};
 use osis_crypto::{Secret32, SigningSecret};
 use osis_host::{Admission, HostConfig, HostPolicy, LabelCaps};
 use osis_label::Address;
@@ -78,6 +79,20 @@ impl SyncEngine {
         self.engine.get_typed(&me, &ct::HOST).ok().flatten()
     }
 
+    /// Whether this node's person owns group `g` for `own` admission (spec/data-model.md §9):
+    /// `g` is the node or its person (an actor the node holds admin on), or an owner up its
+    /// chain is that, or an actor whose admins include it. Invariant: reading a group, or
+    /// holding admin on it alone, never qualifies; only an owner chain through the person
+    /// does, so a stranger's grant cannot make this node spend its storage (the inbox accept
+    /// step's principle).
+    fn owns(&self, g: &Tid) -> bool {
+        let node = self.engine.tid();
+        let core = &self.engine.core;
+        let admin_of = |h: &Tid, x: &Tid| core.current_holders(x).iter().any(|(t, r, _)| t == h && *r == Role::Admin);
+        let mine = |x: &Tid| *x == node || admin_of(&node, x);
+        self.engine.owner_chain(g).enumerate().any(|(i, x)| mine(&x) || i > 0 && core.current_holders(&x).iter().any(|(h, r, _)| *r == Role::Admin && mine(h)))
+    }
+
     /// What the host runs with now: from `host.0^` (none: not hosting).
     pub fn host_config(&mut self) -> Option<HostConfig> {
         let h = self.hosting()?;
@@ -90,7 +105,8 @@ impl SyncEngine {
             Admit::Open => Admission::Open,
             Admit::Own => {
                 let mut ids: BTreeSet<LabelId> = h.labels.clone();
-                ids.extend(self.labels().iter().filter(|(_, l)| l.hosts.iter().any(|a| a.key == key)).map(|(_, l)| l.id));
+                let labels = self.labels();
+                ids.extend(labels.iter().filter(|(g, l)| l.hosts.iter().any(|a| a.key == key) && self.owns(g)).map(|(_, l)| l.id));
                 Admission::Only(ids)
             }
         };

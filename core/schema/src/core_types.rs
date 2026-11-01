@@ -201,8 +201,8 @@ codec_struct! {
     pub struct Seen { 0 ts: WallMs, 1 stranded: bool }
 }
 codec_enum! {
-    /// `host.0^` admission: `own` takes the labels of groups this node reads that name its host
-    /// address, `open` any label within the caps.
+    /// `host.0^` admission: `own` takes the labels of groups this node's person owns that name
+    /// its host address, `open` any label within the caps.
     #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
     pub enum Admit { #[default] 0 Own, 1 Open }
 }

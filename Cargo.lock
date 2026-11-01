@@ -2558,6 +2558,7 @@ dependencies = [
  "osis-commit",
  "osis-crdt",
  "osis-crypto",
+ "osis-host",
  "osis-label",
  "osis-node",
  "osis-proto",
