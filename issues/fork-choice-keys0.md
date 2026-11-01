@@ -10,3 +10,5 @@ The root is that the same forks are ordered two ways: `keys.0` keeps one keyset 
 - a `keys.0` keyset merge by epoch order instead of LWW (a CRDT register type osis lacks).
 
 Decide whether any is simpler than keeping `fork_named`; if one is, drop `fork_named` and its spec sentence.
+
+Review of reseal-livelock: one fork order would remove `fork_named` only. The re-seal fork rules (a key actor's box per fork, a higher-keyed box counting for the newest only, a re-sealer needing a missing fork's secret) come from holders keeping every fork's secret, not from which fork is newest, so they stay under any order. A `keys.0` keyset merged by epoch order is a max register, which a planted n near 2^63 would pin for good (LWW lets the next valid write replace it). The rule that would remove both is "forks do not persist" (a node holding every fork ends it by rotating), rejected once for the single-use link loop; revisit only with a rule that stops concurrent fork-enders re-forking.
