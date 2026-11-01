@@ -9,9 +9,9 @@ cd "$dir"
 git init -q -b main r
 cd r
 git config user.email t@t; git config user.name t; git config commit.gpgsign false
-mkdir -p tools core/engine core/osis kit/src app notes
+mkdir -p tools core/engine core/osis kit/src app notes spec issues
 cp "$gate" tools/gate.sh
-for f in Cargo.toml core/engine/a.rs core/osis/a.rs kit/src/a.rs app/a.rs notes/n.md; do
+for f in Cargo.toml core/engine/a.rs core/osis/a.rs kit/src/a.rs app/a.rs notes/n.md spec/s.md issues/i.md; do
   seq 1 40 > "$f"
 done
 git add -A; git commit -qm init
@@ -37,7 +37,11 @@ case_ "new app file, tab in name" "core=0 gui=1 seeds=0" "echo x > \"app/a\$(pri
 case_ "core, no sweep crate" "core=1 gui=0 seeds=0" "echo x >> core/osis/a.rs"
 case_ "sweep crate" "core=1 gui=0 seeds=5" "echo x >> core/engine/a.rs"
 case_ "root manifest" "core=1 gui=0 seeds=5" "echo x >> Cargo.toml"
-case_ "notes only" "core=1 gui=0 seeds=0" "echo x >> notes/n.md"
+case_ "notes only" "core=docs gui=0 seeds=0" "echo x >> notes/n.md"
+case_ "spec, notes, issues" "core=docs gui=0 seeds=0" "echo x >> spec/s.md; echo x >> notes/n.md; git rm -q issues/i.md"
+case_ "notes and core" "core=1 gui=0 seeds=0" "echo x >> notes/n.md; echo x >> core/osis/a.rs"
+case_ "notes and kit" "core=docs gui=1 seeds=0" "echo x >> notes/n.md; echo x >> kit/src/a.rs"
+case_ "notes file moved to the root" "core=1 gui=0 seeds=0" "git mv notes/n.md n.md"
 case_ "gate itself" "core=1 gui=0 seeds=0" "echo '#' >> tools/gate.sh"
 case_ "kit and core" "core=1 gui=1 seeds=0" "echo x >> kit/src/a.rs; echo x >> core/osis/a.rs"
 case_ "core deleted" "core=1 gui=0 seeds=0" "git rm -q core/osis/a.rs"

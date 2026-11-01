@@ -13,6 +13,8 @@
 # break the app); both, both. On main itself, or with --all, everything runs. --base REV compares
 # against REV instead of the merge base with main (to time one project's steps). --plan prints the
 # selection (core, gui, seeds) and exits (tested by tools/gate_select_test.sh).
+# A diff whose non-GUI paths are all under spec/, notes/ and issues/ (core=docs) runs the instant checks and the one
+# test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched kit/ or app/), not tier 1, lints, deny or the sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
 seeds=
@@ -40,6 +42,9 @@ if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; th
 $(git ls-files --others --exclude-standard)"
   printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$' || core=
   printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' || gui=
+  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}spec/' -e '^"\{0,1\}notes/' -e '^"\{0,1\}issues/' -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$'; then
+    core=docs
+  fi
 fi
 if [ -z "$seeds" ]; then
   seeds=5
@@ -84,6 +89,18 @@ step python3 tools/policy.py
 step sh tools/gate_select_test.sh
 step python3 tools/spec_map.py --uncited
 step python3 tools/spec_map.py --gaps
+if [ "$core" = docs ]; then
+  # must run exactly one test: a renamed test would otherwise pass as `0 passed`
+  docs_test() {
+    out=$(cargo test --locked -p osis-cli --test it -- --exact cli::every_api_method_has_a_command_plan_cli_tests 2>&1) || { printf '%s\n' "$out"; return 1; }
+    printf '%s\n' "$out" | grep 'test result'
+    printf '%s\n' "$out" | grep -q 'test result: ok. 1 passed'
+  }
+  step docs_test
+  [ -z "$gui" ] || gui_steps
+  echo "== gate passed, docs-only change: tier 1, lints, deny and sweep skipped ($(( $(date +%s) - t0 ))s)"
+  exit 0
+fi
 step cargo test --workspace --locked
 step unification_check
 step cargo clippy --workspace --all-targets --locked -- -D warnings
