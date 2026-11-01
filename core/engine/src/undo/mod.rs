@@ -133,8 +133,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let mut unmade = unmake_ops(tx, &made, ts, node)?;
     // node form only on things whose counters this node is sure of (spec/crdt.md §2.1); in
     // commit form the counters run on across the commit's deltas
-    let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).chain(unmade.keys().map(|k| k.0)).collect();
-    let form = if things.iter().all(|t| tx.core.counters_sure(t)) { Form::Node } else { Form::Commit };
+    let keys: Vec<(Tid, Ak)> = h.aspects.iter().map(|a| (a.tid, a.ak.clone())).chain(unmade.keys().cloned()).collect();
+    let form = if crate::engine::write::node_form_ok(tx, &keys, &Default::default())? { Form::Node } else { Form::Commit };
     let mut next = 1u64;
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
