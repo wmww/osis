@@ -326,7 +326,8 @@ fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static s
 
 #[test]
 fn paged_apply_matches_whole_spec_crdt_8() {
-    let c = differential(3, 14, false);
+    // seed 14: among seeds 0..32 at 14 steps, the cheapest reaching all three (seed 3 took 2.5x)
+    let c = differential(14, 14, false);
     // the history reached what it is for: paged deltas streamed, a reset joined by pages, a
     // commit waiting for its pages
     assert!(["apply: piece", "reset: by pages", "waited for pages"].iter().all(|k| c.get(k).is_some_and(|n| *n > 0)), "{c:?}");
@@ -344,7 +345,7 @@ fn paged_apply_matches_whole_large_spec_crdt_8() {
 /// them (states, deaths, indexes, each delivery's outcome or error); returns the cost counts of
 /// the page-by-page world's deliveries and their outcomes.
 fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'static str, u64>, Vec<String>) {
-    let mut seen = Vec::new();
+    let mut worlds = Vec::new();
     let mut counts = BTreeMap::new();
     let mut outs = Vec::new();
     for whole in [false, true] {
@@ -361,11 +362,13 @@ fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'s
         if !whole {
             counts = crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
         }
-        let mut v = w.seen(true, true);
-        v.extend(w.log.clone());
-        seen.push(v);
+        worlds.push(w);
     }
-    if let Some((x, y)) = seen[0].iter().zip(&seen[1]).find(|(x, y)| x != y) {
+    // compared printed flat, pretty-printed again only to show a difference
+    let mut seen = |pretty: bool| worlds.iter_mut().map(|w| [w.seen(!pretty, pretty), w.log.clone()].concat()).collect::<Vec<_>>();
+    if seen(false).windows(2).any(|x| x[0] != x[1]) {
+        let v = seen(true);
+        let (x, y) = v[0].iter().zip(&v[1]).find(|(x, y)| x != y).unwrap();
         panic!("page-by-page apply differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
     }
     (counts, outs)
@@ -625,7 +628,7 @@ fn paged_snapshot_misstating_held_matches_whole_spec_perm_5_2() {
         let (c, outs) = both(10, |w| {
             let t = w.t;
             let b = w.lp.peers[1].engine.tid();
-            let n = 3000u64;
+            let n = 2000u64;
             let v = |g: u64| Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, g))).collect());
             let mut m = Mutation::new();
             m.set(t, &a, &v(0)).unwrap().retention(t, &a, bounded()).unwrap();
@@ -650,7 +653,7 @@ fn paged_snapshot_misstating_held_matches_whole_spec_perm_5_2() {
                 assert_eq!(f.misstated(&[&w.lp.peers[3].engine.state(&t, &a).unwrap().unwrap()], &|_| true, &|_| false).len(), 0, "{name}: the copy is faithful");
             }
             let pk = forge_snapshot(w, 0, &a, now, f, &|_, _| {});
-            assert!(!pk.blobs.is_empty(), "{name}: not paged");
+            assert!(pk.blobs.len() >= 2, "{name}: no later page");
             vec![pk]
         });
         let want = if late { "stamped after its commit" } else { "Applied" };
@@ -944,3 +947,4 @@ fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
     });
     assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
 }
+

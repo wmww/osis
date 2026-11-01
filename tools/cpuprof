@@ -1,0 +1,24 @@
+#!/bin/sh
+# tools/cpuprof OUT CMD...: runs CMD under a SIGPROF sampler (no perf or gdb on this box), then
+# prints the functions holding the most CPU samples, inclusive and self (notes/testing.md).
+# Samples stay in OUT.<pid>; `tools/cpuprof --report OUT.<pid> [N] [FILTER]` reprints them
+# (FILTER: only samples with a frame whose name contains it). Builds cpuprof.c on first use.
+set -e
+dir="$(cd "$(dirname "$0")" && pwd)"
+if [ "$1" = "--report" ]; then
+    shift
+    exec python3 "$dir/cpuprof_report.py" "$@"
+fi
+out="$1"; shift
+src="$dir/cpuprof.c"
+lib="${XDG_CACHE_HOME:-$HOME/.cache}/osis/cpuprof.so"
+if [ ! -f "$lib" ] || [ "$src" -nt "$lib" ]; then
+    mkdir -p "$(dirname "$lib")"
+    cc -O2 -Wall -shared -fPIC -o "$lib" "$src"
+fi
+status=0
+CPUPROF_OUT="$out" LD_PRELOAD="$lib" "$@" || status=$?
+for f in "$out".*; do
+    [ -f "$f" ] && python3 "$dir/cpuprof_report.py" "$f" 40
+done
+exit $status

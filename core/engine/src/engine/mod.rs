@@ -578,9 +578,9 @@ pub struct Core {
     pub memory_generation: u64,
     /// The running transaction is a memory one (`Tx::set_memory`).
     pub memory_tx: bool,
-    /// `Engine::labels_of` per group: dropped when its `label.0` state is written (`wrote`) and
+    /// `Engine::labels_of` per group, with the records parsed: dropped when its `label.0` state is written (`wrote`) and
     /// on rollback.
-    pub(crate) labels: BTreeMap<Tid, Vec<std::sync::Arc<crate::labeling::GroupLabel>>>,
+    pub(crate) labels: BTreeMap<Tid, (Vec<std::sync::Arc<crate::labeling::GroupLabel>>, osis_schema::core_types::Labels)>,
     /// `Engine::published_under` for every actor, with the counts it was taken at (held
     /// records, `own_keys`, `labeled`).
     pub(crate) published: Option<Published>,

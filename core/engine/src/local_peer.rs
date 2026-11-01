@@ -259,23 +259,35 @@ impl LocalPeer {
 
     /// Sends everything `from` holds to `to` (in `ts` order).
     pub fn sync(&mut self, from: usize, to: usize) -> Result<()> {
-        osis_base::testenv::checkpoint();
-        for pk in self.packages(from)? {
-            self.deliver(to, &pk)?;
-        }
-        Ok(())
+        self.sync_changed(from, to).map(|_| ())
     }
 
-    /// Syncs every ordered pair until nothing changes (at most `n` rounds).
+    /// `sync`; whether any delivery was more than a duplicate.
+    fn sync_changed(&mut self, from: usize, to: usize) -> Result<bool> {
+        osis_base::testenv::checkpoint();
+        let mut changed = false;
+        for pk in self.packages(from)? {
+            changed |= !matches!(self.deliver(to, &pk)?, Ingested::Duplicate(_));
+        }
+        Ok(changed)
+    }
+
+    /// Syncs every ordered pair until a round changes nothing (at most `n` rounds). A round in
+    /// which every delivery was a duplicate is a fixpoint: the next would deliver the same
+    /// packages to the same states.
     pub fn sync_all(&mut self) -> Result<()> {
         let n = self.peers.len();
         for _ in 0..n.max(1) {
+            let mut changed = false;
             for a in 0..n {
                 for b in 0..n {
                     if a != b {
-                        self.sync(a, b)?;
+                        changed |= self.sync_changed(a, b)?;
                     }
                 }
+            }
+            if !changed {
+                break;
             }
         }
         Ok(())
