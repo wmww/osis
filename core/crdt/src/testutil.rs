@@ -272,6 +272,32 @@ pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommi
 
 /// `history` with the given writer sources (commit form: a `Commit` source per writer).
 pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
+    history_from(r, types, sources, rounds, false)
+}
+
+/// A value of `ty` large enough to page at small page parameters: long texts, many elements.
+pub fn bulk_value(r: &mut Rng, ty: &Ty, depth: u32) -> crdt_model::value::Value {
+    use crdt_model::r#gen::{random_text, random_value};
+    use crdt_model::value::Value as V;
+    let many = |r: &mut Rng| if depth <= 1 { 40 + r.below(160) } else { r.below(6) };
+    match ty {
+        Ty::Text => V::Str(random_text(r, if depth <= 1 { 300 } else { 40 })),
+        Ty::Struct(fts) => V::fields(fts.iter().map(|(id, t)| (*id, bulk_value(r, t, depth + 1))).collect()),
+        Ty::Set(et) => V::set((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
+        Ty::Map(kt, vt) => V::map((0..many(r)).map(|_| (bulk_value(r, kt, depth + 1), random_value(r, vt, depth + 1))).collect()),
+        Ty::List(et) => V::List((0..many(r)).map(|_| random_value(r, et, depth + 1)).collect()),
+        Ty::Register if depth > 0 => V::Str(random_text(r, 12)),
+        _ => random_value(r, ty, depth),
+    }
+}
+
+/// `history_with` whose writers each end with a large write (`bulk_value`), so states and
+/// those deltas page at small page parameters.
+pub fn history_bulk(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize) -> Vec<MCommit> {
+    history_from(r, types, sources, rounds, true)
+}
+
+fn history_from(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::Source>, rounds: usize, bulk: bool) -> Vec<MCommit> {
     let n = sources.len();
     // odd writers remove keyed (role-class aspects), even ones keyless (§5.6)
     let mut ws: Vec<MWriter> = sources.into_iter().enumerate().map(|(i, s)| MWriter { keyed: i % 2 == 1, ..MWriter::new(s, 1 << 16, 0) }).collect();
@@ -291,7 +317,13 @@ pub fn history_with(r: &mut Rng, types: &[Ty], sources: Vec<crdt_model::stamp::S
             let before = ws[i].clone();
             ws[i].next_commit(t);
             let ty = &types[i % types.len()];
-            match random_op(r, &mut ws[i], ty, states[i].as_ref()) {
+            let op = if bulk && round + 1 == rounds {
+                let v = bulk_value(r, ty, 0);
+                crdt_model::diff::diff(&mut ws[i], states[i].as_ref().and_then(|s| s.slot(ty.enc())).filter(|s| s.present()), ty, &v)
+            } else {
+                random_op(r, &mut ws[i], ty, states[i].as_ref())
+            };
+            match op {
                 Some(d) => {
                     mapply(&mut states[i], d.clone());
                     commits.push(MCommit { w: ws[i].clone(), delta: d });

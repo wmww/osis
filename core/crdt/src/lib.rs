@@ -27,6 +27,7 @@ mod seq_place;
 mod seq_span;
 mod seq_wire;
 mod stamp;
+mod stream;
 mod state;
 mod undo;
 mod view;
@@ -62,6 +63,8 @@ mod tests_seq;
 mod tests_seq_ops;
 #[cfg(test)]
 mod tests_decoder;
+#[cfg(test)]
+mod tests_stream;
 
 pub use changes::{Changes, Death};
 pub use copies::CopyIndex;
@@ -72,6 +75,7 @@ pub use shape::Shown;
 pub use batch::Batch;
 pub use ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values, remove, replace, reset_entries};
 pub use undo::{UndoBuffer, Undone, undo};
+pub use stream::{Head, Piece, stream_delta, stream_snapshot};
 pub use page::{MemoryPages, PageError, PageParams, PageSink, PageSource, Unpaged};
 pub use paging::{PagedTouch, Paths, Step};
 pub use access::Held;

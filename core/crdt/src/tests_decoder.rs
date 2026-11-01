@@ -21,7 +21,7 @@ const SPECIAL: [u8; 12] = [0x00, 0x01, 0x02, 0x18, 0x20, 0x40, 0x60, 0x80, 0x81,
 
 /// One mutation of `b`: a byte moved by one, overwritten (often by a small item), inserted,
 /// removed, or the tail cut.
-fn mutate(r: &mut Rng, b: &mut Vec<u8>) {
+pub(crate) fn mutate(r: &mut Rng, b: &mut Vec<u8>) {
     if b.is_empty() {
         return;
     }
@@ -118,7 +118,7 @@ fn mutate_at(r: &mut Rng, v: &mut Value, k: &mut usize) -> bool {
 /// A structural mutant of canonical bytes `b` (decoded to a value tree, one node changed,
 /// re-encoded canonically), so it reaches the decoders' semantic checks; `None` if no node
 /// changed.
-fn mutate_tree(r: &mut Rng, b: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn mutate_tree(r: &mut Rng, b: &[u8]) -> Option<Vec<u8>> {
     let mut v = osis_base::decode(b, &osis_base::Limits { max_depth: 512, max_bytes: 1 << 24 }).ok()?;
     let n = count(&v);
     for _ in 0..8 {

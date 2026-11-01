@@ -357,7 +357,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
 
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
-fn big_set(n: usize, order_seed: u64) -> Fragment {
+pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
     let node = |i: u8| Source::node(Tid::from_bytes([i; 15]));
     let mut idx: Vec<usize> = (0..n).collect();
     let mut r = crate::testutil::rng(order_seed | 1);

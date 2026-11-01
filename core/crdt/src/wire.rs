@@ -11,7 +11,7 @@ use crate::page::{PageSink, PageSource};
 use crate::stamp::{CounterRange, Dot, Interner, Session, Source, SourceKind, Stamp};
 use osis_base::{CommitId, Tid, Ts, Value, WallMs};
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, HashMap};
 
 /// Nonce length of a delta (§3).
 pub const NONCE_LEN: usize = 16;
@@ -186,6 +186,138 @@ pub struct Enc<'p> {
     kind: DeltaKind,
     /// Elements in runs without `Content` so far (§3.3 rule 7), pages included.
     bare: u64,
+    /// While a run's position (0) or flag (1) writes are encoded, the sources they name, noted
+    /// when the run closes (§3.3 rule 1).
+    defer: Option<usize>,
+    deferred: [Vec<Source>; 2],
+    /// Check mode (`stream`): re-encoding a decoded delta against its own tables.
+    pub(crate) check: Option<Box<Check>>,
+}
+
+/// One source appearance or a streamed position, in encoding order (`Check::log`).
+pub(crate) enum Ev {
+    Src(u64),
+    Stream(Vec<crate::paging::Step>),
+}
+
+/// Check mode of an `Enc`: the tables are the input's; every source appearance is held against
+/// them (first appearances must come in table order, §3.3 rule 1) and every commit's smallest
+/// counter recorded (rule 1 `base`), checked when the delta ends (`stream`).
+pub(crate) struct Check {
+    /// The next table index not yet seen (1-based).
+    next: u64,
+    /// Per commit table entry, the smallest counter seen (`u64::MAX`: none).
+    min: Vec<u64>,
+    /// Set by an appearance out of table order or of a source not in the table.
+    pub(crate) bad: bool,
+    /// While the root is encoded: appearances and streamed positions, replayed after it.
+    pub(crate) log: Option<Vec<Ev>>,
+    pub(crate) track: Track,
+    /// The paged positions left for streaming, with their link lists as written.
+    pub(crate) streams: BTreeMap<Vec<crate::paging::Step>, Value>,
+    /// Pages the decode fetched outside streamed positions, given back by content.
+    pub(crate) replay: Replay,
+}
+
+/// Replays the pages a decode fetched, so a canonical re-encode reproduces their links.
+pub(crate) struct Replay {
+    pages: HashMap<Vec<u8>, std::collections::VecDeque<osis_base::Link>>,
+    params: crate::page::PageParams,
+}
+
+impl Replay {
+    pub(crate) fn new(params: crate::page::PageParams) -> Replay {
+        Replay { pages: HashMap::new(), params }
+    }
+    /// Adds pages (plaintext, link) in the order the encoder will put them.
+    pub(crate) fn extend(&mut self, fetched: Vec<(Vec<u8>, osis_base::Link)>) {
+        for (b, l) in fetched {
+            self.pages.entry(b).or_default().push_back(l);
+        }
+    }
+}
+
+impl Check {
+    /// A source of table index `i` appears.
+    pub(crate) fn seen(&mut self, i: u64) {
+        match i.cmp(&self.next) {
+            Ordering::Less => {}
+            Ordering::Equal => self.next += 1,
+            Ordering::Greater => self.bad = true,
+        }
+    }
+    /// A stamp of commit table entry `ci` (1-based; 0: not in the table) with counter `ctr`.
+    fn counter(&mut self, ci: u64, ctr: u64) {
+        match ci.checked_sub(1).and_then(|i| self.min.get_mut(i as usize)) {
+            Some(m) => *m = (*m).min(ctr),
+            None => self.bad = true,
+        }
+    }
+
+    /// Whether the root encoding is at a streamed position: then its link list, logged.
+    pub(crate) fn streamed(&mut self) -> Option<Value> {
+        let log = self.log.as_mut().filter(|_| self.track.on)?;
+        let v = self.streams.remove(&self.track.path)?;
+        log.push(Ev::Stream(self.track.path.clone()));
+        Some(v)
+    }
+}
+
+/// Where a walk of the root is (`stream`): the path through `Step`s from the root, the step the
+/// next fragment is reached by, and whether the current position is reached through steps
+/// only (anything else, a sequence's content or a `Slots` slot, is not streamed).
+pub(crate) struct Track {
+    pub(crate) path: Vec<crate::paging::Step>,
+    pub(crate) next_step: Option<crate::paging::Step>,
+    pub(crate) on: bool,
+    level: usize,
+}
+
+impl Track {
+    pub(crate) fn new() -> Track {
+        Track { path: Vec::new(), next_step: None, on: true, level: 0 }
+    }
+    /// Announces the step the next fragment is reached by.
+    pub(crate) fn step(&mut self, s: impl FnOnce() -> crate::paging::Step) {
+        if self.on {
+            self.next_step = Some(s());
+        }
+    }
+
+    /// Entering a fragment: the step it is reached by extends the path (any other nesting
+    /// leaves the steps-only part). Returns what `leave` restores.
+    pub(crate) fn enter(&mut self) -> (bool, bool) {
+        let step = self.next_step.take();
+        let was = self.on;
+        let pushed = match step {
+            Some(s) if self.on => {
+                self.path.push(s);
+                true
+            }
+            _ => {
+                self.on &= self.level == 0;
+                false
+            }
+        };
+        self.level += 1;
+        (was, pushed)
+    }
+    pub(crate) fn leave(&mut self, (was, pushed): (bool, bool)) {
+        self.level -= 1;
+        if pushed {
+            self.path.pop();
+        }
+        self.on = was;
+    }
+}
+
+impl PageSink for Replay {
+    fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, crate::page::PageError> {
+        self.pages.get_mut(plaintext).and_then(std::collections::VecDeque::pop_front).ok_or(crate::page::PageError::Corrupt)
+    }
+    fn params(&self) -> crate::page::PageParams {
+        self.params
+    }
 }
 
 impl<'p> Enc<'p> {
@@ -202,11 +334,82 @@ impl<'p> Enc<'p> {
             pages,
             kind: cx.kind,
             bare: 0,
+            defer: None,
+            deferred: [Vec::new(), Vec::new()],
+            check: None,
+        }
+    }
+
+    /// The root walk's tracker, while the root is encoded in check mode.
+    pub(crate) fn track(&mut self) -> Option<&mut Track> {
+        self.check.as_mut().filter(|c| c.log.is_some()).map(|c| &mut c.track)
+    }
+    /// Announces the step to the fragment encoded next (`Track`).
+    pub(crate) fn step(&mut self, s: impl FnOnce() -> crate::paging::Step) {
+        if let Some(t) = self.track() {
+            t.step(s);
+        }
+    }
+    pub(crate) fn step_done(&mut self) {
+        if let Some(t) = self.track() {
+            t.next_step = None;
+        }
+    }
+
+    /// Sources of position (`w` 0) or flag (1) writes are held until `flush_deferred`.
+    pub(crate) fn defer(&mut self, w: usize) {
+        self.defer = Some(w);
+    }
+    pub(crate) fn undefer(&mut self) {
+        self.defer = None;
+    }
+    /// Notes the held sources: position writes', then flag writes' (§3.3 rule 1).
+    pub(crate) fn flush_deferred(&mut self) {
+        self.defer = None;
+        let [p, f] = std::mem::take(&mut self.deferred);
+        for s in p.iter().chain(&f) {
+            self.note(s);
+        }
+    }
+
+    /// Records an appearance of `s`: the collecting pass builds `Sources` from it, check mode
+    /// holds it against the input's table.
+    fn note(&mut self, s: &Source) {
+        if !self.collecting && self.check.is_none() {
+            return;
+        }
+        if let Some(w) = self.defer {
+            if let Some(b) = self.deferred.get_mut(w) {
+                b.push(s.clone());
+            }
+            return;
+        }
+        if self.collecting {
+            return self.note_source(s);
+        }
+        if *s == self.own {
+            return;
+        }
+        if let SourceKind::Derived(d) = s.kind() {
+            let under = d.src.clone();
+            self.note(&under);
+        }
+        let idx = self.src_idx.get(s).copied();
+        let Some(c) = self.check.as_mut() else { return };
+        match idx {
+            None => c.bad = true,
+            Some(i) => match &mut c.log {
+                Some(log) => log.push(Ev::Src(i)),
+                None => c.seen(i),
+            },
         }
     }
 
     /// The page sink, reborrowed.
     pub(crate) fn sink(&mut self) -> Option<&mut dyn PageSink> {
+        if let Some(c) = self.check.as_mut() {
+            return Some(&mut c.replay);
+        }
         match &mut self.pages {
             Some(p) => Some(&mut **p),
             None => None,
@@ -277,10 +480,30 @@ impl<'p> Enc<'p> {
         if *s == self.own { 0 } else { self.src_idx.get(s).copied().unwrap_or(0) }
     }
 
+    /// Check mode, at the end: every source's first appearance came in table order, then the
+    /// frontier-only sources `extra` ascending; every commit entry's base is its smallest
+    /// counter seen (§3.3 rule 1).
+    pub(crate) fn check_tables(&mut self, extra: &[Source]) -> bool {
+        let mut extra = extra.to_vec();
+        extra.sort();
+        for s in &extra {
+            self.note(s);
+        }
+        let Some(c) = self.check.as_ref() else { return false };
+        !c.bad && c.next == self.sources.len() as u64 + 1 && c.min.iter().zip(&self.commits).all(|(m, e)| *m == e.base)
+    }
+
+    /// `Frontiers := [[Src, ctr]*]`, sorted by `Src` (after the collecting pass).
+    pub(crate) fn frontiers_value(&self, fr: &Frontiers) -> Value {
+        let mut entries: Vec<(u64, u64)> = fr.sources().map(|(s, c)| (self.src_index(&s), c)).collect();
+        entries.sort_unstable_by_key(|(i, _)| *i);
+        Value::List(entries.into_iter().map(|(i, c)| Value::List(vec![uint(i), uint(c)])).collect())
+    }
+
     /// `Src` of a source (0 = own).
     pub fn src(&mut self, s: &Source) -> Value {
+        self.note(s);
         if self.collecting {
-            self.note_source(s);
             return uint(0);
         }
         uint(self.src_index(s))
@@ -288,8 +511,8 @@ impl<'p> Enc<'p> {
 
     /// `Dot := ctr | [Src, ctr]`.
     pub fn dot(&mut self, d: &Dot) -> Value {
+        self.note(&d.src);
         if self.collecting {
-            self.note_source(&d.src);
             return uint(0);
         }
         if d.src == self.own {
@@ -310,8 +533,8 @@ impl<'p> Enc<'p> {
     /// `Stamp := Ci | [Ci, ctr]`.
     pub fn stamp(&mut self, s: &Stamp) -> Value {
         let own_commit = self.is_own(s);
+        self.note(&s.dot.src);
         if self.collecting {
-            self.note_source(&s.dot.src);
             if !own_commit {
                 // while collecting, `commit_idx` holds positions in `commits`
                 let key = (s.ts, s.dot.src.clone());
@@ -330,6 +553,9 @@ impl<'p> Enc<'p> {
         } else {
             let ci = self.commit_idx.get(&(s.ts, s.dot.src.clone())).copied().unwrap_or(0);
             let base = ci.checked_sub(1).and_then(|i| self.commits.get(i as usize)).map_or(0, |c| c.base);
+            if let Some(c) = self.check.as_mut() {
+                c.counter(ci, s.dot.ctr);
+            }
             (ci, base)
         };
         if s.dot.ctr == base { uint(ci) } else { Value::List(vec![uint(ci), uint(s.dot.ctr)]) }
@@ -431,8 +657,9 @@ pub struct Dec<'a> {
     sources: Vec<Source>,
     commits: Vec<CommitEntry>,
     interner: &'a mut Interner,
-    /// Own counters taken by creations and position writes in a writer's delta (§2.3).
-    used: BTreeSet<u64>,
+    /// Own counters taken by creations and position writes in a writer's delta (§2.3), as
+    /// disjoint runs `first -> last` (a writer's creations come in runs: sized by the input).
+    used: BTreeMap<u64, u64>,
     pub(crate) pages: Option<&'a mut dyn PageSource>,
     /// Pages fetched, with their links, for the canonical re-encode.
     pub(crate) fetched: Vec<(Vec<u8>, osis_base::Link)>,
@@ -442,12 +669,15 @@ pub struct Dec<'a> {
     pub(crate) depth: usize,
     /// Sequence elements in runs without `Content` so far, across pages (§3.3 rule 7).
     pub(crate) bare: u64,
+    /// While a root is decoded for streaming: where the walk is, and the paged positions
+    /// reached through steps, left undecoded (`stream`).
+    pub(crate) streaming: Option<(Track, BTreeMap<Vec<crate::paging::Step>, crate::stream::Deferred>)>,
 }
 
 impl<'a> Dec<'a> {
     pub(crate) fn new(cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Dec<'a> {
         let own = interner.intern(&cx.own);
-        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeSet::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0 }
+        Dec { ts: cx.ts, own, range: cx.range, kind: cx.kind, sources: Vec::new(), commits: Vec::new(), interner, used: BTreeMap::new(), pages, fetched: Vec::new(), links_seen: Default::default(), depth: 0, bare: 0, streaming: None }
     }
 
     pub fn kind(&self) -> DeltaKind {
@@ -466,9 +696,19 @@ impl<'a> Dec<'a> {
     /// In a writer's delta, records that an own creation or position write takes counter `ctr`;
     /// two taking one counter is bad input (§2.3, §3.3 rule 6).
     pub fn claim(&mut self, d: &Dot) -> Result<(), Error> {
-        if self.kind == DeltaKind::Writer && d.src == self.own && !self.used.insert(d.ctr) {
+        if self.kind != DeltaKind::Writer || d.src != self.own {
+            return Ok(());
+        }
+        let c = d.ctr;
+        let before = self.used.range(..=c).next_back().map(|(a, b)| (*a, *b));
+        if before.is_some_and(|(_, b)| b >= c) {
             return Err(Error::Malformed("own counter used twice"));
         }
+        let after = c.checked_add(1).and_then(|n| self.used.remove(&n));
+        match before {
+            Some((a, b)) if b.checked_add(1) == Some(c) => self.used.insert(a, after.unwrap_or(c)),
+            _ => self.used.insert(c, after.unwrap_or(c)),
+        };
         Ok(())
     }
 
@@ -657,6 +897,34 @@ impl<'a> Dec<'a> {
         Ok(())
     }
 
+    /// An encoder in check mode over this delta's tables (`stream`): streamed positions
+    /// `streams`, the pages fetched so far given back by `Replay`.
+    pub(crate) fn checker(&mut self, cx: &DeltaCtx, streams: BTreeMap<Vec<crate::paging::Step>, Value>) -> Enc<'static> {
+        let mut enc = Enc::new(cx, None);
+        enc.collecting = false;
+        enc.src_idx = self.sources.iter().enumerate().map(|(i, s)| (s.clone(), i as u64 + 1)).collect();
+        enc.sources = self.sources.clone();
+        enc.commit_idx = self.commits.iter().enumerate().map(|(i, c)| ((c.ts, c.src.clone()), i as u64 + 1)).collect();
+        enc.commits = self.commits.clone();
+        let mut replay = Replay::new(self.pages.as_ref().map_or(crate::page::PageParams::FORMAT, |p| p.params()));
+        replay.extend(std::mem::take(&mut self.fetched));
+        let min = vec![u64::MAX; self.commits.len()];
+        enc.check = Some(Box::new(Check { next: 1, min, bad: false, log: Some(Vec::new()), track: Track::new(), streams, replay }));
+        enc
+    }
+
+    /// Announces the step to the fragment decoded next (`Track`).
+    pub(crate) fn step(&mut self, s: impl FnOnce() -> crate::paging::Step) {
+        if let Some((t, _)) = self.streaming.as_mut() {
+            t.step(s);
+        }
+    }
+    pub(crate) fn step_done(&mut self) {
+        if let Some((t, _)) = self.streaming.as_mut() {
+            t.next_step = None;
+        }
+    }
+
     /// Decodes a nested fragment (no own reset on a register, §3.3 rule 7).
     pub fn fragment(&mut self, v: &Value) -> Result<Fragment, Error> {
         crate::codec::decode_fragment(self, v, false)
@@ -760,6 +1028,27 @@ mod tests {
         dec.load_commits(&foreign).unwrap();
         assert!(dec.stamp(&Value::Int(1)).is_err()); // a write of another commit
         assert_eq!(dec.key_stamp(&Value::Int(1)).unwrap().ts, ts(1, 0));
+    }
+
+    /// §2.3, §3.3 rule 6: a writer's own counter claimed twice is refused, in any claim order
+    /// (the claims are kept as runs: against a plain set).
+    #[test]
+    fn claims_as_runs_spec_3_3() {
+        let own = Source::node(tid(1));
+        let cx = DeltaCtx { ts: ts(100, 0), own: own.clone(), range: CounterRange { lo: 1, hi: 64 }, kind: DeltaKind::Writer };
+        for seed in 0..200u64 {
+            let mut r = crate::testutil::rng(seed);
+            let mut interner = Interner::new();
+            let mut dec = Dec::new(&cx, &mut interner, None);
+            let mut set = std::collections::BTreeSet::new();
+            for _ in 0..40 {
+                let c = 1 + r.below(48) as u64;
+                assert_eq!(dec.claim(&Dot::new(own.clone(), c)).is_ok(), set.insert(c), "seed {seed} counter {c}");
+            }
+            let runs: u64 = dec.used.iter().map(|(a, b)| b - a + 1).sum();
+            assert_eq!(runs, set.len() as u64);
+            assert!(dec.used.iter().zip(dec.used.iter().skip(1)).all(|((_, b), (a, _))| b + 1 < *a), "runs merged");
+        }
     }
 
     /// §3.3 rule 2 clarification: the own commit-form source sorts below other commits.

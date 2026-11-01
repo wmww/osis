@@ -7,15 +7,16 @@
 use crate::error::Error;
 use crate::fragment::{Bag, CaseWrite, Eid, Elem, Encoding, Entry, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};
 use crate::page::{PageError, PageParams, PageSink, PageSource};
+use crate::paging::Step;
 use crate::seq::{self, Seq};
 use crate::stamp::{Dot, Interner, Source, SourceKind, Stamp};
 use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Snapshot, as_array, as_uint, uint};
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{Limits, PageCutter, Value};
 use std::borrow::Cow;
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::BTreeMap;
 
-const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
+pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
 
 // ---- encode
 
@@ -27,7 +28,7 @@ fn opt_frag(cx: &mut Enc, f: Option<&Fragment>) -> Result<Value, Error> {
 }
 
 /// Length of a CBOR array head for `n` items.
-fn array_head(n: usize) -> usize {
+pub(crate) fn array_head(n: usize) -> usize {
     match n {
         0..24 => 1,
         24..256 => 2,
@@ -39,6 +40,9 @@ fn array_head(n: usize) -> usize {
 
 /// An element array, paged when its plain encoding exceeds the target (§8, spec/wire.md §6).
 pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Error> {
+    if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
+        return Ok(v);
+    }
     if cx.collecting() {
         return Ok(Value::List(items));
     }
@@ -58,6 +62,9 @@ pub fn page_array(pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result
 /// and each page a map of consecutive fields.
 fn page_map(cx: &mut Enc, items: Vec<(Value, Value)>) -> Result<Value, Error> {
     let whole = |v: Vec<(Value, Value)>| Value::Map(v.into_iter().collect());
+    if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
+        return Ok(v);
+    }
     if cx.collecting() {
         return Ok(whole(items));
     }
@@ -102,16 +109,8 @@ fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Ve
     // link pages: the tree-node grouping rule, level 1 only
     let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
     let mut groups = Vec::new();
-    let mut group = Vec::new();
-    for l in links {
-        let zero = matches!(&l, Value::Link(x) if x.hash.first() == Some(&0));
-        group.push(l);
-        if (group.len() >= 2 && zero) || group.len() >= params.fanout {
-            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(std::mem::take(&mut group))))?));
-        }
-    }
-    if !group.is_empty() {
-        groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(group)))?));
+    for g in link_groups(&links, params.fanout) {
+        groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
     }
     let top = Value::List(groups);
     if osis_base::encode(&top).len() > params.target {
@@ -120,25 +119,73 @@ fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Ve
     Ok(top)
 }
 
+/// Links grouped into link pages by the tree-node rule (spec/wire.md §6): a group closes after
+/// a link whose hash starts with a zero byte (from its second link) or at `fanout` links.
+pub(crate) fn link_groups(links: &[Value], fanout: usize) -> Vec<&[Value]> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    for (i, l) in links.iter().enumerate() {
+        let zero = matches!(l, Value::Link(x) if x.hash.first() == Some(&0));
+        let n = i + 1 - start;
+        if (n >= 2 && zero) || n >= fanout {
+            out.push(links.get(start..=i).unwrap_or_default());
+            start = i + 1;
+        }
+    }
+    if start < links.len() {
+        out.push(links.get(start..).unwrap_or_default());
+    }
+    out
+}
+
+/// A bag or set element `[Dot, R, Opt(Fragment)]`.
+pub(crate) fn encode_elem(cx: &mut Enc, d: &Dot, e: &Elem) -> Result<Value, Error> {
+    let dot = cx.dot(d);
+    let r = cx.opt_stamp(e.reset.as_ref());
+    let f = opt_frag(cx, e.frag.as_deref())?;
+    Ok(Value::List(vec![dot, r, f]))
+}
+
 fn encode_elems(cx: &mut Enc, elems: &BTreeMap<Dot, Elem>) -> Result<Value, Error> {
     let mut items = Vec::with_capacity(elems.len());
     for (d, e) in cx.sorted(elems) {
-        let dot = cx.dot(d);
-        let r = cx.opt_stamp(e.reset.as_ref());
-        let f = opt_frag(cx, e.frag.as_deref())?;
-        items.push(Value::List(vec![dot, r, f]));
+        items.push(encode_elem(cx, d, e)?);
     }
     elems_value(cx, items)
+}
+
+/// A map entry record `[Dot, Ci?, R, Key?, Opt(Fragment)]`.
+pub(crate) fn encode_entry(cx: &mut Enc, id: &Eid, e: &Entry) -> Result<Value, Error> {
+    let mut x = vec![cx.dot(&id.dot)];
+    // the creation's commit, where a snapshot or import carries it (a writer's own creations
+    // are implied, §3.2)
+    if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
+        x.push(cx.commit_of(c));
+    }
+    x.push(cx.opt_stamp(e.reset.as_ref()));
+    x.extend(id.key().cloned());
+    cx.step(|| Step::Entry(id.clone()));
+    x.push(opt_frag(cx, e.frag.as_deref())?);
+    cx.step_done();
+    Ok(Value::List(x))
+}
+
+/// A struct field or enum payload `(id, Fragment)`; `step` names it in a path.
+pub(crate) fn encode_field(cx: &mut Enc, k: u64, f: &Fragment, step: fn(u64) -> Step) -> Result<(Value, Value), Error> {
+    cx.step(|| step(k));
+    let v = encode_fragment(cx, f);
+    cx.step_done();
+    Ok((uint(k), v?))
 }
 
 fn head(cx: &mut Enc, enc: Encoding, meta: &Meta) -> Vec<Value> {
     vec![uint(u64::from(enc.id())), cx.opt_stamp(meta.reset.as_ref()), cx.opt_stamp(meta.w.as_ref())]
 }
 
-fn encode_children(cx: &mut Enc, c: &BTreeMap<u64, Fragment>) -> Result<Value, Error> {
+fn encode_children(cx: &mut Enc, c: &BTreeMap<u64, Fragment>, step: fn(u64) -> Step) -> Result<Value, Error> {
     let mut items = Vec::with_capacity(c.len());
     for (k, f) in c {
-        items.push((uint(*k), encode_fragment(cx, f)?));
+        items.push(encode_field(cx, *k, f, step)?);
     }
     page_map(cx, items)
 }
@@ -155,6 +202,15 @@ fn encode_register(cx: &mut Enc, r: &Register) -> Value {
 }
 
 pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
+    let Some(at) = cx.track().map(|t| t.enter()) else { return encode_fragment_at(cx, f) };
+    let r = encode_fragment_at(cx, f);
+    if let Some(t) = cx.track() {
+        t.leave(at);
+    }
+    r
+}
+
+fn encode_fragment_at(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
     Ok(match f {
         Fragment::Register(r) => encode_register(cx, r),
         Fragment::Bag(Bag { meta, elems, .. }) | Fragment::Set(Set { meta, elems }) => {
@@ -164,7 +220,7 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
         }
         Fragment::Struct(s) => {
             let mut a = head(cx, Encoding::Struct, &s.meta);
-            a.push(encode_children(cx, &s.fields)?);
+            a.push(encode_children(cx, &s.fields, Step::Field)?);
             Value::List(a)
         }
         Fragment::Enum(s) => {
@@ -178,23 +234,14 @@ pub(crate) fn encode_fragment(cx: &mut Enc, f: &Fragment) -> Result<Value, Error
                 }
             };
             a.push(Value::List(case));
-            a.push(encode_children(cx, &s.payloads)?);
+            a.push(encode_children(cx, &s.payloads, Step::Case)?);
             Value::List(a)
         }
         Fragment::Map(m) => {
             let mut a = head(cx, Encoding::Map, &m.meta);
             let mut items = Vec::with_capacity(m.entries.len());
             for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
-                let mut x = vec![cx.dot(&id.dot)];
-                // the creation's commit, where a snapshot or import carries it (a writer's own
-                // creations are implied, §3.2)
-                if let Some(c) = e.created.as_ref().filter(|c| !cx.is_own(c)) {
-                    x.push(cx.commit_of(c));
-                }
-                x.push(cx.opt_stamp(e.reset.as_ref()));
-                x.extend(id.key().cloned());
-                x.push(opt_frag(cx, e.frag.as_deref())?);
-                items.push(Value::List(x));
+                items.push(encode_entry(cx, id, e)?);
             }
             a.push(elems_value(cx, items)?);
             Value::List(a)
@@ -223,14 +270,7 @@ fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pa
     let extra: Vec<Source> = frontiers.map(|fr| fr.sources().map(|(s, _)| s).collect()).unwrap_or_default();
     enc.finish_collecting(&extra);
     let frag = encode_fragment(&mut enc, f)?;
-    let fr = frontiers.map(|fr| {
-        let mut entries: Vec<(Value, u64)> = fr.sources().map(|(s, c)| (enc.src(&s), c)).collect();
-        entries.sort_by_key(|(i, _)| match i {
-            Value::Int(i) => *i,
-            _ => i64::MAX,
-        });
-        Value::List(entries.into_iter().map(|(i, c)| Value::List(vec![i, uint(c)])).collect())
-    });
+    let fr = frontiers.map(|fr| enc.frontiers_value(fr));
     Ok((enc, frag, fr))
 }
 
@@ -248,7 +288,7 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
     }
     let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
-    let absorbed = Value::List(s.absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect());
+    let absorbed = absorbed_value(&s.absorbed);
     let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
     Ok(osis_base::encode(&Value::List(top)))
 }
@@ -270,7 +310,7 @@ fn check_value(v: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Error> {
+pub(crate) fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Error> {
     let n = items.iter().filter(|i| matches!(i, Value::Link(_))).count();
     if n == 0 {
         return Ok(None);
@@ -289,7 +329,7 @@ pub(crate) type Fetched = Vec<(Vec<u8>, osis_base::Link)>;
 
 /// Fetches a page. Each blob is read once per delta, so expansion is bounded by the distinct
 /// pages that exist.
-fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<(Value, Vec<u8>), Error> {
+pub(crate) fn fetch_page(cx: &mut Dec, link: &osis_base::Link) -> Result<(Value, Vec<u8>), Error> {
     if !cx.links_seen.insert(link.blob) {
         return Err(Error::Malformed("a page linked twice"));
     }
@@ -354,45 +394,15 @@ pub(crate) fn elem_items<'v>(cx: &mut Dec, v: &'v Value) -> Result<(Cow<'v, [Val
     Ok((Cow::Owned(out), fetched))
 }
 
-/// Replays the pages a decode fetched, so the canonical re-encode reproduces their links.
-struct Replay {
-    pages: HashMap<Vec<u8>, VecDeque<osis_base::Link>>,
-    params: PageParams,
-}
-
 impl Dec<'_> {
     /// Records a position's pages after its items are decoded (`Fetched`).
     pub(crate) fn done(&mut self, f: Fetched) {
         self.fetched.extend(f);
     }
-    /// The replay sink of the pages fetched so far.
-    fn replay(&mut self) -> Replay {
-        let params = self.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
-        Replay::new(std::mem::take(&mut self.fetched), params)
-    }
-}
-
-impl Replay {
-    fn new(fetched: Vec<(Vec<u8>, osis_base::Link)>, params: PageParams) -> Replay {
-        let mut pages: HashMap<Vec<u8>, VecDeque<osis_base::Link>> = HashMap::new();
-        for (b, l) in fetched {
-            pages.entry(b).or_default().push_back(l);
-        }
-        Replay { pages, params }
-    }
-}
-
-impl PageSink for Replay {
-    fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, PageError> {
-        self.pages.get_mut(plaintext).and_then(VecDeque::pop_front).ok_or(PageError::Corrupt)
-    }
-    fn params(&self) -> PageParams {
-        self.params
-    }
 }
 
 /// Requires `bytes` to be what encoding `again` produces with the fetched pages replayed.
-fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(), Error> {
+pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(), Error> {
     match again {
         Ok(b) if b == bytes => Ok(()),
         Ok(_) | Err(Error::Page(_)) => Err(Error::Malformed("not canonical")),
@@ -405,9 +415,16 @@ fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
 }
 
 fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
-    let mut out = BTreeMap::new();
     let (items, fetched) = elem_items(cx, v)?;
-    for e in items.iter() {
+    let out = decode_elem_items(cx, &items)?;
+    cx.done(fetched);
+    Ok(out)
+}
+
+/// Bag or set elements.
+pub(crate) fn decode_elem_items(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<Dot, Elem>, Error> {
+    let mut out = BTreeMap::new();
+    for e in items {
         let [d, r, f] = as_array(e)? else { return Err(Error::Malformed("element")) };
         let dot = cx.dot(d)?;
         let reset = cx.opt_stamp(r)?;
@@ -421,13 +438,12 @@ fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
         }
         out.insert(dot, Elem { reset, frag });
     }
-    cx.done(fetched);
     Ok(out)
 }
 
 /// A field or payload map, inline or paged (§8); fields ascend across pages (the re-encode
 /// check then pins the cuts).
-fn decode_children(cx: &mut Dec, v: &Value) -> Result<BTreeMap<u64, Fragment>, Error> {
+fn decode_children(cx: &mut Dec, v: &Value, step: fn(u64) -> Step) -> Result<BTreeMap<u64, Fragment>, Error> {
     let mut out = BTreeMap::new();
     let paged;
     let mut fetched = Vec::new();
@@ -442,20 +458,89 @@ fn decode_children(cx: &mut Dec, v: &Value) -> Result<BTreeMap<u64, Fragment>, E
     };
     let is_paged = matches!(v, Value::List(_));
     for page in pages {
-        let Value::Map(m) = page else { return Err(Error::Malformed("page is not a map")) };
-        if is_paged && m.is_empty() {
-            return Err(Error::Malformed("empty page"));
-        }
-        for (k, f) in m {
-            let k = as_uint(k)?;
-            if out.last_key_value().is_some_and(|(l, _)| *l >= k) {
-                return Err(Error::Malformed("fields out of order across pages"));
-            }
-            out.insert(k, cx.fragment(f)?);
-        }
+        decode_fields(cx, page, is_paged, step, &mut out)?;
     }
     cx.done(fetched);
     Ok(out)
+}
+
+/// The fields of one field map or page of one (`paged`: not empty) into `out`, ascending.
+pub(crate) fn decode_fields(cx: &mut Dec, page: &Value, paged: bool, step: fn(u64) -> Step, out: &mut BTreeMap<u64, Fragment>) -> Result<(), Error> {
+    let Value::Map(m) = page else { return Err(Error::Malformed("page is not a map")) };
+    if paged && m.is_empty() {
+        return Err(Error::Malformed("empty page"));
+    }
+    for (k, f) in m {
+        let k = as_uint(k)?;
+        if out.last_key_value().is_some_and(|(l, _)| *l >= k) {
+            return Err(Error::Malformed("fields out of order across pages"));
+        }
+        cx.step(|| step(k));
+        let f = cx.fragment(f);
+        cx.step_done();
+        out.insert(k, f?);
+    }
+    Ok(())
+}
+
+/// Map entry records.
+pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<Eid, Entry>, Error> {
+    let mut entries = BTreeMap::new();
+    for e in items {
+        // `[Dot, Ci?, R, Key?, Opt(Fragment)]`: a `Ci` is an int, an `R` an array
+        let (d, ci, rest) = match as_array(e)? {
+            [d, ci @ Value::Int(_), rest @ ..] => (d, Some(ci), rest),
+            [d, rest @ ..] => (d, None, rest),
+            [] => return Err(Error::Malformed("entry")),
+        };
+        let (r, key, f) = match rest {
+            [r, f] => (r, None, f),
+            [r, k, f] => (r, Some(k), f),
+            _ => return Err(Error::Malformed("entry")),
+        };
+        let dot = cx.dot(d)?;
+        let reset = cx.opt_stamp(r)?;
+        cx.step(|| Step::Entry(Eid::new(dot.clone(), key.cloned())));
+        let frag = opt_stamp_only(f, |x| cx.fragment(x));
+        cx.step_done();
+        let frag = frag?.map(Box::new);
+        if let Some(k) = key {
+            check_value(k)?;
+        }
+        if frag.is_some() {
+            cx.claim(&dot)?;
+        }
+        // the creation: carried by a snapshot or import; implied in a writer's delta for an
+        // entry created here (own dot in the range)
+        let created = match ci {
+            Some(_) if cx.kind() == DeltaKind::Writer => return Err(Error::Malformed("creation commit in a writer's delta")),
+            Some(_) if frag.is_none() => return Err(Error::Malformed("creation commit on a tombstone")),
+            Some(ci) => {
+                let c = cx.stamp(ci)?;
+                if c.dot.src != dot.src {
+                    return Err(Error::Malformed("creation commit of another source"));
+                }
+                Some(Stamp::new(c.ts, dot.src.clone(), dot.ctr))
+            }
+            None if cx.kind() == DeltaKind::Writer && frag.is_some() && dot.src == *cx.own() && cx.range().contains(dot.ctr) => Some(Stamp::new(cx.ts(), dot.src.clone(), dot.ctr)),
+            None => None,
+        };
+        entries.insert(Eid::new(dot, key.cloned()), Entry { reset, frag, created });
+    }
+    Ok(entries)
+}
+
+/// While a root is decoded for streaming, a paged collection reached through steps is left
+/// undecoded (true) and recorded with its link list (`stream`).
+fn defer(cx: &mut Dec, v: &Value, enc: Encoding) -> Result<bool, Error> {
+    let depth = cx.depth;
+    let Some((t, found)) = cx.streaming.as_mut().filter(|(t, _)| t.on) else { return Ok(false) };
+    let Value::List(items) = v else { return Ok(false) };
+    if links(items)?.is_none() {
+        return Ok(false);
+    }
+    found.insert(t.path.clone(), crate::stream::Deferred { top: v.clone(), enc, depth });
+    Ok(true)
 }
 
 fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Register, Error> {
@@ -486,7 +571,11 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Resul
         return Err(Error::Malformed("fragments nest too deep"));
     }
     cx.depth += 1;
+    let at = cx.streaming.as_mut().map(|(t, _)| t.enter());
     let r = decode_fragment_at(cx, v, may_reset);
+    if let (Some(at), Some((t, _))) = (at, cx.streaming.as_mut()) {
+        t.leave(at);
+    }
     cx.depth -= 1;
     let f = r?;
     if !derived_ok(&f) {
@@ -497,7 +586,7 @@ pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Resul
 
 /// §3.3 rule 7: only a text element's creation (and that creation as a position write) carries
 /// a `Derived` stamp; checks the writes of `f`'s own level (nested fragments check their own).
-fn derived_ok(f: &Fragment) -> bool {
+pub(crate) fn derived_ok(f: &Fragment) -> bool {
     let ok = |s: Option<&Stamp>| !s.is_some_and(|s| s.dot.src.is_derived());
     let meta = |m: &Meta| ok(m.reset.as_ref()) && ok(m.w.as_ref());
     match f {
@@ -526,15 +615,18 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
         (Encoding::Counter | Encoding::Max | Encoding::Min, [_, r, w, e]) => {
             let kind = enc.bag_kind().ok_or(Error::Malformed("bag"))?;
             let meta = decode_meta(cx, r, w)?;
-            Fragment::Bag(Bag { kind, meta, elems: decode_elems(cx, e)? })
+            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
+            Fragment::Bag(Bag { kind, meta, elems })
         }
         (Encoding::Set, [_, r, w, e]) => {
             let meta = decode_meta(cx, r, w)?;
-            Fragment::Set(Set { meta, elems: decode_elems(cx, e)? })
+            let elems = if defer(cx, e, enc)? { BTreeMap::new() } else { decode_elems(cx, e)? };
+            Fragment::Set(Set { meta, elems })
         }
         (Encoding::Struct, [_, r, w, c]) => {
             let meta = decode_meta(cx, r, w)?;
-            Fragment::Struct(Struct { meta, fields: decode_children(cx, c)? })
+            let fields = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Field)? };
+            Fragment::Struct(Struct { meta, fields })
         }
         (Encoding::Enum, [_, r, w, k, c]) => {
             let meta = decode_meta(cx, r, w)?;
@@ -543,56 +635,25 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
                 [s, id] => Ok(CaseWrite { stamp: cx.stamp(s)?, case: Some(as_uint(id)?) }),
                 _ => Err(Error::Malformed("case")),
             })?;
-            Fragment::Enum(Enum { meta, case, payloads: decode_children(cx, c)? })
+            let payloads = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Case)? };
+            Fragment::Enum(Enum { meta, case, payloads })
         }
         (Encoding::Map, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;
-            let mut entries = BTreeMap::new();
-            let (items, fetched) = elem_items(cx, es)?;
-            for e in items.iter() {
-                // `[Dot, Ci?, R, Key?, Opt(Fragment)]`: a `Ci` is an int, an `R` an array
-                let (d, ci, rest) = match as_array(e)? {
-                    [d, ci @ Value::Int(_), rest @ ..] => (d, Some(ci), rest),
-                    [d, rest @ ..] => (d, None, rest),
-                    [] => return Err(Error::Malformed("entry")),
-                };
-                let (r, key, f) = match rest {
-                    [r, f] => (r, None, f),
-                    [r, k, f] => (r, Some(k), f),
-                    _ => return Err(Error::Malformed("entry")),
-                };
-                let dot = cx.dot(d)?;
-                let reset = cx.opt_stamp(r)?;
-                let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
-                if let Some(k) = key {
-                    check_value(k)?;
-                }
-                if frag.is_some() {
-                    cx.claim(&dot)?;
-                }
-                // the creation: carried by a snapshot or import; implied in a writer's delta for
-                // an entry created here (own dot in the range)
-                let created = match ci {
-                    Some(_) if cx.kind() == crate::wire::DeltaKind::Writer => return Err(Error::Malformed("creation commit in a writer's delta")),
-                    Some(_) if frag.is_none() => return Err(Error::Malformed("creation commit on a tombstone")),
-                    Some(ci) => {
-                        let c = cx.stamp(ci)?;
-                        if c.dot.src != dot.src {
-                            return Err(Error::Malformed("creation commit of another source"));
-                        }
-                        Some(Stamp::new(c.ts, dot.src.clone(), dot.ctr))
-                    }
-                    None if cx.kind() == crate::wire::DeltaKind::Writer && frag.is_some() && dot.src == *cx.own() && cx.range().contains(dot.ctr) => Some(Stamp::new(cx.ts(), dot.src.clone(), dot.ctr)),
-                    None => None,
-                };
-                entries.insert(Eid::new(dot, key.cloned()), Entry { reset, frag, created });
+            if defer(cx, es, enc)? {
+                return Ok(Fragment::Map(Map::new(meta, BTreeMap::new())));
             }
+            let (items, fetched) = elem_items(cx, es)?;
+            let entries = decode_entries(cx, &items)?;
             cx.done(fetched);
             Fragment::Map(Map::new(meta, entries))
         }
         (Encoding::List | Encoding::Text, [_, r, w, es]) => {
             let meta = decode_meta(cx, r, w)?;
             let mut s = Seq::new(enc == Encoding::Text, meta, BTreeMap::new());
+            if defer(cx, es, enc)? {
+                return Ok(Fragment::Seq(s));
+            }
             let (runs, fetched) = elem_items(cx, es)?;
             seq::decode_elems(&mut s, &runs, cx)?;
             cx.done(fetched);
@@ -655,7 +716,7 @@ pub fn page_items(bytes: &[u8]) -> Result<usize, Error> {
 
 /// Bad input when a page or root fragment counts more than `params.max_items` (§8), checked
 /// before anything is decoded. The count never exceeds the bytes, so smaller blobs skip it.
-fn check_items(bytes: &[u8], params: PageParams) -> Result<(), Error> {
+pub(crate) fn check_items(bytes: &[u8], params: PageParams) -> Result<(), Error> {
     if bytes.len() > params.max_items && page_items(bytes)? > params.max_items {
         return Err(Error::Malformed("page or root fragment above MAX_PAGE_ITEMS items"));
     }
@@ -664,7 +725,7 @@ fn check_items(bytes: &[u8], params: PageParams) -> Result<(), Error> {
 
 /// `check_items` on the fragment of a delta or snapshot root (its fourth item), found by heads;
 /// a root without one is left to the decoder to refuse.
-fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result<(), Error> {
+pub(crate) fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result<(), Error> {
     let params = pages.map_or(PageParams::FORMAT, |p| p.params());
     if bytes.len() <= params.max_items {
         return Ok(());
@@ -681,30 +742,30 @@ fn check_root(bytes: &[u8], pages: Option<&dyn PageSource>) -> Result<(), Error>
     }
 }
 
-/// Decodes a delta (§3.2) against its header facts; bad input unless canonical.
+/// Decodes a delta (§3.2) against its header facts; bad input unless canonical. The whole
+/// fragment, pages joined in (`stream_delta` checks and yields it page by page).
 pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
-    check_root(bytes, pages.as_deref())?;
-    let top = osis_base::decode(bytes, &LIMITS)?;
-    let [n, sources, commits, frag] = as_array(&top)? else { return Err(Error::Malformed("delta arity")) };
-    let mut dec = Dec::new(cx, interner, pages);
-    dec.load_sources(sources)?;
-    dec.load_commits(commits)?;
-    let fragment = decode_fragment(&mut dec, frag, true)?;
-    let mut replay = dec.replay();
-    let d = Delta { nonce: nonce(n)?, fragment };
-    canonical(bytes, encode_delta(&d, cx, Some(&mut replay)))?;
-    Ok(d)
+    let mut whole = crate::stream::Whole::default();
+    let head = crate::stream::stream(bytes, cx, interner, pages, false, &mut |p| whole.add(p))?;
+    Ok(Delta { nonce: head.nonce, fragment: whole.done() })
 }
 
-/// Decodes a snapshot delta (§8); bad input unless canonical.
+/// Decodes a snapshot delta (§8); bad input unless canonical. The whole fragment, as
+/// `decode_delta`.
 pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
-    check_root(bytes, pages.as_deref())?;
-    let top = osis_base::decode(bytes, &LIMITS)?;
-    let [n, sources, commits, frag, fr, ab] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
-    let mut dec = Dec::new(cx, interner, pages);
+    let mut whole = crate::stream::Whole::default();
+    let head = crate::stream::stream(bytes, cx, interner, pages, true, &mut |p| whole.add(p))?;
+    Ok(Snapshot { nonce: head.nonce, fragment: whole.done(), frontiers: head.frontiers, absorbed: head.absorbed })
+}
+
+/// `[nonce, Sources, Commits]` of a delta or snapshot root into `dec`.
+pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Result<(), Error> {
     dec.load_sources(sources)?;
-    dec.load_commits(commits)?;
-    let fragment = decode_fragment(&mut dec, frag, true)?;
+    dec.load_commits(commits)
+}
+
+/// A snapshot's `Frontiers` and `Absorbed` (§8).
+pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>), Error> {
     let mut frontiers = Frontiers::default();
     for e in as_array(fr)? {
         let [i, c] = as_array(e)? else { return Err(Error::Malformed("frontier")) };
@@ -726,10 +787,57 @@ pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Intern
             return Err(Error::Malformed("absorbed commit repeated"));
         }
     }
-    let mut replay = dec.replay();
-    let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
-    canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
-    Ok(s)
+    Ok((frontiers, absorbed))
+}
+
+/// The absorbed table as written (§8).
+pub(crate) fn absorbed_value(absorbed: &BTreeMap<osis_base::CommitId, osis_base::Tid>) -> Value {
+    Value::List(absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect())
+}
+
+pub(crate) fn nonce_of(v: &Value) -> Result<[u8; NONCE_LEN], Error> {
+    nonce(v)
+}
+
+/// The whole-delta decoder before streaming: decodes every page into one fragment, then
+/// re-encodes all of it (two passes) and requires the input bytes. The test oracle of
+/// `stream` (it must accept and reject exactly the same inputs).
+#[cfg(any(test, fuzzing))]
+pub mod oracle {
+    use super::*;
+
+    fn replay(dec: &mut Dec) -> crate::wire::Replay {
+        let mut r = crate::wire::Replay::new(dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
+        r.extend(std::mem::take(&mut dec.fetched));
+        r
+    }
+
+    pub fn decode_delta<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Delta, Error> {
+        check_root(bytes, pages.as_deref())?;
+        let top = osis_base::decode(bytes, &LIMITS)?;
+        let [n, sources, commits, frag] = as_array(&top)? else { return Err(Error::Malformed("delta arity")) };
+        let mut dec = Dec::new(cx, interner, pages);
+        root_tables(&mut dec, sources, commits)?;
+        let fragment = decode_fragment(&mut dec, frag, true)?;
+        let mut replay = replay(&mut dec);
+        let d = Delta { nonce: nonce(n)?, fragment };
+        canonical(bytes, encode_delta(&d, cx, Some(&mut replay)))?;
+        Ok(d)
+    }
+
+    pub fn decode_snapshot<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>) -> Result<Snapshot, Error> {
+        check_root(bytes, pages.as_deref())?;
+        let top = osis_base::decode(bytes, &LIMITS)?;
+        let [n, sources, commits, frag, fr, ab] = as_array(&top)? else { return Err(Error::Malformed("snapshot arity")) };
+        let mut dec = Dec::new(cx, interner, pages);
+        root_tables(&mut dec, sources, commits)?;
+        let fragment = decode_fragment(&mut dec, frag, true)?;
+        let (frontiers, absorbed) = snapshot_tail(&dec, fr, ab)?;
+        let mut replay = replay(&mut dec);
+        let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
+        canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
+        Ok(s)
+    }
 }
 
 /// `decoded_bound`'s charge per CBOR data item and per byte of a run's text content (each a

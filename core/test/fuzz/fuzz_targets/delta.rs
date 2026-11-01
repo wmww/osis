@@ -1,11 +1,13 @@
 //! Delta and snapshot decoders (spec/crdt.md §7–§8): never panic; the decoders check
 //! canonicality themselves; a decoded fragment reads and joins (twice: idempotent) without
-//! panicking. The first byte picks the form: 0 writer delta, 1 snapshot, 2 import. Pages are
-//! absent (a paged input fails with `Missing`).
+//! panicking; they accept and reject as the whole-delta decoders they replaced (and agree on
+//! the fragment). The first byte picks the form: 0 writer delta, 1 snapshot, 2 import. Pages
+//! are absent (a paged input fails with `Missing`).
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
 use osis_base::{Tid, Ts};
+use osis_crdt::fuzzing::{decode_delta_whole, decode_snapshot_whole};
 use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner, MemoryPages, Source, decode_delta, decode_snapshot};
 
 fuzz_target!(|data: &[u8]| {
@@ -24,6 +26,17 @@ fuzz_target!(|data: &[u8]| {
     } else {
         decode_delta(bytes, &cx, &mut interner, Some(&mut pages)).map(|d| d.fragment)
     };
+    let mut pages = MemoryPages::new();
+    let whole = if kind == DeltaKind::Snapshot {
+        decode_snapshot_whole(bytes, &cx, &mut Interner::new(), Some(&mut pages)).map(|s| s.fragment)
+    } else {
+        decode_delta_whole(bytes, &cx, &mut Interner::new(), Some(&mut pages)).map(|d| d.fragment)
+    };
+    match (&fragment, &whole) {
+        (Ok(a), Ok(b)) => assert_eq!(a, b),
+        (Err(_), Err(_)) => {}
+        (a, b) => panic!("streamed {a:?}, whole {b:?}"),
+    }
     if let Ok(f) = fragment {
         let read = f.read();
         let mut st = Fragment::default();

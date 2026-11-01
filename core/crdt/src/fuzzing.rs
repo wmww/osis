@@ -80,3 +80,8 @@ pub fn seq_follow_state() -> Fragment {
 /// The `seq_ops` target's script and replay (src/fuzz_seq.rs); built only for fuzzing.
 #[cfg(fuzzing)]
 pub use crate::fuzz_seq::{LocalOp, Script, Stats, Step, replay};
+
+/// The whole-delta decoders the streaming check replaced, the `delta` target's oracle
+/// (`codec::oracle`); built only for fuzzing.
+#[cfg(fuzzing)]
+pub use crate::codec::oracle::{decode_delta as decode_delta_whole, decode_snapshot as decode_snapshot_whole};
