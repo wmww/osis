@@ -1079,26 +1079,47 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
     (lp, a, m)
 }
 
-// spec/permissions.md §3 (left out, re-seal trigger), spec/crypto.md §4 (carried secrets): P,
-// lacking A's current write, may not rotate A's admin (it would carry write to A's owner, a
-// key actor). Its read is current, so no heartbeat reports it stranded: the re-seal trigger of
-// A's owner (M lacks a box at A's current write) re-seals M once M rotates.
-// The settle never ends at about a third of the seeds (issues/rotation-settle-livelock.md).
+// spec/permissions.md §3 (left out, re-seal trigger, forks), spec/crypto.md §4 (carried
+// secrets): P, lacking A's current write, may not rotate A's admin (it would carry write to A's
+// owner, a key actor). Its read is current, so no heartbeat reports it stranded: the re-seal
+// trigger of A's owner (M lacks a box at A's current write) re-seals M once M rotates. P's own
+// cascade rotates M's write unsynced, so M's owner's rotation of it forks: A's owner, holding no
+// secret of M, names one fork (its `keys.0` keyset) and M's owner the other (its newest), each
+// judging the other's box to M uncovered, so A's write was rotated back and forth for good
+// (at about a third of seeds) until the fork was rotated away first.
 #[test]
 fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
-    let (mut lp, a, m) = lacking_write(962);
+    // seeds that forked so (each run costs seconds: six peers)
+    for seed in [960, 962] {
+        lacking_write_resealed(seed);
+    }
+}
+
+/// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS.
+#[test]
+#[ignore = "tier 2"]
+fn rotator_lacking_carried_write_resealed_large() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", 955..975);
+    s.announce("rotator_lacking_carried_write_resealed_large");
+    for seed in s.range {
+        lacking_write_resealed(seed);
+    }
+}
+
+fn lacking_write_resealed(seed: u64) {
+    let (mut lp, a, m) = lacking_write(seed);
     let f = lp.peers[5].engine.tid();
     lp.peers[5].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(still.contains(&Role::Admin), "stranded on A's admin: {still:?}");
+    assert!(still.contains(&Role::Admin), "seed {seed}: stranded on A's admin: {still:?}");
     let e = lp.peers[1].engine.epochs(&a).unwrap();
-    assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "P's read is current: no heartbeat");
+    assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "seed {seed}: P's read is current: no heartbeat");
     settle(&mut lp, &[2, 0], &[m, a]);
     let e = lp.peers[1].engine.epochs(&a).unwrap();
-    assert!(e.write.newest_held().is_some() && e.admin.newest_held().is_some(), "P re-sealed on A's write through M");
+    assert!(e.write.newest_held().is_some() && e.admin.newest_held().is_some(), "seed {seed}: P re-sealed on A's write through M");
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(still.is_empty(), "{still:?}");
+    assert!(still.is_empty(), "seed {seed}: {still:?}");
 }
 
 // A removal P makes itself in that shape: its rotation would carry write to A's owner, so it
@@ -1112,4 +1133,5 @@ fn removal_lacking_carried_secret_refused_spec_permissions_3() {
     assert!(format!("{err}").contains("re-seal"), "{err}");
     assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
 }
+
 
