@@ -4,7 +4,8 @@
 //! spec/permissions.md §5, §5.2; spec/crdt.md §4.6). Random histories over three writers
 //! (grants, demotions with frontiers before, inside and after the demoted writes, re-grants,
 //! self-removals, roster and compaction snapshots, things created under things in later
-//! commits, writes inside map entries, struct fields and nested texts, undo, expiry, partial
+//! commits, writes inside map entries, struct fields and nested texts, undo, expiry (expiring
+//! writes and undos), partial
 //! syncs) are delivered, as one held set, to fresh nodes in several arrival orders (two of them
 //! also with multi-aspect commits split into a part and late parts): every
 //! order must give the same per-delta verdicts, reads and states of every aspect, rosters,
@@ -74,7 +75,7 @@ enum Step {
     Advance { who: Option<usize>, ms: u64 },
 }
 
-const OPS: u8 = 27;
+const OPS: u8 = 30;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -98,6 +99,10 @@ fn aspect_of(op: u8) -> Ak {
         21 => "t:keptset.0",
         22 | 25 => "t:map.0",
         23 | 24 => "t:text.0",
+        // expiring twins (`expiry_of`) of a register set, a map put and a text insert
+        27 => "t:reg.0",
+        28 => "t:map.0",
+        29 => "t:text.0",
         _ => "t:docs.0",
     })
 }
@@ -114,6 +119,12 @@ fn keep_of(op: u8) -> Option<Retention> {
         18..=20 => at_most(0),
         _ => None,
     }
+}
+
+/// The expiry of `op`'s writes after their commit's wall time, if any (spec/crdt.md §4.7): a
+/// second (a peer's own clock steps pass it) or half an hour (a global advance does).
+fn expiry_of(op: u8, v: u8) -> Option<u64> {
+    (27..=29).contains(&(op % OPS)).then_some(if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 })
 }
 
 /// The op of a `Write`: k and v from small domains, so writers collide.
@@ -147,6 +158,7 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         22 => PathOp { path: vec![key(k), PathSeg::Field(1)], op: Op::Set(Value::Int(v as i64)) },
         // kept twins of text inserts and deletes, map removals, text in a map entry
         23..=26 => return content_op([10, 11, 5, 8][(op % OPS - 23) as usize], k, v),
+        27..=29 => return content_op([0, 3, 10][(op % OPS - 27) as usize], k, v),
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
@@ -252,6 +264,9 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 let mut m = Mutation::new();
                 if let Some(r) = keep_of(op) {
                     let _ = m.retention(th(t), &a, r);
+                }
+                if let Some(ms) = expiry_of(op, v) {
+                    let _ = m.expires(th(t), &a, WallMs(lp.peers[by].engine.now().0 + ms));
                 }
                 if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
                     marks[by].push(lp.peers[by].engine.now());
@@ -1622,4 +1637,147 @@ fn expired_residue_survives_unmerge_spec_crdt_4_6() {
         assert_eq!(p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap(), None, "order {o:?}");
     }
     check(24111, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
+}
+
+// spec/requirements.md Decentralization (the index is a function of what is held), seed 50036
+// (plain writes expiring, ops 27-29): two expired deltas' value-less list was kept in the
+// order they expired, so the persisted index differed by arrival order. Kept sorted.
+#[test]
+fn valueless_list_order_independent_spec_crdt_4_7() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }];
+    check(50036, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
+}
+
+// issues/valueless-gaps.md: a purged delta whose body was dropped as covered leaves its
+// value-less write in the state alone once the purge drops its coverer; a later write that
+// superseded it there and is un-merged takes it along (made order: "old" comes back; demotion
+// first: absent). The purger's re-snapshot hides it when it reaches the node.
+#[test]
+#[ignore]
+fn repro_purged_covered_write_lost_by_unmerge() {
+    let mut lp = LocalPeer::new(3, 24112, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    m.set(g, &KEPT, &s("k")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let mut seen: BTreeSet<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let mut packs: Vec<Package> = seen.iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
+    let mut take = |lp: &mut LocalPeer, i: usize| -> CommitId {
+        let mut last = None;
+        for id in lp.peers[i].engine.commit_ids() {
+            if seen.insert(id) {
+                packs.push(lp.peers[i].engine.package(&id).unwrap().unwrap());
+                last = Some(id);
+            }
+        }
+        last.unwrap()
+    };
+    let set = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(g, &REG, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap();
+    };
+    // peer 1's old write, unknown to peer 0 (its snapshot does not cover it)
+    set(&mut lp, 1, "old");
+    let c0 = take(&mut lp, 1);
+    lp.advance(10);
+    set(&mut lp, 0, "secret");
+    let c = take(&mut lp, 0);
+    lp.advance(10);
+    lp.peers[0].engine.snapshot(&g, &ak("t:reg.0")).unwrap().unwrap();
+    let snap = take(&mut lp, 0);
+    lp.advance(10);
+    set(&mut lp, 2, "w");
+    let w = take(&mut lp, 2);
+    lp.advance(10);
+    // peer 2 demoted as of before its write: w is invalid
+    let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
+    let before = WallMs(lp.peers[2].engine.header(&w).unwrap().ts.wall_ms().0 - 1);
+    let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
+    let mut m = edge_write(g, ids[2], None);
+    m.frontier(f.to_value());
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let demote = take(&mut lp, 0);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.set(g, &KEPT, &s("k2")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: g, ak: ak("t:reg.0") });
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let purge = take(&mut lp, 0);
+    let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
+    let base: Vec<&Package> = packs.iter().filter(|p| ![c0, c, snap, w, demote, purge].contains(&p.id)).collect();
+    let by = |id: CommitId| packs.iter().find(|p| p.id == id).unwrap();
+    let mut got = Vec::new();
+    for order in [[c0, c, snap, w, purge, demote], [demote, c0, c, snap, w, purge]] {
+        let mut p = Peer::new(FRESH, now).unwrap();
+        for pk in &base {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        for id in order {
+            p.engine.ingest(&by(id).bytes, by(id).blobs.clone()).unwrap();
+            if id == snap {
+                // node-sync's compaction drop of the covered body
+                p.engine.drop_body(&c, &g, &ak("t:reg.0")).unwrap();
+            }
+        }
+        assert!(!p.engine.body_not_dropped(&snap, &g, &ak("t:reg.0")), "the purge drops the snapshot");
+        got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
+    }
+    assert_eq!(got, vec![None, None]);
+}
+
+// issues/valueless-gaps.md: a part of an expired delta arriving after T, later than the rest of
+// its commit, is skipped (dropped at expiry while missing) where spec/crdt.md §4.7 joins it
+// value-less: the whole commit hides "old", the split one shows it.
+#[test]
+#[ignore]
+fn repro_expired_late_part_skipped() {
+    let mut lp = LocalPeer::new(2, 24113, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    lp.peers[0].commit(m).unwrap();
+    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.set(g, &REG, &s("old")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    let now = lp.peers[0].engine.now();
+    m.set(g, &REG, &s("brief")).unwrap();
+    m.expires(g, &REG, WallMs(now.0 + 1000)).unwrap();
+    m.set(g, &KEPT, &s("k")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(2000);
+    let packs: Vec<Package> = lp.peers[0].engine.commit_ids().iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
+    let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
+    let mut got = Vec::new();
+    for split in [false, true] {
+        let mut p = Peer::new(FRESH, now).unwrap();
+        for pk in packs.iter().filter(|pk| pk.id != c) {
+            p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        }
+        let pk = packs.iter().find(|pk| pk.id == c).unwrap();
+        if split {
+            let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            let reg = b.header.aspects.iter().position(|a| a.ak.as_str() == "t:reg.0");
+            let keep = b.parts.iter().map(|x| x.ai).filter(|ai| Some(*ai) != reg).max().unwrap();
+            b.parts.retain(|x| x.ai == keep);
+            p.engine.ingest(&b.encode(), pk.blobs.clone()).unwrap();
+        }
+        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        let _ = p.engine.reexamine();
+        got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
+    }
+    assert_eq!(got, vec![None, None]);
 }

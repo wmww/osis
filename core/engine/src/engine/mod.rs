@@ -298,7 +298,7 @@ impl std::fmt::Debug for LazyHeader {
 
 /// Owner of writes: one delta of one node (`[lo, hi)`), a commit-form commit, or exact dots of
 /// one node (writes snapshots carry, `ctrs` sorted).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owned {
     /// Counters `lo..hi` of a node or session source (node and session form).
     Range { src: osis_crdt::Source, lo: u64, hi: u64 },
