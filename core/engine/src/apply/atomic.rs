@@ -804,10 +804,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
             crate::retention::note_copies(tx, id, tid, ak)?;
         }
     }
-    // a late snapshot part carrying values a held purge request purged (spec/commits.md §5)
-    for ai in late {
-        crate::retention::drop_purged_snapshot(tx, id, ai)?;
-    }
+    // expiry and purges for the late parts (a late snapshot part carrying purged values too)
+    crate::retention::on_late(tx, id, &late, &mut changed)?;
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx, &meta.view, Some(&h), id, all)?;
@@ -1056,8 +1054,10 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
 /// value-less is in a body or a residue the node holds, never in the state alone, so a rebuild
 /// (an un-merge) gives it back after a later write that superseded it in the state goes: the
 /// state stays the join of what is held, whatever the order the expiry, that write and its
-/// revocation came in. Known gaps (a late part after T, a purged covered delta):
-/// issues/valueless-gaps.md.
+/// revocation came in. Held: a body dropped as covered gives its residue from its coverers'
+/// copies (`retention::make_valueless`); a part missing at expiry or purge gives none and joins
+/// when a late copy comes (`retention::takes_late`). Known gap (a keep-at-most drop before
+/// the delta went value-less): issues/valueless-gaps.md.
 fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
     let mut rows = Vec::new();
     tx.scan(&records::aspect_key(records::RESIDUE, tid, ak), |k, v| {

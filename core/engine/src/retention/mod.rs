@@ -351,28 +351,12 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         tx.core.forget_live(tid, ak);
     }
     for (c, ai) in lost {
-        tx.core.touch();
-        let Some(mut m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-        // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`
-        m.dropped.remove(&ai);
-        m.missing.insert(ai);
-        // never received from now on: what its body judged goes too (`Dropped::role`; the
-        // header's one-delta rule for `secrets.0` stays, `validity::note_required`), and so do
-        // the epochs it introduced (`keys::rebuild_intro` below)
-        tx.core.ix.rotation_role.remove(&(c, ai));
-        let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
-        if !several {
-            tx.core.ix.grant_overreach.remove(&(c, ai));
-        }
-        // those are inputs of its judgment (`validity::rejudge_all` judges it again)
-        tx.core.stale_commits.insert(c);
+        // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
+        // the epochs it introduced go too (`keys::rebuild_intro` below)
+        let Some(m) = reopen(tx, &c, ai)? else { continue };
         if m.view.kind.has_own_writes() {
             owned.extend(Owned::of_view(&m.view, &c, ai));
         }
-        if let Some(blob) = tx.get_commit(&c)? {
-            tx.put_commit(&c, &blob, &m, Shred::No, None)?;
-        }
-        tx.core.ix.commits.insert(c, m);
         if let Some(ch) = &mut tx.core.changed {
             ch.undropped.insert(c);
         }
@@ -394,7 +378,56 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     Ok(owned)
 }
 
-/// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7).
+/// Makes dropped part `ai` of `c` missing, as at a node that never received it: what its body
+/// judged goes too (`Dropped::role`; the header's one-delta rule for `secrets.0` stays,
+/// `validity::note_required`). Its meta after.
+fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
+    tx.core.touch();
+    let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    m.dropped.remove(&ai);
+    m.missing.insert(ai);
+    tx.core.ix.rotation_role.remove(&(*c, ai));
+    let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
+    if !several {
+        tx.core.ix.grant_overreach.remove(&(*c, ai));
+    }
+    // those are inputs of its judgment (`validity::rejudge_all` judges it again)
+    tx.core.stale_commits.insert(*c);
+    if let Some(blob) = tx.get_commit(c)? {
+        tx.put_commit(c, &blob, &m, Shred::No, None)?;
+    }
+    tx.core.ix.commits.insert(*c, m.clone());
+    Ok(Some(m))
+}
+
+/// Whether a late copy of dropped part `ai` of `c` joins (spec/crdt.md §4.7: a copy arriving
+/// after T or the purge is stripped and joined): its delta is held value-less and none of its
+/// writes were kept, as when it was missing at expiry or purge (no residue). Reopened
+/// (`reopen_late`), the copy joins and `on_late` drops it again, keeping its residue.
+pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+    let (Some(d), Some(a)) = (m.dropped.get(&ai), m.header.aspects.get(ai)) else { return Ok(false) };
+    let Some(o) = Owned::of(&m.header, c, ai).filter(|_| !d.as_cover && m.header.kind.has_own_writes()) else { return Ok(false) };
+    if !tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o)) {
+        return Ok(false);
+    }
+    let key = records::residue_key(&a.tid, &a.ak, c, ai);
+    Ok(tx.txn.get_local(&key)?.is_none())
+}
+
+/// Reopens the dropped parts among `ais` of `c` (`takes_late`) for their late copies to join.
+pub(crate) fn reopen_late(tx: &mut Tx<'_>, c: &CommitId, ais: &BTreeSet<usize>) -> Result<()> {
+    for ai in ais {
+        if tx.core.ix.commits.get(c).is_some_and(|m| m.dropped.contains_key(ai)) {
+            reopen(tx, c, *ai)?;
+        }
+    }
+    Ok(())
+}
+
+/// Holds the value-carrying writes of a delta value-less from now on (spec/crdt.md §4.7), and
+/// keeps its writes as a residue: from its body, or for a body dropped as covered from its held
+/// valid coverers' copies. A part dropped otherwise or still missing has none (`takes_late`).
 fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Tid, Ak)>> {
     tx.core.touch();
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
@@ -409,15 +442,35 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let enc = encode_owned(list);
     tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
     // the delta's writes lie where it touched the state (a page of a paged state)
-    let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
-    // its residue outlives the body: in the state a later write may supersede it, and when that
-    // write is un-merged the residue must supersede again (`apply::atomic::rebuilt`)
-    let mut residue = Fragment::default();
-    for b in &bodies {
-        residue.join(b.clone());
+    let mut bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    if bodies.is_empty() && m.dropped.get(&ai).is_some_and(|d| d.as_cover) {
+        // a covered body's live writes are in its coverers (a purge drops them next)
+        let found = std::cell::RefCell::new(Vec::new());
+        any_coverer(tx.core, c, ai, &|s| {
+            found.borrow_mut().push(*s);
+            false
+        });
+        for s in found.into_inner() {
+            let Some(sai) = held_part(tx.core, &s, &a.tid, &a.ak) else { continue };
+            if !crate::apply::validity::snapshot_valid(tx.core, &s, &a.tid, &a.ak) {
+                continue;
+            }
+            for p in crate::apply::held_parts(tx, &s, sai)? {
+                let mut f = p.into_fragment();
+                f.remove_writes(&|d| !o.owns(d));
+                bodies.push(f);
+            }
+        }
     }
-    residue.strip(&|d| o.owns(d));
-    if !residue.is_empty() {
+    // its residue outlives the body: in the state a later write may supersede it, and when that
+    // write is un-merged the residue must supersede again (`apply::atomic::rebuilt`); kept even
+    // empty, so a late copy is not taken again (`takes_late`)
+    if !bodies.is_empty() {
+        let mut residue = Fragment::default();
+        for b in &bodies {
+            residue.join(b.clone());
+        }
+        residue.strip(&|d| o.owns(d));
         let memory = tx.txn.is_memory_aspect(&a.tid, &a.ak);
         let (key, enc) = (records::residue_key(&a.tid, &a.ak, c, ai), crate::engine::state::encode(&residue)?);
         tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::No)?))?;
@@ -634,23 +687,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(()) };
     let h = m.header.clone();
     let mut purged = BTreeSet::new();
-    for (ai, a) in h.aspects.iter().enumerate() {
-        if let Some(t) = a.expires {
-            if t <= tx.now().0 {
-                expire(tx, id, ai, &mut purged)?;
-            } else {
-                tx.put_timer(t, id, ai, T_EXPIRY)?;
-            }
-        }
-        // purge requests held before this delta arrived
-        for pc in purge_requests(tx, &a.tid, &a.ak)? {
-            let items: Vec<PurgeItem> = tx.core.ix.commits.get(&pc).map(|p| p.header.purge.clone()).unwrap_or_default();
-            for item in items {
-                purge_one(tx, &pc, &item, id, ai, &mut purged)?;
-            }
-        }
-        drop_purged_snapshot(tx, id, ai)?;
-    }
+    on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged)?;
     for item in &h.purge {
         let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
         for c in held {
@@ -666,6 +703,45 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
             tx.core.waits.wake(item.tid(), item.ak());
         }
     }
+    purged_changed(tx, purged, changed);
+    Ok(())
+}
+
+/// After late parts `ais` of applied commit `id` joined: `on_apply` for them (a part reopened
+/// by `takes_late` expires or is purged again, now with its body).
+pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
+    let mut purged = BTreeSet::new();
+    on_parts(tx, id, &h, ais, &mut purged)?;
+    purged_changed(tx, purged, changed);
+    Ok(())
+}
+
+/// Parts `ais` of applied commit `id`: expiry (now or by timer), held purge requests naming
+/// them, held snapshots' parts carrying purged values.
+fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, purged: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    for ai in ais.iter().copied() {
+        let Some(a) = h.aspects.get(ai) else { continue };
+        if let Some(t) = a.expires {
+            if t <= tx.now().0 {
+                expire(tx, id, ai, purged)?;
+            } else {
+                tx.put_timer(t, id, ai, T_EXPIRY)?;
+            }
+        }
+        // purge requests held before this delta arrived
+        for pc in purge_requests(tx, &a.tid, &a.ak)? {
+            let items: Vec<PurgeItem> = tx.core.ix.commits.get(&pc).map(|p| p.header.purge.clone()).unwrap_or_default();
+            for item in items {
+                purge_one(tx, &pc, &item, id, ai, purged)?;
+            }
+        }
+        drop_purged_snapshot(tx, id, ai)?;
+    }
+    Ok(())
+}
+
+fn purged_changed(tx: &mut Tx<'_>, purged: BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>) {
     for (t, a) in &purged {
         tx.core.mark_aspect_changed(t, a);
     }
@@ -673,7 +749,6 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
         tx.core.events.queue(Event::Changed { cause: Cause::Purge, changed: purged.iter().cloned().collect() });
         changed.extend(purged);
     }
-    Ok(())
 }
 
 /// A due timer: its store key, commit, aspect index and kind (`T_EXPIRY`, `T_AT_MOST`).
