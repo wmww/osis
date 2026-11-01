@@ -52,28 +52,45 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
     osis_keys::Key { ts: p.ts.to_u64(), node: p.node, commit: p.commit }
 }
 
-/// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timeline: `a`'s
-/// epoch start, then every applied commit ordered after it with an edge write on `a` lowering an
-/// edge (`departure_of`) or setting an `until` passed by now, and every applied commit ordered
-/// after it whose demotion's audit dropped an edge write on `a` (once per thing its edge writes
-/// target: that thing's epoch start may stand in for it). A superset of the departures from `a`
-/// this node knows of: a missed kind of departure would be a missed name. `departs`: the
-/// rotation commit itself, when it makes a departure from `a` (it cannot name its own ID).
+/// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timelines: those
+/// of `a` and of every actor below it (`below_of`: the holders with secrets of their own,
+/// transitively, owners included; `thing_names`). A holder actor's are named because its admins
+/// write its keyset: a node lacking an admin's departure from it holds that admin's later
+/// keysets valid and would box the actor there. Invariant (with `keyset_names`): where these
+/// names are met, every `keys.0` body of a boxed holder actor valid there is by an author the
+/// rotator did not see depart (every admin path into the actor runs through actors below `a`),
+/// so the keyset a met keyset name leads the node to box the actor at is one the rotator would
+/// box it at too. `departs`: the rotation commit itself, when it makes a departure from `a` (it
+/// cannot name its own ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut out = osis_keys::Names { departs, ..osis_keys::Names::default() };
-    let Some(tl) = core.timelines.get(a) else { return out };
+    thing_names(core, a, &mut out.list);
+    for v in below_of(core, a).0 {
+        thing_names(core, &v, &mut out.list);
+    }
+    out
+}
+
+/// The names of the departures from `a` (spec/crypto.md §4): `a`'s epoch start, then every
+/// applied commit ordered after it with an edge write on `a` lowering an edge (`departure_of`)
+/// or setting an `until` passed by now, and every applied commit ordered after it whose
+/// demotion's audit dropped an edge write on `a` (once per thing its edge writes target: that
+/// thing's epoch start may stand in for it). A superset of the departures from `a` this node
+/// knows of: a missed kind of departure would be a missed name.
+fn thing_names(core: &Core, a: &Tid, out: &mut BTreeSet<osis_keys::Name>) {
+    let Some(tl) = core.timelines.get(a) else { return };
     let now = now_ts(core);
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
     let start = tl.epoch_start(a).and_then(|id| core.ix.commits.get(&id).map(|m| osis_perm::Point { ts: m.view.ts, node: m.view.author, commit: id }));
     let after = |p: &osis_perm::Point| start.is_none_or(|s| key_of(p) > key_of(&s));
     if let Some(s) = start {
-        out.list.insert(osis_keys::Name { thing: *a, key: key_of(&s) });
+        out.insert(osis_keys::Name { thing: *a, key: key_of(&s) });
     }
     for (mc, op) in edge_writes(tl, a) {
         let p = mc.point();
         let lowers = departure_of(tl, a, mc, op).is_some() || op.edge.is_some_and(|e| !e.alive_at(Some(now)));
         if lowers && after(&p) && held(&p.commit) {
-            out.list.insert(osis_keys::Name { thing: *a, key: key_of(&p) });
+            out.insert(osis_keys::Name { thing: *a, key: key_of(&p) });
         }
     }
     for (w, p) in tl.dropped() {
@@ -86,10 +103,9 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
         }
         let things: BTreeSet<Tid> = tl.role_commit(&p.commit).map(|mc| mc.ops.iter().map(|op| op.target).collect()).unwrap_or_else(|| BTreeSet::from([*a]));
         for t in things {
-            out.list.insert(osis_keys::Name { thing: t, key: key_of(p) });
+            out.insert(osis_keys::Name { thing: t, key: key_of(p) });
         }
     }
-    out
 }
 
 /// The keyset names of a rotation (spec/crypto.md §4): per boxed holder actor and rotated role it

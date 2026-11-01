@@ -34,6 +34,11 @@ instances=(
   "rotation Rotation MC_names_own.cfg small fail"       # negative control: own removals only
   "rotation Rotation MC_keyset.cfg small pass"
   "rotation Rotation MC_keyset_nonames.cfg small fail"  # negative control: no keyset names
+  "rotation Rotation MC_keyset_forge.cfg small pass"
+  "rotation Rotation MC_keyset_forge_rot.cfg all pass"
+  "rotation Rotation MC_keyset_forge_nogroup.cfg small fail"  # negative control: no group names
+  "rotation Rotation MC_keyset_forge_commit.cfg small fail"   # negative control: commit-named keysets
+  "rotation Rotation MC_keyset_forge_write.cfg small fail"    # issues/unestablished-successor-history.md
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"

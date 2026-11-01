@@ -1,5 +1,6 @@
-//! A rotation's names (spec/crypto.md §4): the departures from the actor its rotator held, read
-//! from its own role timeline and carried in every history box the rotation writes. An epoch
+//! A rotation's names (spec/crypto.md §4): the departures from the actor and the actors below it
+//! its rotator held, read from its own role timeline and carried in every history box the
+//! rotation writes. An epoch
 //! whose secret a node holds is established there only once some history entry of it has its
 //! names met, so a node never uses an epoch while it lacks a departure the epoch's rotator held.
 
@@ -24,7 +25,9 @@ pub struct Name {
 
 /// A holder actor's keyset epoch a rotation's box to it names: a departure inside that actor
 /// rides in the rotation that made the epoch, and a node boxing the actor at an older keyset
-/// would hand the new epoch to the departed holder.
+/// would hand the new epoch to the departed holder. Met by any valid keyset body writing or
+/// listing it: the departures from the actor are named too (`Names::list`), so a departed admin's
+/// later keysets are invalid wherever the names are met.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct KeysetName {
     pub thing: Tid,
