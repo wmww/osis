@@ -121,6 +121,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `ephemeral::random_window_{converges,inflight,one_capped_host}_large`, `random_churn_converges_large` | osis-node | `OSIS_EPH_*` (0..200) | see Tiers |
 | `rotation::tests::forked_reseals_settle_large` | osis-engine lib | `OSIS_FORKS_*` (0..100) | 100 seeds 58 s at load 34; 1000 seeds 453 s at load 18-37 (was 2431 s one at a time) |
 | `rotation::tests::forks_with_departures_settle_large` | osis-engine lib | `OSIS_DEPART_*` (0..100) | 100 seeds 122 s at load 36 |
+| `rotation::tests::withheld_departures_leak_nothing_large` | osis-engine lib | `OSIS_WITHHELD_*` (0..100; each seed twice, with and without grants and `until`s) | 300 seeds 154 s at load 16 (one variant) |
 | `rotation::tests::cycle_removals_leak_nothing_random_large` | osis-engine lib | `OSIS_CYCLE_*` (1000..1200) | 200 seeds 15 s at load 28 |
 | `rotation::tests::rotator_lacking_write_resealed_large` | osis-engine lib | `OSIS_LACKING_*` (955..975) | 20 seeds 26 s at load 25 |
 | `apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8` | osis-engine lib | `OSIS_PAGED_APPLY_*` (1..25) | see Tiers |
