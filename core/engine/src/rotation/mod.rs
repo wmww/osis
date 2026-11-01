@@ -210,7 +210,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
         Some(osis_keys::Own { ts: ts.to_u64(), node: m.signer.unwrap_or(tx.core.id.tid()) })
     };
     let mut names = departures::names(tx.core, &a, departs);
-    names.list.extend(departures::keyset_names(tx.core, &boxed, roles));
+    names.keysets = departures::keyset_names(&boxed, roles);
     let rot = rotate(&a, roles, held, &secrets, &boxed, &names, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;

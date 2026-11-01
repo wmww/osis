@@ -266,9 +266,9 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
-    // a role-class body whole: what keys noted from it (`keys::intro_epochs`, `forget_dropped`)
+    // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
-    let intros = crate::apply::keys::intro_epochs(&m.header, ai, &role_bodies);
+    let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
     // what of the state holds copies of the dropped deltas' writes, shredded a piece at a time
     // while the part is still stored (none held: the state alone)
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
@@ -279,7 +279,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     if held.is_empty() {
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, intros });
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, keysets });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
@@ -371,7 +371,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     }
     for (c, ai) in lost {
         // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
-        // the epochs it introduced go too (`keys::rebuild_intro` below)
+        // the epochs it introduced or held go too (`keys::rebuild_keysets` below)
         let Some(m) = reopen(tx, &c, ai)? else { continue };
         // its residue, if it went value-less while dropped, came from its coverers' copies
         // (`make_valueless`) and goes with them. Invariant: a part dropped as covered has a
@@ -389,7 +389,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         }
     }
     if any && ak.as_str() == "keys.0" {
-        crate::apply::keys::rebuild_intro(tx, &BTreeSet::from([*tid]))?;
+        crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*tid]))?;
     }
     // held snapshots' copies of the writes of deltas now never received are carried writes
     if !owned.is_empty() {

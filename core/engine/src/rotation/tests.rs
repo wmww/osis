@@ -2207,7 +2207,6 @@ fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
 // yet it holds X's keyset X_p only and (S's roster lacking M) knows of no departure from X. e
 // must not be established at Y: Y's rotation of G would box X at X_p, which M opens.
 #[test]
-#[ignore = "issues/keyset-names-start-escape.md: fails, M opens e"]
 fn holder_keyset_name_not_met_by_roster_snapshot_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_971, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
@@ -2250,6 +2249,81 @@ fn holder_keyset_name_not_met_by_roster_snapshot_spec_crypto_4() {
     let mut got = osis_keys::ActorEpochs::default();
     osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &m_x }, &mut got, None).unwrap();
     assert!(got.read.reading_secret(&e).is_none(), "M opens e through Y's rotation");
+}
+
+/// X (peer 1's team, reader M = 2) reads G (peer 0's, admin Y = 3); M then leaves X (R_P, X's
+/// read to X_s). Returns (G, X, R_P's commits).
+fn keyset_world(lp: &mut LocalPeer) -> (Tid, Tid, BTreeSet<osis_base::CommitId>) {
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let x = group(lp, 1);
+    lp.peers[1].engine.grant(&x, &tids[2], &edge(Role::Read)).unwrap();
+    let g = group(lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(lp, 1);
+    lp.peers[1].engine.demote(&x, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_p = commit_ids(lp, 1).difference(&before).copied().collect();
+    (g, x, r_p)
+}
+
+// spec/crypto.md §4 (a keyset name is met by a held `keys.0` compaction snapshot carrying that
+// keyset): A (0) holds X's keyset X_s only from X's `keys.0` compaction snapshot S_k (R_P
+// withheld), and still names it (no introducing commit needed). Y (3), lacking R_P and S_k,
+// holds X_p only: e is not established there. Once S_k arrives (R_P still withheld), it is.
+#[test]
+fn keyset_name_from_compaction_snapshot_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_973, WallMs(1_700_000_000_000)).unwrap();
+    let (g, x, r_p) = keyset_world(&mut lp);
+    let x_s = lp.peers[1].engine.epochs(&x).unwrap().read.newest_held().unwrap().0;
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.compaction_snapshot(&x, &osis_base::Ak::new("keys.0").unwrap()).unwrap().unwrap();
+    let s_k: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    for pk in lp.packages(1).unwrap().iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[0].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(lp.peers[0].engine.core.ix.epoch_intro.get(&(x, Role::Read, x_s)).is_none(), "A holds no commit introducing X_s");
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    assert!(lp.peers[0].engine.epochs(&g).unwrap().read.is_established(&e), "A's own epoch");
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    let r_p_s_k: BTreeSet<_> = r_p.union(&s_k).copied().collect();
+    for pk in all.iter().filter(|p| !r_p_s_k.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    let at_y = lp.peers[3].engine.epochs(&g).unwrap();
+    assert!(at_y.read.secret(&e).is_some() && !at_y.read.is_established(&e), "e established at Y holding X_p only");
+    withheld_arrives(&mut lp, 3, g, e, &all, &s_k);
+}
+
+// spec/crypto.md §4 (a keyset name is met by a held keyset listing it as superseded): as above,
+// A holds R_P and rotates G to e naming X_s; X's owner then rotates X's read again (K2, listing
+// X_s). Y holds K2 but not R_P (its `keys.0` delta dropped after `ROLE_KEEP`, say): e is
+// established there, and Y boxes X at K2, which M does not open.
+#[test]
+fn keyset_name_met_by_superseding_keyset_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_975, WallMs(1_700_000_000_000)).unwrap();
+    let (g, x, r_p) = keyset_world(&mut lp);
+    let m_x = lp.peers[2].engine.epochs(&x).unwrap();
+    lp.sync(1, 0).unwrap();
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    rotate_leaving_out(&mut lp, 1, x, &BTreeSet::from([Role::Read]), &[]);
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(lp.peers[3].engine.epochs(&g).unwrap().read.is_current(&e), "e current at Y through K2");
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let e2 = newest_read(&lp, 3, g).unwrap();
+    let state = lp.peers[3].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    let mut got = osis_keys::ActorEpochs::default();
+    osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &m_x }, &mut got, None).unwrap();
+    assert!(got.read.reading_secret(&e).is_none() && got.read.reading_secret(&e2).is_none(), "M opens G through Y's rotation");
 }
 
 // spec/crypto.md §4 (names: every commit whose demotion's audit dropped an edge write on the

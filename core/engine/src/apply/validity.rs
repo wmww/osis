@@ -1130,7 +1130,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     // per aspect, the parts that went invalid (their bodies say which pages to un-merge)
     let mut fell: BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = BTreeMap::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
-    let mut intro_flips: BTreeSet<Tid> = BTreeSet::new();
+    let mut keyset_flips: BTreeSet<Tid> = BTreeSet::new();
     let things = std::mem::take(&mut tx.core.stale_things);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
@@ -1201,7 +1201,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     secrets_flips.push((id, ai, *b));
                 }
                 if x.ak.as_str() == "keys.0" {
-                    intro_flips.insert(x.tid);
+                    keyset_flips.insert(x.tid);
                 }
                 // a snapshot's frontiers count as received while it is valid (`receipt::received`)
                 if h.kind.is_compaction() {
@@ -1248,8 +1248,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             crate::retention::mark_deaths_due(tx, tid, ak)?;
         }
     }
-    super::keys::rebuild_intro(tx, &intro_flips)?;
-    super::keys::refresh_own_keys(tx, &intro_flips, true)?;
+    super::keys::rebuild_keysets(tx, &keyset_flips)?;
+    super::keys::refresh_own_keys(tx, &keyset_flips, true)?;
     for (c, ai, now_valid) in secrets_flips {
         if now_valid {
             super::keys::revalidated(tx, &c, ai)?;
@@ -1904,7 +1904,7 @@ mod keys_tests {
     // spec/crypto.md §4 (an epoch a departed party's rotation introduced does not cover its
     // departure), spec/commits.md §5: admin P rotates read (removing R); the owner grants X at
     // that epoch, compacts and drops P's rotation bodies. The epoch's introducer stays P's
-    // rotation (not the later grant), at open and after a rebuild.
+    // rotation (not the later grant), at open and after a rebuild; the keyset epoch stays held.
     #[test]
     fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
         let mut lp = LocalPeer::new(4, 931, WallMs(1_700_000_000_000)).unwrap();
@@ -1940,6 +1940,7 @@ mod keys_tests {
         lp.peers[0].engine.rebuild_index().unwrap();
         assert_eq!(intro(&lp), Some(p), "rebuilt");
         assert_eq!(d0.first_diff(&lp.peers[0].engine.index_digest()), None);
+        assert!(lp.peers[0].engine.core.ix.keyset_epochs.get(&t).is_some_and(|s| s.contains(&(Role::Read, ep))), "held keyset epoch kept");
     }
 
     // spec/permissions.md §3, spec/crypto.md §4: a writer rotates read and write only. A removal

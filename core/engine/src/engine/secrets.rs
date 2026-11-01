@@ -331,8 +331,8 @@ impl Core {
 }
 
 /// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits (a departing
-/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`), and epoch
-/// starts.
+/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`), epoch
+/// starts, and held keyset epochs (`keyset_epochs`).
 struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
@@ -348,6 +348,9 @@ impl osis_keys::Held for NamesHeld<'_> {
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))
         });
         applied || self.core.start_key(&n.thing).is_some_and(|s| n.key < s)
+    }
+    fn keyset(&self, k: &osis_keys::KeysetName) -> bool {
+        self.core.ix.keyset_epochs.get(&k.thing).is_some_and(|s| s.contains(&(k.role, k.epoch)))
     }
     fn departed(&self, own: &Own) -> bool {
         let applied = osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
@@ -743,7 +746,7 @@ mod tests {
         a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
         let k = |n: u8| Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_snapshot(e2);
-        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
+        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), keysets: [osis_keys::KeysetName { thing: Tid::from_bytes([6; 15]), role: Role::Write, epoch: e1 }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
         a.write.set_established(e1, Provenance::Derived);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);

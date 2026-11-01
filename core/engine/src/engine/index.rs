@@ -36,6 +36,7 @@ pub(super) const METAS: &[u8] = b"node/metas";
 // records table is not deepened by them).
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
+const KEYSET_EPOCHS: &[u8] = b"node/keyset epochs";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
@@ -479,9 +480,12 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
-        w = w.u32(d.intros.len() as u32);
-        for (r, e) in &d.intros {
-            w = w.u8(*r as u8).u64(e.n()).raw(e.nonce());
+        w = w.u32(d.keysets.len() as u32);
+        for (r, e, listed) in &d.keysets {
+            w = w.u8(*r as u8).u64(e.n()).raw(e.nonce()).u32(listed.len() as u32);
+            for x in listed {
+                w = w.u64(x.n()).raw(x.nonce());
+            }
         }
         let Some((fr, abs)) = &d.gives else {
             w = w.u8(0);
@@ -611,11 +615,15 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
         for _ in 0..r.u32()? {
             covered_by.insert(CommitId(r.arr()?));
         }
-        let mut intros = Vec::new();
+        let mut keysets = Vec::new();
         for _ in 0..r.u32()? {
-            let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped intro role"))?;
-            let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped intro epoch"))?;
-            intros.push((role, e));
+            let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from(r.u8()?)).copied().ok_or(Error::Corrupt("dropped keyset role"))?;
+            let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?;
+            let mut listed = Vec::new();
+            for _ in 0..r.u32()? {
+                listed.push(osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped keyset epoch"))?);
+            }
+            keysets.push((role, e, listed));
         }
         let gives = match r.u8()? {
             0 => None,
@@ -637,7 +645,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
         };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, intros });
+        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, keysets });
     }
     Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
@@ -674,6 +682,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     }
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
+    put_setmap(txn, KEYSET_EPOCHS, &c.ix.keyset_epochs, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
@@ -838,6 +847,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, EPOCH_INTRO)? {
         tx.core.ix.epoch_intro.insert(k, dec(&v)?);
+    }
+    for ((t, x), _) in scan::<(Tid, (Role, osis_crypto::Epoch))>(tx, KEYSET_EPOCHS)? {
+        tx.core.ix.keyset_epochs.insert(t, x);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);

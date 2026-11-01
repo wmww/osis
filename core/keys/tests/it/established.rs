@@ -36,6 +36,9 @@ impl osis_keys::Held for Holding {
     fn met(&self, n: &osis_keys::Name) -> bool {
         self.0.contains(&n.key.commit)
     }
+    fn keyset(&self, _: &osis_keys::KeysetName) -> bool {
+        true
+    }
     fn departed(&self, own: &osis_keys::Own) -> bool {
         u8::try_from(own.ts).is_ok_and(|b| self.0.contains(&cid(b)))
     }
@@ -174,7 +177,7 @@ fn reorder_holding_e2_without_e1() {
     let mut w = World::new();
     let (r1, a1v1, s1) = w.remove_m1();
     let e1 = r1.rotated[0].epoch;
-    let names = Names { list: [r1_name(&w)].into(), departs: None };
+    let names = Names { list: [r1_name(&w)].into(), ..Names::default() };
     let r2 = w.rotate_naming(&a1v1, &s1, &[w.p, w.a2], &names);
     let e2 = r2.rotated[0].epoch;
     let (mut a1v2, mut s1b) = (a1v1.clone(), s1.clone());

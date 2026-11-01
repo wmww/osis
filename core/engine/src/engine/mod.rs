@@ -104,11 +104,15 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// The epochs a role commit's `keys.0` body keyed (`epoch_intro` candidates,
-    /// `apply::keys::intro_epochs`): which commit introduced an epoch is a judgment the covers
-    /// rule needs.
-    pub intros: Vec<(osis_base::Role, osis_crypto::Epoch)>,
+    /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
+    /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
+    /// introduced an epoch is a judgment the covers rule needs); every valid one's count in
+    /// `keyset_epochs` (keyset names, spec/crypto.md §4).
+    pub keysets: Vec<KeysetRec>,
 }
+
+/// A keyset a `keys.0` body wrote: its role, epoch and the epochs it lists as superseded.
+pub(crate) type KeysetRec = (osis_base::Role, osis_crypto::Epoch, Vec<osis_crypto::Epoch>);
 
 /// A snapshot part's frontiers and `Absorbed` (commit, author).
 pub(crate) type Gives = (osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
@@ -462,6 +466,10 @@ indexes! {
     /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
     /// introducer is unknown (`rotation`).
     pub epoch_intro: EpochIntro,
+    /// The keyset epochs held per actor (spec/crypto.md §4, keyset names): each epoch a held
+    /// valid `keys.0` body (a role commit's delta or a compaction snapshot; kept once dropped,
+    /// `Dropped::keysets`) writes as a role's keyset or lists as superseded by one.
+    pub keyset_epochs: JSetMap<Tid, (osis_base::Role, osis_crypto::Epoch)>,
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
     /// (engine ms; 0: now).
     pub lost_due: JMap<Tid, u64>,

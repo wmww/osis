@@ -60,7 +60,7 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 /// this node knows of: a missed kind of departure would be a missed name. `departs`: the
 /// rotation commit itself, when it makes a departure from `a` (it cannot name its own ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
-    let mut out = osis_keys::Names { list: BTreeSet::new(), departs };
+    let mut out = osis_keys::Names { departs, ..osis_keys::Names::default() };
     let Some(tl) = core.timelines.get(a) else { return out };
     let now = now_ts(core);
     let held = |c: &osis_base::CommitId| core.ix.commits.contains_key(c);
@@ -92,12 +92,11 @@ pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> os
     out
 }
 
-/// The names of the keysets a rotation's boxes to holder actors name (spec/crypto.md §4): per
-/// boxed actor and rotated role it holds, the commit that introduced the epoch of the actor its
-/// box names (`epoch_intro`, when held). A departure inside a holder actor rides in the
-/// actor's rotation that wrote that keyset: a node lacking it would box the actor at an older
+/// The keyset names of a rotation (spec/crypto.md §4): per boxed holder actor and rotated role it
+/// holds, the epoch of the actor its box names. A departure inside a holder actor rides in the
+/// actor's rotation that made that epoch: a node not holding it would box the actor at an older
 /// keyset a departed holder of it opens, and the new epoch's history box would carry this one.
-pub(crate) fn keyset_names(core: &Core, boxed: &[osis_keys::Recipient], roles: &BTreeSet<Role>) -> BTreeSet<osis_keys::Name> {
+pub(crate) fn keyset_names(boxed: &[osis_keys::Recipient], roles: &BTreeSet<Role>) -> BTreeSet<osis_keys::KeysetName> {
     let mut out = BTreeSet::new();
     for rc in boxed {
         let osis_keys::HolderKeys::Actor { keysets, own } = &rc.keys else { continue };
@@ -107,8 +106,8 @@ pub(crate) fn keyset_names(core: &Core, boxed: &[osis_keys::Recipient], roles: &
                 Some((es, _)) if osis_keys::symmetric_box(es, ks.as_ref()) => Some(*es),
                 _ => ks,
             };
-            if let Some((ts, au, _, id)) = named.and_then(|e| core.ix.epoch_intro.get(&(rc.holder, *r, e))) {
-                out.insert(osis_keys::Name { thing: rc.holder, key: osis_keys::Key { ts: ts.to_u64(), node: *au, commit: *id } });
+            if let Some(e) = named {
+                out.insert(osis_keys::KeysetName { thing: rc.holder, role: *r, epoch: e });
             }
         }
     }

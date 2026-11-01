@@ -3,7 +3,8 @@
 //! whose secret a node holds is established there only once some history entry of it has its
 //! names met, so a node never uses an epoch while it lacks a departure the epoch's rotator held.
 
-use osis_base::{CommitId, Tid, Value};
+use osis_base::{CommitId, Role, Tid, Value};
+use osis_crypto::Epoch;
 use std::collections::BTreeSet;
 
 /// A commit's key (spec/permissions.md §6): its position in the role timeline's order.
@@ -21,6 +22,16 @@ pub struct Name {
     pub key: Key,
 }
 
+/// A holder actor's keyset epoch a rotation's box to it names: a departure inside that actor
+/// rides in the rotation that made the epoch, and a node boxing the actor at an older keyset
+/// would hand the new epoch to the departed holder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct KeysetName {
+    pub thing: Tid,
+    pub role: Role,
+    pub epoch: Epoch,
+}
+
 /// The rotation commit itself, when it departs a holder of the actor (it cannot name its own
 /// ID): its `ts` and author node, unique to it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -29,32 +40,46 @@ pub struct Own {
     pub node: Tid,
 }
 
-/// What one history entry names: the commits, and the rotation commit itself when it departs a
-/// holder.
+/// What one history entry names: the commits, the holder actors' keyset epochs, and the
+/// rotation commit itself when it departs a holder.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Names {
     pub list: BTreeSet<Name>,
+    pub keysets: BTreeSet<KeysetName>,
     pub departs: Option<Own>,
 }
 
+fn role_byte(r: Role) -> u64 {
+    match r {
+        Role::Read => 0,
+        Role::Write => 1,
+        Role::Admin => 2,
+    }
+}
+
 impl Names {
-    /// `[[name*], Opt([ts, node])]`, each name `[thing, ts, node, commit]`, ascending
-    /// (spec/wire.md §7).
+    /// `[[name*], [keyset name*], Opt([ts, node])]`, each name `[thing, ts, node, commit]`, each
+    /// keyset name `[thing, role, n, nonce]`, ascending (spec/wire.md §7).
     pub fn to_value(&self) -> Value {
         let list = self
             .list
             .iter()
             .map(|n| Value::List(vec![Value::bytes(n.thing.as_bytes()), Value::uint(n.key.ts), Value::bytes(n.key.node.as_bytes()), Value::bytes(&n.key.commit.0)]))
             .collect();
+        let keysets = self
+            .keysets
+            .iter()
+            .map(|k| Value::List(vec![Value::bytes(k.thing.as_bytes()), Value::uint(role_byte(k.role)), Value::uint(k.epoch.n()), Value::bytes(k.epoch.nonce())]))
+            .collect();
         let own = self.departs.iter().map(|o| Value::List(vec![Value::uint(o.ts), Value::bytes(o.node.as_bytes())])).collect();
-        Value::List(vec![Value::List(list), Value::List(own)])
+        Value::List(vec![Value::List(list), Value::List(keysets), Value::List(own)])
     }
 
     /// The names of `v`; `None` unless it is exactly the encoding `to_value` writes (ascending,
     /// distinct).
     pub fn from_value(v: &Value) -> Option<Names> {
         let Value::List(f) = v else { return None };
-        let [Value::List(items), Value::List(own)] = f.as_slice() else { return None };
+        let [Value::List(items), Value::List(ks), Value::List(own)] = f.as_slice() else { return None };
         let departs = match own.as_slice() {
             [] => None,
             [Value::List(o)] => match o.as_slice() {
@@ -78,7 +103,20 @@ impl Names {
             last = Some(n);
             list.insert(n);
         }
-        Some(Names { list, departs })
+        let mut keysets = BTreeSet::new();
+        let mut last: Option<KeysetName> = None;
+        for it in ks {
+            let Value::List(x) = it else { return None };
+            let [Value::Bytes(thing), Value::Int(role), Value::Int(n), Value::Bytes(nonce)] = x.as_slice() else { return None };
+            let role = [Role::Read, Role::Write, Role::Admin].get(usize::try_from(*role).ok()?).copied()?;
+            let k = KeysetName { thing: Tid::from_bytes(thing.as_slice().try_into().ok()?), role, epoch: Epoch::new(u64::try_from(*n).ok()?, nonce.as_slice().try_into().ok()?).ok()? };
+            if last.is_some_and(|l| l >= k) {
+                return None;
+            }
+            last = Some(k);
+            keysets.insert(k);
+        }
+        Some(Names { list, keysets, departs })
     }
 }
 
@@ -87,6 +125,10 @@ pub trait Held {
     /// `n`'s commit is applied here, or its key is ordered before this node's epoch start of
     /// `n.thing`.
     fn met(&self, n: &Name) -> bool;
+    /// A held valid `keys.0` body of `k.thing` writes `k.epoch` as its keyset of `k.role` or
+    /// lists it as superseded by one (no epoch start stands in: a roster snapshot carries no
+    /// keyset).
+    fn keyset(&self, k: &KeysetName) -> bool;
     /// The commit `own` names (by `ts` and author) is applied here with its edge write on the
     /// actor, or lies before this node's epoch start of the actor.
     fn departed(&self, own: &Own) -> bool;
@@ -98,6 +140,9 @@ pub struct AllHeld;
 
 impl Held for AllHeld {
     fn met(&self, _: &Name) -> bool {
+        true
+    }
+    fn keyset(&self, _: &KeysetName) -> bool {
         true
     }
     fn departed(&self, _: &Own) -> bool {
