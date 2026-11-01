@@ -73,8 +73,8 @@ pub struct Claim {
 pub struct EpochInfo {
     /// Suite ID (from the keyset that named it; 1 until one is seen).
     pub suite: u64,
-    /// Epochs its rotation superseded: from its rotation commit (removed boxes) and from its
-    /// opened history box (everything listed). Counts only once established.
+    /// Epochs its opened history box lists (and its rotator's own record). With its valid claims'
+    /// (`superseded_epochs`), what it supersedes; counts only once established.
     pub supersedes: BTreeSet<Epoch>,
     /// The held rotation commits that claim it, valid or not (the chain condition of
     /// `establish`): a holder may re-claim an epoch in a later commit, and invalidating that one
@@ -109,6 +109,14 @@ impl Default for EpochInfo {
 }
 
 impl EpochInfo {
+    /// What it supersedes (spec/crypto.md §4): the epochs its valid claims remove boxes at, and
+    /// those its opened history box lists. A function of the held claims and their verdicts, so a
+    /// claim found invalid leaves nothing behind.
+    pub fn superseded_epochs(&self) -> BTreeSet<Epoch> {
+        let claimed = self.claims.values().filter(|c| c.valid).flat_map(|c| c.supersedes.keys());
+        self.supersedes.iter().chain(claimed).copied().collect()
+    }
+
     /// Its secret is known only from pending commits.
     pub fn is_reading_only(&self) -> bool {
         self.secret.is_some() && !self.reading.is_empty()
@@ -242,11 +250,7 @@ impl RoleEpochs {
     /// whether it is new.
     pub fn set_claim(&mut self, e: Epoch, commit: CommitId, valid: bool, supersedes: Superseded) -> bool {
         let claim = Claim { valid, supersedes: supersedes.into_iter().filter(|(s, _)| s.n() < e.n()).collect() };
-        let info = self.observe(e);
-        if valid {
-            info.supersedes.extend(claim.supersedes.keys().copied());
-        }
-        info.claims.insert(commit, claim.clone()) != Some(claim)
+        self.observe(e).claims.insert(commit, claim.clone()) != Some(claim)
     }
 
     /// Rotation commit `commit` was found invalid: its claims stay, invalid; the epochs it
@@ -371,7 +375,7 @@ impl RoleEpochs {
 
     /// Superseded by an established rotation.
     pub fn superseded(&self, e: &Epoch) -> bool {
-        self.map.values().any(|i| i.established.is_some() && i.supersedes.contains(e))
+        self.map.values().any(|i| i.established.is_some() && i.superseded_epochs().contains(e))
     }
 
     /// Current epochs: established and not superseded, ascending.
@@ -538,7 +542,7 @@ impl ActorEpochs {
                     suite: i.suite,
                     // past the cap two owner epochs with one secret derive one epoch: it never
                     // supersedes itself
-                    supersedes: i.supersedes.iter().map(id).filter(|x| x != de).collect(),
+                    supersedes: i.superseded_epochs().iter().map(id).filter(|x| x != de).collect(),
                     claims: BTreeMap::new(),
                     snapshot: false,
                     established: i.established.map(|_| Provenance::Derived),

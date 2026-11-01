@@ -96,11 +96,11 @@ impl SecretsWrite {
         Ok(out)
     }
 
-    /// Records the write's epochs and rotations in `epochs` (a received commit's delta).
-    /// Establishes nothing: see `claimed`.
+    /// Records the epochs the write names in `epochs` (a received commit's delta). What its
+    /// rotations supersede is the commit's claims' (`claimed`). Establishes nothing.
     pub fn observe(&self, epochs: &mut ActorEpochs) -> Result<(), Error> {
-        for (r, e, sup) in self.rotations()? {
-            epochs.role_mut(r).rotation(e, sup.into_keys());
+        for (r, e, _) in self.rotations()? {
+            epochs.role_mut(r).observe(e);
         }
         for k in self.boxes.keys() {
             epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
