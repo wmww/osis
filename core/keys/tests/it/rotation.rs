@@ -28,7 +28,7 @@ fn switched(extra: &[Recipient]) -> (Tid, Tid, ActorEpochs, ActorEpochs, Secrets
     let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
-    view = r.preview(&view).unwrap();
+    view = applied(&r, &view, 1);
     (a, p, pe, view, s)
 }
 
@@ -112,7 +112,7 @@ fn supersession_independent_of_arrival_order() {
     let y = rotate(&a, &set(&[Role::Read]), &view, &s, &holders, &mut rng(3)).unwrap();
     let (mut sx, mut vx) = (s.clone(), view.clone());
     x.secrets.apply(&mut sx);
-    vx = x.preview(&vx).unwrap();
+    vx = applied(&x, &vx, 2);
     let z = rotate(&a, &set(&[Role::Read]), &vx, &sx, &holders, &mut rng(4)).unwrap();
     // `switched`'s rotation again (same inputs and randomness)
     let r0 = rotate(&a, &roles_up_to(Role::Admin), &ActorEpochs::derived(&pe, &a), &Secrets::default(), &holders, &mut rng(1)).unwrap();

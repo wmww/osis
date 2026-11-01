@@ -122,7 +122,7 @@ codec_struct! {
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, and what its rotation
-    /// supersedes: each epoch with the valid rotation commits of it the rotator applied
+    /// supersedes: each epoch with the valid settled rotation commits of it the rotator applied
     /// (spec/crypto.md §3, §4, §7, §8).
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Keyset { 0 epoch: Epoch, 1 kem_key: KemKey, 2 suite: u64, 3 delete_key: SigningKey, 4 supersedes: BTreeMap<Epoch, BTreeSet<CommitId>> }

@@ -51,7 +51,7 @@ impl World {
         let r0 = rotate(&a, &roles_up_to(Role::Admin), &derived, &Secrets::default(), &holders, &mut rng(1)).unwrap();
         let (mut s0, mut a1v) = (Secrets::default(), derived);
         r0.secrets.apply(&mut s0);
-        a1v = r0.preview(&a1v).unwrap();
+        a1v = applied(&r0, &a1v, 1);
         let mut a2v = ActorEpochs::default();
         ingest(&a, &s0, &Opener::Actor { holder: a2, epochs: &a2e }, &mut a2v, None).unwrap();
         assert!(r0.secrets.claimed(&mut a2v, cid(1), &r0.keys, true).unwrap());
@@ -82,7 +82,7 @@ impl World {
         let r1 = self.rotate(&v0, &s0, &[self.p, self.a2]);
         let (mut v, mut s) = (v0, s0);
         r1.secrets.apply(&mut s);
-        v = r1.preview(&v).unwrap();
+        v = applied(&r1, &v, 4);
         (r1, v, s)
     }
 }

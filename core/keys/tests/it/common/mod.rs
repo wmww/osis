@@ -57,3 +57,13 @@ pub fn actor_rcpt(holder: Tid, role: Role, a: &ActorEpochs) -> Recipient {
 pub fn key_rcpt(holder: Tid, role: Role, seed: &Secret32) -> Recipient {
     Recipient { holder, role, keys: HolderKeys::from_keys(&key_actor_keys(seed)).unwrap() }
 }
+
+/// `view` after the rotator applies its own rotation commit `rot` under ID `[id; 32]`: what a
+/// later rotation by it lists (spec/crypto.md §4) names the ID other nodes hold the commit by,
+/// which `Rotation::preview`'s placeholder does not.
+pub fn applied(rot: &osis_keys::Rotation, view: &ActorEpochs, id: u8) -> ActorEpochs {
+    let mut a = view.clone();
+    rot.record(&mut a);
+    rot.secrets.claimed(&mut a, osis_base::CommitId([id; 32]), &rot.keys, true).unwrap();
+    a
+}

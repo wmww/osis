@@ -181,12 +181,13 @@ fn removals(roles: &BTreeSet<Role>, held: &ActorEpochs, held_secrets: &Secrets) 
 /// What a rotation of a role whose current epochs are `current` lists as superseded in its
 /// keyset (spec/crypto.md §4): each current epoch not derived from the owner (a derived epoch,
 /// held only where the owner's secret is, is superseded through the history box), with the
-/// valid rotation commits of it applied here.
+/// valid settled rotation commits of it applied here.
 fn superseded_list(re: &RoleEpochs, current: &[Epoch]) -> Superseded {
+    let settled = re.settled_claims();
     current
         .iter()
         .filter(|e| re.provenance(e) != Some(Provenance::Derived))
-        .map(|e| (*e, re.get(e).map(|i| i.claims.iter().filter(|(_, c)| c.valid).map(|(id, _)| *id).collect()).unwrap_or_default()))
+        .map(|e| (*e, re.get(e).map(|i| i.claims.iter().filter(|(id, c)| c.valid && settled.contains(&(*e, **id))).map(|(id, _)| *id).collect()).unwrap_or_default()))
         .collect()
 }
 
