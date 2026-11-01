@@ -2,6 +2,8 @@
 > Summary: Under frozen coverage (notes/epoch-establishment-study.md) a grant of holder actor N on A carries the granter's names for N (departures inside N, N's keyset) under A's read secret, so an A-level boxer must hold them before boxing N. A boxer of A on U (one level up) is no reader of A and never sees them: it judges A's keyset knowing nothing about N. Question: is that a hole in NoLeak's "never held a role" half, or an accepted residual?
 > Tags: security, keys, engine
 
+Reproduced: `rotation::tests::repro_later_admin_path_forgery_meets_keyset_name_spec_crypto_4` (osis-engine, ignored; D forges X's keyset after N is granted admin on X, X a holder actor of G). Also on main.
+
 Filed on the devbox `keyset-names` branch (c0b63e8e); this copy carries the answer. The branch text was not available here; assumed rule: names tied to the grant, readable by every reader of A's label (the boxer of N is an A-admin, not a holder of N), the named commits placed with the grant, a grant that leaves the actor out of every role refused, history-box names under the read secret.
 
 ## Answer (devbox fable)
