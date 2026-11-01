@@ -1604,3 +1604,22 @@ fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
     assert_eq!(alike(&want, &got, &|_, _| false), None);
     check(21187, &h, LARGE).unwrap();
 }
+
+// spec/crdt.md §4.6 Un-merge, §4.7 (an expired delta's non-value writes stay), order seed
+// 24111: A writes v5, B writes v1, B's undo of v1 writes v5 back expiring; past its expiry its
+// body goes, leaving a value-less write that beats v1. A's later undo superseded it in the state,
+// then B's backdated demotion of A un-merges that undo: the value-less write must win again (was
+// v1 as made, absent in reverse: the residue lived in the state alone).
+#[test]
+fn expired_residue_survives_unmerge_spec_crdt_4_6() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 7, op: 12, k: 2, v: 5 }, Write { by: 1, t: 5, op: 0, k: 2, v: 4 }, New { by: 0, parent: 3, write: false }, Write { by: 0, t: 0, op: 12, k: 2, v: 1 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Undo { by: 1, back: 0 }, Undo { by: 0, back: 1 }, Advance { who: None, ms: 7126221 }, Undo { by: 1, back: 2 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }];
+    let played = play(24111, &h);
+    let made: Vec<usize> = (0..played.packs.len()).collect();
+    let rev: Vec<usize> = made.iter().rev().copied().collect();
+    for o in [made, rev] {
+        let mut p = deliver(&played, &o);
+        assert_eq!(p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap(), None, "order {o:?}");
+    }
+    check(24111, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
+}

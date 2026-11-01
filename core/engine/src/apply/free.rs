@@ -73,7 +73,11 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
+        let residues = tx.txn.memory_local_keys(&[records::RESIDUE, t.as_bytes()].concat());
         let aks = tx.txn.drop_memory_thing(t, |ak| ASPECT_RECORDS.iter().map(|p| records::aspect_key(p, t, ak)).collect())?;
+        for k in residues {
+            tx.txn.remove_local(&k, Shred::No)?;
+        }
         for ak in aks {
             unindex_aspect(tx.core, t, &ak);
         }

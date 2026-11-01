@@ -1051,6 +1051,29 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
     tx.set_state(tid, ak, st, Shred::Yes, false)
 }
 
+/// The residues of `(tid, ak)` (`records::RESIDUE`), not a void import's (its body joins
+/// nothing either). Invariant: every non-value write and value-less stamp of a delta held
+/// value-less is in a body or a residue the node holds, never in the state alone, so a rebuild
+/// (an un-merge) gives it back after a later write that superseded it in the state goes: the
+/// state stays the join of what is held, whatever the order the expiry, that write and its
+/// revocation came in.
+fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
+    let mut rows = Vec::new();
+    tx.scan(&records::aspect_key(records::RESIDUE, tid, ak), |k, v| {
+        let mut r = records::Rd::new(k);
+        let c = CommitId(r.arr()?);
+        rows.push((c, v));
+        Ok(())
+    })?;
+    let mut out = Vec::new();
+    for (c, v) in rows {
+        if !tx.core.ix.void.contains(&c) {
+            out.push(crate::engine::state::decode(&v)?);
+        }
+    }
+    Ok(out)
+}
+
 /// What `rebuild_without` writes, and the valid snapshots misstating a held delta other than by
 /// value-less copies. A held
 /// delta's writes under a dot a held valid snapshot misstates (`validity::misstated_in`) count
@@ -1120,8 +1143,11 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
         }
     }
     tx.load(tid, ak)?;
-    let mut current = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
-    if let Some(c) = current.as_mut() {
+    let current = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
+    // the state and the residues of bodies dropped value-less: what the node holds beyond its
+    // bodies (spec/crdt.md §4.6 Un-merge)
+    let mut kept: Vec<Fragment> = current.into_iter().chain(residues(tx, tid, ak)?).collect();
+    for c in kept.iter_mut() {
         if !strip_state.is_empty() {
             c.strip_forged(&|d| strip_state.contains(d));
         }
@@ -1136,7 +1162,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
     }
     let mut st = Fragment::default();
     let mut ch = Changes::new();
-    for mut b in current.into_iter().chain(bodies.into_iter().map(|b| b.0)) {
+    for mut b in kept.into_iter().chain(bodies.into_iter().map(|b| b.0)) {
         b.remove_dots(&|d| un.bad(d));
         st.join_into(b, None, &mut ch);
     }

@@ -19,6 +19,10 @@ pub const ASPECTS: &[u8] = b"a/";
 pub const RECEIPT: &[u8] = b"r/";
 /// Value-less deltas per aspect (expired, purged): `v/` + aspect key.
 pub const VALUELESS: &[u8] = b"v/";
+/// What a delta held value-less (expired, purged) leaves once its body goes: its body's writes
+/// with every value stripped (spec/crdt.md §4.7), one row per delta: `w/` + aspect key + commit
+/// ID + aspect index (4 bytes).
+pub const RESIDUE: &[u8] = b"w/";
 /// Purge items waiting for the deltas they name: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
@@ -75,6 +79,10 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k.extend_from_slice(&(a.len() as u16).to_be_bytes());
     k.extend_from_slice(a);
     k
+}
+
+pub fn residue_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
+    [aspect_key(RESIDUE, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()
 }
 
 pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {
