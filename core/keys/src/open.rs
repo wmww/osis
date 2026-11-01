@@ -3,6 +3,7 @@
 
 use crate::aspects::{from_schema, observe_secrets};
 use crate::epoch::{ActorEpochs, Unchecked};
+use crate::names::Names;
 use crate::Error;
 use osis_base::{Role, Tid};
 use osis_crypto::{BoxForm, BoxSlot, Epoch, KeyActorKeys, KemSecret, Secret32, key_actor_role_secret, open_box, open_history, open_symmetric_box, role_kem};
@@ -92,7 +93,8 @@ pub type HistoryAlts = BTreeMap<HistoryKey, Vec<Vec<u8>>>;
 /// entry of a key (`alts`: each live entry of keys with several) is tried, since any writer of
 /// the key may put one (spec/crypto.md §4); each secret an entry lists names its own epoch
 /// (osis-crypto recomputes it), so a lying entry only names an epoch of its own. The epochs
-/// listed are marked superseded by the opening one (counted once it is established).
+/// listed are marked superseded by the opening one (counted once it is established), and its
+/// names recorded (spec/crypto.md §4: what establishes it once met).
 /// `from`: the source when `secrets` is a pending commit's: what its history boxes list is
 /// reading-only, and so is what a reading-only secret opens (it inherits that secret's sources);
 /// neither supersedes anything.
@@ -121,11 +123,14 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
             progress = true;
             let mut opened_any = false;
             for c in std::iter::once(ct).chain(alts.get(k).into_iter().flatten()) {
-                let Ok(earlier) = open_history(&s, actor, k.role, &e, c) else { continue };
+                let Ok((earlier, names)) = open_history(&s, actor, k.role, &e, c) else { continue };
+                // an entry whose names do not parse opens nothing
+                let Some(names) = Names::from_value(&names) else { continue };
                 opened_any = true;
                 let re = epochs.role_mut(k.role);
                 if checked {
                     re.rotation(e, earlier.iter().map(|(x, _)| *x));
+                    re.add_names(e, names);
                 }
                 for (x, sx) in earlier {
                     if checked {
@@ -151,8 +156,9 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
 }
 
 /// Everything a node learns from `actor`'s `secrets.0`: the epochs named, its boxes' secrets,
-/// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
-/// `SecretsWrite::claimed` per held rotation commit and `snapshot_keyed` per held snapshot.
+/// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller records
+/// `SecretsWrite::rotated` per held valid rotation commit and `snapshot_keyed` per held snapshot,
+/// and its view establishes (`ActorEpochs::establish`).
 /// `unchecked`: `None` when `secrets` is the applied valid state; the source for boxes of a
 /// pending commit, whose secrets are kept for reading only (spec/crypto.md §4). Returns what
 /// could not be opened.

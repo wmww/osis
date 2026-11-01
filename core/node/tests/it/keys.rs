@@ -6,7 +6,7 @@ use common::*;
 use osis_base::{Role, Tid, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_crypto::SeededRng;
-use osis_keys::{HolderKeys, Provenance, Recipient, Rotation, rotate};
+use osis_keys::{HolderKeys, Names, Provenance, Recipient, Rotation, rotate};
 use osis_node::Mutation;
 use osis_node::local_peer::LocalPeer;
 use osis_schema::AspectKey;
@@ -19,18 +19,18 @@ fn rcpt(lp: &LocalPeer, i: usize, role: Role) -> Recipient {
     Recipient { holder: e.tid(), role, keys: HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
 }
 
-/// A read rotation of `a` from node 0's view, written as one role commit.
-fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>) -> (osis_base::CommitId, Rotation) {
+/// A read rotation of `a` from node 0's view, written as one role commit naming `names`.
+fn rotation_commit(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, names: &Names) -> (osis_base::CommitId, Rotation) {
     let holders = [rcpt(lp, 0, Role::Admin), rcpt(lp, 1, Role::Read)];
-    rotation_commit_to(lp, a, seed, roles, &holders)
+    rotation_commit_to(lp, a, seed, roles, &holders, names)
 }
 
 /// A rotation of `a` from node 0's view boxing `holders`.
-fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, holders: &[Recipient]) -> (osis_base::CommitId, Rotation) {
+fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Role>, holders: &[Recipient], names: &Names) -> (osis_base::CommitId, Rotation) {
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, holders, &mut SeededRng::from_u64(seed)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, holders, names, &mut SeededRng::from_u64(seed)).unwrap();
     let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -52,18 +52,22 @@ fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Rol
     (e.commit(m).unwrap().unwrap(), r)
 }
 
-// spec/crypto.md §4: a rotation commit received before the one it supersedes is not current
-// (nor established) until the chain is applied; establishment survives a restart.
+// spec/crypto.md §4 (names): a rotation commit naming a commit the node does not hold yet (here
+// the rotation before it) is not current (nor established) at a node holding its secret until
+// that commit is applied; establishment is recomputed after a restart.
 #[test]
 fn rotation_out_of_order_spec_crypto_4() {
     let mut lp = net(2, 81);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
-    let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]));
+    let (c1, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
     let v0 = lp.peers[0].engine.epochs(&a).unwrap();
     assert!(v0.read.is_established(&e1), "{:?}", v0.read);
-    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]));
+    let h1 = lp.peers[0].engine.header(&c1).unwrap();
+    let key = osis_keys::Key { ts: h1.ts.to_u64(), node: h1.author, commit: c1 };
+    let names = Names { list: [osis_keys::Name { thing: a, key }].into(), departs: None };
+    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &names);
     let e2 = r2.rotated[0].epoch;
     assert_eq!(lp.peers[0].engine.epochs(&a).unwrap().read.current(), vec![e2]);
     // node 1: the thing, then e2's commit before e1's
@@ -80,8 +84,8 @@ fn rotation_out_of_order_spec_crypto_4() {
     assert!(!v.read.current().contains(&e2));
     lp.deliver(1, &p1).unwrap();
     let v = lp.peers[1].engine.epochs(&a).unwrap();
-    assert_eq!(v.read.provenance(&e1), Some(Provenance::Chain));
-    assert_eq!(v.read.provenance(&e2), Some(Provenance::Chain));
+    assert_eq!(v.read.provenance(&e1), Some(Provenance::Rotated));
+    assert_eq!(v.read.provenance(&e2), Some(Provenance::Rotated));
     assert_eq!(v.read.current(), vec![e2]);
     lp.peers[1].restart(810).unwrap();
     assert_eq!(lp.peers[1].engine.epochs(&a).unwrap().read.current(), vec![e2]);
@@ -98,9 +102,9 @@ fn history_chain_from_state_spec_crypto_4() {
     let roles = BTreeSet::from([Role::Read]);
     let only0 = [rcpt(&lp, 0, Role::Admin)];
     // secrets of its own are all three roles' (spec/crypto.md §3); then two read rotations
-    rotation_commit_to(&mut lp, a, 9, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &only0);
-    let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0);
-    let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0);
+    rotation_commit_to(&mut lp, a, 9, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &only0, &Names::default());
+    let (_, r1) = rotation_commit_to(&mut lp, a, 1, roles.clone(), &only0, &Names::default());
+    let (_, r2) = rotation_commit_to(&mut lp, a, 2, roles.clone(), &only0, &Names::default());
     sync(&mut lp, 0, 1);
     let (e1, e2) = (r1.rotated[0].epoch, r2.rotated[0].epoch);
     assert!(lp.peers[1].engine.epochs(&a).is_none_or(|v| v.read.secret(&e2).is_none()), "not boxed yet");
@@ -154,9 +158,9 @@ fn late_keys_part_establishes_rotation_spec_crypto_4() {
     let mut lp = net(2, 86);
     lp.sync_all().unwrap();
     let a = new_thing(&mut lp, 0);
-    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]));
+    let (_, r1) = rotation_commit(&mut lp, a, 1, BTreeSet::from([Role::Read, Role::Write, Role::Admin]), &Names::default());
     let e1 = r1.rotated.iter().find(|x| x.role == Role::Read).unwrap().epoch;
-    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]));
+    let (c2, r2) = rotation_commit(&mut lp, a, 2, BTreeSet::from([Role::Read]), &Names::default());
     let e2 = r2.rotated[0].epoch;
     let pks = lp.packages(0).unwrap();
     for p in pks.iter().filter(|p| p.id != c2) {

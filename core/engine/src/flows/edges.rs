@@ -234,6 +234,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     let mut done = Done::default();
     let mut m = Mutation::new();
+    // before the rotation: a departing commit's names carry its signer (`rotation_into`)
+    if let Some(s) = signer {
+        m.sign_as(s);
+    }
     match old {
         Some(_) => remove_edge(&mut m, target, holder)?,
         None => {
@@ -291,9 +295,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             rot = Some(r);
         }
     }
-    if let Some(s) = signer {
-        m.sign_as(s);
-    }
     if selfr {
         m.unchecked();
     }
@@ -313,7 +314,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if let Err(i) = under.binary_search(&target) {
             under.insert(i, target);
         }
-        done.deliveries.push(Delivery::First { commits: vec![c], under });
+        done.deliveries.push(Delivery::First { commits: rotation::placed_with(c, rot.as_ref()), under });
         // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
         // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
         // may have left it already (an unplace), so it goes under the labels holding G, where

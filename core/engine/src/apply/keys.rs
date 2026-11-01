@@ -1,8 +1,8 @@
-//! Established epochs (spec/crypto.md §4):
-//! a held role commit's `secrets.0` write, valid or invalid, is `SecretsWrite::claimed` with its
-//! `keys.0` write; a held `secrets.0` compaction snapshot keys its epochs (`snapshot_keyed`); a
-//! commit later found invalid has its claims flipped invalid, valid again re-claimed. Establishment is
-//! persisted with the epochs, never re-inferred from state.
+//! What establishment (spec/crypto.md §4) is computed from: a held valid role commit's
+//! `secrets.0` write is recorded with its `keys.0` write (`SecretsWrite::rotated`); a held
+//! `secrets.0` compaction snapshot keys its epochs (`snapshot_keyed`); a commit later found
+//! invalid no longer counts, valid again is recorded again. `Core::own_epochs` establishes from
+//! these and the held commits and epoch starts (the names).
 
 use crate::engine::{Core, Tx};
 use crate::error::Result;
@@ -192,12 +192,11 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
             // epochs kept from a rotation found invalid earlier: start again from the derived
             // ones (`Core::epochs`), so a stale derived epoch stays current nowhere
             let derived = |e: &osis_keys::ActorEpochs| ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.established == Some(osis_keys::Provenance::Derived)));
-            let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_epochs(t).is_none();
+            let restart = regain && tx.core.ix.secrets.get(t).is_some_and(derived) && tx.core.own_record(t).is_none();
             let base = restart.then(|| tx.core.epochs(t)).flatten();
             tx.core.ix.own_keys.insert(*t);
-            if let Some(mut b) = base {
-                b.establish();
-                tx.core.ix.secrets.insert(*t, b);
+            if let Some(b) = base {
+                tx.core.ix.secrets.insert(*t, b.into_record());
                 save(tx, t)?;
             }
         } else {
@@ -274,8 +273,6 @@ pub(crate) struct Pending {
     ai: usize,
     actor: Tid,
     keys: KeysWrite,
-    /// The part is valid; an invalid one's rotations are recorded as invalid claims.
-    valid: bool,
 }
 
 pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, Decoded)], valid: &[bool]) -> Result<Vec<Pending>> {
@@ -294,7 +291,10 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
         }
         let Decoded::Delta(d) = d else { continue };
         note_boxes_to(tx.core, &a.tid, &d.fragment);
-        let ok = valid.get(*ai).copied().unwrap_or(false);
+        // an invalid commit's epochs count for nothing (spec/crypto.md §4)
+        if !valid.get(*ai).copied().unwrap_or(false) {
+            continue;
+        }
         let keys = parts
             .iter()
             .find_map(|(x, _, k)| match (h.aspects.get(*x), k) {
@@ -302,7 +302,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
                 _ => None,
             })
             .unwrap_or_default();
-        out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys, valid: ok });
+        out.push(Pending { id: h.id(), ai: *ai, actor: a.tid, keys });
     }
     Ok(out)
 }
@@ -333,11 +333,9 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
         }
         let actor = p.actor;
         let e = tx.core.ix.secrets.entry_or_default(actor);
-        // persisted whenever it changed: `claimed` also records epochs and supersessions it
-        // reports no change for
         let before = e.clone();
-        let changed = w.claimed(e, p.id, &p.keys, p.valid).unwrap_or(false);
-        if changed || *e != before {
+        let _ = w.rotated(e, p.id, &p.keys);
+        if *e != before {
             save(tx, &actor)?;
         }
     }
@@ -358,8 +356,8 @@ pub(crate) fn after_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, De
     Ok(())
 }
 
-/// A held commit's `secrets.0` delta became invalid: the rotations it claimed are claimed
-/// invalid (another valid commit claiming the same epoch keeps it applied).
+/// A held commit's `secrets.0` delta became invalid: its rotations no longer count (another valid
+/// rotation commit of the same epoch keeps it).
 pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.header.aspects.get(ai)).cloned() else { return Ok(()) };
     if a.ak.as_str() != "secrets.0" {
@@ -368,7 +366,6 @@ pub(crate) fn invalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     tx.core.touch();
     if let Some(e) = tx.core.ix.secrets.get_mut(&a.tid) {
         e.invalidate(c);
-        e.establish();
     }
     save(tx, &a.tid)
 }
@@ -400,7 +397,9 @@ pub(crate) fn revalidated(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()
     }
     tx.core.touch();
     let e = tx.core.ix.secrets.entry_or_default(a.tid);
-    if secrets.claimed(e, *c, &keys, true).unwrap_or(false) {
+    let before = e.clone();
+    let _ = secrets.rotated(e, *c, &keys);
+    if *e != before {
         save(tx, &a.tid)?;
     }
     Ok(())
@@ -706,7 +705,7 @@ mod tests {
                 held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
                 let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: kem.clone(), seed: None } };
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
-                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut rng).unwrap();
+                let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
                 let bytes = forge_role_commit(lp, x, t, &rec, &v, None);
                 assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
@@ -768,7 +767,7 @@ mod tests {
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let bytes = forge_role_commit(lp, by, t, &rec, &v, also);
         assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
@@ -914,7 +913,7 @@ mod tests {
         let epochs = lp.peers[0].engine.epochs(&t).unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
-        let w = osis_keys::reseal_holder(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
+        let w = osis_keys::box_holder(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
         let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
         // signed before the removal; pending for good (a thing nobody holds the `created.0` of)
         let bytes = forge_role_commit(&mut lp, 0, t, &rec, &v, Some(Tid::from_bytes([0x5b; 15])));
@@ -1002,7 +1001,7 @@ mod tests {
         let rcpt = osis_keys::Recipient { holder: lp.peers[1].engine.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
-        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
+        let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
         let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
         let mut forged = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 2, t, &rec, &boxed, None)).unwrap();
         forged.header.author = lp.peers[0].engine.tid();

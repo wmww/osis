@@ -24,7 +24,7 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
     let mut view = ActorEpochs::derived(pe, &a);
     let mut holders = vec![owner_rcpt(p, pe)];
     holders.extend_from_slice(extra);
-    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &mut rng(1)).unwrap();
+    let r = rotate(&a, &roles_up_to(Role::Admin), &view, &Secrets::default(), &holders, &osis_keys::Names::default(), &mut rng(1)).unwrap();
     let mut s = Secrets::default();
     r.secrets.apply(&mut s);
     view = r.preview(&view).unwrap();
@@ -61,7 +61,7 @@ fn lost_device_owner_rotation() {
     let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
     assert_eq!(rotate_first(&tid(0), &ts, &tview, &all, &rw, &deps, &newest), rw);
     // T rotates, boxing P under its new secrets: covered.
-    let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &mut rng(2)).unwrap();
+    let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
     let (mut tv2, mut ts2) = (tview.clone(), ts.clone());
     r.secrets.apply(&mut ts2);
     tv2 = r.preview(&tv2).unwrap();
@@ -81,7 +81,7 @@ fn grant_raced_by_rotation() {
     let (pe, ge) = (person(0x20), person(0x50));
     let (view, base) = switched(a, p, &pe, &[]);
     let grant = box_holder(&a, &view, &base, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(3)).unwrap().unwrap();
-    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &mut rng(4)).unwrap();
+    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(4)).unwrap();
     let mut s = base.clone();
     rot.secrets.apply(&mut s);
     grant.apply(&mut s);
@@ -94,7 +94,7 @@ fn grant_raced_by_rotation() {
     assert!(reseal_needed(&s, &v, &near, now).is_empty());
     let far = [Holder { holder: g, role: Role::Read, until: Some(WallMs(now.0 + 3_600_001)) }];
     assert_eq!(reseal_needed(&s, &v, &far, now).len(), 1);
-    let reseal = osis_keys::reseal_holder(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
+    let reseal = osis_keys::box_holder(&a, &v, &s, &actor_rcpt(g, Role::Read, &ge), &read(), &mut rng(5)).unwrap().unwrap();
     reseal.apply(&mut s);
     assert!(reseal_needed(&s, &v, &holders, now).is_empty());
     let mut gv = ActorEpochs::default();
@@ -112,8 +112,8 @@ fn rotation_held_before_the_removal() {
     let (pe, me) = (person(0x20), person(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)]);
     let with_m = [owner_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
-    let eager = rotate(&a, &read(), &view, &base, &with_m, &mut rng(6)).unwrap();
-    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &mut rng(7)).unwrap();
+    let eager = rotate(&a, &read(), &view, &base, &with_m, &osis_keys::Names::default(), &mut rng(6)).unwrap();
+    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &osis_keys::Names::default(), &mut rng(7)).unwrap();
     let none = MemoryHeldActors::default();
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
@@ -131,7 +131,7 @@ fn rotation_held_before_the_removal() {
     let first = rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &none);
     assert_eq!(first.contains(&Role::Read), v.read.newest() == Some(e2));
     // Rotating past both forks excludes M.
-    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &mut rng(8)).unwrap();
+    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &osis_keys::Names::default(), &mut rng(8)).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&e2) && history.contains(&e2r));
     assert_eq!(heal.rotated[0].supersedes, history);
@@ -163,7 +163,7 @@ fn raced_grant_box_still_uncovers() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let grant = box_holder(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     let write: BTreeSet<Role> = [Role::Write].into_iter().collect();
-    let rot = rotate(&a, &write, &view, &base, &[owner_rcpt(p, &pe)], &mut rng(7)).unwrap();
+    let rot = rotate(&a, &write, &view, &base, &[owner_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(7)).unwrap();
     let (mut s, mut v) = (base.clone(), view.clone());
     grant.apply(&mut s);
     rot.secrets.apply(&mut s);

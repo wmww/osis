@@ -93,7 +93,7 @@ impl Sim {
 
     fn rotate(&mut self, roles: &BTreeSet<Role>) {
         let mut r = self.next_rng();
-        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &mut r).unwrap();
+        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &osis_keys::Names::default(), &mut r).unwrap();
         assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
         self.view = rot.preview(&self.view).unwrap();
@@ -130,7 +130,7 @@ impl Sim {
                 let mut forks = Vec::new();
                 for _ in 0..2 {
                     let mut r = self.next_rng();
-                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.holders(), &mut r).unwrap());
+                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.holders(), &osis_keys::Names::default(), &mut r).unwrap());
                 }
                 for f in &forks {
                     f.secrets.apply(&mut self.s);
@@ -165,6 +165,7 @@ impl Sim {
             // Holding the state as a compaction snapshot, it agrees on the newest epoch.
             let mut sv = v.clone();
             osis_keys::snapshot_keyed(&self.s, &mut sv).unwrap();
+            sv.establish(&osis_keys::AllHeld);
             assert!(osis_keys::may_compact_secrets(&self.s, &sv).unwrap());
             for r in ROLES.into_iter().filter(|r| r <= role) {
                 assert_eq!(sv.role(r).newest_held().map(|x| x.0), self.view.role(r).newest(), "holder {i} role {r:?}");

@@ -8,7 +8,7 @@ use osis_base::CommitId;
 use crate::error::{Error, Result};
 use osis_base::{CreationRecord, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
-use osis_keys::{ActorEpochs, HistoryAlts, Opener, Provenance, ROLES, Unchecked};
+use osis_keys::{ActorEpochs, HistoryAlts, Key, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
@@ -62,7 +62,7 @@ impl Core {
         let mut chain = Vec::new();
         let mut cur = *tid;
         for _ in 0..MAX_CHAIN {
-            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur).cloned());
+            let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur));
             if let Some(mut e) = held {
                 for t in chain.iter().rev() {
                     e = ActorEpochs::derived(&e, t);
@@ -83,12 +83,28 @@ impl Core {
         None
     }
 
+    /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
+    /// applied commits and epoch starts, `NamesHeld`), so nothing about establishment is stored
+    /// or invalidated.
+    pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
+        let mut e = self.own_record(tid)?.clone();
+        e.establish(&NamesHeld { core: self, actor: *tid });
+        Some(e)
+    }
+
+    /// The key (spec/permissions.md §6) of this node's epoch start of `thing`, if any.
+    fn start_key(&self, thing: &Tid) -> Option<Key> {
+        let id = self.timelines.get(thing)?.epoch_start(thing)?;
+        let m = self.ix.commits.get(&id)?;
+        Some(Key { ts: m.view.ts.to_u64(), node: m.view.author, commit: id })
+    }
+
     /// The opened epochs of `tid` when they make it an actor with secrets of its own here: it is
     /// in `own_keys`, is no known thing, or, no keyset part of it held (`keyset_parts`), holds an epoch
-    /// established by an applied valid rotation or a held snapshot, a valid `secrets.0` part or an
-    /// inbox hint of its delete keys. Not by this node's own rotation alone: that commit may have
-    /// turned invalid.
-    pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
+    /// with a held valid rotation commit or snapshot, a valid `secrets.0` part or an inbox hint of
+    /// its delete keys. Not by this node's own rotation alone: that commit may have turned
+    /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
+    pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
         let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
         if self.ix.own_keys.contains(tid) || !thing {
@@ -100,7 +116,7 @@ impl Core {
         if self.ix.keyset_parts.get(tid).is_some_and(|s| !s.is_empty()) {
             return None;
         }
-        let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| matches!(i.established, Some(Provenance::Chain | Provenance::Snapshot))));
+        let rotated = || ROLES.iter().any(|r| e.role(*r).epochs().any(|(_, i)| i.rotated()));
         (rotated() || self.ix.delete_hints.contains_key(tid) || self.valid_secrets_part(tid)).then_some(e)
     }
 
@@ -116,7 +132,7 @@ impl Core {
     /// The opened epochs of a plain thing `tid` that are not its own (`own_epochs`): what a
     /// rotation since found invalid gave it (spec/crypto.md §3, §4), kept for reading.
     fn stale_epochs(&self, tid: &Tid) -> Option<&ActorEpochs> {
-        if self.own_epochs(tid).is_some() {
+        if self.own_record(tid).is_some() {
             return None;
         }
         self.ix.secrets.get(tid)
@@ -135,7 +151,7 @@ impl Core {
                 return Some(DeleteBase::KeyActor(k.keys().signing.verifying_key()));
             }
             if let Some(e) = self.own_epochs(&cur) {
-                return Some(DeleteBase::Actor(cur, Some(e.clone())));
+                return Some(DeleteBase::Actor(cur, Some(e)));
             }
             if self.ix.own_keys.contains(&cur) {
                 return Some(DeleteBase::Actor(cur, None));
@@ -290,17 +306,13 @@ impl Core {
         let Some(CreationRecord::Thing { owner, .. }) = self.created(actor) else { return };
         let Some(o) = self.epochs(owner) else { return };
         let d = ActorEpochs::derived(&o, actor);
-        let mut any = false;
         for r in ROLES {
             for (ep, info) in d.role(r).epochs() {
-                if info.established.is_some() && info.secret.is_some() && epochs.role(r).get(ep).is_some() && !epochs.role(r).is_established(ep) {
+                let sticky = epochs.role(r).get(ep).is_some_and(|i| i.established.is_some_and(Provenance::sticky));
+                if info.established.is_some() && info.secret.is_some() && epochs.role(r).get(ep).is_some() && !sticky {
                     epochs.role_mut(r).set_established(*ep, Provenance::Derived);
-                    any = true;
                 }
             }
-        }
-        if any {
-            epochs.establish();
         }
     }
 
@@ -315,6 +327,27 @@ impl Core {
                 let _ = osis_keys::observe_keys(keys, e);
             }
         }
+    }
+}
+
+/// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits (a departing
+/// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`), and epoch
+/// starts.
+struct NamesHeld<'c> {
+    core: &'c Core,
+    actor: Tid,
+}
+
+impl osis_keys::Held for NamesHeld<'_> {
+    fn met(&self, n: &Name) -> bool {
+        self.core.ix.commits.contains_key(&n.key.commit) || self.core.start_key(&n.thing).is_some_and(|s| n.key < s)
+    }
+    fn departed(&self, own: &Own) -> bool {
+        let applied = osis_base::Ak::new("roles.0").ok().and_then(|ak| self.core.ix.by_aspect.get(&(self.actor, ak))).is_some_and(|set| {
+            let ts = osis_base::Ts::from_u64(own.ts).unwrap_or_default();
+            set.range((ts, CommitId([0; 32]))..=(ts, CommitId([0xff; 32]))).any(|(_, c)| self.core.ix.commits.get(c).is_some_and(|m| m.view.author == own.node))
+        });
+        applied || self.core.start_key(&self.actor).is_some_and(|s| (own.ts, own.node) < (s.ts, s.node))
     }
 }
 
@@ -521,37 +554,8 @@ fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
 
 // ---- local encoding of held epochs (the store's actor secrets unit)
 
-fn provenance_code(p: Provenance) -> u64 {
-    match p {
-        Provenance::Fixed => 0,
-        Provenance::Derived => 1,
-        Provenance::Chain => 2,
-        Provenance::Snapshot => 3,
-    }
-}
-
-fn provenance_of(c: i64) -> Option<Provenance> {
-    [Provenance::Fixed, Provenance::Derived, Provenance::Chain, Provenance::Snapshot].get(usize::try_from(c).ok()?).copied()
-}
-
-/// A claim's superseded epochs: `[[epoch, [commit]]]`.
-fn encode_superseded(s: &osis_keys::Superseded) -> Value {
-    Value::List(s.iter().map(|(e, by)| Value::List(vec![e.to_wire(), Value::List(by.iter().map(|c| Value::Bytes(c.0.to_vec())).collect())])).collect())
-}
-
-fn decode_superseded(v: &Value) -> Option<osis_keys::Superseded> {
-    let Value::List(items) = v else { return None };
-    let mut out = osis_keys::Superseded::new();
-    for it in items {
-        let Value::List(it) = it else { return None };
-        let [e, Value::List(by)] = it.as_slice() else { return None };
-        let by = by.iter().map(|c| if let Value::Bytes(c) = c { Some(CommitId(c.as_slice().try_into().ok()?)) } else { None }).collect::<Option<_>>()?;
-        out.insert(Epoch::from_wire(e).ok()?, by);
-    }
-    Some(out)
-}
-
-/// Persisted as is: establishment is stored, never re-inferred on load (spec/crypto.md §4).
+/// Persisted: what establishment is computed from (rotation commits, snapshot, names) and the
+/// directly set `Fixed`/`Derived` provenances; `Rotated` is never stored (`Core::own_epochs`).
 pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
     let roles = ROLES
         .iter()
@@ -560,12 +564,14 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                 a.role(*r)
                     .epochs()
                     .map(|(e, i)| {
+                        let sticky = i.established.filter(|p| p.sticky()).map(|p| Value::Bool(p == Provenance::Derived));
                         Value::List(vec![
                             e.to_wire(),
                             Value::uint(i.suite),
-                            Value::List(i.claims.iter().map(|(c, cl)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Bool(cl.valid), encode_superseded(&cl.supersedes)])).collect()),
+                            Value::List(i.rotations.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
                             Value::Bool(i.snapshot),
-                            Value::List(i.established.iter().map(|p| Value::uint(provenance_code(*p))).collect()),
+                            Value::List(i.names.iter().map(osis_keys::Names::to_value).collect()),
+                            Value::List(sticky.into_iter().collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
                             Value::List(i.secret.iter().map(|s| Value::Bytes(s.expose().to_vec())).collect()),
                             Value::List(i.reading.iter().map(|u| Value::List(vec![Value::Bytes(u.author.as_bytes().to_vec()), Value::Bytes(u.commit.0.to_vec())])).collect()),
@@ -648,19 +654,25 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::Int(suite), Value::List(claims), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::Int(suite), Value::List(rotations), Value::Bool(snapshot), Value::List(names), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             info.suite = u64::try_from(*suite).map_err(|_| bad())?;
-            info.snapshot = *snapshot;
-            for cl in claims {
-                let Value::List(cl) = cl else { return Err(bad()) };
-                let [Value::Bytes(c), Value::Bool(valid), sup] = cl.as_slice() else { return Err(bad()) };
+            for x in rotations {
+                let Value::List(x) = x else { return Err(bad()) };
+                let [Value::Bytes(c), Value::List(list)] = x.as_slice() else { return Err(bad()) };
                 let c = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
-                info.claims.insert(c, osis_keys::Claim { valid: *valid, supersedes: decode_superseded(sup).ok_or_else(bad)? });
+                let list = list.iter().map(|s| Epoch::from_wire(s).map_err(|_| bad())).collect::<Result<_>>()?;
+                info.rotations.insert(c, list);
             }
-            if let [Value::Int(p)] = est.as_slice() {
-                info.established = Some(provenance_of(*p).ok_or_else(bad)?);
+            info.snapshot = *snapshot;
+            for n in names {
+                info.names.insert(osis_keys::Names::from_value(n).ok_or_else(bad)?);
+            }
+            match est.as_slice() {
+                [] => {}
+                [Value::Bool(derived)] => info.established = Some(if *derived { Provenance::Derived } else { Provenance::Fixed }),
+                _ => return Err(bad()),
             }
             for s in sup {
                 info.supersedes.insert(Epoch::from_wire(s).map_err(|_| bad())?);
@@ -710,7 +722,8 @@ mod tests {
     use super::*;
 
     // spec/crypto.md §4: a secret learned only from a pending or invalid commit stays reading-only
-    // across a restart (the mark is persisted with the epochs, never re-inferred).
+    // across a restart (the mark is persisted with the epochs, never re-inferred); what
+    // establishment is computed from round-trips.
     #[test]
     fn reading_only_mark_persists() {
         let mut a = ActorEpochs::default();
@@ -720,9 +733,11 @@ mod tests {
         let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(2));
-        a.read.set_established(e2, Provenance::Chain);
-        a.read.set_claim(e2, osis_base::CommitId([9; 32]), true, osis_keys::Superseded::from([(Epoch::new(1, [3; 32]).unwrap(), [osis_base::CommitId([8; 32])].into())]));
-        a.read.set_claim(e2, osis_base::CommitId([7; 32]), false, osis_keys::Superseded::new());
+        a.read.set_rotation(e2, osis_base::CommitId([9; 32]), [Epoch::new(1, [3; 32]).unwrap()].into());
+        let k = |n: u8| Key { ts: u64::from(n), node: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
+        a.read.set_snapshot(e2);
+        a.read.add_names(e2, osis_keys::Names { list: [Name { thing: Tid::from_bytes([6; 15]), key: k(5) }].into(), departs: Some(Own { ts: 7, node: Tid::from_bytes([7; 15]) }) });
+        a.write.set_established(e1, Provenance::Derived);
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

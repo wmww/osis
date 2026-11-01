@@ -207,10 +207,11 @@ fn ad_nonce(ad: &[u8]) -> [u8; 24] {
 }
 
 /// History box (role, epoch) of `actor`: AEAD under `kdf("history", secret)`, nonce zero,
-/// AD `[actor, role, n, nonce]`, plaintext `[[n, secret]*]` ascending by the epochs they name.
+/// AD `[actor, role, n, nonce]`, plaintext `[[[n, secret]*], names]`, the pairs ascending by the
+/// epochs they name, `names` the rotation's names (spec/crypto.md §4; osis-keys encodes them).
 /// Repeated pairs collapse; an epoch its secret does not name, or whose n is not below
 /// `epoch`'s, is `Malformed`.
-pub fn seal_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, earlier: &[(Epoch, Secret32)]) -> Result<Vec<u8>, Error> {
+pub fn seal_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, earlier: &[(Epoch, Secret32)], names: &Value) -> Result<Vec<u8>, Error> {
     let mut sorted: Vec<&(Epoch, Secret32)> = earlier.iter().collect();
     sorted.sort_by_key(|(e, _)| *e);
     sorted.dedup();
@@ -220,20 +221,27 @@ pub fn seal_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, e
     if sorted.iter().any(|(e, _)| e.n >= epoch.n) {
         return Err(Error::Malformed("history epoch not earlier"));
     }
-    let value = Value::List(sorted.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n), Value::Bytes(s.expose().to_vec())])).collect());
+    let pairs = Value::List(sorted.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n), Value::Bytes(s.expose().to_vec())])).collect());
+    let value = Value::List(vec![pairs, names.clone()]);
     let pt = Zeroizing::new(encode(&value));
     wipe_value(value);
     aead::seal(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &history_ad(actor, role, epoch), &pt)
 }
 
-/// Opens a history box: each entry at the epoch its secret names (spec/crypto.md §4); an entry
-/// out of order, or whose n is not below `epoch`'s, is `Malformed`.
-pub fn open_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, ct: &[u8]) -> Result<Vec<(Epoch, Secret32)>, Error> {
+/// Opens a history box: each entry at the epoch its secret names (spec/crypto.md §4), and the
+/// names value as written; an entry out of order, or whose n is not below `epoch`'s, is
+/// `Malformed`.
+pub fn open_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, ct: &[u8]) -> Result<(Vec<(Epoch, Secret32)>, Value), Error> {
     let pt = Zeroizing::new(aead::open(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &history_ad(actor, role, epoch), ct)?);
     let value = decode(&pt, &Limits::DEFAULT).map_err(|_| Error::Malformed("history"))?;
-    let out = parse_history(&value, actor, role, epoch);
-    wipe_value(value);
-    out
+    let Value::List(mut parts) = value else { return Err(Error::Malformed("history")) };
+    let (Some(names), Some(pairs), None) = (parts.pop(), parts.pop(), parts.pop()) else {
+        parts.into_iter().for_each(wipe_value);
+        return Err(Error::Malformed("history"));
+    };
+    let out = parse_history(&pairs, actor, role, epoch);
+    wipe_value(pairs);
+    Ok((out?, names))
 }
 
 fn parse_history(v: &Value, actor: &Tid, role: Role, epoch: &Epoch) -> Result<Vec<(Epoch, Secret32)>, Error> {
@@ -439,6 +447,11 @@ mod tests {
         assert!(matches!(open_symmetric_box(&s, &at, es, &lie), Err(Error::Malformed(_))));
     }
 
+    /// A names value (osis-keys encodes them; opaque here).
+    fn names() -> Value {
+        Value::List(vec![Value::List(vec![]), Value::Bool(true)])
+    }
+
     // spec/crypto.md §4: a history box under the new secret opens every distinct earlier one,
     // sorted, each at the epoch it names; another role or epoch does not open it.
     #[test]
@@ -447,18 +460,18 @@ mod tests {
         let a = actor(1);
         let e3 = ep(Role::Read, 3, 1);
         let earlier = vec![(ep(Role::Read, 2, 2), sec(2)), (ep(Role::Read, 1, 3), sec(3)), (ep(Role::Read, 2, 2), sec(2))];
-        let ct = seal_history(&s, &a, Role::Read, &e3, &earlier).unwrap();
+        let ct = seal_history(&s, &a, Role::Read, &e3, &earlier, &names()).unwrap();
         let got = open_history(&s, &a, Role::Read, &e3, &ct).unwrap();
-        assert_eq!(got, vec![earlier[1].clone(), earlier[0].clone()]);
+        assert_eq!(got, (vec![earlier[1].clone(), earlier[0].clone()], names()));
         assert_eq!(open_history(&s, &a, Role::Write, &e3, &ct), Err(Error::Decrypt));
         assert_eq!(open_history(&s, &a, Role::Read, &ep(Role::Read, 4, 1), &ct), Err(Error::Decrypt));
         let e1 = ep(Role::Read, 1, 1);
-        let empty = seal_history(&s, &a, Role::Read, &e1, &[]).unwrap();
-        assert_eq!(open_history(&s, &a, Role::Read, &e1, &empty), Ok(vec![]));
+        let empty = seal_history(&s, &a, Role::Read, &e1, &[], &names()).unwrap();
+        assert_eq!(open_history(&s, &a, Role::Read, &e1, &empty), Ok((vec![], names())));
         // Forks: one n, two secrets, both kept.
         let fork = [(ep(Role::Read, 2, 2), sec(2)), (ep(Role::Read, 2, 4), sec(4))];
-        let ct = seal_history(&s, &a, Role::Read, &e3, &fork).unwrap();
-        assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct).unwrap().len(), 2);
+        let ct = seal_history(&s, &a, Role::Read, &e3, &fork, &names()).unwrap();
+        assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct).unwrap().0.len(), 2);
     }
 
     // spec/crypto.md §4: a history box lists only earlier epochs, each the one its secret names.
@@ -468,19 +481,23 @@ mod tests {
         let a = actor(1);
         let e3 = ep(Role::Read, 3, 1);
         let lie = [(ep(Role::Read, 1, 2), sec(3))];
-        assert_eq!(seal_history(&s, &a, Role::Read, &e3, &lie), Err(Error::Malformed("history epoch")));
+        assert_eq!(seal_history(&s, &a, Role::Read, &e3, &lie, &names()), Err(Error::Malformed("history epoch")));
         for late in [ep(Role::Read, 3, 2), ep(Role::Read, 4, 2)] {
-            assert!(seal_history(&s, &a, Role::Read, &e3, &[(late, sec(2))]).is_err());
+            assert!(seal_history(&s, &a, Role::Read, &e3, &[(late, sec(2))], &names()).is_err());
         }
         // A box listing its own n (built by hand) is rejected on open; so is one out of order.
         let key = kdf(kdf::HISTORY, s.expose(), b"");
         let item = |n: i64, b: u8| Value::List(vec![Value::Int(n), Value::Bytes(vec![b; 32])]);
-        let pt = encode(&Value::List(vec![item(3, 2)]));
+        let pt = encode(&Value::List(vec![Value::List(vec![item(3, 2)]), names()]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history epoch not earlier")));
-        let pt = encode(&Value::List(vec![item(2, 2), item(1, 3)]));
+        let pt = encode(&Value::List(vec![Value::List(vec![item(2, 2), item(1, 3)]), names()]));
         let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
         assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history order")));
+        // the plaintext is exactly [pairs, names]
+        let pt = encode(&Value::List(vec![item(1, 3)]));
+        let ct = aead::seal(key.expose(), &ZERO_NONCE, &history_ad(&a, Role::Read, &e3), &pt).unwrap();
+        assert_eq!(open_history(&s, &a, Role::Read, &e3, &ct), Err(Error::Malformed("history")));
     }
 
     // spec/wire.md §1: epochs are `[n, nonce]` with n in the int range and a 32-byte nonce.

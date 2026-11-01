@@ -1,7 +1,7 @@
 //! `keys.0` and `secrets.0` contents and the writes rotations, grants and re-seals make to them
 //! (spec/crypto.md §3, §4; types: osis-schema `core_types`).
 
-use crate::epoch::{ActorEpochs, ROLES, SUITE, Superseded};
+use crate::epoch::{ActorEpochs, ROLES, SUITE};
 use crate::Error;
 use osis_base::{CommitId, Role};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, role_kem};
@@ -25,21 +25,20 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 }
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
-/// (spec/crypto.md §3, §7), superseding `supersedes` (§4: each epoch with the valid settled
-/// rotation commits of it the rotator applied).
-pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &Superseded) -> Keyset {
+/// (spec/crypto.md §3, §7), listing `supersedes` (§4).
+pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &BTreeSet<Epoch>) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
         kem_key: KemKey::X25519MlKem768(role_kem(secret).public().as_bytes().to_vec()),
         suite: SUITE,
         delete_key: SigningKey::Ed25519(DeleteSecret::derive(secret).verifying_key().to_bytes().to_vec()),
-        supersedes: supersedes.iter().map(|(e, by)| (to_schema(e), by.clone())).collect(),
+        supersedes: supersedes.iter().map(to_schema).collect(),
     }
 }
 
 /// What the rotation writing keyset `ks` supersedes, as its keyset lists it (spec/crypto.md §4).
-fn superseded_of(ks: &Keyset) -> Result<Superseded, Error> {
-    ks.supersedes.iter().map(|(e, by)| Ok((from_schema(e)?, by.clone()))).collect()
+fn superseded_of(ks: &Keyset) -> Result<BTreeSet<Epoch>, Error> {
+    ks.supersedes.iter().map(from_schema).collect()
 }
 
 /// A write to `secrets.0`: boxes put, boxes removed, history boxes put (spec/crypto.md §4).
@@ -80,7 +79,7 @@ impl SecretsWrite {
     }
 
     /// Records the epochs the write names in `epochs` (a received commit's delta): its box and
-    /// history keys. What a rotation supersedes is its claim's (`claimed`). Establishes nothing.
+    /// history keys. What a rotation supersedes is its commit's (`rotated`). Establishes nothing.
     pub fn observe(&self, epochs: &mut ActorEpochs) -> Result<(), Error> {
         for k in self.history.keys() {
             epochs.role_mut(k.role).observe(from_schema(&k.epoch)?);
@@ -96,7 +95,7 @@ impl SecretsWrite {
     /// at, with what that keyset lists as superseded. A grant or re-seal re-writes history boxes
     /// but writes no keyset, so it makes none. Superseded epochs not below e are kept here;
     /// `RoleEpochs` drops them.
-    pub fn rotation_commit(&self, keys: &KeysWrite) -> Result<Vec<(Role, Epoch, Superseded)>, Error> {
+    pub fn rotation_commit(&self, keys: &KeysWrite) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
         let mut out = Vec::new();
         for (r, ks) in &keys.keysets {
             if self.history.contains_key(&HistoryKey { role: *r, epoch: ks.epoch.clone() }) {
@@ -107,19 +106,16 @@ impl SecretsWrite {
     }
 
     /// The held commit `commit` carrying this write (and `keys.0` write `keys`) is applied and
-    /// valid (`valid`), or held and invalid: records its rotations as claims by it, and when
-    /// valid its epochs, then recomputes establishment (spec/crypto.md §4: an invalid commit's
-    /// epochs count for nothing but the chain passing through them). Returns whether
-    /// establishment or a claim recorded changed (persist then).
-    pub fn claimed(&self, epochs: &mut ActorEpochs, commit: CommitId, keys: &KeysWrite, valid: bool) -> Result<bool, Error> {
-        if valid {
-            self.observe(epochs)?;
-        }
+    /// valid: records its epochs and its rotations (spec/crypto.md §4). An invalid commit's
+    /// epochs count for nothing, so it is never recorded. Establishes nothing (the caller's
+    /// view does, `ActorEpochs::establish`). Returns whether a rotation recorded is new.
+    pub fn rotated(&self, epochs: &mut ActorEpochs, commit: CommitId, keys: &KeysWrite) -> Result<bool, Error> {
+        self.observe(epochs)?;
         let mut recorded = false;
         for (r, e, sup) in self.rotation_commit(keys)? {
-            recorded |= epochs.role_mut(r).set_claim(e, commit, valid, sup);
+            recorded |= epochs.role_mut(r).set_rotation(e, commit, sup);
         }
-        Ok(epochs.establish() | recorded)
+        Ok(recorded)
     }
 }
 
@@ -137,15 +133,15 @@ pub fn observe_secrets(s: &Secrets, epochs: &mut ActorEpochs) -> Result<(), Erro
     Ok(())
 }
 
-/// A held compaction snapshot of `secrets.0` (`s`, its pages joined) keys these epochs: they are
-/// established (`Snapshot`, spec/crypto.md §4). Returns whether anything changed (an epoch's
-/// snapshot mark or establishment): what the caller persists.
+/// A held compaction snapshot of `secrets.0` (`s`, its pages joined) keys these epochs
+/// (spec/crypto.md §4: a base of establishment). Returns whether anything changed: what the
+/// caller persists.
 pub fn snapshot_keyed(s: &Secrets, epochs: &mut ActorEpochs) -> Result<bool, Error> {
     let mut changed = false;
     for (r, e) in keyed(s)? {
         changed |= epochs.role_mut(r).set_snapshot(e);
     }
-    Ok(epochs.establish() | changed)
+    Ok(changed)
 }
 
 /// The `secrets.0` compaction gate (spec/crypto.md §4): every epoch the state `s` keys is

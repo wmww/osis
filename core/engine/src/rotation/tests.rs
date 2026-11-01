@@ -1368,12 +1368,12 @@ fn forks_with_departures_settle_spec_permissions_3() {
     forks_with_departures(1, false);
 }
 
-// spec/crypto.md §4 (settled rotation commits): rotation commits turned invalid, their rotator
-// demoted concurrently. Seeds 23, 25: a demoted admin's own rotation falls at it too (at 25 it
-// stayed current there, an epoch no other node established). Seeds 51, 243, 336: a valid
-// rotation superseding one stayed unestablished but at its author, and so every one after it (at
-// 51 the older epoch stayed current with its boxes gone, an admin signing under it while a demoted
-// writer held it); 336 settles only by passing through the invalid one.
+// spec/crypto.md §4 (established by its own valid rotation commit, whatever came before):
+// rotation commits turned invalid, their rotator demoted concurrently. Seeds 23, 25: a demoted
+// admin's own rotation falls at it too (at 25 it stayed current there, an epoch no other node
+// established). Seeds 51, 243, 336: a valid rotation superseding an invalid one is established
+// (once a chain through the superseded epochs was required, it stayed unestablished but at its
+// author, and so every one after it: at 51 the older epoch stayed current with its boxes gone).
 #[test]
 fn invalid_own_rotation_falls_spec_crypto_4() {
     forks_with_departures(23, false);
@@ -1385,29 +1385,29 @@ fn invalid_own_rotation_falls_25_spec_crypto_4() {
 }
 
 #[test]
-fn chain_passes_invalid_rotation_51_spec_crypto_4() {
+fn rotation_after_invalid_one_51_spec_crypto_4() {
     forks_with_departures(51, false);
 }
 
 #[test]
-fn chain_passes_invalid_rotation_243_spec_crypto_4() {
+fn rotation_after_invalid_one_243_spec_crypto_4() {
     forks_with_departures(243, false);
 }
 
 #[test]
-fn chain_passes_invalid_rotation_336_spec_crypto_4() {
+fn rotation_after_invalid_one_336_spec_crypto_4() {
     forks_with_departures(336, false);
 }
 
-// spec/crypto.md §4 (settled: passing through re-written boxes): peer 1's rotation G of read
+// spec/crypto.md §4 (established by its own valid rotation commit): peer 1's rotation G of read
 // (epoch s, boxing peers 2 and 4 only) falls invalid, peer 0 demoting 1 to read concurrently;
 // peer 4's rotation of read is a valid fork beside it. Unaware of the demotion, 2 and 4 re-grant
 // each other (re-writing every box G made at s), then 2 removes reader 3: its rotation C removes
-// the boxes at s and at 4's fork, its removal at s naming only the grants. Before: C never
-// settled, so 4's fork stayed current with its boxes gone, covering 3 by the box rule, and was
-// encrypted under while 3 held it.
+// the boxes at s and at 4's fork. C must be established wherever it is held, else 4's fork stays
+// current with its boxes gone, covering 3 by the box rule, and is encrypted under while 3 holds
+// it.
 #[test]
-fn chain_passes_invalid_rotation_through_regrants_spec_crypto_4() {
+fn rotation_after_invalid_one_through_regrants_spec_crypto_4() {
     let mut lp = LocalPeer::new(5, 3_917, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1441,9 +1441,8 @@ fn chain_passes_invalid_rotation_through_regrants_spec_crypto_4() {
 }
 
 /// Peer `w`, holding read epoch `s` of `g`, signs F, a forged rotation commit of `s`: `s`'s
-/// keyset (listing nothing, so F is settled), history box and `holder`'s box at `s` written again.
-/// Returns F's ID.
-fn forge_claim(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, holder: Tid) -> osis_base::CommitId {
+/// keyset (listing nothing), history box and `holder`'s box at `s` written again. Returns F's ID.
+fn forge_rotation(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, holder: Tid) -> osis_base::CommitId {
     let ids = |lp: &mut LocalPeer| -> BTreeSet<osis_base::CommitId> { lp.packages(w).unwrap().into_iter().map(|p| p.id).collect() };
     let before = ids(lp);
     lp.peers[w]
@@ -1465,16 +1464,14 @@ fn forge_claim(lp: &mut LocalPeer, w: usize, g: Tid, s: osis_crypto::Epoch, hold
     *ids(lp).difference(&before).next().unwrap()
 }
 
-// spec/crypto.md §4 (only the commits a rotation's keyset lists pass an epoch through): owner A
-// (peer 0) removes reader M (2), rotating read to s (R_s). Admin G (1) signs F, a forged
-// rotation commit of s (s's keyset, history box and X's box written again; it lists nothing, so
-// it is settled), then re-grants admin X (3), whose box record it replaces at s (C). A, holding C
-// but not F, removes G, rotating to e (listing R_s; its removals at s name R_s and C, C's names
-// F); so F is invalid (G demoted concurrently). X holds every commit but R_s: e must not be
-// established there (else X, still seeing M as a reader, re-seals e to it). Once R_s arrives, e
-// is.
+// spec/crypto.md §4 (names): owner A (peer 0) removes reader M (2), rotating read to s (R_s).
+// Admin G (1) signs F, a forged rotation commit of s (s's keyset, history box and X's box
+// written again), then re-grants admin X (3), whose box record it replaces at s (C). A, holding C
+// but not F, removes G, rotating to e (naming R_s); so F is invalid (G demoted concurrently). X
+// holds every commit but R_s: e must not be established there (else X, still seeing M as a
+// reader, re-seals e to it). Once R_s arrives, e is.
 #[test]
-fn forged_claim_withheld_rotation_spec_crypto_4() {
+fn forged_rotation_withheld_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1489,7 +1486,7 @@ fn forged_claim_withheld_rotation_spec_crypto_4() {
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
-    let f = forge_claim(&mut lp, 1, g, s, tids[3]);
+    let f = forge_rotation(&mut lp, 1, g, s, tids[3]);
     let before = ids(&mut lp, 1);
     lp.peers[1].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
     for pk in lp.packages(1).unwrap().into_iter().filter(|p| !before.contains(&p.id)) {
@@ -1504,24 +1501,29 @@ fn forged_claim_withheld_rotation_spec_crypto_4() {
         let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
     }
     let at_x = lp.peers[3].engine.epochs(&g).unwrap();
-    let claims = |x: &osis_keys::ActorEpochs, ep: &osis_crypto::Epoch| x.read.get(ep).map(|i| i.claims.iter().map(|(c, cl)| (*c, cl.valid)).collect::<Vec<_>>()).unwrap_or_default();
-    assert_eq!(claims(&at_x, &s), vec![(f, false)], "F held, invalid; R_s withheld");
-    assert!(claims(&at_x, &e).iter().any(|c| c.1), "e's rotation commit applied, valid");
-    assert!(!at_x.read.is_established(&e), "e established through a forged claim of s");
-    for pk in all.iter().filter(|p| r_s.contains(&p.id)) {
-        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
-    }
-    assert!(lp.peers[3].engine.epochs(&g).unwrap().read.is_current(&e));
+    let rotations = |x: &osis_keys::ActorEpochs, ep: &osis_crypto::Epoch| x.read.get(ep).map(|i| i.rotations.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
+    assert!(lp.peers[3].engine.core.ix.commits.contains_key(&f) && rotations(&at_x, &s).is_empty(), "F held, invalid; R_s withheld");
+    assert!(!rotations(&at_x, &e).is_empty(), "e's rotation commit applied, valid");
+    assert!(at_x.read.secret(&e).is_some());
+    assert!(!at_x.read.is_established(&e), "e established at X without R_s, which it names");
+    withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
-// spec/crypto.md §4 (only the rotator's own list picks the chain): owner A (peer 0) removes
-// reader M (2), rotating read to s (R_s). Writer W (1, may rotate read) signs F, a forged
-// rotation commit of s, valid and settled (it lists nothing). A applies F, then removes W,
-// rotating to e (listing s: R_s and F). X (3) holds every commit but R_s: F establishes s there
-// (W held s, so may leak it anyway), but e must not be established (else X, still seeing M as a
-// reader, re-seals e to it, though both M and W departed before e). Once R_s arrives, e is.
+/// The commits `withheld` of `all` reach peer `x`: `e` is then current there (names met).
+fn withheld_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::Epoch, all: &[crate::local_peer::Package], withheld: &BTreeSet<osis_base::CommitId>) {
+    for pk in all.iter().filter(|p| withheld.contains(&p.id)) {
+        let _ = lp.peers[x].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(lp.peers[x].engine.epochs(&g).unwrap().read.is_current(&e), "e current once the withheld commits arrive");
+}
+
+// spec/crypto.md §4 (names): owner A (peer 0) removes reader M (2), rotating read to s (R_s).
+// Writer W (1, may rotate read) signs F, a forged rotation commit of s, valid. A applies F, then
+// removes W, rotating to e (naming R_s). X (3) holds every commit but R_s: e must not be
+// established (else X, still seeing M as a reader, re-seals e to it, though both M and W departed
+// before e). Once R_s arrives, e is.
 #[test]
-fn valid_forged_claim_withheld_rotation_spec_crypto_4() {
+fn valid_forged_rotation_withheld_removal_spec_crypto_4() {
     let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1536,11 +1538,11 @@ fn valid_forged_claim_withheld_rotation_spec_crypto_4() {
     let r_s: BTreeSet<_> = ids(&mut lp, 0).difference(&before).copied().collect();
     let s = newest_read(&lp, 0, g).unwrap();
     lp.sync(0, 1).unwrap();
-    let f = forge_claim(&mut lp, 1, g, s, tids[3]);
+    let f = forge_rotation(&mut lp, 1, g, s, tids[3]);
     for pk in lp.packages(1).unwrap() {
         let _ = lp.peers[0].engine.ingest(&pk.bytes, pk.blobs);
     }
-    assert!(lp.peers[0].engine.epochs(&g).unwrap().read.get(&s).unwrap().claims[&f].valid, "F valid at A");
+    assert!(lp.peers[0].engine.epochs(&g).unwrap().read.get(&s).unwrap().rotations.contains_key(&f), "F valid at A");
     lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced }).unwrap();
     let e = newest_read(&lp, 0, g).unwrap();
     assert!(e.n() > s.n());
@@ -1550,33 +1552,173 @@ fn valid_forged_claim_withheld_rotation_spec_crypto_4() {
         let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
     }
     let at_x = lp.peers[3].engine.epochs(&g).unwrap();
-    let claims = |x: &osis_keys::ActorEpochs, ep: &osis_crypto::Epoch| x.read.get(ep).map(|i| i.claims.iter().map(|(c, cl)| (*c, cl.valid)).collect::<Vec<_>>()).unwrap_or_default();
-    assert_eq!(claims(&at_x, &s), vec![(f, true)], "F held, valid; R_s withheld");
-    assert!(claims(&at_x, &e).iter().any(|c| c.1), "e's rotation commit applied, valid");
-    assert!(!at_x.read.is_established(&e), "e established through a valid forged claim of s");
-    // X may re-seal s to M (s current there, M a reader): W, a holder of s, could leak s anyway
-    assert_eq!(at_x.read.current(), vec![s]);
-    for pk in all.iter().filter(|p| r_s.contains(&p.id)) {
-        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    let rotations = |x: &osis_keys::ActorEpochs, ep: &osis_crypto::Epoch| x.read.get(ep).map(|i| i.rotations.keys().copied().collect::<Vec<_>>()).unwrap_or_default();
+    assert_eq!(rotations(&at_x, &s), vec![f], "F held, valid; R_s withheld");
+    assert!(!rotations(&at_x, &e).is_empty(), "e's rotation commit applied, valid");
+    assert!(!at_x.read.is_established(&e), "e established at X without R_s, which it names");
+    // nor s: its history box (F's copy of R_s's) names R_s as its departing commit
+    assert!(!at_x.read.is_established(&s));
+    withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
+}
+
+/// Peers 0 (owner A of `g`), 1 (W, a writer), 2 (M, a reader), 3 (X, an admin), all synced; A
+/// then removes M (R_s, rotating read to s). Returns `g`, the tids, R_s's commits and s.
+fn removed_reader(lp: &mut LocalPeer, extra_admin: bool) -> (Tid, Vec<Tid>, BTreeSet<osis_base::CommitId>, osis_crypto::Epoch) {
+    let n = lp.peers.len();
+    let tids: Vec<Tid> = (0..n).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(lp, 0);
+    let mut grants = vec![(1, Role::Write), (2, Role::Read), (3, Role::Admin)];
+    if extra_admin {
+        grants.push((4, Role::Admin));
     }
-    assert!(lp.peers[3].engine.epochs(&g).unwrap().read.is_current(&e));
+    for (i, r) in grants {
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let before = commit_ids(lp, 0);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_s: BTreeSet<_> = commit_ids(lp, 0).difference(&before).copied().collect();
+    let s = newest_read(lp, 0, g).unwrap();
+    (g, tids, r_s, s)
+}
+
+fn commit_ids(lp: &mut LocalPeer, i: usize) -> BTreeSet<osis_base::CommitId> {
+    lp.packages(i).unwrap().into_iter().map(|p| p.id).collect()
+}
+
+/// Delivers `all` but `withheld` to peer `x`; asserts `e` is not established there (it names a
+/// withheld commit), then delivers the rest and asserts it is current.
+fn withheld_then_arrives(lp: &mut LocalPeer, x: usize, g: Tid, e: osis_crypto::Epoch, all: &[crate::local_peer::Package], withheld: &BTreeSet<osis_base::CommitId>) {
+    for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
+        let _ = lp.peers[x].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    let at_x = lp.peers[x].engine.epochs(&g).unwrap();
+    let cands = lp.peers[x].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
+    assert!(at_x.read.secret(&e).is_some(), "X holds e's secret");
+    assert!(!at_x.read.is_established(&e), "e established at X without R_s; re-seal candidates there: {cands:?}");
+    withheld_arrives(lp, x, g, e, all, withheld);
+}
+
+// spec/crypto.md §4 (names come from the rotator's own timeline, never from another's word):
+// writer W (1) saw R_s (M's removal) and rotates read to e1 itself, its history box naming
+// nothing and its keyset listing nothing (`list_s`: listing s, with a forged rotation commit F of
+// s beside it). At owner A e1 is current; A removes W, rotating to e (naming R_s). X (3), withheld
+// R_s, must not establish e (it would re-seal e to M, departed before e).
+fn writer_rotation_skips(list_s: bool) {
+    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (g, tids, r_s, s) = removed_reader(&mut lp, false);
+    lp.sync(0, 1).unwrap();
+    if list_s {
+        forge_rotation(&mut lp, 1, g, s, tids[3]);
+    }
+    lp.peers[1]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&g).unwrap();
+            let holders = super::recipients(tx, &g, &[])?;
+            let mut m = Mutation::new();
+            let secrets = crate::flows::secrets_in(tx, &g)?;
+            let mut rot = osis_keys::rotate(&g, &[Role::Read].into(), &held, &secrets, &holders, &osis_keys::Names::default(), &mut *tx.rng).unwrap();
+            let r = &rot.rotated[0];
+            let list: BTreeSet<osis_crypto::Epoch> = if list_s { [s].into() } else { BTreeSet::new() };
+            rot.keys.keysets.insert(Role::Read, osis_keys::keyset(&r.epoch, &r.secret, &list));
+            crate::flows::put_secrets(&mut m, g, &rot.secrets, false)?;
+            crate::flows::put_keysets(&mut m, g, &rot.keys)?;
+            crate::engine::Engine::commit_tx(tx, m)?;
+            super::record(tx, g, &rot)
+        })
+        .unwrap();
+    for pk in lp.packages(1).unwrap() {
+        let _ = lp.peers[0].engine.ingest(&pk.bytes, pk.blobs);
+    }
+    let e1 = newest_read(&lp, 0, g).unwrap();
+    assert!(e1.n() > s.n(), "W's rotation current at A");
+    assert_eq!(lp.peers[0].engine.epochs(&g).unwrap().read.current(), vec![e1]);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced }).unwrap();
+    let e = newest_read(&lp, 0, g).unwrap();
+    assert!(e.n() > e1.n());
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
+}
+
+#[test]
+fn writer_rotation_naming_nothing_spec_crypto_4() {
+    writer_rotation_skips(false);
+}
+
+#[test]
+fn writer_rotation_listing_forged_spec_crypto_4() {
+    writer_rotation_skips(true);
+}
+
+// spec/crypto.md §4 (names; an epoch held by snapshot alone): owner A (0) removes M (2) by R_s,
+// compacts `secrets.0` (a snapshot keying s), then removes W, rotating to e (naming R_s). X (3)
+// gets everything but R_s: e must not be established (X sees M as a reader).
+#[test]
+fn snapshot_keyed_without_removal_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_931, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (g, tids, r_s, s) = removed_reader(&mut lp, false);
+    let snap = lp.peers[0].engine.compaction_snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap()).unwrap();
+    assert!(snap.is_some());
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced }).unwrap();
+    let e = newest_read(&lp, 0, g).unwrap();
+    assert!(e.n() > s.n());
+    let all = lp.packages(0).unwrap();
+    withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
+}
+
+// spec/crypto.md §4 (names): A (0) rotates read (R_p), then removes M (2) by R_s. Writer W (1)
+// forges F of s. Admin B (4) gets everything but R_p and removes W, rotating to e: it names R_s
+// from its own timeline, whatever F says. X (3) gets everything but R_s: e not established.
+#[test]
+fn rotator_beside_forged_rotation_spec_crypto_4() {
+    let mut lp = LocalPeer::new(5, 3_931, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..5).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    for (i, r) in [(1, Role::Write), (2, Role::Read), (3, Role::Admin), (4, Role::Admin)] {
+        lp.peers[0].engine.grant(&g, &tids[i], &edge(r)).unwrap();
+    }
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 0);
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let r_p: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_s: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    let s = newest_read(&lp, 0, g).unwrap();
+    lp.sync(0, 1).unwrap();
+    forge_rotation(&mut lp, 1, g, s, tids[3]);
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[4].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert_eq!(lp.peers[4].engine.epochs(&g).unwrap().read.current(), vec![s], "s current at B");
+    lp.peers[4].engine.demote(&g, &Demotion { holder: tids[1], new: None, presync: PreSync::Synced }).unwrap();
+    let e = newest_read(&lp, 4, g).unwrap();
+    assert!(e.n() > s.n());
+    all.extend(lp.packages(4).unwrap());
+    withheld_then_arrives(&mut lp, 3, g, e, &all, &r_s);
 }
 
 /// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS (default 0..100, as `forks_with_departures_settle_large`).
 #[test]
 #[ignore = "tier 2"]
-fn regrants_pass_through_large() {
+fn regrants_after_invalid_rotation_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
-    let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::regrants_pass_through_large -- --ignored --exact");
-    s.run("rotation::tests::regrants_pass_through_large", replay, regrants_pass_through);
+    let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::regrants_after_invalid_rotation_large -- --ignored --exact");
+    s.run("rotation::tests::regrants_after_invalid_rotation_large", replay, regrants_after_invalid_rotation);
 }
 
-/// Random variations of `chain_passes_invalid_rotation_through_regrants_spec_crypto_4`: an
+/// Random variations of `rotation_after_invalid_one_through_regrants_spec_crypto_4`: an
 /// admin demoted by the owner rotates read unaware (invalid) beside a valid fork; the other
 /// admins, cut off from the owner, re-grant each other (re-writing the invalid rotation's boxes),
-/// then one removes the reader. Naming the chain by removal dots instead of the keyset list,
-/// about 1 seed in 10 leaks.
-fn regrants_pass_through(seed: u64) {
+/// then one removes the reader.
+fn regrants_after_invalid_rotation(seed: u64) {
     const N: usize = 5;
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
     let mut lp = LocalPeer::new(N, 5_000 + seed, WallMs(1_700_000_000_000)).unwrap();
@@ -1788,3 +1930,195 @@ fn departures_settle(lp: &mut LocalPeer, g: Tid, seed: u64, rng: &mut Rng, was: 
         }
     }
 }
+
+// spec/crypto.md §4 (names: the keysets a rotation's boxes to holder actors name): holder actor
+// X (peer 1's team, reader M = peer 2) reads G (peer 0's; admin Y = peer 3). M leaves X (R_P
+// rotates X to X_s). A rotates G to e, boxing X at X_s and naming R_P. Y, withheld R_P, holds X's
+// keyset X_p only: e must not be established there, so Y's rotation of G (e2, boxing X at X_p,
+// which M opens) does not carry e. Once R_P arrives, e is current at Y. Before: M opened e.
+#[test]
+fn holder_actor_keyset_named_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_951, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let x = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&x, &tids[2], &edge(Role::Read)).unwrap();
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let m_x = lp.peers[2].engine.epochs(&x).unwrap();
+    assert!(m_x.read.holds_any());
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.demote(&x, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_p: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    lp.sync(1, 0).unwrap();
+    let (done, still) = lp.peers[0].engine.ensure_rotated(&g).unwrap();
+    assert!(!done.commits.is_empty() && still.is_empty(), "A rotates G: {still:?}");
+    let e = newest_read(&lp, 0, g).unwrap();
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    let at_y = lp.peers[3].engine.epochs(&g).unwrap();
+    assert!(at_y.read.secret(&e).is_some() && !at_y.read.is_established(&e), "e established at Y without R_P");
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let e2 = newest_read(&lp, 3, g).unwrap();
+    // M, keeping X's secrets it held, opens G's secrets.0 as Y holds it: e2 (Y's own, made
+    // unaware), never e
+    let state = lp.peers[3].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    let mut got = osis_keys::ActorEpochs::default();
+    osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &m_x }, &mut got, None).unwrap();
+    assert!(got.read.reading_secret(&e2).is_some(), "Y boxed X at X_p");
+    assert!(got.read.reading_secret(&e).is_none(), "M opens e through Y's rotation");
+    withheld_arrives(&mut lp, 3, g, e, &all, &r_p);
+}
+
+/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS (default 0..100).
+#[test]
+#[ignore = "tier 2"]
+fn withheld_departures_leak_nothing_large() {
+    let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
+    let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::withheld_departures_leak_nothing_large -- --ignored --exact");
+    s.run("rotation::tests::withheld_departures_leak_nothing_large", replay, withheld_departures);
+}
+
+// spec/crypto.md §4 (names; a node uses an epoch only once it holds every departure its rotator
+// held): random removals, demotions, self-removals, rotations (forks, ones boxing nobody),
+// `secrets.0` compactions and partial syncs on a group of five peers; then an admin X gets
+// everything but some departing commits (and a few others), re-seals and rotates. No departed
+// peer opens, from the boxes held at the end, an epoch whose rotator held its departure (the last
+// write on its edge) and saw it below the epoch's role. Seeds 59 and 69 leak with names ignored.
+#[test]
+fn withheld_departures_leak_nothing() {
+    for seed in [59, 69] {
+        withheld_departures(seed);
+    }
+}
+
+fn withheld_departures(seed: u64) {
+    const N: usize = 5;
+    let roles = [Role::Read, Role::Write, Role::Admin];
+    let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
+    let mut lp = LocalPeer::new(N, 7_000 + seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..N).map(|i| lp.peers[i].engine.tid()).collect();
+    let g = group(&mut lp, 0);
+    for t in &tids[1..] {
+        lp.peers[0].engine.grant(&g, t, &edge(roles[rng.next(3) as usize])).unwrap();
+    }
+    lp.sync_all().unwrap();
+    // (role, epoch) -> the commits its rotator held when it made it (those it held before the
+    // action, and the rotation commit itself: a cascade rotation comes before a removal's), and
+    // the peers below the role in its view then
+    type Made = BTreeMap<(Role, osis_crypto::Epoch), (BTreeSet<osis_base::CommitId>, BTreeSet<usize>)>;
+    let mut made: Made = BTreeMap::new();
+    type Before = (BTreeSet<(Role, osis_crypto::Epoch)>, BTreeSet<osis_base::CommitId>);
+    let seen = |lp: &LocalPeer, i: usize| -> Before {
+        let epochs = (0..N).flat_map(|i| lp.peers[i].engine.epochs(&g).into_iter().flat_map(move |e| roles.into_iter().flat_map(move |r| e.role(r).epochs().map(move |(x, _)| (r, *x)).collect::<Vec<_>>()))).collect();
+        (epochs, lp.peers[i].engine.core.ix.commits.keys().copied().collect())
+    };
+    let record = |made: &mut Made, lp: &LocalPeer, i: usize, (before, held): &Before| {
+        let Some(e) = lp.peers[i].engine.epochs(&g) else { return };
+        for r in roles {
+            let below: BTreeSet<usize> = (0..N).filter(|d| lp.peers[i].engine.core.role_now(&tids[*d], &g) < Some(r)).collect();
+            for (x, info) in e.role(r).epochs() {
+                if info.checked().is_some() && !before.contains(&(r, *x)) {
+                    let own = lp.peers[i].engine.core.ix.epoch_intro.get(&(g, r, *x)).map(|v| v.3);
+                    made.insert((r, *x), (held.iter().copied().chain(own).collect(), below.clone()));
+                }
+            }
+        }
+    };
+    // the commits that lower an edge (removals, demotions, self-removals)
+    let mut departing: BTreeSet<osis_base::CommitId> = BTreeSet::new();
+    for _ in 0..3 + rng.next(4) {
+        for i in 0..N {
+            let Some(ri) = lp.peers[i].engine.core.role_now(&tids[i], &g) else { continue };
+            if ri < Role::Write || rng.next(2) == 0 {
+                continue;
+            }
+            let before = seen(&lp, i);
+            match rng.next(5) {
+                0 | 1 if ri == Role::Admin => {
+                    let j = 1 + rng.next(N as u64 - 1) as usize;
+                    let new = (rng.next(2) == 0).then_some(Role::Read);
+                    if j != i
+                        && lp.peers[i].engine.core.role_now(&tids[j], &g) > new
+                        && let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: new.map(edge), presync: PreSync::Synced })
+                    {
+                        departing.extend(d.commits);
+                    }
+                }
+                2 if i != 0 => {
+                    if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[i], new: None, presync: PreSync::Synced }) {
+                        departing.extend(d.commits);
+                    }
+                }
+                3 if ri == Role::Admin => {
+                    let _ = lp.peers[i].engine.compaction_snapshot(&g, &osis_base::Ak::new("secrets.0").unwrap());
+                }
+                _ => {
+                    let rot: BTreeSet<Role> = roles.into_iter().filter(|r| *r <= ri && rng.next(2) == 0).collect();
+                    if !rot.is_empty() {
+                        let skip: Vec<usize> = (0..N).filter(|j| *j != i && rng.next(4) == 0).collect();
+                        rotate_leaving_out(&mut lp, i, g, &rot, &skip);
+                    }
+                }
+            }
+            record(&mut made, &lp, i, &before);
+        }
+        for _ in 0..3 {
+            let (a, b) = (rng.next(N as u64) as usize, rng.next(N as u64) as usize);
+            if a != b {
+                lp.sync(a, b).unwrap();
+            }
+        }
+    }
+    // X: an admin that stays one at peer 0 (the owner never departs), given everything but
+    // some departing commits (and, rarely, others), re-seals and rotates
+    let x = (1..N).find(|p| lp.peers[0].engine.core.role_now(&tids[*p], &g) == Some(Role::Admin)).unwrap_or(0);
+    let mut all = Vec::new();
+    for p in (0..N).filter(|p| *p != x) {
+        all.extend(lp.packages(p).unwrap());
+    }
+    let mut withheld: BTreeSet<osis_base::CommitId> = departing.iter().copied().filter(|_| rng.next(2) == 0).collect();
+    withheld.extend(all.iter().map(|p| p.id).filter(|_| rng.next(8) == 0));
+    for pk in all.iter().filter(|p| !withheld.contains(&p.id)) {
+        let _ = lp.peers[x].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    for _ in 0..2 {
+        let before = seen(&lp, x);
+        let _ = lp.peers[x].engine.reseal_due(&g, &Pass);
+        let _ = lp.peers[x].engine.ensure_rotated(&g);
+        if rng.next(2) == 0 {
+            let rot: BTreeSet<Role> = roles.into_iter().filter(|_| rng.next(2) == 0).collect();
+            rotate_leaving_out(&mut lp, x, g, &rot, &[]);
+        }
+        record(&mut made, &lp, x, &before);
+    }
+    lp.sync_all().unwrap();
+    // each departed peer's departure: the last write on its edge, in the converged timeline
+    let tl = lp.peers[0].engine.core.timelines.get(&g).unwrap();
+    let last_write: Vec<Option<osis_base::CommitId>> = tids
+        .iter()
+        .map(|d| tl.applied().values().filter(|a| a.target == g && tl.role_commit(&a.point.commit).is_some_and(|mc| mc.ops.iter().any(|op| op.target == g && op.holder == *d))).map(|a| a.point).max().map(|p| p.commit))
+        .collect();
+    let state = lp.peers[0].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    for d in 0..N {
+        let Some(gone) = last_write[d] else { continue };
+        // what d holds, and opens of the converged state with its key
+        let seed_d = lp.peers[d].engine.core.id.seed().clone();
+        let mut got = lp.peers[d].engine.epochs(&g).unwrap_or_default();
+        let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[d], seed: &seed_d }, &mut got, None);
+        for r in roles.into_iter().filter(|r| lp.peers[0].engine.core.role_now(&tids[d], &g) < Some(*r)) {
+            for (e, _) in got.role(r).held_newest_first() {
+                let knew = made.get(&(r, e)).is_some_and(|(held, below)| held.contains(&gone) && below.contains(&d));
+                assert!(!knew, "seed {seed}: departed peer {d} opens {r:?} epoch {e:?} made by a rotator that saw it depart");
+            }
+        }
+    }
+}
+

@@ -135,9 +135,13 @@ pub fn boxes() -> VecFile {
     let e3 = named(&actor, Role::Read, 3, &s32(0x09));
     let mut earlier = vec![(named(&actor, Role::Read, 1, &s32(0x21)), s32(0x21)), (named(&actor, Role::Read, 2, &s32(0x22)), s32(0x22))];
     earlier.sort_by_key(|(e, _)| *e);
-    let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &earlier).unwrap();
-    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), earlier);
-    let pt = encode(&Value::List(earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect()));
+    // names (spec/wire.md §7): one name [thing, ts, node, commit], departs set
+    let name = Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(1_700_000_000_000 << 16), Value::Bytes(vec![0x31; 15]), Value::Bytes(vec![0x32; 32])]);
+    let names = Value::List(vec![Value::List(vec![name]), Value::Bool(true)]);
+    let h = seal_history(&s32(0x09), &actor, Role::Read, &e3, &earlier, &names).unwrap();
+    assert_eq!(open_history(&s32(0x09), &actor, Role::Read, &e3, &h).unwrap(), (earlier.clone(), names.clone()));
+    let pairs = Value::List(earlier.iter().map(|(e, s)| Value::List(vec![Value::Int(e.n() as i64), Value::Bytes(s.expose().to_vec())])).collect());
+    let pt = encode(&Value::List(vec![pairs, names]));
     let ad = encode(&Value::List(vec![Value::Bytes(actor.as_bytes().to_vec()), Value::Int(0), Value::Int(3), Value::Bytes(e3.nonce().to_vec())]));
     cases.push(
         case("history box", "spec/wire.md §7")

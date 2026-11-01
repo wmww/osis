@@ -170,7 +170,7 @@ fn roster_removal_cost() {
         // secrets of its own are all three roles' (spec/crypto.md §3): the thing gets them first
         let all = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
         let view = e.epochs(&a).unwrap();
-        let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &mut SeededRng::from_u64(2)).unwrap();
+        let r0 = rotate(&a, &all, &view, &Default::default(), &holders[..1], &osis_keys::Names::default(), &mut SeededRng::from_u64(2)).unwrap();
         let mut m = Mutation::new();
         for (k, b) in &r0.secrets.boxes {
             m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
@@ -191,7 +191,7 @@ fn roster_removal_cost() {
         let t0 = Instant::now();
         let view = e.epochs(&a).unwrap();
         let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-        let r = rotate(&a, &roles, &view, &state, &holders, &mut SeededRng::from_u64(1)).unwrap();
+        let r = rotate(&a, &roles, &view, &state, &holders, &osis_keys::Names::default(), &mut SeededRng::from_u64(1)).unwrap();
         let sealed = t0.elapsed();
         let mut m = Mutation::new();
         for (k, b) in &r.secrets.boxes {
