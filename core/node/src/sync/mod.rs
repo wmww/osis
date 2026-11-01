@@ -301,7 +301,7 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
-    /// Registrations refused for now per label (the back-off doubles per refusal).
+    /// Registrations refused for now in a row per label (the back-off doubles per refusal).
     pub refusals: BTreeMap<LabelId, u32>,
 }
 
@@ -623,6 +623,11 @@ impl SyncEngine {
 
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
+    }
+
+    /// Tests: knobs a running engine reads at each use (e.g. `retry_ms`).
+    pub fn config_mut(&mut self) -> &mut SyncConfig {
+        &mut self.cfg
     }
 
     /// Asks for a Tick at raw ms `t` at the latest (`settle_at`).

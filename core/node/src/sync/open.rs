@@ -366,6 +366,7 @@ impl SyncEngine {
         self.set_head(conn, l, head)?;
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.reopens.remove(&l);
+            c.req.refusals.remove(&l);
         }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Open;
@@ -527,7 +528,7 @@ impl SyncEngine {
     }
 
     /// The host refused registering `l` for now: opened again after a back-off, `retry_ms`
-    /// doubling per refusal on this connection up to `resync_ms`.
+    /// doubling per refusal in a row on this connection (an open resets it) up to `resync_ms`.
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
         let now = self.raw_now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);

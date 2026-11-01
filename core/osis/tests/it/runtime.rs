@@ -587,6 +587,8 @@ async fn own_host_device_in_process_spec_data_model_9() {
     let (_, reply) = alice.pair_accept(j.request()).unwrap();
     let dev = j.finish(&reply).unwrap();
     assert_eq!(dev.me(), alice.me());
+    // the refused-for-now back-off (5 s) shortened: the test waits it once per new label
+    alice.sync_engine(|s| s.config_mut().retry_ms = 100);
     dev.set_hosting(Some(osis::Hosting { listen: vec!["mem://h".into()], admit: osis::Admit::Own, ..Default::default() })).unwrap();
     let ha = tokio::time::timeout(GUARD, async {
         loop {

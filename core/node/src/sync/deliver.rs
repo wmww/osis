@@ -83,6 +83,7 @@ impl SyncEngine {
             c.req.replacing.retain(|(l, _), _| !gone(l));
             c.req.timed_sent.retain(|(l, _)| !gone(l));
             c.req.reopens.retain(|l, _| !gone(l));
+            c.req.refusals.retain(|l, _| !gone(l));
         }
         self.synced.actors.retain(|l, _| !gone(l));
         self.passes.retain(|(_, l), _| !gone(l));
