@@ -1,4 +1,0 @@
-# sweep-5-ak-grammar
-- A spelling script cannot see which untyped test keys are written ephemeral (`eph(CONST)`, `ukey(..)`, `.ephemeral()` on a variable). What found them: a temporary engine check that printed each key whose marker differed from its write lifetime, made non-fatal behind an env var, over one tier-1 run with `--nocapture`; a first fatal run only shows the first mismatch per test.
-- Changing AK bytes moves every seed-driven test onto other runs. `rotation::tests::rotator_lacking_carried_write_resealed_spec_permissions_3` stopped settling at its seed. A seed probe found the livelock on main at other seeds (issues/rotation-settle-livelock.md). Expect such fallout from any wire-byte rename.
-- osis-schema has `doctest = false` (policy.py). A `compile_fail` doctest I added passed `cargo test --doc` and then failed policy. Run policy.py before adding a doctest.
