@@ -356,17 +356,17 @@ impl<'p> Enc<'p> {
         }
     }
 
-    /// Sources of position (`w` 0) or flag (1) writes are held until `flush_deferred`.
+    /// Sources of position (`w` 0) or flag (1) writes are held, not noted, until `undefer`.
     pub(crate) fn defer(&mut self, w: usize) {
         self.defer = Some(w);
     }
-    pub(crate) fn undefer(&mut self) {
+    /// Ends holding: the sources held, for `note_held` when their run closes.
+    pub(crate) fn undefer(&mut self) -> [Vec<Source>; 2] {
         self.defer = None;
+        std::mem::take(&mut self.deferred)
     }
-    /// Notes the held sources: position writes', then flag writes' (§3.3 rule 1).
-    pub(crate) fn flush_deferred(&mut self) {
-        self.defer = None;
-        let [p, f] = std::mem::take(&mut self.deferred);
+    /// Notes held sources: position writes', then flag writes' (§3.3 rule 1).
+    pub(crate) fn note_held(&mut self, [p, f]: [Vec<Source>; 2]) {
         for s in p.iter().chain(&f) {
             self.note(s);
         }
