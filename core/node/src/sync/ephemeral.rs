@@ -51,7 +51,8 @@ pub(crate) struct LaneEntry {
     pub commit: CommitId,
     pub blob: Vec<u8>,
     pub wrap: [u8; osis_crypto::WRAP_LEN],
-    /// Under the label's write key (relayed entries keep theirs; own ones are stamped here).
+    /// Under the label's write key: a writer stamps every entry it uploads under the head's
+    /// write key there (`eph_upload`); a reader relays the stamp it received.
     pub stamp: Option<Signature>,
     /// Built here: not counted against the cap.
     pub own: bool,
@@ -916,9 +917,21 @@ impl SyncEngine {
 
     /// Uploads entry `b` of `l` on every connection where the label is open and the peer is not
     /// known to hold it (but `from`, where it came from).
+    ///
+    /// Invariant (spec/sync.md §6): once the connected nodes hold the same valid ephemeral
+    /// commits and a writer among them holds each, every host of the label holds them. It rests
+    /// on: `present` names only what was learned on the connection up now (`eph_lost` clears
+    /// it, a promoted entry adds nothing from before its wait); every entry kept goes to each
+    /// open connection not known to hold it, here or by the first Sync's `gained` list; and a
+    /// writer stamps what it uploads under the head's current key (`eph_upload`), so a stamp
+    /// from before a rotation does not strand an entry. A reader alone holding an entry stamped
+    /// under an earlier key cannot put it back.
     fn eph_spread(&mut self, l: LabelId, b: BlobId, from: Option<HostKey>, out: &mut Vec<Action>) -> Result<()> {
-        for (conn, host, keys) in self.eph_conns(&l) {
+        let conns = self.eph_conns(&l);
+        self.eph_trace(&l, &b, None, || format!("spread on {} open connections", conns.len()));
+        for (conn, host, keys) in conns {
             if Some(host) == from || self.eph.present.contains(&(host, l, b)) {
+                self.eph_trace(&l, &b, None, || format!("not spread to host {}: {}", host6(&host), if Some(host) == from { "came from it" } else { "present" }));
                 continue;
             }
             self.eph_upload(conn, l, &[b], &keys, out)?;
@@ -938,10 +951,12 @@ impl SyncEngine {
                 continue;
             }
             let Some(own) = self.eph.entries.get(&(l, *b)).map(|e| e.own) else { continue };
-            // an own entry is stamped under this connection's head: one stamped before a
-            // rotation (built offline, or for another host) is refused under it (code 9);
-            // with no write key there it waits for one (`eph_restamp`), unless this node does
-            // not write the label (a thing also under a group it only reads): never sent there
+            // a writer stamps whatever it uploads under this connection's head, its own entries
+            // and others' alike: one stamped before a rotation (built offline, for another
+            // host, or another's stamped before a demotion and promotion) is refused under it
+            // (code 9), and only a writer can put it back (spec/sync.md §9). An own entry with
+            // no write key there waits for one (`eph_restamp`), unless this node does not write
+            // the label (a thing also under a group it only reads): never sent there
             if own && keys.write.is_none() {
                 if self.eph_writes(&l) {
                     self.eph.restamp.insert((conn, l, *b), None);
@@ -950,7 +965,7 @@ impl SyncEngine {
             }
             let Some(e) = self.eph.entries.get_mut(&(l, *b)) else { continue };
             let stamp = match (e.stamp, &keys.write) {
-                (_, Some(w)) if e.own => {
+                (_, Some(w)) => {
                     let s = osis_label::sign_stamp(w, &l, b, &e.wrap);
                     e.stamp = Some(s);
                     self.eph.stamped.insert((conn, l, *b), w.verifying_key());
@@ -1297,6 +1312,10 @@ impl SyncEngine {
                 return Ok(());
             }
         }
+        // a promoted entry is present where `present` says (marked when it arrived, cleared when
+        // that connection ended): the host it came from may have restarted since, and marking
+        // it present there again left it at no host (random churn seed 154)
+        let host = if promoted.is_some() { None } else { host };
         if let Some(s) = host {
             self.eph.present.insert((s, l, b));
         }
@@ -1305,9 +1324,8 @@ impl SyncEngine {
         let mut e = e;
         e.charge = self.engine.ephemeral_charge(&commit, &ais).max(size);
         self.eph_keep(l, b, e);
-        if stamp.is_some() {
-            self.eph_spread(l, b, host, out)?;
-        }
+        // unstamped (its stamp is under an earlier write key): a writer stamps it (`eph_upload`)
+        self.eph_spread(l, b, host, out)?;
         Ok(())
     }
 

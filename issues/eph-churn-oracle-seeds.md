@@ -1,24 +1,17 @@
-# random_churn oracle: three seeds diverge after a demotion, host restarts and a re-promotion
-> Summary: `ephemeral::random_churn_converges_large` fails seeds 154 and 169 of 0..300, 118077, 119026 and 138077, whether or not superseded expiring writes are dropped: a demoted-then-promoted author's ephemeral commits come back only at holders that kept them waiting apart; no cover is involved. Traced in review of eph-restart-seeds.
-> Tags: ephemeral, node-sync, tests
+# random_churn oracle: holders of the same commits read differently after expiries
+> Summary: `ephemeral::random_churn_converges_large` fails seeds 138077, 237087 and 237295 and never finishes 140170 and 140188 (all on main too): holders of the same valid ephemeral commits read differently because the non-value writes of expired commits (a reset, a removal, a value-less register winner) stay in the state of nodes that held them at expiry and are gone at nodes that did not, or that rebuilt the aspect since.
+> Tags: ephemeral, crdt, tests
 
-Replay: `OSIS_EPH_START=<seed> OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large --nocapture`. The failure prints each never-demoted holder's reads, the commits held only at one of them and the step log.
+Replay: `OSIS_EPH_START=<seed> OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large --nocapture`. The failure prints each never-demoted holder's reads, the commits held only at one of them (empty in all three), the step log and the lane dump. To see the states, print `EphAspect` (`state`, `own`, `parts`) per node in `lane_dump` (a temporary engine accessor).
 
-Trace (temporary eprintlns in `release_held`, the pending promotion in `eph_step` and `reconciled`; same in all three seeds):
-1. The author is demoted (`PreSync::Synced`: the revoke's frontier names durable commits only, so its earlier ephemeral commits turn invalid). Every holder's `rejudge_ephemeral` releases them (all parts invalid); `eph_unhold` forgets the lane entries and clears `reconciled`.
-2. Holders that reconcile afterwards fetch them back; they wait apart (`eph.pending`, `EphIngest::Pending`): neither served nor uploaded. A holder that is offline or blocked meanwhile (154: node 0, offline from the step after the demotion; 169, 118077: node 3) does not.
-3. Both hosts restart and lose them. Nobody re-uploads: no holder holds them valid.
-4. The author is promoted again: the commits are valid again (judged at their stamp). The waiting holders promote them (`eph_step`, `eph_added_with(RelayFrom::Host(from), ..)` with the host recorded when they began to wait), which marks them present at that host although it lost them. So they are not uploaded there, and they are not relayed to the other host either: their stamp is under a write key from before the rotation. The author holds them as an earlier session's commits (`own` false), so it does not upload them either.
-5. The holder from step 2 that forgot them reconciles after the heal; neither host lists them, so it never gets them back. Seed 154: node 2 holds `da1b97` (node 1's step-2 write `fhWp=v2`, expiring at 40 min) and reads it, node 0 does not.
+Mechanism (traced on 237295): node 2 writes `NgtV=v2` (expiring 20 min) at step 2 and `Replace({k1: r9})` expiring 90 s at step 9. spec/crdt.md §4.7: at expiry a delta's value-carrying writes go value-less, its non-value writes (the map reset) stay. Ephemeral bodies are dropped at expiry, so the reset stays only in the state of nodes that held the commit then. Node 0 did (it promoted the commit after node 2's demotion and promotion, before it expired) and reads no `v2`; node 3 held it invalid while node 2 was demoted, was offline when it expired, and reads `v2`. Both hold the same 22 commits. The same split appears inside one node: `rebuild_aspect` (any validity flip, `rejudge_ephemeral`) joins own writes and held parts only, so it drops the remnants of expired parts the node did keep; and an author's own expired writes are stripped from `own` differently from a holder's copy (237087: node 0's own expired flag write is gone at node 0, its value-less copy wins the register at nodes 2 and 3). 138077: an entry reset (`ed1e5ad2:4`) of node 3's earlier session is in nodes 0 and 3's state, not in 1 and 2's.
 
-Two defects (the second alone would let them reach the host not marked present; the first alone uploads nothing while the stamp is stale):
-- A pending entry's promotion trusts presence recorded when it began to wait; a host restart since then (no `eph_lost` for an entry that only waited) leaves it stale. It should count as present nowhere, or be checked by the next reconcile.
-- A held entry whose stamp no longer verifies under the head's write key cannot be relayed by anyone but its author, and the author treats an earlier session's commit as someone else's. A holder with write access could stamp it again under the current key, as an author does with its own entries (spec/sync.md §6, code 9).
+So the state is not a function of the held valid commits, which the oracle (and "state outlives its author") assumes. Directions:
+- Ephemeral expiry removes a part whole (un-merge, spec/crdt.md §4.6): state = own live writes joined with the live valid held parts, at every node and for the author's own writes. Departs from §4.7 for ephemeral data (an expiring removal stops removing at T); needs the spec and the author's `own` stripping changed. Simplest and convergent.
+- Keep remnants: impossible for a node that never held the body (ephemeral bodies are gone everywhere once expired).
 
-The oracle skips nodes once demoted, whose view of their own writes differs. Fixed earlier: 203 (eph-restart-seeds: own expiring writes made while the thing was in no labeled closure were never sent).
+Fixed earlier on this oracle: 203 (eph-restart-seeds); 154, 169, 118077, 119026, 237008, 237140, 237171 (eph-churn-demote: a demoted author's commits, fetched back to wait apart, were marked present at a host that had restarted since and carried a stamp under a write key from before the rotation, so nobody put them back; spec/sync.md §6).
 
-119026 (review run 119000..119200): the same; node 2's commits `1cc973`, `bc8c67` released at nodes 0, 1, 3 at its demotion, promoted back at node 1 only (from the host it waited on, after both hosts restarted).
+140170 and 140188 (eph-churn-demote run 140000..140300) never finish, on main too: the seed timeout stops the run (use `OSIS_SEED_TIMEOUT_SECS=60`). Not traced; the lane is not what loops (`OSIS_EPH_TRACE=all` prints about 1500 events in 15 s, none repeating much).
 
 Each seed found later goes here with its class; the oracle is a periodic check until this list is empty.
-
-138077 (review sweep-7, 138000..138200): fails on main too (demotions and promotions of nodes 2 and 3, a restart of node 1); not traced.
