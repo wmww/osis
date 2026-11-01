@@ -646,15 +646,22 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
 // recomputes: each write's earliest superseder. Every body node 4 holds is dated no earlier:
 // a body with writes of its own dies iff node 5's does, first and last no earlier; a snapshot's
-// last death no earlier. Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS, a thread per core
-// (OSIS_STRAYS_THREADS); every failing seed is reported.
+// last death no earlier. Seeds 0..24; more in `_large`.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
-    let range = osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..24);
-    let seeds: Vec<u64> = range.range.clone().collect();
-    let name = "retention::deaths_never_early_random_spec_commits_5";
-    let replay = |s: u64| format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
-    run_seeds_noted(name, &seeds, range.overridden, "OSIS_STRAYS_THREADS", replay, dating_history);
+    let seeds: Vec<u64> = (0..24).collect();
+    osis_base::testenv::run_seeds("retention::deaths_never_early_random_spec_commits_5", &seeds, false, dating_replay, dating_history);
+}
+
+/// Seeds: OSIS_STRAYS_START, OSIS_STRAYS_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn deaths_never_early_random_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_STRAYS_START", "OSIS_STRAYS_SEEDS", 0..200).run("retention::deaths_never_early_random_large", dating_replay, dating_history);
+}
+
+fn dating_replay(s: u64) -> String {
+    format!("OSIS_STRAYS_START={s} OSIS_STRAYS_SEEDS=1 cargo test --workspace --test it retention::deaths_never_early_random_large -- --ignored --exact")
 }
 
 /// One history of `deaths_never_early_random_*`.
@@ -1009,15 +1016,22 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
 // a map of structs (puts, removes, nested edits, inserts, deletes; most with a random expiry),
 // undos and redos of any held commit by any node (its own from the undo buffer, others' from
 // held bodies), syncs and time passing. Every written value is unique; after each step no node
-// reads one past the expiry of the write that first wrote it. Seeds: OSIS_UNDOEXP_START,
-// OSIS_UNDOEXP_SEEDS, a thread per core (OSIS_UNDOEXP_THREADS).
+// reads one past the expiry of the write that first wrote it. Seeds 0..24; more in `_large`.
 #[test]
 fn undo_never_outlives_expiry_random_spec_crdt_4_6() {
-    let range = osis_base::testenv::Seeds::from_env("OSIS_UNDOEXP_START", "OSIS_UNDOEXP_SEEDS", 0..24);
-    let seeds: Vec<u64> = range.range.clone().collect();
-    let name = "retention::undo_never_outlives_expiry_random_spec_crdt_4_6";
-    let replay = |s: u64| format!("OSIS_UNDOEXP_START={s} OSIS_UNDOEXP_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
-    run_seeds_noted(name, &seeds, range.overridden, "OSIS_UNDOEXP_THREADS", replay, undo_expiry_history);
+    let seeds: Vec<u64> = (0..24).collect();
+    osis_base::testenv::run_seeds("retention::undo_never_outlives_expiry_random_spec_crdt_4_6", &seeds, false, undo_replay, undo_expiry_history);
+}
+
+/// Seeds: OSIS_UNDOEXP_START, OSIS_UNDOEXP_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn undo_never_outlives_expiry_random_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_UNDOEXP_START", "OSIS_UNDOEXP_SEEDS", 0..200).run("retention::undo_never_outlives_expiry_random_large", undo_replay, undo_expiry_history);
+}
+
+fn undo_replay(s: u64) -> String {
+    format!("OSIS_UNDOEXP_START={s} OSIS_UNDOEXP_SEEDS=1 cargo test --workspace --test it retention::undo_never_outlives_expiry_random_large -- --ignored --exact")
 }
 
 /// One history of `undo_never_outlives_expiry_random_*`.

@@ -490,25 +490,27 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
 
 // as above, randomized: four nodes grant, demote (rotations), compact `secrets.0` and `keys.0`
 // dropping what the snapshot covers, and pass commits on late and out of order; at random points
-// and at the end an open equals a rebuild, whole index included. Seeds: OSIS_WALKS_SECRETS_START,
-// OSIS_WALKS_SECRETS_SEEDS (default 0..4 and FOUND), a thread per core (OSIS_WALKS_THREADS).
-// FOUND: 10607 kept a thing in `own_keys` after its `keys.0` went back to missing, which a rebuild
-// lost; 225191 left a part `uncover` made missing judged by its dropped body's role
+// and at the end an open equals a rebuild, whole index included. Seeds 0..4 and FOUND; more in
+// `_large`. FOUND: 10607 kept a thing in `own_keys` after its `keys.0` went back to missing, which
+// a rebuild lost; 225191 left a part `uncover` made missing judged by its dropped body's role
 // (`uncovered_part_judged_anew`).
 #[test]
 fn open_equals_rebuild_random_secrets_compactions() {
     const FOUND: [u64; 2] = [10607, 225191];
-    let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..4);
-    let mut seeds: Vec<u64> = range.range.clone().collect();
-    if !range.overridden {
-        seeds.extend(FOUND);
-    }
-    let name = "walks::open_equals_rebuild_random_secrets_compactions";
-    let replay = |s: u64| format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
-    let dropped: usize = run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, secrets_history).into_iter().sum();
-    if !range.overridden {
-        assert!(dropped > 0, "no role body dropped");
-    }
+    let seeds: Vec<u64> = (0..4).chain(FOUND).collect();
+    let dropped: usize = osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_secrets_compactions", &seeds, false, secrets_replay, secrets_history).into_iter().sum();
+    assert!(dropped > 0, "no role body dropped");
+}
+
+/// Seeds: OSIS_WALKS_SECRETS_START, OSIS_WALKS_SECRETS_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn open_equals_rebuild_random_secrets_compactions_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_SECRETS_START", "OSIS_WALKS_SECRETS_SEEDS", 0..200).run("walks::open_equals_rebuild_random_secrets_compactions_large", secrets_replay, secrets_history);
+}
+
+fn secrets_replay(s: u64) -> String {
+    format!("OSIS_WALKS_SECRETS_START={s} OSIS_WALKS_SECRETS_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_secrets_compactions_large -- --ignored --exact")
 }
 
 // spec/permissions.md §5.2 (a part dropped as covered whose coverer turns invalid is missing
@@ -762,25 +764,29 @@ fn reached(e: &Engine) -> [usize; 4] {
 // their chunks), compaction snapshots, revokes that flip validity and un-merge late writes,
 // roster snapshots, a move (imports) and late, out-of-order deliveries: at random points a node
 // opened from its persisted index, and then rebuilt from its commit records, equals the running
-// node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds: OSIS_WALKS_START,
-// OSIS_WALKS_SEEDS, a thread per core (OSIS_WALKS_THREADS); every failing seed is reported.
+// node (views, `by_thing`, `by_chunk`, validity, perm, states). Seeds 0..4, which reach drops,
+// invalid parts, roster snapshots and chunks; more in `_large`.
 #[test]
 fn open_equals_rebuild_random_histories() {
-    let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", 0..4);
-    let seeds: Vec<u64> = range.range.clone().collect();
-    let name = "walks::open_equals_rebuild_random_histories";
-    let replay = |s: u64| format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
+    let seeds: Vec<u64> = (0..4).collect();
     let mut most = [0usize; 4];
-    for (r, _) in run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false, false)) {
+    for (r, _) in osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories", &seeds, false, walks_replay, |seed| random_history(seed, 1, false, false)) {
         for k in 0..4 {
             most[k] = most[k].max(r[k]);
         }
     }
-    // the default seeds reach drops, invalid parts, roster snapshots and chunks (other ranges,
-    // a one-seed repro say, pass or fail on their own)
-    if !range.overridden {
-        assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
-    }
+    assert!(most.iter().all(|n| *n > 0), "reached (dropped, invalid, roster snapshots, chunks): {most:?}");
+}
+
+/// Seeds: OSIS_WALKS_START, OSIS_WALKS_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn open_equals_rebuild_random_histories_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_START", "OSIS_WALKS_SEEDS", 0..200).run("walks::open_equals_rebuild_random_histories_large", walks_replay, |seed| random_history(seed, 1, false, false));
+}
+
+fn walks_replay(s: u64) -> String {
+    format!("OSIS_WALKS_START={s} OSIS_WALKS_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_large -- --ignored --exact")
 }
 
 // as above: seeds where a snapshot of the moved thing carried imported writes whose origin
@@ -816,48 +822,59 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 // storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
 // held tag's dot and `ts` with another value, sent on like any commit, and compactors dropping
 // what they cover: open equals rebuild, and once every node holds everything the tags agree
-// (a valid snapshot's copy governs where the original is held too). Seeds:
-// OSIS_WALKS_FORGED_START, OSIS_WALKS_FORGED_SEEDS (default 0..16), a thread per core.
+// (a valid snapshot's copy governs where the original is held too). Seeds 0..16; more in
+// `_large`.
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
-    let range = osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", 0..16);
-    let seeds: Vec<u64> = range.range.clone().collect();
-    let name = "walks::open_equals_rebuild_random_histories_forged";
-    let replay = |s: u64| format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test --workspace --test it {name} -- --exact");
-    run_seeds_noted(name, &seeds, range.overridden, "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 1, false, true));
+    let seeds: Vec<u64> = (0..16).collect();
+    osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, 1, false, true));
+}
+
+/// Seeds: OSIS_WALKS_FORGED_START, OSIS_WALKS_FORGED_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn open_equals_rebuild_random_histories_forged_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_WALKS_FORGED_START", "OSIS_WALKS_FORGED_SEEDS", 0..200).run("walks::open_equals_rebuild_random_histories_forged_large", forged_replay, |seed| random_history(seed, 1, false, true));
+}
+
+fn forged_replay(s: u64) -> String {
+    format!("OSIS_WALKS_FORGED_START={s} OSIS_WALKS_FORGED_SEEDS=1 cargo test --workspace --test it walks::open_equals_rebuild_random_histories_forged_large -- --ignored --exact")
 }
 
 // as above with moves weighted up (copies of copies, their aspects snapshotted); seeds 6013,
 // 6106 and 6305 failed on issues/carried-import-order.md (about one seed in ten did; one in 200
 // without the weighting). With hostile second imports into a copy (spec/permissions.md §7):
 // seeds DOUBLES (6012 and 6036 failed while the last import to arrive named the author; 51999
-// while an invalid snapshot still counted as a carrier of deaths), and every
-// seed of OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS (OSIS_WALKS_MOVES_DOUBLES=0: without
-// them, as the first three), a thread per core (OSIS_WALKS_THREADS).
+// while an invalid snapshot still counted as a carrier of deaths); more in `_large`.
 #[test]
 fn open_equals_rebuild_random_histories_moves() {
     const PLAIN: [u64; 3] = [6013, 6106, 6305];
     const DOUBLES: [u64; 3] = [6012, 6036, 51999];
-    use osis_base::testenv::{Seeds, u64_var};
-    let range = Seeds::from_env("OSIS_WALKS_MOVES_START", "OSIS_WALKS_MOVES_SEEDS", 0..1);
-    let start = u64_var("OSIS_WALKS_MOVES_START");
-    let doubles_on = u64_var("OSIS_WALKS_MOVES_DOUBLES") != Some(0);
-    let seeds: Vec<(u64, bool)> = match start {
-        Some(_) => range.range.clone().map(|s| (s, doubles_on)).collect(),
-        None => PLAIN.map(|s| (s, false)).into_iter().chain(DOUBLES.map(|s| (s, true))).collect(),
-    };
-    let doubles: std::collections::BTreeMap<u64, bool> = seeds.iter().copied().collect();
-    let name = "walks::open_equals_rebuild_random_histories_moves";
-    let replay = |s: u64| format!("OSIS_WALKS_MOVES_START={s} OSIS_WALKS_MOVES_DOUBLES={} cargo test --workspace --test it {name} -- --exact", u8::from(doubles[&s]));
-    let keys: Vec<u64> = doubles.keys().copied().collect();
+    let seeds: Vec<u64> = PLAIN.into_iter().chain(DOUBLES).collect();
+    let doubles = |seed: u64| DOUBLES.contains(&seed);
+    let replay = |s: u64| moves_replay(s, doubles(s));
     let mut doubled = 0;
-    for (seed, (_, n)) in keys.iter().zip(run_seeds_noted(name, &keys, start.is_some(), "OSIS_WALKS_THREADS", replay, |seed| random_history(seed, 3, doubles[&seed], false))) {
+    for (seed, (_, n)) in seeds.iter().zip(osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_moves", &seeds, false, replay, |seed| random_history(seed, 3, doubles(seed), false))) {
         if n > 0 {
             eprintln!("seed {seed}: {n} double imports");
         }
         doubled += n;
     }
-    assert!(doubled > 0 || start.is_some(), "no double import");
+    assert!(doubled > 0, "no double import");
+}
+
+/// Seeds: OSIS_WALKS_MOVES_START, OSIS_WALKS_MOVES_SEEDS (default 0..100), with hostile second
+/// imports unless OSIS_WALKS_MOVES_DOUBLES=0.
+#[test]
+#[ignore = "tier 2"]
+fn open_equals_rebuild_random_histories_moves_large() {
+    let doubles = osis_base::testenv::u64_var("OSIS_WALKS_MOVES_DOUBLES") != Some(0);
+    let s = osis_base::testenv::Seeds::from_env("OSIS_WALKS_MOVES_START", "OSIS_WALKS_MOVES_SEEDS", 0..100);
+    s.run("walks::open_equals_rebuild_random_histories_moves_large", |seed| moves_replay(seed, doubles), |seed| random_history(seed, 3, doubles, false));
+}
+
+fn moves_replay(s: u64, doubles: bool) -> String {
+    format!("OSIS_WALKS_MOVES_START={s} OSIS_WALKS_MOVES_SEEDS=1 OSIS_WALKS_MOVES_DOUBLES={} cargo test --workspace --test it walks::open_equals_rebuild_random_histories_moves_large -- --ignored --exact", u8::from(doubles))
 }
 
 /// One random history of `open_equals_rebuild_random_histories` with up to `max_moves` moves (more
