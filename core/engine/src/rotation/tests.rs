@@ -2326,6 +2326,86 @@ fn keyset_name_met_by_superseding_keyset_spec_crypto_4() {
     assert!(got.read.reading_secret(&e).is_none() && got.read.reading_secret(&e2).is_none(), "M opens G through Y's rotation");
 }
 
+/// X (peer 1's team) has admin D (2) and reads G (peer 0's, admin Y = 3). X's owner removes D
+/// (R_P, X's read to X_s); A (0) holds R_P and rotates G to e, naming X_s. D, lacking R_P,
+/// rotates X's read itself (X_d) and then rewrites its keyset to list X_s as superseded (X_s's
+/// epoch is public: G's box to X names it). Y gets every commit but R_P. Returns (G, X, e, X_d,
+/// D's epochs of X, R_P's commits, every commit).
+type Forged = (Tid, Tid, osis_crypto::Epoch, osis_crypto::Epoch, osis_keys::ActorEpochs, BTreeSet<osis_base::CommitId>, Vec<crate::local_peer::Package>);
+fn forged_listing_world(lp: &mut LocalPeer) -> Forged {
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let x = group(lp, 1);
+    lp.peers[1].engine.grant(&x, &tids[2], &edge(Role::Admin)).unwrap();
+    let g = group(lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(lp, 1);
+    lp.peers[1].engine.demote(&x, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_p: BTreeSet<_> = commit_ids(lp, 1).difference(&before).copied().collect();
+    let x_s = lp.peers[1].engine.epochs(&x).unwrap().read.newest_held().unwrap().0;
+    lp.sync(1, 0).unwrap();
+    rotate_leaving_out(lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(lp, 0, g).unwrap();
+    rotate_leaving_out(lp, 2, x, &BTreeSet::from([Role::Read]), &[]);
+    let d_x = lp.peers[2].engine.epochs(&x).unwrap();
+    let (x_d, s_d) = d_x.read.newest_held().map(|(e, s)| (e, s.clone())).unwrap();
+    let mut listed: BTreeSet<_> = lp.peers[2].engine.get_typed(&x, &ct::KEYS).unwrap().unwrap().read.unwrap().supersedes;
+    listed.insert(osis_keys::aspects::to_schema(&x_s));
+    let forged = osis_keys::keyset(&x_d, &s_d, &listed.iter().map(|e| osis_keys::aspects::from_schema(e).unwrap()).collect());
+    let mut mu = Mutation::new();
+    mu.op(x, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
+    mu.unchecked();
+    lp.peers[2].engine.core.skip_writer_rules = true;
+    lp.peers[2].commit(mu).unwrap().unwrap();
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    all.extend(lp.packages(2).unwrap());
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    (g, x, e, x_d, d_x, r_p, all)
+}
+
+// spec/crypto.md §4 (keyset names): `forged_listing_world`. At Y, D's forged keyset is valid
+// (Y lacks R_P), so it meets e's keyset name; Y then boxes X at X_d, which D opens: e reaches D
+// though A knew D had left X.
+#[test]
+#[ignore = "issues/keyset-names-forged-by-removed-admin.md: fails, D opens e"]
+fn keyset_name_not_met_by_removed_admins_listing_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_977, WallMs(1_700_000_000_000)).unwrap();
+    let (g, x, e, _, d_x, _, _) = forged_listing_world(&mut lp);
+    let at_y = lp.peers[3].engine.epochs(&g).unwrap();
+    assert!(at_y.read.secret(&e).is_some(), "Y holds e's secret");
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let state = lp.peers[3].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    let mut got = osis_keys::ActorEpochs::default();
+    osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &d_x }, &mut got, None).unwrap();
+    assert!(got.read.reading_secret(&e).is_none(), "D opens e through Y's rotation (e established at Y: {})", at_y.read.is_established(&e));
+}
+
+// spec/crypto.md §4 (keyset names held from valid `keys.0` bodies only): `forged_listing_world`;
+// Y holds X_d from D's bodies while they are valid. R_P arrives: they turn invalid and X_d is
+// held no more, alike after a restart and a rebuild.
+#[test]
+fn keyset_epochs_follow_validity_flips_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_979, WallMs(1_700_000_000_000)).unwrap();
+    let (_, x, _, x_d, _, r_p, all) = forged_listing_world(&mut lp);
+    let held = |lp: &LocalPeer| lp.peers[3].engine.core.ix.keyset_epochs.get(&x).is_some_and(|s| s.contains(&(Role::Read, x_d)));
+    assert!(held(&lp), "X_d held from D's valid bodies");
+    for pk in all.iter().filter(|p| r_p.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(!held(&lp), "X_d held from D's bodies once invalid");
+    let d0 = lp.peers[3].engine.index_digest();
+    lp.peers[3].restart(5).unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "reopened");
+    lp.peers[3].engine.rebuild_index().unwrap();
+    assert_eq!(d0.first_diff(&lp.peers[3].engine.index_digest()), None, "rebuilt");
+}
+
 // spec/crypto.md §4 (names: every commit whose demotion's audit dropped an edge write on the
 // actor, named by the thing the demotion is on): G is owned by actor O (peer 0's); W (1) an
 // admin of O grants D (2) read on G through the owner chain (C). Owner A demotes W to write on

@@ -1,0 +1,9 @@
+# A removed admin of a holder actor meets a keyset name by forging a keyset
+> Summary: A keyset name (M, r, f) is met by any valid `keys.0` body of M writing f or listing it superseded. Validity is judged by what the node holds, so at a node lacking the removal R_P of admin D from M, D's own later `keys.0` writes are valid: D rotates M itself and lists f (an epoch id is public), the name is met, and the node boxes M at D's keyset. The rotator, which held R_P, meant the epoch never to reach D.
+> Tags: security, keys, engine
+
+Reproduced: `rotation::tests::keyset_name_not_met_by_removed_admins_listing_spec_crypto_4` (osis-engine, ignored). Without D's forged listing it passes (the name stays unmet). Writing f itself works alike (a keyset at epoch f with D's KEM key). D needs: admin on M (a person's device on the person, say), f's id (G's sealed box to M names it in plaintext; a withholding host sees it), and the target not holding R_P (the withheld-departure case names exist for).
+
+Main's rule (name the commit that wrote f, met by applying it with its `roles.0` delta, or by an epoch start after it) was not open to this: the commit is signed by M's honest admin, and holding it shows D's removal, which makes D's later writes invalid. It had the roster-snapshot escape instead (issues/keyset-names-start-escape.md, closed by this design).
+
+Direction (not tried): require both. A keyset name carries f and the commit that wrote it (when the rotator holds it); met when f is held from a valid body (this branch's rule) and that commit is met by the ordinary name rule (applied, or before the epoch start of M). Under an epoch start of M after R_P, D's tenure ledger entry audits its writes (spec/permissions.md §6), so D's forgeries are invalid there; holding f closes the roster-snapshot escape. Open: a rotator holding f only from a compaction snapshot (no commit to name) still names f alone.
