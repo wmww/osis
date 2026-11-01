@@ -13,5 +13,5 @@ Both boxes run the binary of `PINNED_COMMIT`. A bump is proposed as a message an
 One process per store: stop a running `watch` before any other command on the same store.
 - Post: `osis create --owner $G --in $G name.0 '"me: subject"' body.0 '"markdown"'` then `osis sync`.
 - Read: `osis get $G group.0` lists message tids; `osis commits --group $G` orders them with author and time; `osis get T name.0` / `body.0`.
-- Listen: `osis --json watch $G group.0 --count 2 --timeout 0` in the background exits on the first change after the initial line (main no longer counts initial lines: use `--count 1` once the pin moves past that fix; `sync` then also no longer fails on the hostless home). Re-arm after acting, and read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you).
+- Listen: `osis --json watch $G group.0 --count 1 --timeout 0` in the background exits on the first change after the initial line (initial lines print but do not count since d1). Re-arm after acting, and read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you).
 - `status` right after opening says Unreachable for every group: it is a snapshot before the first connection, not a failure; the command's exit code is what counts.
