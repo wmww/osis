@@ -521,6 +521,9 @@ pub struct Core {
     pub defer_deaths: bool,
     /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
+    /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
+    /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
+    pub timer_floor: u64,
     /// What changed since node-sync last took it (`Engine::take_changed`; `None`: no
     /// node-sync, nothing kept). A mark from an aborted transaction stays: one extra judgment.
     pub changed: Option<Changed>,
@@ -775,6 +778,7 @@ impl Core {
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
+            timer_floor: 0,
             changed: None,
             sync_records: None,
             live_trees: BTreeMap::new(),
@@ -875,6 +879,7 @@ impl Tx<'_> {
     /// Sets a retention timer of commit `c`'s part `ai` at `t`: memory for a memory commit.
     pub(crate) fn put_timer(&mut self, t: u64, c: &CommitId, ai: usize, kind: u8) -> Result<()> {
         let memory = self.is_memory_commit(c);
+        self.core.timer_floor = self.core.timer_floor.min(t);
         self.in_class(memory, |tx| Ok(tx.txn.put_local(&records::timer_key(t, c, ai), &[kind], Shred::No)?))
     }
 
@@ -1329,6 +1334,7 @@ impl Engine {
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
         e.reload()?;
         e.reexamine()?;
+        e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
         Ok(e)
     }
 

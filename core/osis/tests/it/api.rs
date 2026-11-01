@@ -414,6 +414,27 @@ fn role_class_refused_spec_permissions_1() {
     w.at(t, core::GROUP).set(&Group::default()).unwrap();
 }
 
+// spec/crdt.md §4.7: expiry is a hard bound however late the driver's Tick: from T on, no call
+// sees the write, durable or ephemeral, with no tick run
+#[test]
+fn expired_unseen_before_tick_spec_crdt_4_7() {
+    let c = clock();
+    let db = Osis::create(cfg(1, MemStore::new(), &c)).unwrap().0;
+    let (k, e) = (ak("t:msg.0"), ak("t:typing.0~"));
+    let t = db
+        .write_with(|w| {
+            let t = w.create(db.me())?;
+            w.at(t, k.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("hi"))?;
+            w.at(t, e.clone()).expires_in(std::time::Duration::from_secs(60)).set(&s("typing"))?;
+            Ok(t)
+        })
+        .unwrap();
+    c.advance(59_999);
+    assert_eq!((db.get(t, k.clone()).unwrap(), db.get(t, e.clone()).unwrap()), (Some(s("hi")), Some(s("typing"))));
+    c.advance(1);
+    assert_eq!((db.get(t, k).unwrap(), db.get(t, e).unwrap()), (None, None));
+}
+
 // spec/commits.md §6, §5: per-write expiry kills the value at T; retention per write; purge
 // drops the history and removes the aspect.
 #[test]

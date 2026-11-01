@@ -667,17 +667,21 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
 type Due = (Vec<u8>, CommitId, usize, u8);
 
 /// The expiry and keep-at-most timers due by the corrected clock.
-fn due_timers(tx: &mut Tx<'_>) -> Result<Vec<Due>> {
+/// The timers due by the corrected clock, and when the first of the others is (`u64::MAX`: none).
+fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
     let now = tx.now().0;
     let mut due = Vec::new();
+    let mut next = u64::MAX;
     tx.scan(records::TIMER, |k, v| {
         let (t, c, ai) = records::parse_timer(k)?;
         if t <= now {
             due.push((k.to_vec(), c, ai, v.first().copied().unwrap_or(0)));
+        } else {
+            next = next.min(t);
         }
         Ok(())
     })?;
-    Ok(due)
+    Ok((due, next))
 }
 
 impl Engine {
@@ -704,9 +708,12 @@ impl Engine {
     /// parked for drift. The commits whose timers fired are marked changed (`Core::changed`).
     pub fn tick(&mut self) -> Result<()> {
         self.settle_deaths()?;
-        self.run(|tx| {
+        let r = self.run(|tx| {
             let mut changed = BTreeSet::new();
-            for (k, c, ai, kind) in due_timers(tx)? {
+            let (due, next) = due_timers(tx)?;
+            // the timers these put lower it again
+            tx.core.timer_floor = next;
+            for (k, c, ai, kind) in due {
                 // a memory commit's timer is memory work: what it writes stays in memory
                 let memory = tx.is_memory_commit(&c);
                 let mut ch = BTreeSet::new();
@@ -730,7 +737,12 @@ impl Engine {
                 tx.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             }
             Ok(())
-        })?;
+        });
+        if r.is_err() {
+            // the timers stay: due again
+            self.core.timer_floor = 0;
+        }
+        r?;
         self.reexamine()
     }
 
@@ -740,7 +752,7 @@ impl Engine {
     pub fn due_live_drops(&mut self) -> Result<Vec<LiveDrop>> {
         let due = self.run(|tx| {
             let mut out = Vec::new();
-            for (_, c, ai, _) in due_timers(tx)?.into_iter().filter(|x| x.3 == T_AT_MOST) {
+            for (_, c, ai, _) in due_timers(tx)?.0.into_iter().filter(|x| x.3 == T_AT_MOST) {
                 let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
                 let (_, holders) = body_class(tx.core, &h, &c, ai);
                 let aspects: Vec<(Tid, Ak)> = holders.iter().filter_map(|x| h.aspects.get(*x)).map(|a| (a.tid, a.ak.clone())).collect();
@@ -756,6 +768,14 @@ impl Engine {
             }
         }
         Ok(out)
+    }
+
+    /// Whether an expiry or keep-at-most timer, durable or ephemeral, is due by the corrected
+    /// clock: in memory, no store read (a timer removed without running may leave a false
+    /// `true`, which the next `tick` clears).
+    pub fn timers_due(&self) -> bool {
+        let now = self.now().0;
+        self.core.timer_floor <= now || self.next_ephemeral_timer().is_some_and(|t| t <= now)
     }
 
     /// When the next expiry or keep-at-most timer is due (corrected wall ms).
