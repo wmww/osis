@@ -32,6 +32,12 @@ impl Writer {
         let lo = lo.max(1);
         Writer { ts, src, lo, next: lo, keyed: false, copied: BTreeSet::new() }
     }
+    /// Continues a delta whose counters below `next` are taken: commit-level writes keep its
+    /// delta stamp `lo` (§2.3), creations and position writes go on from `next`.
+    pub fn resume(mut self, next: u64) -> Writer {
+        self.next = self.next.max(next);
+        self
+    }
     /// Whether map removals carry the removed record's key (role-class aspects only,
     /// §5.6); else a removal is the dot's key-erased record.
     pub fn keyed_removals(mut self, on: bool) -> Writer {
@@ -136,7 +142,7 @@ pub enum Op {
     /// sequence without it (§5.7).
     Move { at: usize, len: usize, to: usize },
     /// Text paste of cut elements `dots` (`cut_dots`) at visible index `at` of the text without
-    /// them: a move plus an undelete (§5.7 cut, paste). Fails if a dot or its char is gone.
+    /// them: a move plus an undelete (§5.7 move and undelete; client side: notes/crdt.md, clipboard). Fails if a dot or its char is gone.
     Paste { dots: Vec<Dot>, at: usize },
     /// Sequence edit from `base` to `new` (`diff_values`), rebased onto the current sequence by
     /// matching `base` to its read (notes/api.md `edit`).

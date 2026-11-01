@@ -11,14 +11,14 @@
 //! counter). Memory: the skeleton, one decoded page, its encoding, and trackers sized by the
 //! input (the tables, the leaf links, a writer's claimed counters).
 
-use crate::codec::{absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, link_groups, links, nonce, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, link_groups, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
-use crate::fragment::{Bag, Eid, Encoding, Enum, Fragment, Map, Meta, Set, Struct};
+use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
 use crate::paging::Step;
 use crate::seq::Seq;
 use crate::seq_wire::Runs;
-use crate::stamp::{Dot, Interner, Stamp};
+use crate::stamp::{Dot, Interner, Stamp, max_opt};
 use crate::wire::{Dec, DeltaCtx, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
 use osis_base::{CommitId, PageCutter, Tid, Value};
 use std::collections::{BTreeMap, VecDeque};
@@ -117,7 +117,8 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
     canonical(bytes, again)?;
     let log = enc.check.as_mut().and_then(|c| c.log.take()).unwrap_or_default();
 
-    let wraps: BTreeMap<Vec<Step>, WrapPath> = found.keys().map(|p| (p.clone(), wrap_path(&skeleton, p))).collect();
+    let wraps: BTreeMap<Vec<Step>, (WrapPath, Option<Stamp>)> = found.keys().map(|p| (p.clone(), (wrap_path(&skeleton, p), reset_at(&skeleton, p)))).collect();
+    prune_stable(&skeleton, None)?;
     each(Raw::Skeleton(skeleton))?;
     // the streamed positions where the root encoding met them, between its appearances
     for ev in log {
@@ -128,8 +129,8 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
                 }
             }
             Ev::Stream(path) => {
-                let (Some(d), Some(w)) = (found.remove(&path), wraps.get(&path)) else { return Err(NOT_CANONICAL) };
-                position(&mut dec, &mut enc, &d, w, each)?;
+                let (Some(d), Some((w, e))) = (found.remove(&path), wraps.get(&path)) else { return Err(NOT_CANONICAL) };
+                position(&mut dec, &mut enc, &d, w, e.as_ref(), each)?;
             }
         }
     }
@@ -155,9 +156,56 @@ fn wrap_path(root: &Fragment, path: &[Step]) -> WrapPath {
     out
 }
 
+/// The effective reset (§4.2) over the elements of the collection at `path`: the greatest reset
+/// on the way down, with a map entry's the cross resets of its dot's records (§5.6).
+fn reset_at(root: &Fragment, path: &[Step]) -> Option<Stamp> {
+    let mut e = root.reset();
+    let mut at = Some(root);
+    for s in path {
+        let Some(f) = at else { break };
+        if let (Step::Entry(id), Fragment::Map(m)) = (s, f) {
+            for (rid, en) in m.of_dot(&id.dot) {
+                if id.key.is_none() || rid.key.is_none() || rid == id {
+                    e = max_opt(e, en.reset.clone());
+                }
+            }
+        }
+        at = f.step(s);
+        e = max_opt(e, at.and_then(Fragment::reset));
+    }
+    e
+}
+
+/// `prune_stable` of one leaf page under `e`, an element (a map dot's records, a field) at a
+/// time, so the check copies one element, not the page. A map dot's records may straddle pages
+/// and prune each other (§5.6): `carry` holds the previous page's last dot's records, checked
+/// along with this page's first dot.
+fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) -> Result<(), Error> {
+    let one = |f: Fragment| prune_stable(&f, e);
+    match f {
+        Fragment::Map(m) => {
+            let mut group: Vec<(Eid, Entry)> = std::mem::take(carry);
+            for (id, en) in &m.entries {
+                if group.first().is_some_and(|(g, _)| g.dot != id.dot) {
+                    one(Fragment::Map(Map::new(Meta::default(), group.drain(..).collect())))?;
+                }
+                group.push((id.clone(), en.clone()));
+            }
+            one(Fragment::Map(Map::new(Meta::default(), group.iter().cloned().collect())))?;
+            *carry = group;
+            Ok(())
+        }
+        Fragment::Bag(b) => b.elems.iter().try_for_each(|(d, x)| one(Fragment::Bag(Bag { kind: b.kind, meta: Meta::default(), elems: BTreeMap::from([(d.clone(), x.clone())]) }))),
+        Fragment::Set(x) => x.elems.iter().try_for_each(|(d, el)| one(Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(d.clone(), el.clone())]) }))),
+        Fragment::Seq(q) => q.elems().iter().try_for_each(|(d, el)| one(Fragment::Seq(Seq::new(q.text, Meta::default(), BTreeMap::from([(d.clone(), el.clone())]))))),
+        Fragment::Struct(Struct { fields, .. }) | Fragment::Enum(Enum { payloads: fields, .. }) => fields.values().try_for_each(|x| prune_stable(x, e)),
+        Fragment::Register(_) | Fragment::Slots(_) => prune_stable(f, e),
+    }
+}
+
 /// Streams one paged position: every leaf page decoded, handed over and re-encoded; then the
 /// link structure the encoder would write over those leaves (spec/wire.md §6).
-fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
+fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
     let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     if osis_base::encode(&d.top).len() > params.target {
         return Err(Error::Malformed("link list above the page target"));
@@ -167,6 +215,7 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, each: &
     // per top link: a leaf (None) or a link page's links
     let mut shape: Vec<Option<Vec<Value>>> = Vec::with_capacity(top.len());
     let mut leaves: Vec<Value> = Vec::new();
+    let mut carry = Vec::new();
     let mut leaf = |dec: &mut Dec, enc: &mut Enc, page: Value, bytes: Vec<u8>, l: osis_base::Link| -> Result<(), Error> {
         leaves.push(Value::Link(l));
         out.queue.push_back(bytes);
@@ -178,6 +227,7 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, each: &
             c.replay.extend(std::mem::take(&mut dec.fetched));
         }
         out.push(enc, &inner)?;
+        prune_page(&inner, e, &mut carry)?;
         each(Raw::Page(wrap, inner))
     };
     for l in &top {

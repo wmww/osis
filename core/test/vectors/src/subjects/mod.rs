@@ -8,6 +8,7 @@ pub mod bundle;
 pub mod cbor;
 pub mod chunker;
 pub mod commit;
+pub mod crdt;
 pub mod delete;
 pub mod inbox;
 pub mod kdf;
@@ -60,6 +61,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "link/link.vec" => Subject { generate: Some(link::links), check: None },
         "lan/announce.vec" => Subject { generate: Some(lan::announce), check: None },
         "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },
+        "crdt/deltas.vec" => Subject { generate: Some(crdt::deltas), check: Some(crdt::check) },
         _ => return None,
     })
 }

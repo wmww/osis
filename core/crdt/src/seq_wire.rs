@@ -333,11 +333,7 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         for f in as_array(flagw)? {
             let [i, j, st, b] = as_array(f)? else { return Err(Error::Malformed("flag write")) };
             let (i, j) = (index(i, n)?, index(j, n)?);
-            let st = cx.stamp(st)?;
-            if writer && st.dot.ctr != cx.range().lo {
-                // a commit-level write: the delta stamp (§2.3)
-                return Err(Error::Malformed("flag write off the delta stamp"));
-            }
+            let st = cx.level_stamp(st)?;
             let Value::Bool(b) = b else { return Err(Error::Malformed("flag")) };
             if i > j {
                 return Err(Error::Malformed("flag range"));

@@ -6,6 +6,8 @@ use crate::state::{Anchor, BagKind, Composite, Content, Elem, Entry, Frag, SeqEl
 use crate::value::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
+/// Deepest value nesting (spec/data-model.md §5).
+pub const MAX_VALUE_DEPTH: usize = 64;
 /// Runs never exceed this many elements (§3.3 rule 3).
 pub const MAX_RUN: usize = 1 << 12;
 /// A list run closes once its content reaches this many bytes (§3.3 rule 3; spec/wire.md `CHUNK_MAX`).
@@ -280,6 +282,22 @@ impl Ctx {
             }
             let mut used = BTreeSet::new();
             f.check_writer(&self.own, hi, &mut used)?;
+            if !f.levels_at(self.lo) {
+                return Err(Error::Bad("commit-level write off the delta stamp"));
+            }
+        }
+        if f.read_depth() > MAX_VALUE_DEPTH {
+            return Err(Error::Bad("reads deeper than MAX_VALUE_DEPTH"));
+        }
+        // a delta is a state fragment: its own resets prune nothing it carries (§3.3 rule 7)
+        let mut before = Vec::new();
+        f.stamps(&mut before);
+        let mut pruned = f.clone();
+        pruned.prune(None);
+        let mut after = Vec::new();
+        pruned.stamps(&mut after);
+        if before.len() != after.len() {
+            return Err(Error::Bad("carries a write its own resets prune"));
         }
         Ok(())
     }
@@ -456,6 +474,47 @@ impl Frag {
                 out.push(s.clone());
             }
         });
+    }
+
+    /// §2.3: every commit-level write (register value, reset, `W`, case, element reset, deleted flag) of a writer's
+    /// delta has the delta stamp, counter `lo` (its other stamp parts are checked by `check`).
+    fn levels_at(&self, lo: u64) -> bool {
+        let at = |s: &Option<Stamp>| s.as_ref().map_or(true, |s| s.dot.ctr == lo);
+        let comp = |c: &Composite| at(&c.reset) && at(&c.w);
+        let elems = |e: &BTreeMap<Dot, Elem>| e.values().all(|x| at(&x.reset) && x.frag.as_ref().map_or(true, |f| f.levels_at(lo)));
+        match self {
+            Frag::Register { reset, write } => at(reset) && at(&write.as_ref().map(|w| w.0.clone())),
+            Frag::Bag { c, elems: e, .. } | Frag::Set { c, elems: e } => comp(c) && elems(e),
+            Frag::Struct { c, fields } => comp(c) && fields.values().all(|f| f.levels_at(lo)),
+            Frag::Enum { c, case, payloads } => comp(c) && at(&case.as_ref().map(|x| x.0.clone())) && payloads.values().all(|f| f.levels_at(lo)),
+            Frag::Map { c, entries } => comp(c) && entries.values().all(|e| at(&e.reset) && e.frag.as_ref().map_or(true, |f| f.levels_at(lo))),
+            Frag::Seq { c, elems, .. } => {
+                comp(c)
+                    && elems.values().all(|e| at(&e.deleted.as_ref().map(|d| d.0.clone())) && !matches!(&e.content, Content::Frag(f) if !f.levels_at(lo)))
+            }
+            Frag::Slots { .. } => true,
+        }
+    }
+
+    /// The deepest value this fragment could read as with every write live (§3.3 rule 7): a struct, map or list adds
+    /// one level, an enum or set two, a register its value's depth, a map key its depth below the map; a `Slots`
+    /// position is its deepest slot.
+    pub fn read_depth(&self) -> usize {
+        fn max(it: impl Iterator<Item = usize>) -> usize {
+            it.max().unwrap_or(0)
+        }
+        let reg = |e: &Elem| e.frag.as_ref().map_or(0, |f| f.read_depth());
+        match self {
+            Frag::Register { write, .. } => write.as_ref().and_then(|w| w.1.as_ref()).map_or(0, Value::depth),
+            Frag::Bag { elems, .. } => max(elems.values().map(reg)),
+            Frag::Set { elems, .. } => 2 + max(elems.values().map(reg)),
+            Frag::Struct { fields, .. } => 1 + max(fields.values().map(Frag::read_depth)),
+            Frag::Enum { payloads, .. } => 2 + max(payloads.values().map(Frag::read_depth)),
+            Frag::Map { entries, .. } => 1 + max(entries.iter().map(|((_, k), e)| k.as_ref().map_or(0, Value::depth).max(e.frag.as_ref().map_or(0, |f| f.read_depth())))),
+            Frag::Seq { text: true, .. } => 0,
+            Frag::Seq { elems, .. } => 1 + max(elems.values().map(|e| if let Content::Frag(f) = &e.content { f.read_depth() } else { 0 })),
+            Frag::Slots { reg, slots } => max(reg.iter().map(|r| r.read_depth()).chain(slots.values().map(Frag::read_depth))),
+        }
     }
 
     /// Writer-only rules (§2.3, §3.3 rule 7): no `Slots`, no `Derived` creation runs, own sequence element dots
@@ -769,9 +828,13 @@ fn dec_elems(it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, Elem>, Error> {
         }
         last = Some(d.clone());
         let frag = dec_opt_frag(&a[2], cx)?;
-        // a set or bag element's value is one register (spec §3.2)
-        if frag.as_deref().map_or(false, |f| !matches!(f, Frag::Register { .. })) {
-            return Err(Error::Bad("set or bag element not a register"));
+        // a set or bag element's value is one register (spec §3.2), written only by the element's creation, so by
+        // its dot's source (§3.3 rule 7)
+        match frag.as_deref() {
+            None | Some(Frag::Register { write: None, .. }) => {}
+            Some(Frag::Register { write: Some(w), .. }) if w.0.dot.source == d.source => {}
+            Some(Frag::Register { .. }) => return Err(Error::Bad("set or bag element value of another source")),
+            Some(_) => return Err(Error::Bad("set or bag element not a register")),
         }
         m.insert(d, Elem { reset: dec_opt_stamp(&a[1], cx)?, frag });
     }

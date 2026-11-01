@@ -160,7 +160,7 @@ fn pred_of(p: &Placement, i: usize) -> Anchor {
 }
 
 /// The dots a cut of `len` visible elements from `at` removes and a paste restores: the visible
-/// ones (the clipboard text). A client remembers them beside the clipboard (§5.7 cut, paste).
+/// ones (the clipboard text). A client remembers them beside the clipboard (notes/crdt.md, Text size: clipboard).
 pub fn cut_dots(state: &Fragment, at: usize, len: usize) -> Result<Vec<Dot>, Error> {
     let crate::state::SlotRef::Frag(Fragment::Seq(s)) = state.chosen_slot() else { return Err(Error::Mismatch("not a sequence")) };
     let vis = visible(s);

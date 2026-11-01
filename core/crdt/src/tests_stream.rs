@@ -611,3 +611,36 @@ fn stream_memory_big_map() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// §3.3 rule 7, §5.6: the records of one map dot prune each other across a page seam (the
+/// key-erased record's reset above the keyed record's content): the stream rejects what the
+/// whole-delta oracle rejects however the pages cut, and accepts the reset below the content.
+#[test]
+fn map_dot_prunes_across_pages_spec_3_3() {
+    use crate::fragment::{Eid, Entry, Map, Meta, RegWrite, Register};
+    use crate::stamp::{Dot, Source, Stamp};
+    use osis_base::{Tid, Value};
+    let node = Source::node(Tid::from_bytes([1; 15]));
+    let st = |t: u64, c: u64| Stamp::new(crate::testutil::ts(t << 16), node.clone(), c);
+    let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(1)) }) }));
+    let (mut straddled, mut seen) = (0, 0);
+    for n in 20..80u64 {
+        for reset_t in [6, 4] {
+            let mut entries: std::collections::BTreeMap<Eid, Entry> = (1..=n).map(|k| (Eid::new(Dot::new(node.clone(), k), Some(Value::Str(format!("filler entry number {k} of the map")))), Entry { reset: None, frag: Some(reg(st(5, k))), created: Some(st(5, k)) })).collect();
+            let x = Dot::new(node.clone(), n + 1);
+            entries.insert(Eid::erased(x.clone()), Entry { reset: Some(st(reset_t, 1)), frag: None, created: None });
+            entries.insert(Eid::new(x.clone(), Some(Value::Str("k".into()))), Entry { reset: None, frag: Some(reg(st(5, n + 1))), created: Some(st(5, n + 1)) });
+            let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
+            let mut pages = Blobs::new(TINY);
+            let bytes = encode_snapshot(&s, &snap_cx(), Some(&mut pages)).unwrap();
+            let streamed = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages.clone())).is_ok();
+            let whole = oracle::decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), Some(&mut pages.clone())).is_ok();
+            assert_eq!((streamed, whole), (reset_t == 4, reset_t == 4), "{n} fillers, reset at {reset_t}");
+            // a seam between the two records: one page ends with the dot's first record
+            let firsts: Vec<_> = pages.pages.iter().filter_map(|p| page_items(p)).filter_map(|(_, a)| a.first().cloned()).collect();
+            seen += usize::from(!pages.pages.is_empty());
+            straddled += usize::from(firsts.iter().any(|f| matches!(f, Value::List(e) if e.first() == Some(&Value::List(vec![Value::Int(1), Value::Int((n + 1) as i64)])) && e.len() == 5)));
+        }
+    }
+    assert!(seen > 60 && straddled > 0, "paged {seen}, straddled {straddled}");
+}

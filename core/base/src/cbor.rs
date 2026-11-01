@@ -261,7 +261,7 @@ pub fn encode_into(v: &Value, out: &mut Vec<u8>) {
 
 /// Whether a link occurs in `v`. Only then can `Ord` (links by content hash) differ from the
 /// order of canonical bytes, so sets and maps holding one sort their encodings explicitly.
-fn has_link(v: &Value) -> bool {
+pub fn has_link(v: &Value) -> bool {
     match v {
         Value::Link(_) => true,
         Value::Enum(_, Some(p)) => has_link(p),
@@ -560,6 +560,9 @@ impl<'a> Decoder<'a> {
                     return Err(DecodeError::TagContent(tag));
                 }
                 let case = self.expect(MAJOR_UINT, tag)?;
+                if i64::try_from(case).is_err() {
+                    return Err(DecodeError::IntOutOfRange);
+                }
                 let payload = if n == 2 { Some(Box::new(self.item(inner + 1)?)) } else { None };
                 Ok(Value::Enum(case, payload))
             }

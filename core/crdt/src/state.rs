@@ -64,24 +64,15 @@ impl Write for CaseWrite {
     }
 }
 
-/// Copy order of values (§4.1): absent (value-less) first, then canonical encodings bytewise.
-/// `Value`'s order is that, except links compare by content hash alone, so equal values holding
-/// a link compare their bytes.
+/// Copy order of values (§4.1, §3.3 rule 2): absent (value-less) first, then canonical encodings
+/// bytewise. `Value`'s order is that unless a link occurs on either side (it compares links by
+/// content hash alone), so then the encodings are compared.
 pub(crate) fn opt_value_cmp(a: Option<&Value>, b: Option<&Value>) -> Ordering {
+    use osis_base::cbor::{encode, has_link};
     match (a, b) {
-        (Some(x), Some(y)) => x.cmp(y).then_with(|| if has_link(x) { osis_base::cbor::encode(x).cmp(&osis_base::cbor::encode(y)) } else { Ordering::Equal }),
+        (Some(x), Some(y)) if has_link(x) || has_link(y) => encode(x).cmp(&encode(y)),
+        (Some(x), Some(y)) => x.cmp(y),
         _ => a.is_some().cmp(&b.is_some()),
-    }
-}
-
-fn has_link(v: &Value) -> bool {
-    match v {
-        Value::Link(_) => true,
-        Value::Enum(_, p) => p.as_deref().is_some_and(has_link),
-        Value::List(l) => l.iter().any(has_link),
-        Value::Set(s) => s.iter().any(has_link),
-        Value::Map(m) => m.iter().any(|(k, v)| has_link(k) || has_link(v)),
-        _ => false,
     }
 }
 

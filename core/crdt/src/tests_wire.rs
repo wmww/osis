@@ -368,3 +368,151 @@ fn position_write_sibling_keys_spec_3_3() {
     // a table entry nothing names
     assert!(alike(&delta(vec![n2], table(), posw(vec![i(0), i(0), i(0)]))).is_err());
 }
+
+// ---- spec audit rules (§2.3, §3.3 rules 2, 5, 7, §5.5)
+
+/// Snapshot by node 2 at ts 9·2^16 of node 1's commit at ts 5·2^16 (base 3), plus `more`
+/// sources and commit entries.
+fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, DeltaCtx) {
+    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let srcs = [vec![Value::Bytes(tid(1).as_bytes().to_vec())], more_src].concat();
+    let commits = [vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])], more_commits].concat();
+    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), l(commits), f, l(vec![]), l(vec![])]));
+    (b, scx)
+}
+
+fn snap_ok(b: &[u8], cx: &DeltaCtx) -> bool {
+    decode_snapshot(b, cx, &mut Interner::new(), None).is_ok()
+}
+
+/// §2.3, §3.3 rule 7: in a writer's delta every commit-level write (register value, reset, `W`,
+/// element reset) has the delta stamp, counter `lo`; only creations and position writes take the
+/// other counters of `[lo, hi)`.
+#[test]
+fn rejects_commit_level_off_delta_stamp_spec_2_3() {
+    let at4 = || l(vec![i(0), i(4)]);
+    rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), at4(), i(1)])), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(vec![], vec![], l(vec![i(6), l(vec![at4()]), l(vec![]), l(vec![])])), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(vec![], vec![], l(vec![i(6), l(vec![]), l(vec![at4()]), l(vec![])])), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(vec![], vec![], set_with(vec![l(vec![i(4), l(vec![at4()]), l(vec![])])])), &wcx(), ErrorClass::BadInput);
+    // element 4 created, its value at the delta stamp
+    assert!(decode_delta(&delta(vec![], vec![], set_with(vec![elem(i(4), 1)])), &wcx(), &mut Interner::new(), None).is_ok());
+}
+
+/// §3.3 rules 5, 7, §4.2, §5.1: a delta carries no write its own resets prune: a register's reset
+/// below its write, a child below its struct's reset, a set element below the set's reset.
+#[test]
+fn rejects_writes_own_resets_prune_spec_3_3() {
+    let reg = |r: Value, s: Value| l(vec![i(0), l(vec![r]), s, i(7)]);
+    let (b, cx) = snap(vec![], vec![], reg(i(1), i(1)));
+    assert!(snap_ok(&b, &cx), "a replace: reset and write share a stamp");
+    let (b, cx) = snap(vec![], vec![], reg(i(1), l(vec![i(1), i(4)])));
+    assert!(!snap_ok(&b, &cx), "reset below the register's write");
+    let child = l(vec![i(0), l(vec![]), i(1), i(7)]);
+    let st = |r: Value| l(vec![i(4), l(vec![r]), l(vec![]), Value::Map([(i(1), child.clone())].into_iter().collect())]);
+    let (b, cx) = snap(vec![], vec![], st(i(1)));
+    assert!(snap_ok(&b, &cx));
+    let (b, cx) = snap(vec![], vec![], st(l(vec![i(1), i(4)])));
+    assert!(!snap_ok(&b, &cx), "child below the struct's reset");
+    let set = l(vec![i(6), l(vec![l(vec![i(1), i(4)])]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(3)]), l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(1), i(1)])])])])]);
+    let (b, cx) = snap(vec![], vec![], set);
+    assert!(!snap_ok(&b, &cx), "element below the set's reset");
+}
+
+/// §3.3 rule 7, §5.5: a set or bag element's value register is written only by its creation, so
+/// by its dot's source.
+#[test]
+fn rejects_set_value_of_another_source_spec_5_5() {
+    let set = |ci: i64| l(vec![i(6), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(3)]), l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(ci), i(1)])])])])]);
+    let (b, cx) = snap(vec![], vec![], set(1));
+    assert!(snap_ok(&b, &cx));
+    // node 1's element 3 holding a value stamped by node 3 (the encoder writes it canonically)
+    use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
+    use crate::stamp::{Dot, Stamp};
+    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), Source::node(tid(3)), 1), value: Some(i(1)) }) });
+    let f = Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(Dot::new(Source::node(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)) })]) });
+    let b = encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f, frontiers: Frontiers::default() }, &cx, None).unwrap();
+    assert!(!snap_ok(&b, &cx), "node 3 wrote node 1's element value");
+}
+
+/// §3.3 rule 7, spec/data-model.md §5: a fragment reads at most 64 deep from the aspect root: a
+/// struct field adds one level, an enum payload two.
+#[test]
+fn rejects_fragments_reading_too_deep_spec_3_3() {
+    let nested = |n: usize| (0..n).fold(i(1), |v, _| l(vec![v]));
+    let reg = |n: usize| l(vec![i(0), l(vec![]), i(0), nested(n)]);
+    let ok = |f: Value| decode_delta(&delta(vec![], vec![], f), &wcx(), &mut Interner::new(), None).is_ok();
+    assert!(ok(reg(64)));
+    assert!(!ok(reg(65)));
+    let st = |n: usize| l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), reg(n))].into_iter().collect())]);
+    assert!(ok(st(63)));
+    assert!(!ok(st(64)), "64 below a struct reads 65 deep");
+    let en = |n: usize| l(vec![i(5), l(vec![]), l(vec![]), l(vec![]), Value::Map([(i(1), reg(n))].into_iter().collect())]);
+    assert!(ok(en(62)));
+    assert!(!ok(en(63)), "63 below an enum payload reads 65 deep");
+}
+
+/// spec/data-model.md §5, §3.3 rule 7: a writer refuses what a reader would reject: a case step
+/// counts two levels, a list item one below its list; an enum case above 2^63 - 1.
+#[test]
+fn writer_refuses_out_of_profile_values_spec_3_3() {
+    use crate::batch::Batch;
+    use crate::ops::{Op, PathOp, PathSeg, Writer};
+    use crate::view::AnyView;
+    let nested = |n: usize| (0..n).fold(i(1), |v, _| l(vec![v]));
+    let apply = |path: Vec<PathSeg>, op: Op| {
+        let state = crate::Fragment::default();
+        let mut b = Batch::new(&state, Writer::new(ts(5 << 16), Source::node(tid(1)), 3));
+        b.apply(&PathOp { path, op }, &AnyView).err().map(|e| e.to_string())
+    };
+    let deep = |e: Option<String>| e.is_some_and(|e| e.contains("MAX_VALUE_DEPTH"));
+    assert!(deep(apply(vec![PathSeg::Case(1)], Op::Set(nested(63)))));
+    assert!(!deep(apply(vec![PathSeg::Case(1)], Op::Set(nested(62)))));
+    assert!(deep(apply(vec![], Op::Insert { at: 0, items: vec![nested(64)] })));
+    assert!(!deep(apply(vec![], Op::Insert { at: 0, items: vec![nested(63)] })));
+    assert!(deep(apply(vec![], Op::Set(Value::Enum(1 << 63, None)))));
+    assert!(apply(vec![], Op::Set(Value::Enum(i64::MAX as u64, None))).is_none());
+}
+
+/// §3.3 rule 2, §4.1 copy order: values holding links compare by canonical bytes, not by
+/// `Value` order (links by content hash): of two copies of one write the bytewise greater wins,
+/// and two map keys of one dot differing only in link bytes are two records in byte order.
+#[test]
+fn links_compare_by_bytes_spec_3_3() {
+    use crate::fragment::{Eid, Entry, Fragment, Key, Map, Meta, RegWrite, Register};
+    use crate::stamp::{Dot, Stamp};
+    use std::cmp::Ordering;
+    let link = |blob: u8| Value::Link(osis_base::Link { hash: [1; 32], blob: osis_base::BlobId([blob; 32]), suite: 1, key: [0; 32] });
+    // `Value` order puts [l3, 3] first (equal hashes, then 3 < 5); bytes put [l2, 5] first
+    let (a, b) = (l(vec![link(2), i(5)]), l(vec![link(3), i(3)]));
+    assert_eq!(a.cmp(&b), Ordering::Greater);
+    assert!(osis_base::encode(&a) < osis_base::encode(&b));
+    assert!(Key(a.clone()) < Key(b.clone()));
+    let src = Source::node(tid(1));
+    let s = Stamp::new(ts(5 << 16), src.clone(), 3);
+    let reg = |v: &Value| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v.clone()) }) });
+    for (x, y) in [(&a, &b), (&b, &a)] {
+        let mut f = reg(x);
+        f.join(reg(y));
+        assert_eq!(f.read().map(|v| osis_base::encode(&v)), Some(osis_base::encode(&b)), "the bytewise greater copy");
+    }
+    let dot = Dot::new(src, 3);
+    let entry = || Entry { reset: None, frag: Some(Box::new(reg(&i(1)))), created: Some(s.clone()) };
+    let entries: BTreeMap<Eid, Entry> = [(Eid::new(dot.clone(), Some(b.clone())), entry()), (Eid::new(dot, Some(a.clone())), entry())].into_iter().collect();
+    assert_eq!(entries.keys().map(|e| e.key().cloned()).collect::<Vec<_>>(), vec![Some(a), Some(b)]);
+    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &scx, None).unwrap();
+    assert_eq!(decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap(), snap);
+}
+
+/// §2.4, §8: a snapshot commit carries only foreign writes and consumes no counters: a write of
+/// this commit (`Ci` 0) is bad input there, while the same fragment is a writer's delta.
+#[test]
+fn snapshot_carries_no_own_writes_spec_2_4() {
+    let f = l(vec![i(0), l(vec![]), i(0), i(1)]);
+    assert!(decode_delta(&delta(vec![], vec![], f.clone()), &wcx(), &mut Interner::new(), None).is_ok());
+    let scx = DeltaCtx { ts: ts(5 << 16), own: Source::node(tid(1)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), f, l(vec![]), l(vec![])]));
+    assert!(decode_snapshot(&b, &scx, &mut Interner::new(), None).is_err());
+}

@@ -145,7 +145,7 @@ mod tests {
         osis_base::hex::decode(s).unwrap().try_into().unwrap()
     }
 
-    // spec/crypto.md §1: Ed25519 is RFC 8032 (test 1 of §7.1: empty message).
+    // spec/crypto.md §1: Ed25519 is RFC 8032 (its section 7.1, test 1: empty message).
     #[test]
     fn rfc8032_known_answer() {
         use ed25519_dalek::Signer;
