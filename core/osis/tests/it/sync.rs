@@ -186,8 +186,8 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 }
 
 // spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
-// reads what was there before; his redemption removes the link key (the link's `flags`, spec/
-// wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
+// reads what was there before; his redemption removes the link key (the link's `flags`,
+// spec/wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
 // a second redeemer is refused (`Network` after `wait_timeout`).
 #[test]
 fn link_redeem_spec_permissions_9() {

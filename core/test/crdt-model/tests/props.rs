@@ -907,7 +907,10 @@ fn decoder_rejects_writer_rule_violations() {
     // own stamp outside [lo, hi)
     let f = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 7), Some(Value::Int(1)))) };
     assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 6)).is_err());
-    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_ok());
+    // in range, but a register value is a commit-level write: the delta stamp, counter lo (§2.3)
+    assert!(decode_delta(&enc(&f), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_err());
+    let at_lo = Frag::Register { reset: None, write: Some((Stamp::new(ts, own.clone(), 5), Some(Value::Int(1)))) };
+    assert!(decode_delta(&enc(&at_lo), &mut Ctx::writer(ts, own.clone(), 5, 8)).is_ok());
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok(), "an import or snapshot context checks no range");
     // a foreign stamp in a writer's delta
     let f = Frag::Register { reset: None, write: Some((Stamp::new(2 << 16, Source::node(2), 1), Some(Value::Int(1)))) };

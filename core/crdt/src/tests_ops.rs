@@ -319,7 +319,7 @@ fn absent_key_typed_spec_5_6() {
 
 /// §5.5, §5.6, §9, spec/data-model.md §6: large values compare by keyed content hash: two writes
 /// of one content (other blob and key) are one set element, one map key, an unchanged register;
-/// the read shows the lowest live dot's link (§5.5, §5.6).
+/// the read shows the lowest live dot's link (spec/crdt.md §5.5, §5.6).
 #[test]
 fn large_values_equal_by_hash_spec_5_5() {
     use osis_base::{BlobId, Link};

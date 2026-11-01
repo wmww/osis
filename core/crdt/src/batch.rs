@@ -8,21 +8,47 @@ use crate::ops::{PathOp, PathSeg, Writer, joined, key_state, leaf, seq_text};
 use crate::seq::{self, Layered, SeqRead};
 use crate::stamp::{CounterRange, Dot, Stamp, max_opt};
 use crate::view::View;
+use osis_base::Value;
 use std::borrow::Cow;
 use std::collections::BTreeMap;
 
-/// Does the op's path plus a value it carries nest deeper than `MAX_VALUE_DEPTH` (spec/data-model.md
-/// §5, Depth)? Checked before resolving, which recurses per level.
-fn too_deep(op: &PathOp) -> bool {
+/// Would the op's writes read deeper than `MAX_VALUE_DEPTH` from the aspect root, or hold an enum
+/// case above `i64::MAX` (spec/data-model.md §5; the reader's rule, spec/crdt.md §3.3 rule 7)?
+/// A field, key or index step adds one level, a case step two (tag and array); a map key sits
+/// one below its map, a set element two, a list item one. Checked before resolving, which
+/// recurses per level.
+fn out_of_profile(op: &PathOp) -> bool {
     use crate::ops::Op;
     use osis_base::format::MAX_VALUE_DEPTH;
-    let Some(room) = MAX_VALUE_DEPTH.checked_sub(op.path.len()) else { return true };
-    let keys = op.path.iter().any(|s| matches!(s, PathSeg::Key(k) if k.deeper_than(MAX_VALUE_DEPTH)));
-    keys || match &op.op {
-        Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => v.deeper_than(room),
-        Op::Edit { base, new } => base.deeper_than(room) || new.deeper_than(room),
-        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(|v| v.deeper_than(room)),
-        Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::DeleteDots { .. } => false,
+    // `v` read at depth `at`
+    let bad = |v: &Value, at: usize| MAX_VALUE_DEPTH.checked_sub(at).is_none_or(|room| v.deeper_than(room)) || big_case(v);
+    let mut at = 0;
+    for s in &op.path {
+        if let PathSeg::Key(k) = s
+            && bad(k, at + 1)
+        {
+            return true;
+        }
+        at += if matches!(s, PathSeg::Case(_)) { 2 } else { 1 };
+    }
+    match &op.op {
+        Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Remove(v) | Op::Inc(v) => bad(v, at),
+        Op::Add(v) => bad(v, at + 2),
+        Op::Edit { base, new } => bad(base, at) || bad(new, at),
+        // a text's strings are its chars, read at the text's depth
+        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(|v| bad(v, if matches!(v, Value::Str(_)) { at } else { at + 1 })),
+        Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::DeleteDots { .. } => at > MAX_VALUE_DEPTH,
+    }
+}
+
+/// An enum case above `i64::MAX` anywhere in `v` (called after the depth check bounds recursion).
+fn big_case(v: &Value) -> bool {
+    match v {
+        Value::Enum(c, p) => i64::try_from(*c).is_err() || p.as_deref().is_some_and(big_case),
+        Value::List(l) => l.iter().any(big_case),
+        Value::Set(s) => s.iter().any(big_case),
+        Value::Map(m) => m.iter().any(|(k, v)| big_case(k) || big_case(v)),
+        _ => false,
     }
 }
 
@@ -117,8 +143,8 @@ impl<'s> Batch<'s> {
 
     /// Applies `op` under the writer's `view` (of the aspect root).
     pub fn apply<V: View>(&mut self, op: &PathOp, view: &V) -> Result<(), Error> {
-        if too_deep(op) {
-            return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH"));
+        if out_of_profile(op) {
+            return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH or enum case above i64::MAX"));
         }
         let point = seq_point(&op.path, &op.op).map(|(n, index)| (op.path.get(..n).unwrap_or_default().to_vec(), index));
         let seen = self.seen.take().filter(|x| point.as_ref().is_some_and(|(at, index)| *at == x.at && *index == x.index));

@@ -288,17 +288,21 @@ fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid) -> Resul
 fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, node: Tid, form: Form, next: &mut u64, deltas: &mut Vec<Resolved>) -> Result<()> {
     let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
     let joined = deltas.last().is_some_and(|d| d.tid == tid && d.ak == ak);
-    let lo = match deltas.last() {
+    // joined: one delta, so its commit-level writes keep that delta's stamp (spec/crdt.md §2.3)
+    let (lo, resume) = match deltas.last() {
         Some(d) if joined => {
             state.join(d.fragment.clone());
-            d.hi
+            (d.lo, d.hi)
         }
-        _ if form == Form::Commit => *next,
-        _ => tx.txn.counter(&tid, &ak)?,
+        _ if form == Form::Commit => (*next, *next),
+        _ => {
+            let c = tx.txn.counter(&tid, &ak)?;
+            (c, c)
+        }
     };
     let schema = osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
     let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-    let w = Writer::new(ts, form.own_source(node, CommitId([0; 32])), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
+    let w = Writer::new(ts, form.own_source(node, CommitId([0; 32])), lo).resume(resume).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
     let out = match &view {
         Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
         None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,

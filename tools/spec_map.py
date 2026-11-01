@@ -34,9 +34,15 @@ FN = re.compile(r"^\s*(?:pub\s+)?(?:async\s+)?fn\s+(\w+)")
 SHOWN = 8
 
 
+# A section of an outside standard ("RFC 8949 §4.2.1"), not of a spec file.
+RFC = re.compile(r"RFC\s*\d+\s*\(?\s*$")
+
+
 def citations(text, default_file=None):
     out, cur = [], default_file
     for m in CITE.finditer(text):
+        if RFC.search(text, 0, m.start()):
+            continue
         if m.group(1):
             cur = m.group(1)
         if cur:

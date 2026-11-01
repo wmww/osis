@@ -303,11 +303,24 @@ fn opt_stamp_only<T>(v: &Value, f: impl FnOnce(&Value) -> Result<T, Error>) -> R
     }
 }
 
-fn check_value(v: &Value) -> Result<(), Error> {
-    if v.depth() > MAX_VALUE_DEPTH {
+/// A register value or map key at read depth `cx.depth` (§3.3 rule 7): the value it reads as
+/// nests at most `MAX_VALUE_DEPTH` deep counted from the aspect root.
+fn check_value(cx: &Dec, v: &Value) -> Result<(), Error> {
+    if MAX_VALUE_DEPTH.checked_sub(cx.depth).is_none_or(|room| v.deeper_than(room)) {
         return Err(Error::Malformed("value nests too deep"));
     }
     Ok(())
+}
+
+/// Read depth a fragment of encoding `e` adds above its children (§3.3 rule 7): the array or
+/// map a struct, map or list reads as; the tag and array of an enum or set (whose elements'
+/// registers are its values).
+fn head_depth(e: Option<Encoding>) -> usize {
+    match e {
+        Some(Encoding::Struct | Encoding::Map | Encoding::List) => 1,
+        Some(Encoding::Enum | Encoding::Set) => 2,
+        _ => 0,
+    }
 }
 
 pub(crate) fn links(items: &[Value]) -> Result<Option<Vec<osis_base::Link>>, Error> {
@@ -410,8 +423,17 @@ pub(crate) fn canonical(bytes: &[u8], again: Result<Vec<u8>, Error>) -> Result<(
     }
 }
 
+/// §3.3 rule 7: a fragment carries no write its own resets, or `e` (the effective reset above
+/// it), prune (§4.2): a delta is a state fragment, prune-stable like any state. Checked on a
+/// copy: prune also drops what is no write but a join keeps (an undelete's chars, §5.7).
+pub(crate) fn prune_stable(f: &Fragment, e: Option<&Stamp>) -> Result<(), Error> {
+    let mut ch = crate::Changes::new();
+    f.clone().prune(e, &mut ch);
+    if ch.deaths().is_empty() { Ok(()) } else { Err(Error::Malformed("carries a write its own resets prune")) }
+}
+
 fn decode_meta(cx: &mut Dec, r: &Value, w: &Value) -> Result<Meta, Error> {
-    Ok(Meta { reset: cx.opt_stamp(r)?, w: cx.opt_stamp(w)? })
+    Ok(Meta { reset: cx.opt_level_stamp(r)?, w: cx.opt_level_stamp(w)? })
 }
 
 fn decode_elems(cx: &mut Dec, v: &Value) -> Result<BTreeMap<Dot, Elem>, Error> {
@@ -427,11 +449,15 @@ pub(crate) fn decode_elem_items(cx: &mut Dec, items: &[Value]) -> Result<BTreeMa
     for e in items {
         let [d, r, f] = as_array(e)? else { return Err(Error::Malformed("element")) };
         let dot = cx.dot(d)?;
-        let reset = cx.opt_stamp(r)?;
+        let reset = cx.opt_level_stamp(r)?;
         let frag = opt_stamp_only(f, |x| cx.fragment(x))?.map(Box::new);
-        // a set or bag element's value is one register (§3.2)
-        if frag.as_deref().is_some_and(|f| !matches!(f, Fragment::Register(_))) {
-            return Err(Error::Malformed("set or bag element not a register"));
+        // a set or bag element's value is one register (§3.2), written only by the element's
+        // creation, so by its dot's source (§3.3 rule 7)
+        match frag.as_deref() {
+            None | Some(Fragment::Register(Register { write: None, .. })) => {}
+            Some(Fragment::Register(Register { write: Some(w), .. })) if w.stamp.dot.src == dot.src => {}
+            Some(Fragment::Register(_)) => return Err(Error::Malformed("set or bag element value written by another source")),
+            Some(_) => return Err(Error::Malformed("set or bag element not a register")),
         }
         if frag.is_some() {
             cx.claim(&dot)?;
@@ -499,13 +525,13 @@ pub(crate) fn decode_entries(cx: &mut Dec, items: &[Value]) -> Result<BTreeMap<E
             _ => return Err(Error::Malformed("entry")),
         };
         let dot = cx.dot(d)?;
-        let reset = cx.opt_stamp(r)?;
+        let reset = cx.opt_level_stamp(r)?;
         cx.step(|| Step::Entry(Eid::new(dot.clone(), key.cloned())));
         let frag = opt_stamp_only(f, |x| cx.fragment(x));
         cx.step_done();
         let frag = frag?.map(Box::new);
         if let Some(k) = key {
-            check_value(k)?;
+            check_value(cx, k)?;
         }
         if frag.is_some() {
             cx.claim(&dot)?;
@@ -548,16 +574,16 @@ fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Registe
         [_, r, rest @ ..] => (r, rest),
         _ => return Err(Error::Malformed("register")),
     };
-    let reset = cx.opt_stamp(r)?;
+    let reset = cx.opt_level_stamp(r)?;
     if reset.is_some() && !may_reset {
         return Err(Error::Malformed("nested register with a reset"));
     }
     let write = match rest {
         [] => None,
-        [s] => Some(RegWrite { stamp: cx.stamp(s)?, value: None }),
+        [s] => Some(RegWrite { stamp: cx.level_stamp(s)?, value: None }),
         [s, v] => {
-            check_value(v)?;
-            Some(RegWrite { stamp: cx.stamp(s)?, value: Some(v.clone()) })
+            check_value(cx, v)?;
+            Some(RegWrite { stamp: cx.level_stamp(s)?, value: Some(v.clone()) })
         }
         _ => return Err(Error::Malformed("register arity")),
     };
@@ -566,17 +592,19 @@ fn decode_register(cx: &mut Dec, a: &[Value], may_reset: bool) -> Result<Registe
 
 /// Decodes a fragment; `may_reset` where a register may carry a reset (root, a `Slots` slot).
 pub(crate) fn decode_fragment(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragment, Error> {
-    // nesting counts across pages too (a page's fragments may hold paged arrays)
-    if cx.depth >= MAX_OBJECT_DEPTH {
-        return Err(Error::Malformed("fragments nest too deep"));
+    // read depth counts across pages too (a page's fragments may hold paged arrays), so every
+    // page level adds one; within a blob the CBOR depth bounds the recursion
+    let up = head_depth(v.as_list().and_then(|a| a.first()).and_then(Value::as_uint).and_then(Encoding::from_id));
+    if cx.depth + up > MAX_VALUE_DEPTH {
+        return Err(Error::Malformed("fragment reads deeper than MAX_VALUE_DEPTH"));
     }
-    cx.depth += 1;
+    cx.depth += up;
     let at = cx.streaming.as_mut().map(|(t, _)| t.enter());
     let r = decode_fragment_at(cx, v, may_reset);
     if let (Some(at), Some((t, _))) = (at, cx.streaming.as_mut()) {
         t.leave(at);
     }
-    cx.depth -= 1;
+    cx.depth -= up;
     let f = r?;
     if !derived_ok(&f) {
         return Err(Error::Malformed("write with a Derived stamp"));
@@ -631,8 +659,8 @@ fn decode_fragment_at(cx: &mut Dec, v: &Value, may_reset: bool) -> Result<Fragme
         (Encoding::Enum, [_, r, w, k, c]) => {
             let meta = decode_meta(cx, r, w)?;
             let case = opt_stamp_only(k, |c| match as_array(c)? {
-                [s] => Ok(CaseWrite { stamp: cx.stamp(s)?, case: None }),
-                [s, id] => Ok(CaseWrite { stamp: cx.stamp(s)?, case: Some(as_uint(id)?) }),
+                [s] => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: None }),
+                [s, id] => Ok(CaseWrite { stamp: cx.level_stamp(s)?, case: Some(as_uint(id)?) }),
                 _ => Err(Error::Malformed("case")),
             })?;
             let payloads = if defer(cx, c, enc)? { BTreeMap::new() } else { decode_children(cx, c, Step::Case)? };
@@ -818,6 +846,7 @@ pub mod oracle {
         let mut replay = replay(&mut dec);
         let d = Delta { nonce: nonce(n)?, fragment };
         canonical(bytes, encode_delta(&d, cx, Some(&mut replay)))?;
+        prune_stable(&d.fragment, None)?;
         Ok(d)
     }
 
@@ -832,6 +861,7 @@ pub mod oracle {
         let mut replay = replay(&mut dec);
         let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
         canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
+        prune_stable(&s.fragment, None)?;
         Ok(s)
     }
 }

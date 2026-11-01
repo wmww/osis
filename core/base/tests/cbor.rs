@@ -33,7 +33,7 @@ fn leaf() -> impl Strategy<Value = Value> {
         any::<[u8; 15]>().prop_map(|b| Value::Tid(Tid::from_bytes(b))),
         (any::<[u8; 32]>(), any::<[u8; 32]>(), any::<u8>(), any::<[u8; 32]>())
             .prop_map(|(hash, blob, suite, key)| Value::Link(Link { hash, blob: BlobId(blob), suite, key })),
-        prop_oneof![Just(0u64), Just(23), Just(300), Just(u64::MAX)].prop_map(|c| Value::Enum(c, None)),
+        prop_oneof![Just(0u64), Just(23), Just(300), Just(i64::MAX as u64)].prop_map(|c| Value::Enum(c, None)),
     ]
 }
 
@@ -43,7 +43,7 @@ fn value() -> impl Strategy<Value = Value> {
             prop::collection::vec(inner.clone(), 0..6).prop_map(Value::List),
             prop::collection::vec((inner.clone(), inner.clone()), 0..6).prop_map(|e| Value::Map(e.into_iter().collect())),
             prop::collection::vec(inner.clone(), 0..6).prop_map(|e| Value::Set(e.into_iter().collect())),
-            (any::<u64>(), inner.clone()).prop_map(|(c, p)| Value::Enum(c, Some(Box::new(p)))),
+            (0..=i64::MAX as u64, inner.clone()).prop_map(|(c, p)| Value::Enum(c, Some(Box::new(p)))),
             (prop_oneof![Just(0u64), Just(2), Just(255), Just(259), Just(TAG_STRUCT_RESERVED), Just(70_000), Just(u64::MAX)], inner)
                 .prop_map(|(t, c)| Value::Unknown(Unknown::new(t, CanonicalBytes::from_value(&c)).unwrap())),
         ]

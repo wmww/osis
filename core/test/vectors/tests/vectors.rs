@@ -21,6 +21,7 @@ macro_rules! vector_files {
 // A file leaving `pending` in MANIFEST adds its line here.
 vector_files! {
     cbor_values => "cbor/values.vec",
+    crdt_deltas => "crdt/deltas.vec",
     tid_thing => "tid/thing.vec",
     chunker_gear => "chunker/gear.vec",
     padme_padme => "padme/padme.vec",

@@ -54,7 +54,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 | struct | map with int keys (field IDs); unknown IDs preserved |
 | set | tag 258 around an array sorted by canonical encoded bytes of the elements |
 | tid | tag 1616 (TID) around a 15-byte byte string |
-| enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]` |
+| enum | tag 1617 (ENUM) around `[case_id]` or `[case_id, payload]`; `case_id` a major-0 integer at most 2^63 - 1 |
 | link | tag 1618 (LINK) around `[content hash, blob ID, suite byte || key]` (§6) |
 
 - Tag numbers TID = 1616, ENUM = 1617, LINK = 1618 (unassigned in the IANA CBOR tags registry); 1619 (STRUCT) is reserved, unused. Each encodes as `0xd9` plus two big-endian bytes.

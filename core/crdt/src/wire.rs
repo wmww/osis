@@ -819,14 +819,24 @@ impl<'a> Dec<'a> {
         Ok(s)
     }
 
-    /// `Opt(Stamp)`.
-    pub(crate) fn opt_stamp(&self, v: &Value) -> Result<Option<Stamp>, Error> {
+    /// A commit-level write's stamp (§2.3): in a writer's delta the delta stamp `(ts, own, lo)`.
+    pub(crate) fn level_stamp(&self, v: &Value) -> Result<Stamp, Error> {
+        let s = self.stamp(v)?;
+        if self.kind == DeltaKind::Writer && s.dot.ctr != self.range.lo {
+            return Err(Error::Malformed("commit-level write off the delta stamp"));
+        }
+        Ok(s)
+    }
+
+    /// `Opt(Stamp)` of a commit-level write (`level_stamp`); every `Opt(Stamp)` is one.
+    pub(crate) fn opt_level_stamp(&self, v: &Value) -> Result<Option<Stamp>, Error> {
         match as_array(v)? {
             [] => Ok(None),
-            [s] => self.stamp(s).map(Some),
+            [s] => self.level_stamp(s).map(Some),
             _ => Err(Error::Malformed("Opt(Stamp)")),
         }
     }
+
 
     /// Reads `Sources` (§3.2).
     pub(crate) fn load_sources(&mut self, v: &Value) -> Result<(), Error> {

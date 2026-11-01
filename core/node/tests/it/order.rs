@@ -1856,7 +1856,7 @@ fn expired_late_part_joins_valueless_spec_crdt_4_7() {
 }
 
 // Order seed 27039: a snapshot carries another's writes nested in an expiring put's entry in the
-// entry's key-erased record (§4.7), their own delta keyed. When the snapshot turns invalid (its
+// entry's key-erased record (spec/crdt.md §4.7), their own delta keyed. When the snapshot turns invalid (its
 // author revoked) its copies go though their own delta is held (`validity::regiven`), so the
 // state is the keyed record alone, as when the snapshot was invalid on arrival.
 #[test]

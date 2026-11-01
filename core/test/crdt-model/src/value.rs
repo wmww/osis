@@ -41,6 +41,20 @@ impl Value {
     pub fn fields(kv: Vec<(u64, Value)>) -> Value {
         Value::map(kv.into_iter().map(|(k, v)| (Value::Int(k as i64), v)).collect())
     }
+    /// Nesting depth: arrays, maps and tags on the deepest path (spec/data-model.md §5).
+    pub fn depth(&self) -> usize {
+        fn max<'a>(it: impl Iterator<Item = &'a Value>) -> usize {
+            it.map(Value::depth).max().unwrap_or(0)
+        }
+        match self {
+            Value::Bool(_) | Value::Int(_) | Value::Float(_) | Value::Str(_) | Value::Bytes(_) => 0,
+            Value::Tid(_) => 1,
+            Value::List(l) => 1 + max(l.iter()),
+            Value::Map(m) => 1 + max(m.iter().flat_map(|(k, v)| [k, v])),
+            Value::Set(s) => 2 + max(s.iter()),
+            Value::Enum(_, p) => 2 + p.as_deref().map_or(0, Value::depth),
+        }
+    }
     pub fn to_item(&self) -> Item {
         match self {
             Value::Bool(b) => Item::Bool(*b),

@@ -1,0 +1,5 @@
+# crdt-audit-fix
+- `cargo test --workspace` took about 10 min wall at load 33-39 (other agents' runs); the per-crate `cargo test -p osis-crdt` loop (15-35 s) carried the work.
+- tools/spec_map.py attributes a bare `§n` to the last file named before it in the comment, so a crdt test comment naming `spec/data-model.md §6` mid-list sent its later `(§5.5, §5.6)` to data-model, and a file name broken across comment lines (`spec/` / `wire.md`) was missed. A clause-based reset was tried and dropped (it lost real citations after `: ` inside parentheses); the fix is writing the file name out where a comment switches files.
+- Prune in place looked like the cheap prune-stability check, but prune also drops an undelete's chars (no creation in the delta): checking needs a copy.
+- My mid-task `cargo test --workspace --no-fail-fast 2>&1 | grep ... | head` showed nothing, yet the gate then failed on crdt-model's `props` (a test asserting the old leniency). Probably read the wrong run; the gate caught it.

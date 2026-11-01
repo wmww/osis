@@ -26,3 +26,4 @@ proto/messages.vec provisional
 proto/reconcile.vec provisional
 bundle/bundle.vec provisional
 lan/announce.vec provisional
+crdt/deltas.vec provisional
