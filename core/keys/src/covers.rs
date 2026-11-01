@@ -245,7 +245,9 @@ pub type Carries<'a> = Option<&'a dyn Fn(&BoxKey, Role, &Epoch) -> bool>;
 
 /// The boxes of `holder` that may carry role `r` at epoch `e`: its box at (r, e), and a
 /// key-actor box (sealed, no keyset) keyed at a higher role's current epoch, which carries the
-/// roles below it (spec/crypto.md §4) where `carries` says so; with `stale`, also such a box at
+/// roles below it (spec/crypto.md §4) where `carries` says so (the re-seal trigger: and only at
+/// r's newest epoch, the one such a box carries; another fork's gets a box of its own, so one
+/// the higher box never carried is not counted as held); with `stale`, also such a box at
 /// a superseded epoch of the higher role where `stale` says it carries (r, e).
 fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, e: &Epoch, carries: Carries, stale: Option<&dyn HeldActors>) -> bool {
     let exact = box_key(*holder, r, e);
@@ -254,7 +256,7 @@ fn boxes_for(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, e: 
             && (*k == exact
                 || (k.role > r
                     && matches!(b, SecretBox::Sealed(s) if s.keyset.is_none())
-                    && (from_schema(&k.epoch).is_ok_and(|ke| epochs.role(k.role).is_current(&ke)) && carries.is_none_or(|f| f(k, r, e))
+                    && (from_schema(&k.epoch).is_ok_and(|ke| epochs.role(k.role).is_current(&ke)) && carries.is_none_or(|f| epochs.role(r).newest() == Some(*e) && f(k, r, e))
                         || stale.is_some_and(|h| h.stale_box_carries(k, r, e)))))
     })
 }
@@ -359,22 +361,19 @@ pub fn reseal_needed(
         if m.until.is_some_and(|u| u.0 <= now.0.saturating_add(MAX_DRIFT_MS)) {
             continue;
         }
-        let roles: BTreeSet<Role> = ROLES
-            .into_iter()
-            .filter(|r| *r <= m.role)
-            .filter(|r| {
-                let re = epochs.role(*r);
-                re.current()
-                    .iter()
-                    .filter(|e| re.provenance(e).is_some_and(Provenance::reseals))
-                    .any(|e| !boxes_for(secrets, epochs, &m.holder, *r, e, Some(carries), None))
-            })
-            .collect();
+        let roles: BTreeSet<Role> = ROLES.into_iter().filter(|r| *r <= m.role).filter(|r| !reseal_missing(secrets, epochs, &m.holder, *r, carries).is_empty()).collect();
         if !roles.is_empty() {
             out.push((m.holder, roles));
         }
     }
     out
+}
+
+/// The epochs of `r` at which the re-seal trigger finds `holder` without a box (`reseal_needed`):
+/// current ones established through their rotation commits.
+pub fn reseal_missing(secrets: &Secrets, epochs: &ActorEpochs, holder: &Tid, r: Role, carries: &dyn Fn(&BoxKey, Role, &Epoch) -> bool) -> Vec<Epoch> {
+    let re = epochs.role(r);
+    re.current().into_iter().filter(|e| re.provenance(e).is_some_and(Provenance::reseals)).filter(|e| !boxes_for(secrets, epochs, holder, r, e, Some(carries), None)).collect()
 }
 
 #[cfg(test)]
