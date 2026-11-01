@@ -24,49 +24,125 @@ fn carries(e: &SeqElem) -> bool {
     e.flag() || !matches!(e.content, SeqContent::None)
 }
 
-/// A run element range: `(record dot, record, offset, length)`.
-type Piece<'a> = (&'a Dot, &'a SeqElem, u64, u64);
+/// Elements of one record in a run, as the run's encoding reads them (list content is encoded
+/// as it is pushed): first dot, length, creation stamp and anchor of the first, the extra
+/// position writes (single-element records only), the deletion and a text char.
+struct Part {
+    dot: Dot,
+    len: u64,
+    created: Option<(Stamp, Anchor)>,
+    pos: Vec<PosW>,
+    deleted: Option<(Stamp, bool)>,
+    ch: Option<char>,
+}
 
-/// Maximal runs (rule 3) over the wire-ordered records, as pieces of records (a range record's
-/// elements share every property the rule compares, and chain to each other).
-fn runs<'a>(text: bool, v: &[(&'a Dot, &'a SeqElem)]) -> Vec<Vec<Piece<'a>>> {
-    let mut out = Vec::new();
-    let (mut i, mut off) = (0usize, 0u64);
-    while let Some((k0, e0)) = v.get(i).copied() {
-        let d0 = nth(k0, off);
-        let mut run: Vec<Piece<'a>> = Vec::new();
-        let (mut n, mut prev) = (0u64, d0.clone());
-        while let Some((k, e)) = v.get(i).copied() {
-            if n > 0 {
-                // a new record starts here (`off` is 0)
-                if k.src != d0.src || Some(k.ctr) != prev.ctr.checked_add(1) || carries(e) != carries(e0) || (!text && has_content(e) != has_content(e0)) {
-                    break;
-                }
-                let ok = if e0.created.is_some() {
-                    matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == prev)
-                } else {
-                    e.created.is_none() && e.pos.is_empty() && e0.pos.is_empty() && e.deleted == e0.deleted
-                };
-                if !ok {
-                    break;
-                }
+/// The run being built: what rule 3 compares against its first record, and the chunk not yet
+/// written (a list run's content is cut at `CHUNK_MAX`; the run goes on in the next chunk).
+struct Open {
+    src: crate::stamp::Source,
+    carries: bool,
+    content: bool,
+    creation: bool,
+    pos_empty: bool,
+    deleted: Option<(Stamp, bool)>,
+    prev: Dot,
+    n: u64,
+    parts: Vec<Part>,
+    fs: Vec<Value>,
+    size: usize,
+}
+
+/// Maximal runs (rule 3) over records pushed in wire order, written as they close: whole
+/// sequences and, across pages, streamed ones (one open run held). Every source is noted in the
+/// order of rule 1: a run's first dot and anchor, its content, then (deferred to the end of the
+/// run, past any `CHUNK_MAX` cut) its position writes and flag writes.
+pub(crate) struct Runs {
+    text: bool,
+    open: Option<Open>,
+}
+
+impl Runs {
+    pub(crate) fn new(text: bool) -> Runs {
+        Runs { text, open: None }
+    }
+
+    /// Whether record `(k, e)` continues the open run `o` (rule 3).
+    fn continues(&self, o: &Open, k: &Dot, e: &SeqElem) -> bool {
+        if k.src != o.src || Some(k.ctr) != o.prev.ctr.checked_add(1) || carries(e) != o.carries || (!self.text && has_content(e) != o.content) {
+            return false;
+        }
+        if o.creation {
+            matches!(&e.created, Some((_, Anchor::Dot(a))) if *a == o.prev)
+        } else {
+            e.created.is_none() && e.pos.is_empty() && o.pos_empty && e.deleted == o.deleted
+        }
+    }
+
+    /// Adds record `(k, e)`, the next in wire order; closed runs go to `out`.
+    pub(crate) fn push(&mut self, k: &Dot, e: &SeqElem, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
+        let mut off = 0u64;
+        while off < e.span {
+            // past the first piece of a record the open run is full
+            if let Some(o) = &self.open
+                && (o.n == MAX_RUN || off > 0 || !self.continues(o, k, e))
+            {
+                self.close(cx, out)?;
             }
-            let take = (e.span - off).min(MAX_RUN - n);
-            run.push((k, e, off, take));
-            n += take;
-            prev = nth(k, off + take - 1);
+            let anchor_at = |a: &Anchor| if off == 0 { a.clone() } else { Anchor::Dot(nth(k, off - 1)) };
+            if self.open.is_none() {
+                let d0 = nth(k, off);
+                cx.dot(&d0);
+                if let Some((_, a)) = &e.created {
+                    anchor(cx, &anchor_at(a));
+                }
+                let deleted = e.deleted.clone();
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0 });
+            }
+            let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
+            let take = (e.span - off).min(MAX_RUN - o.n);
+            let created = e.created.as_ref().map(|(st, a)| (if off == 0 { st.clone() } else { Stamp { ts: st.ts, dot: nth(k, off) } }, anchor_at(a)));
+            let pos = if e.span == 1 { e.pos.iter().filter(|p| p.0.dot != *k).cloned().collect() } else { Vec::new() };
+            let ch = if self.text && has_content(e) { e.char() } else { None };
+            o.parts.push(Part { dot: nth(k, off), len: take, created, pos, deleted: e.deleted.clone(), ch });
+            o.n += take;
+            o.prev = nth(k, off + take - 1);
             off += take;
-            if off == e.span {
-                i += 1;
-                off = 0;
-            }
-            if n == MAX_RUN {
-                break;
+            // a list run also closes once its content reaches `CHUNK_MAX` bytes (rule 3), so a
+            // run fits a page; content-carrying list elements are single-element records
+            if let (false, SeqContent::Frag(f)) = (self.text, &e.content) {
+                let v = cx.fragment(f)?;
+                o.size += osis_base::encode(&v).len();
+                o.fs.push(v);
+                if o.size >= CHUNK_MAX {
+                    self.chunk(cx, out)?;
+                }
             }
         }
-        out.push(run);
+        Ok(())
     }
-    out
+
+    /// Writes the open run's parts so far as one run.
+    fn chunk(&mut self, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
+        let Some(o) = self.open.as_mut() else { return Ok(()) };
+        if o.parts.is_empty() {
+            return Ok(());
+        }
+        let parts = std::mem::take(&mut o.parts);
+        let fs = std::mem::take(&mut o.fs);
+        o.size = 0;
+        let content = (!self.text && o.content).then_some(fs);
+        out.push(encode_run(self.text, &parts, content, cx)?);
+        Ok(())
+    }
+
+    /// Closes the open run: its last chunk, then the sources of its position and flag writes.
+    pub(crate) fn close(&mut self, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
+        self.chunk(cx, out)?;
+        if self.open.take().is_some() {
+            cx.flush_deferred();
+        }
+        Ok(())
+    }
 }
 
 fn anchor(cx: &mut Enc, a: &Anchor) -> Value {
@@ -78,96 +154,68 @@ fn anchor(cx: &mut Enc, a: &Anchor) -> Value {
 
 /// The `[Run*]` array of `s` (before paging), runs in wire order.
 pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
-    let v = cx.sorted(s.elems());
     let mut out = Vec::new();
-    for run in runs(s.text, &v) {
-        // a list run also closes once its content reaches `CHUNK_MAX` bytes (rule 3), so a run
-        // fits a page; the collecting pass ignores this (rule 1 orders sources without it)
-        if s.text || cx.collecting() || !run.iter().any(|p| has_content(p.1)) {
-            out.push(encode_run(s.text, &run, None, cx)?);
-            continue;
-        }
-        // content-carrying list elements are single-element records, all of the run's
-        let (mut start, mut size, mut fs) = (0, 0, Vec::new());
-        for (j, p) in run.iter().enumerate() {
-            if let SeqContent::Frag(f) = &p.1.content {
-                let v = cx.fragment(f)?;
-                size += osis_base::encode(&v).len();
-                fs.push(v);
-            }
-            if size >= CHUNK_MAX || j + 1 == run.len() {
-                out.push(encode_run(false, run.get(start..=j).unwrap_or_default(), Some(std::mem::take(&mut fs)), cx)?);
-                start = j + 1;
-                size = 0;
-            }
-        }
+    let mut runs = Runs::new(s.text);
+    for (k, e) in cx.sorted(s.elems()) {
+        runs.push(k, e, cx, &mut out)?;
     }
+    runs.close(cx, &mut out)?;
     Ok(out)
 }
 
-/// One run; `content`: its list content already encoded.
-fn encode_run(text: bool, run: &[Piece], content: Option<Vec<Value>>, cx: &mut Enc) -> Result<Value, Error> {
-    let Some(&(k0, e0, off0, _)) = run.first() else { return Err(Error::Malformed("empty run")) };
-    let n: u64 = run.iter().map(|p| p.3).sum();
-    let first = cx.dot(&nth(k0, off0));
-    let creation = match &e0.created {
+/// One run of `parts`; `content`: its list content, encoded.
+fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut Enc) -> Result<Value, Error> {
+    let Some(p0) = parts.first() else { return Err(Error::Malformed("empty run")) };
+    let n: u64 = parts.iter().map(|p| p.len).sum();
+    let first = cx.dot(&p0.dot);
+    let creation = match &p0.created {
         None => Value::List(Vec::new()),
         Some((_, a)) => {
-            let a = if off0 == 0 { anchor(cx, a) } else { anchor(cx, &Anchor::Dot(nth(k0, off0 - 1))) };
+            let a = anchor(cx, a);
             let mut segs: Vec<(u64, u64)> = Vec::new();
-            for &(k, e, off, len) in run {
-                let Some((st, _)) = &e.created else { continue };
-                let ci = if off == 0 { cx.commit_of(st) } else { cx.commit_of(&Stamp { ts: st.ts, dot: nth(k, off) }) };
-                let ci = as_uint(&ci).unwrap_or(0);
+            for p in parts {
+                let Some((st, _)) = &p.created else { continue };
+                let ci = as_uint(&cx.commit_of(st)).unwrap_or(0);
                 match segs.last_mut() {
-                    Some((c, x)) if *c == ci => *x += len,
-                    _ => segs.push((ci, len)),
+                    Some((c, x)) if *c == ci => *x += p.len,
+                    _ => segs.push((ci, p.len)),
                 }
             }
             let segs = segs.into_iter().map(|(c, k)| Value::List(vec![uint(c), uint(k)])).collect();
             Value::List(vec![a, Value::List(segs)])
         }
     };
-    // content and extra position writes sit only on single-element records
-    let content = if let Some(fs) = content {
-        Value::List(fs)
-    } else if !run.iter().any(|p| has_content(p.1)) {
-        Value::List(Vec::new())
-    } else if text {
-        Value::Str(run.iter().filter(|p| has_content(p.1)).filter_map(|p| p.1.char()).collect())
-    } else {
-        let mut fs = Vec::with_capacity(run.len());
-        for p in run {
-            if let SeqContent::Frag(f) = &p.1.content {
-                fs.push(cx.fragment(f)?);
-            }
-        }
-        Value::List(fs)
+    let content = match content {
+        Some(fs) => Value::List(fs),
+        None if text && parts.iter().any(|p| p.ch.is_some()) => Value::Str(parts.iter().filter_map(|p| p.ch).collect()),
+        None => Value::List(Vec::new()),
     };
+    // rule 1: sources of position and flag writes count after the whole run's content
+    cx.defer(0);
     let mut posw = Vec::new();
     let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
     let mut idx = 0u64;
-    for &(k, e, _, len) in run {
-        if e.span == 1 {
-            for (st, a, key) in e.pos.iter().filter(|p| p.0.dot != *k) {
-                let st = cx.stamp(st);
-                let mut w = vec![uint(idx), st, anchor(cx, a)];
-                w.extend(key.as_ref().map(|k| cx.stamp(k)));
-                posw.push(Value::List(w));
-            }
+    for p in parts {
+        for (st, a, key) in &p.pos {
+            let st = cx.stamp(st);
+            let mut w = vec![uint(idx), st, anchor(cx, a)];
+            w.extend(key.as_ref().map(|k| cx.stamp(k)));
+            posw.push(Value::List(w));
         }
-        if let Some(dl) = &e.deleted {
+        if let Some(dl) = &p.deleted {
             match flagw.last_mut() {
-                Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + len - 1,
-                _ => flagw.push((idx, idx + len - 1, dl)),
+                Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + p.len - 1,
+                _ => flagw.push((idx, idx + p.len - 1, dl)),
             }
         }
-        idx += len;
+        idx += p.len;
     }
+    cx.defer(1);
     let mut fw = Vec::with_capacity(flagw.len());
     for (i, j, (st, b)) in flagw {
         fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
     }
+    cx.undefer();
     if matches!(&content, Value::List(x) if x.is_empty()) {
         cx.note_bare(n)?;
     }
