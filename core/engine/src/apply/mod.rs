@@ -415,14 +415,18 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 }
 
 /// A delta of an already applied commit, arriving later, is joined on arrival (spec/commits.md
-/// §4); dropped parts stay dropped. Late deltas that wait (their thing's `created.0`, chain or
-/// pages) are kept pending under the commit's ID and joined once they apply.
+/// §4); dropped parts stay dropped, but for one held value-less without its writes
+/// (`retention::takes_late`), which joins value-less and drops again. Late deltas that wait
+/// (their thing's `created.0`, chain or pages) are kept pending under the commit's ID and
+/// joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
     let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
     let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
     let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
     for ai in meta.dropped.keys() {
-        skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
+        if !crate::retention::takes_late(tx, id, *ai)? {
+            skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
+        }
     }
     if tx.core.ix.pending.contains_key(id)
         && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
@@ -449,6 +453,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
                 tx.core.touch();
                 tx.txn.remove_pending(id, Shred::Yes)?;
             }
+            crate::retention::reopen_late(tx, id, &parts.ais())?;
             atomic::join_late(tx, id, &merged, parts)?;
             Ok(Ingested::Applied(*id))
         }

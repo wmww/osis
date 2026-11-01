@@ -122,7 +122,9 @@ fn keep_of(op: u8) -> Option<Retention> {
 }
 
 /// The expiry of `op`'s writes after their commit's wall time, if any (spec/crdt.md §4.7): a
-/// second (a peer's own clock steps pass it) or half an hour (a global advance does).
+/// second (a peer's own clock steps pass it) or half an hour (a global advance does). With
+/// `k` 2 the commit also writes `t:rec.0`, without expiry: two parts, so split delivery makes
+/// the expiring one a late part, maybe arriving after T.
 fn expiry_of(op: u8, v: u8) -> Option<u64> {
     (27..=29).contains(&(op % OPS)).then_some(if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 })
 }
@@ -267,6 +269,10 @@ fn play(seed: u64, steps: &[Step]) -> Played {
                 }
                 if let Some(ms) = expiry_of(op, v) {
                     let _ = m.expires(th(t), &a, WallMs(lp.peers[by].engine.now().0 + ms));
+                    if k == 2 {
+                        let (a2, po2) = content_op(15, k, v);
+                        let _ = m.op(th(t), &a2, po2);
+                    }
                 }
                 if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
                     marks[by].push(lp.peers[by].engine.now());
@@ -1649,13 +1655,13 @@ fn valueless_list_order_independent_spec_crdt_4_7() {
     check(50036, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1 }).unwrap();
 }
 
-// issues/valueless-gaps.md: a purged delta whose body was dropped as covered leaves its
-// value-less write in the state alone once the purge drops its coverer; a later write that
-// superseded it there and is un-merged takes it along (made order: "old" comes back; demotion
-// first: absent). The purger's re-snapshot hides it when it reaches the node.
+// spec/crdt.md §4.6 Un-merge, §4.7 (residue), spec/commits.md §5 (purge): a purged delta whose
+// body was dropped as covered keeps its residue from the coverer's copies, which the purge drops
+// next; a later write that superseded it in the state and is un-merged does not take it along
+// (was: made order "old" came back, demotion first absent). The purger's re-snapshot would hide
+// it once it reaches the node.
 #[test]
-#[ignore]
-fn repro_purged_covered_write_lost_by_unmerge() {
+fn purged_covered_residue_survives_unmerge_spec_crdt_4_6() {
     let mut lp = LocalPeer::new(3, 24112, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1732,12 +1738,11 @@ fn repro_purged_covered_write_lost_by_unmerge() {
     assert_eq!(got, vec![None, None]);
 }
 
-// issues/valueless-gaps.md: a part of an expired delta arriving after T, later than the rest of
-// its commit, is skipped (dropped at expiry while missing) where spec/crdt.md §4.7 joins it
-// value-less: the whole commit hides "old", the split one shows it.
+// spec/crdt.md §4.7 (a copy arriving after T is stripped and joined): a part of an expired
+// delta arriving after T, later than the rest of its commit (dropped at expiry while missing),
+// joins value-less (was skipped: the whole commit hid "old", the split one showed it).
 #[test]
-#[ignore]
-fn repro_expired_late_part_skipped() {
+fn expired_late_part_joins_valueless_spec_crdt_4_7() {
     let mut lp = LocalPeer::new(2, 24113, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..2).map(|i| lp.peers[i].engine.tid()).collect();
@@ -1780,4 +1785,15 @@ fn repro_expired_late_part_skipped() {
         got.push(p.engine.get(&g, &ak("t:reg.0")).unwrap());
     }
     assert_eq!(got, vec![None, None]);
+}
+
+// issues/valueless-key-records.md (order seed 27039, pre-existing): another's writes nested in
+// an expired map put's entry, repeating its key, keep a keyed record in one order and also a
+// key-erased one in the other.
+#[test]
+#[ignore]
+fn repro_valueless_entry_key_records_by_order() {
+    use Step::*;
+    let h = vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }, Compact { by: 1, t: 4, op: 5 }, Write { by: 0, t: 2, op: 7, k: 1, v: 9 }, Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }, Roster { by: 0, t: 6 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Write { by: 0, t: 3, op: 1, k: 0, v: 4 }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 0, t: 7, op: 5, k: 2, v: 3 }, Edge { by: 0, t: 0, holder: 1, role: None }];
+    check(27039, &h, LARGE).unwrap();
 }
