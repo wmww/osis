@@ -1056,7 +1056,8 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
 /// value-less is in a body or a residue the node holds, never in the state alone, so a rebuild
 /// (an un-merge) gives it back after a later write that superseded it in the state goes: the
 /// state stays the join of what is held, whatever the order the expiry, that write and its
-/// revocation came in.
+/// revocation came in. Known gaps (a late part after T, a purged covered delta):
+/// issues/valueless-gaps.md.
 fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
     let mut rows = Vec::new();
     tx.scan(&records::aspect_key(records::RESIDUE, tid, ak), |k, v| {

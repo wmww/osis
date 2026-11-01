@@ -402,8 +402,9 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     let Some(o) = Owned::of(&m.header, c, ai).filter(|_| m.header.kind.has_own_writes()) else { return Ok(None) };
     let k = (a.tid, a.ak.clone());
     let list = tx.core.ix.valueless.entry_or_default(k.clone());
-    if !list.contains(&o) {
-        list.push(o.clone());
+    // sorted: what the node holds, not the order it learned it in
+    if let Err(i) = list.binary_search(&o) {
+        list.insert(i, o.clone());
     }
     let enc = encode_owned(list);
     tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
