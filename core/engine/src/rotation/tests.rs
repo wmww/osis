@@ -1089,9 +1089,9 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
 // (at about a third of seeds) until the fork was rotated away first.
 #[test]
 fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
-    // a seed that forked so (960 did too; each run costs seconds: six peers, so one seed
-    // here and the range in `_large`)
-    lacking_write_resealed(962);
+    // a seed that forks so (which seeds do moves with unrelated byte changes: recheck with
+    // `fork_named` off; each run costs seconds, six peers, so one seed here, the range in `_large`)
+    lacking_write_resealed(960);
 }
 
 /// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS.
