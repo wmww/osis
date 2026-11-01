@@ -7,7 +7,7 @@ use crate::keys::{Prefix, Secrets, delete_keys};
 use crate::lists::{BlobSink, write_list};
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB};
-use osis_base::{Ak, BlobId, CommitId, SchemaId, Tid, Ts, Value};
+use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
 use osis_crypto::{CryptoRngCore, SigningSecret, delta_hash};
 use osis_schema::Retention;
 use std::collections::BTreeMap;
@@ -28,8 +28,6 @@ pub struct AspectWrite {
     pub retention: Retention,
     /// Expiry T, wall ms ([`crate::retention::write_expires`]).
     pub expires: Option<u64>,
-    /// The AK's schema and revision; `None` for an untyped write.
-    pub schema: Option<(SchemaId, u64)>,
     /// Chunk, tree-node and page blobs the deltas introduce (framed with this aspect's delete
     /// keys, [`delete_keys`]).
     pub chunks: Vec<BlobId>,
@@ -40,7 +38,7 @@ pub struct AspectWrite {
 impl AspectWrite {
     /// One delta with untyped defaults; set the other fields as needed.
     pub fn new(tid: Tid, ak: Ak, lo: u64, hi: u64, delta: Vec<u8>) -> AspectWrite {
-        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), expires: None, schema: None, chunks: Vec::new(), records: Vec::new() }
+        AspectWrite { tid, ak, lo, hi, deltas: vec![delta], retention: Retention::default(), expires: None, chunks: Vec::new(), records: Vec::new() }
     }
 }
 
@@ -99,17 +97,6 @@ impl CommitBuilder {
             b
         });
 
-        // schema table
-        let mut schemas: BTreeMap<SchemaId, u64> = BTreeMap::new();
-        for a in &self.aspects {
-            if let Some((id, rev)) = a.schema
-                && *schemas.entry(id).or_insert(rev) != rev
-            {
-                return Err(Error::Build("one schema at two revisions"));
-            }
-        }
-        let schema_idx: BTreeMap<SchemaId, usize> = schemas.keys().enumerate().map(|(i, id)| (*id, i)).collect();
-
         // aspects in canonical order, with their delete keys and delta hashes
         self.aspects.sort_by_cached_key(|a| aspect_key(&a.tid, &a.ak));
         let mut aspect_keys = Vec::with_capacity(self.aspects.len());
@@ -134,7 +121,6 @@ impl CommitBuilder {
                     hi,
                     retention: a.retention,
                     expires: a.expires,
-                    schema: a.schema.and_then(|(id, _)| schema_idx.get(&id).copied()),
                     keys: Vec::new(),
                     hashes: hd.iter().map(|x| x.0).collect(),
                 },
@@ -174,7 +160,6 @@ impl CommitBuilder {
             kind,
             ts: self.ts,
             form: self.form,
-            schemas: schemas.into_iter().collect(),
             aspects: entries.into_iter().map(|e| e.0).collect(),
             chunks,
             purge,

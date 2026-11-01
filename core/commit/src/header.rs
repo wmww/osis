@@ -4,7 +4,7 @@
 use crate::Error;
 use crate::cbor::{ak, as_ak, as_bytes, as_idx, as_list, as_opt, as_tid, as_uint, tid, uidx, uint};
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_ADMIN, DELETE_WRITER, FORMAT_VERSION, MAX_BLOB, MAX_OBJECT_DEPTH};
-use osis_base::{Ak, BlobId, CommitId, Limits, Link, SchemaId, Tid, Ts, Value};
+use osis_base::{Ak, BlobId, CommitId, Limits, Link, Tid, Ts, Value};
 use osis_crdt::DeltaKind;
 use osis_crypto::{Domain, Signature, SigningSecret, VerifyingKey};
 use osis_schema::{Bound, PurgeBy, Retention};
@@ -12,8 +12,6 @@ use std::collections::BTreeMap;
 
 /// Decoder limits of commit structures (spec/wire.md §13).
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
-/// Schema table entries at most (spec/wire.md §13).
-pub const MAX_SCHEMAS: usize = 256;
 /// `abs` bound meaning forever (spec/wire.md §4).
 pub const FOREVER: u64 = i64::MAX as u64;
 
@@ -135,8 +133,6 @@ pub struct AspectEntry {
     pub retention: Retention,
     /// Expiry, wall ms.
     pub expires: Option<u64>,
-    /// Index into the schema table; `None` for an untyped write.
-    pub schema: Option<usize>,
     /// Ascending indices into the header's delete keys.
     pub keys: Vec<usize>,
     pub hashes: Vec<[u8; 32]>,
@@ -257,7 +253,6 @@ pub struct Header {
     pub kind: Kind,
     pub ts: Ts,
     pub form: Form,
-    pub schemas: Vec<(SchemaId, u64)>,
     pub aspects: Vec<AspectEntry>,
     pub chunks: Vec<ChunkEntry>,
     pub purge: Vec<PurgeItem>,
@@ -298,7 +293,6 @@ fn aspect_value(a: &AspectEntry) -> Value {
         uint(a.hi),
         retention_value(&a.retention),
         Value::opt(a.expires.map(uint)),
-        Value::opt(a.schema.map(uidx)),
         Value::List(a.keys.iter().map(|i| uidx(*i)).collect()),
         Value::List(a.hashes.iter().map(|h| Value::bytes(h)).collect()),
     ])
@@ -351,7 +345,6 @@ impl Header {
     }
 
     pub fn to_value(&self) -> Value {
-        let schemas = self.schemas.iter().map(|(id, rev)| Value::List(vec![Value::bytes(&id.0), uint(*rev)])).collect();
         Value::List(vec![
             uint(self.version),
             tid(&self.author),
@@ -359,7 +352,6 @@ impl Header {
             uint(self.kind.id()),
             uint(self.ts.to_u64()),
             self.form.value(),
-            Value::List(schemas),
             self.position(ListField::Aspects),
             self.position(ListField::Chunks),
             self.position(ListField::Purge),
@@ -431,7 +423,7 @@ pub(crate) fn as_retention(v: &Value) -> Result<Retention, Error> {
 }
 
 fn as_aspect(v: &Value) -> Result<AspectEntry, Error> {
-    let [t, a, lo, hi, r, exp, schema, toks, hashes] = as_list(v)? else { return Err(Error::Malformed("aspect arity")) };
+    let [t, a, lo, hi, r, exp, toks, hashes] = as_list(v)? else { return Err(Error::Malformed("aspect arity")) };
     let hashes = as_list(hashes)?.iter().map(as_bytes::<32>).collect::<Result<Vec<_>, _>>()?;
     if hashes.is_empty() {
         return Err(Error::Malformed("aspect without delta hashes"));
@@ -443,7 +435,6 @@ fn as_aspect(v: &Value) -> Result<AspectEntry, Error> {
         hi: as_uint(hi)?,
         retention: as_retention(r)?,
         expires: as_opt(exp)?.map(as_uint).transpose()?,
-        schema: as_opt(schema)?.map(as_idx).transpose()?,
         keys: as_list(toks)?.iter().map(as_idx).collect::<Result<_, _>>()?,
         hashes,
     })
@@ -546,20 +537,9 @@ impl Header {
         if version != FORMAT_VERSION {
             return Err(Error::Malformed("format version"));
         }
-        let [_, author, actor, kind, ts, form, schemas, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
+        let [_, author, actor, kind, ts, form, aspects, chunks, purge, undoes, blind, keys, frontier, origins, ephemeral] = items else {
             return Err(Error::Malformed("header arity"));
         };
-        let schemas = as_list(schemas)?;
-        if schemas.len() > MAX_SCHEMAS {
-            return Err(Error::Malformed("too many schemas"));
-        }
-        let schemas = schemas
-            .iter()
-            .map(|s| match as_list(s)? {
-                [id, rev] => Ok((SchemaId(as_bytes(id)?), as_uint(rev)?)),
-                _ => Err(Error::Malformed("schema entry arity")),
-            })
-            .collect::<Result<_, Error>>()?;
         let mut h = Header {
             version,
             author: as_tid(author)?,
@@ -567,7 +547,6 @@ impl Header {
             kind: Kind::from_id(as_uint(kind)?).ok_or(Error::Malformed("kind"))?,
             ts: as_ts(ts)?,
             form: Form::from_value(form)?,
-            schemas,
             aspects: Vec::new(),
             chunks: Vec::new(),
             purge: Vec::new(),

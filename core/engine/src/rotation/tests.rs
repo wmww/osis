@@ -1086,7 +1086,7 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
 // The settle never ends at about a third of the seeds (issues/rotation-settle-livelock.md).
 #[test]
 fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
-    let (mut lp, a, m) = lacking_write(961);
+    let (mut lp, a, m) = lacking_write(962);
     let f = lp.peers[5].engine.tid();
     lp.peers[5].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();

@@ -10,7 +10,7 @@ use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, CommitId, CreationRecord, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
@@ -332,8 +332,6 @@ pub(crate) struct Resolved {
     pub lo: u64,
     pub hi: u64,
     pub schema: Option<Arc<Schema>>,
-    /// The schema table entry without a schema held: an import keeps its origin's.
-    pub schema_ref: Option<(SchemaId, u64)>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
     /// A snapshot delta's frontiers and absorbed commits (spec/crdt.md §8).
@@ -449,8 +447,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
                 return Err(Error::Misuse("counter moved under the writer"));
             }
         }
-        let schema: Option<(SchemaId, u64)> = d.schema.as_ref().filter(|s| s.aspects.contains_key(d.ak.as_str())).map(|s| (s.id, s.revision)).or(d.schema_ref);
-        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, schema, chunks, records: d.records });
+        writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, chunks, records: d.records });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
     b.aspects = writes;
@@ -652,7 +649,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             keep_schema(tx, s, false)?;
         }
         let records = if memory { memory_records(tx.core, &tid, &ak, &am.ops) } else { Vec::new() };
-        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, schema_ref: None, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records });
+        deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
         return Ok(None);
@@ -712,16 +709,24 @@ fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
     Ok(())
 }
 
-/// Records schema `s` as known here, in memory and in the store (`records::SCHEMAS`):
-/// replacing a different one of its ID when `replace` (a registration), else only an older
-/// revision (a local write). An equal one writes nothing (every open re-registers).
+/// Records schema `s` as the local schema of each AK it declares, in memory and in the store
+/// (`records::SCHEMAS`, one record per AK): replacing another one when `replace` (a
+/// registration), else only one of a lower revision (a local write). An equal one writes
+/// nothing (every open re-registers). The core schema is compiled in, never kept.
 pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace: bool) -> Result<()> {
-    if let Some(k) = tx.core.schemas.get(&s.id)
-        && (**k == **s || (!replace && k.revision >= s.revision))
-    {
+    if s.declares_core() {
         return Ok(());
     }
-    tx.core.schemas.insert(s.id, s.clone());
-    tx.txn.put_local(&[super::records::SCHEMAS, &s.id.0[..]].concat(), &s.canonical_bytes(), osis_store::Shred::No)?;
+    let mut bytes = None;
+    for ak in s.aspects.keys() {
+        if let Some(k) = tx.core.schemas.get(ak)
+            && (**k == **s || (!replace && k.revision >= s.revision))
+        {
+            continue;
+        }
+        tx.core.schemas.insert(ak.clone(), s.clone());
+        let b = bytes.get_or_insert_with(|| s.canonical_bytes());
+        tx.txn.put_local(&[super::records::SCHEMAS, ak.as_bytes()].concat(), b, osis_store::Shred::No)?;
+    }
     Ok(())
 }

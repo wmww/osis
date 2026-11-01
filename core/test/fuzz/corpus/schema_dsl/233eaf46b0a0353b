@@ -1,6 +1,5 @@
 //! The schema of schemas (spec/data-model.md §10): a parsed schema is a value of type `schema`.
 //! Local only: this file's schema ID is never written anywhere.
-schema 0xffffffffffffffffffffffffffffffff;
 revision 1;
 
 type schema = struct {

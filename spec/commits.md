@@ -7,8 +7,7 @@ Encoding: spec/wire.md §4. Fields:
 - Author node tid and the actor tid it acts for.
 - Kind: content or role (§2); compaction-snapshot marker; import marker (content only, with the origins table, spec/permissions.md §7); roster-snapshot marker (role only).
 - `ts` (spec/crdt.md §2.2) and the dot form, node, commit or session (§3).
-- Schema table `[(schema ID, revision)]` (spec/versioning.md §3).
-- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6), schema index or none, and the delta hashes of its deltas. A content commit has one delta per aspect; a role commit may have several (§2), all sharing the aspect's range.
+- Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6) and the delta hashes of its deltas. A content commit has one delta per aspect; a role commit may have several (§2), all sharing the aspect's range.
 - Chunk list: the chunk, tree-node and page blobs the deltas introduce, each with the indices of the delete keys of the delta that created it (spec/crypto.md §7).
 - Optional purge request (§5), optional `undoes: commit ID` (§7).
 - A 16-byte random blind and the delete keys with their levels (spec/crypto.md §7); per aspect, the indices of the keys its deltas call for.

@@ -27,8 +27,6 @@ pub enum Rule {
     DefaultChanged,
     /// A default was added to a formerly required field (allowed only when explicitly marked).
     DefaultAdded,
-    /// The schema ID changed.
-    SchemaIdChanged,
     /// The schema changed without a greater revision.
     RevisionNotBumped,
     /// An aspect was removed (its wire type never changes; a different type is a new AK).
@@ -69,9 +67,6 @@ pub fn check(old: &Schema, new: &Schema) -> Vec<Violation> {
         return invalid;
     }
     let mut c = Checker { old, new, out: Vec::new(), seen: BTreeSet::new(), depth: 0, work: 0, stopped: false };
-    if old.id != new.id {
-        c.v(Rule::SchemaIdChanged, "schema".into());
-    }
     let changed = {
         let mut o = old.clone();
         o.revision = new.revision;

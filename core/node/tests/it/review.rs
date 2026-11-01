@@ -221,7 +221,6 @@ fn snapshot_bounds_from_carried_writes_spec_commits_5() {
     let ret = |e: &osis_node::Engine, c: &osis_base::CommitId| e.header(c).unwrap().aspects[0].retention;
     let snap = e1.snapshot(&t, &short).unwrap().unwrap();
     assert_eq!(ret(e1, &snap), most(Some(600_000)), "schema default, schema unknown here");
-    assert_eq!(e1.header(&snap).unwrap().schemas, vec![(TEST.get().id, 1)], "names the deltas' schema");
     let snap = e1.snapshot(&t, &ak("t:kept.0")).unwrap().unwrap();
     assert_eq!(ret(e1, &snap), Retention { at_least: Bound { abs: None, rel: Some(86_400_000) }, ..most(None) }, "keep at least");
     let u = e1.snapshot(&t, &doc).unwrap().unwrap();

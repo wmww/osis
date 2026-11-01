@@ -1,5 +1,5 @@
 # Data model and value encoding
-> Summary: Things and self-certifying tids, aspects and AKs, the type system, values and their canonical CBOR profile, large atomic values (chunk trees and links), hashing, groups, core aspects, schema identity.
+> Summary: Things and self-certifying tids, aspects and AKs, the type system, values and their canonical CBOR profile, large atomic values (chunk trees and links), hashing, groups, core aspects, schemas.
 
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
@@ -14,7 +14,7 @@
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or more than 1024 bytes (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
 - **Markers**: `^` admin-only (no rule depends on it); `~` ephemeral and `*` signal, matching the declared lifetime flag below; for an AK no schema declares, the writer picks the lifetime and the marker is a convention nothing checks (provisional).
-- AKs of one name segment and no tid belong to the core schema (§9). Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker owns, by convention (nothing checks it).
+- AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker owns, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
 - A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag**, matching the AK's lifetime marker, decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `signal`, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable but `placed.0~` (§8), which is ephemeral. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
 
@@ -86,7 +86,7 @@ Values are CBOR (RFC 8949) restricted to the following profile. A decoder MUST r
 - `placed.0~`, of `group.0`'s type, is the one ephemeral core aspect: the ephemeral placements into the group, written by group operations only. Adding or removing an item or subgroup that is ephemeral after the write is a write of the group's `placed.0~`, needing write on the group; any other write of an ephemeral group's `group.0` is ephemeral too and goes to `placed.0~`. Adding a durable item or subgroup is durable and persists the group (§1). When a thing persists, the persisting commit adds it durably to each group it is ephemerally placed in that the persisting node may write, with that placement's expiry, and the node removes it from `placed.0~`; a placement into a group it may not write stays ephemeral. Likewise every later content commit with a durable delta on a durable thing adds each of its ephemeral placements durably (a placement made while it persisted elsewhere, or restored by an undo), and removing a durable item or subgroup also removes it from `placed.0~`. A persisting thing with a `placed.0~` and no `group.0` gets an empty durable `group.0` in that commit.
 
 ## 9. Core schema
-The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
+The core aspects form the core schema, evolving under spec/versioning.md. Exact types below (DSL of notes/data-model.md); `creation`, `signing_key`, `kem_key`, `sealed` are spec/wire.md §3.
 
 | AK | type | notes |
 |---|---|---|
@@ -100,7 +100,7 @@ The core aspects form the core schema, schema ID 16 zero bytes, revision 1, evol
 | `label.0` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `moved.0` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
 | `was.0` | tid (register) | the thing this one continues (spec/permissions.md §7) |
-| `node.0` | struct { software revision, schemas: map<schema ID, revision> } | on a node thing |
+| `node.0` | struct { software revision } | on a node thing |
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
@@ -150,7 +150,7 @@ aspect tenures.0: set<tenure>;
 aspect label.0: map<blob, label>;                                // label ID -> label
 aspect moved.0: tid;
 aspect was.0: tid;
-aspect node.0: struct { 0 software: string, 1 schemas: map<blob, int> };   // schema ID -> revision
+aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
@@ -165,13 +165,12 @@ aspect tag.0: struct { 0 color: option<string> };
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas
-- A schema has a **schema ID** (128 random bits, minted once, never changed) and a **revision** (integer, bumped on every publish).
+- A schema has a **revision** (integer, bumped on every publish), for people and tools only: no schema ID or revision travels on the wire or is attached to aspects (spec/versioning.md §3).
 - A parsed schema is itself an osis value, of type `schema` below; its canonical form is the canonical encoding of that value. The core never distributes schemas.
 ```
 type schema = struct {
-    0 id: blob, 1 revision: int,                                // id: 16 bytes
-    2 types: map<string, type_def>, 3 aspects: map<string, aspect_def>,   // by type name, by AK
-    5 doc: option<string>,                                       // 4 retired
+    0 revision: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
+    3 doc: option<string>,
 };
 type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
 type type_expr = enum {

@@ -9,10 +9,8 @@ use osis_schema::*;
 use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-const ID: &str = "0102030405060708090a0b0c0d0e0f10";
-
 fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("schema 0x{ID};\nrevision {rev};\n{body}")).unwrap()
+    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
 }
 
 fn st(fields: &[(i64, Value)]) -> Value {

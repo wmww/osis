@@ -1,6 +1,5 @@
 //! The app's own aspects (notes/app.md). Notes are core `name.0` plus `body.0`, tags core `tag.0` groups,
 //! events and contacts the first-party schemas (schema/).
-schema 0x1479f2511b02a554fda5785da8c52882;
 revision 1;
 
 /// Marks a group as the app's internal group (an item and subgroup of home, no `tag.0`, never shown).

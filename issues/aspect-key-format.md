@@ -7,7 +7,7 @@ Decided so far (owner, Oct 2026):
 - Markers are positional with reserved characters, never substrings ("admin" appearing anywhere must not mean anything).
 - Major version in the key is a standard, not a codegen convention: same namespace and name with a higher major = successor form (spec/versioning.md §4: a type change is a new AK); a node may use the relation without the schema (diagnostics, grouping; no conversion implied).
 - Admin-only aspects: a marker in the key, judged by the validity path like role-class aspects (notes/permissions.md); no schema dependence, no wire bytes.
-- Schema source stays out of the key (it is the schema ID in the header's schema table: 128 random bits, spec/data-model.md §10).
+- Schema source stays out of the key (superseded below: no schema ID at all).
 - A namespace registry (a file in this repo claimed by PR) is cheap and optional; none exists yet (notes/data-model.md AK namespaces).
 
 Open for the discussion: separators (slashes may change), the reserved characters for version and admin markers, whether the core schema's single-segment keys keep their form, how generated constants and the DSL spell the markers, and the migration of existing keys (pre-release: a regeneration of vectors and schemas).
@@ -30,4 +30,4 @@ Implementation: a format change everywhere AKs appear (spec, wire, DSL, codegen,
 
 Sweep plan (steps, order, remnant hunts): issues/one-node-kind.md, Sweep plan.
 
-Built (sweep step 5): the grammar (`osis_base::Ak`), the new spelling everywhere, `roles.0`; markers only parse and must match the schema's lifetime flags; untyped test keys carry them by convention. Left: step 6 (schema ID and revision off the wire), step 7 (markers carry meaning).
+Built (sweep step 5): the grammar (`osis_base::Ak`), the new spelling everywhere, `roles.0`; markers only parse and must match the schema's lifetime flags; untyped test keys carry them by convention. Built (step 6): no schema ID or revision on the wire; the engine keeps one local schema per app AK. Left: step 7 (markers carry meaning).

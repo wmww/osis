@@ -76,7 +76,7 @@ fn engine_reopenable(seed: u64) -> (Engine, Arc<AtomicU64>, Arc<AtomicU64>, Reop
     (e, batches, bytes, Reopen(inner, root))
 }
 
-static SCALE: StaticSchema = StaticSchema::new("scale.osis", "schema 0x5ca1e5ca1e5ca1e5ca1e5ca1e5ca1e50; revision 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:short.0: map<string, string> [by: writer, keep_at_most: 10m];\n");
+static SCALE: StaticSchema = StaticSchema::new("scale.osis", "revision 1; aspect s:text.0: text; aspect s:tags.0: set<string>; aspect s:kept.0: set<string> [by: writer, keep_at_least: 1d]; aspect s:short.0: map<string, string> [by: writer, keep_at_most: 10m];\n");
 const TEXT: Aspect<Value> = Aspect::new("s:text.0", &SCALE);
 const TAGS: Aspect<Value> = Aspect::new("s:tags.0", &SCALE);
 const KEPT: Aspect<Value> = Aspect::new("s:kept.0", &SCALE);

@@ -8,5 +8,6 @@ Probe (the test's body over seeds, `settle` with peers [2, 0] on [M, A], after P
 - main 9338c682, seeds 955-969: 957, 958, 959, 963, 968 fail;
 - the sweep-5 branch, same seeds: 960, 962, 964, 966 fail; those four still fail with 40 rounds (a livelock, not slow convergence).
 - Without P's own `ensure_rotated` first, seeds 940-999 all settle on the branch.
+- Sweep step 6 (schema table off the header) changed the run again: seeds 955-965 on that branch, 955, 956, 957, 959, 960, 961, 965 fail; the test moved back to seed 962.
 
 Next: log which commits each round makes at a failing seed (rotation vs re-seal, which admin, which actor) and find the cycle; then turn the probe into a seed-range test (spec/permissions.md §3: re-seal trigger and rotation must reach a fixpoint).

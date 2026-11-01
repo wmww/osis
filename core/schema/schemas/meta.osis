@@ -1,12 +1,9 @@
 //! The schema of schemas (spec/data-model.md §10): a parsed schema is a value of type `schema`.
-//! Local only: this file's schema ID is never written anywhere.
-schema 0xffffffffffffffffffffffffffffffff;
 revision 1;
 
 type schema = struct {
-    0 id: blob, 1 revision: int,                                // id: 16 bytes
-    2 types: map<string, type_def>, 3 aspects: map<string, aspect_def>,   // by type name, by AK
-    5 doc: option<string>,                                       // 4 retired (signal kinds)
+    0 revision: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
+    3 doc: option<string>,
 };
 type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
 type type_expr = enum {

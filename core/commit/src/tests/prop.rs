@@ -4,7 +4,7 @@ use crate::tests::{dkey, t, ts};
 use crate::tests::build::{key, rng};
 use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
-use osis_base::{Ak, BlobId, CommitId, Link, SchemaId, Tid, Value};
+use osis_base::{Ak, BlobId, CommitId, Link, Tid, Value};
 use osis_schema::{Bound, PurgeBy, Retention};
 use proptest::prelude::*;
 
@@ -21,8 +21,8 @@ fn tid() -> impl Strategy<Value = Tid> {
 }
 
 fn aspect() -> impl Strategy<Value = AspectEntry> {
-    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::option::of(0u64..1 << 50), proptest::option::of(0usize..4), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
-        .prop_map(|(tid, ak, lo, hi, retention, expires, schema, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, expires, schema, keys, hashes })
+    (tid(), "[a-z]{1,8}", 0u64..100, 0u64..100, retention(), proptest::option::of(0u64..1 << 50), proptest::collection::vec(0usize..8, 0..3), proptest::collection::vec(any::<[u8; 32]>(), 1..3))
+        .prop_map(|(tid, ak, lo, hi, retention, expires, keys, hashes)| AspectEntry { tid, ak: Ak::new(format!("{ak}.0")).unwrap(), lo, hi, retention, expires, keys, hashes })
 }
 
 fn link() -> impl Strategy<Value = Link> {
@@ -32,7 +32,6 @@ fn link() -> impl Strategy<Value = Link> {
 prop_compose! {
     fn header()(
         author in tid(), actor in tid(), kind in 0u64..6, wall in 0u64..1 << 46, form in any::<bool>(),
-        schemas in proptest::collection::vec((any::<[u8; 16]>(), 0u64..9), 0..3),
         aspects in proptest::collection::vec(aspect(), 0..4),
         chunks in proptest::collection::vec((any::<[u8; 32]>(), proptest::collection::vec(0usize..5, 0..3)), 0..3),
         purge in proptest::collection::vec((proptest::option::of(any::<[u8; 32]>()), tid()), 0..3),
@@ -50,7 +49,6 @@ prop_compose! {
         let mut h = Header {
             version: 1, author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
             form: if form { Form::Commit } else { Form::Node },
-            schemas: schemas.into_iter().map(|(i, r)| (SchemaId(i), r)).collect(),
             aspects,
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {

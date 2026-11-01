@@ -2,9 +2,8 @@
 //! expansion of named types; validation.
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
-use osis_base::format::CORE_SCHEMA_ID;
 pub use osis_base::Lifetime;
-use osis_base::{Ak, SchemaId, Value};
+use osis_base::{Ak, Value};
 use osis_crdt::Encoding;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,7 +13,7 @@ const MAX_EXPAND: usize = 64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schema {
-    pub id: SchemaId,
+    /// For people and tools only: never on the wire, never attached to aspects.
     pub revision: u64,
     pub types: BTreeMap<String, TypeDef>,
     /// By AK.
@@ -149,8 +148,14 @@ pub struct Invalid {
 }
 
 impl Schema {
-    pub fn new(id: SchemaId, revision: u64) -> Schema {
-        Schema { id, revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
+    pub fn new(revision: u64) -> Schema {
+        Schema { revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
+    }
+
+    /// Declares core AKs: the core schema (`Schema::validate` allows no mix). An app schema
+    /// never does.
+    pub fn declares_core(&self) -> bool {
+        self.aspects.keys().any(|ak| crate::core_types::is_core_key(ak))
     }
 
     /// Write defaults for an AK this schema declares.
@@ -257,12 +262,12 @@ impl Schema {
         for (name, msg) in self.irregular_recursion() {
             bad(&format!("type {name}"), msg);
         }
+        let core = self.declares_core();
         for (ak, def) in &self.aspects {
             let item = format!("aspect {ak}");
-            let core = self.id == CORE_SCHEMA_ID;
             match Ak::new(ak.as_str()) {
                 Ok(_) if crate::core_types::is_core_key(ak) != core => {
-                    bad(&item, "core AKs have one name segment and no tid and belong to the core schema; app AKs have two or more, or a tid".into())
+                    bad(&item, "a schema declares core AKs (one name segment, no tid) only, or app AKs (two or more, or a tid) only".into())
                 }
                 Ok(a) if a.lifetime() != def.lifetime() => bad(&item, "the AK's lifetime marker must match its flags: `~` ephemeral, `*` signal".into()),
                 Ok(_) => {}

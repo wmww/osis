@@ -697,7 +697,7 @@ impl Engine {
             };
             let retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() };
             let records = chain.iter().filter_map(|t| creates.get(t).cloned()).collect();
-            writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, deltas: vec![bytes], retention, expires, schema: None, chunks: Vec::new(), records });
+            writes.push(AspectWrite { tid, ak, lo: 0, hi: 0, deltas: vec![bytes], retention, expires, chunks: Vec::new(), records });
         }
         let things: Vec<Tid> = writes.iter().map(|w| w.tid).collect();
         let published = self.run(|tx| published_keys(tx, &creates, things))?;

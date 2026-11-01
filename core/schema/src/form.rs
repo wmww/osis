@@ -7,7 +7,7 @@ use crate::schema::{AspectDef, Bound, Flag, PurgeBy, Retention, Schema, TypeDef}
 use crate::statics::StaticSchema;
 use crate::typed::typed_read;
 use crate::types::{Case, EnumType, Field, StructType, Type};
-use osis_base::{SchemaId, Value};
+use osis_base::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Source of the schema of schemas (spec/data-model.md §10).
@@ -117,7 +117,7 @@ impl Schema {
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        st_fields(vec![(0, Value::bytes(&self.id.0)), (1, Value::uint(self.revision)), (2, Value::Map(types)), (3, Value::Map(aspects)), (5, doc(&self.doc))])
+        st_fields(vec![(0, Value::uint(self.revision)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.
@@ -134,14 +134,13 @@ impl Schema {
     pub fn from_value(v: &Value) -> Result<Schema, Error> {
         let v = typed_read(meta_schema(), v, &Type::named("schema")).map_err(|e| Error::Form(e.to_string()))?;
         let f = Fields::of(&v)?;
-        let id: [u8; 16] = f.bytes(0)?.try_into().map_err(|_| Error::Form("schema ID must be 16 bytes".into()))?;
-        let mut s = Schema::new(SchemaId(id), f.uint(1)?);
-        for (n, d) in f.map(2)? {
+        let mut s = Schema::new(f.uint(0)?);
+        for (n, d) in f.map(1)? {
             let d = Fields::of(d)?;
             let params = d.list(0)?.iter().map(as_str).collect::<Result<_, _>>()?;
             s.types.insert(as_str(n)?, TypeDef { params, body: read_type(d.get(1)?)?, doc: d.doc(2)? });
         }
-        for (ak, a) in f.map(3)? {
+        for (ak, a) in f.map(2)? {
             let a = Fields::of(a)?;
             let r = Fields::of(a.get(1)?)?;
             let by = PurgeBy::from_id(r.case(0)?).ok_or_else(|| Error::Form("purgeable-by case".into()))?;
@@ -158,7 +157,7 @@ impl Schema {
             let expires = a.opt(2)?.map(as_uint).transpose()?;
             s.aspects.insert(as_str(ak)?, AspectDef { ty: read_type(a.get(0)?)?, retention, expires, flags, succeeds, doc: a.doc(5)? });
         }
-        s.doc = f.doc(5)?;
+        s.doc = f.doc(3)?;
         if let Some(inv) = s.validate().into_iter().next() {
             return Err(Error::Form(format!("{}: {}", inv.item, inv.msg)));
         }
@@ -194,9 +193,6 @@ impl<'a> Fields<'a> {
     }
     fn uint(&self, id: i64) -> Result<u64, Error> {
         as_uint(self.get(id)?)
-    }
-    fn bytes(&self, id: i64) -> Result<Vec<u8>, Error> {
-        self.get(id)?.as_bytes().map(<[u8]>::to_vec).ok_or_else(|| Error::Form("expected blob".into()))
     }
     fn map(&self, id: i64) -> Result<&'a BTreeMap<Value, Value>, Error> {
         match self.get(id)? {

@@ -926,19 +926,14 @@ impl Engine {
                 }
             }
             let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
-            // bounds from the retention of the writes it carries, schema known here or not; it
-            // names the schema of the newest delta naming one (spec/commits.md §5)
+            // bounds from the retention of the writes it carries, schema known here or not
+            // (spec/commits.md §5)
             let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0);
             if compaction && osis_commit::retention::carrier_only(&retention) {
                 return Ok(None);
             }
-            let schema_ref = tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten().rev().find_map(|(_, c)| {
-                let h = &tx.core.ix.commits.get(c)?.header;
-                let a = h.aspects.iter().find(|a| a.tid == tid && a.ak == ak)?;
-                a.schema.and_then(|i| h.schemas.get(i)).copied()
-            });
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, schema_ref, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records: Vec::new() };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records: Vec::new() };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

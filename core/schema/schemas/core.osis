@@ -1,5 +1,4 @@
 //! Core schema (spec/data-model.md §9). Agility enums and the creation record: spec/wire.md §3.
-schema 0x00000000000000000000000000000000;
 revision 1;
 
 type signing_key = enum { 1 ed25519(blob) };          // 32 bytes
@@ -47,8 +46,7 @@ aspect tenures.0: set<tenure> [by: admin, keep_at_least: 90d];
 aspect label.0: map<blob, label> [by: admin, keep_at_least: 90d];
 aspect moved.0: tid [by: admin, keep_at_least: 90d];
 aspect was.0: tid [by: admin, keep_at_least: 90d];
-/// Schema ID -> revision.
-aspect node.0: struct { 0 software: string, 1 schemas: map<blob, int> };
+aspect node.0: struct { 0 software: string };
 /// 32-byte P2P key, relay URLs, 32-byte LAN secret.
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
 /// ts: wall ms of the commit's ts.

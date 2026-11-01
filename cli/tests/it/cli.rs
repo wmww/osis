@@ -370,8 +370,7 @@ fn watch_initial_plan_cli_4() {
     assert_eq!((o.code, o.err.trim()), (6, "error: timed out after 1 change(s)"), "{}", o.out);
 }
 
-const SCHEMA: &str = "schema 0x0123456789abcdef0123456789abcdef;
-revision 1;
+const SCHEMA: &str = "revision 1;
 type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
 aspect todo:task.0: task;
 aspect todo:list.0: list<task>;

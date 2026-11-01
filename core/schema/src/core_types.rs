@@ -7,7 +7,7 @@ use crate::{codec_enum, codec_struct};
 use crate::keys::Aspect;
 use crate::path::{Path, PathError, PathErrorKind};
 use crate::statics::CORE;
-use osis_base::{CommitId, CreationRecord, LabelId, Role, SchemaId, Tid, Ts, Value, WallMs};
+use osis_base::{CommitId, CreationRecord, LabelId, Role, Tid, Ts, Value, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Role-class aspects (spec/data-model.md §9): fixed retention, spec/commits.md §2.
@@ -186,9 +186,9 @@ codec_struct! {
     pub struct Secrets { 0 boxes: BTreeMap<BoxKey, SecretBox>, 1 history: BTreeMap<HistoryKey, Vec<u8>> }
 }
 codec_struct! {
-    /// `node.0`: software revision, schema ID -> revision.
+    /// `node.0`: software revision.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct NodeInfo { 0 software: String, 1 schemas: BTreeMap<SchemaId, u64> }
+    pub struct NodeInfo { 0 software: String }
 }
 codec_struct! {
     /// `reach.0`: 32-byte P2P key, relay URLs, 32-byte LAN secret.

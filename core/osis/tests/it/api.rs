@@ -110,6 +110,13 @@ fn registered_schema_key_spec_api_keys() {
     let db = db(1);
     db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
     assert!(db.register_schema_source("bad.osis", "schema nonsense").is_err());
+    // a schema declaring a core AK is the core schema's business, not an app's
+    assert!(db.register_schema_source("core.osis", "revision 1;\naspect name.0: int;\n").is_err());
+    assert_eq!(db.key("name.0").unwrap().schema().map(|s| s.declares_core()), Some(true));
+    // a later registration of an AK types it
+    db.register_schema_source("n2.osis", "revision 5;\naspect note:title.0: int;\n").unwrap();
+    assert_eq!(db.key("note:title.0").unwrap().schema().map(|s| s.revision), Some(5));
+    db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
     let title = db.key("note:title.0").unwrap();
     assert!(title.schema().is_some());
     assert!(db.key("other:x.0").unwrap().schema().is_none());
@@ -200,7 +207,7 @@ fn write_ops_spec_api_writes() {
     db.write_with(|w| w.at(t, notes::TASKS).path(p![0, task::PRIORITY]).set_case(osis::CaseId(1), Some(Value::Enum(2, None)))).unwrap();
     assert_eq!(db.get(t, notes::TASKS).unwrap().unwrap()[0].priority, Some(notes::Priority::High));
     // max: observe keeps the largest contribution
-    db.register_schema_source("t.osis", "schema 0x0123456789abcdef0123456789abcdef;\nrevision 1;\naspect t:max.0: max<int>;\n").unwrap();
+    db.register_schema_source("t.osis", "revision 1;\naspect t:max.0: max<int>;\n").unwrap();
     let mx = db.key("t:max.0").unwrap();
     db.write_with(|w| {
         w.at(t, mx.clone()).path(p![]).observe(&7i64)?;

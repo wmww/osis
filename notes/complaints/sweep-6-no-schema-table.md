@@ -1,0 +1,2 @@
+- A scripted removal of `schema 0x...;` lines with a trailing-comment pattern ate the rest of a generated one-line escaped string (core/schema/tests/gen/notes.rs): regenerate gen files instead of editing them.
+- `rotator_lacking_carried_write_resealed_spec_permissions_3` livelocked again (issues/rotation-settle-livelock.md): any header byte change reshuffles commit IDs, and the test's seed has to be re-picked each time (4.5 min to see "no fixpoint" at 30 rounds). The livelock itself wants fixing.

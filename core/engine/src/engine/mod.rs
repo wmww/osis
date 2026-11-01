@@ -263,8 +263,7 @@ fn fallback_header(v: &View) -> Header {
         kind: v.kind,
         ts: v.ts,
         form: v.form,
-        schemas: Vec::new(),
-        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), expires: None, schema: None, keys: Vec::new(), hashes: Vec::new() }).collect(),
+        aspects: v.aspects.iter().map(|a| osis_commit::AspectEntry { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, retention: Default::default(), expires: None, keys: Vec::new(), hashes: Vec::new() }).collect(),
         chunks: Vec::new(),
         purge: Vec::new(),
         undoes: None,
@@ -497,9 +496,10 @@ pub struct Core {
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
     /// addressed, so never stale.
     pub frontiers: BTreeMap<[u8; 32], (Arc<osis_perm::Frontier>, usize)>,
-    /// Schemas registered or written with here (`records::SCHEMAS`): typed views for undo and
-    /// large-value write-back, also after a restart (snapshots need none).
-    pub schemas: BTreeMap<osis_base::SchemaId, Arc<osis_schema::Schema>>,
+    /// The local schema of each app AK, registered or written with here (`records::SCHEMAS`):
+    /// typed views for undo and large-value write-back, also after a restart (snapshots need
+    /// none). Never from the wire.
+    pub schemas: BTreeMap<String, Arc<osis_schema::Schema>>,
     pub events: Events,
     /// States the running transaction wrote (dropped from the cache on rollback).
     pub written: Vec<(Tid, Ak)>,
@@ -1331,7 +1331,7 @@ impl Engine {
         let node = self.tid();
         let mut m = Mutation::new();
         m.create(self.core.id.record().clone());
-        m.set(node, &ct::NODE, &ct::NodeInfo { software: self.cfg.software.clone(), schemas: BTreeMap::new() })?;
+        m.set(node, &ct::NODE, &ct::NodeInfo { software: self.cfg.software.clone() })?;
         self.commit(m)?;
         let kem = self.core.id.keys().kem.public();
         let mut k = Mutation::new();

@@ -31,7 +31,6 @@
 
 ## Wire choices (spec/wire.md)
 - Tags 1616-1619 sit in the IANA registry's unassigned 1401-18299 block (checked against the registry); every tag >= 256 costs a 3-byte head, so no cheaper choice existed in the allowed range. Registering them is optional.
-- Core schema ID is 16 zero bytes: well known, and no randomly minted ID collides with it.
 - The creation record is a struct value so `created.0` stores exactly the hashed bytes. Link and recovery keys derive their nonce from the seed, so the link or card alone names the key actor's tid.
 - Tree-node content hashes cover their children's hashes, not the bytes below: an edit rehashes one path (O(change)), while covered-bytes hashing rehashes up to the whole value per level. The root stays a function of the value's bytes, so equality by content holds. Nodes close on a content-hash byte (prolly-tree style) so an insert does not shift every later node.
 - `MAX_BLOB / CHUNK_THRESHOLD = 64`: 128 KiB keeps ordinary documents inline; 8 MiB blobs fit one protocol message and browser memory.
@@ -39,7 +38,7 @@
 
 ## AKs
 - Grammar: spec/data-model.md §2 (owner decisions, round 13). A string on the wire, readable in diagnostics, whose structure is a grammar; markers are positional reserved characters, never substrings; one spelling per key (`.0` always written, no leading zeros, fixed marker order). The version is a standard, not a codegen convention: same tid and name segments with a higher version is the successor, usable without any schema.
-- Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. A collision is detected (schema ID in headers), never prevented; until detected the writes merge like concurrent writes (spec/requirements.md, Versioning).
+- Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. Nothing on the wire names a schema (owner, round 13: no machine mapping from AK to schema), so a collision is never prevented and shows only as typed-read failures where the types differ; the writes merge like concurrent writes (spec/requirements.md, Versioning). A node types an AK by the schema it holds for it: the engine keeps one per app AK (`Core::schemas`, the newest registration wins), and no app schema declares a core AK.
 - Codegen is the one writer of the strings: app code uses generated constants, each checked at build time (`Aspect::new` calls the `const fn` `Ak::check`).
 - Markers today: `~`/`*` must match the schema's lifetime flag (validation); untyped keys carry them by convention (the tests' ephemeral and signal keys do), nothing checks them; `^` parses and carries no rule. Step 7 of issues/one-node-kind.md makes the marker decide.
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
@@ -51,8 +50,7 @@ Example: spreadsheet thing = group of two axis things, each a group of row/colum
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect, signal), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
 ```
 //! Notes app schema.
-schema 0x7f3a9c21e0d84b6a9b1c5e2d4f607a83;   // 16 bytes, random, minted once
-revision 4;                                   // bumped on every publish
+revision 4;                                   // bumped on every publish, for people and tools
 
 type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int), reserved (4, 5) };
 type task = struct {

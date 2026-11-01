@@ -22,8 +22,6 @@ impl Header {
             return Err(Error::Malformed("format version"));
         }
         let ord = |ok: bool, what: &'static str| if ok { Ok(()) } else { Err(Error::Malformed(what)) };
-        ord(strictly_ascending(&self.schemas, |s| s.0), "schemas not sorted and distinct")?;
-        ord(self.schemas.iter().all(|s| s.1 <= FOREVER), "integer above 2^63 - 1")?;
         ord(!self.aspects.is_empty(), "no aspects")?;
         ord(strictly_ascending(&self.aspects, |a| aspect_key(&a.tid, &a.ak)), "aspects not sorted and distinct")?;
         ord(strictly_ascending(&self.chunks, |c| c.blob), "chunks not sorted and distinct")?;
@@ -44,9 +42,6 @@ impl Header {
             ord(!a.hashes.is_empty(), "aspect without delta hashes")?;
             let nums = [Some(a.lo), Some(a.hi), a.expires, a.retention.at_least.abs, a.retention.at_least.rel, a.retention.at_most.abs, a.retention.at_most.rel];
             ord(nums.iter().flatten().all(|n| *n <= FOREVER), "integer above 2^63 - 1")?;
-            if a.schema.is_some_and(|i| i >= self.schemas.len()) {
-                return Err(Error::Malformed("schema index out of range"));
-            }
             ord(strictly_ascending(&a.keys, |i| *i), "aspect delete keys not ascending")?;
             let mut levels = Vec::with_capacity(a.keys.len());
             for i in &a.keys {

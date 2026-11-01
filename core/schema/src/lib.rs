@@ -1,4 +1,4 @@
-//! osis-schema: the type system, the `*.osis` DSL (hand-written parser), schema identity and the
+//! osis-schema: the type system, the `*.osis` DSL (hand-written parser), the
 //! additive evolution checker, typed reads and write validation, the `View` for the structural
 //! diff, the core schema and its Rust types, typed aspect keys, codegen (spec/data-model.md §2–§5,
 //! §9, §10; spec/versioning.md).

@@ -15,7 +15,6 @@ use std::collections::BTreeSet;
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
-schema 0x5e1f5e1f5e1f5e1f5e1f5e1f5e1f5e1f;
 revision 1;
 aspect k:pairs.0: map<string, string> [by: writer, keep_at_most: 1h];
 "#,

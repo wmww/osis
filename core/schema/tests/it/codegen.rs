@@ -48,12 +48,12 @@ fn list_struct_warning() {
 fn colliding_constant_names_refused() {
     for (a, b) in [("a:b_c.0", "a_b:c.0"), ("x:y.1", "x:y_v1.0"), ("x:y.0: int", "x:y.0~: int [ephemeral]"), ("t:schema.0", "t:z.0")] {
         let d = |k: &str| if k.contains(": ") { k.to_string() } else { format!("{k}: int") };
-        let src = format!("schema 0x00000000000000000000000000000001;\nrevision 1;\naspect {};\naspect {};\n", d(a), d(b));
+        let src = format!("revision 1;\naspect {};\naspect {};\n", d(a), d(b));
         let s = parse("c.osis", &src).unwrap();
         let e = generate(&s, "c.osis", &src).unwrap_err();
         assert!(matches!(e, Error::Codegen(ref m) if m.contains("collides")), "{a} {b}: {e}");
     }
-    let src = "schema 0x00000000000000000000000000000001;\nrevision 1;\naspect x:y.0: int;\naspect x:y.1: int;\n";
+    let src = "revision 1;\naspect x:y.0: int;\naspect x:y.1: int;\n";
     assert!(generate(&parse("c.osis", src).unwrap(), "c.osis", src).is_ok());
 }
 
@@ -75,7 +75,7 @@ fn generated_types_round_trip_through_keys_spec_versioning_5() {
     let v = notes::TASKS.encode(&tasks);
     notes::TASKS.validate(&v).unwrap();
     assert_eq!(notes::TASKS.decode(&v).unwrap(), tasks);
-    assert_eq!(notes::TASKS.schema_ref().unwrap().1, 4);
+    assert_eq!(notes::TASKS.schema().unwrap().revision, 4);
     assert_eq!(notes::LAST_OPENED.defaults().expires, Some(30 * 86_400_000));
     // Reader defaults apply through TryFrom: an old task without fields 3..8.
     let old = Value::Map(BTreeMap::from([(Value::Int(1), Value::Str("x".into())), (Value::Int(2), Value::Bool(true))]));
