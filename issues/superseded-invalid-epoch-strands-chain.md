@@ -11,4 +11,6 @@ After every re-seal and rotation settles: 2/126 is never established, so neither
 
 spec/crypto.md §4 does say this ("established ... when the node has applied its rotation commit ... and every epoch that rotation supersedes is established"); the chain condition is there so that holding an epoch means holding every departure its chain carried (TLC R9, Residue 1), which an invalid commit carries none of. A likely fix: the chain condition skips a superseded epoch whose rotation commit the node holds and judges invalid (a function of the held set). Then `Own` could be dropped for an invalid own rotation too. Before the reseal-forks branch the same (supersession then also came from `keys.0`).
 
-Repro: `OSIS_DEPART_START=51 OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib forks_with_departures_settle_large -- --ignored`.
+Seed 243 is the same without the leak: peer 0's rotation of every role, made knowing a read fork of an admin demoted concurrently (so invalid), is established only at peer 0 (`Own`) and at that admin (whose own fork is `Own` there), so those two count it newest and the rest the older fork. In 300 seeds (0..300) these two are the only failures of the test.
+
+Repro: `OSIS_DEPART_START=51 OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib forks_with_departures_settle_large -- --ignored` (and 243).
