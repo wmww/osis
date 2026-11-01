@@ -289,12 +289,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
         tx.core.mark_aspect_changed(&a.tid, &a.ak);
     }
     if !misstated.is_empty() {
-        let mut by: BTreeMap<osis_crdt::Source, Vec<u64>> = BTreeMap::new();
-        for d in misstated {
-            by.entry(d.src).or_default().push(d.ctr);
-        }
-        let gone: Vec<Owned> = by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs }).collect();
-        crate::apply::rebuild_without(tx, &a.tid, &a.ak, &gone)?;
+        crate::apply::rebuild_without(tx, &a.tid, &a.ak, &Owned::dots(misstated))?;
         mark_deaths_due(tx, &a.tid, &a.ak)?;
         tx.core.mark_aspect_changed(&a.tid, &a.ak);
     }
