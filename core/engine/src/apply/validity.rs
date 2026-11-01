@@ -906,15 +906,11 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 /// holds), stays.
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
     let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
-    let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-    for d in super::held_parts(tx, snap, sai)? {
-        for (d, ts) in d.fragment().writes() {
-            if ts.is_some() && !d.src.is_derived() && regiven(tx.core, tid, ak, &d) {
-                by.entry(d.src.clone()).or_default().insert(d.ctr);
-            }
-        }
+    let mut dots = Vec::new();
+    for f in super::held_fragments(tx, snap, sai)? {
+        dots.extend(f.writes().into_iter().filter(|(d, ts)| ts.is_some() && !d.src.is_derived() && regiven(tx.core, tid, ak, d)).map(|(d, _)| d));
     }
-    Ok(by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect())
+    Ok(Owned::dots(dots))
 }
 
 /// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):

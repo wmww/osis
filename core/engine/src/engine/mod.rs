@@ -334,6 +334,14 @@ impl Owned {
         let a = v.aspects.get(ai)?;
         Some(Owned::of_form(v.form, v.author, id, a.lo, a.hi))
     }
+    /// Exactly the dots `ds`, one `Dots` per source.
+    pub(crate) fn dots(ds: impl IntoIterator<Item = Dot>) -> Vec<Owned> {
+        let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+        for d in ds {
+            by.entry(d.src).or_default().insert(d.ctr);
+        }
+        by.into_iter().map(|(src, ctrs)| Owned::Dots { src, ctrs: ctrs.into_iter().collect() }).collect()
+    }
     /// Whether `d` (an owner dot, never `Derived`) belongs to this delta.
     pub fn owns(&self, d: &Dot) -> bool {
         match (self, d.src.kind()) {
