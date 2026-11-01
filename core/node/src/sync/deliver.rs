@@ -20,14 +20,10 @@ impl SyncEngine {
     }
 
     /// `take_done` for a flow that may be a self-removal (`Done::drop_lost`): what it lost is
-    /// dropped once it is placed (every label idle), at once when it goes under no label.
+    /// dropped once it is placed (`drop_left`).
     fn take_done_lost(&mut self, done: Done) -> Result<()> {
         if done.drop_lost {
-            if done.deliveries.iter().any(|d| matches!(d, Delivery::First { under, .. } if !under.is_empty())) {
-                self.drop_when_idle = true;
-            } else {
-                self.drop_lost()?;
-            }
+            self.left_check = Some((u64::MAX, u64::MAX));
         }
         self.take_done(done)?;
         // placements wait for a pass
@@ -35,10 +31,36 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Drops what this node lost read access to once its own self-removals behind those losses
+    /// are placed (spec/permissions.md §3: the removal goes up before the leaver forgets the
+    /// labels it would go under). Run while `left_check` is set, again only after the sync
+    /// state or the engine changed. Both inputs are derived from stored state: a crash between
+    /// a self-removal and its drop leaves nothing behind (`left_check` is set at start).
+    pub(crate) fn drop_left(&mut self) -> Result<()> {
+        let key = (self.state.version, self.engine.core.generation);
+        if self.left_check.is_none_or(|k| k == key) {
+            return Ok(());
+        }
+        self.left_check = Some(key);
+        // a loss with no self-removal of this node behind it is the trigger's (`drop_lost_due`)
+        let own = self.engine.lost_leaving()?;
+        if own.is_empty() {
+            self.left_check = None;
+            return Ok(());
+        }
+        for c in &own {
+            if !self.placed(c)? {
+                return Ok(());
+            }
+        }
+        self.left_check = None;
+        self.drop_lost()
+    }
+
     /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
     /// §3) and its sync state about it: the engine forgets the records in its transaction, this
     /// reloads them and drops the sessions and in-memory marks of the forgotten labels. Flows'
-    /// self-removals call it once uploaded; an app calls it when told it was removed.
+    /// `drop_left` calls it once a self-removal is placed; an app calls it when told it was removed.
     pub fn drop_lost(&mut self) -> Result<()> {
         self.forget_lost(false)
     }

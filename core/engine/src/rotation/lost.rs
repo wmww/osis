@@ -265,6 +265,21 @@ impl Engine {
         Ok(self.forget_lost(false)?.0)
     }
 
+    /// This node's own self-removals (`departures_placing`) behind a departure from an actor it
+    /// lost read access to and still holds secrets of. node-sync drops the lost
+    /// (`drop_lost_secrets`) once these are placed. From stored state only, so a restart between
+    /// the self-removal and the drop finds them.
+    pub fn lost_leaving(&mut self) -> Result<BTreeSet<osis_base::CommitId>> {
+        self.run(|tx| {
+            let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
+            let mut own = BTreeSet::new();
+            for a in lost_among(tx, all)? {
+                own.extend(super::departures_placing(tx, &a)?.into_iter().filter_map(|(_, c)| c));
+            }
+            Ok(own)
+        })
+    }
+
     /// Whether the lost-access trigger has work (`drop_lost_due`).
     pub fn lost_due(&self) -> bool {
         !self.core.ix.lost_due.is_empty()

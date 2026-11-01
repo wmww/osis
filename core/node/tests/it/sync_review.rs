@@ -414,3 +414,41 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
         }
     }
 }
+
+// spec/permissions.md §3 (a node that learns it lost read access drops it; a removal goes under
+// the labels the removed party could read): a node leaving a group offline, then crashing
+// before or after carrying the self-removal out, still places the removal and drops the
+// group's secrets and content once back online.
+#[test]
+fn self_removal_crash_still_drops_spec_permissions_3() {
+    for crash in ["none", "before carry_out", "after carry_out"] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "marker");
+        net.run();
+        assert_eq!(net.read(b, t), Some(s("marker")));
+        net.set_online(b, false);
+        let bt = net.tid(b);
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(b).demote(&g, &d).unwrap();
+        assert!(done.drop_lost);
+        if crash != "before carry_out" {
+            let acts = net.sync(b).carry_out(done).unwrap();
+            net.actions(b, acts);
+        }
+        if crash != "none" {
+            net.restart(b, 77);
+        }
+        net.set_online(b, true);
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        assert!(!net.engine(a).roster(&g).contains_key(&bt), "crash {crash}: the removal reached the admin");
+        assert!(net.engine(b).epochs(&g).is_none_or(|e| e.read.held().next().is_none()), "crash {crash}: the leaver keeps the group's secrets");
+        assert_eq!(net.read(b, t), None, "crash {crash}: the leaver keeps the group's content");
+    }
+}
