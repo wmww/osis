@@ -1,0 +1,100 @@
+#!/usr/bin/env python3
+"""Every token a diff renames, as `count  old -> new  first-file`, most frequent first, so an
+over-match (`RELAYS_REMEMBERED -> RELAYS_REHOLDERED`) stands out among the intended pairs
+(notes/build.md, Scripted renames).
+
+Usage: tools/rename-table [REV | A..B | -]
+  REV    the changes of commit REV (against its first parent)
+  A..B   the diff between A and B
+  -      a unified diff on stdin
+  none   the merge base with main against the working tree (committed or not)
+
+Per hunk, each run of removed lines is compared with the run of added lines after it, token by
+token (identifiers: [A-Za-z_][A-Za-z0-9_]*). A replaced span of equal length pairs token for
+token; spans of unequal length are listed whole (`a b -> c`), which also shows a rename that
+split or merged words. Files git calls binary are skipped.
+"""
+import collections
+import difflib
+import re
+import signal
+import subprocess
+import sys
+
+TOKEN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+
+
+def git_diff(args):
+    cmd = ["git", "diff", "--no-color", "--no-ext-diff", "-U0", "--find-renames"] + args
+    return subprocess.run(cmd, check=True, capture_output=True, text=True, errors="replace").stdout
+
+
+def diff_text(argv):
+    if len(argv) > 1:
+        sys.exit(__doc__.split("\n\n")[1])
+    if not argv:
+        base = subprocess.run(["git", "merge-base", "HEAD", "main"], check=True, capture_output=True, text=True).stdout.strip()
+        return git_diff([base])
+    a = argv[0]
+    if a == "-":
+        return sys.stdin.read()
+    if ".." in a:
+        return git_diff([a])
+    return git_diff([a + "^", a])
+
+
+def pairs(old_lines, new_lines):
+    old = [t for line in old_lines for t in TOKEN.findall(line)]
+    new = [t for line in new_lines for t in TOKEN.findall(line)]
+    sm = difflib.SequenceMatcher(None, old, new, autojunk=False)
+    for op, i1, i2, j1, j2 in sm.get_opcodes():
+        if op != "replace":
+            continue
+        if i2 - i1 == j2 - j1:
+            yield from zip(old[i1:i2], new[j1:j2])
+        else:
+            yield " ".join(old[i1:i2]), " ".join(new[j1:j2])
+
+
+def main():
+    counts = collections.Counter()
+    first = {}
+    path = None
+    removed, added = [], []
+
+    def flush():
+        if removed and added:
+            for p in pairs(removed, added):
+                counts[p] += 1
+                first.setdefault(p, path)
+        removed.clear()
+        added.clear()
+
+    for line in diff_text(sys.argv[1:]).splitlines():
+        if line.startswith("diff --git "):
+            flush()
+            path = None
+        elif line.startswith("+++ "):
+            path = line[4:].removeprefix("b/")
+        elif line.startswith("--- "):
+            pass
+        elif line.startswith("-"):
+            if added:
+                flush()
+            removed.append(line[1:])
+        elif line.startswith("+"):
+            added.append(line[1:])
+        else:
+            flush()
+    flush()
+    if not counts:
+        print("rename-table: no renamed tokens", file=sys.stderr)
+        return
+    width = max(len(str(c)) for c in counts.values())
+    for (old, new), c in sorted(counts.items(), key=lambda x: (-x[1], x[0])):
+        print(f"{c:>{width}}  {old} -> {new}  {first[(old, new)]}")
+
+
+if __name__ == "__main__":
+    signal.signal(signal.SIGPIPE, signal.SIG_DFL)  # quiet under `| head`
+    main()
