@@ -740,3 +740,32 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     assert_eq!(read(&mut w.lp.peers[3]), want);
 }
 
+
+/// A commit adding and removing one key of the paged map in a map entry (node 1's: net, an
+/// explicit `W` on the map and no element) reaches the map's page set with no dot: the pages
+/// loaded for it still give the entry's creation, kept in the set's path only (node 1 commits
+/// it, node 3 applies it; every node then holds one state, stored as cached).
+#[test]
+fn elementless_write_keeps_entry_creation_spec_crdt_5_6() {
+    both(8, |w| {
+        let (t, a) = (w.t, aks()[1].clone());
+        let mut r = Rng(51);
+        let mut m = Mutation::new();
+        m.set(t, &a, &fill_value(1, &mut r, 0)).unwrap();
+        let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(w, 0, &[fill]);
+        for to in [1, 3] {
+            w.lp.deliver(to, &pk[0]).unwrap();
+        }
+        let big = || PathSeg::Key(Value::Str("big".into()));
+        let mut m = Mutation::new();
+        m.op(t, &a, PathOp { path: vec![big(), PathSeg::Key(Value::Int(99_999))], op: Op::Set(Value::Int(1)) }).unwrap();
+        m.op(t, &a, PathOp { path: vec![big()], op: Op::Remove(Value::Int(99_999)) }).unwrap();
+        let c = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let pk = packages(w, 1, &[c]);
+        w.lp.deliver(0, &pk[0]).unwrap();
+        let want = w.lp.peers[0].engine.state(&t, &a).unwrap();
+        assert!(w.lp.peers[1].engine.stored_state(&t, &a).unwrap() == want, "the committer's store lost what node 0 holds");
+        pk
+    });
+}
