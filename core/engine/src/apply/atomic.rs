@@ -590,7 +590,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let changed = j.changed;
     let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect() } else { BTreeSet::new() };
     // a received roster change may end this node's read access (spec/permissions.md §3); its own
-    // self-removals drop what they lost once uploaded (`Done::drop_lost`)
+    // self-removals drop what they lost once placed (node-sync `drop_left`)
     if origin != Origin::Local {
         crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
     }
