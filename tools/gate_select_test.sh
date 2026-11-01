@@ -42,6 +42,8 @@ case_ "spec, notes, issues" "core=docs gui=0 seeds=0" "echo x >> spec/s.md; echo
 case_ "notes and core" "core=1 gui=0 seeds=0" "echo x >> notes/n.md; echo x >> core/osis/a.rs"
 case_ "notes and kit" "core=docs gui=1 seeds=0" "echo x >> notes/n.md; echo x >> kit/src/a.rs"
 case_ "notes file moved to the root" "core=1 gui=0 seeds=0" "git mv notes/n.md n.md"
+case_ "non-Markdown file under notes" "core=1 gui=0 seeds=0" "echo x > notes/v.txt"
+case_ "non-ASCII Markdown name under spec" "core=docs gui=0 seeds=0" "echo x > \"spec/\$(printf '\\303\\251').md\""
 case_ "gate itself" "core=1 gui=0 seeds=0" "echo '#' >> tools/gate.sh"
 case_ "kit and core" "core=1 gui=1 seeds=0" "echo x >> kit/src/a.rs; echo x >> core/osis/a.rs"
 case_ "core deleted" "core=1 gui=0 seeds=0" "git rm -q core/osis/a.rs"
@@ -71,6 +73,11 @@ rm core/engine/new.rs
 git checkout -q --detach
 check "detached HEAD" "core=0 gui=1 seeds=0"
 git checkout -q t
+# a source on main reading notes/: a notes-only branch then runs everything, naming it (last: main changes)
+git checkout -q main; echo 'let _ = std::fs::read_to_string("../notes/n.md");' > core/osis/r.rs; git add -A; git commit -qm reader
+case_ "notes only, a source reads notes" "gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate
+core/osis/r.rs:1:let _ = std::fs::read_to_string(\"../notes/n.md\");
+core=1 gui=0 seeds=0" "echo x >> notes/n.md"
 git checkout -q main; git checkout -qb fresh; echo x >> kit/src/a.rs
 check "uncommitted kit edit, no commits (base = HEAD)" "core=1 gui=1 seeds=5"
 git checkout -q kit/src/a.rs

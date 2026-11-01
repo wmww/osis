@@ -13,7 +13,7 @@
 # break the app); both, both. On main itself, or with --all, everything runs. --base REV compares
 # against REV instead of the merge base with main (to time one project's steps). --plan prints the
 # selection (core, gui, seeds) and exits (tested by tools/gate_select_test.sh).
-# A diff whose non-GUI paths are all under spec/, notes/ and issues/ (core=docs) runs the instant checks and the one
+# A diff whose non-GUI paths are all Markdown under spec/, notes/ and issues/ (core=docs) runs the instant checks and the one
 # test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched kit/ or app/), not tier 1, lints, deny or the sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
@@ -42,8 +42,15 @@ if [ -z "$all" ] && [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ]; th
 $(git ls-files --others --exclude-standard)"
   printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$' || core=
   printf '%s\n' "$changed" | grep -q -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' || gui=
-  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}spec/' -e '^"\{0,1\}notes/' -e '^"\{0,1\}issues/' -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$'; then
-    core=docs
+  # docs: only Markdown under spec/, notes/, issues/, and no Rust source but the known one
+  # (notes/cli.md) names a path there on a line that reads or includes a file; else everything
+  if [ -n "$core" ] && ! printf '%s\n' "$changed" | grep -q -v -e '^"\{0,1\}\(spec\|notes\|issues\)/.*\.md"\{0,1\}$' -e '^"\{0,1\}kit/' -e '^"\{0,1\}app/' -e '^$'; then
+    readers=$(git grep -n -E '(include(_str|_bytes)?!|read_to_string|fs::read|File::open|\.join)\(.*(spec|notes|issues)/' -- '*.rs' | grep -v -e '^kit/' -e '^app/' -e '^cli/tests/it/cli\.rs:[0-9]*: .*"\.\./notes/cli\.md"' || true)
+    if [ -z "$readers" ]; then
+      core=docs
+    else
+      printf 'gate: docs-only diff, but these read spec/, notes/ or issues/ (add them to the docs step): full gate\n%s\n' "$readers" >&2
+    fi
   fi
 fi
 if [ -z "$seeds" ]; then
