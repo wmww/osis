@@ -391,7 +391,37 @@ impl RelaySeen {
     }
 }
 
+/// `OSIS_EPH_TRACE` (diagnostics): unset, no trace; `all`, every lane event; else a hex prefix
+/// of the commit IDs (or blob IDs) to follow. Read once per process.
+fn eph_trace_filter() -> Option<&'static str> {
+    static F: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    F.get_or_init(|| std::env::var("OSIS_EPH_TRACE").ok().map(|v| v.to_ascii_lowercase())).as_deref()
+}
+
+fn hex(b: &[u8]) -> String {
+    b.iter().map(|x| format!("{x:02x}")).collect()
+}
+
+/// A host key, short, for the trace.
+fn host6(s: &HostKey) -> String {
+    hex(&s[..3])
+}
+
 impl SyncEngine {
+    /// One stderr line per lane event of a traced commit (`eph_trace_filter`): `EPH node <tid>
+    /// commit <c> blob <b> label <l>: <what>`. The commit is `c`, else the lane's entry's (held
+    /// or waiting), else unknown (`-`: a blob not opened yet, matched by its ID).
+    fn eph_trace(&self, l: &LabelId, b: &BlobId, c: Option<&CommitId>, what: impl FnOnce() -> String) {
+        let Some(f) = eph_trace_filter() else { return };
+        let c = c.copied().or_else(|| self.eph.entries.get(&(*l, *b)).or_else(|| self.eph.pending.get(&(*l, *b)).map(|x| &x.0)).map(|e| e.commit));
+        let (ch, bh) = (c.map(|c| hex(&c.0)), hex(&b.0));
+        if f != "all" && !ch.as_deref().is_some_and(|x| x.starts_with(f)) && !bh.starts_with(f) {
+            return;
+        }
+        let t = self.engine.tid().to_string();
+        eprintln!("EPH node {} commit {} blob {} label {}: {}", &t[..t.len().min(6)], ch.as_deref().map_or("-", |x| &x[..12]), &bh[..12], &hex(&l.0)[..8], what());
+    }
+
     /// The write key that stamps under `l` of `g` now: an open connection's, else the served
     /// head's (a label synced with nobody, or served to peers).
     fn eph_stamp_key(&mut self, g: &Tid, l: &LabelId) -> Option<SigningSecret> {
@@ -636,6 +666,7 @@ impl SyncEngine {
         if !cs.is_empty() {
             let g = self.group_of(&l);
             if !self.eph_covers_held_at(&cs, g, &l, s) {
+                self.eph_trace(&l, &b, None, || format!("delete at host {} waits for {} covers", host6(&s), cs.len()));
                 self.eph.waiting.insert((l, b, s), (cs, item));
                 return Ok(());
             }
@@ -670,6 +701,7 @@ impl SyncEngine {
             }
             return Ok(());
         };
+        self.eph_trace(&l, &b, None, || format!("delete sent on conn {conn}"));
         self.eph.deletes.insert((conn, l, b), (item.clone(), key));
         self.command(conn, Command::Delete { label: l, items: vec![item] }, out)
     }
@@ -720,6 +752,7 @@ impl SyncEngine {
                 continue;
             }
             let held = self.engine.holds_ephemeral(&c);
+            self.eph_trace(&l, &b, Some(&c), || format!("wait over (held {held})"));
             promoted.insert(c);
             let Some((e, from)) = self.eph.pending.remove(&(l, b)) else { continue };
             if let Some(n) = self.eph.pending_bytes.get_mut(&l) {
@@ -760,6 +793,7 @@ impl SyncEngine {
         let ready: Vec<(LabelId, BlobId)> = self.eph.share_refused.iter().filter(|(_, (_, needs))| needs.iter().any(|t| self.engine.has_record(t))).map(|(k, _)| *k).collect();
         for (l, b) in ready {
             let Some((host, _)) = self.eph.share_refused.remove(l, b) else { continue };
+            self.eph_trace(&l, &b, None, || format!("refetch from {}", host.as_ref().map_or("nobody".into(), host6)));
             match host.and_then(|s| self.eph_conn_to(&l, s)) {
                 Some(conn) => self.fetch_on(conn, l, [b], out)?,
                 None => self.eph.reconciled.retain(|(_, x)| *x != l),
@@ -834,6 +868,7 @@ impl SyncEngine {
 
     /// Keeps an entry under `l` (served to peers from now on).
     fn eph_keep(&mut self, l: LabelId, b: BlobId, e: LaneEntry) {
+        self.eph_trace(&l, &b, Some(&e.commit), || format!("kept ({}, charge {})", if e.own { "own" } else { "others'" }, e.charge));
         if !e.own {
             *self.eph.bytes.entry(l).or_default() += e.charge;
         }
@@ -924,6 +959,7 @@ impl SyncEngine {
             };
             let (blob, wrap) = (e.blob.clone(), e.wrap);
             let replaces = self.eph_replaces(conn, l, *b, &mut room);
+            self.eph_trace(&l, b, None, || format!("upload on conn {conn} ({} replaced)", replaces.len()));
             entries.push(osis_proto::Entry { blob, wrap, stamp, replaces });
             self.eph.uploads.insert((conn, l, *b));
             self.eph.restamp.remove(&(conn, l, *b));
@@ -1010,6 +1046,9 @@ impl SyncEngine {
     /// The peer asked for gained IDs it lacks: the lane's go up. The rest of `ids`.
     pub(crate) fn eph_want(&mut self, conn: ConnId, l: LabelId, ids: Vec<BlobId>, out: &mut Vec<Action>) -> Result<Vec<BlobId>> {
         let (mine, rest): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.eph.entries.contains_key(&(l, *b)));
+        for b in &mine {
+            self.eph_trace(&l, b, None, || format!("wanted by conn {conn}"));
+        }
         if let Some(g) = self.eph.gained.get_mut(&(conn, l)) {
             for b in &mine {
                 g.remove(b);
@@ -1050,6 +1089,7 @@ impl SyncEngine {
                 rest.1.push(code);
                 continue;
             }
+            self.eph_trace(&l, &b, None, || format!("upload status {} on conn {conn}", code.0));
             let replaced = self.eph_replaced(conn, host, l, b, code == Code::OK);
             let key = self.eph.stamped.remove(&(conn, l, b));
             if !self.eph.entries.contains_key(&(l, b)) {
@@ -1113,6 +1153,11 @@ impl SyncEngine {
         // the ID must name these bytes: the wrap's nonce is only its first 24 bytes, so one blob
         // would open under 2^64 IDs, each kept and charged apart (the durable path checks in
         // `put_blobs`)
+        self.eph_trace(&l, &b, None, || format!("arrived {class:?} from {}{}", match from {
+            RelayFrom::Host(Some(s)) => format!("host {}", host6(&s)),
+            RelayFrom::Host(None) => "a bundle".into(),
+            RelayFrom::Served(c) => format!("served conn {c}"),
+        }, if promoted.is_some() { ", promoted" } else { "" }));
         if osis_label::blob_id(&blob) != b {
             self.diag(format!("label {l:?}: an ephemeral blob not matching its ID dropped"));
             return Ok(());
@@ -1121,6 +1166,7 @@ impl SyncEngine {
             return self.relay_in(from, l, b, blob, wrap, stamp, out);
         }
         if self.eph.unfit.contains(l, b) {
+            self.eph_trace(&l, &b, None, || "dropped: known unfit".into());
             return Ok(());
         }
         let host = from.host();
@@ -1133,9 +1179,11 @@ impl SyncEngine {
         }
         // an own entry forgotten while its upload was in flight (being deleted where it lands)
         if self.eph.orphans.range((l, b, 0)..).next().is_some_and(|((l2, b2, _), _)| (*l2, *b2) == (l, b)) {
+            self.eph_trace(&l, &b, None, || "dropped: own entry being deleted".into());
             return Ok(());
         }
         if self.eph.entries.contains_key(&(l, b)) || self.eph.pending.contains_key(&(l, b)) {
+            self.eph_trace(&l, &b, None, || "already held or waiting".into());
             if let Some(s) = host {
                 self.eph.present.insert((s, l, b));
             }
@@ -1143,7 +1191,10 @@ impl SyncEngine {
         }
         let Some(g) = self.group_of(&l) else { return Ok(()) };
         let secrets = self.read_secrets(&g);
-        let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { return Ok(()) };
+        let Some((_, key)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else {
+            self.eph_trace(&l, &b, None, || "dropped: no secret unwraps it".into());
+            return Ok(());
+        };
         let (pt, cb) = match open_commit(&blob, &key) {
             Ok(x) => x,
             Err(e) => {
@@ -1162,12 +1213,14 @@ impl SyncEngine {
         let cap = self.cfg.ephemeral_bytes;
         let (bound, part) = crate::Engine::ephemeral_bound(&cb);
         if size > cap || part > cap {
+            self.eph_trace(&l, &b, Some(&cb.id()), || format!("dropped: unfit ({size} B, part {part}, cap {cap})"));
             self.eph_unfit(l, b);
             return Ok(());
         }
         let used = self.eph.bytes.get(&l).copied().unwrap_or(0);
         let room = cap.saturating_sub(used);
         if promoted.is_none() && size > room {
+            self.eph_trace(&l, &b, Some(&cb.id()), || format!("dropped: capped ({size} B, room {room})"));
             self.eph_capped(l);
             return Ok(());
         }
@@ -1185,6 +1238,7 @@ impl SyncEngine {
         let may_wait = pending_used.saturating_add(waits) <= cap / PENDING_SHARE;
         let needs = if may_wait { BTreeSet::new() } else { self.engine.ephemeral_needs(&cb) };
         let ingested = self.engine.ingest_ephemeral_within(cb, may_wait, room);
+        self.eph_trace(&l, &b, Some(&commit), || format!("ingested: {ingested:?} (may wait {may_wait}, room {room})"));
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
         let keys = a.map(|a| a.keys.iter().filter_map(|i| h.keys.get(*i).copied()).collect()).unwrap_or_default();
@@ -1198,6 +1252,7 @@ impl SyncEngine {
                     // fetched again once a record it lacks is here (none: a change of the held
                     // durable set, left to `refused_pending`: refetching at every change would
                     // download it each time)
+                    self.eph_trace(&l, &b, Some(&commit), || format!("dropped: waiting share full ({} records lacked)", needs.len()));
                     if !needs.is_empty() {
                         let w = needs.len();
                         self.eph.share_refused.insert(l, b, (host, needs), w);
@@ -1381,6 +1436,9 @@ impl SyncEngine {
             let cover = self.engine.ephemeral_absorbers(c);
             // superseded by its author's later writes: the author deletes it, nobody else
             let author_only = self.engine.ephemeral_superseded(c);
+            for (l, b) in self.eph.by_commit.get(c).into_iter().flatten() {
+                self.eph_trace(l, b, Some(c), || format!("forgotten by the engine (covers {}, author only {author_only})", cover.len()));
+            }
             let moved: Vec<(LabelId, BlobId, HostKey)> = self.eph.waiting.iter().filter(|(_, (w, _))| w.contains(c)).map(|(k, _)| *k).collect();
             for k in moved {
                 let Some(w) = self.eph.waiting.get_mut(&k) else { continue };
@@ -1418,6 +1476,7 @@ impl SyncEngine {
 
     /// Forgets lane entry `b` of `l` (no longer served); its bytes leave the label's count.
     fn eph_unkeep(&mut self, l: LabelId, b: BlobId) -> Option<LaneEntry> {
+        self.eph_trace(&l, &b, None, || "dropped from the lane".into());
         let e = self.eph.entries.remove(&(l, b))?;
         self.eph.by_blob.remove(&(b, l));
         if !e.own
@@ -1442,6 +1501,7 @@ impl SyncEngine {
         for c in commits {
             let Some(keys) = self.eph.by_commit.remove(c) else { continue };
             for (l, b) in keys {
+                self.eph_trace(&l, &b, Some(c), || "unheld: every part invalid".into());
                 if self.eph_unkeep(l, b).is_none() {
                     continue;
                 }
@@ -1458,6 +1518,9 @@ impl SyncEngine {
     /// `reconcile_fetches`; a refused one a reconciliation asked for reconciles the label again
     /// (on this connection's next sync, `sync_label`, or the next periodic pass).
     pub(crate) fn eph_fetch_done(&mut self, conn: ConnId, l: LabelId, ids: &[BlobId], refused: bool) {
+        for b in ids {
+            self.eph_trace(&l, b, None, || format!("fetch on conn {conn} {}", if refused { "refused" } else { "answered" }));
+        }
         let Some(asked) = self.eph.reconcile_fetches.get_mut(&(conn, l)) else { return };
         let mut lost = false;
         for b in ids {
@@ -1504,6 +1567,7 @@ impl SyncEngine {
                 rest_codes.push(code);
                 continue;
             };
+            self.eph_trace(&l, &b, None, || format!("delete status {} on conn {conn}", code.0));
             match code {
                 // signed under a key older than the head's (a rotation this node had not read):
                 // again under the next one
