@@ -6,7 +6,7 @@ use osis_base::{ManualClock, WallMs};
 use osis_crypto::SeededRng;
 use osis_proto::MemoryLabelStore;
 use osis_proto::examples::Fixture;
-use osis_store::MemoryBackend;
+use osis_store::{Backend, BackendError, MemoryBackend, MemoryRoot, StoreConfig, WriteBatch};
 use proptest::prelude::*;
 
 const T0: u64 = 1_700_000_000_000;
@@ -14,18 +14,25 @@ const DAY_MS: u64 = 86_400_000;
 
 struct Env {
     clock: Arc<ManualClock>,
-    store: HostStore<MemoryBackend>,
+    store: HostStore,
     backend: MemoryBackend,
+    root: MemoryRoot,
     f: Fixture,
 }
 
 fn env(policy: HostPolicy) -> Env {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let backend = MemoryBackend::new();
-    let mut store = HostStore::open(backend.clone(), clock.clone(), policy, &mut SeededRng::from_seed([1; 32])).unwrap();
+    let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+    let mut store = open(backend.clone(), &root, clock.clone(), policy, 1);
     let f = Fixture::new(0x10);
     store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
-    Env { clock, store, backend, f }
+    Env { clock, store, backend, root, f }
+}
+
+/// A host store over `b` and `root` (created on first use), its rng from `seed`.
+fn open(b: impl Backend + 'static, root: &MemoryRoot, clock: Arc<ManualClock>, policy: HostPolicy, seed: u8) -> HostStore {
+    let store = Store::open_or_create(Box::new(b), Box::new(root.clone()), StoreConfig::default(), &mut SeededRng::from_seed([seed; 32])).unwrap();
+    HostStore::open(store, clock, policy, Box::new(SeededRng::from_seed([seed ^ 0x55; 32]))).unwrap()
 }
 
 fn blob(n: u8) -> Vec<u8> {
@@ -51,7 +58,7 @@ fn state_survives_reopen() {
     assert_eq!(e.store.put(&l, put(&blob(2), false, Some(T0 + 10))).unwrap(), Code::OK);
     e.store.push_step(&l, e.f.child.clone(), None).unwrap();
     let before = (e.store.log_head(&l).unwrap(), e.store.live_by_id(&l, None, 100).unwrap(), e.store.log_after(&l, 0, 100).unwrap());
-    let again = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
+    let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
     let after = (again.log_head(&l).unwrap(), again.live_by_id(&l, None, 100).unwrap(), again.log_after(&l, 0, 100).unwrap());
     assert_eq!(before, after);
     assert_eq!(again.head(&l).unwrap(), Some(e.f.child.id()));
@@ -60,7 +67,7 @@ fn state_survives_reopen() {
     assert_eq!(again.claim_set(&l, &e.f.child.id()).unwrap(), None);
     assert_eq!(again.blob(&id(1)).unwrap(), Some(blob(1)));
     // a fresh instance names its logs differently: old cursors are invalid there
-    let mut fresh = HostStore::open(MemoryBackend::new(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([3; 32])).unwrap();
+    let mut fresh = open(MemoryBackend::new(), &MemoryRoot::new(), e.clock.clone(), HostPolicy::default(), 3);
     fresh.push_step(&l, e.f.genesis.clone(), None).unwrap();
     assert_ne!(fresh.log_head(&l).unwrap().0, before.0.0);
 }
@@ -85,7 +92,7 @@ fn blob_bytes_once_per_node() {
     e.store.delete(&g.label, &id(7), T0).unwrap();
     assert_eq!(e.store.blob(&id(7)).unwrap(), None);
     assert_eq!(e.store.blob_prefix(&id(7)).unwrap(), None);
-    assert!(e.backend.scan_prefix(b"R", 10).unwrap().is_empty());
+    assert!(e.store.scan_prefix(b"R", 10).unwrap().is_empty());
 }
 
 // spec/sync.md §5: an upload of a held blob replaces wrap and stamp and clears the deposited flag; a deposit of a held blob changes nothing
@@ -171,7 +178,7 @@ fn rate_limits() {
     assert_eq!(e.store.delete(&l, &id(0), T0).unwrap(), Code::OK);
     assert_eq!(e.store.schedule_delete(&l, &id(1), T0 + 100).unwrap(), Code::OK);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::RATE_LIMITED);
-    let replace = |s: &mut HostStore<MemoryBackend>, n: u8, w: u8| {
+    let replace = |s: &mut HostStore, n: u8, w: u8| {
         let b = blob(n);
         let mut p = put(&b, true, None);
         p.wrap = [w; WRAP_LEN];
@@ -539,7 +546,7 @@ fn deletion_records_within_cap() {
 /// The path indexes (`V`, `W` rows) against the whole path: each step's child is the next one,
 /// the genesis the child of none, none past the head; each key of `pool` names the newest step
 /// registering it as sync key.
-fn check_indexes(store: &HostStore<MemoryBackend>, l: &LabelId, path: &[Step], pool: &[osis_crypto::VerifyingKey]) -> Result<(), String> {
+fn check_indexes(store: &HostStore, l: &LabelId, path: &[Step], pool: &[osis_crypto::VerifyingKey]) -> Result<(), String> {
     let ids: Vec<StepId> = path.iter().map(|s| s.id()).collect();
     let mut want = vec![(None, ids.first().copied())];
     want.extend(ids.iter().enumerate().map(|(i, id)| (Some(*id), ids.get(i + 1).copied())));
@@ -582,7 +589,7 @@ fn path_records_follow_path_across_reopen() {
             e.store.push_step(&l, s.clone(), None).unwrap();
             prev = s;
             if h[4].is_multiple_of(7) {
-                e.store = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::unlimited(), &mut SeededRng::from_seed([h[5]; 32])).unwrap();
+                e.store = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::unlimited(), h[5]);
             }
             let path = e.store.path(&l).unwrap();
             assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&path), "seed {seed} step {i}");
@@ -638,7 +645,7 @@ fn steps_count_toward_byte_caps() {
         assert_eq!(e.store.push_step(&l, t.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert_eq!(e.store.totals().unwrap().bytes, before + 2 * step);
         let v = child_of(&e.f, &t);
-        let mut again = HostStore::open(e.backend.clone(), e.clock.clone(), cap.clone(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        let mut again = open(e.backend.clone(), &e.root, e.clock.clone(), cap.clone(), 2);
         for st in [&mut e.store, &mut again] {
             let (log, totals) = (st.log_head(&l).unwrap(), st.totals().unwrap());
             assert_eq!(st.push_step(&l, v.clone(), None).unwrap(), Code::STORAGE_CAP);
@@ -668,7 +675,7 @@ fn steps_count_toward_byte_caps() {
         let u = child_of(&e.f, &t);
         assert_eq!(e.store.push_step(&l, u.clone(), Some(set.clone())).unwrap(), Code::OK);
         assert!(e.store.claim_set(&l, &u.id()).unwrap().is_some());
-        let again = HostStore::open(e.backend.clone(), e.clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([2; 32])).unwrap();
+        let again = open(e.backend.clone(), &e.root, e.clock.clone(), HostPolicy::default(), 2);
         assert_eq!(again.totals().unwrap(), e.store.totals().unwrap());
     }
     // a new label's genesis step past a cap: refused, nothing changed
@@ -731,14 +738,14 @@ impl Backend for Reads {
 }
 
 // spec/sync.md §5 (Open by claim or static entry), spec/requirements.md (peer input never causes
-// unbounded work): an Open looks its key up in the claim index, reading at most an entry box
-// however large the set (here MAX_CLAIMS keys, 2 MiB); the index goes with the set when the sweep
-// drops it, in budgeted steps, and its bytes leave the totals
+// unbounded work): an Open looks its key up in the claim index, reading one path of store pages
+// however large the set (here MAX_CLAIMS keys, 2 MiB); the index goes with the set when the
+// sweep drops it, in budgeted steps, and its bytes leave the totals
 #[test]
 fn claim_lookup_reads_no_set() {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let reads = Reads { inner: MemoryBackend::new(), read: Arc::default() };
-    let mut store = HostStore::open(reads.clone(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
+    let (reads, root) = (Reads { inner: MemoryBackend::new(), read: Arc::default() }, MemoryRoot::new());
+    let mut store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 1);
     let f = Fixture::new(0x10);
     let l = f.label;
     let g = f.genesis.id();
@@ -752,9 +759,13 @@ fn claim_lookup_reads_no_set() {
     let (holder, stat) = (set.claims[0], *set.entries.keys().next().unwrap());
     let lookups = [(holder, Some(set.entries.get(&holder).cloned())), (stat, Some(set.entries.get(&stat).cloned())), ([0xee; 32], None)];
     for (k, want) in &lookups {
+        // cold caches: a lookup reads one path of table pages and key-tree nodes (each at most
+        // about 11 KB), never the set's unit
+        drop(store);
+        store = open(reads.clone(), &root, clock.clone(), HostPolicy::default(), 1);
         reads.read.store(0, std::sync::atomic::Ordering::Relaxed);
         assert_eq!(store.claim(&l, &g, k).unwrap(), *want);
-        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 4096, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
+        assert!(reads.read.load(std::sync::atomic::Ordering::Relaxed) < 128 << 10, "{} bytes read", reads.read.load(std::sync::atomic::Ordering::Relaxed));
     }
     // superseded and swept: the index rows go over several budgeted sweeps, then the set
     let step = f.genesis.to_bytes().len() as u64;
@@ -835,4 +846,27 @@ fn policy_knobs_by_name() {
     assert!(p.set("max_queued_bytes", q - 1).is_err());
     p.set("max_queued_bytes", q).unwrap();
     assert!(HostPolicy::default().max_queued_bytes >= osis_proto::serving::SEND_QUEUE);
+}
+
+// spec: none (sweep robustness): an unparsable index row is dropped; a failing sweep (its commit
+// failing) backs off instead of spinning, and the store recovers for the next
+#[test]
+fn sweep_junk_and_failures() {
+    let faults = osis_store::Faults::new();
+    let (backend, root) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
+    let clock = Arc::new(ManualClock::new(WallMs(T0)));
+    let mut store = open(backend, &root, clock, HostPolicy::default(), 1);
+    let mut junk = Writes::default();
+    junk.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
+    store.write(junk).unwrap();
+    let mut hub = crate::Hub::new(store, [1; 32], Box::new(SeededRng::from_seed([2; 32])));
+    assert_eq!(hub.next_due(T0), Some(0));
+    faults.at(0, osis_store::Fault::Fail);
+    let out = hub.tick(T0);
+    assert!(out.iter().any(|o| matches!(o, crate::HubOutput::Diagnostic(d) if d.starts_with("sweep"))), "{out:?}");
+    assert_eq!(hub.next_due(T0), Some(T0 + 1_000));
+    assert!(hub.tick(T0 + 999).is_empty());
+    assert!(hub.tick(T0 + 1_000).is_empty());
+    assert_eq!(hub.next_due(T0 + 1_000), None);
+    assert!(hub.store().scan_prefix(b"X", 10).unwrap().is_empty());
 }

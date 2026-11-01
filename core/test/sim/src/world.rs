@@ -28,12 +28,14 @@ const STORM_TRACE: usize = 500;
 
 /// One host.
 pub struct Host {
-    pub hub: Hub<MemoryBackend>,
+    pub hub: Hub,
     pub addr: HostAddr,
     /// The database running it (by start order), if not the world's own.
     pub node: Option<usize>,
     /// It runs (a database's host stops when its `host.0^` goes).
     pub up: bool,
+    /// Its store's rows, every write recorded (`MemoryBackend::history`).
+    pub backend: MemoryBackend,
 }
 
 enum Msg {
@@ -110,12 +112,13 @@ impl World {
         let i = self.hosts.len();
         let b = 0x50u8.wrapping_add(i as u8);
         let key = [b; 32];
-        let store = match HostStore::open(MemoryBackend::new(), self.clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(900 + i as u64)) {
+        let backend = MemoryBackend::new();
+        let store = match host_store(&backend, 900 + i as u64).and_then(|st| HostStore::open(st, self.clock.clone(), HostPolicy::default(), Box::new(SeededRng::from_u64(900 + i as u64)))) {
             Ok(s) => s,
             Err(e) => panic!("host store: {e:?}"),
         };
         let hub = Hub::new(store, key, Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key), node: None, up: true });
+        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key), node: None, up: true, backend });
         i
     }
 
@@ -124,8 +127,8 @@ impl World {
         self.hosts.iter().position(|h| h.node == Some(d))
     }
 
-    /// Database `d` hosts with `cfg`, or stops (none): its hub starts (store in memory, every
-    /// write recorded: `MemoryBackend::history`), changes, or stops with its connections.
+    /// Database `d` hosts with `cfg`, or stops (none): its hub starts (its own store, in memory, every
+    /// write recorded: `Host::backend`), changes, or stops with its connections.
     #[allow(clippy::panic)] // test harness: fail the test loudly
     fn host(&mut self, d: usize, cfg: Option<Box<osis_host::HostConfig>>) {
         let s = self.host_of(d).filter(|s| self.hosts.get(*s).is_some_and(|h| cfg.as_ref().is_none_or(|c| h.hub.static_key() == c.key)));
@@ -150,7 +153,7 @@ impl World {
             None => {
                 let backend = MemoryBackend::new();
                 backend.record_history();
-                let store = match HostStore::open(backend, self.clock.clone(), cfg.policy.clone(), &mut SeededRng::from_u64(700 + d as u64)) {
+                let store = match host_store(&backend, 700 + d as u64).and_then(|st| HostStore::open(st, self.clock.clone(), cfg.policy.clone(), Box::new(SeededRng::from_u64(700 + d as u64)))) {
                     Ok(s) => s,
                     Err(e) => panic!("host store: {e:?}"),
                 };
@@ -160,7 +163,7 @@ impl World {
                 if let Some(h) = self.host_of(d).and_then(|old| self.hosts.get_mut(old)) {
                     h.node = None;
                 }
-                self.hosts.push(Host { hub, addr: HostAddr::new(&url, cfg.key), node: Some(d), up: true });
+                self.hosts.push(Host { hub, addr: HostAddr::new(&url, cfg.key), node: Some(d), up: true, backend });
                 self.hosts.len() - 1
             }
         };
@@ -563,6 +566,12 @@ fn kind(bytes: &[u8]) -> String {
         Ok(Some(f)) => frame_kind(&f),
         _ => format!("{} bytes", bytes.len()),
     }
+}
+
+/// A host's own store over `backend`.
+fn host_store(backend: &MemoryBackend, seed: u64) -> Result<osis_store::Store, osis_proto::StoreError> {
+    let (b, r) = (Box::new(backend.clone()), Box::new(osis_store::MemoryRoot::new()));
+    osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut SeededRng::from_u64(seed ^ 0x570e)).map_err(|e| osis_proto::StoreError(e.to_string()))
 }
 
 #[cfg(test)]

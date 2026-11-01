@@ -78,16 +78,16 @@ impl Client {
 pub struct Host {
     pub addr: osis_label::Address,
     pub control: tokio::sync::mpsc::Sender<osis_host::Control>,
-    pub task: tokio::task::JoinHandle<osis_host::Hub<osis_store::MemoryBackend>>,
+    pub task: tokio::task::JoinHandle<osis_host::Hub>,
 }
 
 impl Host {
     /// Starts the driver on `transport` listening on `url` (static secret from `seed`), on a
     /// manual clock at `T0`.
-    pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, backend: osis_store::MemoryBackend, peers: Vec<osis_label::Address>) -> Host {
+    pub async fn start<T: osis_transport::Transport>(transport: T, url: &str, seed: u8, store: osis_store::Store, peers: Vec<osis_label::Address>) -> Host {
         use osis_transport::Listener;
         let clock = std::sync::Arc::new(osis_base::ManualClock::new(osis_base::WallMs(T0)));
-        let store = osis_host::HostStore::open(backend, clock.clone(), osis_host::HostPolicy::default(), &mut osis_crypto::SeededRng::from_seed([seed; 32])).unwrap();
+        let store = osis_host::HostStore::open(store, clock.clone(), osis_host::HostPolicy::default(), Box::new(osis_crypto::SeededRng::from_seed([seed; 32]))).unwrap();
         let secret = osis_transport::StaticSecret::from_bytes([seed; 32]);
         let listener = transport.listen(osis_transport::ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
         let a = listener.address();
@@ -106,8 +106,18 @@ impl Host {
     }
 
     /// Shuts the driver down; returns its hub.
-    pub async fn stop(self) -> osis_host::Hub<osis_store::MemoryBackend> {
+    pub async fn stop(self) -> osis_host::Hub {
         self.control.send(osis_host::Control::Shutdown).await.unwrap();
         self.task.await.unwrap()
     }
+}
+
+/// A host store over `b` and `r` (created on first use).
+pub fn store_on(b: &osis_store::MemoryBackend, r: &osis_store::MemoryRoot) -> osis_store::Store {
+    osis_store::Store::open_or_create(Box::new(b.clone()), Box::new(r.clone()), osis_store::StoreConfig::default(), &mut osis_crypto::SeededRng::from_seed([7; 32])).unwrap()
+}
+
+/// A host store in memory.
+pub fn mem_store() -> osis_store::Store {
+    store_on(&osis_store::MemoryBackend::new(), &osis_store::MemoryRoot::new())
 }

@@ -97,7 +97,11 @@ fn blind_node_stores_nothing_forbidden() {
         let (_, sec) = ep.role(r).newest_secret().unwrap();
         needles.push((format!("{r:?} secret"), sec.expose().to_vec()));
     }
-    let history = net.hosts[host].backend.history();
+    // every row the host store wrote, and every one an attacker holding the device decrypts
+    let mut history = net.hosts[host].backend.history();
+    let keys = net.hosts[host].hub.store_mut().store_mut().unwrap().forensic_keys().unwrap();
+    let plain = osis_store::forensic_plaintexts(keys, &history);
+    history.extend(plain.into_iter().map(|p| (Vec::new(), p)));
     let blobs = stored(&net, host);
     assert!(history.len() > 20 && blobs.len() > 10, "the scenario stored something");
     // control: what the node may know (the label ID) is found by the same search

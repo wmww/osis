@@ -14,7 +14,6 @@ use crate::{Admission, LabelCaps};
 use osis_base::LabelId;
 use osis_base::Clock;
 use osis_label::Address;
-use osis_store::Backend;
 use osis_transport::link::{self, Link, LinkRx, LinkTx, blocking};
 use osis_transport::{Backoff, Source, StaticSecret, Transport};
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -76,8 +75,8 @@ struct ConnState {
     taken: u64,
 }
 
-struct Driver<B: Backend> {
-    hub: Hub<B>,
+struct Driver {
+    hub: Hub,
     clock: Arc<dyn Clock>,
     log: Log,
     conns: HashMap<ConnId, ConnState>,
@@ -136,7 +135,7 @@ async fn read(id: ConnId, mut rx: LinkRx, ev: mpsc::UnboundedSender<Ev>, turn: A
     let _ = ev.send(Ev::Closed(id));
 }
 
-impl<B: Backend> Driver<B> {
+impl Driver {
     fn now(&self) -> u64 {
         self.clock.now_wall_ms().0
     }
@@ -286,7 +285,7 @@ async fn keep_dialing<T: Transport>(t: Arc<T>, secret: StaticSecret, addr: Addre
 /// Runs the host until `Control::Shutdown` (or the control sender is dropped): serves
 /// sessions on `ep`'s listeners and those handed in, keeps a replication session to each of
 /// `peers`, and returns the hub. The hub's static key must be the listeners' key.
-pub async fn run<B: Backend + 'static, T: Transport>(hub: Hub<B>, ep: Endpoint<T>, peers: Vec<Address>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub<B> {
+pub async fn run<T: Transport>(hub: Hub, ep: Endpoint<T>, peers: Vec<Address>, clock: Arc<dyn Clock>, mut control: mpsc::Receiver<Control>, log: Log) -> Hub {
     // unbounded, yet at most a read and an end per connection and a link per dial task
     let (ev_tx, mut ev_rx) = mpsc::unbounded_channel();
     let Endpoint { transport, listeners, secret } = ep;

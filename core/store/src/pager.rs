@@ -249,6 +249,49 @@ impl Dirty {
     }
 }
 
+/// Finishes or rolls back an interrupted commit and loads the committed top: (epoch, root key,
+/// top version, meta, top node). The stored shape overrides `cfg`'s.
+fn recover(backend: &mut dyn Backend, root: &mut dyn RootStorage, cfg: &mut StoreConfig) -> Result<(u64, Secret32, u64, Meta, Node), Error> {
+    root.repair().map_err(Error::Root)?;
+    let rec = root.load().map_err(Error::Root)?.ok_or(Error::NoStore)?;
+    if let Some(p) = backend.get(ROW_P)? {
+        let (p_epoch, p_ver) = read_pointer(&p)?;
+        let journals = backend.scan_prefix(&W::new().u8(JOURNAL).u64(p_ver).0, usize::MAX)?;
+        let mut batch = WriteBatch::new();
+        for (k, v) in &journals {
+            let j = Journal::decode(v)?;
+            let finish = p_epoch == rec.epoch;
+            let (rows, blobs) = if finish { (j.old_rows, j.old_blobs) } else { (j.new_rows, j.new_blobs) };
+            rows.into_iter().for_each(|r| batch.delete(r));
+            blobs.into_iter().for_each(|b| batch.delete_blob(b));
+            batch.delete(k.clone());
+        }
+        if p_epoch == rec.epoch {
+            batch.put(ROW_R.to_vec(), pointer(p_epoch, p_ver));
+        }
+        batch.delete(ROW_P.to_vec());
+        backend.commit(batch)?;
+    }
+    // Journals left by spills of transactions that never committed.
+    rollback(backend, &[JOURNAL])?;
+    let (epoch, ver) = read_pointer(&backend.get(ROW_R)?.ok_or(Error::NoStore)?)?;
+    if epoch != rec.epoch {
+        return Err(Error::Corrupt("root epoch"));
+    }
+    let row = top_row(ver);
+    let v = backend.get(&row)?.ok_or(Error::Corrupt("top node missing"))?;
+    let plain = Zeroizing::new(open(&rec.key, &row, &v)?);
+    let mut r = R::new(&plain);
+    let meta = Meta::decode(&mut r)?;
+    let top = Node::decode(&mut r, meta.arity)?;
+    r.end()?;
+    cfg.arity = meta.arity;
+    cfg.depth = meta.depth;
+    cfg.page_max = meta.page_max as usize;
+    cfg.capacity()?;
+    Ok((epoch, rec.key, ver, meta, top))
+}
+
 pub(crate) struct Pager {
     backend: Box<dyn Backend>,
     root: Box<dyn RootStorage>,
@@ -301,44 +344,23 @@ impl Pager {
     /// Opens a store, finishing or rolling back an interrupted commit. The stored shape wins
     /// over `cfg.arity` and `cfg.depth`.
     pub fn open(mut backend: Box<dyn Backend>, mut root: Box<dyn RootStorage>, mut cfg: StoreConfig) -> Result<Pager, Error> {
-        root.repair().map_err(Error::Root)?;
-        let rec = root.load().map_err(Error::Root)?.ok_or(Error::NoStore)?;
-        if let Some(p) = backend.get(ROW_P)? {
-            let (p_epoch, p_ver) = read_pointer(&p)?;
-            let journals = backend.scan_prefix(&W::new().u8(JOURNAL).u64(p_ver).0, usize::MAX)?;
-            let mut batch = WriteBatch::new();
-            for (k, v) in &journals {
-                let j = Journal::decode(v)?;
-                let finish = p_epoch == rec.epoch;
-                let (rows, blobs) = if finish { (j.old_rows, j.old_blobs) } else { (j.new_rows, j.new_blobs) };
-                rows.into_iter().for_each(|r| batch.delete(r));
-                blobs.into_iter().for_each(|b| batch.delete_blob(b));
-                batch.delete(k.clone());
-            }
-            if p_epoch == rec.epoch {
-                batch.put(ROW_R.to_vec(), pointer(p_epoch, p_ver));
-            }
-            batch.delete(ROW_P.to_vec());
-            backend.commit(batch)?;
-        }
-        // Journals left by spills of transactions that never committed.
-        rollback(&mut *backend, &[JOURNAL])?;
-        let (epoch, ver) = read_pointer(&backend.get(ROW_R)?.ok_or(Error::NoStore)?)?;
-        if epoch != rec.epoch {
-            return Err(Error::Corrupt("root epoch"));
-        }
-        let row = top_row(ver);
-        let v = backend.get(&row)?.ok_or(Error::Corrupt("top node missing"))?;
-        let plain = Zeroizing::new(open(&rec.key, &row, &v)?);
-        let mut r = R::new(&plain);
-        let meta = Meta::decode(&mut r)?;
-        let top = Node::decode(&mut r, meta.arity)?;
-        r.end()?;
-        cfg.arity = meta.arity;
-        cfg.depth = meta.depth;
-        cfg.page_max = meta.page_max as usize;
-        cfg.capacity()?;
-        Ok(Pager::new(backend, root, cfg, epoch, rec.key, ver, meta, top))
+        let (epoch, key, ver, meta, top) = recover(&mut *backend, &mut *root, &mut cfg)?;
+        Ok(Pager::new(backend, root, cfg, epoch, key, ver, meta, top))
+    }
+
+    /// Recovers in place as `open` would (after a failed commit left the pager broken): caches
+    /// emptied, versions not reused.
+    pub fn reopen(&mut self) -> Result<(), Error> {
+        let mut cfg = self.cfg;
+        let (epoch, key, ver, meta, top) = recover(&mut *self.backend, &mut *self.root, &mut cfg)?;
+        self.next_ver = self.next_ver.max(meta.next_ver);
+        (self.cfg, self.epoch, self.root_key, self.top_ver, self.meta, self.top) = (cfg, epoch, key, ver, meta, top);
+        self.open_spills.clear();
+        self.nodes.clear();
+        self.units.clear();
+        self.unit_bytes = 0;
+        self.broken = false;
+        Ok(())
     }
 
     pub fn cfg(&self) -> &StoreConfig {
@@ -757,6 +779,33 @@ impl Pager {
         }
         Ok(out)
     }
+}
+
+/// Every row of `history` an attacker holding the device opens: starting from `keys` (what the
+/// current tree yields, `Store::forensic_keys`), every row tried with every key, keys harvested
+/// from opened tree nodes, to a fixpoint. Shredding tests only.
+pub fn forensic_plaintexts(mut keys: Vec<[u8; 32]>, history: &[crate::KeyValue]) -> Vec<Vec<u8>> {
+    let mut known: std::collections::HashSet<[u8; 32]> = keys.iter().copied().collect();
+    let mut opened = vec![None; history.len()];
+    let mut tried = 0;
+    while tried < keys.len() {
+        let batch = keys.get(tried..).unwrap_or_default().to_vec();
+        tried = keys.len();
+        for ((row, value), slot) in history.iter().zip(opened.iter_mut()) {
+            if slot.is_some() {
+                continue;
+            }
+            if let Some(plain) = batch.iter().find_map(|k| forensic_open(row, value, k)) {
+                for nk in forensic_node_keys(row, &plain) {
+                    if known.insert(nk) {
+                        keys.push(nk);
+                    }
+                }
+                *slot = Some(plain);
+            }
+        }
+    }
+    opened.into_iter().flatten().collect()
 }
 
 /// Opens a stored row with a candidate key: the plaintext, or `None`. Shredding tests only.

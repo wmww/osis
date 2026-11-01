@@ -10,7 +10,6 @@ use crate::store::HostStore;
 use osis_base::LabelId;
 use osis_crypto::CryptoRngCore;
 use osis_proto::{ClientInput, ClientOutput, ServingConfig, ServingSession, ServingInput, ServingOutput};
-use osis_store::Backend;
 use osis_transport::Source;
 use std::collections::BTreeMap;
 
@@ -39,8 +38,8 @@ enum Conn {
     Peer { r: Box<Replicator>, timer: Option<u64> },
 }
 
-pub struct Hub<B: Backend> {
-    store: HostStore<B>,
+pub struct Hub {
+    store: HostStore,
     static_key: [u8; 32],
     rng: Box<dyn CryptoRngCore + Send>,
     conns: BTreeMap<ConnId, Conn>,
@@ -54,17 +53,17 @@ pub struct Hub<B: Backend> {
     relays_delivered: u64,
 }
 
-impl<B: Backend> Hub<B> {
+impl Hub {
     /// `static_key`: this node's transport key (bound by open signatures).
-    pub fn new(store: HostStore<B>, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub<B> {
+    pub fn new(store: HostStore, static_key: [u8; 32], rng: Box<dyn CryptoRngCore + Send>) -> Hub {
         Hub { store, static_key, rng, conns: BTreeMap::new(), sweep_hold: 0, sweep_more: false, buffered: 0, relays_delivered: 0 }
     }
 
-    pub fn store(&self) -> &HostStore<B> {
+    pub fn store(&self) -> &HostStore {
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut HostStore<B> {
+    pub fn store_mut(&mut self) -> &mut HostStore {
         &mut self.store
     }
 
@@ -127,11 +126,11 @@ impl<B: Backend> Hub<B> {
         self.batch(|h, out| h.replicate(now, id, Some(ClientInput::Start), out))
     }
 
-    /// Runs `f` with the store's commits made durable once at its end (one fsync for a whole
-    /// message of entries, spec/requirements.md: peer input never causes unbounded work), before
-    /// any output leaves. If that fails, nothing the batch would send goes: the connections it
+    /// Runs `f` in one store transaction committed at its end (one commit, at most one shredding
+    /// root write, for a whole message of entries, spec/requirements.md: peer input never causes
+    /// unbounded work), before any output leaves. If that fails, nothing the batch would send goes: the connections it
     /// would have written to are closed (their peers retry what went unanswered).
-    fn batch(&mut self, f: impl FnOnce(&mut Hub<B>, &mut Vec<HubOutput>)) -> Vec<HubOutput> {
+    fn batch(&mut self, f: impl FnOnce(&mut Hub, &mut Vec<HubOutput>)) -> Vec<HubOutput> {
         self.store.defer_durability();
         let mut out = Vec::new();
         f(self, &mut out);
@@ -184,8 +183,8 @@ impl<B: Backend> Hub<B> {
         })
     }
 
-    /// The connection is gone (either side closed it). Runs as a batch: what an earlier failed
-    /// sync left visible is synced now.
+    /// The connection is gone (either side closed it). Runs as a batch (it commits nothing of
+    /// its own).
     pub fn closed(&mut self, id: ConnId) -> Vec<HubOutput> {
         self.batch(|h, _| h.remove(id))
     }
@@ -220,7 +219,7 @@ impl<B: Backend> Hub<B> {
 
     fn tick_in(&mut self, now: u64, out: &mut Vec<HubOutput>) {
         if now >= self.sweep_hold && (self.sweep_more || self.store.next_due().ok().flatten().is_some_and(|t| t <= now)) {
-            match self.store.sweep(now, SWEEP_BUDGET) {
+            match self.store.sweep(now, SWEEP_BUDGET).and_then(|s| self.store.commit().map(|()| s)) {
                 Ok(s) => {
                     self.sweep_more = s.more;
                     for l in s.grew {

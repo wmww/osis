@@ -15,7 +15,6 @@ use osis_base::{BlobId, LabelId};
 use osis_crypto::VerifyingKey;
 use osis_proto::msg::{Entry, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command, LabelStore, LogRecord, StoreError};
-use osis_store::Backend;
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Log records or entries read per batch.
@@ -116,7 +115,7 @@ impl Replicator {
 
     /// Feeds the session (if `input`), completes the in-flight batch when every request has been
     /// answered, releases due retries and starts the next batch.
-    pub fn handle<B: Backend>(&mut self, now: u64, store: &mut HostStore<B>, input: Option<ClientInput>) -> Vec<ClientOutput> {
+    pub fn handle(&mut self, now: u64, store: &mut HostStore, input: Option<ClientInput>) -> Vec<ClientOutput> {
         let mut out = match input {
             Some(i) => self.session.handle(now, i),
             None => Vec::new(),
@@ -146,7 +145,7 @@ impl Replicator {
         self.dirty.remove(&label);
     }
 
-    fn pump<B: Backend>(&mut self, now: u64, store: &mut HostStore<B>, out: &mut Vec<ClientOutput>) {
+    fn pump(&mut self, now: u64, store: &mut HostStore, out: &mut Vec<ClientOutput>) {
         if !self.session.is_ready() || self.session.is_closed() {
             return;
         }
@@ -211,7 +210,7 @@ impl Replicator {
         }
     }
 
-    fn complete<B: Backend>(&mut self, store: &mut HostStore<B>, label: LabelId, log_id: [u8; 16], done: Done) -> Result<(), StoreError> {
+    fn complete(&mut self, store: &mut HostStore, label: LabelId, log_id: [u8; 16], done: Done) -> Result<(), StoreError> {
         match done {
             Done::Log(seq) => store.set_replica_pos(&self.peer, &label, log_id, seq)?,
             Done::Replay(run, after) => {
@@ -237,7 +236,7 @@ impl Replicator {
     }
 
     /// The next batch for a label: none when the peer is up to date.
-    fn batch<B: Backend>(&mut self, store: &HostStore<B>, label: &LabelId) -> Result<Option<Batch>, StoreError> {
+    fn batch(&mut self, store: &HostStore, label: &LabelId) -> Result<Option<Batch>, StoreError> {
         let Some(_) = store.head(label)? else { return Ok(None) };
         let (log_id, head) = store.log_head(label)?;
         if !self.replays.contains_key(label) {
@@ -299,7 +298,7 @@ impl Replicator {
     /// Commands for log records after `pos`: Register per new head, Upload for stamped entries
     /// whose latest add is the record (not from this peer); bounded by `BATCH_BYTES`. Returns the
     /// last sequence number covered.
-    fn log_batch<B: Backend>(&self, store: &HostStore<B>, label: &LabelId, pos: u64, recs: Vec<(u64, LogRecord)>) -> Result<(Vec<Command>, u64), StoreError> {
+    fn log_batch(&self, store: &HostStore, label: &LabelId, pos: u64, recs: Vec<(u64, LogRecord)>) -> Result<(Vec<Command>, u64), StoreError> {
         let mut cmds = Vec::new();
         let mut entries = Vec::new();
         let (mut last, mut bytes) = (pos, 0);
@@ -348,7 +347,7 @@ impl Replicator {
     }
 }
 
-fn register<B: Backend>(store: &HostStore<B>, label: &LabelId, step: Step) -> Result<Command, StoreError> {
+fn register(store: &HostStore, label: &LabelId, step: Step) -> Result<Command, StoreError> {
     let claim_set = store.claim_set(label, &step.id())?.map(|c| (*c).clone());
     Ok(Command::Register { label: *label, step, claim_set })
 }

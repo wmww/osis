@@ -81,8 +81,11 @@ fn hosting_own_then_open_spec_sync_5() {
     assert_eq!(restored.get(tb, ak("t:x.0")).unwrap(), Some(Value::Str("bob's".into())));
 
     // hygiene: no tid or AK of the label Alice reads or the one she does not
-    let history = w.hosts[s].hub.store().backend().history();
+    let mut history = w.hosts[s].backend.history();
     assert!(!history.is_empty());
+    let keys = w.hosts[s].hub.store_mut().store_mut().unwrap().forensic_keys().unwrap();
+    let plain = osis_store::forensic_plaintexts(keys, &history);
+    history.extend(plain.into_iter().map(|p| (Vec::new(), p)));
     for needle in [ta.as_bytes().as_slice(), tb.as_bytes(), alice.me().as_bytes(), bob.me().as_bytes(), alice.node().as_bytes(), bob.node().as_bytes(), b"t:x.0"] {
         for (k, v) in &history {
             assert!(!contains(k, needle) && !contains(v, needle));

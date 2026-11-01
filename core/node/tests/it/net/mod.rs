@@ -14,7 +14,7 @@ use osis_schema::core_types as ct;
 use osis_schema::{AspectKey, Codec};
 use osis_proto::LabelStore;
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
-use osis_store::{MemoryBackend, MemoryRoot};
+use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -22,8 +22,10 @@ use std::sync::mpsc::Receiver;
 pub const T0: u64 = 1_700_000_000_000;
 
 pub struct Host {
-    pub hub: Hub<MemoryBackend>,
+    pub hub: Hub,
+    /// Its own store's device.
     pub backend: MemoryBackend,
+    pub root: MemoryRoot,
     pub address: Address,
     /// Added to the wall clock this host reports (handshakes, pongs) and acts on.
     pub skew: i64,
@@ -171,20 +173,26 @@ impl Net {
 
     pub fn add_host_with(&mut self, policy: HostPolicy) -> usize {
         let i = self.hosts.len();
-        let backend = MemoryBackend::new();
-        let store = HostStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(900 + i as u64)).unwrap();
+        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+        let store = self.host_store(&backend, &root, policy, 900 + i as u64);
         let hub = Hub::new(store, host_key(i), Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, backend, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, skew: 0 });
+        self.hosts.push(Host { hub, backend, root, address: Address { url: format!("quic://host{i}:1"), key: host_key(i) }, skew: 0 });
         i
+    }
+
+    /// A host store over `backend` and `root` (created on first use).
+    fn host_store(&self, backend: &MemoryBackend, root: &MemoryRoot, policy: HostPolicy, seed: u64) -> HostStore {
+        let store = Store::open_or_create(Box::new(backend.clone()), Box::new(root.clone()), StoreConfig::default(), &mut SeededRng::from_u64(seed)).unwrap();
+        HostStore::open(store, self.clock.clone(), policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).unwrap()
     }
 
     /// Host `s` loses everything it stored (same key and address).
     pub fn wipe_host(&mut self, s: usize) {
-        let backend = MemoryBackend::new();
-        let store = HostStore::open(backend.clone(), self.clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(990 + s as u64)).unwrap();
+        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+        let store = self.host_store(&backend, &root, HostPolicy::default(), 990 + s as u64);
         let hub = Hub::new(store, host_key(s), Box::new(SeededRng::from_u64(995 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
-        self.hosts[s] = Host { hub, backend, address, skew };
+        self.hosts[s] = Host { hub, backend, root, address, skew };
     }
 
     /// Restarts host `s` over its durable state: its connections are gone, its in-memory
@@ -200,11 +208,11 @@ impl Net {
             self.links.remove(&(n, c));
             self.queue.push_back(Msg::Close(n, self.nodes[n].life, c));
         }
-        let backend = self.hosts[s].backend.clone();
-        let store = HostStore::open(backend.clone(), self.clock.clone(), policy, &mut SeededRng::from_u64(980 + s as u64)).unwrap();
+        let (backend, root) = (self.hosts[s].backend.clone(), self.hosts[s].root.clone());
+        let store = self.host_store(&backend, &root, policy, 980 + s as u64);
         let hub = Hub::new(store, host_key(s), Box::new(SeededRng::from_u64(985 + s as u64)));
         let (address, skew) = (self.hosts[s].address.clone(), self.hosts[s].skew);
-        self.hosts[s] = Host { hub, backend, address, skew };
+        self.hosts[s] = Host { hub, backend, root, address, skew };
     }
 
     /// Host `s`'s wall clock.

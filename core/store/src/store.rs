@@ -6,7 +6,7 @@
 use crate::backend::Backend;
 use crate::btree::{self, Units};
 use crate::codec::{R, W};
-use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
+use crate::overlay::{MEM_TABLE, MemTxn, Overlay, Undo};
 use crate::pager::{Dirty, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
@@ -115,10 +115,32 @@ impl Store {
         Ok(Store { pager, mem: Overlay::default() })
     }
 
+    /// Opens the store held by `root`, or creates one when `root` holds none.
+    pub fn open_or_create(backend: Box<dyn Backend>, root: Box<dyn RootStorage>, cfg: StoreConfig, rng: &mut dyn CryptoRngCore) -> Result<Store, Error> {
+        match root.load().map_err(Error::Root)? {
+            Some(_) => Store::open(backend, root, cfg),
+            None => Store::create(backend, root, cfg, rng),
+        }
+    }
+
+    /// Recovers in place as `open` would, after a failed commit (`Error::Broken`); the memory
+    /// overlay starts empty.
+    pub fn reopen(&mut self) -> Result<(), Error> {
+        self.pager.reopen()?;
+        self.mem = Overlay::default();
+        Ok(())
+    }
+
     /// Starts a transaction; reads see its own writes. Drop it to abort.
     pub fn transaction<'a>(&'a mut self, rng: &'a mut dyn CryptoRngCore) -> Result<Transaction<'a>, Error> {
         let d = self.pager.begin()?;
         Ok(Transaction { pager: &mut self.pager, d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false })
+    }
+
+    /// Continues a transaction set aside by `Transaction::suspend`. No other transaction may
+    /// start in between: `transaction` rolls back the spills of every uncommitted one.
+    pub fn resume<'a>(&'a mut self, s: Suspended, rng: &'a mut dyn CryptoRngCore) -> Transaction<'a> {
+        Transaction { pager: &mut self.pager, d: s.d, rng, mem: MemTxn { o: &mut self.mem, undo: s.undo, done: false }, memory: s.memory }
     }
 
     pub fn root_tier(&self) -> RootTier {
@@ -141,6 +163,15 @@ impl Store {
     pub fn forensic_keys(&mut self) -> Result<Vec<[u8; 32]>, Error> {
         self.pager.forensic_keys()
     }
+}
+
+/// A transaction set aside between calls (`Transaction::suspend`, `Store::resume`): the
+/// host store keeps one open across a batch of requests and commits it once. Dropped without
+/// resuming, it aborts, except that its memory-overlay rows stay: suspend none.
+pub struct Suspended {
+    d: Dirty,
+    undo: Vec<Undo>,
+    memory: bool,
 }
 
 /// A set of writes committed atomically. Every method fails with `Error::Broken` after a failed
@@ -188,6 +219,13 @@ impl Transaction<'_> {
         pager.commit(d, rng)?;
         mem.done = true;
         Ok(())
+    }
+
+    /// Sets the transaction aside, uncommitted (`Store::resume`).
+    pub fn suspend(self) -> Suspended {
+        let Transaction { d, mut mem, memory, .. } = self;
+        mem.done = true;
+        Suspended { d, undo: std::mem::take(&mut mem.undo), memory }
     }
 
     /// Memory mode: new rows go to the memory overlay (a memory commit's application).

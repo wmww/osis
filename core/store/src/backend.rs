@@ -83,17 +83,8 @@ pub trait Backend: Send {
     fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError>;
     /// Up to `limit` pairs with `start <= key < end` (`None`: unbounded), ascending.
     fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError>;
-    /// Applies `batch` atomically; durable when it returns `Ok`, with every `commit_lazy` before.
+    /// Applies `batch` atomically; durable when it returns `Ok`.
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError>;
-    /// Applies `batch` atomically and visibly, durable only once a later `commit` or `sync`
-    /// returns `Ok` (a crash before may lose it, never a part of it).
-    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.commit(batch)
-    }
-    /// Makes every `commit_lazy` before it durable.
-    fn sync(&mut self) -> Result<(), BackendError> {
-        Ok(())
-    }
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError>;
     /// Bytes `offset..offset+len` of a blob (clipped at its end); `None` if absent.
     fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError>;
@@ -103,38 +94,6 @@ pub trait Backend: Send {
     fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
         let end = prefix_end(prefix);
         self.scan(prefix, end.as_deref(), limit)
-    }
-}
-
-/// A backend chosen at run time (the node's host store: redb in a store directory, memory
-/// otherwise).
-impl Backend for Box<dyn Backend> {
-    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
-        (**self).get(key)
-    }
-    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
-        (**self).scan(start, end, limit)
-    }
-    fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        (**self).commit(batch)
-    }
-    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        (**self).commit_lazy(batch)
-    }
-    fn sync(&mut self) -> Result<(), BackendError> {
-        (**self).sync()
-    }
-    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
-        (**self).get_blob(id)
-    }
-    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
-        (**self).read_blob(id, offset, len)
-    }
-    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
-        (**self).blob_len(id)
-    }
-    fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
-        (**self).scan_prefix(prefix, limit)
     }
 }
 

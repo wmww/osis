@@ -84,7 +84,7 @@ fn signals_relay_only_spec_sync_5() {
     let t = net.item(a, g, g, "x");
     net.run();
     let rx: Vec<_> = [a, b, c].iter().map(|n| net.listen(*n)).collect();
-    let rows = osis_store::Backend::scan(&net.hosts[host].backend, &[], None, usize::MAX).unwrap().len();
+    let rows = net.hosts[host].hub.store().rows().unwrap();
     let ring = crate::common::ak("t:typing.0*");
     net.eph_write(a, t, &ring, Value::Bool(true));
     net.settle(10_000);
@@ -93,7 +93,7 @@ fn signals_relay_only_spec_sync_5() {
     for (i, n) in [(1, b), (2, c)] {
         assert_eq!(got[i].iter().map(|x| (x.0, x.1.clone(), x.2.clone(), x.3)).collect::<Vec<_>>(), vec![(t, "t:typing.0*".into(), Value::Bool(true), osis_node::Origin::Remote)], "node {n}");
     }
-    assert_eq!(osis_store::Backend::scan(&net.hosts[host].backend, &[], None, usize::MAX).unwrap().len(), rows, "stored nowhere");
+    assert_eq!(net.hosts[host].hub.store().rows().unwrap(), rows, "stored nowhere");
     assert_eq!(net.eph_read(b, t, "t:typing.0*"), None);
     // a reader may not fire one
     let mut m = osis_node::Mutation::new();

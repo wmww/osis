@@ -1,5 +1,5 @@
 //! Phase B harness: real node sync engines (`SyncEngine`) and hosts (osis-host `Hub`
-//! over `HostStore<MemoryBackend>`) exchanging proto bytes engine to engine, no tokio
+//! over `HostStore` on a `MemoryBackend`) exchanging proto bytes engine to engine, no tokio
 //! (notes/architecture.md §2). Connections are ordered byte streams: a fault cuts one (a lost
 //! message on a stream is a broken stream), delays a message (per-stream order kept), duplicates
 //! one, or reorders deliveries across streams. Partitions block (node, host) and (host,
@@ -27,7 +27,7 @@ use osis_node::sync::{Action, ConnId, Event, SyncConfig, SyncEngine};
 use osis_node::{Engine, Mutation};
 use osis_schema::core_types as ct;
 use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
-use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot};
+use osis_store::{Fault, Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -130,8 +130,10 @@ impl NetNode {
 
 /// One host.
 pub struct NetHost {
-    hub: Option<Hub<MemoryBackend>>,
+    hub: Option<Hub>,
+    /// Its own store's device: rows and key root, one fault plan.
     backend: MemoryBackend,
+    root: MemoryRoot,
     pub faults: Faults,
     pub key: [u8; 32],
     pub address: Address,
@@ -398,8 +400,8 @@ impl NetSim {
         let i = self.hosts.len();
         let key = host_key(i);
         let faults = Faults::new();
-        let backend = MemoryBackend::with_faults(faults.clone());
-        self.hosts.push(NetHost { hub: None, backend, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
+        let (backend, root) = (MemoryBackend::with_faults(faults.clone()), MemoryRoot::with_faults(faults.clone()));
+        self.hosts.push(NetHost { hub: None, backend, root, faults, key, address: Address { url: format!("quic://host{i}:1"), key }, peers: Vec::new(), up: false, evil: None, sent: BTreeMap::new(), policy, slow: false });
         self.start_host(i)?;
         Ok(i)
     }
@@ -410,7 +412,9 @@ impl NetSim {
         let host = self.host(s)?;
         let policy = host.policy.clone();
         host.faults.revive();
-        let store = HostStore::open(host.backend.clone(), clock, policy, &mut SeededRng::from_u64(seed));
+        let (b, r) = (Box::new(host.backend.clone()), Box::new(host.root.clone()));
+        let store = Store::open_or_create(b, r, StoreConfig::default(), &mut SeededRng::from_u64(seed)).map_err(|e| e.to_string());
+        let store = store.and_then(|st| HostStore::open(st, clock, policy, Box::new(SeededRng::from_u64(seed ^ 0x570e))).map_err(|e| e.to_string()));
         let store = store.map_err(|e| self.fail(format!("host {s} open: {e}")))?;
         let host = self.host(s)?;
         host.hub = Some(Hub::new(store, host.key, Box::new(SeededRng::from_u64(seed ^ 0x5eed))));
@@ -438,7 +442,7 @@ impl NetSim {
         ss.iter().map(|s| self.address(*s)).collect()
     }
 
-    pub fn hub(&self, s: usize) -> Option<&Hub<MemoryBackend>> {
+    pub fn hub(&self, s: usize) -> Option<&Hub> {
         self.hosts.get(s).and_then(|x| x.hub.as_ref())
     }
 
@@ -873,6 +877,7 @@ impl NetSim {
         let host = self.host(s)?;
         host.faults = Faults::new();
         host.backend = MemoryBackend::with_faults(host.faults.clone());
+        host.root = MemoryRoot::with_faults(host.faults.clone());
         self.tombs.remove(&s);
         self.note(format!("host {s} lost its data"));
         *self.eph.boots.entry(Party::S(s)).or_default() += 1;

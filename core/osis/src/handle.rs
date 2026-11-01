@@ -32,8 +32,9 @@ pub const DEFAULT_IDLE_COMMIT: Duration = Duration::from_secs(2);
 pub struct MemStore {
     backend: MemoryBackend,
     root: MemoryRoot,
-    /// The store of the node's host, while it hosts (`set_hosting`).
+    /// The store of the node's host, its own key root beside it, while it hosts (`set_hosting`).
     pub(crate) host: MemoryBackend,
+    pub(crate) host_root: MemoryRoot,
 }
 
 impl MemStore {
@@ -46,7 +47,8 @@ impl MemStore {
 #[derive(Clone, Debug)]
 pub enum StoreAt {
     Memory(MemStore),
-    /// A directory: `db.redb`, the key root `root` and, while it hosts, `host.redb`.
+    /// A directory: `db.redb`, the key root `root` and, while it hosts, the host's own store
+    /// `host.redb` with its key root `host.root`.
     Dir(std::path::PathBuf),
 }
 

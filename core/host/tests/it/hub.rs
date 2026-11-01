@@ -10,7 +10,6 @@ use osis_crypto::SigningSecret;
 use osis_proto::msg::DeleteItem;
 use osis_proto::*;
 use osis_host::HostPolicy;
-use osis_store::Backend;
 
 // spec/sync.md §5, §6: register, open, upload inline with Sync, download by replay, cursor sync with gained and want
 /// A header blind (spec/crypto.md §7).
@@ -234,7 +233,7 @@ fn subscriptions_and_relays() {
     }
     w.run(b, Command::Subscribe { labels: vec![l2.id] });
     w.run(a, Command::Subscribe { labels: vec![l2.id] });
-    let backend_rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
+    let stored_rows = w.hubs[h].store().rows().unwrap();
     let relay = relay_blob(&w, 5);
     let rid = osis_label::blob_id(&relay);
     let ev = w.run(a, Command::Upload { label: l2.id, entries: vec![l2.entry(relay.clone())] });
@@ -242,7 +241,7 @@ fn subscriptions_and_relays() {
     let (evs, _) = events_of(&w.take(b));
     assert_eq!(added(&evs), vec![rid], "pushed to the subscriber");
     assert!(w.take(a).is_empty() && w.take(c).is_empty(), "not the sender, not unsubscribed");
-    assert_eq!(w.backends[h].scan(&[], None, usize::MAX).unwrap().len(), backend_rows, "relays store nothing");
+    assert_eq!(w.hubs[h].store().rows().unwrap(), stored_rows, "relays store nothing");
     assert!(w.hubs[h].store().entry(&l2.id, &rid).unwrap().is_none());
     // a later sync never sees it
     let (evs, _) = events_of(&w.run(c, sync(l2.id, None, vec![], vec![])));
@@ -311,7 +310,7 @@ fn relay_replay_flood_bounded_spec_sync_5() {
     let codes: Vec<Code> = (10..16).map(|n| statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(relay_blob(&w, n))] }))[0]).collect();
     assert_eq!(codes, [Code::OK, Code::OK, Code::OK, Code::OK, Code::RATE_LIMITED, Code::RATE_LIMITED], "the label's rate");
     assert_eq!(w.take(b).len(), 4);
-    assert!(w.backends[h].scan(&[], None, usize::MAX).unwrap().len() < 100, "nothing stored");
+    assert!(w.hubs[h].store().rows().unwrap() < 100, "nothing stored");
 }
 
 // spec/sync.md §4, §5: ephemeral entries are held in memory: synced and pushed like any, no store
@@ -328,11 +327,11 @@ fn ephemeral_entries_in_memory() {
     w.setup(a, &l);
     w.open(a, &l);
     w.open(b, &l);
-    let rows = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
+    let rows = w.hubs[h].store().rows().unwrap();
     let eph: Vec<Vec<u8>> = (1..=3).map(|n| classed(n, osis_label::Class::Ephemeral)).collect();
     let ev = w.run(a, Command::Upload { label: l.id, entries: eph.iter().map(|e| l.entry(e.clone())).collect() });
     assert_eq!(statuses(&ev), vec![Code::OK, Code::OK, Code::STORAGE_CAP], "the third is over the cap");
-    let reserve = w.backends[h].scan(&[], None, usize::MAX).unwrap().len();
+    let reserve = w.hubs[h].store().rows().unwrap();
     assert_eq!(reserve, rows, "only the label meta row changed (sequence reservation)");
     let charged = w.hubs[h].store().ephemeral_bytes(&l.id);
     assert!(charged > (eph[0].len() + eph[1].len()) as u64 && charged <= 2_400, "blobs and their overhead: {charged}");
