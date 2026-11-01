@@ -822,6 +822,13 @@ impl Core {
             SourceKind::Derived(_) => None,
         }
     }
+
+    /// The expiry of the delta that wrote dot `d` on `(tid, ak)` (its commit's header, kept past
+    /// the body; spec/crdt.md §4.7): `None` if that commit is not known.
+    pub fn write_expiry(&self, tid: &Tid, ak: &Ak, d: &Dot) -> Option<Option<u64>> {
+        let m = self.ix.commits.get(&self.commit_of(tid, ak, d)?)?;
+        m.header.aspects.iter().find(|x| x.tid == *tid && x.ak == *ak).map(|x| x.expires)
+    }
 }
 
 /// One transaction with the engine's in-memory state.

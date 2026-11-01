@@ -306,8 +306,8 @@ impl Engine {
             }
             return a.expiring.iter().find(|(_, r)| super::in_ranges(d, &d.src, r)).map(|(t, _)| *t);
         }
-        if let Some(m) = self.core.commit_of(tid, ak, d).and_then(|c| self.core.ix.commits.get(&c)) {
-            return m.header.aspects.iter().zip(&m.valid).find(|(x, v)| **v && x.tid == *tid && x.ak == *ak).and_then(|(x, _)| x.expires);
+        if let Some(e) = self.core.write_expiry(tid, ak, d) {
+            return e;
         }
         let mut held = false;
         let mut t: Option<u64> = None;
