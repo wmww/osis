@@ -2014,6 +2014,17 @@ fn withheld_departures_audits_and_expiries_leak_nothing() {
 
 const WITHHELD_MORE: [u64; 1] = [3];
 
+// As `withheld_departures_audits_and_expiries_leak_nothing`, seed 282407 (periodic run 13):
+// admin P removes holder M (rotating to e), its own edge passes an `until` set by another admin,
+// then P re-grants M at e. M takes e from that grant while it looks valid; it is invalid once
+// the `until` is known. M keeps e's secret (nothing unlearns it): no leak as long as no node
+// encrypts under e, which the harness checks at the owner after `ensure_rotated` (e, written by
+// the since-departed P, does not cover P's departure).
+#[test]
+fn withheld_regrant_past_own_until_spec_crypto_4() {
+    withheld_departures(282_407, true);
+}
+
 fn withheld_departures(seed: u64, more: bool) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
@@ -2160,15 +2171,52 @@ fn withheld_departures(seed: u64, more: bool) {
         let seed_d = lp.peers[d].engine.core.id.seed().clone();
         let mut got = lp.peers[d].engine.epochs(&g).unwrap_or_default();
         let _ = osis_keys::ingest(&g, &state, &osis_keys::Opener::KeyActor { holder: tids[d], seed: &seed_d }, &mut got, None);
-        for r in roles.into_iter().filter(|r| lp.peers[0].engine.core.role_now(&tids[d], &g) < Some(*r)) {
+        let now_d = lp.peers[0].engine.core.role_now(&tids[d], &g);
+        for r in roles.into_iter().filter(|r| now_d < Some(*r)) {
             for (e, _) in got.role(r).held_newest_first() {
                 let knew = made.get(&(r, e)).is_some_and(|(held, below)| held.contains(&gone) && below.contains(&d));
+                // a box to d in a commit valid when d took it, invalid now (its author departed
+                // after: a regrant past its own `until`, say): d keeps the secret, so the epoch
+                // must not cover the author's departure, and nobody encrypts under it
+                if knew && boxed_by_invalid(&mut lp, 0, g, tids[d], r, &e) {
+                    let _ = lp.peers[0].engine.ensure_rotated(&g);
+                    let now = lp.peers[0].engine.epochs(&g).unwrap();
+                    assert!(now.role(r).newest() != Some(e), "seed {seed}: owner encrypts under {r:?} epoch {e:?}, which departed peer {d} opens from an invalid box");
+                    continue;
+                }
                 assert!(!knew, "seed {seed}: departed peer {d} opens {r:?} epoch {e:?} made by a rotator that saw it depart");
             }
         }
     }
 }
 
+
+/// Whether peer `i` holds an invalid `secrets.0` delta on `g` boxing `holder` at (`r`, `e`).
+fn boxed_by_invalid(lp: &mut LocalPeer, i: usize, g: Tid, holder: Tid, r: Role, e: &osis_crypto::Epoch) -> bool {
+    let ak = osis_base::Ak::new("secrets.0").unwrap();
+    let want = ct::BoxKey { holder, role: r, epoch: osis_keys::aspects::to_schema(e) };
+    lp.peers[i]
+        .engine
+        .run(|tx| {
+            let ids: Vec<osis_base::CommitId> = tx.core.ix.by_aspect.get(&(g, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+            for id in ids {
+                let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
+                let Some(ai) = m.aspect(&g, &ak) else { continue };
+                if m.valid_at(ai) {
+                    continue;
+                }
+                for d in crate::apply::held_parts(tx, &id, ai)? {
+                    if let osis_commit::Decoded::Delta(d) = d
+                        && crate::apply::keys::secrets_write(&d.fragment).boxes.contains_key(&want)
+                    {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })
+        .unwrap()
+}
 
 // spec/crypto.md §4 (a name is met when its commit is applied: its edge write on the name's
 // thing held): owner A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
