@@ -102,21 +102,29 @@ fn aspect_index(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
     core.ix.commits.get(c)?.aspect(tid, ak)
 }
 
+/// The aspect index of `(tid, ak)` in known commit `c` and its header (`UnknownCommit`: not
+/// known with that aspect).
+fn known_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<(usize, crate::engine::LazyHeader)> {
+    let m = core.ix.commits.get(c).ok_or(Error::UnknownCommit(*c))?;
+    Ok((m.aspect(tid, ak).ok_or(Error::UnknownCommit(*c))?, m.header.clone()))
+}
+
 /// The known compaction snapshots of `(tid, ak)`, held, dropped or missing.
 fn snapshots_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<CommitId> {
     core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|s| core.ix.commits.get(s).is_some_and(|m| m.view.kind.is_compaction())).collect()
 }
 
-/// Whether held part `ai` of `c` holds a write `owns` matches.
-fn holds_any(tx: &mut Tx<'_>, c: &CommitId, ai: usize, owns: &dyn Fn(&osis_crdt::Dot) -> bool) -> Result<bool> {
-    for f in crate::apply::held_fragments(tx, c, ai)? {
+/// Drops held snapshot part `(s, sai)` if it carries a value of a write of `owned` (purged,
+/// spec/commits.md §5).
+fn drop_carrying(tx: &mut Tx<'_>, s: &CommitId, sai: usize, owned: &[Owned]) -> Result<()> {
+    for f in crate::apply::held_fragments(tx, s, sai)? {
         let mut g = f.clone();
-        g.strip(owns);
+        g.strip(&|x| owned.iter().any(|o| o.owns(x)));
         if g != f {
-            return Ok(true);
+            return drop_part(tx, s, sai);
         }
     }
-    Ok(false)
+    Ok(())
 }
 
 /// The actor whose readers a delta's thing has (spec/sync.md §3 entitlement): the thing if it
@@ -641,10 +649,8 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
     // snapshots carrying the purged values (spec/commits.md §5)
     if let Some(o) = Owned::of(&m.header, c, ai) {
         for s in snapshots_of(tx.core, &a.tid, &a.ak) {
-            if let Some(sai) = aspect_index(tx.core, &s, &a.tid, &a.ak)
-                && holds_any(tx, &s, sai, &|x| o.owns(x))?
-            {
-                drop_part(tx, &s, sai)?;
+            if let Some(sai) = aspect_index(tx.core, &s, &a.tid, &a.ak) {
+                drop_carrying(tx, &s, sai, std::slice::from_ref(&o))?;
             }
         }
     }
@@ -682,10 +688,7 @@ pub(crate) fn drop_purged_snapshot(tx: &mut Tx<'_>, s: &CommitId, sai: usize) ->
     if owned.is_empty() {
         return Ok(());
     }
-    if holds_any(tx, s, sai, &|x| owned.iter().any(|o| o.owns(x)))? {
-        drop_part(tx, s, sai)?;
-    }
-    Ok(())
+    drop_carrying(tx, s, sai, &owned)
 }
 
 /// After a commit applied: its expiry (now or by timer), its purge request against held
@@ -900,8 +903,7 @@ impl Engine {
         self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
         let (h, r, d) = self.run(|tx| {
-            let ai = aspect_index(tx.core, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
-            let h = tx.core.ix.commits.get(&c).map(|m| m.header.clone()).ok_or(Error::UnknownCommit(c))?;
+            let (ai, h) = known_part(tx.core, &c, &tid, &ak)?;
             let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(c))?.retention;
             let d = deaths_of(tx, &h, &c, ai)?;
             Ok((h, r, d))
@@ -921,8 +923,7 @@ impl Engine {
         self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
-            let ai = aspect_index(tx.core, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
-            let h = tx.core.ix.commits.get(&c).map(|m| m.header.clone()).ok_or(Error::UnknownCommit(c))?;
+            let (ai, h) = known_part(tx.core, &c, &tid, &ak)?;
             deaths_of(tx, &h, &c, ai)
         })
     }
