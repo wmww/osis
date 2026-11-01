@@ -6,7 +6,7 @@
 use crate::backend::Backend;
 use crate::btree::{self, Units};
 use crate::codec::{R, W};
-use crate::overlay::{MEM_TABLE, MemTxn, Overlay, Undo};
+use crate::overlay::{MEM_TABLE, MemTxn, Overlay};
 use crate::pager::{Dirty, Pager, StoreConfig};
 use crate::root::{RootStorage, RootTier};
 use crate::{Error, KeyValue};
@@ -140,7 +140,7 @@ impl Store {
     /// Continues a transaction set aside by `Transaction::suspend`. No other transaction may
     /// start in between: `transaction` rolls back the spills of every uncommitted one.
     pub fn resume<'a>(&'a mut self, s: Suspended, rng: &'a mut dyn CryptoRngCore) -> Transaction<'a> {
-        Transaction { pager: &mut self.pager, d: s.d, rng, mem: MemTxn { o: &mut self.mem, undo: s.undo, done: false }, memory: s.memory }
+        Transaction { pager: &mut self.pager, d: s.d, rng, mem: MemTxn { o: &mut self.mem, undo: Vec::new(), done: false }, memory: false }
     }
 
     pub fn root_tier(&self) -> RootTier {
@@ -167,11 +167,9 @@ impl Store {
 
 /// A transaction set aside between calls (`Transaction::suspend`, `Store::resume`): the
 /// host store keeps one open across a batch of requests and commits it once. Dropped without
-/// resuming, it aborts, except that its memory-overlay rows stay: suspend none.
+/// resuming, it aborts. It holds no memory-overlay rows (`suspend` refuses them).
 pub struct Suspended {
     d: Dirty,
-    undo: Vec<Undo>,
-    memory: bool,
 }
 
 /// A set of writes committed atomically. Every method fails with `Error::Broken` after a failed
@@ -221,11 +219,15 @@ impl Transaction<'_> {
         Ok(())
     }
 
-    /// Sets the transaction aside, uncommitted (`Store::resume`).
-    pub fn suspend(self) -> Suspended {
-        let Transaction { d, mut mem, memory, .. } = self;
+    /// Sets the transaction aside, uncommitted (`Store::resume`). In memory mode or holding
+    /// memory-overlay rows it fails `Misuse` and aborts (a dropped `Suspended` could not undo them).
+    pub fn suspend(self) -> Result<Suspended, Error> {
+        if self.memory || !self.mem.undo.is_empty() {
+            return Err(Error::Misuse("suspend with memory rows"));
+        }
+        let Transaction { d, mut mem, .. } = self;
         mem.done = true;
-        Suspended { d, undo: std::mem::take(&mut mem.undo), memory }
+        Ok(Suspended { d })
     }
 
     /// Memory mode: new rows go to the memory overlay (a memory commit's application).

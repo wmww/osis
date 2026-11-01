@@ -246,7 +246,7 @@ impl Db {
             None => store.transaction(&mut **rng)?,
         };
         let r = f(&mut t, *table);
-        *open = Some(t.suspend());
+        *open = Some(t.suspend()?);
         r
     }
 
@@ -267,7 +267,7 @@ impl Db {
                     Write::DeleteBlob(id) => t.delete_blob(&id),
                 }
             }
-            Ok(t.suspend())
+            t.suspend()
         });
         match r {
             Ok(s) => {
