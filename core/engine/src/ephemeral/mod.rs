@@ -242,11 +242,11 @@ impl Engine {
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {
             let group = ak.as_str() == GROUP.ak();
-            if ak.as_str() == PLACED.ak() || (group && !a.lifetime.is_durable()) {
+            if ak.as_str() == PLACED.ak() {
                 return Err(Error::Misuse("ephemeral placements are written through group ops only"));
             } else if group {
                 gops.push((tid, a));
-            } else if a.lifetime.is_durable() {
+            } else if ak.lifetime().is_durable() {
                 m.aspects.insert((tid, ak), a);
             } else {
                 eph_ops.push(EphOp { tid, ak, am: a });
@@ -312,7 +312,7 @@ impl Engine {
                 if m.purge.iter().any(|p| matches!(p, osis_commit::PurgeItem::Aspect { tid: t, ak: a } if t == tid && a == ak)) {
                     return Err(Error::Misuse("a purge applies to durable aspects only"));
                 }
-                if am.lifetime == Lifetime::Signal {
+                if ak.lifetime() == Lifetime::Signal {
                     match am.ops.as_slice() {
                         [op] if op.path.is_empty() && am.expires.is_none() => match &op.op {
                             Op::Set(v) => signals.push((*tid, ak.clone(), v.clone())),
@@ -325,7 +325,7 @@ impl Engine {
         }
         for op in &eph_ops {
             let (tid, ak, am) = (&op.tid, &op.ak, &op.am);
-            if am.lifetime == Lifetime::Signal {
+            if ak.lifetime() == Lifetime::Signal {
                 continue;
             }
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));

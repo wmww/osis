@@ -143,7 +143,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
    - The header's schema table and per-aspect schema index go (spec/data-model.md §10, spec/commits.md, spec/wire.md), as do `SchemaId`, `CORE_SCHEMA_ID`/`REVISION` and the `schema 0x...;` line.
    - Schema files keep a human `version`. The node picks a local schema for an AK from the schemas it has, never from the wire. Vectors are regenerated.
    - Hunt: `G 'SchemaId|schema_id|CORE_SCHEMA|schema table|schema index'` returns nothing; `G -w revision` matches only the human version. Read the commit header layout in spec/wire.md against osis-commit's encoder.
-7. **Markers carry meaning (c; M).**
+7. **Markers carry meaning (c; M).** Built.
    - `~` (ephemeral) and `*` (signal) come from the key; the `ephemeral` and `signal` schema flags leave the DSL and the `flag` enum.
    - `^` admin-only is judged by validity: a write of a `^` aspect needs admin on the thing. This replaces notes/permissions.md "Admin-only aspects (accepted)" and adds a spec/permissions.md rule.
    - Hunt: `G 'Flag::(Ephemeral|Signal)|\b(ephemeral|signal)\b' -- core/schema schema` (DSL docs, flag lists); read spec/data-model.md §2 and §10 and notes/versioning.md.

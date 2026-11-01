@@ -32,7 +32,6 @@ use osis_node::Mutation;
 use osis_node::sync::Event;
 use osis_proto::LabelStore;
 use osis_schema::core_types as ct;
-use osis_schema::{Lifetime, Untyped};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// `map<string, string>`, ephemeral.
@@ -78,18 +77,13 @@ pub struct Track {
 }
 
 impl NetSim {
-    fn ukey(&self, ak: &str, l: Lifetime) -> Res<Untyped> {
-        let a = Ak::new(ak).map_err(|e| self.fail(e.to_string()))?;
-        Ok(Untyped::new(a, l))
-    }
-
     fn eph_ak(&self, ak: &str) -> Res<Ak> {
         Ak::new(ak).map_err(|e| self.fail(e.to_string()))
     }
 
     /// Node `n` makes an ephemeral window owned by and placed in `g` (its `placed.0~`) and tracks it.
     pub fn window(&mut self, n: usize, g: Tid) -> Res<Tid> {
-        let state = self.ukey(STATE, Lifetime::Ephemeral)?;
+        let state = self.eph_ak(STATE)?;
         let e = self.engine(n)?;
         let mut m = Mutation::new();
         let w = e.new_thing(&mut m, g);
@@ -182,21 +176,21 @@ impl NetSim {
             4 if matches!(self.eph_read(n, &t, NOTES)?, Some(Value::Map(_))) => {
                 let key = format!("k{}", self.dice.below(5));
                 let op = PathOp { path: Vec::new(), op: Op::Remove(Value::Str(key.clone())) };
-                m.op(t, &self.ukey(NOTES, Lifetime::Ephemeral)?, op).map_err(|e| self.fail(e.to_string()))?;
+                m.op(t, &self.eph_ak(NOTES)?, op).map_err(|e| self.fail(e.to_string()))?;
                 format!("notes {t} remove {key}")
             }
             0..=4 => {
                 let key = format!("k{}", self.dice.below(5));
                 let op = PathOp { path: vec![PathSeg::Key(Value::Str(key.clone()))], op: Op::Set(Value::Str(format!("v{k}"))) };
-                m.op(t, &self.ukey(NOTES, Lifetime::Ephemeral)?, op).map_err(|e| self.fail(e.to_string()))?;
+                m.op(t, &self.eph_ak(NOTES)?, op).map_err(|e| self.fail(e.to_string()))?;
                 format!("notes {t} {key}=v{k}")
             }
             5 => {
-                m.set(t, &self.ukey(STATE, Lifetime::Ephemeral)?, &Value::Str(format!("s{k}"))).map_err(|e| self.fail(e.to_string()))?;
+                m.set(t, &self.eph_ak(STATE)?, &Value::Str(format!("s{k}"))).map_err(|e| self.fail(e.to_string()))?;
                 format!("state {t} s{k}")
             }
             6 => {
-                let key = self.ukey(TYPING, Lifetime::Ephemeral)?;
+                let key = self.eph_ak(TYPING)?;
                 let at = self.engine(n)?.now().0.saturating_add(5_000 + self.dice.below(25_000));
                 m.set(t, &key, &Value::Bool(true)).map_err(|e| self.fail(e.to_string()))?;
                 m.expires(t, &key, WallMs(at)).map_err(|e| self.fail(e.to_string()))?;
@@ -208,7 +202,7 @@ impl NetSim {
                 format!("cursor {t} {v}")
             }
             _ => {
-                m.set(t, &self.ukey(RING, Lifetime::Signal)?, &Value::Str(format!("sig{k}"))).map_err(|e| self.fail(e.to_string()))?;
+                m.set(t, &self.eph_ak(RING)?, &Value::Str(format!("sig{k}"))).map_err(|e| self.fail(e.to_string()))?;
                 format!("signal {t} sig{k}")
             }
         };
@@ -271,7 +265,7 @@ impl NetSim {
     /// Node `n`'s cursor write on `t` into `m`: a fresh entry at its key, expiring `CURSOR_MS`
     /// out.
     fn cursor_op(&mut self, n: usize, t: Tid, v: &str, m: &mut Mutation) -> Res<()> {
-        let key = self.ukey(CURSOR, Lifetime::Ephemeral)?;
+        let key = self.eph_ak(CURSOR)?;
         let at = self.engine(n)?.now().0.saturating_add(CURSOR_MS);
         let op = PathOp { path: vec![PathSeg::Key(Value::Str(n.to_string()))], op: Op::Put(Value::Str(v.into())) };
         m.op(t, &key, op).map_err(|e| self.fail(e.to_string()))?;
@@ -347,7 +341,7 @@ impl NetSim {
         self.eph.next += 1;
         let v = format!("sig{}", self.eph.next);
         let mut m = Mutation::new();
-        m.set(t, &self.ukey(RING, Lifetime::Signal)?, &Value::Str(v.clone())).map_err(|e| self.fail(e.to_string()))?;
+        m.set(t, &self.eph_ak(RING)?, &Value::Str(v.clone())).map_err(|e| self.fail(e.to_string()))?;
         self.eph_write(n, m, format!("final signal {t} {v}"))?;
         self.settle()?;
         for o in ms {

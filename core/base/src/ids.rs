@@ -305,6 +305,16 @@ impl Ak {
     pub fn lifetime(&self) -> Lifetime {
         self.parsed().lifetime
     }
+    /// The markers of a valid AK's text, read from its tail (`^`, `~` and `*` occur nowhere else
+    /// in one): admin-only, lifetime. For keys held as text (`AspectKey::ak`).
+    pub fn markers_of(s: &str) -> (bool, Lifetime) {
+        let (lifetime, rest) = match s.as_bytes() {
+            [r @ .., b'~'] => (Lifetime::Ephemeral, r),
+            [r @ .., b'*'] => (Lifetime::Signal, r),
+            r => (Lifetime::Durable, r),
+        };
+        (matches!(rest, [.., b'^']), lifetime)
+    }
     /// Whether this key is a later version of `other`: the same tid and name segments, a higher
     /// version, any markers (spec/data-model.md §2).
     pub fn successor_of(&self, other: &Ak) -> bool {
@@ -475,6 +485,10 @@ mod tests {
         assert_eq!(Ak::new("x.3*").unwrap().lifetime(), Lifetime::Signal);
         let admin = Ak::new("x.0^").unwrap();
         assert_eq!((admin.admin(), admin.lifetime()), (true, Lifetime::Durable));
+        for k in ["x.0", "x.3*", "x.0^", "x:y.1^~", ":AAAAAAAAAAAAAAAAAAAA:a.12^*"] {
+            let a = Ak::new(k).unwrap();
+            assert_eq!(Ak::markers_of(k), (a.admin(), a.lifetime()), "{k}");
+        }
         assert!(Ak::new("note:body.1").unwrap().successor_of(&a));
         assert!(Ak::new("note:body.1~").unwrap().successor_of(&a));
         assert!(!a.successor_of(&a) && !Ak::new("note:bod.1").unwrap().successor_of(&a) && !Ak::new(format!(":{t}:note:body.1")).unwrap().successor_of(&a));

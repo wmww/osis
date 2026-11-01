@@ -152,10 +152,6 @@ mod tests {
         Ak::new(s).unwrap()
     }
 
-    fn eph(s: &str) -> osis_schema::Untyped {
-        osis_schema::Lifetimes::ephemeral(ak(s))
-    }
-
     // issues/eph-unify.md step 3 (freeing): memory commits applied on memory things, then those
     // things freed, leave every journaled index (and perm's view) as if the commits had never
     // applied, and no memory row but the session's counters: an index applying fills and
@@ -175,20 +171,20 @@ mod tests {
         let mut m = Mutation::new();
         let top = e.new_thing(&mut m, g);
         let leaf = e.new_thing(&mut m, top);
-        m.set(leaf, &eph("t:a.0~"), &Value::Str("x".into())).unwrap();
-        m.expires(leaf, &eph("t:a.0~"), WallMs(e.now().0 + 60_000)).unwrap();
+        m.set(leaf, &ak("t:a.0~"), &Value::Str("x".into())).unwrap();
+        m.expires(leaf, &ak("t:a.0~"), WallMs(e.now().0 + 60_000)).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         for i in 0..2 {
             let mut m = Mutation::new();
-            m.set(leaf, &eph("t:a.0~"), &Value::Str(format!("y{i}"))).unwrap();
-            m.set(top, &eph("t:b.0~"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
+            m.set(leaf, &ak("t:a.0~"), &Value::Str(format!("y{i}"))).unwrap();
+            m.set(top, &ak("t:b.0~"), &Value::Set([Value::Str(format!("z{i}"))].into())).unwrap();
             e.commit_in_memory(m).unwrap().unwrap();
         }
         // an owner no commit is on, of a thing one is on
         let mut m = Mutation::new();
         let boss = e.new_thing(&mut m, g);
         let kid = e.new_thing(&mut m, boss);
-        m.set(kid, &eph("t:a.0~"), &Value::Str("k".into())).unwrap();
+        m.set(kid, &ak("t:a.0~"), &Value::Str("k".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
         // the first write expires: held value-less, its timer gone
         lp.advance(61_000);

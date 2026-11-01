@@ -26,8 +26,6 @@ pub(crate) struct AspectMut {
     pub schema: Option<Arc<Schema>>,
     pub retention: Option<Retention>,
     pub expires: Option<u64>,
-    /// Where the writes go (the key's lifetime, notes/ephemeral.md).
-    pub lifetime: Lifetime,
     /// The key's default expiry (ms after the write): ephemeral writes fill it themselves.
     pub default_expiry: Option<u64>,
 }
@@ -114,14 +112,7 @@ impl Mutation {
     fn entry<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<&mut AspectMut> {
         let ak = ak_of(key)?;
         let defaults = key.defaults();
-        let mut fresh = false;
-        let e = self.aspects.entry((tid, ak)).or_insert_with(|| {
-            fresh = true;
-            AspectMut { lifetime: defaults.lifetime, default_expiry: defaults.expires, ..AspectMut::default() }
-        });
-        if !fresh && e.lifetime != defaults.lifetime {
-            return Err(Error::Misuse("one aspect written with two lifetimes in one batch"));
-        }
+        let e = self.aspects.entry((tid, ak)).or_insert_with(|| AspectMut { default_expiry: defaults.expires, ..AspectMut::default() });
         if e.schema.is_none()
             && let Some(s) = key.schema()
         {
@@ -218,11 +209,13 @@ impl Mutation {
     }
 }
 
-/// The role a write of `ak` needs (spec/permissions.md §1, §3): admin for edges, `label.0`,
-/// `moved.0`, `was.0`, `tenures.0`; write for rotations (`secrets.0`, `keys.0`) and content.
+/// The role a write of `ak` needs (spec/permissions.md §1, §3, §5.2): admin for edges,
+/// `label.0`, `moved.0`, `was.0`, `tenures.0` and admin-only (`^`) aspects; write for rotations
+/// (`secrets.0`, `keys.0`) and other content.
 pub(crate) fn required_role(ak: &str) -> Role {
     match ak {
         "roles.0" | "label.0" | "moved.0" | "was.0" | "tenures.0" => Role::Admin,
+        _ if Ak::markers_of(ak).0 => Role::Admin,
         _ => Role::Write,
     }
 }
@@ -522,13 +515,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             return Err(Error::Misuse("thing already exists"));
         }
     }
+    // an aspect's class is its key's lifetime marker (spec/commits.md §2): a memory commit
+    // writes `~` aspects only, a durable one unmarked ones only (a durable write on a memory thing
+    // is a durable commit persisting it, spec/data-model.md §1); tests let a local writer break
+    // this, to test receivers
+    let class = if memory { Lifetime::Ephemeral } else { Lifetime::Durable };
+    if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| ak.lifetime() != class) {
+        return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
+    }
     if memory {
-        // an aspect's class is its schema lifetime: a memory commit writes memory-class aspects
-        // only (a durable-schema write on a memory thing is a durable write persisting it,
-        // spec/data-model.md §1)
-        if m.aspects.values().any(|a| a.lifetime != Lifetime::Ephemeral) {
-            return Err(Error::Misuse("a memory commit writes ephemeral aspects only"));
-        }
         // a memory commit's records are held here at once and travel beside its deltas
         // (spec/commits.md §2): a thing made with no write is known all the same
         for rec in std::mem::take(&mut m.creates).into_values() {

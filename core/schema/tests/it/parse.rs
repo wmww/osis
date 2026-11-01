@@ -30,7 +30,6 @@ fn core_schema_parses_spec_data_model_9() {
         assert!(aks.contains(&ak), "{ak}");
     }
     assert_eq!(aks.len(), 19);
-    assert_eq!(s.aspects["placed.0~"].lifetime(), osis_schema::Lifetime::Ephemeral);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
     assert_eq!(holders.retention.at_least.rel, Some(ROLE_KEEP_MS));
@@ -56,7 +55,7 @@ fn notes_schema_parses_items_spec_data_model_2() {
     assert_eq!((pinned.by, pinned.at_most.rel), (PurgeBy::Writer, Some(0)));
     assert!(s.aspects["note:body.0"].flags.contains(&Flag::Indexed));
     assert_eq!(s.aspects["note:body.0"].doc.as_deref(), Some("Markdown; not guaranteed valid."));
-    assert!(s.aspects["note:typing.0*"].flags.contains(&Flag::Signal));
+    assert!(s.aspects["note:typing.0*"].flags.is_empty());
     assert_eq!(s.types["tagged"].params, vec!["T".to_string()]);
 }
 
@@ -168,12 +167,11 @@ fn validation_rules_spec_data_model_3() {
         ("aspect x:a.0: int [frob];", "unknown attribute"),
         ("aspect x:a.0: int [by: everyone];", "expected nobody"),
         ("type x<T> = struct { 0 a: T = 1 };", "cannot type a default"),
-        ("aspect x:a.0*: int [ephemeral, signal];", "at most one of"),
-        ("aspect x:a.0~: int [ephemeral, by: admin];", "durable aspects only"),
-        ("aspect x:a.0*: int [signal, expires: 5s];", "no value to expire"),
-        ("aspect x:a.0: int [ephemeral];", "lifetime marker"),
-        ("aspect x:a.0~: int;", "lifetime marker"),
-        ("aspect x:a.0~: int [signal];", "lifetime marker"),
+        ("aspect x:a.0~: int [by: admin];", "durable aspects only"),
+        ("aspect x:a.0*: int [expires: 5s];", "no value to expire"),
+        ("aspect x:a.0: int [ephemeral];", "unknown attribute"),
+        ("aspect x:a.0*: int [signal];", "unknown attribute"),
+        ("aspect x.0~: int;", "core aspects are durable"),
         ("aspect x:a.01: int;", "invalid AK"),
         ("aspect x:a.0^^: int;", "invalid AK"),
         ("aspect :AAAAAAAAAAAAAAAAAAA:a.0: int;", "invalid AK"),
@@ -184,12 +182,10 @@ fn validation_rules_spec_data_model_3() {
         assert!(e.msg.contains(needle), "{src}: {e}");
     }
     // a tid-prefixed app key, its successor version, a marker run (spec/data-model.md §2)
-    let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; aspect :AAAAAAAAAAAAAAAAAAAA:a.1^~: text succeeds (:AAAAAAAAAAAAAAAAAAAA:a.0, x:b.0) [ephemeral];").unwrap();
+    let s = app("aspect :AAAAAAAAAAAAAAAAAAAA:a.0: int; aspect :AAAAAAAAAAAAAAAAAAAA:a.1^~: text succeeds (:AAAAAAAAAAAAAAAAAAAA:a.0, x:b.0);").unwrap();
     assert_eq!(s.aspects[":AAAAAAAAAAAAAAAAAAAA:a.1^~"].succeeds.len(), 2);
-    // lifetime flags (notes/ephemeral.md): the key's defaults carry them; the form round-trips
-    let s = app("aspect x:e.0~: int [ephemeral, expires: 5s]; aspect x:s.0*: string [signal]; aspect x:d.0: int;").unwrap();
-    let life = |ak: &str| s.defaults(ak).unwrap().lifetime;
-    assert_eq!([life("x:e.0~"), life("x:s.0*"), life("x:d.0")], [Lifetime::Ephemeral, Lifetime::Signal, Lifetime::Durable]);
+    // the lifetime is the key's marker (spec/data-model.md §2), no flag; the form round-trips
+    let s = app("aspect x:e.0~: int [expires: 5s]; aspect x:s.0*: string; aspect x:d.0: int;").unwrap();
     assert_eq!(s.defaults("x:e.0~").unwrap().expires, Some(5_000));
     assert_eq!(Schema::from_value(&s.to_value()).unwrap(), s);
     // Wrappers are fine in mergeable positions, and under a parameter instantiated well.

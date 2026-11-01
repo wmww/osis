@@ -131,7 +131,7 @@ fn zero_deltas_refused() {
 // is refused rather than clamped.
 #[test]
 fn expiry_range() {
-    let d = AspectDefaults { retention: Retention::default(), expires: Some(u64::MAX - 5), ..Default::default() };
+    let d = AspectDefaults { retention: Retention::default(), expires: Some(u64::MAX - 5) };
     assert!(retention::write_expires("app:x.0", ts(10), Some(&d), None).is_err());
     assert!(retention::write_expires("app:x.0", ts(10), None, Some(FOREVER + 1)).is_err());
     let mut h = sample_header();

@@ -291,22 +291,29 @@ fn foreign_actor_claim_refused_spec_wire_4() {
 /// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
 /// the writer-side rules; its counters start at `lo`.
 fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    forge_commit(lp, by, t, ak, v, lo, osis_commit::Kind::Role)
+}
+
+/// `forge_role_commit` of any kind; an AK the core schema does not declare is written untyped.
+fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
     let author = lp.peers[by].engine.tid();
     let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
-    let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
     // commit form (spec/commits.md §3): own dots name the commit, a placeholder until built
     let own = Source::commit(osis_base::CommitId([0; 32]));
     let mut w = Writer::new(ts, own.clone(), lo);
-    let f = create(&mut w, &view, v).unwrap();
+    let f = match osis_schema::core_schema().view(ak.as_str()) {
+        Some(view) => create(&mut w, &view, v).unwrap(),
+        None => create(&mut w, &osis_crdt::AnyView, v).unwrap(),
+    };
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
+    let mut cx = writer_ctx(kind, ts, author, r.lo, r.hi);
     cx.own = own;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+    let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
@@ -368,6 +375,46 @@ fn forged_role_class_unmerged_spec_perm_1() {
     let honest = forge_role_commit(&mut lp, 1, d, &a, &Value::Tid(other), 100);
     lp.peers[0].engine.ingest(&honest, Vec::new()).unwrap();
     assert_eq!(lp.peers[0].engine.get(&d, &a).unwrap(), Some(Value::Tid(other)));
+}
+
+// spec/permissions.md §5.2 (admin-only): a writer's node refuses its write of a `^` aspect,
+// durable or ephemeral; one forged past that is invalid at every node, its author's included;
+// the same write once its author holds admin applies everywhere
+#[test]
+fn admin_only_aspect_needs_admin_spec_perm_5_2() {
+    let (mut lp, d, b, _) = setup(53);
+    let key = ak("t:settings.0^");
+    let write = |v: &str| {
+        let mut m = Mutation::new();
+        m.set(d, &key, &s(v)).unwrap();
+        m
+    };
+    assert!(matches!(lp.peers[1].commit(write("bob")), Err(osis_node::Error::Permission { .. })));
+    let mut m = Mutation::new();
+    m.set(d, &ak("t:settings.0^~"), &s("bob")).unwrap();
+    assert!(matches!(lp.peers[1].engine.write(m), Err(osis_node::Error::Permission { .. })), "an ephemeral `^` write refused too");
+    lp.advance(1_000);
+    let forged = forge_commit(&mut lp, 1, d, &key, &s("bob"), 1, osis_commit::Kind::Content);
+    // control: the same forged write on an unmarked key applies
+    let plain = ak("t:settings.0");
+    let control = forge_commit(&mut lp, 1, d, &plain, &s("bob"), 1, osis_commit::Kind::Content);
+    for i in 0..3 {
+        lp.peers[i].engine.ingest(&forged, Vec::new()).unwrap();
+        lp.peers[i].engine.ingest(&control, Vec::new()).unwrap();
+        assert_eq!(lp.peers[i].engine.get(&d, &key).unwrap(), None, "{i}: a writer's `^` write applied");
+        assert_eq!(lp.peers[i].engine.get(&d, &plain).unwrap(), Some(s("bob")), "{i}");
+    }
+    lp.sync_all().unwrap();
+    assert!((0..3).all(|i| lp.peers[i].engine.get(&d, &key).unwrap().is_none()));
+    // the same write once its author is an admin applies
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    lp.peers[1].commit(write("bob, admin")).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&d, &key).unwrap(), Some(s("bob, admin")), "{i}");
+    }
 }
 
 // spec/permissions.md §5.2 (a valid compaction snapshot vouches for the writes it carries):

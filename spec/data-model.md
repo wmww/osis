@@ -13,10 +13,10 @@
 ## 2. Aspects
 - An aspect is identified by (tid, AK). An **AK** is a string (text on the wire) of the grammar `ak = [":" tid ":"] name *(":" name) "." version ["^"] ["~" / "*"]`, `name = [a-z_][a-z0-9_]*`, `tid` its 20-character text form (§1), `version` a decimal u64 without leading zeros: `name.0`, `contact:names.0`, `:<tid>:foo.1^~`. Anything else, or more than 1024 bytes (spec/wire.md §4), is not an AK.
 - The tid and name segments name the aspect; the **version** is its major version. A key with the same tid and name segments and a higher version is a **successor** of the lower: the form a breaking change takes (spec/versioning.md §4). A node may use the relation without any schema; it implies no conversion.
-- **Markers**: `^` admin-only (no rule depends on it); `~` ephemeral and `*` signal, matching the declared lifetime flag below; for an AK no schema declares, the writer picks the lifetime and the marker is a convention nothing checks (provisional).
+- **Markers**: `^` **admin-only**: a write of the aspect needs admin on the thing (spec/permissions.md §5.2). The **lifetime marker** decides where writes of the AK go, for every AK alike, declared by a schema or not: none, durable commits; `~` **ephemeral**, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `*` **signal**, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). A node decides an aspect's storage class from its AK alone (spec/commits.md §2). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable but `placed.0~` (§8), which is ephemeral.
 - AKs of one name segment and no tid belong to the core schema (§9); no other schema declares one. Every other AK has two or more name segments or a tid segment: first-party AKs live in the osis repository (`contact:names.0`); an app's start with a tid its maker owns, by convention (nothing checks it).
 - An aspect is present iff its root fragment is present (spec/crdt.md §4.3).
-- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags. `ro`, `synthetic`, `guaranteed`, `indexed` are local; nothing on the wire enforces them. At most one **lifetime flag**, matching the AK's lifetime marker, decides where writes of the AK go: none, durable commits; `ephemeral`, a value held in memory by the nodes holding the thing, never in a durable commit (it syncs as ephemeral commits, spec/commits.md §2, spec/sync.md §9); `signal`, an ephemeral write with no lasting value (delivered to listeners here and on the devices connected now, never in state; only a whole-value set). Ephemeral writes carry no retention; expiry applies (spec/crdt.md §4.7, in memory). Core aspects are durable but `placed.0~` (§8), which is ephemeral. An aspect reads the join of its durable and ephemeral states (spec/crdt.md §4.1).
+- A schema declares per AK: the type, the default retention (purgeable by, keep at least, keep at most, in any form; spec/commits.md §5), which the writer puts into every delta, an optional default expiry duration measured from the write (spec/commits.md §6), and flags `ro`, `synthetic`, `guaranteed`, `indexed`, which are local: nothing on the wire enforces them. A non-durable AK declares no retention, a signal AK no expiry.
 
 ## 3. Types
 - Scalars: `string` (UTF-8), `blob` (bytes), `bool`, `int` (i64), `float` (f64), `tid`.
@@ -154,7 +154,7 @@ aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
-aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> } [ephemeral];
+aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect groups.0: set<tid> [synthetic, guaranteed];
 aspect name.0: string;
 aspect body.0: markdown;
@@ -186,6 +186,6 @@ type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<a
 type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
 type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
 type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author, 3 writer }, 1 at_least: bound, 2 at_most: bound };
-type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed, 4 ephemeral, 5 signal };
+type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
 type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
 ```

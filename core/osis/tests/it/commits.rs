@@ -463,7 +463,7 @@ fn undo_of_creation_deletes_spec_crdt_4_6() {
 #[test]
 fn undo_of_ephemeral_creation_deletes_spec_crdt_4_6() {
     let db = db(2);
-    let k = osis::Lifetimes::ephemeral(ak("app:draft.0~"));
+    let k = ak("app:draft.0~");
     let mk = |db: &Osis| db.write_with(|w| { let g = w.create_durable(db.me())?; w.make_group(g)?; Ok(g) }).unwrap();
     let (f, f2) = (mk(&db), mk(&db));
     let e = db.write_with(|w| { let e = w.create_in(db.me(), &[f])?; w.at(e, k.clone()).set(&Value::Int(1))?; Ok(e) }).unwrap();

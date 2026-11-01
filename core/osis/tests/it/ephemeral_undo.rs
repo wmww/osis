@@ -5,7 +5,7 @@
 use osis::internals::Internals as _;
 use crate::common::*;
 use crate::common::CreateIn;
-use osis::{ChangeId, CommitKind, CommitQuery, DropReason, Error, Lifetimes, MemStore, Osis, Scope, Value};
+use osis::{ChangeId, CommitKind, CommitQuery, DropReason, Error, MemStore, Osis, Scope, Value};
 
 fn setup(seed: u64) -> Osis {
     Osis::create(cfg(seed, MemStore::new(), &clock())).unwrap().0
@@ -21,7 +21,7 @@ fn int(n: i64) -> Option<Value> {
 #[test]
 fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     let db = setup(1);
-    let k = ak("app:draft.0~").ephemeral();
+    let k = ak("app:draft.0~");
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let marks = || db.engine(|e| (e.commit_ids().len(), e.core.generation));
     let before = marks();
@@ -81,7 +81,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
 fn thing_scope_skips_cursor_spec_crdt_4_6() {
     let db = setup(3);
     let text = ak("doc:text.0");
-    let cursor = ak("doc:cursor.0~").ephemeral();
+    let cursor = ak("doc:cursor.0~");
     let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
     db.write_with(|w| w.at(d, text.clone()).set(&Value::Str("a".into()))).unwrap();
     db.write_with(|w| w.at(d, cursor.clone()).set(&Value::Int(1))).unwrap();
@@ -104,7 +104,7 @@ fn thing_scope_skips_cursor_spec_crdt_4_6() {
 fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
     let db = setup(4);
     let x = ak("t:x.0");
-    let sel = ak("t:sel.0~").ephemeral();
+    let sel = ak("t:sel.0~");
     let d = db.write_with(|w| w.create_durable(db.me())).unwrap();
     let mut w = db.write();
     w.at(d, x.clone()).set(&Value::Int(1)).unwrap();
@@ -130,7 +130,7 @@ fn mixed_batch_undone_in_one_step_spec_crdt_4_6() {
 #[test]
 fn mixed_scope_undo_order_spec_crdt_4_6() {
     let db = setup(5);
-    let (body, draft) = (ak("t:body.0"), ak("t:draft.0~").ephemeral());
+    let (body, draft) = (ak("t:body.0"), ak("t:draft.0~"));
     let (f, item, e) = db
         .write_with(|w| {
             let f = w.create_durable(db.me())?;
@@ -178,7 +178,7 @@ fn not_undoable_past_history_cap_spec_crdt_4_6() {
     let mut x = cfg(6, MemStore::new(), &c);
     x.ephemeral_history = 8_000;
     let db = Osis::create(x).unwrap().0;
-    let k = ak("app:n.0~").ephemeral();
+    let k = ak("app:n.0~");
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let mut ids = Vec::new();
     for i in 0..40 {
@@ -225,7 +225,7 @@ impl Tap for osis::Write<'_> {}
 #[test]
 fn undo_of_save_restores_the_draft_spec_crdt_4_6() {
     let db = setup(9);
-    let draft = ak("app:draft.0~").ephemeral();
+    let draft = ak("app:draft.0~");
     let body = ak("app:body.0");
     let f = db.write_with(|w| { let f = w.create_durable(db.me())?; w.make_group(f)?; Ok(f) }).unwrap();
     let e = db

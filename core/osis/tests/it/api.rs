@@ -360,7 +360,7 @@ fn local_rights_check_spec_permissions_1() {
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
     // signals need write too
     let mut w = b.write();
-    w.at(t, osis::Lifetimes::signal(ak("t:sig.0*"))).set(&Value::Int(1)).unwrap();
+    w.at(t, ak("t:sig.0*")).set(&Value::Int(1)).unwrap();
     assert!(matches!(w.commit(), Err(Error::Permission { .. })));
 }
 
@@ -945,7 +945,7 @@ fn changed_content_only_api_reads() {
     assert_eq!(a.changed(t).unwrap().shown(), osis::WallMs(T0 + 40), "a delete is a change");
     let mut w = a.write();
     let e = w.create(a.me()).unwrap();
-    w.at(e, osis::Lifetimes::ephemeral(ak("t:x.0~"))).set(&s("draft")).unwrap();
+    w.at(e, ak("t:x.0~")).set(&s("draft")).unwrap();
     w.commit().unwrap();
     assert!(a.created(e).unwrap().commit.is_none());
     assert_eq!(a.changed(e), a.created(e));

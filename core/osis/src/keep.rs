@@ -84,13 +84,13 @@ impl Osis {
     /// cursor map, or a register position) and rewrites it every half of the key's default
     /// expiry while the returned `KeepAlive` lives. Two devices keeping one path alive (a
     /// person's key) overwrite each other at every rewrite: key by device. The key must be
-    /// ephemeral with a default expiry (schema `[ephemeral, expires: ...]`) well above the
+    /// ephemeral (`~`) with a default expiry (schema `[expires: ...]`) well above the
     /// network delay and the clock differences between nodes; the database needs its runtime (a
     /// `Config::transport`) for the timer. Nothing outlives the process: after a restart the app
     /// calls this again.
     pub fn keep_alive<K: AspectKey, U: Codec>(&self, tid: Tid, key: K, path: Path, value: &U) -> Result<KeepAlive> {
         let d = key.defaults();
-        let Some(exp) = d.expires.filter(|_| d.lifetime == osis_schema::Lifetime::Ephemeral) else {
+        let Some(exp) = d.expires.filter(|_| key.lifetime() == osis_schema::Lifetime::Ephemeral) else {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
         };
         let value = value.to_value();

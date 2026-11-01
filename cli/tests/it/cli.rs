@@ -375,7 +375,7 @@ type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
 aspect todo:task.0: task;
 aspect todo:list.0: list<task>;
 aspect todo:count.0: counter<int>;
-aspect todo:ping.0*: int [signal];
+aspect todo:ping.0*: int;
 ";
 
 // notes/cli.md Design Honest about names: named forms with a registered schema; --raw numbered.

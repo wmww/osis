@@ -40,7 +40,7 @@
 - Grammar: spec/data-model.md §2 (owner decisions, round 13). A string on the wire, readable in diagnostics, whose structure is a grammar; markers are positional reserved characters, never substrings; one spelling per key (`.0` always written, no leading zeros, fixed marker order). The version is a standard, not a codegen convention: same tid and name segments with a higher version is the successor, usable without any schema.
 - Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. Nothing on the wire names a schema (owner, round 13: no machine mapping from AK to schema), so a collision is never prevented and shows only as typed-read failures where the types differ; the writes merge like concurrent writes (spec/requirements.md, Versioning). A node types an AK by the schema it holds for it: the engine keeps one per app AK (`Core::schemas`: the highest version registered or written with, an equal one registered again replacing it, so a stale app never downgrades it; a session's `Osis::key` uses its own newest registration), and no app schema declares a core AK.
 - Codegen is the one writer of the strings: app code uses generated constants, each checked at build time (`Aspect::new` calls the `const fn` `Ak::check`).
-- Markers today: `~`/`*` must match the schema's lifetime flag (validation); untyped keys carry them by convention (the tests' ephemeral and signal keys do), nothing checks them; `^` parses and carries no rule. Step 7 of issues/one-node-kind.md makes the marker decide.
+- Markers carry meaning (sweep step 7): `~`/`*` are the lifetime for every key, typed or not (no schema flag; `AspectKey::lifetime`), so a node decides storage class from the key alone: a writer refuses a mismatched commit (`commit_in`, `Misuse`), a receiver drops the part (`apply::examine`, the old path's `eph_part_valid`). `^` needs admin (`write::required_role`; spec/permissions.md §5.2). `Ak::markers_of` reads both from a key's text tail.
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
 
 ## Groups
@@ -66,7 +66,7 @@ aspect note:body.0: markdown [indexed];
 aspect note:last_opened.0: timestamp [expires: 30d];
 aspect note:pinned.0: map<tid, tagged<int>> [by: writer, keep_at_most: 0s];
 aspect note:title.1: text succeeds note:title.0;
-aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp } [signal];
+aspect note:typing.0*: struct { 0 who: tid, 1 at: timestamp };
 ```
 - AKs (after `aspect` and `succeeds`) are written as on the wire (`contact:names.0`, `note:typing.0*`); the lexer reads one where a name or `:` run reaches `.` and a digit, the validation checks its grammar.
 - Aspect attributes: flags `ro`, `synthetic`, `guaranteed`, `indexed`; `by: nobody|admin|author|writer` (default `author`); `keep_at_least:`/`keep_at_most:` a duration (relative, after replaced) and/or `abs <wall ms>`; `expires: <duration>`. Durations `250ms`, `10s`, `5m`, `12h`, `30d`. Trailing commas everywhere.

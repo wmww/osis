@@ -14,7 +14,7 @@ aspect n:n.0: int;
 aspect n:s.0: string;
 aspect n:e.0: e;
 aspect n:tree.0: tree;
-aspect n:sig.0*: int [signal];
+aspect n:sig.0*: int;
 ";
 
 fn schema(rev: u64, body: &str) -> Schema {
@@ -95,7 +95,7 @@ fn additive_changes_pass_spec_versioning_4() {
         ("aspect n:s.0: string;", "aspect n:s.0: markdown;"),
         ("2 c: option<int>, reserved 5", "reserved (2, 5)"),
         ("aspect n:n.0: int;", "/// Docs change freely.\naspect n:n.0: int [indexed, by: admin, expires: 1d];"),
-        ("aspect n:sig.0*: int [signal];", "aspect n:sig.0*: int [signal];\naspect n:more.0: set<tid>;"),
+        ("aspect n:sig.0*: int;", "aspect n:sig.0*: int;\naspect n:more.0: set<tid>;"),
         ("type t = struct", "type t2 = struct { 0 q: int };\ntype t = struct"),
     ] {
         assert_eq!(rules(from, to), vec![], "{to}");
@@ -131,7 +131,7 @@ fn each_rule_is_enforced_spec_versioning_4() {
         ("2 c: option<int>", "2 c: option<int> = some(1)", vec![DefaultChanged]),
         ("0 a: int", "0 a: int = 0", vec![DefaultAdded]),
         ("aspect n:e.0: e;\n", "", vec![AspectRemoved]),
-        ("aspect n:sig.0*: int [signal];\n", "", vec![AspectRemoved]),
+        ("aspect n:sig.0*: int;\n", "", vec![AspectRemoved]),
     ] {
         assert_eq!(rules(from, to), want, "{from} -> {to}");
     }
