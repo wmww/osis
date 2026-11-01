@@ -144,7 +144,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | sim `IDLE_ROUNDS` 3 | M | ping-pong with a longer period goes unseen |
 | sim `STORM` 5000, `ROGUE_STORM` 100 000, `SLOW_MS` 30 s | M | |
 | sim world `STORM` 5000 rounds (`world.rs`; busiest osis-test settle about 300) | M | a storm panics; at infinity it hangs the test |
-| node test seed runners `SEED_TIMEOUT_SECS` 600 (`tests/it/common`, `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seed seconds at load 30) | M | 0: every run stops at its first seed; ∞: a hung seed hangs the run silently |
+| seed runner `SEED_TIMEOUT_SECS` 600 (`osis_base::testenv`, CPU-seconds a seed's thread uses, or seconds it uses none; `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seeds take a few CPU-s) | M | 0: every seed is hung; ∞: a hung seed hangs the run silently |
 
 ## Counts
 Table rows (a row may group several related values): P 17, R 33, M 34, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.
