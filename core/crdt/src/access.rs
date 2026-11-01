@@ -84,6 +84,14 @@ impl Fragment {
             })
             .max()
     }
+    /// The stamp of a register's write (`None`: no register, or none written).
+    pub fn write_stamp(&self) -> Option<&Stamp> {
+        match self {
+            Fragment::Register(r) => r.write.as_ref().map(|w| &w.stamp),
+            _ => None,
+        }
+    }
+
     /// The position at `path` as a read sees it: a struct field, the current case's payload, what
     /// a map key reads as (its live entries joined, §5.6), a list element by index. Only that
     /// position is copied; a key costs O(log n).

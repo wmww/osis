@@ -722,7 +722,8 @@ impl SyncEngine {
 
     /// Closes served sessions without bytes for `SyncConfig.serve_idle_ms`, and those that
     /// opened no label within `serve_open_ms`; expires peer deletions and this node's
-    /// tombstones; prunes charges and blob sizes.
+    /// tombstones; forgets carriers and certificate placements nothing needs; prunes charges
+    /// and blob sizes.
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
@@ -734,6 +735,9 @@ impl SyncEngine {
         let wall = self.state.now;
         self.state.feed.expire(wall);
         self.state.expire_tombs(wall);
+        self.state.sweep_carriers(wall);
+        let ix = &self.engine.core.ix.commits;
+        self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.dropped.contains_key(&ai))));
         self.prune_charges();
         if self.blob_sizes.len() > self.state.entries.len() {
             let held: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).collect();

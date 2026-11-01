@@ -119,12 +119,42 @@ pub(crate) fn put_label(m: &mut Mutation, group: Tid, label: LabelId, index: u64
     Ok(())
 }
 
+/// Drops, in `m`, the claim sets (with their entry boxes) of `group`'s steps superseded for
+/// `ROLE_KEEP` (spec/sync.md §2: an admin may): a step is superseded when the record of its
+/// first child was written, by that write's stamp. Folded into every `label.0` write an admin
+/// makes, so a group's records hold the sets of its recent steps only.
+pub(crate) fn drop_old_claims(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid) -> Result<()> {
+    let now = tx.core.now().0;
+    let Some(state) = tx.state(&group, &ak("label.0")?)?.cloned() else { return Ok(()) };
+    let labels = state.read().and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
+    for (label, rec) in &labels {
+        let Ok(steps) = label_steps(rec) else { continue };
+        // when each step's record was written
+        let written = |id: &StepId| {
+            let path = [PathSeg::Key(label.to_value()), PathSeg::Field(1), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(0)];
+            state.at(&path).and_then(|f| f.write_stamp().map(|s| s.ts.wall_ms().0))
+        };
+        for (id, (_, claims)) in &steps {
+            if claims.is_none() {
+                continue;
+            }
+            let superseded = steps.iter().filter(|(_, (c, _))| c.prev == Some(*id)).filter_map(|(c, _)| written(c)).min();
+            if superseded.is_some_and(|t| t.saturating_add(osis_base::format::ROLE_KEEP_MS) <= now) {
+                let path = vec![PathSeg::Key(label.to_value()), PathSeg::Field(1), PathSeg::Key(Value::Bytes(id.0.to_vec())), PathSeg::Field(1)];
+                m.op(group, &ct::LABEL, PathOp { path, op: Op::Replace(None::<Vec<u8>>.to_value()) })?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// A new label of `group` (its home label when `group` is an actor): genesis step at its
 /// newest epochs, written to `label.0` in `m`. Returns the label ID.
 pub(crate) fn new_label(tx: &mut Tx<'_>, m: &mut Mutation, group: Tid, epochs: &ActorEpochs, readers: &[ReaderKey], deposit: &Secret32, hosts: &[Address]) -> Result<LabelId> {
     let index = labels_of(tx, &group)?.values().map(|l| l.index.saturating_add(1)).max().unwrap_or(0);
     let (step, set) = issue(tx, &group, epochs, index, None, readers, deposit)?;
     put_label(m, group, step.label, index, &step, &set, Some(hosts))?;
+    drop_old_claims(tx, m, group)?;
     Ok(step.label)
 }
 
@@ -219,6 +249,7 @@ impl Engine {
             let (step, set) = issue(tx, &g, &epochs, rec.index, Some((&head, &admin_secret)), &rs, &deposit)?;
             let mut m = Mutation::new();
             put_label(&mut m, g, l, rec.index, &step, &set, None)?;
+            drop_old_claims(tx, &mut m, g)?;
             done.add(Engine::commit_tx(tx, m)?);
             Ok(Some((step, set)))
         })?;
@@ -259,6 +290,12 @@ impl Engine {
             done.add(Engine::commit_tx(tx, m)?);
             Ok((id, done))
         })
+    }
+
+    /// `drop_old_claims` into `m`, a `label.0` write of `group` by this admin.
+    pub fn drop_old_claims(&mut self, m: &mut Mutation, group: &Tid) -> Result<()> {
+        let g = *group;
+        self.run(|tx| drop_old_claims(tx, m, g))
     }
 
     /// The newest label of `group` with its hosts.

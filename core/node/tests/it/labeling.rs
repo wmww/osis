@@ -123,3 +123,28 @@ fn head_keys_and_delete_keys_spec_sync_5() {
     net.pair(a, r);
     assert!(net.engine(r).delete_secrets_of(&c, &body.parts).is_empty());
 }
+
+// spec/sync.md §2 (growth, notes/growth.md): an admin's `label.0` write drops the claim sets
+// (entry boxes with them) of the steps superseded for `ROLE_KEEP`; the newer ones stay.
+#[test]
+fn old_claim_sets_dropped_spec_sync_2() {
+    use osis_schema::core_types as ct;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    net.run();
+    let l = net.label(a);
+    let label = |net: &mut Net| net.engine(a).get_typed(&g, &ct::LABEL).unwrap().unwrap().remove(&l).unwrap();
+    let head = |net: &mut Net| osis_label::tips(&label(net)).unwrap()[0];
+    let s0 = head(&mut net);
+    let s1 = net.engine(a).issue_step(&g, &l, &s0, true).unwrap().0.unwrap().0.id();
+    net.run();
+    net.advance(osis_base::format::ROLE_KEEP_MS);
+    let s2 = net.engine(a).issue_step(&g, &l, &s1, true).unwrap().0.unwrap().0.id();
+    net.run();
+    let rec = label(&mut net);
+    let claims = |id: &osis_label::StepId| rec.steps.get(&id.0).unwrap().claims.is_some();
+    assert_eq!((claims(&s0), claims(&s1), claims(&s2)), (false, true, true), "only the set superseded for ROLE_KEEP went");
+    assert_eq!(rec.steps.len(), 3, "the steps themselves stay");
+}

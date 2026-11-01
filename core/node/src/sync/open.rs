@@ -630,6 +630,7 @@ impl SyncEngine {
             let path = vec![PathSeg::Key(l.to_value()), PathSeg::Field(1), PathSeg::Key(s.id().0.to_value())];
             m.op(*g, &osis_schema::core_types::LABEL, PathOp { path, op: Op::Set(rec.to_value()) })?;
         }
+        self.engine.drop_old_claims(&mut m, g)?;
         self.engine.commit(m)?;
         Ok(())
     }
