@@ -215,6 +215,63 @@ pub fn par_map<T: Send>(items: &[u64], threads: usize, f: impl Fn(u64) -> T + Sy
     out.into_iter().map(|x| x.1).collect()
 }
 
+/// Seconds one seed of a seed runner may run before the process stops naming it
+/// (`OSIS_SEED_TIMEOUT_SECS` overrides). Minor consequence, test-only: at 0 every run stops at
+/// its first seed; at infinity a hung seed hangs the run silently. 600 s is far past any seed's
+/// cost (the slowest, ephemeral random windows, take seconds even at load 30).
+pub const SEED_TIMEOUT_SECS: u64 = 600;
+
+/// `par_map`, watched: when one item has run longer than `SEED_TIMEOUT_SECS`, prints
+/// `label(item)` of every item still running past libtest's capture and exits the process
+/// (a hung thread cannot be stopped; without this the run hangs silently).
+pub fn par_map_watched<T: Send>(name: &str, items: &[u64], threads: usize, label: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
+    use std::collections::BTreeMap;
+    use std::sync::{Condvar, Mutex};
+    use std::time::{Duration, Instant};
+    let limit = Duration::from_secs(osis_base::testenv::u64_var("OSIS_SEED_TIMEOUT_SECS").unwrap_or(SEED_TIMEOUT_SECS));
+    // items running, with their start; None once the run is over
+    let state: Mutex<Option<BTreeMap<u64, Instant>>> = Mutex::new(Some(BTreeMap::new()));
+    let wake = Condvar::new();
+    struct Over<'a>(&'a Mutex<Option<BTreeMap<u64, Instant>>>, &'a Condvar);
+    impl Drop for Over<'_> {
+        fn drop(&mut self) {
+            *self.0.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            self.1.notify_all();
+        }
+    }
+    let lock = || state.lock().unwrap_or_else(|e| e.into_inner());
+    std::thread::scope(|s| {
+        s.spawn(|| {
+            let mut g = lock();
+            while let Some(running) = g.as_ref() {
+                let now = Instant::now();
+                let oldest = running.values().min().copied();
+                match oldest {
+                    Some(t) if now.duration_since(t) >= limit => {
+                        let hung: Vec<String> = running.iter().map(|(&x, t)| format!("  {} running {} s", label(x), now.duration_since(*t).as_secs())).collect();
+                        osis_base::testenv::visible(true, &format!("{name}: a seed ran past {} s (OSIS_SEED_TIMEOUT_SECS); stopping. Still running:\n{}", limit.as_secs(), hung.join("\n")));
+                        std::process::exit(101);
+                    }
+                    Some(t) => g = wake.wait_timeout(g, limit - now.duration_since(t)).unwrap_or_else(|e| e.into_inner()).0,
+                    None => g = wake.wait(g).unwrap_or_else(|e| e.into_inner()),
+                }
+            }
+        });
+        let _over = Over(&state, &wake);
+        par_map(items, threads, |x| {
+            if let Some(r) = lock().as_mut() {
+                r.insert(x, Instant::now());
+            }
+            wake.notify_all();
+            let out = f(x);
+            if let Some(r) = lock().as_mut() {
+                r.remove(&x);
+            }
+            out
+        })
+    })
+}
+
 /// `f`, a panic as an error.
 pub fn caught<T>(f: impl FnOnce() -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|e| {
@@ -234,7 +291,8 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], threads_var: &str, replay: 
 /// environment: a passing run shows it without `--nocapture`).
 pub fn run_seeds_noted<T: Send>(name: &str, seeds: &[u64], visible: bool, threads_var: &str, replay: impl Fn(u64) -> String + Sync, f: impl Fn(u64) -> T + Sync) -> Vec<T> {
     let t0 = std::time::Instant::now();
-    let results = par_map(seeds, threads(threads_var), |seed| {
+    let replay = &replay;
+    let results = par_map_watched(name, seeds, threads(threads_var), |seed| format!("seed {seed} (replay: {})", replay(seed)), |seed| {
         caught(|| Ok(f(seed))).map_err(|e| {
             let msg = format!("seed {seed} (replay: {}): {e}", replay(seed));
             eprintln!("{msg}\n");
