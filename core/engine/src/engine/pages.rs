@@ -13,7 +13,7 @@ use super::{clear_table, scan_table};
 use crate::error::{Error, Result};
 use osis_base::format::PAGE_TARGET;
 use osis_base::{Ak, Tid, Value};
-use osis_crdt::{Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
+use osis_crdt::{Changes, Dot, Eid, Encoding, Fragment, PagedTouch, PathSeg, Paths, PlaceBlock, PlaceDiff, PlaceMisses, PlaceRow, PlaceTop, SeqPlace, SourceKind, Step};
 use osis_store::{Shred, Table, Transaction};
 use std::collections::BTreeMap;
 use std::ops::Range as Span;
@@ -1506,6 +1506,139 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
         }
     }
     Ok(true)
+}
+
+/// Drops the loaded pages of the paged state `f` (written already: the store holds them),
+/// keeping its skeleton, so a delta joined a page at a time holds about one page of its state
+/// (issues/durable-decode-bound.md). Not while it pages a sequence: those stay loaded for their
+/// placement (notes/crdt.md: long texts load fully for linearization).
+pub fn evict(idx: &mut PageIndex, f: &mut Fragment) {
+    if idx.sets.values().any(is_seq) {
+        return;
+    }
+    *f = f.reduced(&idx.paths);
+    for set in idx.sets.values_mut() {
+        set.loaded.clear();
+        set.whole = false;
+    }
+}
+
+/// What `join_reset` did.
+pub enum Reset {
+    /// It does not fit the pages: join the whole state.
+    Whole,
+    /// Pages rewritten: the new skeleton (no page loaded) and the unit's state field.
+    Paged { skeleton: Fragment, unit: Vec<u8>, changes: Changes },
+    /// The joined state, to write whole (its pages joined already): a paged collection's
+    /// encoding changed, an element outgrew a page, the skeleton outgrew the unit, or nothing
+    /// is left.
+    Laid { state: Option<Fragment>, changes: Changes },
+}
+
+/// A death as compared across the pieces of one join.
+type DeathKey = (osis_crdt::Stamp, osis_base::Ts, Dot);
+
+fn death_key(d: &osis_crdt::Death) -> DeathKey {
+    (d.stamp.clone(), d.at, d.by.clone())
+}
+
+/// The row keys of a paged collection's pages, in order.
+fn set_rows(txn: &mut Transaction<'_>, t: Table, set: &PageSet) -> Result<Vec<Vec<u8>>> {
+    let mut out = Vec::new();
+    scan_table(txn, t, &set.prefix(), Some(&set.id.saturating_add(1).to_be_bytes()), |k, _| {
+        out.push(k);
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// Joins `d`, which may reset a paged collection or change its encoding (`touch_of` is `None`),
+/// into the paged state `f` a page at a time instead of loading it whole: the skeleton joins
+/// `d` (`j`); each page of a collection `d` reaches (`Fragment::reaches`) joins, below the
+/// skeleton's and `d`'s spines along its path (`Fragment::spine`: all that a join's pruning
+/// there depends on) with `d`'s elements in its range, and is written back; the new skeleton is
+/// `j` reduced. That is the whole join: elements are independent per dot and a position is
+/// pruned by the resets on its path alone (spec/crdt.md §4.2, §8); a death several pieces
+/// report counts once. `held_only`: only deaths of writes the state held. Not for a paged
+/// sequence (its placement follows a join whole), a collection paged inside another's elements
+/// (its path runs through pages) or `d` changing an encoding above a paged collection: `Whole`.
+pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &Fragment, d: &Fragment, held_only: bool) -> Result<Reset> {
+    let nested = idx.sets.keys().any(|p| idx.sets.keys().any(|q| q.len() < p.len() && p.starts_with(q)));
+    if nested || idx.sets.values().any(is_seq) || !idx.sets.keys().all(|p| d.steps_through(p)) {
+        return Ok(Reset::Whole);
+    }
+    let s0 = f.reduced(&idx.paths);
+    let mut j = s0.clone();
+    let mut changes = j.join(d.clone());
+    if held_only {
+        let st = s0.stamps();
+        changes.retain_deaths(|x| st.holds(&x.stamp));
+    }
+    let seen: std::collections::BTreeSet<DeathKey> = changes.deaths().iter().map(death_key).collect();
+    let t = table(txn, tid, ak)?;
+    let kt = txn.create_table(tid, ak, KEY_TABLE)?;
+    let none = Paths::default();
+    // `relay`: lay the state out again; `kept`: a reached collection keeps an element
+    let (mut relay, mut kept, mut all) = (false, false, true);
+    for (p, set) in idx.sets.iter_mut() {
+        if !d.reaches(p) {
+            all = false;
+            continue;
+        }
+        let spine = s0.spine(p, None);
+        for key in set_rows(txn, t, set)? {
+            let Some(row) = txn.table_get(t, &key)? else { continue };
+            let (r, pg) = parse_page_row(&row)?;
+            let mut g = spine.clone();
+            // the state's own page under its own skeleton: nothing dies
+            g.join(Fragment::wrap(&set.path, pg.clone()));
+            let before = held_only.then(|| g.stamps());
+            let mut ch = g.join(d.spine(p, Some((r.0.as_ref(), r.1.as_ref()))));
+            ch.retain_deaths(|x| !seen.contains(&death_key(x)) && before.as_ref().is_none_or(|b| b.holds(&x.stamp)));
+            let empty = pg.emptied().ok_or(Error::Corrupt("state page"))?;
+            let c = match g.at_steps(p).and_then(|x| x.slot(set.enc)) {
+                Some(osis_crdt::SlotRef::Frag(c)) => c,
+                _ => &empty,
+            };
+            let now = c.elem_dots(r.0.as_ref(), r.1.as_ref());
+            kept |= !now.is_empty();
+            if ch.is_changed() {
+                let mut dots = pg.elem_dots(None, None);
+                dots.extend(now);
+                dots.sort();
+                dots.dedup();
+                set.loaded = BTreeMap::from([(key.clone(), r.clone())]);
+                if !dots.is_empty() && !rewrite_set(txn, t, kt, set, c, &none, &dots, Shred::No)? {
+                    // one element alone outgrew a page: written as it is, laid out again below
+                    txn.table_put(t, &key, page_row(&r, &page(c, &none, &r)?)?, Shred::No)?;
+                    relay = true;
+                }
+                set.loaded.clear();
+            }
+            changes.merge(ch);
+        }
+    }
+    for set in idx.sets.values_mut() {
+        set.loaded.clear();
+        set.whole = false;
+    }
+    // a collection now under another encoding (a `Slots` leaf, or gone into a register's
+    // embedding) is no longer paged there
+    relay |= !idx.sets.iter().all(|(p, set)| j.at_steps(p).is_none_or(|x| x.encoding() == set.enc));
+    let skeleton = j.reduced(&idx.paths);
+    let unit = unit_state(&skeleton, idx)?;
+    if relay || unit.len() > PAGE_TARGET || all && !kept && skeleton.is_empty() {
+        let mut m = j;
+        for set in idx.sets.values() {
+            for key in set_rows(txn, t, set)? {
+                if let Some(row) = txn.table_get(t, &key)? {
+                    m.join(Fragment::wrap(&set.path, parse_page_row(&row)?.1));
+                }
+            }
+        }
+        return Ok(Reset::Laid { state: (!m.is_empty()).then_some(m), changes });
+    }
+    Ok(Reset::Paged { skeleton, unit, changes })
 }
 
 /// The unit state of the paged state `f` (its skeleton and sets).

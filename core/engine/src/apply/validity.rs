@@ -772,7 +772,7 @@ pub struct Carried {
 
 /// The writes of snapshot fragment `f` of `(tid, ak)` whose owning delta was never received
 /// here, by source. A record carrying no `ts` (a tombstone, a bare anchor) carries no write.
-fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
+pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTreeMap<osis_crdt::Source, BTreeSet<u64>> {
     let mut out: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
     for (d, ts) in f.writes() {
         if ts.is_some() && !d.src.is_derived() && !owner_received(core, tid, ak, &d) {
@@ -850,10 +850,9 @@ pub(crate) fn self_origin_imports(core: &Core, id: &CommitId, h: &Header) -> BTr
 }
 
 /// Records the held imports per (thing, origin) (`Core::imports`: which delta owns a `Commit`
-/// source's writes on a thing, spec/permissions.md §7), and refuses carried writes stamped after
-/// the commit carrying them (spec/crdt.md §8, §7): a node's next stamp exceeds every stamp it
-/// holds (§2.2).
-pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header, parts: &[(usize, usize, osis_commit::Decoded)]) -> Result<()> {
+/// source's writes on a thing, spec/permissions.md §7). `examine` refused carried writes stamped
+/// after their commit.
+pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header) {
     if h.kind == Kind::Import {
         for a in &h.aspects {
             for o in &h.origins {
@@ -861,26 +860,21 @@ pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header, parts: &[
             }
         }
     }
-    for (_, _, d) in parts {
-        let carried = match d {
-            osis_commit::Decoded::Snapshot(s) => Some(&s.fragment),
-            osis_commit::Decoded::Delta(x) if h.kind == Kind::Import => Some(&x.fragment),
-            osis_commit::Decoded::Delta(_) => None,
-        };
-        if carried.and_then(osis_crdt::Fragment::max_ts).is_some_and(|t| t > h.ts) {
-            return Err(crate::error::Error::BadInput("carried write stamped after its commit"));
-        }
-    }
-    Ok(())
 }
 
 /// Records the writes snapshot `snap`'s fragment `f` of `(tid, ak)` carries whose owning delta
 /// was never received here (any snapshot held, whatever its validity).
 pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, f: &Fragment) {
+    let c = carried_of(core, tid, ak, f);
+    note_carried_of(core, tid, ak, snap, c);
+}
+
+/// `note_carried` of the writes `carried_of` found (in a fragment's pieces, gathered).
+pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>>) {
     let k = (*tid, ak.clone());
     let before = core.ix.carried.get(&k).cloned().unwrap_or_default();
     let mut cur: Vec<Carried> = before.iter().filter(|c| c.snap != *snap).cloned().collect();
-    cur.extend(carried_of(core, tid, ak, f).into_iter().map(|(src, ctrs)| Carried { snap: *snap, src, ctrs: ctrs.into_iter().collect() }));
+    cur.extend(carried.into_iter().map(|(src, ctrs)| Carried { snap: *snap, src, ctrs: ctrs.into_iter().collect() }));
     // in one order whatever order the snapshots arrived in
     cur.sort_by(|x, y| (x.snap, &x.src).cmp(&(y.snap, &y.src)));
     if cur == before {

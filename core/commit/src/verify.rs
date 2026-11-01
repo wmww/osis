@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{Form, Header};
 use crate::Error;
 use osis_base::{CommitId, Tid};
-use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Snapshot, Source, decode_delta, decode_snapshot};
+use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, Source, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
 use osis_crypto::{Secret32, VerifyingKey, delta_hash};
 
 /// A verified, decoded delta.
@@ -63,6 +63,37 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
     };
     check_entry_keys(a.ak.as_str(), d.fragment())?;
     Ok(d)
+}
+
+/// `verify_part` handing the delta to `each` one piece at a time (`osis_crdt::stream_delta`):
+/// the skeleton, then each leaf page. Returns a snapshot's root tables (frontiers, `Absorbed`). Pieces
+/// already handed over stay valid only if the whole call succeeds.
+pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32, interner: &'a mut Interner, pages: Option<&'a mut dyn PageSource>, each: &mut dyn FnMut(osis_crdt::Fragment) -> Result<(), osis_crdt::Error>) -> Result<Option<osis_crdt::Head>, Error> {
+    let a = h.aspects.get(part.ai).ok_or(Error::Malformed("part aspect index out of range"))?;
+    let want = a.hashes.get(part.di).ok_or(Error::Malformed("part delta index out of range"))?;
+    if delta_hash(dedup, &part.delta) != *want {
+        return Err(Error::DeltaHash { ai: part.ai, di: part.di });
+    }
+    let cx = delta_ctx(h, id, part.ai, interner)?;
+    // the keyed-removal rule holds of the whole iff of every piece (it is per record); a bad
+    // delta still streams to its end, so a decoding error wins as in `verify_part`
+    let ak = a.ak.as_str();
+    let mut keyed = Ok(());
+    let mut each = |p: Piece| {
+        let f = match p {
+            Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
+        };
+        if keyed.is_ok() {
+            keyed = check_entry_keys(ak, &f);
+        }
+        if keyed.is_ok() { each(f) } else { Ok(()) }
+    };
+    let out = match cx.kind {
+        DeltaKind::Snapshot => stream_snapshot(&part.delta, &cx, interner, pages, &mut each).map(Some)?,
+        DeltaKind::Writer | DeltaKind::Import => stream_delta(&part.delta, &cx, interner, pages, &mut each).map(|_| None)?,
+    };
+    keyed?;
+    Ok(out)
 }
 
 /// A keyed map removal or tombstone (a keyed entry record with a reset) outside the

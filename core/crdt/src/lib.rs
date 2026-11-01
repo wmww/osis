@@ -67,7 +67,7 @@ mod tests_decoder;
 mod tests_stream;
 
 pub use changes::{Changes, Death};
-pub use copies::CopyIndex;
+pub use copies::{CopyIndex, CopySet};
 pub use codec::{decoded_bound, decode_delta, decode_snapshot, encode_delta, encode_snapshot, page_array, page_items};
 pub use error::Error;
 pub use fragment::{BagKind, Bag, CaseWrite, Eid, Elem, Encoding, Entry, Key, Enum, Fragment, Map, Meta, RegWrite, Register, Set, Slots, Struct};

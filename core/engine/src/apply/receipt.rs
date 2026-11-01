@@ -13,7 +13,7 @@ use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
-use osis_commit::{CommitBlob, Decoded, Form, Header};
+use osis_commit::{CommitBlob, Form, Header};
 use osis_crypto::VerifyingKey;
 use osis_crdt::{Frontiers, Source};
 use osis_perm::DemotionScope;
@@ -219,9 +219,8 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
 
 /// Records what an applied commit's held parts gave this node (a snapshot: its ID; what it
 /// carries counts through `received`).
-pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)], received: WallMs) -> Result<()> {
-    let held: BTreeSet<usize> = parts.iter().map(|p| p.0).collect();
-    for ai in held {
+pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, held: &BTreeSet<usize>, received: WallMs) -> Result<()> {
+    for ai in held.iter().copied() {
         let Some(a) = h.aspects.get(ai) else { continue };
         let mut r = get(tx, &a.tid, &a.ak)?;
         if h.kind.has_own_writes() {

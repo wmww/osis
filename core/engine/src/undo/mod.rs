@@ -29,22 +29,36 @@ fn decode_buffer(b: &[u8]) -> Result<Vec<(CommitId, Vec<u8>)>> {
     Ok(out)
 }
 
-/// Records the state of `(tid, ak)` before local commit `id` applies: the part undoing `delta`
-/// reads (`Fragment::footprint`), or all of it without one.
-pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta: Option<&Fragment>) -> Result<()> {
-    // a paged state loads what the delta touches (its footprint lies there)
-    match delta {
-        Some(d) => {
-            tx.load_lazy(tid, ak)?;
-            let touch = crate::engine::pages::touch_of(d, tx.core.pages.get(&(*tid, ak.clone())));
-            tx.ensure_touch(tid, ak, &touch)?;
+/// Joins into `acc` the part of the state of `(tid, ak)` that undoing `piece` of a delta reads
+/// (`Fragment::footprint`; of a delta's pieces, their join is the delta's): a paged state loads
+/// what the piece touches, then drops it again. `acc` stays `None` while there is no state.
+pub(crate) fn footprint(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, piece: &Fragment, acc: &mut Option<Fragment>) -> Result<()> {
+    tx.load_lazy(tid, ak)?;
+    let touch = crate::engine::pages::touch_of(piece, tx.core.pages.get(&(*tid, ak.clone())));
+    tx.ensure_touch(tid, ak, &touch)?;
+    if let Some(f) = tx.cached(tid, ak) {
+        let fp = f.footprint(piece);
+        match acc {
+            Some(a) => {
+                a.join(fp);
+            }
+            None => *acc = Some(fp),
         }
-        None => tx.load(tid, ak)?,
     }
-    let pre = match (tx.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref), delta) {
-        (Some(f), Some(d)) => crate::engine::state::encode(&f.footprint(d))?,
-        (Some(f), None) => crate::engine::state::encode(f)?,
-        (None, _) => Vec::new(),
+    tx.evict_pages(tid, ak);
+    Ok(())
+}
+
+/// Records the state of `(tid, ak)` before local commit `id` applies: `pre`, the part undoing
+/// its delta reads (`footprint`; `Some(None)`: there was no state), or all of it (`None`: not
+/// one delta).
+pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, pre: Option<Option<Fragment>>) -> Result<()> {
+    let pre = match pre {
+        Some(fp) => fp.as_ref().map(crate::engine::state::encode).transpose()?.unwrap_or_default(),
+        None => {
+            tx.load(tid, ak)?;
+            tx.cached(tid, ak).map(crate::engine::state::encode).transpose()?.unwrap_or_default()
+        }
     };
     let mut unit = tx.unit(tid, ak)?;
     let mut list = decode_buffer(&unit.undo)?;

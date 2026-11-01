@@ -510,6 +510,10 @@ pub struct Core {
     /// learns nothing more (`apply::atomic::observe_secrets_keys`).
     #[cfg(test)]
     pub check_ingest: bool,
+    /// Tests: apply every part decoded whole through the pre-streaming join (`apply::oracle`),
+    /// the differential's oracle.
+    #[cfg(test)]
+    pub whole_apply: bool,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -773,6 +777,8 @@ impl Core {
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
+            #[cfg(test)]
+            whole_apply: false,
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
@@ -1034,6 +1040,55 @@ impl Tx<'_> {
             self.load(tid, ak)?;
         }
         Ok(())
+    }
+
+    /// A joined state `st` of `(tid, ak)` as it is cached: `None` when empty, unless paged with
+    /// a page not loaded (what is loaded may be empty while other pages hold elements).
+    pub fn kept(&self, tid: &Tid, ak: &Ak, st: osis_crdt::Fragment) -> Option<osis_crdt::Fragment> {
+        (!st.is_empty() || self.held_in_part(tid, ak)).then_some(st)
+    }
+
+    /// Drops the loaded pages of the cached state of `(tid, ak)`, keeping its skeleton
+    /// (`pages::evict`).
+    pub fn evict_pages(&mut self, tid: &Tid, ak: &Ak) {
+        let k = (*tid, ak.clone());
+        if let (Some(idx), Some(Some(f))) = (self.core.pages.get_mut(&k), self.core.states.get_mut(&k)) {
+            pages::evict(idx, f);
+        }
+    }
+
+    /// Joins `delta` into the paged state of `(tid, ak)` a page at a time where it may reset a
+    /// paged collection or change its encoding (`pages::join_reset`); `None`: not paged, or it
+    /// does not fit (join whole). The state is noted written.
+    pub fn join_reset(&mut self, tid: &Tid, ak: &Ak, delta: &osis_crdt::Fragment, held_only: bool) -> Result<Option<osis_crdt::Changes>> {
+        let k = (*tid, ak.clone());
+        if !self.core.pages.contains_key(&k) {
+            return Ok(None);
+        }
+        // noted first: a failure midway evicts what it changed
+        self.core.touch();
+        self.core.wrote(k.clone());
+        let (Some(idx), Some(Some(f))) = (self.core.pages.get_mut(&k), self.core.states.get(&k)) else { return Ok(None) };
+        match pages::join_reset(&mut self.txn, tid, ak, idx, f, delta, held_only)? {
+            pages::Reset::Whole => {
+                let _s = crate::costs::span("reset: whole");
+                Ok(None)
+            }
+            pages::Reset::Paged { skeleton, unit, changes } => {
+                let _s = crate::costs::span("reset: by pages");
+                self.core.state_changed(tid, ak);
+                let mut u = self.txn.get_aspect(tid, ak)?.unwrap_or_default();
+                u.state = unit;
+                self.txn.put_aspect(tid, ak, &u, Shred::No)?;
+                self.core.states.insert(k, Some(skeleton));
+                Ok(Some(changes))
+            }
+            pages::Reset::Laid { state, changes } => {
+                let _s = crate::costs::span("reset: laid out");
+                self.set_state(tid, ak, state, Shred::No, false)?;
+                Ok(Some(changes))
+            }
+        }
     }
 
     /// The cached state as loaded so far (after `load_lazy` and `ensure_*`).
@@ -1504,6 +1559,7 @@ impl Engine {
         #[cfg(test)]
         {
             fresh.check_ingest = self.core.check_ingest;
+            fresh.whole_apply = self.core.whole_apply;
         }
         self.core = fresh;
         let r = {
