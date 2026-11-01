@@ -1,0 +1,13 @@
+# A re-promoted writer re-seals itself on every pass when its role has two current epochs
+> Summary: after a writer's demotion and re-promotion with concurrent rotations, the role (Write) has two current epochs and `reseal_needed` keeps listing the node itself for it after each `reseal_one`; every pass writes another `secrets.0` commit, forever, each slower than the last (the aspect grows). Makes `ephemeral::random_churn_converges_large` seeds 140170 and 140188 never finish (on main too).
+> Tags: engine, permissions, tests
+
+Replay: `OSIS_SEED_TIMEOUT_SECS=30 OSIS_EPH_START=140170 OSIS_EPH_SEEDS=1 cargo test -p osis-node --test it -- --ignored --exact ephemeral::random_churn_converges_large`. Nothing ephemeral is involved: the churn oracle demotes nodes 2 then 1 (steps 26, 27) and promotes both at the heal.
+
+What loops (traced in review of eph-churn-demote with probes in `reseal_candidates` and a backtrace on SIGUSR1): after the heal, node 1's `SyncEngine::reseal` (end of every `judge_label`) calls `Engine::reseal_due`, whose `reseal_candidates` returns (node 1 itself, {Write}); `reseal_one` commits a re-seal, the commit goes up, the next pass asks again. About 500 re-seal commits in 20 s, each one slower (cloning and re-paging the growing `secrets.0` state, `commit_bytes`/`package` per upload). Not exponential: a livelock whose per-step cost grows. 140188: the same, at two nodes (`PrYjnJ...` and `fhWp61...`).
+
+Write's current epochs at node 1 (`ActorEpochs::role(Write).current()`), both with provenance `reseals`:
+- One run: n=2 (secret not held) and n=3 (held). `reseal_needed` asks for a box at every current epoch with `reseals` provenance (`covers.rs`), but `reseal_holder` (`box_at`) boxes only epochs whose secret is held, and `reseal_candidates`' `holds` needs only one. So the box at n=2 is never written. Filtering `reseal_needed` to held secrets is not enough:
+- Another run (OsRng in the boxes makes later runs differ): both secrets held, `secrets.0` holds node 1's box for (Write, n=3) only; the re-seal commit's (Write, n=2) box never shows in the state afterwards (refused as invalid at its part, or reset by a later removal: not traced). `box_written` for node 1 lists Write at three `ts`.
+
+To find out: why two Write epochs stay current after both re-promotions (concurrent rotations at the two demotions), and why node 1's own box at the other one does not hold. Whatever the cause, a re-seal that changes nothing in what `reseal_needed` judges must not be written again: a rule tying `reseal_needed`'s epochs to what `reseal_one` can box and land would stop the loop. Test: the churn seeds above, then a shrunk unit test (two concurrent Write rotations while a writer is demoted, then its promotion).
