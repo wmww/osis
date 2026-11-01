@@ -53,20 +53,38 @@ fn key_of(p: &osis_perm::Point) -> osis_keys::Key {
 }
 
 /// The names a rotation of `a` writes (spec/crypto.md §4), from this node's own timelines: those
-/// of `a` and of every actor below it (`below_of`: the holders with secrets of their own,
-/// transitively, owners included; `thing_names`). A holder actor's are named because its admins
+/// of `a` and of every thing below it (`admin_paths_into`: its current holders, transitively,
+/// owners included; `thing_names`). A holder actor's are named because its admins
 /// write its keyset: a node lacking an admin's departure from it holds that admin's later
 /// keysets valid and would box the actor there. Invariant (with `keyset_names`): where these
 /// names are met, every `keys.0` body of a boxed holder actor valid there is by an author the
-/// rotator did not see depart (every admin path into the actor runs through actors below `a`),
+/// rotator did not see depart (every admin path into the actor runs through things below `a`),
 /// so the keyset a met keyset name leads the node to box the actor at is one the rotator would
 /// box it at too. `departs`: the rotation commit itself, when it makes a departure from `a` (it
 /// cannot name its own ID).
 pub(crate) fn names(core: &Core, a: &Tid, departs: Option<osis_keys::Own>) -> osis_keys::Names {
     let mut out = osis_keys::Names { departs, ..osis_keys::Names::default() };
-    thing_names(core, a, &mut out.list);
-    for v in below_of(core, a).0 {
+    for v in admin_paths_into(core, a) {
         thing_names(core, &v, &mut out.list);
+    }
+    out
+}
+
+/// `a` and every thing on a path of current holders into it (owners included), transitively,
+/// whether or not it has secrets of its own: an owner chain passing a plain thing (derived
+/// secrets) still gives its admins admin below it, so `below_of` (holders with secrets of their
+/// own, for the covers rule) would miss their departures.
+fn admin_paths_into(core: &Core, a: &Tid) -> Vec<Tid> {
+    let mut out = vec![*a];
+    let mut seen = BTreeSet::from([*a]);
+    let mut i = 0;
+    while let Some(v) = out.get(i).copied() {
+        i += 1;
+        for (x, _, _) in core.current_holders(&v) {
+            if seen.insert(x) {
+                out.push(x);
+            }
+        }
     }
     out
 }
