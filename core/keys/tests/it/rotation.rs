@@ -93,7 +93,7 @@ fn wrap_under_held_superseded() {
     let p_box = s.boxes[&box_key(p, Role::Read, &e1)].clone();
     s.boxes.insert(box_key(p, Role::Read, &fork), p_box);
     let rot = rotate(&a, &set(&[Role::Read]), &view, &s, &[owner(p, &pe)], &mut rng(2)).unwrap();
-    // it supersedes the epochs whose boxes it removes and those its history box lists
+    // it supersedes the epochs its keyset lists and those its history box lists
     let held: BTreeSet<Epoch> = view.read.held_established().map(|x| x.0).collect();
     assert_eq!(rot.rotated[0].supersedes, held.iter().copied().chain([fork]).collect());
     assert!(held.contains(&e1) && !held.contains(&fork));
