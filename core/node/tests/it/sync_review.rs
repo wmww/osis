@@ -410,6 +410,7 @@ fn purge_crash_before_sync_forget_leaves_no_copy_spec_commits_5() {
         }
         for id in &ids {
             assert!(!net.sync(b).holds_blob(id), "crash {crash}: the purger keeps the purged body's key or ciphertext");
+            assert!(net.sync(b).entry_meta(&l, id).is_none_or(|(w, _)| w == [0; osis_crypto::WRAP_LEN]), "crash {crash}: the purger keeps the purged body's wrap");
         }
     }
 }
