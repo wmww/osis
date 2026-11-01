@@ -71,8 +71,8 @@ struct Item<'a> {
 
 /// Writes `rcpt`'s boxes for `items` (one per (role, epoch)) into `out`; returns the (role,
 /// epoch) pairs they carry. A key-actor holder without its seed gets one sealed box keyed at the
-/// highest role, carrying one secret per role (the newest epoch given for each). `None` when a
-/// needed keyset is unknown.
+/// highest role, carrying one secret per role (the newest epoch given for each), and a box of
+/// its own for each other epoch given (a fork). `None` when a needed keyset is unknown.
 fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn CryptoRngCore, out: &mut SecretsWrite) -> Result<Option<Vec<(Role, Epoch)>>, Error> {
     let holder = rcpt.holder;
     match &rcpt.keys {
@@ -90,7 +90,16 @@ fn box_items(actor: &Tid, rcpt: &Recipient, items: &[Item], rng: &mut dyn Crypto
             let sealed = seal_box(kem, &slot, None, &payload, rng)?;
             let b = SecretBox::Sealed(SealedBox { keyset: None, suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) });
             out.boxes.insert(box_key(holder, *top_role, &top.epoch), b);
-            return Ok(Some(per_role.values().map(|i| (i.role, i.epoch)).collect()));
+            // the other epochs given (a fork's, spec/crypto.md §4): one box each, at its own key,
+            // which the re-seal trigger looks for (`reseal_needed`); folded into the box above
+            // they would never show, and a re-seal would be written again on every pass
+            for i in items.iter().filter(|i| per_role.get(&i.role).is_some_and(|n| n.epoch != i.epoch)) {
+                let slot = BoxSlot::Secrets { actor: *actor, holder, role: i.role, epoch: i.epoch };
+                let payload = [BoxItem { role: i.role, epoch: i.epoch, secret: i.secret.clone() }];
+                let sealed = seal_box(kem, &slot, None, &payload, rng)?;
+                out.boxes.insert(box_key(holder, i.role, &i.epoch), SecretBox::Sealed(SealedBox { keyset: None, suite: SUITE, sealed: Sealed::X25519MlKem768(sealed) }));
+            }
+            return Ok(Some(items.iter().map(|i| (i.role, i.epoch)).collect()));
         }
         HolderKeys::KeyActor { seed: Some(seed), .. } => {
             for i in items {

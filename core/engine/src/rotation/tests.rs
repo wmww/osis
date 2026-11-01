@@ -1132,3 +1132,49 @@ fn removal_lacking_carried_secret_refused_spec_permissions_3() {
     assert!(format!("{err}").contains("re-seal"), "{err}");
     assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
 }
+
+// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks; a key-actor holder's
+// boxes) (churn seeds 140170 and 140188 shrunk: a node re-sealed itself on every pass): A and
+// D rotate G's write concurrently, D's rotation leaving writer B out, so B lacks a box and the
+// secret at D's fork. B, holding only A's fork, writes no re-seal of itself (before: one
+// boxing A's fork alone on every pass); A, holding both, re-seals B once, a box at each fork
+// (before: folded into one box at the newest, so the other never showed and A re-sealed B on
+// every pass).
+#[test]
+fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
+    let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (b, d) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &b, &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &d, &edge(Role::Write)).unwrap();
+    lp.sync_all().unwrap();
+    rotate_unboxed(&mut lp, 0, g, &[Role::Write], Some(Role::Write));
+    lp.peers[2]
+        .engine
+        .run(|tx| {
+            let held = tx.core.epochs(&g).unwrap();
+            let holders = super::recipients(tx, &g, &[(b, Some(Role::Read))])?;
+            let mut m = Mutation::new();
+            let rot = super::rotation_into(tx, &mut m, g, &[Role::Write].into(), &held, &holders, &[])?;
+            crate::engine::Engine::commit_tx(tx, m)?;
+            super::record(tx, g, &rot)
+        })
+        .unwrap();
+    lp.sync_all().unwrap();
+    let e = lp.peers[1].engine.epochs(&g).unwrap();
+    assert_eq!(e.write.current().len(), 2, "write forked");
+    assert_eq!(e.write.current().iter().filter(|x| e.write.secret(x).is_some()).count(), 1, "B holds one fork");
+    for pass in 0..3 {
+        assert!(lp.peers[1].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "B re-sealed itself on pass {pass}");
+        lp.sync_all().unwrap();
+    }
+    assert_eq!(lp.peers[0].engine.reseal_due(&g, &Pass).unwrap().commits.len(), 1, "A re-seals B");
+    lp.sync_all().unwrap();
+    for p in 0..3 {
+        assert!(lp.peers[p].engine.reseal_due(&g, &Pass).unwrap().commits.is_empty(), "peer {p}: fixpoint");
+        assert!(all_boxed(&mut lp, p, &[g]), "peer {p}: every holder boxed at both forks");
+    }
+    let e = lp.peers[1].engine.epochs(&g).unwrap();
+    assert!(e.write.current().iter().all(|x| e.write.secret(x).is_some()), "B holds both forks' secrets");
+}
