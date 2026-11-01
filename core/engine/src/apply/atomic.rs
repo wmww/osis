@@ -1143,8 +1143,7 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
             }
         }
     }
-    tx.load(tid, ak)?;
-    let current = tx.core.states.get(&(*tid, ak.clone())).cloned().flatten();
+    let current = tx.state(tid, ak)?.cloned();
     // the state and the residues of bodies dropped value-less: what the node holds beyond its
     // bodies (spec/crdt.md §4.6 Un-merge)
     let mut kept: Vec<Fragment> = current.into_iter().chain(residues(tx, tid, ak)?).collect();
