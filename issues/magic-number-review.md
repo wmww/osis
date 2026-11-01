@@ -21,4 +21,4 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | schema limits `MAX_EXPAND` 64, `MAX_TYPE_DEPTH` 256, `MAX_INSTANCES` 10 000, `MAX_CHECK_WORK` 100 000, `MAX_NEST` 64 | decide whether a schema is valid but are not in the spec: another implementation could accept what osis refuses | `schema/` |
 
 
-Notes: the `MAX_LIST_BYTES` conflict with "a change has no size limit" goes away with page-by-page apply (issues/durable-decode-bound.md); the schema limits may move with the key-format decision (issues/aspect-key-format.md).
+Notes: the `MAX_LIST_BYTES` conflict with "a change has no size limit" goes away with page-by-page apply (issues/durable-decode-bound.md).

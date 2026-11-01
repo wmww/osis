@@ -72,7 +72,7 @@ fn state_survives_reopen() {
     assert_ne!(fresh.log_head(&l).unwrap().0, before.0.0);
 }
 
-// spec/sync.md §4: blob bytes are stored once per node and deleted when no label references them
+// spec/sync.md §4: blob bytes are stored once per host and deleted when no label references them
 #[test]
 fn blob_bytes_once_per_node() {
     let mut e = env(HostPolicy::default());
@@ -309,7 +309,7 @@ fn ephemeral_churn_memory_bounded() {
     assert!(!e.store.tombstoned(&l, &osis_label::blob_id(&b)).unwrap());
 }
 
-// ephemeral security review M4: a stranger filling the node-wide ephemeral cap with its own
+// ephemeral security review M4: a stranger filling the host-wide ephemeral cap with its own
 // labels does not lock another label out: the label charged most gives way (oldest first)
 #[test]
 fn ephemeral_total_evicts_largest_label() {
@@ -608,7 +608,7 @@ fn child_of(f: &Fixture, prev: &Step) -> Step {
     s
 }
 
-// spec/sync.md §5 Register: a step and its claim set count toward the label's and the node's byte
+// spec/sync.md §5 Register: a step and its claim set count toward the label's and the host's byte
 // caps until the claim set is dropped; past them a child step is still taken, without its set (a
 // refused rotation would keep a removed holder's keys valid), and a new label is refused (code 12)
 #[test]

@@ -1,5 +1,5 @@
 //! Resource bounds and replication robustness (spec/sync.md §5: hosts cap storage; spec/wire.md
-//! §11.2 Register Error 12): connection cap, Hello deadline, node-wide caps, bounded sweeps,
+//! §11.2 Register Error 12): connection cap, Hello deadline, host-wide caps, bounded sweeps,
 //! retry after refusals, mutual replication.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
@@ -159,9 +159,9 @@ fn failed_commit_sends_nothing() {
     assert_eq!(statuses(&w.run(a3, Command::Upload { label: l.id, entries: vec![l.entry(blob(2))] })), vec![Code::OK]);
 }
 
-// spec/wire.md §11.2 Register, spec/sync.md §5: node-wide caps refuse new labels (Error 12) and new entries (code 12)
+// spec/wire.md §11.2 Register, spec/sync.md §5: host-wide caps refuse new labels (Error 12) and new entries (code 12)
 #[test]
-fn node_wide_caps() {
+fn host_wide_caps() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy { max_labels: 2, max_entries: 3, ..HostPolicy::default() });
     let c = w.connect(h);
