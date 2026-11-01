@@ -313,7 +313,7 @@ impl Engine {
         if !m.header.kind.is_role() {
             return true;
         }
-        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")).map(|a| a.tid).collect();
+        let targets: BTreeSet<Tid> = m.header.aspects.iter().filter(|a| crate::apply::validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
         targets.iter().all(|t| {
             let Some(tl) = self.core.timelines.get(t) else { return true };
             let Some(mc) = tl.role_commit(c) else { return true };
@@ -400,7 +400,7 @@ impl Engine {
         for c in &own {
             let Some(h) = self.header(c) else { continue };
             if let Some(p) = out.get_mut(c) {
-                p.retain(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
+                p.retain(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| crate::apply::validity::edge_ak(a.ak.as_str())));
             }
         }
         (out, own)

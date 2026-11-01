@@ -71,7 +71,7 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
 }
 
 fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, j: &mut Joins) -> Result<()> {
-    if matches!(ak.as_str(), "roles.0" | "tenures.0" | "created.0") {
+    if validity::perm_ak(ak.as_str()) {
         return Ok(());
     }
     let held = f.is_some();
