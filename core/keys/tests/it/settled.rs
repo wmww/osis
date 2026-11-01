@@ -8,7 +8,7 @@ use osis_base::CommitId;
 use osis_crypto::Epoch;
 use osis_keys::{Provenance, RoleEpochs, Superseded};
 use proptest::prelude::*;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 fn ep(n: u64, k: u8) -> Epoch {
     Epoch::new(n, [k; 32]).unwrap()
