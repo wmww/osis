@@ -33,7 +33,8 @@ pub(crate) use lost::{PENDING_GRANT_WAIT_MS, authentic};
 /// (`rotation_into`). So no actor waits on itself through others. A role whose rotation would
 /// carry a role this node holds no current secret of to a key-actor holder (spec/crypto.md §4;
 /// it reaches `a` through a holder actor a rotation left out) waits for a re-seal, as a role it
-/// may not rotate does.
+/// may not rotate does. A forked role is due too when a box to `a` names a fork other than
+/// the newest (`fork_named`).
 fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
     let Some((held, by_role)) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
@@ -42,7 +43,7 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for (r, ds) in by_role {
-        if ds.is_empty() || !may.contains(&r) || unheld.contains(&r) {
+        if !may.contains(&r) || unheld.contains(&r) || (ds.is_empty() && !fork_named(tx, a, r)?) {
             continue;
         }
         for d in ds {
@@ -57,6 +58,36 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
         out.insert(r);
     }
     Ok(out)
+}
+
+/// Whether role `r` of `a` is forked (spec/crypto.md §4) and a current box to `a` in an actor
+/// it holds a role on names a current epoch of `a` other than the newest. A node holding no
+/// secret of `a` names its `keys.0` keyset (the LWW winner of the forks' writes) and one holding
+/// the forks names the newest (lowest nonce): each judges the other's box uncovered, so the
+/// actor above was rotated back and forth for good. Rotating `a` ends the fork.
+fn fork_named(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
+    let Some(e) = tx.core.epochs(a) else { return Ok(false) };
+    let (current, newest) = (e.role(r).current(), e.role(r).newest());
+    if current.len() < 2 {
+        return Ok(false);
+    }
+    for t in above(tx.core, a).into_iter().filter(|t| t != a) {
+        let Some(te) = tx.core.epochs(&t) else { continue };
+        for (k, b) in secrets_in(tx, &t)?.boxes {
+            let at = osis_keys::aspects::from_schema(&k.epoch).ok();
+            if k.holder != *a || k.role != r || !at.is_some_and(|x| te.role(r).is_current(&x)) {
+                continue;
+            }
+            let named = match &b {
+                osis_schema::core_types::SecretBox::Sealed(sb) => sb.keyset.as_ref().and_then(|x| osis_keys::aspects::from_schema(x).ok()),
+                osis_schema::core_types::SecretBox::Symmetric(sb) => osis_keys::aspects::from_schema(&sb.epoch).ok(),
+            };
+            if named.is_some_and(|x| current.contains(&x) && Some(x) != newest) {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
 }
 
 /// The roles of `a` a rotation by this node could not make: one whose box to a key-actor
