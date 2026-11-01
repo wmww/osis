@@ -341,14 +341,60 @@ fn stream_seams_spec_8() {
 }
 
 
+/// §3.3 rule 1: a `Commits` entry no stamp uses is refused, whatever its `base` (the check's
+/// "none seen" mark, `u64::MAX`, lies above every counter a `Value` holds).
+#[test]
+fn unused_commit_entry_refused_spec_3_3() {
+    use osis_base::Value as V;
+    let mut n = 0;
+    for seed in 0..6 {
+        for i in inputs(seed, &types(seed), None).0 {
+            let V::List(top) = osis_base::decode(&i.root, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+            let Some(V::List(groups)) = top.get(2) else { panic!() };
+            let Some(V::List(g)) = groups.last() else { continue };
+            let Some(V::List(entries)) = g.get(1) else { panic!() };
+            for base in [1, i64::MAX] {
+                let mut e = entries.clone();
+                e.push(V::List(vec![V::Int(1), V::Int(0), V::Int(base)]));
+                let mut t = top.clone();
+                let V::List(gs) = &mut t[2] else { panic!() };
+                let last = gs.len() - 1;
+                let V::List(g) = &mut gs[last] else { panic!() };
+                g[1] = V::List(e);
+                let m = Input { root: osis_base::encode(&V::List(t)), pages: None, cx: i.cx.clone(), snapshot: i.snapshot };
+                assert_eq!(m.agree(), Ok(false), "seed {seed} base {base}");
+                n += 1;
+            }
+        }
+    }
+    assert!(n > 4, "{n} cases");
+}
+
 /// §3.3 rule 1, 3: in a list run cut at `CHUNK_MAX`, sources count as if it were not cut: a
 /// source first in the second chunk's content precedes one first in the first chunk's position
 /// writes. The model's bytes, accepted by both decoders.
 #[test]
 fn sources_order_ignores_chunk_cut_spec_3_3() {
+    chunk_cut_case(false);
+    chunk_cut_case(true);
+}
+
+/// `nested`: each element also holds a text before the edited register (its runs close inside
+/// the outer run's later chunk).
+fn chunk_cut_case(nested: bool) {
     use crdt_model::value::Value as MV;
-    let ty = Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
-    let elem = |i: usize, tag: i64| MV::fields([(1, MV::Str(format!("{i}{}", "x".repeat(128 * 1024 - 16)))), (2, MV::Int(tag))].into_iter().collect());
+    let mut fields = vec![(1, Ty::Register), (2, Ty::Register)];
+    if nested {
+        fields.push((0, Ty::Text));
+    }
+    let ty = Ty::List(Box::new(Ty::Struct(fields.into_iter().collect())));
+    let elem = |i: usize, tag: i64| {
+        let mut f = vec![(1, MV::Str(format!("{i}{}", "x".repeat(128 * 1024 - 16)))), (2, MV::Int(tag))];
+        if nested {
+            f.push((0, MV::Str("ab".into())));
+        }
+        MV::fields(f)
+    };
     let mut a = crdt_model::ops::Writer::new(MSource::node(1), 5 << 16, 1);
     let mut state = None;
     let d = crdt_model::ops::create(&mut a, &ty, &MV::List((0..6).map(|i| elem(i, 0)).collect()));

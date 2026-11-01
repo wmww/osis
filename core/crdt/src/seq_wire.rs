@@ -50,6 +50,9 @@ struct Open {
     parts: Vec<Part>,
     fs: Vec<Value>,
     size: usize,
+    /// Sources of the written chunks' position and flag writes, noted when the run closes
+    /// (a later chunk's content may close nested runs first).
+    held: [Vec<crate::stamp::Source>; 2],
 }
 
 /// Maximal runs (rule 3) over records pushed in wire order, written as they close: whole
@@ -96,7 +99,7 @@ impl Runs {
                     anchor(cx, &anchor_at(a));
                 }
                 let deleted = e.deleted.clone();
-                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0 });
+                self.open = Some(Open { src: k.src.clone(), carries: carries(e), content: has_content(e), creation: e.created.is_some(), pos_empty: e.pos.is_empty(), deleted, prev: d0, n: 0, parts: Vec::new(), fs: Vec::new(), size: 0, held: Default::default() });
             }
             let Some(o) = self.open.as_mut() else { return Err(Error::Malformed("run")) };
             let take = (e.span - off).min(MAX_RUN - o.n);
@@ -132,14 +135,17 @@ impl Runs {
         o.size = 0;
         let content = (!self.text && o.content).then_some(fs);
         out.push(encode_run(self.text, &parts, content, cx)?);
+        let [p, f] = cx.undefer();
+        o.held[0].extend(p);
+        o.held[1].extend(f);
         Ok(())
     }
 
     /// Closes the open run: its last chunk, then the sources of its position and flag writes.
     pub(crate) fn close(&mut self, cx: &mut Enc, out: &mut Vec<Value>) -> Result<(), Error> {
         self.chunk(cx, out)?;
-        if self.open.take().is_some() {
-            cx.flush_deferred();
+        if let Some(o) = self.open.take() {
+            cx.note_held(o.held);
         }
         Ok(())
     }
@@ -190,7 +196,8 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut 
         None if text && parts.iter().any(|p| p.ch.is_some()) => Value::Str(parts.iter().filter_map(|p| p.ch).collect()),
         None => Value::List(Vec::new()),
     };
-    // rule 1: sources of position and flag writes count after the whole run's content
+    // rule 1: sources of position and flag writes count after the whole run's content (held:
+    // `Runs::chunk` takes them, `Runs::close` notes them)
     cx.defer(0);
     let mut posw = Vec::new();
     let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
@@ -215,7 +222,6 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut 
     for (i, j, (st, b)) in flagw {
         fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
     }
-    cx.undefer();
     if matches!(&content, Value::List(x) if x.is_empty()) {
         cx.note_bare(n)?;
     }
