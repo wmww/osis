@@ -24,6 +24,10 @@ const ROGUE: usize = 2;
 
 struct Rng(u64);
 impl Rng {
+    /// A distinct history per seed (below 2^63): xorshift needs a nonzero state.
+    fn new(seed: u64) -> Rng {
+        Rng(seed << 1 | 1)
+    }
     fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
@@ -218,15 +222,22 @@ impl World {
     }
 
     /// What must agree: per node, every aspect's state and read, every held commit's deaths
-    /// there, what pends, and the indexes.
-    fn seen(&mut self) -> Vec<String> {
+    /// there, what pends, and the indexes; states pretty-printed if `pretty` (`first_diff`).
+    /// `stored`: also each state loaded afresh must equal the cached one (a reload of every
+    /// page: the costliest check).
+    fn seen(&mut self, stored: bool, pretty: bool) -> Vec<String> {
         let t = self.t;
         let mut out = Vec::new();
         for (i, p) in self.lp.peers.iter_mut().enumerate() {
             for a in aks() {
                 // the stored pages, not only what loading them gives (it prunes again)
                 assert_eq!(p.engine.stale_page_writes(&t, &a).unwrap(), 0, "node {i} {a}: a page holds writes its skeleton prunes");
-                out.push(format!("{i} {a} state {:?}", p.engine.state(&t, &a).unwrap()));
+                let st = p.engine.state(&t, &a).unwrap();
+                if stored {
+                    let s = p.engine.stored_state(&t, &a).unwrap();
+                    assert!(s == st, "node {i} {a}: the store does not hold the cached state\n{}", first_diff(&format!("{s:#?}"), &format!("{st:#?}"), ["stored", "cached"]));
+                }
+                out.push(if pretty { format!("{i} {a} state {st:#?}") } else { format!("{i} {a} state {st:?}") });
                 for c in p.engine.commit_ids() {
                     out.push(format!("{i} {a} {c:?} deaths {:?}", p.engine.deaths(&c, &t, &a).map_err(|e| e.to_string())));
                 }
@@ -238,12 +249,50 @@ impl World {
     }
 }
 
-/// Runs `steps` steps of seed `seed` in both worlds, comparing after each.
-fn differential(seed: u64, steps: u64) -> BTreeMap<&'static str, u64> {
+/// Where two pretty-printed (`{:#?}`) values first differ: the path to the first differing
+/// line (each enclosing line, by indentation, with the whole key of a map entry) and a few
+/// lines of each side from there.
+fn first_diff(x: &str, y: &str, names: [&str; 2]) -> String {
+    let (a, b): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
+    let i = a.iter().zip(&b).position(|(x, y)| x != y).unwrap_or(a.len().min(b.len()));
+    let indent = |l: &str| l.len() - l.trim_start().len();
+    let mut path: Vec<&str> = Vec::new();
+    let mut at = a.get(i).or(b.get(i)).map_or(0, |l| indent(l));
+    let mut j = i.min(a.len());
+    while j > 0 {
+        j -= 1;
+        if indent(a[j]) < at {
+            at = indent(a[j]);
+            let end = j;
+            // `}: Entry {` closes a key printed over several lines: back to its opening line
+            if a[j].trim_start().starts_with(['}', ')', ']']) {
+                while j > 0 && indent(a[j - 1]) > at {
+                    j -= 1;
+                }
+                j = j.saturating_sub(1);
+            }
+            path.extend(a[j..=end].iter().rev());
+        }
+    }
+    path.reverse();
+    let tail = |v: &[&str]| v[i.min(v.len())..(i + 8).min(v.len())].join("\n");
+    format!("at line {i} under\n{}\n--- {}\n{}\n--- {}\n{}", path.join("\n"), names[0], tail(&a), names[1], tail(&b))
+}
+
+#[test]
+fn first_diff_names_the_entry() {
+    let v = |c: Option<u8>| format!("{:#?}", BTreeMap::from([((1, "a"), (0, None)), ((2, "b"), (1, c))]));
+    let d = first_diff(&v(None), &v(Some(3)), ["x", "y"]);
+    assert!(d.contains("        \"b\",\n    ): (\n--- x\n        None,"), "{d}");
+}
+
+/// Runs `steps` steps of seed `seed` in both worlds, comparing after each, the stored states
+/// with the cached ones after the last (`stored_each`: after each).
+fn differential(seed: u64, steps: u64, stored_each: bool) -> BTreeMap<&'static str, u64> {
     crate::costs::take();
     let mut new = world(seed, false);
     let mut old = world(seed, true);
-    let (mut rn, mut ro) = (Rng(seed | 1), Rng(seed | 1));
+    let (mut rn, mut ro) = (Rng::new(seed), Rng::new(seed));
     for g in 0..=steps {
         if g == steps {
             new.sync();
@@ -256,11 +305,14 @@ fn differential(seed: u64, steps: u64) -> BTreeMap<&'static str, u64> {
             old.step(&mut ro, g);
         }
         assert_eq!(new.log, old.log, "seed {seed} step {g}: outcomes differ");
-        let (a, b) = (new.seen(), old.seen());
-        if let Some((x, y)) = a.iter().zip(&b).find(|(x, y)| x != y) {
-            panic!("seed {seed} step {g}: page-by-page apply differs from whole\n new {}\n old {}\nlog {:#?}", &x[..x.len().min(3000)], &y[..y.len().min(3000)], new.log);
+        let stored = stored_each || g == steps;
+        let (a, b) = (new.seen(stored, false), old.seen(stored, false));
+        assert_eq!(a.len(), b.len(), "seed {seed} step {g}: held commits differ");
+        if a != b {
+            let (a, b) = (new.seen(false, true), old.seen(false, true));
+            let (x, y) = a.iter().zip(&b).find(|(x, y)| x != y).unwrap();
+            panic!("seed {seed} step {g}: page-by-page apply differs from whole\n{}\nlog {:#?}", first_diff(x, y, ["page by page", "whole"]), new.log);
         }
-        assert_eq!(a.len(), b.len());
     }
     let mut c: BTreeMap<&'static str, u64> = crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
     c.insert("waited for pages", new.log.iter().filter(|l| l.contains("WaitBlobs")).count() as u64);
@@ -269,7 +321,7 @@ fn differential(seed: u64, steps: u64) -> BTreeMap<&'static str, u64> {
 
 #[test]
 fn paged_apply_matches_whole_spec_crdt_8() {
-    let c = differential(7, 14);
+    let c = differential(3, 14, false);
     // the history reached what it is for: paged deltas streamed, a reset joined by pages, a
     // commit waiting for its pages
     assert!(["apply: piece", "reset: by pages", "waited for pages"].iter().all(|k| c.get(k).is_some_and(|n| *n > 0)), "{c:?}");
@@ -280,7 +332,7 @@ fn paged_apply_matches_whole_spec_crdt_8() {
 fn paged_apply_matches_whole_large_spec_crdt_8() {
     let seeds = osis_base::testenv::Seeds::from_env("OSIS_PAGED_APPLY_START", "OSIS_PAGED_APPLY_SEEDS", 1..25);
     let replay = |s: u64| format!("OSIS_PAGED_APPLY_START={s} OSIS_PAGED_APPLY_SEEDS=1 cargo test -p osis-engine --lib apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8 -- --ignored --exact");
-    seeds.run("apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8", replay, |seed| differential(seed, 30));
+    seeds.run("apply::tests_paged::paged_apply_matches_whole_large_spec_crdt_8", replay, |seed| differential(seed, 30, true));
 }
 
 /// Runs `script` in a world applying page by page and in one applying whole, then compares
@@ -304,12 +356,12 @@ fn both(seed: u64, script: impl Fn(&mut World) -> Vec<Package>) -> (BTreeMap<&'s
         if !whole {
             counts = crate::costs::take().into_iter().map(|(k, _, n)| (k, n)).collect();
         }
-        let mut v = w.seen();
+        let mut v = w.seen(true, true);
         v.extend(w.log.clone());
         seen.push(v);
     }
     if let Some((x, y)) = seen[0].iter().zip(&seen[1]).find(|(x, y)| x != y) {
-        panic!("page-by-page apply differs from whole\n new {}\n old {}", &x[..x.len().min(3000)], &y[..y.len().min(3000)]);
+        panic!("page-by-page apply differs from whole\n{}", first_diff(x, y, ["page by page", "whole"]));
     }
     (counts, outs)
 }
@@ -365,6 +417,38 @@ fn paged_and_unpaged_parts_spec_crdt_8() {
     });
     let (pieces, loads) = (c.get("apply: piece").copied().unwrap_or(0), c.get("state page load").copied().unwrap_or(0));
     assert!(pieces > 2 && loads > pieces, "{c:?}");
+}
+
+/// Node 3 gets node 1's rewrite of a map held in a map entry, large enough to page, before the
+/// fill creating that entry (seed 8130018 of the large differential): the state pages the map
+/// under a record without its creation, which then arrives. The store must hold it as the
+/// cache does (`seen` reloads), applied by pieces and whole: the fill paged itself (its pages
+/// carry the creation), and small as a replace (a root reset: `join_reset`).
+#[test]
+fn entry_creation_after_its_paged_content_spec_crdt_5_6() {
+    for replace in [false, true] {
+        let (c, _) = both(8, |w| {
+            let (t, a) = (w.t, aks()[1].clone());
+            let mut r = Rng(51);
+            let mut m = Mutation::new();
+            if replace {
+                let small = Value::Map((0..10).map(|i| (Value::Int(i), s(i as u64, 0))).collect());
+                m.replace(t, &a, &Value::Map(BTreeMap::from([(Value::Str("big".into()), small), (Value::Str("x".into()), Value::Int(0))]))).unwrap();
+            } else {
+                m.set(t, &a, &fill_value(1, &mut r, 0)).unwrap();
+            }
+            let fill = w.lp.peers[0].commit(m).unwrap().unwrap();
+            let pk = packages(w, 0, &[fill]);
+            w.lp.deliver(1, &pk[0]).unwrap();
+            let mut m = Mutation::new();
+            m.set(t, &a, &fill_value(1, &mut r, 1)).unwrap();
+            let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+            let mut pks = packages(w, 1, &[rewrite]);
+            pks.push(pk[0].clone());
+            pks
+        });
+        assert_eq!(c.contains_key("reset: by pages"), replace, "{c:?}");
+    }
 }
 
 /// Made-up delete keys and the thing's dedup secret, for hand-built commits.
@@ -655,3 +739,4 @@ fn failed_streamed_apply_leaves_nothing_spec_commits_4() {
     let want = [&big, &set].map(|a| w.lp.peers[2].engine.state(&t, a).unwrap());
     assert_eq!(read(&mut w.lp.peers[3]), want);
 }
+
