@@ -1088,9 +1088,20 @@ impl Tx<'_> {
 
     /// A joined state `st` of `(tid, ak)` as it is cached: `None` when empty, unless paged with
     /// a page not loaded that it still reaches (what is loaded may be empty while other pages
-    /// hold elements; `PageIndex::unloaded_reached`).
-    pub fn kept(&self, tid: &Tid, ak: &Ak, st: osis_crdt::Fragment) -> Option<osis_crdt::Fragment> {
-        (!st.is_empty() || self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| i.unloaded_reached(&st))).then_some(st)
+    /// hold elements; `PageIndex::unloaded_reached`). Invariant: `None` exactly when the whole
+    /// state is empty (as a rebuild leaves it): an empty loaded part first loads the first page
+    /// of each collection it reaches with a page not loaded (it may be the one page left,
+    /// holding no element; any other page holds one). Not exact for a collection paged inside
+    /// another's elements, kept while that one has a page not loaded.
+    pub fn kept(&mut self, tid: &Tid, ak: &Ak, mut st: osis_crdt::Fragment) -> Result<Option<osis_crdt::Fragment>> {
+        if !st.is_empty() {
+            return Ok(Some(st));
+        }
+        let Some(idx) = self.core.pages.get_mut(&(*tid, ak.clone())) else { return Ok(None) };
+        if idx.unloaded_reached(&st) {
+            pages::load_firsts(&mut self.txn, tid, ak, idx, &mut st)?;
+        }
+        Ok((!st.is_empty() || idx.unloaded_reached(&st)).then_some(st))
     }
 
     /// Drops the loaded pages of the cached state of `(tid, ak)`, keeping its skeleton

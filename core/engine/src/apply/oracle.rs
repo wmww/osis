@@ -115,7 +115,7 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> 
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let ch = st.join(delta);
-    let st = tx.kept(tid, ak, st);
+    let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() || !ch.deaths().is_empty() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
     } else {
