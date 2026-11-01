@@ -4,13 +4,13 @@
 
 use super::{Parts, Streamed, validity};
 use crate::engine::{Core, Meta, Owned, Tx, records};
-use std::cell::RefCell;
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
 use osis_commit::{CommitBlob, Decoded, Header};
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Value, WallMs};
 use osis_crdt::{Changes, Fragment};
 use osis_store::Shred;
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -235,7 +235,7 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
     r.map(|_| ()).map_err(|_| Error::Corrupt("a delta examined failed to decode again"))
 }
 
-/// What the joins of a commit's parts leave for the rest of apply.
+/// What the joins of a commit's parts, and the rebuilds after them, leave for the rest of apply.
 #[derive(Default)]
 pub(super) struct Joins {
     pub changed: BTreeSet<(Tid, Ak)>,
@@ -248,7 +248,7 @@ pub(super) struct Joins {
 }
 
 /// Joins every part of commit `id` (`valid`: per aspect; `void`: a void import's body joins
-/// nothing), in part order, a piece at a time.
+/// nothing), in part order, a piece at a time (tests under `Core::whole_apply`: `oracle::joins`).
 ///
 /// Invariant (the differential `tests_paged` checks it against `oracle::joins`, which decodes
 /// and joins every part whole): joining a delta a piece at a time, each piece's state pages
@@ -257,12 +257,17 @@ pub(super) struct Joins {
 /// split a delta by element (§8), and what is judged of a whole delta is judged of its pieces:
 /// carried writes, un-merging and holding value-less per write, misstatements per write against
 /// the state before the part (`copies_before`), deaths per join.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool], void: bool, j: &mut Joins) -> Result<()> {
-    for (ai, part) in in_order(parts) {
-        join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), void, j)?;
+fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, parts: &Parts, valid: &[bool], void: bool) -> Result<Joins> {
+    let mut j = Joins::default();
+    #[cfg(test)]
+    if tx.core.whole_apply {
+        super::oracle::joins(tx, h, id, parts, valid, void, &mut j)?;
+        return Ok(j);
     }
-    Ok(())
+    for (ai, part) in in_order(parts) {
+        join_part(tx, h, id, blob, ai, part, valid.get(ai).copied().unwrap_or(false), void, &mut j)?;
+    }
+    Ok(j)
 }
 
 /// Joins one part (`joins`): every held snapshot notes its frontiers and carried writes,
@@ -277,9 +282,9 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let gives = part.gives();
     let snap = gives.is_some();
     // edge and creation aspects reach perm instead
-    let perm = matches!(ak.as_str(), "roles.0" | "tenures.0" | "created.0");
+    let perm = validity::perm_ak(ak.as_str());
     if !v && !snap && (void || perm) {
-        return if perm { Ok(()) } else { arrived_invalid(tx, &tid, &ak, &mut j.changed, &mut j.touched) };
+        return if perm { Ok(()) } else { arrived_invalid(tx, &tid, &ak, j) };
     }
     if let Some(fr) = gives {
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
@@ -327,7 +332,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     }
     if !v {
         if !snap {
-            unmerged(tx, &tid, &ak, &mut j.changed, &mut j.touched)?;
+            unmerged(tx, &tid, &ak, j)?;
         }
         return Ok(());
     }
@@ -553,56 +558,31 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         }
     }
     let pend = super::keys::before_join(tx, &h, &parts.whole, &valid)?;
-    let mut j = Joins::default();
-    #[cfg(test)]
-    if tx.core.whole_apply {
-        super::oracle::joins(tx, &h, &id, &parts, &valid, void_self, &mut j)?;
-    } else {
-        joins(tx, &h, &id, blob, &parts, &valid, void_self, &mut j)?;
-    }
-    #[cfg(not(test))]
-    joins(tx, &h, &id, blob, &parts, &valid, void_self, &mut j)?;
-    let Joins { mut changed, mut touched, vouching, joined } = j;
+    let mut j = joins(tx, &h, &id, blob, &parts, &valid, void_self)?;
     // an invalid aspect whose part is not held: others' writes under its creations go too (the
     // part may never come, or come late)
     for (ai, a) in h.aspects.iter().enumerate() {
         if !valid.get(ai).copied().unwrap_or(false) && !parts.has(ai) {
-            arrived_invalid(tx, &a.tid, &a.ak, &mut changed, &mut touched)?;
+            arrived_invalid(tx, &a.tid, &a.ak, &mut j)?;
         }
     }
     {
         let _s = crate::costs::span("apply: put_commit");
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
-    rebuild_all(tx, &vouching, &mut changed, &mut touched)?;
-    refill(tx, &h, &id, &uncarried, &mut changed, &mut touched)?;
-    unjoin_void(tx, &h, &id, &voided, &mut changed, &mut touched)?;
-    for (tid, ak, snap, deaths) in &joined {
-        crate::retention::note_deaths(tx, tid, ak, deaths)?;
-        if *snap {
-            crate::retention::note_copies(tx, &id, tid, ak)?;
-        }
-    }
+    after_store(tx, &h, &id, &uncarried, &voided, &mut j)?;
     {
         let _s = crate::costs::span("apply: retention");
-        crate::retention::on_apply(tx, &id, &mut changed)?;
+        crate::retention::on_apply(tx, &id, &mut j.changed)?;
     }
-
     {
         let _s = crate::costs::span("apply: observe");
-        for (tid, ak) in &changed {
-            observe_touched(tx, tid, ak, &touched)?;
-        }
+        observe_all(tx, &j)?;
     }
     super::keys::after_join(tx, &h, &parts.whole, &valid, pend)?;
-    let mut flipped = Vec::new();
-    if held_changed || tx.core.stale() {
-        flipped = validity::rejudge_all(tx, true)?;
-        for (tid, ak) in &flipped {
-            observe_state(tx, tid, ak)?;
-        }
-    }
-    let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| a.ak.as_str() == "roles.0" || a.ak.as_str() == "tenures.0").map(|a| a.tid).collect() } else { BTreeSet::new() };
+    let flipped = rejudged(tx, held_changed)?;
+    let changed = j.changed;
+    let rosters: BTreeSet<Tid> = if h.kind.is_role() { h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect() } else { BTreeSet::new() };
     // a received roster change may end this node's read access (spec/permissions.md §3); its own
     // self-removals drop what they lost once uploaded (`Done::drop_lost`)
     if origin != Origin::Local {
@@ -627,24 +607,24 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 /// apply or late: others' writes already joined may sit under its creations, so the aspect
 /// un-merges as on a flip; a held one joins and un-merges a piece at a time (`join_part`).
 /// Edge and creation aspects reach perm instead.
-fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
-    if matches!(ak.as_str(), "roles.0" | "tenures.0" | "created.0") {
+fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
+    if validity::perm_ak(ak.as_str()) {
         return Ok(());
     }
     if unmerge_fell(tx, tid, ak, None)? {
-        unmerged(tx, tid, ak, changed, touched)?;
+        unmerged(tx, tid, ak, j)?;
     }
     Ok(())
 }
 
 /// After an invalid delta's writes went from `(tid, ak)`.
-fn unmerged(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+fn unmerged(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
     // the writes it un-merged may have superseded others (spec/crdt.md §4.8)
     crate::retention::mark_if_bounded(tx, tid, ak)?;
     // others' writes went: what waits on the aspect's state is judged again
     tx.core.mark_aspect_changed(tid, ak);
-    changed.insert((*tid, ak.clone()));
-    touched.whole(tid, ak);
+    j.changed.insert((*tid, ak.clone()));
+    j.touched.whole(tid, ak);
     Ok(())
 }
 
@@ -658,10 +638,40 @@ pub(super) fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt:
     }
 }
 
+/// Once commit `id` (header `h`) is stored, so its own bodies join too: the rebuilds its joins
+/// call for (`vouching`, `refill`, `unjoin_void`), then the deaths its valid parts reported.
+fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], voided: &BTreeSet<CommitId>, j: &mut Joins) -> Result<()> {
+    for (tid, ak) in std::mem::take(&mut j.vouching) {
+        // counted: tests read whether a snapshot vouched
+        let _s = crate::costs::span("apply: vouched rebuild");
+        rebuild_changed(tx, &tid, &ak, &[], j)?;
+    }
+    refill(tx, h, id, uncarried, j)?;
+    unjoin_void(tx, h, id, voided, j)?;
+    for (tid, ak, snap, deaths) in &j.joined {
+        crate::retention::note_deaths(tx, tid, ak, deaths)?;
+        if *snap {
+            crate::retention::note_copies(tx, id, tid, ak)?;
+        }
+    }
+    Ok(())
+}
+
+/// Rebuilds `(tid, ak)` without `gone` (`rebuild_without`): its deaths recomputed, what waits on
+/// its state judged again.
+fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], j: &mut Joins) -> Result<()> {
+    rebuild_without(tx, tid, ak, gone)?;
+    crate::retention::mark_deaths_due(tx, tid, ak)?;
+    tx.core.mark_aspect_changed(tid, ak);
+    j.changed.insert((*tid, ak.clone()));
+    j.touched.whole(tid, ak);
+    Ok(())
+}
+
 /// Rebuilds the aspects of commit `id` (header `h`) whose writes valid snapshots held before it
 /// copied otherwise than its deltas hold them (`uncarried`, `validity::differing_copies`): the
 /// snapshots' copies govern (spec/permissions.md §5.2), so the delta's writes under those dots go.
-fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], j: &mut Joins) -> Result<()> {
     for (tid, ak, snaps) in uncarried {
         let Some(ai) = h.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         // an invalid snapshot's copies never joined
@@ -672,11 +682,7 @@ fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTr
         if validity::differing_copies(tx, h, id, ai, &snaps)?.is_empty() {
             continue;
         }
-        rebuild(tx, tid, ak)?;
-        crate::retention::mark_deaths_due(tx, tid, ak)?;
-        tx.core.mark_aspect_changed(tid, ak);
-        changed.insert((*tid, ak.clone()));
-        touched.whole(tid, ak);
+        rebuild_changed(tx, tid, ak, &[], j)?;
     }
     Ok(())
 }
@@ -684,37 +690,39 @@ fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTr
 /// Rebuilds the aspects where held imports turned void by commit `id` (header `h`), an origin
 /// on their own thing, joined copies under `id`'s own dots: those go from the state and `id`'s
 /// deltas give the writes again (spec/permissions.md §7).
-fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<CommitId>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
+fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<CommitId>, j: &mut Joins) -> Result<()> {
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     for c in voided.iter().filter(|c| *c != id) {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         aspects.extend(m.header.aspects.iter().filter(|a| h.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak)).map(|a| (a.tid, a.ak.clone())));
     }
     for (tid, ak) in aspects {
-        if !validity::owns_commit_dots(tx.core, id, &tid, &ak) {
-            continue;
+        if validity::owns_commit_dots(tx.core, id, &tid, &ak) {
+            rebuild_changed(tx, &tid, &ak, &[Owned::Commit(*id)], j)?;
         }
-        rebuild_without(tx, &tid, &ak, &[Owned::Commit(*id)])?;
-        crate::retention::mark_deaths_due(tx, &tid, &ak)?;
-        tx.core.mark_aspect_changed(&tid, &ak);
-        changed.insert((tid, ak.clone()));
-        touched.whole(&tid, &ak);
     }
     Ok(())
 }
 
-/// Rebuilds `aspects` once the commit is stored, so its own body joins too (`vouching`).
-fn rebuild_all(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
-    for (tid, ak) in aspects {
-        // counted: tests read whether a snapshot vouched
-        let _s = crate::costs::span("apply: vouched rebuild");
-        rebuild(tx, tid, ak)?;
-        crate::retention::mark_deaths_due(tx, tid, ak)?;
-        tx.core.mark_aspect_changed(tid, ak);
-        changed.insert((*tid, ak.clone()));
-        touched.whole(tid, ak);
+/// The derived indexes of every aspect the joins changed (`observe_touched`).
+fn observe_all(tx: &mut Tx<'_>, j: &Joins) -> Result<()> {
+    for (tid, ak) in &j.changed {
+        observe_touched(tx, tid, ak, &j.touched)?;
     }
     Ok(())
+}
+
+/// Re-judges held deltas when the held set changed or something is stale
+/// (`validity::rejudge_all`), and observes the aspects that flipped; returns them.
+fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
+    if !held_changed && !tx.core.stale() {
+        return Ok(Vec::new());
+    }
+    let flipped = validity::rejudge_all(tx, true)?;
+    for (tid, ak) in &flipped {
+        observe_state(tx, tid, ak)?;
+    }
+    Ok(flipped)
 }
 
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
@@ -732,80 +740,20 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     super::receipt::record(tx, &h, id, &late, received)?;
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
     validity::note_imports(tx.core, id, &h);
-    let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
+    let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     if h.kind.is_role() {
-        // judged with the parts held before (a grant's `roles.0` part names what its
-        // `secrets.0` part may box)
-        let mut all = parts.whole.clone();
-        all.extend(super::held_parts_at(tx, id, &|ai| !parts.has(ai))?);
-        validity::note_required(tx.core, &h, id, &all);
-        // what that judged (an overreaching late `secrets.0` part) holds for the late parts'
-        // join below; other aspects' flips go through the re-judge (`invalidated`, `revalidated`)
-        let mut flipped = false;
-        for ai in late.iter().copied() {
-            let v = validity::part_valid(tx.core, &h, id, ai);
-            if let Some(x) = meta.valid.get_mut(ai)
-                && *x != v
-            {
-                *x = v;
-                flipped = true;
-            }
-        }
-        if flipped {
-            if let Some(m) = tx.core.ix.commits.get_mut(id) {
-                m.valid = meta.valid.clone();
-            }
-            tx.core.index_validity(id);
-            held_changed = true;
-        }
+        held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
     }
-    // late `secrets.0` parts establish epochs like the first ones, with the commit's `keys.0`
-    // (held parts). The keysets "before" are the current `keys.0` state, which already holds this
-    // commit's `keys.0` when that part joined earlier: an approximation like `revalidated`'s (a
-    // keyset the commit replaced is no longer known; its removed keys come from the index of
-    // held keyed entries, and a write whose removed keys are unknown waits as usual). A late
-    // `keys.0` part likewise applies the held `secrets.0` of its thing again: applied without
-    // the keyset (a role commit applies from any held part), they made no rotation.
-    let mut with_keys = parts.whole.clone();
-    if h.kind == osis_commit::Kind::Role {
-        let late_on = |ak: &str| -> BTreeSet<Tid> { late.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == ak).map(|a| a.tid).collect() };
-        let (late_secrets, late_keys) = (late_on("secrets.0"), late_on("keys.0"));
-        for (ai, a) in h.aspects.iter().enumerate() {
-            let want = match a.ak.as_str() {
-                "keys.0" => late_secrets.contains(&a.tid),
-                "secrets.0" => late_keys.contains(&a.tid),
-                _ => false,
-            };
-            if want && !parts.has(ai) {
-                with_keys.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
-            }
-        }
-    }
+    let with_keys = with_keys(tx, &h, id, &parts)?;
     let pend = super::keys::before_join(tx, &h, &with_keys, &meta.valid)?;
     let void_import = h.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(id);
-    let mut j = Joins::default();
-    #[cfg(test)]
-    if tx.core.whole_apply {
-        super::oracle::joins(tx, &h, id, &parts, &meta.valid, void_import, &mut j)?;
-    } else {
-        joins(tx, &h, id, merged, &parts, &meta.valid, void_import, &mut j)?;
-    }
-    #[cfg(not(test))]
-    joins(tx, &h, id, merged, &parts, &meta.valid, void_import, &mut j)?;
-    let Joins { mut changed, mut touched, vouching, joined } = j;
+    let mut j = joins(tx, &h, id, merged, &parts, &meta.valid, void_import)?;
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
-    rebuild_all(tx, &vouching, &mut changed, &mut touched)?;
-    refill(tx, &h, id, &uncarried, &mut changed, &mut touched)?;
-    for (tid, ak, snap, deaths) in &joined {
-        crate::retention::note_deaths(tx, tid, ak, deaths)?;
-        if *snap {
-            crate::retention::note_copies(tx, id, tid, ak)?;
-        }
-    }
+    after_store(tx, &h, id, &uncarried, &BTreeSet::new(), &mut j)?;
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
-    crate::retention::on_late(tx, id, &late, &mut changed)?;
+    crate::retention::on_late(tx, id, &late, &mut j.changed)?;
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);
         validity::add_role_commit(tx, &meta.view, Some(&h), id, all)?;
@@ -814,26 +762,20 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if held_changed {
         tx.core.update_timelines();
     }
-    for (tid, ak) in &changed {
-        observe_touched(tx, tid, ak, &touched)?;
-    }
+    observe_all(tx, &j)?;
     super::keys::after_join(tx, &h, &with_keys, &meta.valid, pend)?;
-    let mut flipped = Vec::new();
-    if held_changed || tx.core.stale() {
-        flipped = validity::rejudge_all(tx, true)?;
-        for (tid, ak) in &flipped {
-            observe_state(tx, tid, ak)?;
-        }
-    }
-    if edges && meta.origin != Origin::Local {
-        crate::rotation::mark_lost_due(tx, h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")).map(|a| a.tid))?;
-    }
+    let flipped = rejudged(tx, held_changed)?;
     if edges {
-        for thing in h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")).map(|a| a.tid).collect::<BTreeSet<_>>() {
+        let rosters: Vec<Tid> = h.aspects.iter().filter(|a| validity::edge_ak(a.ak.as_str())).map(|a| a.tid).collect();
+        if meta.origin != Origin::Local {
+            crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
+        }
+        for thing in rosters.into_iter().collect::<BTreeSet<_>>() {
             tx.core.events.queue(Event::Roster { thing });
         }
     }
     tx.core.events.queue(Event::Joined { id: *id });
+    let changed = j.changed;
     for (t, a) in &changed {
         tx.core.mark_aspect_changed(t, a);
     }
@@ -844,6 +786,63 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
     }
     Ok(())
+}
+
+/// The late parts of role commit `id` judged with the parts held before (a grant's `roles.0`
+/// part names what its `secrets.0` part may box): what that judged (an overreaching late
+/// `secrets.0` part) holds for their join; other aspects' flips go through the re-judge
+/// (`invalidated`, `revalidated`). Whether a late part's validity changed (`meta` updated).
+fn judge_late(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, meta: &mut Meta) -> Result<bool> {
+    let mut all = parts.whole.clone();
+    all.extend(super::held_parts_at(tx, id, &|ai| !parts.has(ai))?);
+    validity::note_required(tx.core, h, id, &all);
+    let mut flipped = false;
+    for ai in parts.ais() {
+        let v = validity::part_valid(tx.core, h, id, ai);
+        if let Some(x) = meta.valid.get_mut(ai)
+            && *x != v
+        {
+            *x = v;
+            flipped = true;
+        }
+    }
+    if flipped {
+        if let Some(m) = tx.core.ix.commits.get_mut(id) {
+            m.valid = meta.valid.clone();
+        }
+        tx.core.index_validity(id);
+    }
+    Ok(flipped)
+}
+
+/// The late parts of commit `id` with, for a role commit, the held `keys.0` parts of the things
+/// of its late `secrets.0` parts and the held `secrets.0` parts of those of its late `keys.0`
+/// parts: late `secrets.0` parts establish epochs like the first ones, with the commit's
+/// `keys.0`. The keysets "before" are the current `keys.0` state, which already holds this
+/// commit's `keys.0` when that part joined earlier: an approximation like `revalidated`'s (a
+/// keyset the commit replaced is no longer known; its removed keys come from the index of held
+/// keyed entries, and a write whose removed keys are unknown waits as usual). A late `keys.0`
+/// part likewise applies the held `secrets.0` of its thing again: applied without the keyset (a
+/// role commit applies from any held part), they made no rotation.
+fn with_keys(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<Vec<(usize, usize, Decoded)>> {
+    let mut out = parts.whole.clone();
+    if h.kind != osis_commit::Kind::Role {
+        return Ok(out);
+    }
+    let late = parts.ais();
+    let late_on = |ak: &str| -> BTreeSet<Tid> { late.iter().filter_map(|ai| h.aspects.get(*ai)).filter(|a| a.ak.as_str() == ak).map(|a| a.tid).collect() };
+    let (late_secrets, late_keys) = (late_on("secrets.0"), late_on("keys.0"));
+    for (ai, a) in h.aspects.iter().enumerate() {
+        let want = match a.ak.as_str() {
+            "keys.0" => late_secrets.contains(&a.tid),
+            "secrets.0" => late_keys.contains(&a.tid),
+            _ => false,
+        };
+        if want && !parts.has(ai) {
+            out.extend(super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)));
+        }
+    }
+    Ok(out)
 }
 
 /// The `secrets.0` entries a commit's joins touched, per aspect (`None`: anything may have
@@ -917,7 +916,6 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
         if let Some(s) = st.as_ref().and_then(Fragment::read).as_ref().and_then(crate::engine::secrets::secrets_value)
             && tx.core.ingest_secrets(actor, &s, None, &alts)
         {
-
             match before {
                 Some(b) => tx.core.ix.secrets.insert(*actor, b),
                 None => tx.core.ix.secrets.remove(actor),

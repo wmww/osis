@@ -42,6 +42,16 @@ pub(crate) fn header_frontier(h: &Header) -> Option<Arc<Frontier>> {
     Some(Arc::new(frontier_of(f)))
 }
 
+/// Whether `ak` holds edge writes (`roles.0`, `tenures.0`): perm reads them.
+pub(crate) fn edge_ak(ak: &str) -> bool {
+    matches!(ak, "roles.0" | "tenures.0")
+}
+
+/// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
+pub(crate) fn perm_ak(ak: &str) -> bool {
+    edge_ak(ak) || ak == "created.0"
+}
+
 fn dots_of(h: &Header, ai: usize) -> Dots {
     match (h.form, h.aspects.get(ai)) {
         (Form::Node, Some(a)) if a.lo < a.hi => Dots::Node { lo: a.lo, hi: a.hi },

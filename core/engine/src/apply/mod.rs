@@ -1093,7 +1093,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
         }
     }
-    stale.retain(|(_, ak)| !matches!(ak.as_str(), "roles.0" | "tenures.0" | "created.0"));
+    stale.retain(|(_, ak)| !validity::perm_ak(ak.as_str()));
     Ok(Some(stale.into_iter().collect()))
 }
 
@@ -1123,7 +1123,7 @@ pub(crate) fn edge_parts(tx: &mut Tx<'_>, id: &CommitId) -> Result<validity::Edg
 /// `edge_parts` of a commit record's blob (`h`: its resolved header).
 pub(crate) fn edge_parts_of(tx: &mut Tx<'_>, id: &CommitId, h: &Header, mut blob: CommitBlob) -> Result<validity::EdgeParts> {
     blob.header = h.clone();
-    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0")));
+    blob.parts.retain(|p| h.aspects.get(p.ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
     Ok(validity::EdgeParts::of(h, &examine_stored(tx, &blob, id)?))
 }
 
