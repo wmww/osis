@@ -281,13 +281,15 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
         format!("{name}: {done} of {} seeds from {} run, {} failing, {} hung, {threads} threads, {:.1} s", seeds.len(), seeds.first().copied().unwrap_or(0), g.failed, g.hung.len(), t0.elapsed().as_secs_f64())
     };
     // every failure in seed order, with its replay line
-    let failures = |rs: &[Option<Result<T, String>>]| -> Vec<String> {
-        let why = |r: &Option<Result<T, String>>| match r {
+    // `running`: the hung seeds still running
+    let failures = |rs: &[Option<Result<T, String>>], running: &BTreeMap<usize, (Instant, Arc<SeedCtx>)>| -> Vec<String> {
+        let why = |i: usize, r: &Option<Result<T, String>>| match r {
             Some(Ok(_)) => None,
             Some(Err(e)) => Some(e.clone()),
+            None if running.contains_key(&i) => Some(format!("hung: ran past {limit_secs} s, still running")),
             None => Some("not run: the run stopped with every thread on a hung seed".to_string()),
         };
-        rs.iter().zip(seeds).filter_map(|(r, s)| why(r).map(|e| format!("{}: {e}", label(*s)))).collect()
+        rs.iter().zip(seeds).enumerate().filter_map(|(i, (r, s))| why(i, r).map(|e| format!("{}: {e}", label(*s)))).collect()
     };
     let results = std::thread::scope(|s| {
         for _ in 0..threads {
@@ -330,7 +332,7 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
         let summary = summary(&g);
         let stuck: Vec<String> = g.running.values().map(|(t, ctx)| format!("  {} running {} s, {}", ctx.label, t.elapsed().as_secs(), ctx.last())).collect();
         if !stuck.is_empty() {
-            let fails = failures(&g.results);
+            let fails = failures(&g.results, &g.running);
             visible(true, &format!("{summary}\nfailures:\n{}\nstill running (hung; a thread cannot be stopped, so the process exits):\n{}", fails.join("\n\n"), stuck.join("\n")));
             std::process::exit(101);
         }
@@ -338,7 +340,7 @@ pub fn run_seeds<T: Send>(name: &str, seeds: &[u64], visible_summary: bool, repl
         (std::mem::take(&mut g.results), summary)
     });
     let (results, summary) = results;
-    let fails = failures(&results);
+    let fails = failures(&results, &BTreeMap::new());
     if !fails.is_empty() {
         panic!("{summary}\n{} of {} seeds failed or hung:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
     }
