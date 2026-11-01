@@ -1148,6 +1148,19 @@ impl Tx<'_> {
         self.core.states.get(&(*tid, ak.clone())).and_then(Option::as_ref)
     }
 
+    /// The part of the state of `(tid, ak)` a join of `f` meets: a paged state's skeleton and
+    /// the pages holding `f`'s dots (`pages::touch_of`; all of them where `f` may reset a paged
+    /// collection), dropped from the cache again (`evict_pages`), so reading a delta against
+    /// the state a piece at a time holds about one page of it. `None`: the state is empty.
+    pub fn state_at(&mut self, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Option<Fragment>> {
+        self.load_lazy(tid, ak)?;
+        let touch = pages::touch_of(f, self.core.pages.get(&(*tid, ak.clone())));
+        self.ensure_touch(tid, ak, &touch)?;
+        let out = self.cached(tid, ak).cloned();
+        self.evict_pages(tid, ak);
+        Ok(out)
+    }
+
     /// The whole state of `(tid, ak)`.
     pub fn state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<&Fragment>> {
         self.load(tid, ak)?;

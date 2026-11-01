@@ -178,9 +178,10 @@ impl Engine {
                     let mut st = osis_crdt::Fragment::default();
                     for c in held {
                         let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { continue };
-                        for f in crate::apply::held_fragments(tx, &c, ai)? {
+                        crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
                             st.join(f);
-                        }
+                            Ok(())
+                        })?;
                     }
                     tx.set_state(&tid, &ak, (!st.is_empty()).then_some(st), Shred::No, false)?;
                 }

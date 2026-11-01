@@ -1394,7 +1394,8 @@ fn decode_packages(bytes: &[u8]) -> Vec<osis_node::local_peer::Package> {
 // issues/durable-decode-bound.md:
 // peak memory above the resident set before each step, while one node writes an N-key map in one
 // commit and snapshots it, then, each in a fresh process (so no step reuses memory an earlier one
-// freed), a node holding the thing applies that commit, and one starts from the snapshot alone.
+// freed), a node holding the thing applies that commit, one starts from the snapshot alone, and
+// one holding both judges the commit covered and the snapshot live and drops the commit.
 // The stores are in memory, so what a step stores stays resident too (`kept`).
 // `OSIS_SCALE_N` sets N (default 10^6 in release: the writer peaks at about 10 GB, run it alone).
 #[test]
@@ -1424,6 +1425,17 @@ fn big_map_apply_memory() {
         }
         drop(bytes);
         let what = std::env::var("OSIS_SCALE_APPLY").unwrap_or_default();
+        if what == "covered" {
+            // holding the commit (`fill`, the thing package's ID) and the snapshot: compaction's
+            // reads of both (issues/durable-decode-bound.md step 4)
+            let (fill, snap) = (pks.last().unwrap().id, target.id);
+            p.engine.ingest(&target.bytes, target.blobs.clone()).unwrap();
+            step(&format!("n={n} judge the commit covered"), &mut || assert_eq!(p.engine.covered(&snap, &fill, t, &a).unwrap(), Some(true)));
+            step(&format!("n={n} judge the snapshot live"), &mut || assert!(p.engine.body_live(&snap, t, &a).unwrap()));
+            step(&format!("n={n} drop the covered commit"), &mut || p.engine.drop_body(&fill, t, &a).unwrap());
+            assert_eq!(p.engine.get_at(t, &a, &[PathSeg::Key(Value::Int(7))]).unwrap(), Some(Value::Int(7)));
+            return;
+        }
         step(&format!("n={n} apply the {what}"), &mut || {
             p.engine.ingest(&target.bytes, target.blobs.clone()).unwrap();
         });
@@ -1459,10 +1471,13 @@ fn big_map_apply_memory() {
     let now = lp.peers[0].clock.now_wall_ms().0 as i64;
     let meta = osis_node::local_peer::Package { id: fill.id, bytes: osis_base::encode(&Value::List(vec![Value::Tid(t), Value::Int(now)])), blobs: Vec::new() };
     drop(lp);
-    for (what, pk) in [("commit", fill), ("snapshot", snap)] {
+    for (what, pk) in [("commit", &fill), ("snapshot", &snap), ("covered", &snap)] {
         let file = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join(format!("big-map-apply-{}.bin", std::process::id()));
         let mut pks = setup.clone();
-        pks.extend([meta.clone(), pk]);
+        if what == "covered" {
+            pks.push(fill.clone());
+        }
+        pks.extend([meta.clone(), pk.clone()]);
         std::fs::write(&file, encode_packages(&pks)).unwrap();
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "scale::big_map_apply_memory", "--nocapture", "--test-threads", "1"])

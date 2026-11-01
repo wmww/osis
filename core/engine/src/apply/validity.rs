@@ -870,14 +870,9 @@ pub(crate) fn note_imports(core: &mut Core, id: &CommitId, h: &Header) {
     }
 }
 
-/// Records the writes snapshot `snap`'s fragment `f` of `(tid, ak)` carries whose owning delta
-/// was never received here (any snapshot held, whatever its validity).
-pub(crate) fn note_carried(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, f: &Fragment) {
-    let c = carried_of(core, tid, ak, f);
-    note_carried_of(core, tid, ak, snap, c);
-}
-
-/// `note_carried` of the writes `carried_of` found (in a fragment's pieces, gathered).
+/// Records the writes snapshot `snap` of `(tid, ak)` carries whose owning delta was never
+/// received here (any snapshot held, whatever its validity), as `carried_of` found them in its
+/// pieces, gathered.
 pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &CommitId, carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>>) {
     let k = (*tid, ak.clone());
     let before = core.ix.carried.get(&k).cloned().unwrap_or_default();
@@ -907,9 +902,10 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
     let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
     let mut dots = Vec::new();
-    for f in super::held_fragments(tx, snap, sai)? {
+    super::each_held_piece(tx, snap, sai, &mut |tx, f| {
         dots.extend(f.writes().into_iter().filter(|(d, ts)| ts.is_some() && !d.src.is_derived() && regiven(tx.core, tid, ak, d)).map(|(d, _)| d));
-    }
+        Ok(())
+    })?;
     Ok(Owned::dots(dots))
 }
 
@@ -988,21 +984,24 @@ pub(crate) fn owned_ranges(h: &Header, id: &CommitId, ai: usize) -> Vec<(osis_cr
     }
 }
 
-/// Held snapshot `s`'s writes on `(tid, ak)` by dot (`Core::copy_index`); `have`: its
-/// fragment, when the caller read it.
-pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have: Option<&Fragment>) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
+/// Held snapshot `s`'s writes on `(tid, ak)` by dot (`Core::copy_index`), indexed a piece at
+/// a time.
+pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Arc<osis_crdt::CopyIndex>>> {
     let k = (*s, *tid, ak.clone());
     if let Some(ix) = tx.core.copy_index.get(&k) {
         return Ok(Some(ix.clone()));
     }
-    let ix = match have {
-        Some(f) => Arc::new(f.copy_index()),
-        None => {
-            let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
-            let Some(f) = super::held_fragments(tx, s, sai)?.into_iter().next() else { return Ok(None) };
-            Arc::new(f.copy_index())
-        }
-    };
+    let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
+    let mut ix = osis_crdt::CopyIndex::default();
+    if super::each_held_piece(tx, s, sai, &mut |_, f| {
+        ix.add(&f);
+        Ok(())
+    })?
+    .is_empty()
+    {
+        return Ok(None);
+    }
+    let ix = Arc::new(ix);
     if tx.core.copy_index.values().map(|x| x.len()).sum::<usize>() + ix.len() > COPY_CACHE_MAX {
         tx.core.copy_index.clear();
     }
@@ -1012,16 +1011,15 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have
 
 /// The dots among those `owned` matches under which a held valid snapshot of `(tid, ak)` holds a
 /// write: those writes count whatever their own delta's validity, as the snapshot's writer
-/// vouched for them (spec/permissions.md §5.2). `have`: valid snapshots' fragments the caller
-/// read, by commit.
-pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have: &BTreeMap<CommitId, &Fragment>) -> Result<BTreeSet<Dot>> {
+/// vouched for them (spec/permissions.md §5.2).
+pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
     if owned.is_empty() {
         return Ok(out);
     }
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.1).filter(|s| snapshot_valid(tx.core, s, tid, ak)).collect();
     for s in snaps {
-        let Some(ix) = copy_index(tx, &s, tid, ak, have.get(&s).copied())? else { continue };
+        let Some(ix) = copy_index(tx, &s, tid, ak)? else { continue };
         for o in owned {
             let (src, lo, hi) = match o {
                 Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
@@ -1040,23 +1038,41 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned], have
 pub(crate) fn differing_copies(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize, snaps: &BTreeSet<CommitId>) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
     let Some(a) = h.aspects.get(ai) else { return Ok(out) };
-    let own: Vec<Fragment> = super::held_fragments(tx, id, ai)?;
-    let own: Vec<&Fragment> = own.iter().collect();
+    let mut own = None;
     for s in snaps {
-        if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak, None)? {
-            out.extend(misstated_in(&ix, h, id, ai, &own));
+        if let Some(ix) = copy_index(tx, s, &a.tid, &a.ak)? {
+            out.extend(misstated_in(tx, &ix, h, id, ai, &mut own)?);
         }
     }
     Ok(out)
 }
 
 /// The dots under which a snapshot (indexed `ix`) carries copies of the writes of commit `id`'s
-/// held delta `ai` (header `h`, parts `own`) otherwise than the delta holds them
-/// (spec/permissions.md §5.2: another value, `ts` or position, a dot the delta does not use, a
-/// value-less copy of a delta without expiry).
-pub(crate) fn misstated_in(ix: &osis_crdt::CopyIndex, h: &Header, id: &CommitId, ai: usize, own: &[&Fragment]) -> BTreeSet<Dot> {
+/// held delta `ai` (header `h`) otherwise than the delta holds them (spec/permissions.md §5.2:
+/// another value, `ts` or position, a dot the delta does not use, a value-less copy of a delta
+/// without expiry). `own`: the delta's writes, indexed a piece at a time on first need (only
+/// when the snapshot copies one of its dots).
+pub(crate) fn misstated_in(tx: &mut Tx<'_>, ix: &osis_crdt::CopyIndex, h: &Header, id: &CommitId, ai: usize, own: &mut Option<osis_crdt::CopySet>) -> Result<BTreeSet<Dot>> {
+    let ranges = owned_ranges(h, id, ai);
+    if !ix.any_in(&ranges) {
+        return Ok(BTreeSet::new());
+    }
     let lax = h.aspects.get(ai).is_some_and(|a| a.expires.is_some());
-    ix.misstated(&owned_ranges(h, id, ai), own, lax)
+    Ok(ix.misstated(&ranges, held_copies(tx, id, ai, own)?, lax))
+}
+
+/// The writes of held commit `id`'s parts on aspect `ai`, indexed into `own` a piece at a time
+/// unless it is already.
+pub(crate) fn held_copies<'o>(tx: &mut Tx<'_>, id: &CommitId, ai: usize, own: &'o mut Option<osis_crdt::CopySet>) -> Result<&'o osis_crdt::CopySet> {
+    if own.is_none() {
+        let mut set = osis_crdt::CopySet::default();
+        super::each_held_piece(tx, id, ai, &mut |_, f| {
+            set.add(&f);
+            Ok(())
+        })?;
+        *own = Some(set);
+    }
+    Ok(own.get_or_insert_default())
 }
 
 /// Whether the delta owning dot `d` on `(tid, ak)` expires: snapshots carry its writes
@@ -1065,11 +1081,11 @@ pub(crate) fn owner_expires(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
     any_owner(core, tid, ak, d, &|_, m, ai| m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))
 }
 
-/// The dots under which held snapshot `s` of `(tid, ak)` (fragment `f`, when the caller read it)
-/// carries copies of held deltas' writes otherwise than those deltas hold them (`misstated_in`).
-pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f: Option<&Fragment>) -> Result<BTreeSet<Dot>> {
+/// The dots under which held snapshot `s` of `(tid, ak)` carries copies of held deltas' writes
+/// otherwise than those deltas hold them (`misstated_in`).
+pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<BTreeSet<Dot>> {
     let mut out = BTreeSet::new();
-    let Some(ix) = copy_index(tx, s, tid, ak, f)? else { return Ok(out) };
+    let Some(ix) = copy_index(tx, s, tid, ak)? else { return Ok(out) };
     let owners = {
         let core = &*tx.core;
         let found = std::cell::RefCell::new(BTreeSet::new());
@@ -1085,9 +1101,7 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f:
     };
     for (c, ai) in owners {
         let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { continue };
-        let own: Vec<Fragment> = super::held_fragments(tx, &c, ai)?;
-        let own: Vec<&Fragment> = own.iter().collect();
-        out.extend(misstated_in(&ix, &h, &c, ai, &own));
+        out.extend(misstated_in(tx, &ix, &h, &c, ai, &mut None)?);
     }
     Ok(out)
 }
@@ -1235,8 +1249,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 super::atomic::rebuild_without(tx, tid, ak, &gone)?;
             } else {
                 let _s = crate::costs::span("rejudge: unmerge");
-                let bodies = fell_bodies(tx, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
-                super::atomic::unmerge_fell(tx, tid, ak, bodies)?;
+                super::atomic::unmerge_fallen(tx, tid, ak, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
             }
             crate::retention::mark_deaths_due(tx, tid, ak)?;
         }
@@ -1251,24 +1264,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         }
     }
     Ok(flipped.into_iter().collect())
-}
-
-/// The bodies of `parts` joined into one fragment (their pages are where un-merging them
-/// changes a state), or `None` when one is not held whole (dropped, partly received).
-fn fell_bodies(tx: &mut Tx<'_>, parts: &[(CommitId, usize)]) -> Result<Option<Fragment>> {
-    let mut out = Fragment::default();
-    let mut ch = osis_crdt::Changes::new();
-    for (id, ai) in parts {
-        let n = tx.core.ix.commits.get(id).filter(|m| !m.dropped.contains_key(ai)).and_then(|m| m.header.aspects.get(*ai)).map(|a| a.hashes.len());
-        let bodies = super::held_parts(tx, id, *ai)?;
-        if bodies.is_empty() || n != Some(bodies.len()) {
-            return Ok(None);
-        }
-        for d in &bodies {
-            out.join_into(d.fragment().clone(), None, &mut ch);
-        }
-    }
-    Ok(Some(out))
 }
 
 /// Whether `author` lowering `holder`'s edge on `target` at `ts` is a self-removal

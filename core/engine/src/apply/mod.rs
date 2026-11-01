@@ -989,12 +989,24 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
         }
         // snapshots: their frontiers (the bodies carrying a write, `retention::carriers`) and
         // the writes they carry whose own delta was never received
+        // (a part a piece at a time)
         for blob in snaps {
             let id = blob.id();
-            for (ai, _, d) in examine_stored(tx, &blob, &id)? {
-                if let (Some(a), Decoded::Snapshot(s)) = (blob.header.aspects.get(ai), d) {
-                    validity::note_carried(tx.core, &a.tid, &a.ak, &id, &s.fragment);
-                    atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, (s.frontiers, s.absorbed.into_iter().collect()));
+            let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
+            for ai in ais {
+                let Some(a) = blob.header.aspects.get(ai) else { continue };
+                let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+                for g in each_held_piece(tx, &id, ai, &mut |tx, f| {
+                    for (src, ctrs) in validity::carried_of(tx.core, &a.tid, &a.ak, &f) {
+                        carried.entry(src).or_default().extend(ctrs);
+                    }
+                    Ok(())
+                })?
+                .into_iter()
+                .flatten()
+                {
+                    validity::note_carried_of(tx.core, &a.tid, &a.ak, &id, std::mem::take(&mut carried));
+                    atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
                 }
             }
         }
@@ -1133,6 +1145,28 @@ pub(crate) fn held_parts(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Ve
 /// The fragments of a held commit's parts on aspect `ai`.
 pub(crate) fn held_fragments(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<Vec<osis_crdt::Fragment>> {
     Ok(held_parts(tx, id, ai)?.into_iter().map(Decoded::into_fragment).collect())
+}
+
+/// Streams the held parts of commit `id` on aspect `ai`, in part order, a piece at a time
+/// (`atomic::stream_stored`: the skeleton, then its pages; joining the pieces is joining the
+/// part): what reads a part element by element holds about one page of it. Per part streamed,
+/// a snapshot's frontiers and `Absorbed`.
+pub(crate) fn each_held_piece(tx: &mut Tx<'_>, id: &CommitId, ai: usize, f: &mut dyn FnMut(&mut Tx<'_>, osis_crdt::Fragment) -> Result<()>) -> Result<Vec<Option<crate::engine::Gives>>> {
+    let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(Vec::new()) };
+    let Some(mut blob) = tx.get_commit(id)? else { return Ok(Vec::new()) };
+    blob.parts.retain(|p| p.ai == ai);
+    let Some(a) = h.aspects.get(ai).filter(|_| !blob.parts.is_empty()) else { return Ok(Vec::new()) };
+    let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
+    let mut out = Vec::new();
+    for p in &blob.parts {
+        out.push(atomic::stream_stored(tx, &h, id, p, &dedup, f)?);
+    }
+    Ok(out)
+}
+
+/// Whether commit `id`'s stored blob holds a part on aspect `ai` (what `each_held_piece` reads).
+pub(crate) fn stores_part(tx: &mut Tx<'_>, id: &CommitId, ai: usize) -> Result<bool> {
+    Ok(tx.get_commit(id)?.is_some_and(|b| b.parts.iter().any(|p| p.ai == ai)))
 }
 
 /// Decoded parts of a held commit on the aspects `keep` selects, with their indexes.
