@@ -1,0 +1,54 @@
+# Growth census
+> Summary: Every known cause of permanent or unbounded growth of stored or synced data, at nodes and hosts. Each row says what it grows with, an approximate size, whether it is inherent or closable, and the issue that tracks it. Rows are ordered by how badly a "plain database, no history, frequent overwrites" workload grows. Every change that adds a new kind of permanent data adds or updates a row here.
+
+Marks: **M** = measured, **E** = estimated from encodings or spec, **C** = the code says so.
+
+The probe for the M rows: 400 overwrites of one register by one node, compacted after each 200. Store bytes are MemoryBackend `dump()` key+value totals, page overhead included, debug build. Results:
+- Node store: 47 KB to 186 KB to 326 KB. That is about **690 B per overwrite, kept after compaction**. It is still there after 32 days, once tombstones and entry rows have gone.
+- Host store: 7.5 KB to 119 KB, then 66 KB after 32 days. That is about **146 B per overwrite after tombstones expire**.
+
+## Plain database, frequent overwrites (worst first)
+| # | Cause | Where | Grows with, size | Kind | Issue |
+|---|---|---|---|---|---|
+| 1 | Commit header, meta, record and voided mark kept after the bodies drop (commits.md §5 "never headers") | Node, old devices only (new devices never fetch compacted headers) | Per commit ever applied: header + signature about 290 B (E, budget test ≤ 330 B with a small delta) + meta about 90 B + record ≥ 14 B; **about 690 B per commit in the store (M)** | Closable: header forgetting | issues/session-sources.md |
+| 2 | Host per-label log: add and delete records (33-41 B each) | Host | Per blob ever added and deleted: **about 146 B per overwrite (M)**. Trimmed only at `log_keep` = 2^20 records per label (C), so bounded at about 40-150 MB per label | Likely closable: trim records of entries gone for longer than `TOMBSTONE_LIFETIME`. Older cursors already fall back to range reconciliation (check that path) | none |
+| 3 | Receipt record `r/`: a 24 B `(lo, hi, t)` per one-minute arrival bucket per (aspect, source), plus 60 B per commit-form commit (C) | Node | Per minute of writing per aspect, for good | Closable: forget a source's receipts once it leaves no trace (session design rule 6). Commit-form entries go with their headers | issues/session-sources.md |
+| 4 | Snapshot `Absorbed`: commit ID + author, about 47 B per commit-form commit, carried by every later snapshot of the aspect | Node and host (synced) | Per commit-form commit ever (link and recovery keys, item 193's restore window: notes/node.md Counters) | Closable: session form plus "list only what occurs" | issues/session-sources.md |
+| 5 | Snapshot frontier entries for nodes with no write left in the aspect (frontier-only sources, crdt.md §3.3 rule 1) | Node and host (synced) | Per node that ever wrote the aspect: about 20 B (E). Bounded by device count | Closable: session design rule 3 | issues/session-sources.md |
+| 6 | Store COUNTER row per (tid, ak) written in node form, kept even after `drop_aspect` (C) | Node | Per aspect ever written: about 40 B (E) | Closable: counters live in memory per session | issues/session-sources.md |
+| 7 | Map, set and bag tombstones: `(dot, R)` per removed entry until the collection is reset (crdt.md §5.5, §5.6) | Node and host (in snapshots) | Per removal: about 10-40 B (E) | Inherent ("state grows with removals", requirements Scale). A `replace` clears them | none |
+| 8 | `created.0`: about 53 B per thing (E, budget test < 64 B; key actor about 77 B; copy +16 B), stored 3 times locally (commit part, `t/` row, state). Its first commit's body and header are never dropped, because the part is `nobody`, kept forever and never snapshotted | Node and host | Per thing ever created, deleted ones included: about 450 B with its header | Record: inherent (validates late writes, owner chain). The triple copy and the header pinned by it are closable (store the record once; let a commit forget its other parts) | none |
+| 9 | Node-sync `y/d` (timed delete sent) and `y/g` (host said tombstoned) rows, deleted only when read access is lost (C) | Node | Per timed delete and per tombstoned upload, (host, label, blob) about 100 B | Closable without trade-off: drop with the entry, or after `TOMBSTONE_LIFETIME` | none |
+| 10 | Host `T`/`Y` tombstones | Host | Per deletion, kept 30 days: 8 B + index (C) | Bounded (time) | none |
+
+## Other workloads
+| Cause | Where | Grows with, size | Kind | Issue |
+|---|---|---|---|---|
+| Full history (keep at least forever, or no compaction) | Both | Each commit's bodies, as written | Inherent (chosen) | none |
+| Sequence tombstones and bare anchors | Both | Per deleted element: 3-4 B in a run-compressed snapshot; per reset run about 1 B (crdt.md §5.7) | Inherent (requirements Scale) | none |
+| Sequence sessions (after the session design) | Both | Per session whose inserted records survive, per text or list aspect: 32 B `Sources` entry + about 4 B frontier (E) | Accepted residual. Same place as the tombstones | issues/session-sources.md |
+| Value-less list `v/` and residue `w/` per expired or purged delta (C) | Node | Per expiring or purged delta: about 33 B + residue (its dots and structure, tens of B), for good. Disappearing messages and TTL caches hit this per write | Maybe closable: residue is needed for un-merge and stripping while a copy can arrive. Needs design | issues/valueless-gaps.md (related) |
+| Expiring commits' headers (never covered) | Node | Per expiring commit: as row 1 | Closable with rule 8 of the session design (the `v/` list stands in for T) | issues/session-sources.md |
+| Demotion (revoke) frontiers, carried as certificates under every label the successor writes, and in the ledger for good | Both | Per removed device: 10 B per aspect it wrote (session design: about 5 B per traced (aspect, session) + 16 B per session), times labels | Closable in part (split frontier) | issues/frontier-certificate-cost.md |
+| Tenure ledger entries (`tenures.0`) with frontiers, carried forward by every roster snapshot | Both | Per ended tenure of write or above, forever (permissions.md §6) | Inherent today | issues/frontier-certificate-cost.md |
+| `roles.0` edge writes with no roster snapshot | Both | Per edge write, forever until the owner chain writes a roster snapshot; then `ROLE_KEEP` (90 days) after replaced | Inherent (only owner-chain can compact). Large rosters need a roster snapshot policy | none |
+| Role-class bodies (`secrets.0`, `keys.0`, `label.0`) | Both | Kept `ROLE_KEEP` after replaced (bounded) | Bounded | none |
+| History boxes (`secrets.0` history map) | Both | Per rotation of a role: one box holding every earlier secret (about 40 B each) plus names. Never removed, so O(R²) bytes over R rotations (E, crypto.md §4) | Closable with a small trade-off: a rotation removes older history boxes of its role (the newest holds all). A holder that missed rotations then waits for a re-seal, as requirements "Out of scope" already accepts | none |
+| Names in history boxes | Both | Per departure since the epoch start (roster snapshot), repeated in every history box of each rotation | Bounded by roster snapshots | none |
+| Node epoch records `k/` (C) | Node | Per epoch learned per role: about 150-250 B, forever | Inherent while old content is readable. Could fold into the newest history | none |
+| `label.0` steps with claim sets and entry boxes (33 B per claim, about 1.2 KB per static entry) | Both | Per registration step. Spec allows an admin to drop them after `ROLE_KEEP`; not built (C) | Closable without trade-off (implement the drop) | none |
+| Host label rows: `L` meta 129 B, `S` steps about 325 B, `V`/`W` 32 B, `Q` replication position 24 B (C) | Host | Per label and per registration, forever (no label removal) | Closable: label retirement at hosts (needs a protocol op) | none |
+| Host superseded claim sets | Host | Dropped after `max(claim_keep, ROLE_KEEP)` (C) | Bounded | none |
+| Node-sync `y/k` certificates (label, commit), `y/s` carriers per dropped body (32 B IDs), `y/h` head per (host, label) about 325 B (C) | Node | Per certificate placed per label, per dropped body, per host label; until read access is lost | `y/k`, `y/s` closable (drop with the commit or entry); `y/h` bounded by labels | none |
+| Local derived indexes (`node/metas`, `node/edges` about 2x a roster snapshot, box and epoch indexes) | Node | With their commits | Follow rows 1 and 8 | issues/session-sources.md |
+| Ephemeral headers in memory | Node and host memory | About 15 MB per hour per author at presence rates, until restart | Closable: same forgetting | issues/eph-unify.md |
+| Parked commits (unknown encoding) | Node | Whole commit bytes until a build understands them | Bounded by authenticated writers only | none |
+| Undo buffers | Node | Capped at `UNDO_DEPTH` = 16 per aspect | Bounded | none |
+| Death records (DEATH rows) | Node | Live with their body | Bounded | none |
+
+## Closable without other trade-offs (ready to brief)
+- Row 9: `y/d` and `y/g` rows dropped with their entry, or after `TOMBSTONE_LIFETIME`.
+- `label.0` step and claim-set drop after `ROLE_KEEP`. The spec already allows it.
+- `y/k` and `y/s` dropped with their commit or entry.
+- Host log trimming by age for gone entries (row 2), once the cursor-to-reconciliation fallback is confirmed to cover it.
+- The rest (rows 1, 3-6, expiring headers) close together with issues/session-sources.md, which carries the residuals it accepts.
