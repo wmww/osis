@@ -419,13 +419,18 @@ pub fn ensure_touch(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut Pag
                     ensure_span(txn, t, set, f, a, b)?;
                 }
             }
-            if let Some(d) = touch.seqs.get(p) {
-                prefetch(txn, tid, ak, t, set, f, d)?;
+        } else {
+            for d in dots {
+                ensure_dot(txn, t, set, f, d)?;
             }
-            continue;
         }
-        for d in dots {
-            ensure_dot(txn, t, set, f, d)?;
+        // a page joins the set's keyed path into `f`, which `write_touched` takes again: a
+        // delta reaching the set without elements (a `W`) would otherwise drop its creations
+        if set.loaded.is_empty() {
+            ensure_first(txn, t, set, f)?;
+        }
+        if let Some(d) = touch.seqs.get(p) {
+            prefetch(txn, tid, ak, t, set, f, d)?;
         }
     }
     Ok(true)
