@@ -18,6 +18,10 @@ use super::{Action, ConnId, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
+
+/// How often carriers and certificate placements nothing needs are forgotten (they wait
+/// `TOMBSTONE_LIFETIME` anyway): at 0 every tick scans every entry, at infinity they stay.
+pub(crate) const RECORD_SWEEP_MS: u64 = 3_600_000;
 use osis_base::{BlobId, LabelId};
 use osis_label::{ClaimSet, Step, StepId};
 use osis_proto::{Budget, Code, EntryMeta, LabelStore, LogRecord, Put, ServingConfig, ServingSession, ServingInput, ServingOutput, StoreError};
@@ -735,9 +739,13 @@ impl SyncEngine {
         let wall = self.state.now;
         self.state.feed.expire(wall);
         self.state.expire_tombs(wall);
-        self.state.sweep_carriers(wall);
-        let ix = &self.engine.core.ix.commits;
-        self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.dropped.contains_key(&ai))));
+        // these scan every entry and placement: at most once per `RECORD_SWEEP_MS`
+        if wall >= self.swept.saturating_add(RECORD_SWEEP_MS) {
+            self.swept = wall;
+            self.state.sweep_carriers(wall);
+            let ix = &self.engine.core.ix.commits;
+            self.state.sweep_certs(|c| ix.get(c).is_some_and(|m| (0..m.header.aspects.len()).any(|ai| !m.dropped.contains_key(&ai))));
+        }
         self.prune_charges();
         if self.blob_sizes.len() > self.state.entries.len() {
             let held: BTreeSet<BlobId> = self.state.entries.keys().map(|(_, b)| *b).collect();
