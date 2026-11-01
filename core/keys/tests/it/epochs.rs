@@ -128,8 +128,7 @@ fn fork_merge() {
     let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &mut rng(1)).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
-    let mut view = derived.clone();
-    view = r1.preview(&view).unwrap();
+    let view = applied(&r1, &derived, 1);
 
     let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(2)).unwrap();
     let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(3)).unwrap();

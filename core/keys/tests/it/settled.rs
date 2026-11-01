@@ -1,9 +1,11 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Settled rotation commits (spec/crypto.md §4): random claim histories of one role (forks,
-//! invalid claims, keysets listing the commits of what they supersede, forged invalid claims no
-//! rotator lists, snapshots), the held claims recorded in random orders with validity verdicts
-//! flipping on the way, against a direct reading of the spec rule computed from the final held
-//! set. Grants and re-seals re-writing boxes do not appear: the rule reads no box record.
+//! invalid claims, keysets listing the commits of what they supersede, genuine rotations some
+//! list names but the node never got (withheld), forged claims no rotator lists, valid (a writer's
+//! while it could rotate, its keyset copied or listing nothing) or not (anyone's), snapshots),
+//! the held claims recorded in random orders with validity verdicts flipping on the way, against
+//! a direct reading of the spec rule computed from the final held set. Grants and re-seals
+//! re-writing boxes do not appear: the rule reads no box record.
 
 use osis_base::CommitId;
 use osis_crypto::Epoch;
@@ -24,6 +26,7 @@ struct Commit {
     valid: bool,
 }
 
+/// The node's held set: lists may name commits it does not hold.
 #[derive(Clone, Debug)]
 struct History {
     base: bool,
@@ -35,16 +38,17 @@ const LEVELS: u64 = 4;
 const FORKS: u8 = 2;
 
 fn history() -> impl Strategy<Value = History> {
-    let commit = (2..=LEVELS, 0..FORKS, proptest::collection::vec((1..LEVELS, 0..FORKS, proptest::collection::vec(0u8..12, 0..3)), 0..3), proptest::bool::weighted(0.6));
-    // forged: invalid claims with nothing listed, under IDs no list names (anyone can sign one)
-    let forged = proptest::collection::vec((1..=LEVELS, 0..FORKS), 0..3);
+    let commit = (2..=LEVELS, 0..FORKS, proptest::collection::vec((1..LEVELS, 0..FORKS, proptest::collection::vec(0u8..12, 0..3)), 0..3), proptest::bool::weighted(0.6), proptest::bool::weighted(0.15));
+    // forged: claims under IDs no list names, valid or not, listing nothing or a copy of a
+    // genuine commit's list
+    let forged = proptest::collection::vec((1..=LEVELS, 0..FORKS, any::<bool>(), proptest::option::of(0usize..12)), 0..3);
     (any::<bool>(), proptest::collection::btree_set((1..=LEVELS, 0..FORKS), 0..2), proptest::collection::vec(commit, 1..12), forged).prop_map(|(base, snaps, cs, forged)| {
         let id = |i: usize| CommitId([i as u8 + 1; 32]);
-        let claimed: Vec<Epoch> = cs.iter().map(|(n, k, _, _)| ep(*n, *k)).collect();
-        let commits = cs
+        let claimed: Vec<Epoch> = cs.iter().map(|(n, k, ..)| ep(*n, *k)).collect();
+        let genuine: Vec<(Commit, bool)> = cs
             .iter()
             .enumerate()
-            .map(|(i, (n, k, rm, valid))| {
+            .map(|(i, (n, k, rm, valid, withheld))| {
                 let mut lists = Superseded::new();
                 for (sn, sk, names) in rm {
                     let s = ep(*sn, *sk);
@@ -57,10 +61,18 @@ fn history() -> impl Strategy<Value = History> {
                     });
                     lists.entry(s).or_default().extend(named);
                 }
-                Commit { id: id(i), claims: ep(*n, *k), lists, valid: *valid }
+                (Commit { id: id(i), claims: ep(*n, *k), lists, valid: *valid }, *withheld)
             })
-            .chain(forged.iter().enumerate().map(|(i, (n, k))| Commit { id: CommitId([100 + i as u8; 32]), claims: ep(*n, *k), lists: Superseded::new(), valid: false }))
             .collect();
+        let forged: Vec<Commit> = forged
+            .iter()
+            .enumerate()
+            .map(|(i, (n, k, valid, copy))| {
+                let lists = copy.and_then(|j| genuine.get(j)).map(|(c, _)| c.lists.clone()).unwrap_or_default();
+                Commit { id: CommitId([100 + i as u8; 32]), claims: ep(*n, *k), lists, valid: *valid }
+            })
+            .collect();
+        let commits = genuine.into_iter().filter(|(_, w)| !w).map(|(c, _)| c).chain(forged).collect();
         History { base, snapshots: snaps.into_iter().map(|(n, k)| ep(n, k)).collect(), commits }
     })
 }
@@ -80,10 +92,11 @@ fn reference(h: &History) -> BTreeSet<Epoch> {
                 continue;
             }
             let ok = below(c).iter().all(|(s, named)| {
-                est.contains(s)
-                    || (!named.is_empty()
-                        && named.iter().all(|n| h.commits.iter().any(|x| x.id == *n && x.claims == *s && !x.valid && settled.contains(&x.id)))
-                        && !h.commits.iter().any(|x| x.claims == *s && x.valid))
+                if named.is_empty() {
+                    est.contains(s)
+                } else {
+                    h.snapshots.contains(s) || named.iter().all(|n| h.commits.iter().any(|x| x.id == *n && x.claims == *s && settled.contains(&x.id)))
+                }
             });
             if ok {
                 settled.insert(c.id);
@@ -191,4 +204,35 @@ fn forged_claim_passes_nothing() {
     y.invalidate(&rs);
     y.establish();
     assert_eq!(y.current(), vec![p, e]);
+}
+
+// spec/crypto.md §4 (only the rotator's list picks the chain): as `forged_claim_passes_nothing`
+// with F valid (signed by a writer while it could rotate read, applied by e's rotator, which then
+// lists it beside R_s). F establishes s where R_s is withheld, but e is not established until
+// R_s is held and settled; nor when R_p (p's rotation, carrying another removal, which R_s lists)
+// is the one withheld, F settled beside an unsettled R_s.
+#[test]
+fn valid_forged_claim_passes_nothing() {
+    let (o, p, s, e) = (ep(1, 0), ep(2, 0), ep(3, 0), ep(4, 0));
+    let (rp, rs, f, re) = (CommitId([1; 32]), CommitId([2; 32]), CommitId([3; 32]), CommitId([4; 32]));
+    let base = || {
+        let mut x = RoleEpochs::default();
+        x.set_established(o, Provenance::Fixed);
+        x.set_claim(s, f, true, Superseded::new());
+        x.set_claim(e, re, true, Superseded::from([(s, BTreeSet::from([rs, f]))]));
+        x
+    };
+    let mut x = base();
+    x.set_claim(p, rp, true, Superseded::from([(o, BTreeSet::new())]));
+    x.establish();
+    assert!(x.is_established(&s));
+    assert!(!x.is_established(&e), "R_s withheld");
+    x.set_claim(s, rs, true, Superseded::from([(p, BTreeSet::from([rp]))]));
+    x.establish();
+    assert_eq!(x.current(), vec![e]);
+    let mut y = base();
+    y.set_claim(s, rs, true, Superseded::from([(p, BTreeSet::from([rp]))]));
+    y.establish();
+    assert!(!y.is_established(&e), "R_p withheld");
+    assert_eq!(y.settled_claims(), BTreeSet::from([(s, f)]));
 }

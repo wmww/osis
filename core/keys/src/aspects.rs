@@ -25,8 +25,8 @@ pub fn history_key(role: Role, epoch: &Epoch) -> HistoryKey {
 }
 
 /// The keyset of a role epoch: its KEM public key `kdf("kem", secret)` and delete key
-/// (spec/crypto.md §3, §7), superseding `supersedes` (§4: each epoch with the valid rotation
-/// commits of it the rotator applied).
+/// (spec/crypto.md §3, §7), superseding `supersedes` (§4: each epoch with the valid settled
+/// rotation commits of it the rotator applied).
 pub fn keyset(epoch: &Epoch, secret: &Secret32, supersedes: &Superseded) -> Keyset {
     Keyset {
         epoch: to_schema(epoch),
