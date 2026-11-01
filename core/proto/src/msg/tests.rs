@@ -173,3 +173,24 @@ proptest! {
         }
     }
 }
+
+// spec/wire.md §13 (message items), spec/requirements.md (peer input never causes unbounded
+// allocation): a frame of one-byte items is refused before its value tree is built, while the
+// densest replies an engine pages (deletion and pending events by `event_size`) still decode
+#[test]
+fn item_cap_spec_wire_13() {
+    let n = MAX_MESSAGE - 16;
+    let mut body = vec![0x83, 0x0b, 0x01, 0x9a];
+    body.extend_from_slice(&(n as u32).to_be_bytes());
+    body.extend(std::iter::repeat_n(0u8, n));
+    let r = Message::decode(&body).expect_err("decoded");
+    assert_eq!(r.error, Error::Cap("message items"));
+    let cursor = Cursor { log_id: [1; 16], seq: 1 };
+    for e in [Event::Deleted(BlobId([0xee; 32])), Event::Pending { blob_id: BlobId([0xee; 32]), at: u64::from(u32::MAX) << 20 }] {
+        let k = crate::serving::REPLY_BUDGET / event_size(&e);
+        let m = Message::SyncReply { id: 1, events: vec![e; k], want: vec![BlobId([1; 32]); MAX_GAINED], codes: vec![Code::OK; MAX_ITEMS], cursor, more: true };
+        let body = m.encode();
+        assert!(body.len() <= MAX_MESSAGE);
+        assert_eq!(Message::decode(&body), Ok(m));
+    }
+}

@@ -49,11 +49,14 @@ impl FrameDecoder {
         self.max = max.min(MAX_MESSAGE);
     }
 
-    /// Appends received stream bytes.
+    /// Appends received stream bytes. The buffer's capacity stays within about twice the bytes
+    /// not yet handed out plus `bytes` (a peer that sent one large frame and then idles holds
+    /// no frame-sized buffer: `pending` is what a host charges, so the capacity must follow it).
     pub fn push(&mut self, bytes: &[u8]) {
         if self.start > 0 && self.start >= self.buf.len() / 2 {
             self.buf.drain(..self.start);
             self.start = 0;
+            self.buf.shrink_to(2 * self.buf.len());
         }
         self.buf.extend_from_slice(bytes);
     }
@@ -74,6 +77,11 @@ impl FrameDecoder {
         let Some(body) = rest.get(4..4 + len) else { return Ok(None) };
         let body = body.to_vec();
         self.start += 4 + len;
+        // everything handed out: release the buffer (it may be frame-sized)
+        if self.start == self.buf.len() {
+            self.buf = Vec::new();
+            self.start = 0;
+        }
         Ok(Some(body))
     }
 
@@ -116,6 +124,29 @@ mod tests {
         d.set_max(MAX_HELLO_BYTES);
         d.push(&encode_frame(&[0x80; MAX_HELLO_BYTES]));
         assert_eq!(d.next_frame().map(|f| f.map(|b| b.len())), Ok(Some(MAX_HELLO_BYTES)));
+    }
+
+    // spec/requirements.md (peer input never causes unbounded allocation): once a large frame is
+    // handed out the decoder holds no frame-sized buffer, whether the input ended with it or with
+    // the start of a small next frame (a host charges only `pending` to the connection)
+    #[test]
+    fn large_frame_buffer_released() {
+        let big = encode_frame(&vec![0x40; 1 << 20]);
+        let mut d = FrameDecoder::new();
+        for chunk in big.chunks(64 * 1024) {
+            d.push(chunk);
+        }
+        assert_eq!(d.next_frame().map(|f| f.map(|b| b.len())), Ok(Some(1 << 20)));
+        assert_eq!(d.pending(), 0);
+        assert!(d.buf.capacity() == 0, "{}", d.buf.capacity());
+        for chunk in big.chunks(64 * 1024) {
+            d.push(chunk);
+        }
+        d.push(&[0, 0]);
+        assert!(d.next_frame().is_ok_and(|f| f.is_some()));
+        d.push(&[0]);
+        assert_eq!(d.pending(), 3);
+        assert!(d.buf.capacity() < 64 * 1024, "{}", d.buf.capacity());
     }
 
     // spec/wire.md §11.1: 1 <= len <= MAX_MESSAGE
