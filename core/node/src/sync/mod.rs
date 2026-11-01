@@ -469,6 +469,8 @@ pub struct SyncEngine {
     pub(crate) own_keys: BTreeSet<Tid>,
     /// Sizes of blobs served to peers (memory only; pruned at ticks).
     pub(crate) blob_sizes: BTreeMap<osis_base::BlobId, u64>,
+    /// Wall time of the last carrier and certificate sweep (memory only; `serve::RECORD_SWEEP_MS`).
+    pub(crate) swept: u64,
     pub(crate) peer_cache: peers::PeerCache,
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
@@ -577,6 +579,7 @@ impl SyncEngine {
             served_cache: None,
             charges: serve::Charges::default(),
             blob_sizes: BTreeMap::new(),
+            swept: 0,
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
             roles_at: BTreeMap::new(),

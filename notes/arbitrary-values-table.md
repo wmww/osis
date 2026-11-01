@@ -89,6 +89,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 |---|---|---|
 | `MAX_INBOX_RESENDS` 3 | O (sign-off) | |
 | `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears |
+| `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and placement (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
