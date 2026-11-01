@@ -113,3 +113,44 @@ fn crash_every_write_of_a_purging_commit() {
         assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Str("later".into())));
     }
 }
+
+// spec/crdt.md §2.1: a store restored from a backup that receives only a valid snapshot of the
+// commits it lost (their bodies dropped after compaction) takes its counter from the
+// snapshot's frontier for its own node: its next commit overlaps none of them, and when they
+// arrive after all, nothing is void (spec/commits.md §4).
+#[test]
+fn restored_counter_from_snapshot_frontier_spec_crdt_2_1() {
+    let dev = Dev::new();
+    let mut e = dev.create();
+    let mut m = Mutation::new();
+    let me = e.tid();
+    let t = e.new_thing(&mut m, me);
+    m.set(t, &REG, &s("one")).unwrap();
+    e.commit(m).unwrap();
+    let backup = (dev.backend.copy(), dev.root.copy());
+    let lost: Vec<osis_base::CommitId> = (0..3)
+        .map(|i| {
+            dev.clock.advance(5);
+            set(&mut e, t, &format!("lost {i}"))
+        })
+        .collect();
+    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&REG)).unwrap();
+    let snap = e.compaction_snapshot(&t, &ak).unwrap().expect("a snapshot");
+    let packages: Vec<_> = std::iter::once(snap).chain(lost.iter().copied()).map(|c| e.package(&c).unwrap().unwrap()).collect();
+    let last_hi = lost.iter().map(|c| e.header(c).unwrap().aspects.iter().find(|a| a.ak == ak).unwrap().hi).max().unwrap();
+    drop(e);
+
+    let c: Arc<dyn Clock> = dev.clock.clone();
+    let mut r = Engine::open(Box::new(backup.0), Box::new(backup.1), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
+    let [sp, rest @ ..] = packages.as_slice() else { unreachable!() };
+    r.ingest(&sp.bytes, sp.blobs.clone()).unwrap();
+    dev.clock.advance(5);
+    let mine = set(&mut r, t, "restored");
+    let lo = r.header(&mine).unwrap().aspects.iter().find(|a| a.ak == ak).unwrap().lo;
+    assert!(lo >= last_hi, "the restored node's counter {lo} is past the lost commits' {last_hi}");
+    for p in rest {
+        r.ingest(&p.bytes, p.blobs.clone()).unwrap();
+    }
+    assert!(r.core.ix.void.is_empty(), "void: {:?}", r.core.ix.void.iter().collect::<Vec<_>>());
+    assert_eq!(r.get_typed(&t, &REG).unwrap(), Some(s("restored")));
+}

@@ -112,6 +112,12 @@ fn disk_loss() {
     ok("disk_loss", 1);
 }
 
+// spec/crdt.md §2.1: a device restored from a backup writes before its pass; no commit is void.
+#[test]
+fn restore_backup() {
+    ok("restore_backup", 1);
+}
+
 // spec/permissions.md §4 (chain certificates, placed whenever they change): sweep seed 3, the
 // lost device's copy of the card key's `created.0` never reached the host and the remaining
 // device's placed copy lacked it, so the recovering device could not verify the person.

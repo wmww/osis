@@ -52,6 +52,11 @@ impl MemoryRoot {
     pub fn with_faults(faults: Faults) -> MemoryRoot {
         MemoryRoot { slot: Arc::default(), faults }
     }
+    /// An independent copy of the record (`MemoryBackend::copy`).
+    pub fn copy(&self) -> MemoryRoot {
+        let r = self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        MemoryRoot { slot: Arc::new(Mutex::new(r)), faults: self.faults.clone() }
+    }
 }
 
 impl RootStorage for MemoryRoot {

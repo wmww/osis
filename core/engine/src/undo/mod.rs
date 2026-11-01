@@ -12,7 +12,7 @@ use osis_commit::{Decoded, Form, Kind};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
 use osis_schema::AspectKey;
 use osis_schema::core_types::GROUP;
-use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, PathSeg, Source, Stamp, UndoBuffer, Undone, Writer};
+use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, PathSeg, Stamp, UndoBuffer, Undone, Writer};
 use osis_store::Shred;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -130,6 +130,12 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     let ts = ts.unwrap_or_else(|| tx.core.hlc.next());
     let mut deltas = Vec::new();
     let made: BTreeSet<Tid> = made_by(&h, &m.valid).difference(keep).copied().collect();
+    let mut unmade = unmake_ops(tx, &made, ts, node)?;
+    // node form only on things whose counters this node is sure of (spec/crdt.md §2.1); in
+    // commit form the counters run on across the commit's deltas
+    let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).chain(unmade.keys().map(|k| k.0)).collect();
+    let form = if things.iter().all(|t| tx.core.counters_sure(t)) { Form::Node } else { Form::Commit };
+    let mut next = 1u64;
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
         // created is deleted below instead
@@ -180,11 +186,14 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         tx.ensure_touch(&a.tid, &a.ak, &touch)?;
         // a nested edit reads only its own entries (by dot: `osis_crdt::undo`), on the pages
         // holding the delta's dots; the pre-commit side comes from the buffer or held bodies
-        let lo = tx.txn.counter(&a.tid, &a.ak)?;
+        let lo = match form {
+            Form::Commit => next,
+            _ => tx.txn.counter(&a.tid, &a.ak)?,
+        };
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
+        let w = Writer::new(ts, form.own_source(node, CommitId([0; 32])), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
         let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
         // a write of an undo commit in effect, with every later change of the aspect undone:
         // undo steps back through it (spec/crdt.md §4.6); judged on first use
@@ -197,17 +206,24 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
         if let Some((f, r, expires)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
+            next = r.hi;
             deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
+            // joined into the delta just pushed, so its counters stay the last allocated
+            if let Some(ops) = unmade.remove(&(a.tid, a.ak.clone())) {
+                unmake_one(tx, (a.tid, a.ak.clone()), ops, ts, node, form, &mut next, &mut deltas)?;
+            }
         }
     }
-    unmake(tx, &made, ts, node, &mut deltas)?;
+    for (k, ops) in unmade {
+        unmake_one(tx, k, ops, ts, node, form, &mut next, &mut deltas)?;
+    }
     if deltas.is_empty() {
         return Err(Error::Misuse("nothing to undo"));
     }
     for d in &deltas {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+    let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     build_and_apply(tx, plan, deltas)
 }
 
@@ -223,11 +239,11 @@ pub(crate) fn made_by(h: &osis_commit::Header, valid: &[bool]) -> BTreeSet<Tid> 
 /// Undoing a creation deletes the thing (spec/crdt.md §4.6): `delete`'s writes for each of
 /// `made`, its held aspects reset (not `created.0` or role-class ones) and its entries
 /// removed from every `group.0` listing it that this node may write, each resolved after the
-/// undo's own delta of that aspect and joined into it. `Permission` when this node may not
-/// write one of `made` (`delete` would refuse; never a partial revert).
-fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut Vec<Resolved>) -> Result<()> {
+/// undo's own delta of that aspect and joined into it (`unmake_one`). `Permission` when this
+/// node may not write one of `made` (`delete` would refuse; never a partial revert).
+fn unmake_ops(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid) -> Result<BTreeMap<(Tid, Ak), Vec<PathOp>>> {
     if made.is_empty() {
-        return Ok(());
+        return Ok(BTreeMap::new());
     }
     let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
     for x in made {
@@ -255,31 +271,38 @@ fn unmake(tx: &mut Tx<'_>, made: &BTreeSet<Tid>, ts: Ts, node: Tid, deltas: &mut
             ops.entry((*g, gak.clone())).or_default().extend(v);
         }
     }
-    for ((tid, ak), ops) in ops {
-        let at = deltas.iter().position(|d| d.tid == tid && d.ak == ak);
-        let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
-        let lo = match at.and_then(|i| deltas.get(i)) {
-            Some(d) => {
-                state.join(d.fragment.clone());
-                d.hi
-            }
-            None => tx.txn.counter(&tid, &ak)?,
-        };
-        let schema = osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
-        let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
-        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
-        let out = match &view {
-            Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
-            None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,
-        };
-        let Some((f, r)) = out else { continue };
-        match at.and_then(|i| deltas.get_mut(i)) {
-            Some(d) => {
-                d.fragment.join(f);
-                d.hi = r.hi;
-            }
-            None => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
+    Ok(ops)
+}
+
+/// Runs `unmake_ops`' ops on `k`, joined into the undo's delta of `k` when it is the last one
+/// in `deltas` (its counters the last allocated: commit form runs on from `next`).
+#[allow(clippy::too_many_arguments)]
+fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, node: Tid, form: Form, next: &mut u64, deltas: &mut Vec<Resolved>) -> Result<()> {
+    let mut state = tx.state(&tid, &ak)?.cloned().unwrap_or_default();
+    let joined = deltas.last().is_some_and(|d| d.tid == tid && d.ak == ak);
+    let lo = match deltas.last() {
+        Some(d) if joined => {
+            state.join(d.fragment.clone());
+            d.hi
         }
+        _ if form == Form::Commit => *next,
+        _ => tx.txn.counter(&tid, &ak)?,
+    };
+    let schema = osis_schema::core_types::is_core_key(ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone()));
+    let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
+    let w = Writer::new(ts, form.own_source(node, CommitId([0; 32])), lo).keyed_removals(osis_schema::core_types::is_role_class(ak.as_str()));
+    let out = match &view {
+        Some(v) => crate::engine::write::run_ops(&state, w, &ops, v)?,
+        None => crate::engine::write::run_ops(&state, w, &ops, &AnyView)?,
+    };
+    let Some((f, r)) = out else { return Ok(()) };
+    *next = r.hi;
+    match deltas.last_mut() {
+        Some(d) if joined => {
+            d.fragment.join(f);
+            d.hi = r.hi;
+        }
+        _ => deltas.push(Resolved { tid, ak, fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() }),
     }
     Ok(())
 }

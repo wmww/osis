@@ -616,6 +616,16 @@ impl Transaction<'_> {
         Ok(first)
     }
 
+    /// Raises the next counter to at least `next`: counters this node's lost commits used
+    /// (spec/crdt.md §2.1).
+    pub fn raise_counter(&mut self, tid: &Tid, ak: &Ak, next: u64) -> Result<(), Error> {
+        if next > self.counter(tid, ak)? {
+            let m = self.aspect_mem(tid, ak);
+            self.cat_put_to(&aspect_key(kind::COUNTER, tid, ak), W::new().u64(next).take(), Shred::No, m)?;
+        }
+        Ok(())
+    }
+
     // Pending and parked commits.
 
     /// Stores a commit not yet applied, as bytes (header and blob).

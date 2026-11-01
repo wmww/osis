@@ -41,6 +41,11 @@ impl MemStore {
     pub fn new() -> MemStore {
         MemStore::default()
     }
+    /// An independent copy of the store as it is now, as a device backup takes it (the host
+    /// store left out): opening it later is a restore.
+    pub fn backup(&self) -> MemStore {
+        MemStore { backend: self.backend.copy(), root: self.root.copy(), ..MemStore::default() }
+    }
 }
 
 /// Where the database lives.

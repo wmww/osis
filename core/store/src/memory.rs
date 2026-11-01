@@ -124,6 +124,13 @@ impl MemoryBackend {
     pub fn history(&self) -> Vec<KeyValue> {
         self.lock().history.clone().unwrap_or_default()
     }
+    /// An independent copy of the durable state, as a backup takes it (sharing the faults, no
+    /// history).
+    pub fn copy(&self) -> MemoryBackend {
+        let d = self.lock();
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, syncs: 0 };
+        MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
+    }
     /// The live key-value pairs.
     pub fn dump(&self) -> Vec<KeyValue> {
         self.lock().kv.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
