@@ -5,3 +5,6 @@
 - Found in the sweep step 8 review. Non-readers cannot trigger it (`SyncEngine::labels` counts only groups with read secrets held), and admission only gates new registrations within the caps.
 - Path: Bob co-reads group G with Alice; G's hosts name Alice's host address. Bob creates group X, grants Alice read (Bob is connected, so her node admits the grant without a click) and lists her host address in X's hosts. Alice's node now admits X's label: Bob stores up to `cap_bytes` (16 GiB default) per such group, up to the host-wide caps.
 - Options: accept (bounded by caps, same exposure as any co-reader-placed data); count only groups whose `label.0` the node's own person wrote, or where it holds admin (breaks a family group whose other admin named the host); or an explicit list only (`labels`), dropping the automatic part of `own`.
+
+
+Coordinator decision (round 13): `own` means "groups my own person owns" (owner chain ends at my person, or actors my person admins), not "groups I read". Hosting someone else's group takes `open` or an explicit `--label`. Same principle as the inbox accept step: spending my resources on a stranger's data takes an explicit choice.
