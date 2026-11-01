@@ -1356,8 +1356,8 @@ fn forks_with_departures_settle_spec_permissions_3() {
     forks_with_departures(1..2);
 }
 
-/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS. Fails at seeds 51 (a leak) and 243 of 0..300
-/// until issues/superseded-invalid-epoch-strands-chain.md is fixed.
+/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS. Fails at seeds 51 (a leak), 243 and 336 of
+/// 0..400 until issues/superseded-invalid-epoch-strands-chain.md is fixed.
 #[test]
 #[ignore = "tier 2"]
 fn forks_with_departures_settle_large() {
