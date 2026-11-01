@@ -14,7 +14,7 @@ const MAX_EXPAND: usize = 64;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Schema {
     /// For people and tools only: never on the wire, never attached to aspects.
-    pub revision: u64,
+    pub version: u64,
     pub types: BTreeMap<String, TypeDef>,
     /// By AK.
     pub aspects: BTreeMap<String, AspectDef>,
@@ -148,8 +148,8 @@ pub struct Invalid {
 }
 
 impl Schema {
-    pub fn new(revision: u64) -> Schema {
-        Schema { revision, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
+    pub fn new(version: u64) -> Schema {
+        Schema { version, types: BTreeMap::new(), aspects: BTreeMap::new(), doc: None }
     }
 
     /// Declares core AKs: the core schema (`Schema::validate` allows no mix). An app schema
@@ -243,8 +243,8 @@ impl Schema {
         let mut out = Vec::new();
         let mut bad = |item: &str, msg: String| out.push(Invalid { item: item.to_string(), msg });
         let big = |n: Option<u64>| n.is_some_and(|n| i64::try_from(n).is_err());
-        if big(Some(self.revision)) {
-            bad("schema", "revision out of range".into());
+        if big(Some(self.version)) {
+            bad("schema", "version out of range".into());
         }
         for (name, def) in &self.types {
             let item = format!("type {name}");

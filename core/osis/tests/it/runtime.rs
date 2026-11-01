@@ -179,7 +179,7 @@ async fn text_idle_commit_api_text_sessions() {
 async fn keep_alive_rewrites_until_dropped() {
     let net = osis_transport::Net::new(4);
     let db = Osis::create(cfg(1, vec![], Transport::InProcess(net.endpoint("a")))).unwrap().0;
-    db.register_schema_source("c.osis", "revision 1;\naspect c:cursor.0~: map<tid, int> [ephemeral, expires: 60ms];\naspect c:flag.0~: map<tid, int> [ephemeral];\n").unwrap();
+    db.register_schema_source("c.osis", "version 1;\naspect c:cursor.0~: map<tid, int> [ephemeral, expires: 60ms];\naspect c:flag.0~: map<tid, int> [ephemeral];\n").unwrap();
     let k = db.key("c:cursor.0~").unwrap();
     let t = db.write_with(|w| w.create(db.me())).unwrap();
     let me = osis::Path(vec![osis::Step::Key(Value::Tid(db.node()))]);

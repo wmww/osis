@@ -721,7 +721,7 @@ impl Net {
 pub static TEST: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "test.osis",
     r#"
-revision 1;
+version 1;
 aspect t:reg.0: string;
 aspect t:gone.0: string [by: writer, keep_at_most: 1h];
 aspect t:brief.0: string [expires: 1h];

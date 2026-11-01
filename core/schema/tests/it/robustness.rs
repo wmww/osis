@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 fn src(body: &str) -> String {
-    format!("revision 1;\n{body}")
+    format!("version 1;\n{body}")
 }
 
 fn err(body: &str) -> ParseError {
@@ -51,7 +51,7 @@ fn checker_refuses_unvalidated_irregular_schemas() {
         reserved: BTreeSet::new(),
     });
     bad.types.insert("t".into(), TypeDef { params: vec!["T".into()], body, doc: None });
-    bad.revision = 2;
+    bad.version = 2;
     let v = check(&good, &bad);
     assert_eq!(v.iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::Invalid]);
     // And the same schema as a value is refused by from_value.
@@ -79,7 +79,7 @@ fn long_type_chains_error_fast() {
     // Within the limit: parses and compares.
     let s = parse("t.osis", &src(&chain(200))).unwrap();
     let mut s2 = s.clone();
-    s2.revision = 2;
+    s2.version = 2;
     assert_eq!(check(&s, &s2), vec![]);
     // Plain aliases beyond the expansion bound say so.
     let mut a = String::new();

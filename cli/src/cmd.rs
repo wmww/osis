@@ -1093,9 +1093,9 @@ fn schema_check(g: &crate::args::Global, file: &std::path::Path, out: &mut dyn s
         Err(_) => "no lock",
     };
     if g.json {
-        writeln!(out, "{}", J::obj([("revision", J::int(s.revision)), ("status", J::str(status))]).text())?;
+        writeln!(out, "{}", J::obj([("version", J::int(s.version)), ("status", J::str(status))]).text())?;
     } else {
-        writeln!(out, "ok revision {} {status}", s.revision)?;
+        writeln!(out, "ok version {} {status}", s.version)?;
     }
     Ok(())
 }

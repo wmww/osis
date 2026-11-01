@@ -360,7 +360,7 @@ fn future_format() {
     ok("future_format", 1);
 }
 
-// spec/versioning.md §4, §5: a newer schema revision survives an old writer.
+// spec/versioning.md §4, §5: a newer schema version survives an old writer.
 #[test]
 #[ignore = "tier 2"]
 fn newer_schema() {

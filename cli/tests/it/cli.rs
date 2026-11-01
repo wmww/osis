@@ -370,7 +370,7 @@ fn watch_initial_plan_cli_4() {
     assert_eq!((o.code, o.err.trim()), (6, "error: timed out after 1 change(s)"), "{}", o.out);
 }
 
-const SCHEMA: &str = "revision 1;
+const SCHEMA: &str = "version 1;
 type task = struct { 0 title: string, 1 done: bool, 2 due: option<timestamp> };
 aspect todo:task.0: task;
 aspect todo:list.0: list<task>;
@@ -426,7 +426,7 @@ fn named_keys_with_schema_plan_cli_1() {
     assert_eq!(call(&["set", t, "todo:ping.0*", "1"], "").0, 0);
     assert_eq!(call(&["get", t, "todo:ping.0*"], "").0, 3, "absent");
     assert!(!call(&["aspects", t], "").1.contains("todo:ping.0*"));
-    assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok revision 1 no lock\n");
+    assert_eq!(call(&["schema", "check", f.to_str().unwrap()], "").1, "ok version 1 no lock\n");
     // a schema that does not parse: exit 7
     let bad = d.join("bad.osis");
     std::fs::write(&bad, "schema nonsense").unwrap();

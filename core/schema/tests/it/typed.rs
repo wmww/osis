@@ -10,7 +10,7 @@ use proptest::prelude::*;
 use std::collections::{BTreeMap, BTreeSet};
 
 fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
+    parse("t.osis", &format!("version {rev};\n{body}")).unwrap()
 }
 
 fn st(fields: &[(i64, Value)]) -> Value {

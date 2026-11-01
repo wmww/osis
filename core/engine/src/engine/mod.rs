@@ -44,7 +44,7 @@ use std::sync::mpsc::Receiver;
 /// Engine configuration.
 #[derive(Clone, Debug)]
 pub struct Config {
-    /// `node.0` software revision.
+    /// `node.0` software version.
     pub software: String,
     pub store: StoreConfig,
     /// Bytes of own ephemeral batches kept for undo (notes/ephemeral.md Bounds): older ones are
@@ -1726,5 +1726,24 @@ mod tests {
         })
         .unwrap();
         assert!(e.core.ix.delete_hints.contains_key(&g));
+    }
+
+    // spec: none (the local schema of an app AK, notes/data-model.md AKs): the highest
+    // version registered or written with types it, also after a restart; a stale registration
+    // never downgrades it; an equal version registered again replaces it.
+    #[test]
+    fn local_schema_keeps_highest_version() {
+        let parse = |rev: u64, ty: &str| std::sync::Arc::new(osis_schema::parse("t.osis", &format!("version {rev};\naspect t:a.0: {ty};\n")).unwrap());
+        let rev = |p: &Peer| p.engine.core.schemas.get("t:a.0").map(|s| (s.version, s.aspects["t:a.0"].ty.clone()));
+        let mut p = Peer::new(954, WallMs(1_700_000_000_000)).unwrap();
+        let (v2, v1, v2b) = (parse(2, "int"), parse(1, "string"), parse(2, "bool"));
+        p.engine.register_schema(v2.clone()).unwrap();
+        p.engine.register_schema(v1).unwrap();
+        assert_eq!(rev(&p), Some((2, v2.aspects["t:a.0"].ty.clone())), "a lower version never replaces");
+        p.restart(1).unwrap();
+        assert_eq!(rev(&p), Some((2, v2.aspects["t:a.0"].ty.clone())), "kept in the store");
+        p.engine.register_schema(v2b.clone()).unwrap();
+        p.restart(2).unwrap();
+        assert_eq!(rev(&p), Some((2, v2b.aspects["t:a.0"].ty.clone())), "an equal version registered again replaces");
     }
 }

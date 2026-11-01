@@ -10,7 +10,7 @@ use osis_schema::*;
 const NOTES: &str = include_str!("../../schemas/notes.osis");
 
 fn app(body: &str) -> Result<Schema, ParseError> {
-    parse("t.osis", &format!("revision 1;\n{body}"))
+    parse("t.osis", &format!("version 1;\n{body}"))
 }
 
 fn err(body: &str) -> ParseError {
@@ -42,7 +42,7 @@ fn core_schema_parses_spec_data_model_9() {
 #[test]
 fn notes_schema_parses_items_spec_data_model_2() {
     let s = parse("notes.osis", NOTES).unwrap();
-    assert_eq!(s.revision, 4);
+    assert_eq!(s.version, 4);
     assert_eq!(s.doc.as_deref(), Some("Notes app schema (example; notes/data-model.md)."));
     let Type::Struct(task) = &s.types["task"].body else { panic!() };
     assert_eq!(s.types["task"].doc.as_deref(), Some("A task inside a note."));
@@ -128,18 +128,18 @@ fn defaults_typed_by_field_type() {
 
 #[test]
 fn errors_carry_line_and_column() {
-    let e = parse("f.osis", "revision 1;\ntype x = struct { 0 a int };").unwrap_err();
+    let e = parse("f.osis", "version 1;\ntype x = struct { 0 a int };").unwrap_err();
     assert_eq!((e.file.as_str(), e.line, e.col), ("f.osis", 2, 23));
     assert!(e.to_string().starts_with("f.osis:2:23: expected `:`"), "{e}");
     let e = err("aspect x:y.0: nope;");
     assert_eq!((e.line, e.col), (2, 1));
     assert!(e.msg.contains("unknown type nope"), "{e}");
     let e = parse("f.osis", "type x = int;").unwrap_err();
-    assert!(e.msg.contains("missing `revision"), "{e}");
+    assert!(e.msg.contains("missing `version"), "{e}");
     // no schema ID item: a schema is not identified on the wire (spec/versioning.md §3)
     let e = parse("f.osis", "schema 0x01;").unwrap_err();
     assert!(e.msg.contains("unknown item `schema`"), "{e}");
-    let e = parse("f.osis", "revision 1;\ntype x = struct { 0 a: string = \"unterminated };").unwrap_err();
+    let e = parse("f.osis", "version 1;\ntype x = struct { 0 a: string = \"unterminated };").unwrap_err();
     assert!(e.msg.contains("unterminated"), "{e}");
 }
 
@@ -207,10 +207,10 @@ fn deep_nesting_is_an_error_not_a_crash() {
 
 #[test]
 fn core_aspects_only_in_core_schema() {
-    let e = parse("c.osis", "revision 1;\naspect a.0: int;\naspect a:b.0: int;").unwrap_err();
+    let e = parse("c.osis", "version 1;\naspect a.0: int;\naspect a:b.0: int;").unwrap_err();
     assert!(e.msg.contains("core AKs"), "{e}");
-    assert!(parse("c.osis", "revision 1;\naspect a.0: int;").unwrap().declares_core());
-    assert!(!parse("c.osis", "revision 1;\naspect a:b.0: int;").unwrap().declares_core());
+    assert!(parse("c.osis", "version 1;\naspect a.0: int;").unwrap().declares_core());
+    assert!(!parse("c.osis", "version 1;\naspect a:b.0: int;").unwrap().declares_core());
 }
 
 proptest::proptest! {

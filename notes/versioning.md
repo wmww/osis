@@ -9,9 +9,9 @@ Many apps and app versions share data like a file format. Apps do not always upg
 Three layers of compatibility: store/relay/merge (universal: merge is schema-free), typing (per app, ordinary errors), semantics (doc comments, uncheckable). App versions do not exist for the core.
 
 ## Core vs convention
-The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or revision travels on the wire (owner, round 13): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
+The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or version travels on the wire (owner, round 13): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
 - Writers emitting the oldest format version that fits means one upgraded node strands nobody unless it uses a new feature, and then only on that aspect.
-- Defaults are never materialized and immutable: changing one would read old data differently per revision; materializing them would make a default-valued field distinguishable from an unwritten one.
+- Defaults are never materialized and immutable: changing one would read old data differently per version; materializing them would make a default-valued field distinguishable from an unwritten one.
 - Without the schema-aware diff an old app's save of a `set<struct>` would remove every element a newer app had extended and add a stripped copy, and a list with one unreadable element would be rewritten around it.
 
 ## Terminology
@@ -32,7 +32,7 @@ An app update must never by itself change what is stored. Per write into a form 
 - **old only**, g(new): the default when g is exact or its approximation is declared acceptable. Old apps stay fully functional.
 - **new only**: when g is impossible for this value, or policy says the group has moved on. Optionally reset the old form in the same commit.
 - **new plus lossy old**: when g approximates usefully and old readers still matter.
-Policy inputs, all local: whether g is exact; whether recent writes in this group still touch the old form alone (an old writer; pair with an age cutoff for dead nodes); the revision's age; an explicit per-group or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later into a group with old writers goes back to old-only if g is exact.
+Policy inputs, all local: whether g is exact; whether recent writes in this group still touch the old form alone (an old writer; pair with an age cutoff for dead nodes); the version's age; an explicit per-group or per-app setting, which overrides. Two nodes deciding differently produce a mix the tie-break reads correctly. A thing shared later into a group with old writers goes back to old-only if g is exact.
 
 Cost where the new form is used: old apps see stale or missing data on that item, and their later edit wins through f at the granularity of the converted value. Nothing can do better: old code cannot know what new data means.
 
@@ -63,7 +63,7 @@ Format version 1 is the header's first field; the blob prefix has its own framin
 - Per-delta type hash in the header (above).
 
 ## Implemented (osis-schema) vs open
-- Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive); a `DefaultAdded` passes only for locations the caller lists (the "explicitly marked" escape; the schema value has no marker bit). Lock file `<file>.osis.lock`: header, BLAKE3 of the canonical form, canonical bytes in hex (`provisional`). "Publishing" = `osis-schema-gen --publish`, which refuses a revision that breaks the rules. Transition helpers (tie-break, write policy) are not built: no code reads `succeeds` yet; the links are data in the schema value.
+- Implemented: DSL syntax (notes/data-model.md); the additive checker, one named `Rule` per spec/versioning.md §4 item, types compared structurally after expanding named types (renames are free, recursion coinductive); a `DefaultAdded` passes only for locations the caller lists (the "explicitly marked" escape; the schema value has no marker bit). Lock file `<file>.osis.lock`: header, BLAKE3 of the canonical form, canonical bytes in hex (`provisional`). "Publishing" = `osis-schema-gen --publish`, which refuses a version that breaks the rules. Transition helpers (tie-break, write policy) are not built: no code reads `succeeds` yet; the links are data in the schema value.
 - Open: whether a build whose file differs from its lock may write (proposal: writes untyped); the read API returning the greatest commit `ts` under a path (node/api); the optional reset-old-on-new-only write; version-skew simulation (sim).
 
 ## Prior art

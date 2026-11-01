@@ -38,7 +38,7 @@
 
 ## AKs
 - Grammar: spec/data-model.md §2 (owner decisions, round 13). A string on the wire, readable in diagnostics, whose structure is a grammar; markers are positional reserved characters, never substrings; one spelling per key (`.0` always written, no leading zeros, fixed marker order). The version is a standard, not a codegen convention: same tid and name segments with a higher version is the successor, usable without any schema.
-- Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. Nothing on the wire names a schema (owner, round 13: no machine mapping from AK to schema), so a collision is never prevented and shows only as typed-read failures where the types differ; the writes merge like concurrent writes (spec/requirements.md, Versioning). A node types an AK by the schema it holds for it: the engine keeps one per app AK (`Core::schemas`, the newest registration wins), and no app schema declares a core AK.
+- Collisions: no registry. First-party AKs live in this repo (`contact:names.0`); other apps' start with a tid their maker owns. Nothing on the wire names a schema (owner, round 13: no machine mapping from AK to schema), so a collision is never prevented and shows only as typed-read failures where the types differ; the writes merge like concurrent writes (spec/requirements.md, Versioning). A node types an AK by the schema it holds for it: the engine keeps one per app AK (`Core::schemas`: the highest version registered or written with, an equal one registered again replacing it, so a stale app never downgrades it; a session's `Osis::key` uses its own newest registration), and no app schema declares a core AK.
 - Codegen is the one writer of the strings: app code uses generated constants, each checked at build time (`Aspect::new` calls the `const fn` `Ak::check`).
 - Markers today: `~`/`*` must match the schema's lifetime flag (validation); untyped keys carry them by convention (the tests' ephemeral and signal keys do), nothing checks them; `^` parses and carries no rule. Step 7 of issues/one-node-kind.md makes the marker decide.
 - Generated constant names: the AK's name segments joined by `_`, upper-cased, the first dropped when every key of the schema shares it, `_V<n>` appended for a version above 0 (`note:last_opened.0` -> `LAST_OPENED`); not injective (`a:b_c.0` and `a_b:c.0`, `x:y.1` and `x:y_v1.0`, keys differing only in tid or markers), so codegen refuses a schema whose names collide (also with `SCHEMA`).
@@ -50,7 +50,7 @@ Example: spreadsheet thing = group of two axis things, each a group of row/colum
 Rust-like syntax, hand-written recursive-descent parser (no parser libraries, owner decision); grammar in `core/schema/src/parse.rs`. Two passes: the first collects items, the second types field defaults against the then-known types. `///` docs attach to the next item (type, field, case, aspect, signal), `//!` to the schema, and are kept in the schema value. Errors carry file, line, column; validation errors point at the item. No `load_schema!()` proc macro (compile time; codegen covers it).
 ```
 //! Notes app schema.
-revision 4;                                   // bumped on every publish, for people and tools
+version 4;                                   // bumped on every publish, for people and tools
 
 type priority = enum { 0 low, 1 medium, 2 high, 3 custom(int), reserved (4, 5) };
 type task = struct {
