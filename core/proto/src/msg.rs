@@ -35,8 +35,10 @@ const MESSAGE_DEPTH: usize = 6;
 /// CBOR data items in one message, counted before any is decoded (spec/wire.md §13). Resource
 /// bound: a decoded item costs about 100 bytes (`Value`), so a frame of one-byte items would
 /// otherwise cost about 2 GB; the densest message an engine sends (a reply of deletion or pending
-/// events, paged by `event_size`) holds under 800 000. 0: no message decodes; infinity: about
-/// 200 bytes of memory per frame byte from any peer that sent a Hello.
+/// events, paged by `event_size`) holds under 800 000, the densest any valid peer can send (one-
+/// byte `at`s) about 1 021 000, so the cap refuses no message valid by the other rules. 0: no
+/// message decodes; infinity: up to about 250 bytes of memory per frame byte from any peer that
+/// sent a Hello (one-item lists).
 pub const MAX_MESSAGE_ITEMS: usize = 1 << 20;
 
 /// Status codes (spec/wire.md §11.2).

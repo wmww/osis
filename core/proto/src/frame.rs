@@ -49,15 +49,8 @@ impl FrameDecoder {
         self.max = max.min(MAX_MESSAGE);
     }
 
-    /// Appends received stream bytes. The buffer's capacity stays within about twice the bytes
-    /// not yet handed out plus `bytes` (a peer that sent one large frame and then idles holds
-    /// no frame-sized buffer: `pending` is what a host charges, so the capacity must follow it).
+    /// Appends received stream bytes.
     pub fn push(&mut self, bytes: &[u8]) {
-        if self.start > 0 && self.start >= self.buf.len() / 2 {
-            self.buf.drain(..self.start);
-            self.start = 0;
-            self.buf.shrink_to(2 * self.buf.len());
-        }
         self.buf.extend_from_slice(bytes);
     }
 
@@ -77,10 +70,13 @@ impl FrameDecoder {
         let Some(body) = rest.get(4..4 + len) else { return Ok(None) };
         let body = body.to_vec();
         self.start += 4 + len;
-        // everything handed out: release the buffer (it may be frame-sized)
-        if self.start == self.buf.len() {
-            self.buf = Vec::new();
+        // Once half is handed out, drop it and shrink: the capacity stays within about four
+        // times `pending`, which is what a host charges (a large frame followed by one byte
+        // holds no frame-sized buffer). Each drop moves at most the bytes it frees: linear.
+        if self.start >= self.buf.len() / 2 {
+            self.buf.drain(..self.start);
             self.start = 0;
+            self.buf.shrink_to(2 * self.buf.len());
         }
         Ok(Some(body))
     }
@@ -144,9 +140,8 @@ mod tests {
         }
         d.push(&[0, 0]);
         assert!(d.next_frame().is_ok_and(|f| f.is_some()));
-        d.push(&[0]);
-        assert_eq!(d.pending(), 3);
-        assert!(d.buf.capacity() < 64 * 1024, "{}", d.buf.capacity());
+        assert_eq!(d.pending(), 2);
+        assert!(d.buf.capacity() < 64, "{}", d.buf.capacity());
     }
 
     // spec/wire.md §11.1: 1 <= len <= MAX_MESSAGE

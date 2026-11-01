@@ -176,7 +176,7 @@ proptest! {
 
 // spec/wire.md §13 (message items), spec/requirements.md (peer input never causes unbounded
 // allocation): a frame of one-byte items is refused before its value tree is built, while the
-// densest replies an engine pages (deletion and pending events by `event_size`) still decode
+// densest message valid by §11.2 still decodes
 #[test]
 fn item_cap_spec_wire_13() {
     let n = MAX_MESSAGE - 16;
@@ -186,11 +186,13 @@ fn item_cap_spec_wire_13() {
     let r = Message::decode(&body).expect_err("decoded");
     assert_eq!(r.error, Error::Cap("message items"));
     let cursor = Cursor { log_id: [1; 16], seq: 1 };
-    for e in [Event::Deleted(BlobId([0xee; 32])), Event::Pending { blob_id: BlobId([0xee; 32]), at: u64::from(u32::MAX) << 20 }] {
-        let k = crate::serving::REPLY_BUDGET / event_size(&e);
-        let m = Message::SyncReply { id: 1, events: vec![e; k], want: vec![BlobId([1; 32]); MAX_GAINED], codes: vec![Code::OK; MAX_ITEMS], cursor, more: true };
-        let body = m.encode();
-        assert!(body.len() <= MAX_MESSAGE);
-        assert_eq!(Message::decode(&body), Ok(m));
-    }
+    // Pending events with a one-byte `at` filling the frame, all codes (denser than any engine
+    // reply: those page by `event_size`)
+    let pending = Event::Pending { blob_id: BlobId([0xee; 32]), at: 0 };
+    let codes = vec![Code::OK; MAX_ITEMS];
+    let k = (MAX_MESSAGE - MAX_ITEMS - 64) / 37;
+    let m = Message::SyncReply { id: 1, events: vec![pending; k], want: vec![], codes, cursor, more: true };
+    let body = m.encode();
+    assert!(body.len() <= MAX_MESSAGE && body.len() + 100 > MAX_MESSAGE, "{}", body.len());
+    assert_eq!(Message::decode(&body), Ok(m));
 }
