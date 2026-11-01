@@ -86,21 +86,6 @@ impl PageSet {
         }
         k
     }
-    /// Every page is loaded: loaded whole, or the loaded ranges chain from the first page to
-    /// the last (pages a join loaded one by one may be all of them).
-    fn all_loaded(&self) -> bool {
-        if self.whole {
-            return true;
-        }
-        let mut k = self.prefix();
-        loop {
-            match self.loaded.get(&k) {
-                None => return false,
-                Some((_, None)) => return true,
-                Some((_, Some(hi))) => k = self.row_key(Some(hi)),
-            }
-        }
-    }
     /// The loaded page holding `d`, if any.
     fn loaded_page(&self, d: &Dot) -> Option<(&Vec<u8>, &Range)> {
         let k = self.row_key(Some(d));
@@ -131,15 +116,6 @@ impl PageIndex {
     /// Whether every page is loaded.
     pub fn whole(&self) -> bool {
         self.sets.values().all(|s| s.whole)
-    }
-    /// Whether a page not loaded may still hold elements of the paged state whose loaded part
-    /// is `f`: a collection with a page not loaded that `f` reaches, or that lies below another
-    /// one with a page not loaded (its path runs through pages). One `f` no longer reaches
-    /// (pruned with the position holding it) holds nothing. Exact when every page is loaded
-    /// (`all_loaded`, not only `whole`: else an un-merge emptying every page leaves an empty
-    /// state where a rebuild leaves none).
-    pub fn unloaded_reached(&self, f: &Fragment) -> bool {
-        self.sets.iter().any(|(p, s)| !s.all_loaded() && (f.at_steps(p).is_some() || self.sets.iter().any(|(q, t)| q.len() < p.len() && p.starts_with(q) && !t.all_loaded())))
     }
     /// Whether a paged collection lies below a map entry whose dot matches `pred` (an
     /// un-merge removing that entry takes the collection's every page with it).
@@ -393,18 +369,6 @@ fn ensure_dot(txn: &mut Transaction<'_>, t: Table, set: &mut PageSet, f: &mut Fr
 fn row_below(txn: &mut Transaction<'_>, t: Table, key: &[u8]) -> Result<(Vec<u8>, Vec<u8>)> {
     let below = txn.table_rank(t, key)?;
     txn.table_nth(t, below.checked_sub(1).ok_or(Error::Corrupt("state page missing"))?)?.ok_or(Error::Corrupt("state page missing"))
-}
-
-/// Loads the first page of every collection `f` reaches with a page not loaded (one below an
-/// element of another is not: its path may run through what an un-merge took).
-pub fn load_firsts(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageIndex, f: &mut Fragment) -> Result<()> {
-    let t = table(txn, tid, ak)?;
-    for (p, set) in idx.sets.iter_mut() {
-        if !set.all_loaded() && f.at_steps(p).is_some() {
-            ensure_first(txn, t, set, f)?;
-        }
-    }
-    Ok(())
 }
 
 /// Loads the pages of `set` holding the elements from `a` to `b` (dot order).
