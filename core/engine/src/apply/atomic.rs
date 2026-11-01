@@ -145,7 +145,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     if let Some(b) = before {
         ch.retain_deaths(|d| b.holds(&d.stamp));
     }
-    let st = tx.kept(tid, ak, st);
+    let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() || !ch.deaths().is_empty() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
     } else {
@@ -319,7 +319,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         if !v {
             if !snap {
                 join_into_state(tx, &tid, &ak, f.clone(), false)?;
-                unmerge_fell(tx, &tid, &ak, Some(f))?;
+                unmerge_part(tx, &tid, &ak, Some(f))?;
                 tx.evict_pages(&tid, &ak);
             }
             return Ok(());
@@ -337,6 +337,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     }
     if !v {
         if !snap {
+            unmerged_as_rebuilt(tx, &tid, &ak)?;
             unmerged(tx, &tid, &ak, j)?;
         }
         return Ok(());
@@ -1000,11 +1001,23 @@ pub(crate) fn group_def(v: Option<Value>) -> Option<(BTreeSet<Tid>, BTreeSet<Tid
 /// rewrites only the pages holding their dots (else the whole state). No other body is read.
 /// Whether the state may have changed.
 pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<bool> {
+    let changed = unmerge_part(tx, tid, ak, fell)?;
+    unmerged_as_rebuilt(tx, tid, ak)?;
+    Ok(changed)
+}
+
+/// `unmerge_fell` without its check: an invalid delta streamed a piece at a time un-merges after
+/// each piece's join, and only once its last piece joined is the state what a rebuild gives
+/// (the rebuild drops at once every write under the delta's creations, those in pages a later
+/// piece loads too).
+fn unmerge_part(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> Result<bool> {
     let un = Unmerge::of(tx, tid, ak, &BTreeMap::new())?;
     let bad = |d: &osis_crdt::Dot| un.bad(d);
     tx.load_lazy(tid, ak)?;
     let k = (*tid, ak.clone());
-    let touch = fell.as_ref().and_then(|f| crate::engine::pages::touch_of(f, tx.core.pages.get(&k)));
+    // a paged collection below an entry an invalid delta created goes whole with it, pages not
+    // holding the fallen dots too (others' writes nested there): loaded and written whole
+    let touch = fell.as_ref().and_then(|f| crate::engine::pages::touch_of(f, tx.core.pages.get(&k))).filter(|_| !tx.core.pages.get(&k).is_some_and(|i| i.below_entry_of(&bad)));
     tx.ensure_touch(tid, ak, &touch)?;
     let in_place = match tx.core.states.get(&k).and_then(Option::as_ref) {
         None => None,
@@ -1015,18 +1028,24 @@ pub(crate) fn unmerge_fell(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fra
         let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
         st.remove_dots(&bad);
         st.prune(None, &mut Changes::new());
-        let st = tx.kept(tid, ak, st);
+        let st = tx.kept(tid, ak, st)?;
         tx.core.touch();
         tx.core.wrote(k);
         tx.set_state_touched(tid, ak, st, &touch, Shred::Yes)?;
     }
-    // in place is what rebuilding gives
+    Ok(in_place == Some(true))
+}
+
+/// Debug builds: the state of `(tid, ak)` after an un-merge in place is what rebuilding gives.
+fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     #[cfg(debug_assertions)]
     {
         let want = rebuilt(tx, tid, ak, &[])?.0;
         debug_assert!(tx.state(tid, ak)? == want.as_ref(), "in-place un-merge of {tid:?} {ak:?} differs from a rebuild");
     }
-    Ok(in_place == Some(true))
+    #[cfg(not(debug_assertions))]
+    let _ = (tx, tid, ak);
+    Ok(())
 }
 
 /// Rebuilds `(tid, ak)` after validity changed (spec/crdt.md §4.6, spec/permissions.md §5.2):

@@ -120,6 +120,17 @@ fn edited(v: Option<Value>, r: &mut Rng, g: u64) -> Value {
     }
 }
 
+/// Node 0 removes writer `who` with a frontier before all its writes: the removal's commit.
+fn demote_peer(w: &mut World, who: usize) -> CommitId {
+    let (t, x) = (w.t, w.lp.peers[who].engine.tid());
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(x, std::collections::BTreeSet::from([t]))]) };
+    let f = w.lp.peers[0].engine.frontier(&scope, T0).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
+    m.frontier(f.to_value());
+    w.lp.peers[0].commit(m).unwrap().unwrap()
+}
+
 impl World {
     /// Runs one step of the script; every world draws the same numbers.
     fn step(&mut self, r: &mut Rng, g: u64) {
@@ -198,13 +209,7 @@ impl World {
 
     /// Node 0 removes the rogue with a frontier before all its writes.
     fn demote(&mut self) {
-        let (t, rogue) = (self.t, self.lp.peers[ROGUE].engine.tid());
-        let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(rogue, std::collections::BTreeSet::from([t]))]), content: BTreeMap::from([(rogue, std::collections::BTreeSet::from([t]))]) };
-        let f = self.lp.peers[0].engine.frontier(&scope, T0).unwrap();
-        let mut m = Mutation::new();
-        m.op(t, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(rogue)) }).unwrap();
-        m.frontier(f.to_value());
-        let c = self.lp.peers[0].commit(m);
+        let c = demote_peer(self, ROGUE);
         self.log.push(format!("demote: {c:?}"));
     }
 
@@ -768,4 +773,146 @@ fn elementless_write_keeps_entry_creation_spec_crdt_5_6() {
         assert!(w.lp.peers[1].engine.stored_state(&t, &a).unwrap() == want, "the committer's store lost what node 0 holds");
         pk
     });
+}
+
+/// Node 1 fills a map holding a paged map, replaces it (a root reset; the new `big` entry under
+/// another dot) and rewrites the new paged map; node 3 gets the fill, the rewrite (paged under
+/// an entry it has no creation of) and then the replace: the reset joined by pages leaves the
+/// old `big` collection without a position, so the store must keep none of it, as a whole
+/// layout would (seed 262014 of the large differential).
+#[test]
+fn reset_drops_dead_paged_collection_spec_crdt_8() {
+    let (c, _) = both(13, |w| {
+        let (t, a) = (w.t, aks()[1].clone());
+        let mut r = Rng(61);
+        let mut m = Mutation::new();
+        m.set(t, &a, &fill_value(1, &mut r, 0)).unwrap();
+        let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.replace(t, &a, &fill_value(1, &mut r, 1)).unwrap();
+        let replace = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &a, &fill_value(1, &mut r, 2)).unwrap();
+        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        packages(w, 1, &[fill, rewrite, replace])
+    });
+    assert!(c.get("reset: laid out").is_some_and(|n| *n > 0), "{c:?}");
+}
+
+/// The rogue fills a paged set alone; node 3 gets the fill, then node 0's removal of the rogue:
+/// the un-merge in place empties every page (each loaded for the fill's dots), so the state is
+/// absent, as a rebuild leaves it (seed 262094: kept as an empty set while the set was not
+/// noted loaded whole).
+#[test]
+fn unmerge_emptying_every_page_leaves_none_spec_perm_5_2() {
+    let (c, _) = both(14, |w| {
+        let (t, set) = (w.t, aks()[2].clone());
+        let mut r = Rng(71);
+        let mut m = Mutation::new();
+        m.set(t, &set, &fill_value(2, &mut r, 0)).unwrap();
+        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let demote = demote_peer(w, ROGUE);
+        let mut pks = packages(w, ROGUE, &[fill]);
+        pks.extend(packages(w, 0, &[demote]));
+        pks
+    });
+    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+}
+
+/// The rogue fills a paged map; node 1 rewrites it (its writes nested under the rogue's
+/// entries); node 3 gets the rewrite, node 0's removal of the rogue, then the fill, invalid on
+/// arrival: un-merged a piece at a time, the state is what a rebuild gives once the last piece
+/// un-merged, not before (seed 262035: checked after each piece).
+#[test]
+fn invalid_fill_after_nested_rewrite_spec_perm_5_2() {
+    let (c, _) = both(15, |w| {
+        let (t, big) = (w.t, aks()[0].clone());
+        let mut r = Rng(81);
+        let mut m = Mutation::new();
+        m.set(t, &big, &fill_value(0, &mut r, 0)).unwrap();
+        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let pk = packages(w, ROGUE, &[fill]);
+        w.lp.deliver(1, &pk[0]).unwrap();
+        let mut m = Mutation::new();
+        m.set(t, &big, &fill_value(0, &mut r, 1)).unwrap();
+        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let demote = demote_peer(w, ROGUE);
+        let mut pks = packages(w, 1, &[rewrite]);
+        pks.extend(packages(w, 0, &[demote]));
+        pks.extend(pk);
+        pks
+    });
+    assert!(c.get("apply: piece").is_some_and(|n| *n > 2), "{c:?}");
+}
+
+/// Two writers fill a paged set, the one whose dots sort first alone in its first page; node 3
+/// gets both fills and the first writer's removal (the un-merge empties the first page, kept as
+/// the collection's first), reopens (nothing loaded), then gets the second writer's removal:
+/// that un-merge empties every other page and must leave the state absent, which only the
+/// first page, not loaded, can tell.
+#[test]
+fn unmerge_leaving_empty_first_page_leaves_none_spec_perm_5_2() {
+    let (c, _) = both(16, |w| {
+        let (t, set) = (w.t, aks()[2].clone());
+        let mut ws = [1usize, 2, 3];
+        ws.sort_by_key(|i| w.lp.peers[*i].engine.tid());
+        let (x, y) = (ws[0], ws[2]);
+        let mut r = Rng(91);
+        let mut fills = Vec::new();
+        for (by, g) in [(x, 0), (y, 1)] {
+            let mut m = Mutation::new();
+            m.set(t, &set, &fill_value(2, &mut r, g)).unwrap();
+            fills.push(w.lp.peers[by].commit(m).unwrap().unwrap());
+        }
+        let (dx, dy) = (demote_peer(w, x), demote_peer(w, y));
+        let mut pks = packages(w, x, &[fills[0]]);
+        pks.extend(packages(w, y, &[fills[1]]));
+        pks.extend(packages(w, 0, &[dx]));
+        for pk in &pks {
+            w.lp.deliver(3, pk).unwrap();
+        }
+        let p = &mut w.lp.peers[3];
+        let clock: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
+        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
+        packages(w, 0, &[dy])
+    });
+    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+}
+
+/// The rogue fills a map holding a paged map (its `big` entry), node 1 adds to the paged map
+/// (entries of its own, in pages apart from the rogue's), node 0 writes another key; node 3 gets
+/// the three, then the rogue's removal: the un-merge takes the `big` entry with every page below it, node 1's too
+/// (seed 131013).
+#[test]
+fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
+    let (c, _) = both(17, |w| {
+        let (t, mix) = (w.t, aks()[1].clone());
+        let mut r = Rng(101);
+        let mut m = Mutation::new();
+        m.set(t, &mix, &fill_value(1, &mut r, 0)).unwrap();
+        let fill = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let pk = packages(w, ROGUE, &[fill]);
+        w.lp.deliver(1, &pk[0]).unwrap();
+        // entries of node 1's own, superseding none of the rogue's writes (else a rebuild)
+        let mut v = w.lp.peers[1].engine.get(&t, &mix).unwrap().unwrap();
+        if let Value::Map(m) = &mut v
+            && let Some(Value::Map(big)) = m.get_mut(&Value::Str("big".into()))
+        {
+            big.extend((0..400).map(|i| (Value::Int(10_000 + i), s(i as u64, 1))));
+        }
+        let mut m = Mutation::new();
+        m.set(t, &mix, &v).unwrap();
+        let rewrite = w.lp.peers[1].commit(m).unwrap().unwrap();
+        // something else left in the state (else it goes whole)
+        let mut m = Mutation::new();
+        m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
+        let other = w.lp.peers[0].commit(m).unwrap().unwrap();
+        let demote = demote_peer(w, ROGUE);
+        let mut pks = pk;
+        pks.extend(packages(w, 1, &[rewrite]));
+        pks.extend(packages(w, 0, &[other]));
+        pks.extend(packages(w, 0, &[demote]));
+        pks
+    });
+    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
 }
