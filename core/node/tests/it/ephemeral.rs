@@ -984,6 +984,32 @@ fn junk_copy_of_waiting_commit_evicts_nothing_spec_sync_9() {
     }
 }
 
+// spec/crdt.md §4.7 (ephemeral data: an expired write vanishes whole): a commit waiting apart for
+// its author's and thing's records keeps no part past its T; arriving past T, nothing waits
+#[test]
+fn waiting_commit_expires_apart_spec_crdt_4_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(c, Role::Write)], &[host]);
+    let t = net.item(c, g, g, "durable");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &eph("doc:cursor.0~"), &Value::Int(7)).unwrap();
+    m.expires(t, &eph("doc:cursor.0~"), osis_base::WallMs(net.now() + 5_000)).unwrap();
+    net.engine(c).write(m).unwrap();
+    let blob = net.engine(c).take_ephemeral().unwrap()[0].blob.clone();
+    assert_eq!(net.engine(b).ingest_ephemeral(blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Pending);
+    assert!(net.engine(b).pending_ephemeral(&blob.id()));
+    net.advance(6_000);
+    net.engine(b).tick_ephemeral();
+    assert!(!net.engine(b).pending_ephemeral(&blob.id()), "its only part expired apart");
+    assert_eq!(net.engine(b).ingest_ephemeral(blob.clone()).unwrap(), osis_node::ephemeral::EphIngest::Dropped);
+    assert!(!net.engine(b).pending_ephemeral(&blob.id()));
+}
+
 // spec/commits.md §4, spec/sync.md §9 (only verified commits are held and spread): a junk copy of
 // a commit by an author whose record is not here yet, pushed before the real one, is not kept in
 // the lane once the real copy makes the commit held (both wait apart; promotion kept every blob of

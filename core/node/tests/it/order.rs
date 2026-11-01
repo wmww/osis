@@ -1739,6 +1739,73 @@ fn purged_covered_residue_survives_unmerge_spec_crdt_4_6() {
     assert_eq!(got, vec![None, None]);
 }
 
+// spec/permissions.md §5.2 (a part dropped as covered that no coverer carries any more gives
+// nothing, as at a node that never held it), spec/crdt.md §4.7 (residue): a purged delta whose
+// body was dropped as covered takes its residue from the coverer's copies; when the coverer turns
+// invalid the delta is missing again and its residue goes with it, so a rebuild or a restart
+// reads as the state just after (was: the residue joined back, hiding "old" again).
+#[test]
+fn cover_residue_goes_with_cover_spec_perm_5_2() {
+    let mut lp = LocalPeer::new(3, 24114, T0).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    m.set(g, &KEPT, &s("k")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    set_edge(&mut lp.peers[0].engine, g, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, g, ids[2], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let set = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.set(g, &REG, &s(v)).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    set(&mut lp, 1, "old");
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let c = set(&mut lp, 0, "secret");
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let snap = lp.peers[2].engine.snapshot(&g, &ak("t:reg.0")).unwrap().unwrap();
+    lp.advance(10);
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.set(g, &KEPT, &s("k2")).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: g, ak: ak("t:reg.0") });
+    let purge = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    // peer 2 demoted as of before its snapshot: it turns invalid
+    let scope = DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([g]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([g]))]) };
+    let before = WallMs(lp.peers[2].engine.header(&snap).unwrap().ts.wall_ms().0 - 1);
+    let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
+    let mut m = edge_write(g, ids[2], None);
+    m.frontier(f.to_value());
+    let demote = lp.peers[0].commit(m).unwrap().unwrap();
+    let pks = lp.packages(0).unwrap();
+    let by = |id: CommitId| pks.iter().find(|p| p.id == id).unwrap().clone();
+    let snap_pk = lp.peers[2].engine.package(&snap).unwrap().unwrap();
+    let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
+    let mut p = Peer::new(FRESH, now).unwrap();
+    for pk in pks.iter().filter(|pk| ![snap, purge, demote].contains(&pk.id)) {
+        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.engine.ingest(&snap_pk.bytes, snap_pk.blobs.clone()).unwrap();
+    assert_eq!(p.engine.covered(&snap, &c, &g, &ak("t:reg.0")).unwrap(), Some(true), "S covers the write");
+    // node-sync's compaction drop of the covered body
+    p.engine.drop_body(&c, &g, &ak("t:reg.0")).unwrap();
+    p.engine.ingest(&by(purge).bytes, by(purge).blobs.clone()).unwrap();
+    p.engine.ingest(&by(demote).bytes, by(demote).blobs.clone()).unwrap();
+    p.engine.reexamine().unwrap();
+    let after = p.engine.get(&g, &ak("t:reg.0")).unwrap();
+    p.engine.rebuild_state(&g, &ak("t:reg.0")).unwrap();
+    assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "rebuilt");
+    p.restart(FRESH + 1).unwrap();
+    assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), after, "restarted");
+    assert_eq!(after, Some(s("old")), "the purged write is missing again");
+}
+
 // spec/crdt.md §4.7 (a copy arriving after T is stripped and joined): a part of an expired
 // delta arriving after T, later than the rest of its commit (dropped at expiry while missing),
 // joins value-less (was skipped: the whole commit hid "old", the split one showed it).
