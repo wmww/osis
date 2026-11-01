@@ -803,3 +803,36 @@ fn repeated_claims_count_once() {
     let g = e.f.genesis.to_bytes().len() as u64;
     assert_eq!(e.store.totals().unwrap().bytes, g + steps);
 }
+
+// spec/sync.md §5 (an unadmitted genesis step gets code 12; caps per label): `Only` takes no
+// new label outside its set, keeps serving those it holds; a label's own caps replace the
+// policy's for it alone
+#[test]
+fn admission_and_label_caps() {
+    let mut e = env(HostPolicy::default());
+    let (l, g) = (e.f.label, Fixture::new(0x20));
+    e.store.set_admission(Admission::Only([l].into()), [(l, LabelCaps { entries: 1, bytes: u64::MAX })].into());
+    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(e.store.admit_label(&l).unwrap(), Code::OK);
+    assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
+    assert_eq!(e.store.put(&l, put(&blob(2), true, None)).unwrap(), Code::STORAGE_CAP, "its own cap");
+    e.store.set_admission(Admission::Open, BTreeMap::new());
+    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::OK);
+    assert_eq!(e.store.put(&l, put(&blob(2), true, None)).unwrap(), Code::OK);
+}
+
+// spec/sync.md §5, §6: policy knobs by field name; an unknown one, an out-of-range value or a
+// send queue below a client's window is refused
+#[test]
+fn policy_knobs_by_name() {
+    let mut p = HostPolicy::default();
+    p.set("cap_bytes", 1000).unwrap();
+    p.set("deposits", 3).unwrap();
+    assert_eq!((p.cap_bytes, p.deposits), (1000, 3));
+    assert!(p.set("bogus", 1).is_err());
+    assert!(p.set("deposits", u64::from(u32::MAX) + 1).is_err());
+    let q = osis_proto::serving::SEND_QUEUE as u64;
+    assert!(p.set("max_queued_bytes", q - 1).is_err());
+    p.set("max_queued_bytes", q).unwrap();
+    assert!(HostPolicy::default().max_queued_bytes >= osis_proto::serving::SEND_QUEUE);
+}

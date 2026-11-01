@@ -1,9 +1,11 @@
 //! An API-level world: `osis::Osis` handles on `Runtime::Manual` exchange bytes with osis-host
-//! `Hub`s over in-memory queues under one `ManualClock`. No tokio, no threads of its own, no
+//! `Hub`s over in-memory queues under one `ManualClock`. A hub is either the world's own host
+//! (`add_host`) or a database's, run while its `host.0^` says so (`Action::Host`; reached at its
+//! first listen URL, its store in memory; replication is not carried). No tokio, no threads of its own, no
 //! sleeps: time moves only by `advance`, so a run is a function of its seeds. The osis crate's
 //! tests drive it. It panics rather than return failure: a storm, a future that never resolves.
 
-use osis::internals::node::sync::{Action, ConnId, Event};
+use osis::internals::node::sync::{Action, ConnId, Event, HostStatus};
 use osis::internals::{Internals, ManualNet};
 use osis::{Config, ManualClock, MemStore, Osis, RecoveryCard, Runtime, HostAddr, StoreAt, WallMs};
 use osis_crypto::SeededRng;
@@ -28,6 +30,10 @@ const STORM_TRACE: usize = 500;
 pub struct Host {
     pub hub: Hub<MemoryBackend>,
     pub addr: HostAddr,
+    /// The database running it (by start order), if not the world's own.
+    pub node: Option<usize>,
+    /// It runs (a database's host stops when its `host.0^` goes).
+    pub up: bool,
 }
 
 enum Msg {
@@ -109,8 +115,66 @@ impl World {
             Err(e) => panic!("host store: {e:?}"),
         };
         let hub = Hub::new(store, key, Box::new(SeededRng::from_u64(950 + i as u64)));
-        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key) });
+        self.hosts.push(Host { hub, addr: HostAddr::new(&format!("quic://host{i}:1"), key), node: None, up: true });
         i
+    }
+
+    /// The host database `d` runs, if it ever did.
+    pub fn host_of(&self, d: usize) -> Option<usize> {
+        self.hosts.iter().position(|h| h.node == Some(d))
+    }
+
+    /// Database `d` hosts with `cfg`, or stops (none): its hub starts (store in memory, every
+    /// write recorded: `MemoryBackend::history`), changes, or stops with its connections.
+    #[allow(clippy::panic)] // test harness: fail the test loudly
+    fn host(&mut self, d: usize, cfg: Option<Box<osis_host::HostConfig>>) {
+        let s = self.host_of(d).filter(|s| self.hosts.get(*s).is_some_and(|h| cfg.as_ref().is_none_or(|c| h.hub.static_key() == c.key)));
+        let Some(cfg) = cfg else {
+            if let Some(s) = s {
+                if let Some(h) = self.hosts.get_mut(s) {
+                    h.up = false;
+                }
+                let gone: Vec<((usize, ConnId), u64)> = self.links.iter().filter(|(_, (x, _))| *x == s).map(|(k, (_, hc))| (*k, *hc)).collect();
+                for ((db, c), hc) in gone {
+                    self.links.remove(&(db, c));
+                    if let Some(h) = self.hosts.get_mut(s) {
+                        let _ = h.hub.closed(hc);
+                    }
+                    self.queue.push_back(Msg::Down(db, c));
+                }
+            }
+            return;
+        };
+        let s = match s {
+            Some(s) => s,
+            None => {
+                let backend = MemoryBackend::new();
+                backend.record_history();
+                let store = match HostStore::open(backend, self.clock.clone(), cfg.policy.clone(), &mut SeededRng::from_u64(700 + d as u64)) {
+                    Ok(s) => s,
+                    Err(e) => panic!("host store: {e:?}"),
+                };
+                let hub = Hub::new(store, cfg.key, Box::new(SeededRng::from_u64(750 + d as u64)));
+                let url = cfg.listen.first().cloned().unwrap_or_else(|| format!("quic://node{d}:1"));
+                // a restart from off has a new key: the old hub stays down
+                if let Some(h) = self.host_of(d).and_then(|old| self.hosts.get_mut(old)) {
+                    h.node = None;
+                }
+                self.hosts.push(Host { hub, addr: HostAddr::new(&url, cfg.key), node: Some(d), up: true });
+                self.hosts.len() - 1
+            }
+        };
+        let addr = match self.hosts.get_mut(s) {
+            Some(h) => {
+                h.up = true;
+                h.hub.store_mut().set_policy(cfg.policy.clone());
+                h.hub.store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
+                h.addr.to_string()
+            }
+            None => return,
+        };
+        let Ok(a) = osis_label::address_from_text(&addr) else { return };
+        self.with(d, |db| db.sync_engine(|e| e.set_host_status(HostStatus::Listening(vec![a]))));
     }
 
     pub fn addr(&self, s: usize) -> Option<HostAddr> {
@@ -263,7 +327,7 @@ impl World {
             match a {
                 Action::Dial { conn, address } => {
                     let want = HostAddr::new(&address.url, address.key).to_string();
-                    let s = self.hosts.iter().position(|x| x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
+                    let s = self.hosts.iter().position(|x| x.up && x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {
                         self.queue.push_back(Msg::Down(d, conn));
                         continue;
@@ -294,6 +358,7 @@ impl World {
                         self.hub_out(s, out);
                     }
                 }
+                Action::Host(cfg) => self.host(d, cfg),
                 Action::Wake { .. } | Action::Reach => {}
             }
         }
@@ -364,6 +429,7 @@ impl World {
                             Action::Close { .. } => "close",
                             Action::Wake { .. } => "wake",
                             Action::Reach => "reach",
+                            Action::Host(_) => "host",
                         };
                         *seen.entry(format!("db {d} action {k}")).or_default() += 1;
                     }
@@ -410,7 +476,7 @@ impl World {
         self.clock.advance(ms);
         let now = self.now();
         for s in 0..self.hosts.len() {
-            let out = match self.hosts.get_mut(s) {
+            let out = match self.hosts.get_mut(s).filter(|h| h.up) {
                 Some(host) => host.hub.tick(now),
                 None => Vec::new(),
             };

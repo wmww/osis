@@ -2,7 +2,8 @@
 """Policy checks (notes/testing.md, Policy checks): unsafe forbidden everywhere in the workspace,
 workspace lints on, every external dependency has its line in notes/architecture.md §5, and no
 target marked `test = false` / `doctest = false` has unit tests / doctests that would silently not run,
-and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name.
+and core/base/testenv-known.txt lists exactly the `OSIS_*` variables the sources name, and
+osis-host cannot reach decryption (`host_blind`).
 Usage: python3 tools/policy.py [WORKSPACE]   (from the repo root; WORKSPACE: the directory of a
 workspace's root manifest, `.` (core, default) or `kit` (the GUI workspace, notes/app.md); vendored
 crates under `patches/` are not ours and are skipped; exit 1 on any violation)"""
@@ -104,8 +105,82 @@ def env_vars():
     for v in sorted(known - used):
         yield f"{v} is in core/base/testenv-known.txt but nothing reads it"
 
+def paths_of(text, crate):
+    """Every path named under `crate::` in `text` (comments dropped), `{a, b::{c}}` groups
+    expanded; `*` for a glob; `<crate> as` aliases flagged as `as`."""
+    text = re.sub(r"//[^\n]*", "", text)
+    out = []
+    if re.search(rf"\b{crate}\s+as\b", text):
+        out.append("as")
+    def expand(s, i, prefix):
+        # parses a path tree at s[i:], appending full paths; returns the index after it
+        seg = re.match(r"\s*([A-Za-z_][A-Za-z0-9_]*|\*|\{)", s[i:])
+        if not seg:
+            return i
+        tok, i = seg.group(1), i + seg.end()
+        if tok == "{":
+            while True:
+                i = expand(s, i, prefix)
+                m = re.match(r"\s*(,|\})", s[i:])
+                if not m:
+                    return i
+                i += m.end()
+                if m.group(1) == "}":
+                    return i
+                if re.match(r"\s*\}", s[i:]):
+                    i += re.match(r"\s*\}", s[i:]).end()
+                    return i
+        path = prefix + [tok]
+        m = re.match(r"\s*::", s[i:])
+        if m and tok != "*":
+            return expand(s, i + m.end(), path)
+        m = re.match(r"\s+as\s+[A-Za-z_][A-Za-z0-9_]*", s[i:])
+        if m:
+            i += m.end()
+        out.append("::".join(path))
+        return i
+    for m in re.finditer(rf"\b{crate}\s*::", text):
+        expand(text, m.end(), [])
+    return out
+
+HOST_DEPS = {"osis-base", "osis-crypto", "osis-label", "osis-proto", "osis-store", "osis-transport", "tokio"}
+HOST_CRYPTO = {"VerifyingKey", "Signature", "WRAP_LEN", "OsRng", "RngCore", "CryptoRngCore"}
+HOST_LABEL = {"blob_id", "Prefix", "MAX_PREFIX_LEN", "verify_stamp", "step::parse_entry_box", "step::entry_box_bytes", "Address", "address_to_text", "address_from_text", "ClaimSet", "Step", "StepId"}
+NODE_HOST = {"driver", "Hub", "HostStore", "HostConfig", "HostPolicy", "Admission", "LabelCaps"}
+
+def allowed(path, allow):
+    return any(path == a or path.startswith(a + "::") for a in allow)
+
+def host_blind():
+    """The host cannot touch decryption (notes/sync.md Hosting): osis-host depends only on the
+    crates hosting needs and names only allowlisted osis-crypto and osis-label items (fails
+    closed: a new decrypting call fails here); osis-node names only the host's public surface."""
+    man = load(os.path.join(ROOT, "core/host/Cargo.toml"))
+    for key, extra in (("dependencies", set()), ("dev-dependencies", {"proptest"})):
+        for d in sorted(set(man.get(key, {})) - HOST_DEPS - extra):
+            yield f"core/host/Cargo.toml: {key} {d} is not one hosting may use"
+    for src in glob.glob(os.path.join(ROOT, "core/host/src/**/*.rs"), recursive=True):
+        if os.path.basename(src) == "tests.rs":
+            continue
+        rel = os.path.relpath(src, ROOT)
+        text = open(src).read()
+        if "OpenKey" in text:
+            yield f"{rel}: names OpenKey"
+        for crate, allow in (("osis_crypto", HOST_CRYPTO), ("osis_label", HOST_LABEL)):
+            for p in paths_of(text, crate):
+                if p in ("*", "as") or p.endswith("::*"):
+                    yield f"{rel}: {crate} glob or alias"
+                elif not allowed(p, allow):
+                    yield f"{rel}: {crate}::{p} is not on the host's allowlist"
+    for src in glob.glob(os.path.join(ROOT, "core/node/src/**/*.rs"), recursive=True):
+        rel = os.path.relpath(src, ROOT)
+        for p in paths_of(open(src).read(), "osis_host"):
+            if p in ("*", "as") or not allowed(p, NODE_HOST):
+                yield f"{rel}: osis_host::{p} is not the host's public surface"
+
 if WS == ROOT:
     errs.extend(env_vars())
+    errs.extend(host_blind())
 
 for e in errs:
     print(e)

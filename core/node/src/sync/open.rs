@@ -243,7 +243,7 @@ impl SyncEngine {
         let tried = lc.tries.first().cloned();
         // a static entry: the head's entry box carries the read secret of the registered epoch;
         // a sealed box is unauthenticated, so the head's path is verified first and the secret
-        // must derive the head's sync key (`path_steps`, `static_secret`)
+        // must derive the head's sync key (`path_steps`, `static_entry_secret`)
         if let (Some(Try::Static { .. }), Some(b)) = (&tried, entry_box)
             && let Some(lc) = self.lc_mut(conn, &l)
         {
@@ -323,7 +323,7 @@ impl SyncEngine {
             (true, Some(h)) if path.last().map(Step::id) == Some(h.id()) => {
                 self.record_steps(&g, &l, &path, None)?;
                 if let Some(b) = entry_box
-                    && !self.static_secret(conn, l, &g, &h, &b)?
+                    && !self.static_entry_secret(conn, l, &g, &h, &b)?
                 {
                     return self.drop_try(conn, l, out);
                 }
@@ -343,7 +343,7 @@ impl SyncEngine {
     /// Learns the read secret a verified head's entry box carries for the static entry tried,
     /// when it derives the head's sync key (spec/sync.md §2: the step boxes the read secret of
     /// its epoch; anything else is a forged box). False when it does not.
-    fn static_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
+    fn static_entry_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
         let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
         let (e, secret) = match osis_label::open_entry_box(b, head, &kem, g) {

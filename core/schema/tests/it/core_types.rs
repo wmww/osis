@@ -62,6 +62,14 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
         ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
+        ("host", "host.0^", HOST.encode(&Host {
+            listen: vec!["quic://0.0.0.0:7400".into()],
+            admit: Admit::Open,
+            labels: BTreeSet::from([LabelId([31; 16])]),
+            replicate: vec![Address { url: "quic://b:7400".into(), key: [32; 32] }],
+            policy: BTreeMap::from([("cap_bytes".to_string(), 1000)]),
+            caps: BTreeMap::from([(LabelId([33; 16]), HostCaps { entries: 5, bytes: 6 })]),
+        })),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
     ]
 }
@@ -93,6 +101,7 @@ fn core_aspects_round_trip_spec_data_model_9() {
             "node.0" => NODE.encode(&NODE.decode(v).unwrap()),
             "reach.0" => REACH.encode(&REACH.decode(v).unwrap()),
             "seen.0" => SEEN.encode(&SEEN.decode(v).unwrap()),
+            "host.0^" => HOST.encode(&HOST.decode(v).unwrap()),
             "group.0" => GROUP.encode(&GROUP.decode(v).unwrap()),
             _ => panic!("{ak}"),
         }

@@ -249,6 +249,7 @@
 
 mod error;
 mod handle;
+mod hosting;
 #[doc(hidden)]
 pub mod internals;
 mod keep;
@@ -264,6 +265,7 @@ mod watch;
 mod write;
 
 pub use error::{Error, Result};
+pub use hosting::{Admit, HostCaps, Hosting, LabelId};
 pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};
 pub use net::{GroupPolicy, Runtime, Transport};
 pub use person::{Joining, OFFER_LIFETIME_MS, PairOffer, PairReply, PairRequest};

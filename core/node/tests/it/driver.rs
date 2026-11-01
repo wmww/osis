@@ -1,17 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The tokio driver over osis-transport's `InProcess` against the osis-host driver (spec/sync.md
-//! §10): event-driven, nothing sleeps; a timeout guards against a hang.
+//! The tokio driver over osis-transport's `InProcess`, one node hosting (spec/sync.md §10):
+//! event-driven, nothing sleeps; a timeout guards against a hang.
 
 use crate::net;
 use net::*;
 use osis_base::{Clock, CommitId, Role, Tid, Value};
-use osis_crypto::SeededRng;
 use osis_label::Address;
 use osis_node::Event as EngineEvent;
 use osis_node::sync::driver::{self, Control};
 use osis_node::sync::{Event, SyncEngine};
-use osis_host::{HostStore, Endpoint, Hub, HostPolicy};
-use osis_store::MemoryBackend;
+use osis_schema::core_types as ct;
 use osis_transport::{ListenConfig, Listener, StaticSecret, Transport};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
@@ -52,30 +50,39 @@ fn read(s: &mut SyncEngine, t: Tid) -> Option<Value> {
     s.engine_mut().get(&t, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap()
 }
 
-/// Two nodes of one group under the tokio driver converge through the host's driver: the
-/// host listens on `ep` at `url`; the nodes dial with `a` and `b`.
-async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
-    let secret = StaticSecret::from_bytes([0x51; 32]);
-    let listener = ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
-    let addr = listener.address();
+/// Two nodes of one group under the tokio driver converge through a's host (notes/sync.md
+/// Hosting): a's `host.0^` has it listen at `url` with `own` admission, and the group's label
+/// names a's host address. b is served from a's host store; a's own copy reaches its host over
+/// the in-process loopback (`cut` then cuts a's transport from itself, so nothing else could).
+async fn converge<T: Transport>(url: &str, a_ep: T, b_ep: T, cut: impl FnOnce()) {
     let mut net = Net::new();
     let clock: Arc<dyn Clock> = net.clock.clone();
-    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(5)).unwrap();
-    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
-    let (sctl, srx) = mpsc::channel(8);
-    let host = tokio::spawn(osis_host::run(hub, Endpoint { transport: ep, listener, secret }, vec![], clock.clone(), srx, log()));
-
-    let addr = Address { url: addr.url, key: addr.key };
-    let cfg = osis_node::sync::SyncConfig { hosts: vec![addr.clone()], ..Default::default() };
-    let a = net.add_node(1, cfg.clone());
-    let b = net.add_node(2, cfg);
-    let g = net.group_at(a, &[(b, Role::Write)], vec![addr]);
+    let a = net.add_node(1, Default::default());
+    let b = net.add_node(2, Default::default());
+    let me = net.tid(a);
+    let mut m = osis_node::Mutation::new();
+    m.replace(me, &ct::HOST, &ct::Host { listen: vec![url.into()], admit: ct::Admit::Own, ..Default::default() }).unwrap();
+    net.engine(a).commit(m).unwrap();
+    let key = net.sync(a).host_key().or_else(|| net.sync(a).host_config().map(|c| c.key)).unwrap();
+    let addr = Address { url: url.into(), key };
+    let g = net.group_at(a, &[(b, Role::Write)], vec![addr.clone()]);
     let t = net.item(a, g, g, "first");
+    let l = net.label(a);
+    assert_eq!(net.sync(a).host_config().unwrap().admission, osis_host::Admission::Only([l].into()), "own: the label naming this host");
+    cut();
     let brx = net.engine(b).subscribe();
     let (sa, sb) = (net.take(a), net.take(b));
     let (actl, arx) = mpsc::unbounded_channel();
     let (bctl, brx2) = mpsc::unbounded_channel();
     let da = tokio::spawn(driver::run(sa, a_ep, clock.clone(), arx, log()));
+    // b dials once a listens (the manual clock never brings a redial)
+    tokio::time::timeout(GUARD, async {
+        while !matches!(call(&actl, |s| s.host_status().clone()).await, osis_node::sync::HostStatus::Listening(_)) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
     let db = tokio::spawn(driver::run(sb, b_ep, clock.clone(), brx2, log()));
 
     let c = call(&actl, move |s| {
@@ -92,16 +99,16 @@ async fn converge<T: Transport>(ep: T, url: &str, a_ep: T, b_ep: T) {
     }
     da.await.unwrap();
     db.await.unwrap();
-    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    host.await.unwrap();
 }
 
-// spec/sync.md §5, §6, §10: two nodes under the tokio driver converge through the host's
-// driver over in-process sessions (ephemeral client keys, the host's key checked).
+// spec/sync.md §5, §6, §10, notes/sync.md Hosting: two nodes under the tokio driver converge
+// through one node's host over in-process sessions (ephemeral client keys, the host's key
+// checked); the hosting node reaches its own host only through the loopback.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn driver_in_process_spec_sync_10() {
     let tnet = osis_transport::Net::new(3);
-    converge(tnet.endpoint("s"), "mem://s", tnet.endpoint("a"), tnet.endpoint("b")).await;
+    let t2 = tnet.clone();
+    converge("mem://s", tnet.endpoint("a"), tnet.endpoint("b"), move || t2.partition("a", "a")).await;
 }
 
 // spec/sync.md §10: the same over QUIC on localhost (tier 2: touches the network).
@@ -110,7 +117,8 @@ async fn driver_in_process_spec_sync_10() {
 #[ignore]
 async fn driver_quic_localhost_spec_sync_10() {
     use osis_transport::Quic;
-    converge(Quic::new(), "quic://127.0.0.1:0", Quic::new(), Quic::new()).await;
+    let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    converge(&format!("quic://127.0.0.1:{port}"), Quic::new(), Quic::new(), || {}).await;
 }
 
 fn s_(x: &str) -> Value {

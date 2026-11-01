@@ -13,6 +13,7 @@
 mod bundle;
 mod deliver;
 mod ephemeral;
+mod host;
 #[cfg(feature = "driver")]
 pub mod driver;
 mod inbound;
@@ -38,6 +39,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 
+pub use host::{HostStatus, host_policy};
 pub use pass::Verdicts;
 pub use state::Kind as EntryKind;
 
@@ -181,6 +183,9 @@ pub enum Action {
     /// with `dialable_secret()` where the old listener was, and join the LAN again with a fresh
     /// transport key.
     Reach,
+    /// Run the host with this config (`host.0^`; listening with `host_secret()`, reporting with
+    /// `set_host_status`), or stop it (none). Dials of its address reach it in-process.
+    Host(Option<Box<osis_host::HostConfig>>),
 }
 
 /// Open state of a label on a connection.
@@ -494,6 +499,8 @@ pub struct SyncEngine {
     pub(crate) relay_gate: osis_proto::RelayGate,
     /// Labels read for receipts only (`read_receipts`; memory only).
     pub(crate) receipts: BTreeMap<LabelId, receipts::Read>,
+    /// The host config handed to the driver (`host_step`).
+    pub(crate) hosting: host::Hosting,
 }
 
 impl SyncEngine {
@@ -579,6 +586,7 @@ impl SyncEngine {
             eph: ephemeral::Lane::default(),
             relay_gate: osis_proto::RelayGate::default(),
             receipts: BTreeMap::new(),
+            hosting: host::Hosting::default(),
         })
         .and_then(|mut s| {
             // a forgetting a crash interrupted before its inbox check
@@ -689,6 +697,7 @@ impl SyncEngine {
             }
         }
         self.stop_pushes(&mut out);
+        self.host_step(&mut out);
         if let Some(at) = self.next_wake()
             && self.wake != Some(at)
         {

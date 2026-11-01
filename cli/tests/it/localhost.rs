@@ -1,6 +1,6 @@
-//! The localhost end-to-end session (notes/apps.md, notes/cli.md Tests), tier 2: a real
-//! `osis serve` process over QUIC on 127.0.0.1 and three store directories (Alice's two devices,
-//! Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
+//! The localhost end-to-end session (notes/apps.md, notes/cli.md Tests), tier 2: a node
+//! hosting in an `osis serve` process over QUIC on 127.0.0.1 and three more store directories
+//! (Alice's two devices, Bob), driven only through the `osis` binary: init, pair offer/join, link make/redeem, writes
 //! on all three, sync, status, undo, bundles, inspect. Assertions read `--json` output.
 //! Run: `cargo test --workspace --test it localhost:: -- --ignored`.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
@@ -72,8 +72,10 @@ fn pair(old: &Path, new: &Path, host: &str) {
 #[test]
 #[ignore]
 fn two_people_three_devices_one_host_localhost() {
+    // a fresh box: `init`, then `serve` hosting any label (`host.0^` written by the flags)
     let sd = dir("host");
-    let mut serve = Command::new(OSIS).args(["serve", "--data"]).arg(&sd).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    osis(&sd, &["init"]);
+    let mut serve = Command::new(OSIS).arg("-s").arg(&sd).args(["serve", "--listen", "quic://127.0.0.1:0", "--admit", "open"]).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut addr = String::new();
     BufReader::new(serve.stdout.take().unwrap()).read_line(&mut addr).unwrap();
     let _host = Host(serve);

@@ -106,6 +106,38 @@ pub trait Backend: Send {
     }
 }
 
+/// A backend chosen at run time (the node's host store: redb in a store directory, memory
+/// otherwise).
+impl Backend for Box<dyn Backend> {
+    fn get(&self, key: &[u8]) -> Result<Option<Vec<u8>>, BackendError> {
+        (**self).get(key)
+    }
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, BackendError> {
+        (**self).scan(start, end, limit)
+    }
+    fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        (**self).commit(batch)
+    }
+    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        (**self).commit_lazy(batch)
+    }
+    fn sync(&mut self) -> Result<(), BackendError> {
+        (**self).sync()
+    }
+    fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
+        (**self).get_blob(id)
+    }
+    fn read_blob(&self, id: &BlobId, offset: u64, len: usize) -> Result<Option<Vec<u8>>, BackendError> {
+        (**self).read_blob(id, offset, len)
+    }
+    fn blob_len(&self, id: &BlobId) -> Result<Option<u64>, BackendError> {
+        (**self).blob_len(id)
+    }
+    fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, BackendError> {
+        (**self).scan_prefix(prefix, limit)
+    }
+}
+
 /// Options creating a file readable by its owner only (a store file, the root).
 pub(crate) fn owner_only() -> std::fs::OpenOptions {
     let mut o = std::fs::OpenOptions::new();

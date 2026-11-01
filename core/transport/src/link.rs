@@ -151,6 +151,35 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
     Ok(session(c.peer_key(), c.source(), send, recv, Some(c), None, wait))
 }
 
+/// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
+/// peer and `b` sees `a_key`. A node's own sessions to the host it runs go over one.
+pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
+    let (a_tx, b_rx) = pipe();
+    let (b_tx, a_rx) = pipe();
+    (Link { peer_key: b_key, source: None, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, source: None, tx: b_tx, rx: b_rx })
+}
+
+/// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,
+/// counting it taken. Dropping the sender ends the receiver once the queue is drained.
+fn pipe() -> (LinkTx, LinkRx) {
+    let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
+    let queued = Arc::new(AtomicUsize::new(0));
+    let taken = Arc::new(AtomicU64::new(0));
+    let (q, t) = (queued.clone(), taken.clone());
+    let (rtx, rrx) = mpsc::channel(READ_AHEAD);
+    tokio::spawn(async move {
+        while let Some(b) = wrx.recv().await {
+            let n = b.len();
+            if rtx.send(b).await.is_err() {
+                break;
+            }
+            q.fetch_sub(n, Ordering::AcqRel);
+            t.fetch_add(n as u64, Ordering::AcqRel);
+        }
+    });
+    (LinkTx { tx, queued, taken }, LinkRx(rrx))
+}
+
 /// The connections `serve` holds open, by arrival, with their sources.
 type Open<C> = BTreeMap<u64, (Option<Source>, C)>;
 
@@ -237,6 +266,22 @@ mod tests {
         assert_eq!(a.rx.recv().await.unwrap(), b"yo");
         drop(b.tx);
         assert_eq!(a.rx.recv().await, None);
+        drop(a.tx);
+        assert_eq!(b.rx.recv().await, None);
+    }
+
+    // spec/sync.md §10: an in-process pair carries bytes in order both ways with each side's key,
+    // counts them taken, and ends the other side's link when one sender is dropped
+    #[tokio::test]
+    async fn pair_round_trip_and_end() {
+        let (mut a, mut b) = pair([1; 32], [2; 32]);
+        assert_eq!((a.peer_key, b.peer_key), ([2; 32], [1; 32]));
+        assert!(a.tx.send(b"one".to_vec(), usize::MAX) && a.tx.send(b"two".to_vec(), usize::MAX));
+        assert_eq!(b.rx.recv().await.unwrap(), b"one");
+        assert_eq!(b.rx.recv().await.unwrap(), b"two");
+        assert!(b.tx.send(b"back".to_vec(), usize::MAX));
+        assert_eq!(a.rx.recv().await.unwrap(), b"back");
+        assert_eq!(a.tx.taken(), 6);
         drop(a.tx);
         assert_eq!(b.rx.recv().await, None);
     }

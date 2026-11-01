@@ -103,6 +103,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `node.0` | struct { software version } | on a node thing |
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
+| `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not. `admit` `own`: it takes registrations of the labels of groups it reads whose hosts name its host address, and of `labels`; `open`: of any label. `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `placed.0~` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
 | `groups.0` | set<tid> | synthetic, guaranteed, local |
@@ -135,6 +136,8 @@ type frontier = struct {
 type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
+type admit = enum { 0 own, 1 open };
+type host_caps = struct { 0 entries: int, 1 bytes: int };
 
 aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];
@@ -153,6 +156,7 @@ aspect was.0: tid;
 aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
+aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect groups.0: set<tid> [synthetic, guaranteed];
@@ -161,7 +165,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `group.0`, `name.0`, `body.0` and `tag.0`: `author`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

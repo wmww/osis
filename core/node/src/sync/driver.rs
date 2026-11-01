@@ -9,9 +9,16 @@
 //! `Action`. Engine calls run under `block_in_place` on a multi-thread runtime. The engine lives
 //! in a `Shared`: owned by the driver (`run`), or shared with the app (`run_shared`: the `osis` handle
 //! keeps it behind its own lock and hands the driver the actions of its calls).
+//! While the node hosts (`Action::Host`, from its `host.0^`) the driver runs osis-host's driver
+//! as a task beside it over the same transport: its listeners use the host secret, its store is
+//! the holder's (`Shared::host_backend`), and the node's own dials of the host address go to it
+//! over an in-process link pair, no socket (notes/sync.md Hosting).
 
-use super::{Action, ConnId, Event, SyncEngine};
+use super::{Action, ConnId, Event, HostStatus, SyncEngine};
 use osis_base::Clock;
+use osis_crypto::RngCore;
+use osis_host::{HostConfig, driver as host};
+use osis_store::Backend;
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
@@ -120,6 +127,18 @@ struct Conn {
 pub trait Shared: Send + Sync + 'static {
     /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
+    /// Opens the store the node's host keeps (once per start of hosting; closed when it stops).
+    /// In memory unless the holder says otherwise.
+    fn host_backend(&self) -> Result<Box<dyn Backend>, String> {
+        Ok(Box::new(osis_store::MemoryBackend::new()))
+    }
+}
+
+/// The host task while the node hosts.
+struct HostTask {
+    cfg: HostConfig,
+    ctl: mpsc::Sender<host::Control>,
+    task: JoinHandle<osis_host::Hub<Box<dyn Backend>>>,
 }
 
 /// A holder owning the engine (`run`).
@@ -133,7 +152,7 @@ impl Shared for Owned {
 }
 
 /// A transport secret from the engine's 32 bytes.
-fn static_secret(s: &osis_crypto::Secret32) -> StaticSecret {
+fn transport_secret(s: &osis_crypto::Secret32) -> StaticSecret {
     StaticSecret::from_bytes(*s.expose())
 }
 
@@ -210,6 +229,12 @@ struct Driver<T: Transport, H: Shared> {
     relisten_at: Option<tokio::time::Instant>,
     /// Sessions each listener accepted, by its key: they close with it.
     served_by: HashMap<[u8; 32], Vec<ConnId>>,
+    /// The running host, and a config change for it not yet carried out (`host_update`).
+    host: Option<HostTask>,
+    host_want: Option<Option<Box<HostConfig>>>,
+    /// The control channel of a host about to start: dials of its address made before it runs
+    /// wait there.
+    host_chan: Option<(mpsc::Sender<host::Control>, mpsc::Receiver<host::Control>)>,
 }
 
 impl<T: Transport, H: Shared> Driver<T, H> {
@@ -245,17 +270,37 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     }
 
     fn apply(&mut self, acts: Vec<Action>) {
+        // a host config first: dials of its address in the same batch go to it
+        for a in &acts {
+            if let Action::Host(cfg) = a {
+                self.host_want = Some(cfg.clone());
+            }
+        }
         for a in acts {
             match a {
                 Action::Dial { conn, address } => {
                     let t = self.transport.clone();
                     let ev = self.ev_tx.clone();
                     let addr = Address { url: address.url, key: address.key };
+                    let own = self.own_host(&addr.key);
                     let task = tokio::spawn(async move {
-                        let link = match link::dial(&*t, &addr, None, FINISH_WAIT).await {
+                        let dialed = match own {
+                            // the host this node runs: an in-process session with an ephemeral key
+                            Some(ctl) => {
+                                let mut k = [0u8; 32];
+                                osis_crypto::OsRng.fill_bytes(&mut k);
+                                let (mine, theirs) = link::pair(k, addr.key);
+                                match ctl.send(host::Control::Accept(theirs)).await {
+                                    Ok(()) => Ok(mine),
+                                    Err(_) => Err("own host stopped".to_string()),
+                                }
+                            }
+                            None => link::dial(&*t, &addr, None, FINISH_WAIT).await.map_err(|e| e.to_string()),
+                        };
+                        let link = match dialed {
                             Ok(l) => l,
                             Err(e) => {
-                                let _ = ev.send(Ev::Failed(conn, e.to_string())).await;
+                                let _ = ev.send(Ev::Failed(conn, e)).await;
                                 return;
                             }
                         };
@@ -277,6 +322,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 Action::Close { conn } => self.close(conn),
                 Action::Wake { at } => self.wake = Some(at),
                 Action::Reach => self.relisten = true,
+                Action::Host(_) => {}
             }
         }
     }
@@ -367,7 +413,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
     /// listener of an older dialable key stops.
     async fn reach(&mut self, url: String, relays: Vec<String>) -> Result<Address, String> {
         self.reach = Some((url.clone(), relays.clone()));
-        let Some(secret) = self.read(|s| static_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
+        let Some(secret) = self.read(|s| transport_secret(&s.dialable_secret())) else { return Err("engine gone".into()) };
         let addr = self.listen(ListenConfig { url, secret }).await?;
         let key = addr.key;
         if let Some(old) = self.dialable.replace(key).filter(|k| *k != key) {
@@ -508,7 +554,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         if let Some((k, _)) = old {
             self.unlisten_now(k).await;
         }
-        let Some(secret) = self.read(|s| static_secret(&s.lan_secret())) else { return };
+        let Some(secret) = self.read(|s| transport_secret(&s.lan_secret())) else { return };
         let mut r = self.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await;
         if r.is_err()
             && let Some(v4) = v4_only(&url)
@@ -577,6 +623,89 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             Some(Control::Shutdown) | None => return false,
         }
         true
+    }
+
+    /// The control channel of the host this node runs (or is about to start) under `key`.
+    fn own_host(&mut self, key: &[u8; 32]) -> Option<mpsc::Sender<host::Control>> {
+        if let Some(h) = self.host.as_ref().filter(|h| h.cfg.key == *key) {
+            return Some(h.ctl.clone());
+        }
+        let Some(Some(c)) = &self.host_want else { return None };
+        (c.key == *key).then(|| self.host_chan.get_or_insert_with(|| mpsc::channel(64)).0.clone())
+    }
+
+    /// Carries out the last `Action::Host`: stops the host, starts it, or changes it in place
+    /// (only the admission or caps changed) or by a restart (its hub kept).
+    async fn host_update(&mut self) {
+        let Some(want) = self.host_want.take() else { return };
+        // dials waiting for a host that does not start fail
+        let chan = self.host_chan.take();
+        let Some(cfg) = want else {
+            if let Some(h) = self.host.take() {
+                let _ = h.ctl.send(host::Control::Shutdown).await;
+                let _ = h.task.await;
+            }
+            return;
+        };
+        let cfg = *cfg;
+        if let Some(h) = self.host.as_mut()
+            && (HostConfig { admission: cfg.admission.clone(), caps: cfg.caps.clone(), ..h.cfg.clone() }) == cfg
+        {
+            let _ = h.ctl.send(host::Control::Admit(cfg.admission.clone(), cfg.caps.clone())).await;
+            h.cfg = cfg;
+            return;
+        }
+        let hub = match self.host.take() {
+            Some(h) => {
+                let _ = h.ctl.send(host::Control::Shutdown).await;
+                h.task.await.ok()
+            }
+            None => None,
+        };
+        let hub = match hub {
+            Some(mut hub) => {
+                hub.store_mut().set_policy(cfg.policy.clone());
+                hub
+            }
+            None => {
+                let shared = &self.shared;
+                let opened = blocking(|| shared.host_backend().and_then(|b| osis_host::HostStore::open(b, self.clock.clone(), cfg.policy.clone(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())));
+                match opened {
+                    Ok(store) => osis_host::Hub::new(store, cfg.key, Box::new(osis_crypto::OsRng)),
+                    Err(e) => return self.host_status(HostStatus::Failed(format!("host store: {e}"))),
+                }
+            }
+        };
+        let mut hub = hub;
+        hub.store_mut().set_admission(cfg.admission.clone(), cfg.caps.clone());
+        let Some(secret) = self.read(|s| transport_secret(&s.host_secret())) else { return };
+        let mut listeners = Vec::new();
+        let mut addrs = Vec::new();
+        for url in &cfg.listen {
+            match self.transport.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await {
+                Ok(l) => {
+                    let a = l.address();
+                    addrs.push(osis_label::Address { url: a.url, key: a.key });
+                    listeners.push(l);
+                }
+                Err(e) => return self.host_status(HostStatus::Failed(format!("listen {url}: {e}"))),
+            }
+        }
+        let (ctl, rx) = chan.unwrap_or_else(|| mpsc::channel(64));
+        let ep = host::Endpoint { transport: self.transport.clone(), listeners, secret };
+        let task = tokio::spawn(host::run(hub, ep, cfg.replicate.clone(), self.clock.clone(), rx, self.log.clone()));
+        self.host = Some(HostTask { cfg, ctl, task });
+        self.host_status(HostStatus::Listening(addrs));
+    }
+
+    fn host_status(&mut self, st: HostStatus) {
+        if let HostStatus::Failed(e) = &st {
+            (self.log)(&format!("hosting: {e}"));
+        }
+        self.call(&mut |s| {
+            s.set_host_status(st.clone());
+            Vec::new()
+        });
     }
 
     /// After `Action::Reach`: listens with the new dialable secret (the old listener stops) and
@@ -657,10 +786,17 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         relisten: false,
         relisten_at: None,
         served_by: HashMap::new(),
+        host: None,
+        host_want: None,
+        host_chan: None,
     };
     for l in listeners {
         d.serve(l);
     }
+    d.call(&mut |s| {
+        s.host_restart();
+        Vec::new()
+    });
     d.feed(Event::Tick);
     let mut lan_tick = tokio::time::interval(LAN_CHECK);
     while !d.gone {
@@ -694,7 +830,10 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
             }
         }
         d.after_rotation().await;
+        d.host_update().await;
     }
+    d.host_want = Some(None);
+    d.host_update().await;
     #[cfg(feature = "lan")]
     if let Some(x) = d.lan.take() {
         x.tasks.iter().for_each(JoinHandle::abort);

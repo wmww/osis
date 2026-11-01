@@ -15,7 +15,7 @@ use osis::{
 use std::future::Future;
 use std::io::BufRead;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::task::{Context, Poll, Wake, Waker};
 use std::time::{Duration, Instant};
 
@@ -165,7 +165,7 @@ fn not_supported(what: &'static str) -> anyhow::Error {
 }
 
 /// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay
-/// local (their writes go out with the next networked command, `sync` or `daemon`).
+/// local (their writes go out with the next networked command, `sync` or `serve`).
 fn needs_net(c: &Cmd) -> bool {
     matches!(
         c,
@@ -177,7 +177,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Status { .. }
             | Cmd::Sync { .. }
             | Cmd::Wait { .. }
-            | Cmd::Daemon
+            | Cmd::Serve { .. }
             | Cmd::Watch { .. }
             | Cmd::Roster { watch: true, .. }
             | Cmd::Diag { follow: true }
@@ -205,7 +205,6 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
     let sel = crate::store_sel(&g, store)?;
     // Commands that do not open a store.
     match &cli.cmd {
-        Cmd::Serve { config, listen, data, key } => return serve(&g, config, listen, data, key, out),
         Cmd::Schema(SchemaCmd::Check { file }) => return schema_check(&g, file, out),
         Cmd::Schema(SchemaCmd::Gen { file, o }) => return schema_gen(file, o, out),
         Cmd::Schema(SchemaCmd::Add { file }) => return schema_reg(&sel, file, true),
@@ -327,7 +326,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Hosts(HostsCmd::Add { addr }) => Ok(db.add_host(&ctx.arg_text(&addr)?.parse()?)?),
         Cmd::Hosts(HostsCmd::Rm { addr }) => Ok(db.remove_host(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Serve { .. } | Cmd::Schema(_) => unreachable!("handled before opening"),
+        Cmd::Serve { listen, admit, label } => serve(ctx, listen, admit, label),
+        Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
         Cmd::Replace(a) => one_write(ctx, ScriptCmd::Replace(a)),
@@ -525,10 +525,6 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Inspect(i) => inspect(ctx, i),
         Cmd::Diag { follow } => {
             diag(ctx, if follow { ctx.timeout_or(None)? } else { Some(Duration::ZERO) })
-        }
-        Cmd::Daemon => {
-            let t = ctx.timeout_or(None)?;
-            diag(ctx, t)
         }
     }
 }
@@ -1036,39 +1032,59 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     ctx.emit(&lines, j)
 }
 
-fn serve(g: &crate::args::Global, config: &Option<std::path::PathBuf>, listen: &Option<String>, data: &Option<std::path::PathBuf>, key: &Option<std::path::PathBuf>, out: &mut dyn std::io::Write) -> anyhow::Result<()> {
-    let mut cfg = match config {
-        Some(f) => {
-            let text = std::fs::read_to_string(f).map_err(|e| usage(format!("{}: {e}", f.display())))?;
-            osis_host::config::parse(&text).map_err(|e| usage(format!("{}: {e}", f.display())))?
+/// How long `serve` waits for its host to listen. Listening is local (milliseconds); at 0 a
+/// host never prints its address, at infinity a stuck listen hangs the command silently.
+const HOST_START_WAIT: Duration = Duration::from_secs(30);
+
+fn serve(ctx: &mut Ctx<'_>, listen: Vec<String>, admit: Option<crate::args::AdmitArg>, label: Vec<String>) -> anyhow::Result<()> {
+    let db = ctx.db.clone();
+    if !listen.is_empty() || admit.is_some() || !label.is_empty() {
+        let mut h = db.hosting().unwrap_or_default();
+        if !listen.is_empty() {
+            h.listen = listen;
         }
-        None => osis_host::Config { listen: "quic://127.0.0.1:0".into(), key: Default::default(), data: osis_host::config::DEFAULT_DATA.into(), peers: Vec::new(), policy: osis_host::HostPolicy::default() },
-    };
-    if let Some(l) = listen {
-        cfg.listen = l.clone();
-    }
-    if let Some(d) = data {
-        cfg.data = d.clone();
-    }
-    match key {
-        Some(k) => cfg.key = k.clone(),
-        None if config.is_none() => cfg.key = cfg.data.join("host.key"),
-        None => {}
-    }
-    std::fs::create_dir_all(&cfg.data).map_err(|e| anyhow!("{}: {e}", cfg.data.display()))?;
-    let quiet = g.quiet;
-    let log: osis_host::Log = Arc::new(move |m: &str| {
-        if !quiet {
-            eprintln!("osis serve: {m}");
+        if let Some(a) = admit {
+            h.admit = match a {
+                crate::args::AdmitArg::Own => osis::Admit::Own,
+                crate::args::AdmitArg::Open => osis::Admit::Open,
+            };
         }
-    });
-    let out = Mutex::new(out);
-    osis_host::serve::run(cfg, log, |a| {
-        let mut o = out.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = writeln!(o, "{a}");
-        let _ = o.flush();
-    })
-    .map_err(|e| anyhow!(e))
+        if !label.is_empty() {
+            h.labels = label.iter().map(|l| parse_label(l)).collect::<anyhow::Result<_>>()?;
+        }
+        db.set_hosting(Some(h))?;
+    }
+    if db.hosting().is_some() {
+        let until = std::time::Instant::now() + HOST_START_WAIT;
+        let a = loop {
+            if let Some(a) = db.host_address().map_err(|e| exit(6, format!("hosting: {e}")))? {
+                break a;
+            }
+            if std::time::Instant::now() >= until {
+                return Err(exit(6, "hosting: the host did not start listening"));
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        ctx.emit(&[a.to_string()], J::obj([("host", J::str(a.to_string()))]))?;
+        ctx.out.flush()?;
+    }
+    let t = ctx.timeout_or(None)?;
+    diag(ctx, t)
+}
+
+/// A label ID: 32 hex digits.
+fn parse_label(s: &str) -> anyhow::Result<osis::LabelId> {
+    let bad = || usage(format!("not a label ID (32 hex digits): {s}"));
+    let b = s.as_bytes();
+    if b.len() != 32 {
+        return Err(bad());
+    }
+    let mut id = [0u8; 16];
+    for (i, o) in id.iter_mut().enumerate() {
+        let hex = std::str::from_utf8(&b[2 * i..2 * i + 2]).map_err(|_| bad())?;
+        *o = u8::from_str_radix(hex, 16).map_err(|_| bad())?;
+    }
+    Ok(osis::LabelId(id))
 }
 
 /// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.

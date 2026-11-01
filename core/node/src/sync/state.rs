@@ -29,6 +29,8 @@ const HINT: &[u8] = b"y/i";
 const TIMED: &[u8] = b"y/d";
 const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
+/// The host secret (`SyncEngine::host_secret`).
+const HOST_SECRET: &[u8] = b"y/z";
 const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
@@ -222,6 +224,8 @@ pub struct State {
     pub carriers: BTreeMap<CommitId, Vec<CommitId>>,
     /// This node's dialable transport secret (spec/sync.md §10).
     pub reach_secret: Option<Secret32>,
+    /// The transport secret its host listens with, while it hosts.
+    pub host_secret: Option<Secret32>,
     /// The label logs co-reader-peer sessions see (in memory).
     pub feed: super::serve::Feed,
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
@@ -428,6 +432,7 @@ impl State {
                     s.tombs.insert((LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
+                b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"o" => {
                     // not rebuildable: a record that does not decode fails the load, named
                     let (k, o) = decode_out(rest, &v).map_err(|_| Error::Corrupt("sync outbox record"))?;
@@ -584,7 +589,7 @@ impl State {
             for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
-                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) { Shred::Yes } else { Shred::No })?,
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -669,6 +674,15 @@ impl State {
     pub fn set_reach_secret(&mut self, s: Secret32) {
         self.put(REACH.to_vec(), s.expose().to_vec());
         self.reach_secret = Some(s);
+    }
+
+    /// Sets or shreds the host secret.
+    pub fn set_host_secret(&mut self, s: Option<Secret32>) {
+        match &s {
+            Some(s) => self.put(HOST_SECRET.to_vec(), s.expose().to_vec()),
+            None => self.del(HOST_SECRET.to_vec()),
+        }
+        self.host_secret = s;
     }
 
     pub fn set_present(&mut self, s: HostKey, l: LabelId, b: BlobId, on: bool) {

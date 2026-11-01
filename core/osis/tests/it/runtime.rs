@@ -1,7 +1,7 @@
 //! The background runtime (notes/api.md Design rules: async only where another node is waited
-//! on; sync runs on the handle's tokio runtime): two databases on `Runtime::Tokio` reach an
-//! osis-host driver (one on the app's runtime, one on `Runtime::Own`) over in-process sessions (tier 1, a guard timeout against a hang) and over
-//! localhost QUIC (tier 2, ignored).
+//! on; sync runs on the handle's tokio runtime): two databases on `Runtime::Tokio` reach a
+//! third that hosts (one on the app's runtime, one on `Runtime::Own`) over in-process sessions
+//! (tier 1, a guard timeout against a hang) and over localhost QUIC (tier 2, ignored).
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use osis::internals::Internals as _;
@@ -9,13 +9,8 @@ use crate::common;
 use common::ak;
 use crate::common::CreateIn;
 use osis::{Config, MemStore, Osis, Runtime, HostAddr, StoreAt, SyncScope, Transport, Value};
-use osis_crypto::SeededRng;
-use osis_host::{HostStore, Endpoint, Hub, HostPolicy};
-use osis_store::MemoryBackend;
-use osis_transport::{ListenConfig, Listener, StaticSecret, Transport as _};
-use std::sync::Arc;
+use osis_transport::Transport as _;
 use std::time::Duration;
-use tokio::sync::mpsc;
 
 const GUARD: Duration = Duration::from_secs(30);
 
@@ -28,19 +23,31 @@ fn cfg(seed: u64, hosts: Vec<HostAddr>, t: Transport) -> Config {
     c
 }
 
+/// A node hosting any label (`set_hosting`, open admission) on `t` at `url`, and its host
+/// address once it listens.
+async fn host_node(t: Transport, url: &str) -> (Option<Osis>, HostAddr) {
+    let mut c = cfg(90, vec![], t);
+    c.peers = false;
+    let db = Osis::create(c).unwrap().0;
+    db.set_hosting(Some(osis::Hosting { listen: vec![url.into()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let a = tokio::time::timeout(GUARD, async {
+        loop {
+            if let Some(a) = db.host_address().unwrap() {
+                return a;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    (Some(db), a)
+}
+
 /// A person writes into its home group and waits until it is at the host; a fresh device
 /// restores the person from the card and reads it. `p2p`: the host then stops, and a write
 /// reaches the other device directly (each listens with its dialable key, spec/sync.md §5, §10).
-async fn round_trip<T: osis_transport::Transport>(host_ep: T, url: &str, a: Transport, b: Transport, p2p: bool) {
-    let secret = StaticSecret::from_bytes([0x52; 32]);
-    let listener = host_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
-    let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(5)).unwrap();
-    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(6)));
-    let (sctl, srx) = mpsc::channel(8);
-    let host_task = tokio::spawn(osis_host::run(hub, Endpoint { transport: host_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
-    let host = HostAddr::new(&addr.url, addr.key);
+async fn round_trip(host_ep: Transport, url: &str, a: Transport, b: Transport, p2p: bool) {
+    let (mut host_db, host) = host_node(host_ep, url).await;
 
     let (da, card) = Osis::create(cfg(1, vec![host.clone()], a)).unwrap();
     let mut w = da.write();
@@ -57,7 +64,7 @@ async fn round_trip<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tran
     // the host, and the first device as a co-reader once its connection is up
     assert!(db.status().unwrap().connected >= 1);
     if p2p {
-        assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
+        drop(host_db.take());
         let mut w = da.write();
         w.at(t, ak("t:x.0")).set(&Value::Str("peer to peer".into())).unwrap();
         w.commit().unwrap();
@@ -75,17 +82,14 @@ async fn round_trip<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tran
     da.close().unwrap();
     assert!(weak.upgrade().is_none());
     drop(db);
-    if !p2p {
-        assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    }
-    host_task.await.unwrap();
+    drop(host_db);
 }
 
 // notes/api.md Handle (Config.runtime), spec/sync.md §10: the tokio driver under the handle.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_in_process_spec_sync_10() {
     let net = osis_transport::Net::new(3);
-    round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), false).await;
+    round_trip(Transport::InProcess(net.endpoint("s")), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), false).await;
 }
 
 // spec/sync.md §5 (co-reader peer), §10, notes/api.md (Config.peers): two devices under the
@@ -93,7 +97,7 @@ async fn runtime_in_process_spec_sync_10() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn runtime_peers_in_process_spec_sync_5() {
     let net = osis_transport::Net::new(5);
-    round_trip(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), true).await;
+    round_trip(Transport::InProcess(net.endpoint("s")), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b")), true).await;
 }
 
 // spec/sync.md §10: the same over localhost QUIC (tier 2: touches the network).
@@ -101,20 +105,12 @@ async fn runtime_peers_in_process_spec_sync_5() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn runtime_quic_localhost_spec_sync_10() {
-    round_trip(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic, false).await;
+    round_trip(Transport::Quic, "quic://127.0.0.1:0", Transport::Quic, Transport::Quic, false).await;
 }
 
 /// Bob redeems Alice's write link to a synced group, both on the tokio driver.
-async fn redeem_over<T: osis_transport::Transport>(host_ep: T, url: &str, a: Transport, b: Transport) {
-    let secret = StaticSecret::from_bytes([0x53; 32]);
-    let listener = host_ep.listen(ListenConfig { url: url.into(), secret: secret.clone() }).await.unwrap();
-    let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(7)).unwrap();
-    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(8)));
-    let (sctl, srx) = mpsc::channel(8);
-    let host_task = tokio::spawn(osis_host::run(hub, Endpoint { transport: host_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
-    let host = HostAddr::new(&addr.url, addr.key);
+async fn redeem_over(host_ep: Transport, url: &str, a: Transport, b: Transport) {
+    let (host_db, host) = host_node(host_ep, url).await;
     let alice = Osis::create(cfg(1, vec![host.clone()], a)).unwrap().0;
     let bob = Osis::create(cfg(2, vec![host.clone()], b)).unwrap().0;
     let mut w = alice.write();
@@ -133,22 +129,21 @@ async fn redeem_over<T: osis_transport::Transport>(host_ep: T, url: &str, a: Tra
     alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true), ..Default::default() });
     assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
-    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    host_task.await.unwrap();
+    drop(host_db);
 }
 
 // spec/permissions.md §9 (links), spec/sync.md §10: a link redeemed over the tokio driver.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_in_process_spec_permissions_9() {
     let net = osis_transport::Net::new(4);
-    redeem_over(net.endpoint("s"), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b"))).await;
+    redeem_over(Transport::InProcess(net.endpoint("s")), "mem://s", Transport::InProcess(net.endpoint("a")), Transport::InProcess(net.endpoint("b"))).await;
 }
 
 // spec/permissions.md §9, spec/sync.md §10: the same over localhost QUIC (tier 2).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn redeem_quic_localhost_spec_permissions_9() {
-    redeem_over(osis_transport::Quic::new(), "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
+    redeem_over(Transport::Quic, "quic://127.0.0.1:0", Transport::Quic, Transport::Quic).await;
 }
 
 // notes/api.md Text editing sessions, spec/requirements.md (Generality: one commit per editing
@@ -231,16 +226,8 @@ async fn reach_of(db: &Osis) -> osis::internals::node::sync::peers::Peer {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn redeem_direct_in_process_spec_permissions_9() {
     let net = osis_transport::Net::new(6);
-    let host_ep = net.endpoint("s");
-    let secret = StaticSecret::from_bytes([0x54; 32]);
-    let listener = host_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
-    let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(9)).unwrap();
-    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(10)));
-    let (sctl, srx) = mpsc::channel(8);
-    let host_task = tokio::spawn(osis_host::run(hub, Endpoint { transport: host_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
-    let host = HostAddr::new(&addr.url, addr.key);
+    let host_ep = Transport::InProcess(net.endpoint("s"));
+    let (host_db, host) = host_node(host_ep, "mem://s").await;
     net.partition("b", "s");
     let alice = Osis::create(cfg(1, vec![host], Transport::InProcess(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
@@ -354,8 +341,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
     assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());
     drop((alice, bob, carol, dave, erin));
-    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    host_task.await.unwrap();
+    drop(host_db);
 }
 
 // spec/permissions.md §9 (a node without hosts makes only direct links), spec/sync.md §5
@@ -407,17 +393,10 @@ async fn redeem_direct_no_host_in_process_spec_permissions_9() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     let net = osis_transport::Net::new(8);
-    let host_ep = net.endpoint("s");
-    let secret = StaticSecret::from_bytes([0x55; 32]);
-    let listener = host_ep.listen(ListenConfig { url: "mem://s".into(), secret: secret.clone() }).await.unwrap();
-    let addr = listener.address();
-    let clock: Arc<dyn osis::Clock> = Arc::new(osis_base::SystemClock);
-    let store = HostStore::open(MemoryBackend::new(), clock.clone(), HostPolicy::default(), &mut SeededRng::from_u64(11)).unwrap();
-    let hub = Hub::new(store, addr.key, Box::new(SeededRng::from_u64(12)));
-    let (sctl, srx) = mpsc::channel(8);
-    let host_task = tokio::spawn(osis_host::run(hub, Endpoint { transport: host_ep, listener, secret }, vec![], clock, srx, Arc::new(|_: &str| {})));
+    let host_ep = Transport::InProcess(net.endpoint("s"));
+    let (host_db, host) = host_node(host_ep, "mem://s").await;
     net.partition("b", "s");
-    let alice = Osis::create(cfg(1, vec![HostAddr::new(&addr.url, addr.key)], Transport::InProcess(net.endpoint("a")))).unwrap().0;
+    let alice = Osis::create(cfg(1, vec![host.clone()], Transport::InProcess(net.endpoint("a")))).unwrap().0;
     let mut c = cfg(2, vec![], Transport::InProcess(net.endpoint("b")));
     c.wait_timeout = GUARD;
     let bob = Osis::create(c).unwrap().0;
@@ -453,8 +432,7 @@ async fn single_use_direct_keeps_key_in_process_spec_permissions_9() {
     .await
     .unwrap();
     drop((alice, bob));
-    assert!(sctl.send(osis_host::Control::Shutdown).await.is_ok());
-    host_task.await.unwrap();
+    drop(host_db);
 }
 
 // spec/sync.md §10, notes/api.md (`rotate_reach`): a rotated dialable key is listened on at once,
