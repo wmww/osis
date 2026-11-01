@@ -5,3 +5,5 @@
 Shape: as `valid_forged_claim_withheld_rotation_spec_crypto_4` (notes/crypto.md, osis-keys Chain), but e's rotator A joined from a compaction snapshot keying s, taken after R_s. Writer W signs F (keyset of s copied, listing nothing) after that snapshot; A applies F (valid, settled), removes W, rotating to e: list s: {F}. Node X, not compacted, holds everything but R_s: F is held and settled, so e is settled at X.
 
 Not reproduced; needs a compacted rotator and a non-compacted node X fed by the attacker. Possible fix: the compaction snapshot carries, per epoch it keys, the valid settled claim IDs its writer held (an admin-signed record), and a joiner records them as listed claims of s without holding the commits, so its lists stay complete.
+
+Sibling (review): a snapshot-only rotator holding R_s but not what R_s lists (compacted away) finds R_s unsettled, so lists s with nothing; at X "s established" by F then passes s. And issues/snapshot-keyed-skips-withheld-removal.md: the snapshot clause itself passes s at X without R_s.
