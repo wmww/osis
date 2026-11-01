@@ -276,8 +276,11 @@ fn transport_config() -> Result<Arc<quinn::TransportConfig>, Error> {
     Ok(Arc::new(t))
 }
 
-/// `host:port` of a `quic://` URL: port required, IPv6 addresses in brackets.
-fn host_port(url: &str) -> Result<&str, Error> {
+/// The port of a `quic://` URL that names none (spec/sync.md §10).
+pub const DEFAULT_PORT: u16 = 4040;
+
+/// `host:port` of a `quic://` URL: port `DEFAULT_PORT` when absent, IPv6 addresses in brackets.
+fn host_port(url: &str) -> Result<String, Error> {
     crate::check_url(url)?;
     let bad = || Error::BadUrl(url.to_owned());
     let hp = match url.split_once("://") {
@@ -285,17 +288,20 @@ fn host_port(url: &str) -> Result<&str, Error> {
         Some((s, _)) => return Err(Error::UnknownScheme(s.to_owned())),
         None => return Err(bad()),
     };
-    let (host, port) = hp.rsplit_once(':').ok_or_else(bad)?;
+    let (host, port) = match hp.rsplit_once(':') {
+        Some((h, p)) if !hp.ends_with(']') => (h, p.parse::<u16>().map_err(|_| bad())?),
+        _ => (hp, DEFAULT_PORT),
+    };
     let v6 = host.starts_with('[') && host.ends_with(']');
-    if host.is_empty() || hp.contains('/') || (host.contains(':') && !v6) || port.parse::<u16>().is_err() {
+    if host.is_empty() || hp.contains('/') || (host.contains(':') && !v6) {
         return Err(bad());
     }
-    Ok(hp)
+    Ok(format!("{host}:{port}"))
 }
 
 async fn resolve(url: &str) -> Result<SocketAddr, Error> {
     let hp = host_port(url)?;
-    let mut it = tokio::net::lookup_host(hp).await.map_err(|e| Error::Unreachable(format!("{url}: {e}")))?;
+    let mut it = tokio::net::lookup_host(&hp).await.map_err(|e| Error::Unreachable(format!("{url}: {e}")))?;
     it.next().ok_or_else(|| Error::Unreachable(url.to_owned()))
 }
 
@@ -658,13 +664,17 @@ mod tests {
         });
     }
 
-    // spec: none (URL form: port required, IPv6 in brackets, length cap)
+    // spec/sync.md §10 (URL form: port 4040 when absent, IPv6 in brackets), length cap
     #[test]
-    fn url_forms() {
-        assert!(host_port("quic://example.org:4433").is_ok());
-        assert!(host_port("quic://[::1]:4433").is_ok());
+    fn url_forms_spec_sync_10() {
+        assert_eq!(host_port("quic://example.org:4433").unwrap(), "example.org:4433");
+        assert_eq!(host_port("quic://[::1]:4433").unwrap(), "[::1]:4433");
         assert!(host_port("quic://::1:4433").is_err());
-        assert!(host_port("quic://example.org").is_err());
+        assert!(host_port("quic://::1").is_err());
+        assert_eq!(host_port("quic://example.org").unwrap(), "example.org:4040");
+        assert_eq!(host_port("quic://[::1]").unwrap(), "[::1]:4040");
+        assert!(host_port("quic://example.org:").is_err());
+        assert!(host_port("quic://example.org:x").is_err());
         assert!(host_port("quic://example.org:4433/x").is_err());
         assert!(host_port(&format!("quic://{}:1", "a".repeat(300))).is_err());
     }

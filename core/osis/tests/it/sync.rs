@@ -766,6 +766,29 @@ fn add_host_moves_labels_spec_sync_2() {
     assert_eq!(a.status().unwrap().groups[&a.home()].state, SyncState::NoHosts);
 }
 
+// notes/api.md Sync status (`wait_synced(All)` leaves `NoHosts` groups out): Carol has no
+// hosts (her home is `NoHosts`) and joined Alice's hosted group by a link; Alice's later
+// write reaches her through `wait_synced(All)`, while `Group(home)` still fails `Unsynced`.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn wait_synced_all_skips_hostless_groups() {
+    let mut w = World::new();
+    let (alice, _, _) = people(&mut w, 0);
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts::default()).unwrap();
+    w.run();
+    let carol = Osis::create(w.cfg(9, &[])).unwrap().0;
+    w.run();
+    assert_eq!(w.until(carol.redeem(&link), 1000, 10).unwrap(), g);
+    w.run();
+    assert_eq!(carol.status().unwrap().groups[&carol.home()].state, SyncState::NoHosts);
+    let t = item(&alice, g, g, "after the redeem");
+    w.until(alice.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    assert_eq!(x(&carol, t), Some(s("after the redeem")));
+    assert!(matches!(w.until(carol.wait_synced(SyncScope::Group(carol.home()), Duration::from_secs(10)), 1000, 10), Err(osis::Error::Unsynced { .. })));
+}
+
 // notes/api.md Sync configuration (`add_host` scope), spec/sync.md §2: Alice's host changes
 // move her home label and her own shared group, not a group Bob owns that she co-administers,
 // not her link's actor (the link text names its hosts); her shared group keeps its last

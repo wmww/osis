@@ -356,18 +356,21 @@ fn unbuilt_commands_report_unsupported_plan_cli_4() {
     assert_eq!(s.code(&["link", "redeem", "x"]), 7, "malformed link");
 }
 
-// notes/cli.md Command table Watching: initial value first; --count ends it.
+// notes/cli.md Command table Watching: initial value first, printed but not counted by
+// --count (no other node writes here, so --count 1 meets the timeout); roster --watch alike.
 #[test]
-fn watch_initial_plan_cli_4() {
+fn watch_initial_not_counted_plan_cli_4() {
     let s = S::mem();
     let t = s.ok(&["create", "--owner", "me", "--in", "home", "a:b.0", "7"]).line().to_string();
-    let o = s.ok(&["watch", &t, "a:b.0", "--count", "1"]);
-    assert_eq!(o.line(), "initial - - - a:b.0 7");
-    let o = s.ok(&["--json", "watch", &t, "a:b.0", "--count", "1"]);
-    assert!(o.line().contains("\"source\":\"initial\"") && o.line().ends_with("\"value\":7}"), "{}", o.out);
-    // --timeout reached with --count unmet: exit 6, naming the changes seen
-    let o = s.call(&["--timeout", "50ms", "watch", &t, "a:b.0", "--count", "2"], "");
-    assert_eq!((o.code, o.err.trim()), (6, "error: timed out after 1 change(s)"), "{}", o.out);
+    let o = s.call(&["--timeout", "50ms", "watch", &t, "a:b.0", "--count", "1"], "");
+    assert_eq!((o.code, o.line(), o.err.trim()), (6, "initial - - - a:b.0 7", "error: timed out after 0 change(s)"));
+    let o = s.call(&["--json", "--timeout", "50ms", "watch", &t, "--count", "1"], "");
+    assert_eq!(o.code, 6, "{}", o.err);
+    // the whole thing: one initial line per present aspect (`a:b.0`, `created.0`), none counted
+    assert_eq!(o.out.lines().count(), 2, "{}", o.out);
+    assert!(o.out.lines().all(|l| l.contains("\"source\":\"initial\"")) && o.out.contains("\"value\":7}"), "{}", o.out);
+    let o = s.call(&["--timeout", "50ms", "roster", "me", "--watch", "--count", "1"], "");
+    assert_eq!((o.code, o.out.lines().count(), o.err.trim()), (6, 1, "error: timed out after 0 change(s)"), "{}", o.out);
 }
 
 const SCHEMA: &str = "version 1;

@@ -191,7 +191,7 @@ pub enum Cmd {
     Watch {
         t: String,
         ak: Option<String>,
-        /// Stop after N lines
+        /// Stop after N changes (initial lines not counted)
         #[arg(long)]
         count: Option<usize>,
     },
@@ -253,7 +253,7 @@ pub enum Cmd {
         t: String,
         #[arg(long)]
         watch: bool,
-        /// With --watch: stop after N lines
+        /// With --watch: stop after N changes (the first line, the roster now, not counted)
         #[arg(long)]
         count: Option<usize>,
     },

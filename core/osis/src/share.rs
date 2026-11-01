@@ -231,6 +231,7 @@ pub struct Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
+    /// Every synced group with hosts (a `NoHosts` group has nothing to wait for).
     All,
     /// The labels holding this thing (the group's own, or those of groups containing it).
     Group(Tid),
@@ -1049,14 +1050,15 @@ impl Osis {
 
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
     /// local commits so far (they are at a host); fails `Unsynced` for a stranded or
-    /// host-less group in scope, `Network` after `timeout` or without a runtime. Also waits
+    /// host-less group in scope, `Network` after `timeout` or without a runtime. `All` is
+    /// every synced group with hosts (`status` shows the `NoHosts` ones). Also waits
     /// for every queued deposit (any scope): a grant to a recipient whose inbox host refuses
     /// it for now (not registered yet, budget full) keeps it waiting until taken.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let groups = self.locked(|x| {
             let st = status_of(&mut x.sync);
             match scope {
-                SyncScope::All => st.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).collect::<Vec<_>>(),
+                SyncScope::All => st.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::ReceiptsOnly | SyncState::NoHosts)).map(|(g, _)| *g).collect::<Vec<_>>(),
                 SyncScope::Group(t) => {
                     let t = x.engine().resolve(&t, &t);
                     groups_holding(&mut x.sync, &st, &[t].into_iter().collect())

@@ -82,6 +82,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_STREAMS` 16, `MAX_INCOMING` 1024 (handshakes in progress; past it the oldest goes) | R | |
 | link `READ_CHUNK` 64 KiB, `READ_AHEAD` 16 | P | |
 | manage `Backoff` 0.5-60 s | M | |
+| quic `DEFAULT_PORT` 4040 (a `quic://` URL without a port; CLI `serve` listens on `quic://0.0.0.0:4040` when hosting without a listen URL) | O (owner pick; any free port works, spec/sync.md §10) | not a port (0 binds a random one, unreachable by URL) / no such port |
 
 ### Node sync (`node/sync/`)
 | value | class | 0 / ∞ |

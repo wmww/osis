@@ -15,7 +15,7 @@ pub use ct::{Admit, HostCaps};
 /// What this node hosts (`host.0^`).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Hosting {
-    /// Transport URLs to listen on (`quic://0.0.0.0:7400`); the node's own sessions to its host
+    /// Transport URLs to listen on (`quic://0.0.0.0:4040`); the node's own sessions to its host
     /// need none.
     pub listen: Vec<String>,
     /// `Own`: the labels of groups this node's person owns (the owner chain reaches the

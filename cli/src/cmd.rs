@@ -386,17 +386,19 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Roster { t, watch: true, count } => {
             let t = ctx.tid(&t)?;
             let (raw, json_out) = (ctx.g.raw, ctx.g.json);
-            let (tx, rx) = mpsc::channel::<String>();
+            let (tx, rx) = mpsc::channel::<(String, bool)>();
+            // the first call is the roster now: printed, not counted
+            let mut initial = true;
             let _sub = db.watch_roster(t, move |_, r| {
                 let l = if json_out {
                     roster_json(&r).text()
                 } else {
                     roster_lines(&r, raw).join(", ")
                 };
-                let _ = tx.send(l);
+                let _ = tx.send((l, !std::mem::take(&mut initial)));
             });
             let timeout = ctx.timeout_or(None)?;
-            stream_lines(ctx, &rx, count, timeout)
+            stream(ctx, &rx, count, timeout, "change", |_, (l, counts)| (l, counts))
         }
         Cmd::Via { t, holder } => {
             let p = db.holder_path(ctx.tid(&t)?, ctx.tid(&holder)?);
@@ -784,11 +786,12 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
 fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
-    stream(ctx, rx, count, timeout, "line", |_, l| l)
+    stream(ctx, rx, count, timeout, "line", |_, l| (l, true))
 }
 
-/// `stream_lines` over items printed by `line`.
-fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, line: impl Fn(&Ctx<'_>, T) -> String) -> anyhow::Result<()> {
+/// `stream_lines` over items printed by `line`, which also says whether the item counts
+/// toward `count` (an initial value does not).
+fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, timeout: Option<Duration>, what: &str, line: impl Fn(&Ctx<'_>, T) -> (String, bool)) -> anyhow::Result<()> {
     let end = deadline(timeout);
     let mut n = 0;
     while count.is_none_or(|c| n < c) {
@@ -798,10 +801,10 @@ fn stream<T>(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<T>, count: Option<usize>, ti
         };
         match r {
             Ok(x) => {
-                let l = line(ctx, x);
+                let (l, counts) = line(ctx, x);
                 ctx.line(&l)?;
                 ctx.out.flush()?;
-                n += 1;
+                n += usize::from(counts);
             }
             Err(mpsc::RecvTimeoutError::Timeout) if count.is_some() => return Err(exit(6, format!("timed out after {n} {what}(s)"))),
             Err(_) => return Ok(()),
@@ -826,7 +829,7 @@ fn watch(ctx: &mut Ctx<'_>, t: &str, ak: Option<&str>, count: Option<usize>) -> 
         }),
     };
     let timeout = ctx.timeout_or(None)?;
-    stream(ctx, &rx, count, timeout, "change", |ctx, c| change_line(ctx, &c))
+    stream(ctx, &rx, count, timeout, "change", |ctx, c| (change_line(ctx, &c), !matches!(c.source, Source::Initial)))
 }
 
 const KINDS: [(&str, CommitKind); 6] =
@@ -1040,12 +1043,19 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
 /// host never prints its address, at infinity a stuck listen hangs the command silently.
 const HOST_START_WAIT: Duration = Duration::from_secs(30);
 
+/// What `serve` listens on when hosting with no listen URL (osis's default port, spec/sync.md §10).
+const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
+
 fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     if host.any() {
         set_hosting(ctx, host)?;
     }
-    if db.hosting().is_some() {
+    if let Some(mut h) = db.hosting() {
+        if h.listen.is_empty() {
+            h.listen = vec![DEFAULT_LISTEN.into()];
+            db.set_hosting(Some(h))?;
+        }
         let until = std::time::Instant::now() + HOST_START_WAIT;
         let a = loop {
             if let Some(a) = db.host_address().map_err(|e| exit(6, format!("hosting: {e}")))? {
