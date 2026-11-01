@@ -30,7 +30,7 @@ fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Rol
     let e = &mut lp.peers[0].engine;
     let view = e.epochs(&a).unwrap();
     let state = e.get(&a, &ak("secrets.0")).unwrap().map(|v| ct::SECRETS.decode(&v).unwrap()).unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, holders, &|_, _| true, &mut SeededRng::from_u64(seed)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, holders, &mut SeededRng::from_u64(seed)).unwrap();
     let mut m = Mutation::new();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();

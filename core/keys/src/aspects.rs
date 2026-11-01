@@ -72,36 +72,26 @@ impl SecretsWrite {
         self.boxes.is_empty() && self.removed.is_empty() && self.history.is_empty()
     }
 
-    /// The epochs this write introduces per role and what each supersedes: a history box
-    /// written for (r, e) with the epochs of the boxes of r it removes and, from `keys`
-    /// (the commit's `keys.0` write and the keysets held before it), the keyset epoch of r it
-    /// replaces; the latter covers an actor whose holders are all key actors (their boxes are
-    /// keyed at their top role, so a rotation of a lower role removes none). A grant or re-seal
-    /// re-writes history boxes and removes nothing, so it supersedes nothing. Superseded epochs
-    /// not below e are kept here; `RoleEpochs` drops them.
-    pub fn rotations(&self, keys: Option<(&KeysWrite, &Keys)>) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
+    /// The epochs this write introduces per role and what each supersedes as the write itself
+    /// says, the same at every node (spec/crypto.md §4): a history box written for (r, e) with
+    /// the epochs of the boxes of r it removes. A grant or re-seal re-writes history boxes and
+    /// removes nothing, so it supersedes nothing. What e's history box lists supersedes too, for
+    /// a node that opens it (`open_histories`). Superseded epochs not below e are kept here;
+    /// `RoleEpochs` drops them.
+    pub fn rotations(&self) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
         let mut out = Vec::new();
         for k in self.history.keys() {
             let e = from_schema(&k.epoch)?;
-            let mut sup = BTreeSet::new();
-            for b in self.removed.iter().filter(|b| b.role == k.role) {
-                sup.insert(from_schema(&b.epoch)?);
-            }
-            if let Some((w, prev)) = keys
-                && w.keysets.get(&k.role).is_some_and(|ks| ks.epoch == k.epoch)
-                && let Some(old) = keyset_of(prev, k.role)
-            {
-                sup.insert(from_schema(&old.epoch)?);
-            }
+            let sup = self.removed.iter().filter(|b| b.role == k.role).map(|b| from_schema(&b.epoch)).collect::<Result<_, Error>>()?;
             out.push((k.role, e, sup));
         }
         Ok(out)
     }
 
-    /// Records the write's epochs and rotations in `epochs` (a received commit's delta; `keys` as
-    /// for `rotations`). Establishes nothing: see `applied`.
-    pub fn observe(&self, epochs: &mut ActorEpochs, keys: Option<(&KeysWrite, &Keys)>) -> Result<(), Error> {
-        for (r, e, sup) in self.rotations(keys)? {
+    /// Records the write's epochs and rotations in `epochs` (a received commit's delta).
+    /// Establishes nothing: see `applied`.
+    pub fn observe(&self, epochs: &mut ActorEpochs) -> Result<(), Error> {
+        for (r, e, sup) in self.rotations()? {
             epochs.role_mut(r).rotation(e, sup);
         }
         for k in self.boxes.keys() {
@@ -111,19 +101,18 @@ impl SecretsWrite {
     }
 
     /// The rotations this write makes as part of a rotation commit: its history boxes at the
-    /// epochs whose keyset the commit's `keys.0` write sets (`keys`: that write and the keysets
-    /// held before it). A grant or re-seal re-writes history boxes but writes no keyset, so it
-    /// makes none (spec/crypto.md §4).
-    pub fn rotation_commit(&self, keys: (&KeysWrite, &Keys)) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
-        let w = keys.0;
-        Ok(self.rotations(Some(keys))?.into_iter().filter(|(r, e, _)| w.keysets.get(r).is_some_and(|ks| ks.epoch == to_schema(e))).collect())
+    /// epochs whose keyset the commit's `keys.0` write `keys` sets. A grant or re-seal re-writes
+    /// history boxes but writes no keyset, so it makes none (spec/crypto.md §4).
+    pub fn rotation_commit(&self, keys: &KeysWrite) -> Result<Vec<(Role, Epoch, BTreeSet<Epoch>)>, Error> {
+        Ok(self.rotations()?.into_iter().filter(|(r, e, _)| keys.keysets.get(r).is_some_and(|ks| ks.epoch == to_schema(e))).collect())
     }
 
-    /// The commit `commit` carrying this write (and `keys`) is applied and valid: records its
-    /// epochs, marks its rotations applied by it and recomputes establishment (spec/crypto.md
-    /// §4). Returns whether establishment or a rotation recorded changed (persist then).
-    pub fn applied(&self, epochs: &mut ActorEpochs, commit: CommitId, keys: (&KeysWrite, &Keys)) -> Result<bool, Error> {
-        self.observe(epochs, Some(keys))?;
+    /// The commit `commit` carrying this write (and `keys.0` write `keys`) is applied and valid:
+    /// records its epochs, marks its rotations applied by it and recomputes establishment
+    /// (spec/crypto.md §4). Returns whether establishment or a rotation recorded changed (persist
+    /// then).
+    pub fn applied(&self, epochs: &mut ActorEpochs, commit: CommitId, keys: &KeysWrite) -> Result<bool, Error> {
+        self.observe(epochs)?;
         let mut recorded = false;
         for (r, e, sup) in self.rotation_commit(keys)? {
             recorded |= epochs.role_mut(r).set_applied(e, commit, sup);

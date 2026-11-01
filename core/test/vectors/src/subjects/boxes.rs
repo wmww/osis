@@ -29,20 +29,9 @@ fn role_int(r: Role) -> i64 {
     }
 }
 
-/// Box payload `[[role, n, secret]+]`, encoded here independently of osis-crypto.
-fn payload(items: &[BoxItem]) -> Vec<u8> {
-    encode(&Value::List(
-        items
-            .iter()
-            .map(|i| {
-                Value::List(vec![
-                    Value::Int(role_int(i.role)),
-                    Value::Int(i.epoch.n() as i64),
-                    Value::Bytes(i.secret.expose().to_vec()),
-                ])
-            })
-            .collect(),
-    ))
+/// Box payload `[role, n, secret]`, encoded here independently of osis-crypto.
+fn payload(i: &BoxItem) -> Vec<u8> {
+    encode(&Value::List(vec![Value::Int(role_int(i.role)), Value::Int(i.epoch.n() as i64), Value::Bytes(i.secret.expose().to_vec())]))
 }
 
 fn randomness(r: Record) -> Record {
@@ -93,31 +82,26 @@ pub fn boxes() -> VecFile {
     assert_eq!(open_sealed(&recipient, b"ae", &sealed), Err(Error::Decrypt));
     cases.push(case("hybrid sealed box wrong ad", "spec/crypto.md §1").with("recipient-kem-seed", hex(kem_seed.expose())).with("ad", hex(b"ae")).with("sealed", hex(&sealed)).with("reject", "decrypt"));
 
-    // Sealed secrets.0 boxes: to an actor holder (one item, keyset named), to a key-actor holder
-    // (no keyset, every written role).
+    // Sealed secrets.0 boxes: to an actor holder (keyset named), to a key-actor holder (none).
     let ew = named(&actor, Role::Write, 4, &s32(0x09));
-    let er = named(&actor, Role::Read, 2, &s32(0x08));
-    let cases_sealed: [(&str, Option<Epoch>, Vec<BoxItem>); 2] = [
-        ("secrets box sealed, actor holder", Some(epoch(3)), vec![BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) }]),
-        ("secrets box sealed, key-actor holder", None, vec![BoxItem { role: Role::Read, epoch: er, secret: s32(0x08) }, BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) }]),
-    ];
-    for (name, keyset, items) in cases_sealed {
+    let item = BoxItem { role: Role::Write, epoch: ew, secret: s32(0x09) };
+    for (name, keyset) in [("secrets box sealed, actor holder", Some(epoch(3))), ("secrets box sealed, key-actor holder", None)] {
         let slot = BoxSlot::Secrets { actor, holder, role: Role::Write, epoch: ew };
         let form = BoxForm::Sealed { keyset, suite: 1 };
         let ad = slot.ad(form).unwrap();
-        let b = seal_box(recipient.public(), &slot, keyset, &items, &mut FixedRng::new(&[&EPH, &M])).unwrap();
-        assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), items);
-        assert_eq!(&open_sealed(&recipient, &ad, &b).unwrap()[..], &payload(&items)[..]);
+        let b = seal_box(recipient.public(), &slot, keyset, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
+        assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), item);
+        assert_eq!(&open_sealed(&recipient, &ad, &b).unwrap()[..], &payload(&item)[..]);
         let r = secrets_slot(case(name, "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())), &actor, &holder, Role::Write, &ew);
         let r = epoch_fields(r, "keyset", keyset.as_ref()).with("suite", "1").with("ad", hex(&ad));
-        cases.push(randomness(r).with("payload", hex(&payload(&items))).with("sealed", hex(&b)));
+        cases.push(randomness(r).with("payload", hex(&payload(&item))).with("sealed", hex(&b)));
     }
 
     // A box whose item names another epoch than its key's is refused.
     let slot = BoxSlot::Secrets { actor, holder, role: Role::Write, epoch: ew };
     let form = BoxForm::Sealed { keyset: Some(epoch(3)), suite: 1 };
     let ad = slot.ad(form).unwrap();
-    let lie = encode(&Value::List(vec![Value::List(vec![Value::Int(1), Value::Int(4), Value::Bytes(s32(0x0a).expose().to_vec())])]));
+    let lie = encode(&Value::List(vec![Value::Int(1), Value::Int(4), Value::Bytes(s32(0x0a).expose().to_vec())]));
     let b = seal_with(recipient.public(), &ad, &lie, &Secret32::from_bytes(EPH), &M).unwrap();
     assert!(matches!(open_box(&recipient, &slot, form, &b), Err(Error::Malformed(_))));
     let r = secrets_slot(case("secrets box naming another epoch", "spec/crypto.md §4").with("recipient-kem-seed", hex(kem_seed.expose())), &actor, &holder, Role::Write, &ew);
@@ -141,11 +125,11 @@ pub fn boxes() -> VecFile {
     let slot = BoxSlot::Entry { label, step_key, group };
     let form = BoxForm::Sealed { keyset: None, suite: 1 };
     let ad = slot.ad(form).unwrap();
-    let items = [BoxItem { role: Role::Read, epoch: named(&group, Role::Read, 2, &s32(0x08)), secret: s32(0x08) }];
-    let b = seal_box(recipient.public(), &slot, None, &items, &mut FixedRng::new(&[&EPH, &M])).unwrap();
-    assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), items);
+    let item = BoxItem { role: Role::Read, epoch: named(&group, Role::Read, 2, &s32(0x08)), secret: s32(0x08) };
+    let b = seal_box(recipient.public(), &slot, None, &item, &mut FixedRng::new(&[&EPH, &M])).unwrap();
+    assert_eq!(open_box(&recipient, &slot, form, &b).unwrap(), item);
     let r = case("entry box", "spec/wire.md §7").with("recipient-kem-seed", hex(kem_seed.expose())).with("label-id", hex(&label.0)).with("step-key", hex(&step_key)).with("group", hex(group.as_bytes()));
-    cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&payload(&items))).with("sealed", hex(&b)));
+    cases.push(randomness(r.with("keyset", "none").with("suite", "1").with("ad", hex(&ad))).with("payload", hex(&payload(&item))).with("sealed", hex(&b)));
 
     // History box.
     let e3 = named(&actor, Role::Read, 3, &s32(0x09));

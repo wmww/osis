@@ -44,13 +44,13 @@ impl World {
 
 // spec/crypto.md §3: giving a plain thing secrets of its own is a rotation of all three roles from
 // the derived epochs; the history boxes carry the derived secrets. §4 box forms: the owner gets
-// symmetric boxes, an actor holder sealed boxes naming its keyset, a key-actor holder one box
-// keyed at the highest role written carrying every written role.
+// symmetric boxes, an actor holder sealed boxes naming its keyset, a key-actor holder sealed
+// boxes naming none; one box per (role, epoch) each.
 #[test]
 fn own_secrets_switch() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &|_, _| true, &mut rng(1)).unwrap();
+    let rot = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &mut rng(1)).unwrap();
     assert!(rot.unboxed.is_empty());
     let mut s = Secrets::default();
     rot.secrets.apply(&mut s);
@@ -76,9 +76,9 @@ fn own_secrets_switch() {
         other => panic!("{other:?}"),
     }
     assert!(!s.boxes.keys().any(|k| k.holder == w.m && k.role != Role::Read));
-    // L: one box keyed (L, write, e_w).
+    // L: a box at read and one at write.
     let lkeys: Vec<_> = s.boxes.keys().filter(|k| k.holder == w.l).collect();
-    assert_eq!(lkeys, vec![&box_key(w.l, Role::Write, &e(Role::Write))]);
+    assert_eq!(lkeys, vec![&box_key(w.l, Role::Read, &e(Role::Read)), &box_key(w.l, Role::Write, &e(Role::Write))]);
     assert_eq!(s.history.len(), 3);
 
     // Each opens what it holds; history yields the derived secrets.
@@ -89,7 +89,7 @@ fn own_secrets_switch() {
     assert!(errs.is_empty(), "{errs:?}");
     // Opening establishes nothing; applying the rotation commit does (spec/crypto.md §4).
     assert!(ma.read.current().is_empty());
-    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, osis_base::CommitId([1; 32]), (&rot.keys, &Keys::default())).unwrap());
+    let applied = |v: &mut ActorEpochs| assert!(rot.secrets.applied(v, osis_base::CommitId([1; 32]), &rot.keys).unwrap());
     applied(&mut ma);
     // the history box hands M the derived secret at the epoch it names (unestablished here: M
     // holds no secret of the owner)
@@ -125,20 +125,20 @@ fn own_secrets_switch() {
 fn fork_merge() {
     let w = World::new();
     let derived = ActorEpochs::derived(&w.pe, &w.a);
-    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &|_, _| true, &mut rng(1)).unwrap();
+    let r1 = rotate(&w.a, &all(), &derived, &Secrets::default(), &w.holders(), &mut rng(1)).unwrap();
     let mut base = Secrets::default();
     r1.secrets.apply(&mut base);
     let mut view = derived.clone();
     r1.record(&mut view);
 
-    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &|_, _| true, &mut rng(2)).unwrap();
-    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &|_, _| true, &mut rng(3)).unwrap();
+    let x = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(2)).unwrap();
+    let y = rotate(&w.a, &read(), &view, &base, &w.holders(), &mut rng(3)).unwrap();
     let (ex, ey) = (x.rotated[0].epoch, y.rotated[0].epoch);
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
     // Only read boxes at the superseded epoch are removed.
     assert!(x.secrets.removed.iter().all(|k| k.role == Role::Read));
-    assert_eq!(x.secrets.removed.len(), 2); // P and M; L's box is keyed at write
+    assert_eq!(x.secrets.removed.len(), 3); // P, M and L
 
     let (mut s1, mut s2) = (base.clone(), base.clone());
     x.secrets.apply(&mut s1);
@@ -150,20 +150,19 @@ fn fork_merge() {
         for m in [w.p, w.m] {
             assert!(s1.boxes.contains_key(&box_key(m, Role::Read, &e)));
         }
-        // L (write key actor) gets a read-only box keyed at read.
         assert!(s1.boxes.contains_key(&box_key(w.l, Role::Read, &e)));
     }
-    // L's earlier write-keyed box survives: write was not rotated.
+    // L's write box survives: write was not rotated.
     let ew = r1.rotated.iter().find(|r| r.role == Role::Write).unwrap().epoch;
     assert!(s1.boxes.contains_key(&box_key(w.l, Role::Write, &ew)));
 
     // A holder's view after both deltas: both current, newest by lowest nonce; both secrets held.
     let mut ma = ActorEpochs::default();
     let mut k1 = Keys::default();
-    r1.secrets.applied(&mut ma, osis_base::CommitId([1; 32]), (&r1.keys, &k1)).unwrap();
+    r1.secrets.applied(&mut ma, osis_base::CommitId([1; 32]), &r1.keys).unwrap();
     r1.keys.apply(&mut k1);
     for (i, rot) in [&x, &y].into_iter().enumerate() {
-        rot.secrets.applied(&mut ma, osis_base::CommitId([2 + i as u8; 32]), (&rot.keys, &k1)).unwrap();
+        rot.secrets.applied(&mut ma, osis_base::CommitId([2 + i as u8; 32]), &rot.keys).unwrap();
     }
     ingest(&w.a, &s1, &Opener::Actor { holder: w.m, epochs: &w.me }, &mut ma, None).unwrap();
     let mut cur = vec![ex, ey];
@@ -177,8 +176,10 @@ fn fork_merge() {
     let mut zview = view.clone();
     x.record(&mut zview);
     y.record(&mut zview);
-    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &|_, _| true, &mut rng(4)).unwrap();
-    assert_eq!(z.rotated[0].supersedes, [ex, ey].into_iter().collect());
+    let z = rotate(&w.a, &read(), &zview, &s1, &w.holders(), &mut rng(4)).unwrap();
+    let history: std::collections::BTreeSet<_> = zview.read.held_established().map(|x| x.0).collect();
+    assert!(history.contains(&ex) && history.contains(&ey));
+    assert_eq!(z.rotated[0].supersedes, history);
     assert_eq!(z.rotated[0].epoch.n(), 4);
     let mut s3 = s1.clone();
     z.secrets.apply(&mut s3);

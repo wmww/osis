@@ -130,7 +130,7 @@ type Class = (Option<Tid>, Tid, Tid, Role, [bool; 3]);
 /// The covers rule reaches below `v` only through these verdicts (`osis_keys::covers`).
 pub(super) fn verdicts(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> [bool; 3] {
     let (Some(s), Some(e)) = (osis_keys::HeldActors::secrets(held, v), osis_keys::HeldActors::epochs(held, v)) else { return [false; 3] };
-    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::covers(v, s, e, r, &k, d, held)))
+    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::covers(v, s, r, &k, d, held)))
 }
 
 pub(super) fn class_of(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> Class {
@@ -157,9 +157,6 @@ impl osis_keys::HeldActors for Judge<'_> {
     }
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs> {
         self.held.epochs(actor)
-    }
-    fn stale_box_carries(&self, key: &BoxKey, r: Role, e: &Epoch) -> bool {
-        self.held.stale_box_carries(key, r, e)
     }
     fn departed_wrote(&self, a: &Tid, r: Role, e: &Epoch, d: &Departure) -> bool {
         match introduced_by(self.core, a, r, e) {
@@ -310,26 +307,6 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
         presumed_boxes(tx, &a, &e, &mut s)?;
         h.map.insert(a, (s, e));
     }
-    // key-actor boxes keyed at a superseded epoch of a higher role still carry lower roles'
-    // secrets (a grant raced by a rotation of that role only): the covers rule counts them
-    let mut stale = BTreeSet::new();
-    for (a, (s, e)) in &h.map {
-        for (k, b) in &s.boxes {
-            let osis_schema::core_types::SecretBox::Sealed(sb) = b else { continue };
-            let Ok(ke) = osis_keys::aspects::from_schema(&k.epoch) else { continue };
-            if sb.keyset.is_some() || e.role(k.role).is_current(&ke) {
-                continue;
-            }
-            for r in ROLES.into_iter().filter(|r| *r < k.role) {
-                for ce in e.role(r).current() {
-                    if box_knew(tx.core, a, k, r, &ce) != Some(false) {
-                        stale.insert((k.clone(), r, ce));
-                    }
-                }
-            }
-        }
-    }
-    h.stale = stale;
     Ok(h)
 }
 
@@ -398,19 +375,6 @@ fn rotation_boxes(tx: &mut Tx<'_>, a: &Tid, c: &osis_base::CommitId) -> Result<O
     Ok(Some(out))
 }
 
-/// Whether the commit that wrote key-actor box `k` of `a` knew epoch `e` of role `r` (it
-/// carries that role's newest then, osis-keys `Carries`): its first write is ordered at or after
-/// the commit that introduced `e` (its rotation, `introduced_by`); `None` unless both are held.
-/// The first write, not the newest: a later rewrite of the box (a re-seal, a grant) by a writer
-/// ordered after `e` need not have held `e` (a concurrent fork), so it proves nothing; a
-/// rotation that introduces an epoch writes its key-actor boxes under fresh keys anyway.
-/// Unknown counts as carrying for the covers rule (a rotation, never a leak) and as not for the
-/// re-seal trigger (a re-seal to a current holder costs a box, never a leak).
-pub(super) fn box_knew(core: &Core, a: &Tid, k: &BoxKey, r: Role, e: &Epoch) -> Option<bool> {
-    let boxed = core.ix.box_written.get(&(*a, k.clone()))?;
-    Some(*boxed >= introduced_by(core, a, r, e)?.2)
-}
-
 /// The roles of `a` that `who` (this node, or a key actor it signs as) may rotate now: write
 /// and above rotates its role and below.
 pub fn may_rotate(core: &Core, who: &Tid, a: &Tid) -> BTreeSet<Role> {
@@ -476,7 +440,7 @@ pub(super) fn uncovered_by_role(tx: &mut Tx<'_>, a: &Tid, deps: &[Departure]) ->
     let secrets = secrets_in(tx, a)?;
     let held = held_actors(tx)?;
     let judge = Judge::new(tx.core, &held);
-    let by_role = ROLES.into_iter().filter_map(|r| Some((r, uncovered(a, &secrets, &epochs, r, &epochs.role(r).newest_held()?.0, deps, &judge).into_iter().cloned().collect()))).collect();
+    let by_role = ROLES.into_iter().filter_map(|r| Some((r, uncovered(a, &secrets, r, &epochs.role(r).newest_held()?.0, deps, &judge).into_iter().cloned().collect()))).collect();
     Ok(Some((held, by_role)))
 }
 

@@ -320,7 +320,7 @@ fn decisions(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Decisions {
     let mut per_role = Vec::new();
     if let Some(epochs) = tx.core.epochs(a) {
         for r in osis_keys::ROLES {
-            let un = epochs.role(r).newest_held().map(|(e, _)| osis_keys::uncovered(a, &secrets, &epochs, r, &e, &deps, &held).into_iter().map(key).collect()).unwrap_or_default();
+            let un = epochs.role(r).newest_held().map(|(e, _)| osis_keys::uncovered(a, &secrets, r, &e, &deps, &held).into_iter().map(key).collect()).unwrap_or_default();
             per_role.push(un);
         }
     }
@@ -613,7 +613,7 @@ fn all_boxed(lp: &mut LocalPeer, i: usize, actors: &[Tid]) -> bool {
         let s = lp.peers[i].engine.get_typed(t, &ct::SECRETS).unwrap().unwrap();
         let core = &lp.peers[i].engine.core;
         let ms: Vec<osis_keys::Holder> = core.current_holders(t).into_iter().map(|(holder, role, until)| osis_keys::Holder { holder, role, until }).collect();
-        osis_keys::reseal_needed(&s, &e, &ms, core.now(), &|_, _, _| true).is_empty()
+        osis_keys::reseal_needed(&s, &e, &ms, core.now()).is_empty()
     })
 }
 
@@ -781,7 +781,7 @@ fn rotate_unboxed(lp: &mut LocalPeer, i: usize, a: Tid, roles: &[Role], keep: Op
 }
 
 // spec/crypto.md §4 (written by a departed party, along a chain): D, a writer of M, rotates
-// M's read and write (its untouched write box would carry read) without boxing itself, then
+// M's read and write without boxing itself, then
 // leaves M. M reads A; A's admin reads M (so holds M's `secrets.0`) but may not rotate it.
 // M's newest epoch has no box for D but D wrote it, so it does not cover D's departure: A's
 // admin waits for M (or leaves it out) instead of boxing A's new epoch to an epoch D holds;
@@ -1006,14 +1006,14 @@ fn regrant_after_tag_removal_spec_crypto_4() {
     assert!(super::departures::written_by(core, &n, Role::Read, &bob, &bob, &tag), "Bob holds nothing on N now");
 }
 
-// spec/permissions.md §3 (left out), spec/crypto.md §4 (carried secrets): P writes A only
-// through holder actor M (owned by peer 2). D leaves M by itself, so M's epoch is stale;
+// spec/permissions.md §3 (left out), spec/crypto.md §4 (one box per role and epoch): P writes A
+// only through holder actor M (owned by peer 2). D leaves M by itself, so M's epoch is stale;
 // A's owner then removes D (also a reader of A) and its read rotation leaves M out, so P holds
-// A's write but no current read. E, a writer of A, leaves by itself. P may rotate A's write,
-// but a rotation of it carries read to A's owner (a key actor): P is stranded (no error) until
-// M rotates and A's owner, rotating A, boxes M again.
+// A's write but no current read. E, a writer of A, leaves by itself. P rotates A's write, which
+// needs no other role's secret; its heartbeat reports it stranded on read until M rotates and
+// A's owner, rotating A, boxes M again.
 #[test]
-fn rotator_lacking_carried_secret_stranded_spec_permissions_3() {
+fn rotator_lacking_read_rotates_write_spec_permissions_3() {
     let mut lp = LocalPeer::new(5, 961, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let [p, d, e] = [1, 3, 4].map(|i| lp.peers[i].engine.tid());
@@ -1040,8 +1040,8 @@ fn rotator_lacking_carried_secret_stranded_spec_permissions_3() {
     let before = write(&lp);
     // P may rotate M's read (D left it) first: that is fine
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert_eq!(write(&lp), before, "A's write not rotated");
-    assert!(still.contains(&Role::Write), "stranded on A's write: {still:?}");
+    assert_ne!(write(&lp), before, "A's write rotated");
+    assert!(still.is_empty(), "{still:?}");
     let e = lp.peers[1].engine.epochs(&a).unwrap();
     assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Stranded(_)), "P's heartbeat reports it stranded on A");
     settle(&mut lp, &[1, 2, 0], &[m, a]);
@@ -1050,7 +1050,7 @@ fn rotator_lacking_carried_secret_stranded_spec_permissions_3() {
     assert!(still.is_empty(), "{still:?}");
 }
 
-/// The write-lacking shape of `rotator_lacking_carried_secret_stranded_spec_permissions_3`:
+/// The write-lacking shape of `rotator_lacking_read_rotates_write_spec_permissions_3`:
 /// P is A's admin only through holder actor M (owned by peer 2); D, a writer of M, demotes
 /// itself to reader (no rotation), and A's owner demotes writer E to reader, so A's write
 /// rotation leaves M out of write only. P holds A's read and admin but no current write; F is
@@ -1079,16 +1079,16 @@ fn lacking_write(seed: u64) -> (LocalPeer, Tid, Tid) {
     (lp, a, m)
 }
 
-// spec/permissions.md §3 (left out, re-seal trigger, forks), spec/crypto.md §4 (carried
-// secrets): P, lacking A's current write, may not rotate A's admin (it would carry write to A's
-// owner, a key actor). Its read is current, so no heartbeat reports it stranded: the re-seal
-// trigger of A's owner (M lacks a box at A's current write) re-seals M once M rotates. P's own
-// cascade rotates M's write unsynced, so M's owner's rotation of it forks: A's owner, holding no
-// secret of M, names one fork (its `keys.0` keyset) and M's owner the other (its newest), each
-// judging the other's box to M uncovered, so A's write was rotated back and forth for good
-// (at about a third of seeds) until the fork was rotated away first.
+// spec/permissions.md §3 (left out, re-seal trigger, forks): F, an admin of A, leaves by
+// itself. P, lacking A's current write, rotates A's read and admin and leaves write to a node
+// holding it. Its read is current, so no heartbeat reports it stranded: the re-seal trigger of A's
+// owner (M lacks a box at A's current write) re-seals M once M rotates. P's own cascade rotates
+// M's write unsynced, so M's owner's rotation of it forks: A's owner, holding no secret of M,
+// names one fork (its `keys.0` keyset) and M's owner the other (its newest), each judging the
+// other's box to M uncovered, so A's write was rotated back and forth for good (at about a
+// third of seeds) until the fork was rotated away first.
 #[test]
-fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
+fn rotator_lacking_write_resealed_spec_permissions_3() {
     // a seed that forks so (which seeds do moves with unrelated byte changes: recheck with
     // `fork_named` off; each run costs seconds, six peers, so one seed here, the range in `_large`)
     lacking_write_resealed(960);
@@ -1097,9 +1097,9 @@ fn rotator_lacking_carried_write_resealed_spec_permissions_3() {
 /// Seeds: OSIS_LACKING_START, OSIS_LACKING_SEEDS.
 #[test]
 #[ignore = "tier 2"]
-fn rotator_lacking_carried_write_resealed_large() {
+fn rotator_lacking_write_resealed_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_LACKING_START", "OSIS_LACKING_SEEDS", 955..975);
-    s.announce("rotator_lacking_carried_write_resealed_large");
+    s.announce("rotator_lacking_write_resealed_large");
     for seed in s.range {
         lacking_write_resealed(seed);
     }
@@ -1110,9 +1110,13 @@ fn lacking_write_resealed(seed: u64) {
     let f = lp.peers[5].engine.tid();
     lp.peers[5].engine.demote(&a, &Demotion { holder: f, new: None, presync: PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();
+    let admin = |lp: &LocalPeer| lp.peers[1].engine.epochs(&a).unwrap().admin.newest_held().map(|x| x.0);
+    let before = admin(&lp);
     let (_, still) = lp.peers[1].engine.ensure_rotated(&a).unwrap();
-    assert!(still.contains(&Role::Admin), "seed {seed}: stranded on A's admin: {still:?}");
+    assert!(still.is_empty(), "seed {seed}: {still:?}");
+    assert_ne!(admin(&lp), before, "seed {seed}: A's admin rotated");
     let e = lp.peers[1].engine.epochs(&a).unwrap();
+    assert!(e.write.newest_held().is_none(), "seed {seed}: still lacking A's write");
     assert!(matches!(osis_keys::wrap_epoch(&e.read), osis_keys::WrapEpoch::Current(_)), "seed {seed}: P's read is current: no heartbeat");
     settle(&mut lp, &[2, 0], &[m, a]);
     let e = lp.peers[1].engine.epochs(&a).unwrap();
@@ -1121,10 +1125,10 @@ fn lacking_write_resealed(seed: u64) {
     assert!(still.is_empty(), "seed {seed}: {still:?}");
 }
 
-// A removal P makes itself in that shape: its rotation would carry write to A's owner, so it
-// is refused with an error saying it waits for a re-seal, and changes nothing.
+// A removal P makes itself in that shape: it must rotate A's write, whose current secret P
+// lacks, so it is refused with an error saying it waits for a re-seal, and changes nothing.
 #[test]
-fn removal_lacking_carried_secret_refused_spec_permissions_3() {
+fn removal_lacking_rotated_secret_refused_spec_permissions_3() {
     let (mut lp, a, _) = lacking_write(963);
     let f = lp.peers[5].engine.tid();
     let before = lp.peers[1].engine.core.current_holders(&a).len();
@@ -1133,13 +1137,11 @@ fn removal_lacking_carried_secret_refused_spec_permissions_3() {
     assert_eq!(lp.peers[1].engine.core.current_holders(&a).len(), before);
 }
 
-// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks; a key-actor holder's
-// boxes) (churn seeds 140170 and 140188 shrunk: a node re-sealed itself on every pass): A and
-// D rotate G's write concurrently, D's rotation leaving writer B out, so B lacks a box and the
-// secret at D's fork. B, holding only A's fork, writes no re-seal of itself (before: one
-// boxing A's fork alone on every pass); A, holding both, re-seals B once, a box at each fork
-// (before: folded into one box at the newest, so the other never showed and A re-sealed B on
-// every pass).
+// spec/permissions.md §3 (re-seal fixpoint), spec/crypto.md §4 (forks) (churn seeds 140170
+// and 140188 shrunk: a node re-sealed itself on every pass): A and D rotate G's write
+// concurrently, D's rotation leaving writer B out, so B lacks a box and the secret at D's fork.
+// B, holding only A's fork, writes no re-seal of itself (before: one boxing A's fork alone on
+// every pass); A, holding both, re-seals B once, a box at each fork.
 #[test]
 fn forked_role_reseal_reaches_fixpoint_spec_permissions_3() {
     let mut lp = LocalPeer::new(3, 1141, WallMs(1_700_000_000_000)).unwrap();
@@ -1228,16 +1230,25 @@ fn forked_role_resealed_without_a_node_holding_every_fork_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (forks; a node holder's one box keyed at
-// the highest role): random concurrent rotations of G by random holders, each leaving out a
-// random subset of the others, give random fork shapes and random subsets of secrets per node;
-// rounds of every node's re-seal trigger (all on one state, or synced after each node) then
-// reach a fixpoint within a bound (main before reseal-livelock: no fixpoint at 62 of 300
-// seeds). Holders still lacking a fork some node holds are counted, not asserted: two known
-// causes remain (issues/reseal-stranded-forks.md); make it an assertion once they are fixed.
+// spec/permissions.md §3 (re-seal), spec/crypto.md §4 (forks; supersession read from the
+// commits): random concurrent rotations of G by random holders, each leaving out a random
+// subset of the others, give random fork shapes and random subsets of secrets per node; rounds
+// of every node's re-seal trigger (all on one state, or synced after each node) then reach a
+// fixpoint within a bound (main before reseal-livelock: no fixpoint at 62 of 300 seeds), where
+// the re-seal invariant holds (`reseal_candidates`): every node counts the same current epochs,
+// and every holder of a role holds every current epoch of it that any node holds.
 #[test]
 fn forked_reseals_settle_spec_permissions_3() {
     forked_reseals(0..3);
+}
+
+// Seed 3: peer 0 rotates admin while peer 2 rotates read leaving peer 0 out, so peer 0 is
+// re-sealed at read's new epoch. Seed 75: peer 0 rotates admin unaware of peer 3's concurrent
+// admin fork, which stays current at every node and is re-sealed to peer 0.
+#[test]
+fn forked_reseals_settle_issue_seeds_spec_permissions_3() {
+    forked_reseals(3..4);
+    forked_reseals(75..76);
 }
 
 /// Seeds: OSIS_FORKS_START, OSIS_FORKS_SEEDS.
@@ -1252,7 +1263,7 @@ fn forked_reseals_settle_large() {
 fn forked_reseals(seeds: std::ops::Range<u64>) {
     const N: usize = 4;
     let roles = [Role::Read, Role::Write, Role::Admin];
-    let (mut forked, mut max_rounds, mut stranded) = (0, 0, Vec::new());
+    let (mut forked, mut max_rounds) = (0, 0);
     for seed in seeds {
         let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
         let mut lp = LocalPeer::new(N, 2_000 + seed, WallMs(1_700_000_000_000)).unwrap();
@@ -1276,7 +1287,7 @@ fn forked_reseals(seeds: std::ops::Range<u64>) {
                     continue;
                 }
                 let skip: Vec<(Tid, Option<Role>)> = (0..N).filter(|j| *j != i && rng.next(3) == 0).map(|j| (tids[j], None)).collect();
-                // refused (a carried secret not held) changes nothing
+                // refused (a rotated role's secret not held) changes nothing
                 let _ = lp.peers[i].engine.run(|tx| {
                     let held = tx.core.epochs(&g).unwrap();
                     let holders = super::recipients(tx, &g, &skip)?;
@@ -1319,15 +1330,14 @@ fn forked_reseals(seeds: std::ops::Range<u64>) {
         let Some(rounds) = settled else { panic!("seed {seed}: no re-seal fixpoint in 12 rounds") };
         max_rounds = max_rounds.max(rounds);
         for r in roles {
-            for e in e0.role(r).current() {
-                let any = (0..N).any(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).secret(&e).is_some());
-                for h in (0..N).filter(|h| role[*h] >= r) {
-                    if any && lp.peers[h].engine.epochs(&g).unwrap().role(r).secret(&e).is_none() {
-                        stranded.push((seed, h, r));
-                    }
-                }
+            let current: Vec<Vec<osis_crypto::Epoch>> = (0..N).map(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).current()).collect();
+            assert!(current.iter().all(|c| *c == current[0]), "seed {seed}: {r:?}: nodes count different current epochs: {current:?}");
+            for e in &current[0] {
+                let any = (0..N).any(|p| lp.peers[p].engine.epochs(&g).unwrap().role(r).secret(e).is_some());
+                let lacking: Vec<usize> = (0..N).filter(|h| role[*h] >= r && lp.peers[*h].engine.epochs(&g).unwrap().role(r).secret(e).is_none()).collect();
+                assert!(!any || lacking.is_empty(), "seed {seed}: {r:?} holders {lacking:?} lack current epoch {e:?} another node holds");
             }
         }
     }
-    eprintln!("forked re-seals: {forked} runs forked, at most {} rounds to settle; holders lacking a held fork: {stranded:?}", max_rounds + 1);
+    eprintln!("forked re-seals: {forked} runs forked, at most {} rounds to settle", max_rounds + 1);
 }

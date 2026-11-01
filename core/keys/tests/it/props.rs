@@ -93,7 +93,7 @@ impl Sim {
 
     fn rotate(&mut self, roles: &BTreeSet<Role>) {
         let mut r = self.next_rng();
-        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &|_, _| true, &mut r).unwrap();
+        let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &mut r).unwrap();
         assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
         rot.record(&mut self.view);
@@ -130,7 +130,7 @@ impl Sim {
                 let mut forks = Vec::new();
                 for _ in 0..2 {
                     let mut r = self.next_rng();
-                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.holders(), &|_, _| true, &mut r).unwrap());
+                    forks.push(rotate(&self.a, &[Role::Read].into_iter().collect(), &base.0, &base.1, &self.holders(), &mut r).unwrap());
                 }
                 for f in &forks {
                     f.secrets.apply(&mut self.s);
@@ -139,8 +139,8 @@ impl Sim {
             }
             _ => {}
         }
-        // No re-seal: a key actor demoted below its box's key keeps its lower roles through the
-        // demotion's rotation (spec/crypto.md §4).
+        // No re-seal: a demoted holder keeps its lower roles' boxes through the demotion's
+        // rotation (spec/crypto.md §4).
     }
 
     fn opened(&self, i: usize) -> ActorEpochs {

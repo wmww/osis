@@ -34,7 +34,7 @@ fn holder(a: &Actor, role: Role) -> Recipient {
 }
 
 fn rotated(a: &Actor, holders: &[Recipient], seed: u64) -> Actor {
-    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, holders, &|_, _| true, &mut rng(seed)).unwrap();
+    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, holders, &mut rng(seed)).unwrap();
     let (mut view, mut s) = (a.view.clone(), a.s.clone());
     r.secrets.apply(&mut s);
     r.record(&mut view);

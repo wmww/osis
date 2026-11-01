@@ -36,7 +36,6 @@ pub(super) const METAS: &[u8] = b"node/metas";
 // records table is not deepened by them).
 const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
-const BOX_WRITTEN: &[u8] = b"node/box written";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
@@ -666,7 +665,6 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     }
     put_setmap(txn, BOXES_TO, &c.ix.boxes_to, all)?;
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
-    put_map(txn, BOX_WRITTEN, &c.ix.box_written, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
@@ -831,9 +829,6 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<(Tid, Role, osis_crypto::Epoch)>(tx, EPOCH_INTRO)? {
         tx.core.ix.epoch_intro.insert(k, dec(&v)?);
-    }
-    for (k, v) in scan::<(Tid, BoxKey)>(tx, BOX_WRITTEN)? {
-        tx.core.ix.box_written.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);

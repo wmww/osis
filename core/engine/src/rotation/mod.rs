@@ -13,13 +13,12 @@ use crate::error::{Error, Result};
 use crate::flows::{self, Delivery, Done, SyncState, put_keysets, put_secrets, recipient, save_epochs, secrets_in};
 use crate::Mutation;
 use osis_base::{Role, Tid};
-use osis_crypto::Epoch;
-use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate, uncovered};
+use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
 pub(crate) use departures::{departures, held_actors, uncovered_departures, uncovered_roles, Judge};
-use departures::{below_of, box_knew, collect, uncovered_by_role};
+use departures::{below_of, collect, uncovered_by_role};
 pub(crate) use lost::{boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
 pub(crate) use lost::{PENDING_GRANT_WAIT_MS, authentic};
@@ -30,20 +29,16 @@ pub(crate) use lost::{PENDING_GRANT_WAIT_MS, authentic};
 /// (`fresh_box_covers`) and that `a` is not below (no role cycle through both). Such an M
 /// heals by its own rotation: the node waits for it, so that `a`'s rotation then reaches M's
 /// holders in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving M out
-/// (`rotation_into`). So no actor waits on itself through others. A role whose rotation would
-/// carry a role this node holds no current secret of to a key-actor holder (spec/crypto.md §4;
-/// it reaches `a` through a holder actor a rotation left out) waits for a re-seal, as a role it
-/// may not rotate does. A forked role is due too when a box to `a` names a fork other than
-/// the newest (`fork_named`).
+/// (`rotation_into`). So no actor waits on itself through others. A forked role is due too when
+/// a box to `a` names a fork other than the newest (`fork_named`).
 fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
     let Some((held, by_role)) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
     let current: BTreeSet<Tid> = tx.core.current_holders(a).into_iter().map(|x| x.0).collect();
-    let unheld = carried_unheld(tx, a)?;
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for (r, ds) in by_role {
-        if !may.contains(&r) || unheld.contains(&r) || (ds.is_empty() && !fork_named(tx, a, r)?) {
+        if !may.contains(&r) || (ds.is_empty() && !fork_named(tx, a, r)?) {
             continue;
         }
         for d in ds {
@@ -88,17 +83,6 @@ fn fork_named(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
         }
     }
     Ok(false)
-}
-
-/// The roles of `a` a rotation by this node could not make: one whose box to a key-actor
-/// holder holding it carries a lower role (`osis_keys::rotate`) with no current secret held
-/// here. Roles without a current secret held are never rotated (`uncovered_by_role`), so a
-/// rotation never carries one it rotates.
-pub(crate) fn carried_unheld(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<Role>> {
-    let Some(epochs) = tx.core.epochs(a) else { return Ok(BTreeSet::new()) };
-    let Some(lowest) = ROLES.into_iter().find(|r| epochs.role(*r).newest_held().is_none()) else { return Ok(BTreeSet::new()) };
-    let top = recipients(tx, a, &[])?.into_iter().filter(|rc| matches!(rc.keys, osis_keys::HolderKeys::KeyActor { seed: None, .. })).map(|rc| rc.role).max();
-    Ok(ROLES.into_iter().filter(|r| *r > lowest && top >= Some(*r)).collect())
 }
 
 /// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3,
@@ -157,7 +141,7 @@ fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, 
         Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
         _ => ks,
     };
-    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(m, ms, me, r, &k, inner, &Judge::new(tx.core, held))))
+    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(m, ms, r, &k, inner, &Judge::new(tx.core, held))))
 }
 
 /// Current holders of `a` as box recipients; each of `skip` gets its new role or is left out
@@ -214,16 +198,14 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
             boxed.push(rc);
         }
     }
-    let judge = Judge::new(tx.core, &actors);
-    let may_carry = |r: Role, e: &Epoch| uncovered(&a, &secrets, held, r, e, &deps, &judge).is_empty();
-    let rot = rotate(&a, roles, held, &secrets, &boxed, &may_carry, &mut *tx.rng)?;
+    let rot = rotate(&a, roles, held, &secrets, &boxed, &mut *tx.rng)?;
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
 }
 
-/// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it (a
-/// key actor: at any current epoch, its boxes are keyed at its top role): its commit is wrapped
+/// Holders a rotation `rot` of `a` boxes that hold no box at a current read epoch before it: its
+/// commit is wrapped
 /// under that epoch, so they cannot open it from the label (a grant this node learned of after
 /// an epoch that left it out, the single-use link race's winner). They get it by inbox
 /// (spec/permissions.md §3). Called before the rotation is committed.
@@ -234,12 +216,7 @@ pub(crate) fn unreached(tx: &mut Tx<'_>, a: &Tid, rot: &Rotation) -> Result<Vec<
     let mut out: Vec<Tid> = rot.secrets.boxes.keys().map(|k| k.holder).filter(|m| *m != me).collect();
     out.sort();
     out.dedup();
-    out.retain(|m| {
-        let key_actor = tx.core.is_key_actor(m);
-        !secrets.boxes.keys().any(|k| {
-            k.holder == *m && (key_actor || k.role == Role::Read) && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.role(k.role).is_current(&e))
-        })
-    });
+    out.retain(|m| !secrets.boxes.keys().any(|k| k.holder == *m && k.role == Role::Read && osis_keys::aspects::from_schema(&k.epoch).is_ok_and(|e| epochs.read.is_current(&e))));
     Ok(out)
 }
 
@@ -426,6 +403,13 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// The re-seal trigger for `a` (spec/permissions.md §3): current holders lacking a box at a
 /// chain-established current epoch of a role this node may rotate, never at an epoch
 /// established by a snapshot alone, never for an edge whose `until` is within `MAX_DRIFT`.
+///
+/// Invariant: once re-seals settle (every node holding the same commits finds no holder to
+/// re-seal), every node counts the same current epochs of each role, since what a rotation
+/// supersedes is read from its commit alone (`osis_keys::SecretsWrite::rotations`), and every
+/// holder of a role holds every current epoch of it that any node holds, since a holder lacking
+/// one lacks its box there (one box per (holder, role, epoch)), and a node holding it re-seals.
+/// `tests::forked_reseals_settle_*` check it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let me = tx.core.id.tid();
     let may = may_rotate(tx.core, &me, a);
@@ -436,7 +420,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     let secrets = secrets_in(tx, a)?;
     let holders: Vec<osis_keys::Holder> = tx.core.current_holders(a).into_iter().map(|(holder, role, until)| osis_keys::Holder { holder, role, until }).collect();
     let now = tx.core.now();
-    let due = osis_keys::reseal_needed(&secrets, &epochs, &holders, now, &|k, r, e| box_knew(tx.core, a, k, r, e) == Some(true));
+    let due = osis_keys::reseal_needed(&secrets, &epochs, &holders, now);
     let deps = departures(tx, a)?;
     let held = held_actors(tx)?;
     let mut out = Vec::new();
@@ -444,15 +428,14 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
         let mut keep = BTreeSet::new();
         for r in roles {
             // Fixpoint (the re-seal is written on every pass otherwise): a re-seal is made only
-            // when it adds a box the trigger asks for, and each one it writes lands at its own
-            // key (`box_items`): so only by a node holding the secret of an epoch the holder
-            // lacks a box at (`box_at` boxes just those held; a node may lack a fork's, or reach
+            // when it adds a box the trigger asks for, each at its own key: so only by a node
+            // holding the secret of an epoch the holder lacks a box at (`box_at` boxes just those held; a node may lack a fork's, or reach
             // the actor through a holder actor left out). Every re-seal adds a box until the
             // forks end, so the trigger settles; requiring every fork's secret instead stranded
             // a holder when no rotator held them all. A holder actor left out waits until its
             // newest epoch covers.
             let re = epochs.role(r);
-            let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r, &|k, r, e| box_knew(tx.core, a, k, r, e) == Some(true));
+            let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
             if may.contains(&r) && holds && !re.newest_is_snapshot() && holder_covers(tx, &held, &deps, &m, r)? {
                 keep.insert(r);

@@ -62,8 +62,8 @@ impl Provenance {
 pub struct EpochInfo {
     /// Suite ID (from the keyset that named it; 1 until one is seen).
     pub suite: u64,
-    /// Epochs its rotation superseded: from its rotation commit (removed boxes, replaced keyset)
-    /// and from its opened history box (everything listed). Counts only once established.
+    /// Epochs its rotation superseded: from its rotation commit (removed boxes) and from its
+    /// opened history box (everything listed). Counts only once established.
     pub supersedes: BTreeSet<Epoch>,
     /// The applied valid rotation commits that claim it, each with the epochs it supersedes (the
     /// chain condition of `establish`): a holder may re-claim an epoch in a later commit, and
