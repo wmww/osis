@@ -162,6 +162,6 @@ fn observe_and_extend() {
     assert_eq!(v.read.provenance(&e2), Some(osis_keys::Provenance::Chain));
     let key = box_key(p, Role::Read, &e2);
     let mut w = rot.secrets.clone();
-    w.extend(SecretsWrite { removed: [(key.clone(), Default::default())].into_iter().collect(), ..SecretsWrite::default() });
-    assert!(!w.boxes.contains_key(&key) && w.removed.contains_key(&key));
+    w.extend(SecretsWrite { removed: [key.clone()].into(), ..SecretsWrite::default() });
+    assert!(!w.boxes.contains_key(&key) && w.removed.contains(&key));
 }

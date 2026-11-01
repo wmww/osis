@@ -284,7 +284,7 @@ fn delete_keys() {
     assert_eq!(delete_key(2, &thing, Some(&author)), Some(dk(author.write.secret(&ep(1, 0x30)).unwrap())));
     assert_eq!(delete_key(3, &thing, Some(&author)), Some(dk(thing.write.secret(&ep(1, 0x20)).unwrap())));
     assert_eq!(delete_key(2, &thing, None), None);
-    let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap());
+    let ks = osis_keys::keyset(&ep(1, 0x20), thing.admin.secret(&ep(1, 0x20)).unwrap(), &Default::default());
     assert_eq!(ks.delete_key, osis_schema::core_types::SigningKey::Ed25519(delete_key(1, &thing, None).unwrap().to_bytes().to_vec()));
     thing.write.rotation(ep(2, 0), [ep(1, 0x20)]);
     thing.write.set_established(ep(2, 0), osis_keys::Provenance::Fixed);

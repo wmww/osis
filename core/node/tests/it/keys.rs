@@ -35,7 +35,7 @@ fn rotation_commit_to(lp: &mut LocalPeer, a: Tid, seed: u64, roles: BTreeSet<Rol
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
     }
-    for k in r.secrets.removed.keys() {
+    for k in &r.secrets.removed {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(k.to_value()) }).unwrap();
     }
     for (k, h) in &r.secrets.history {

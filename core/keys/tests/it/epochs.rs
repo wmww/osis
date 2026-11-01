@@ -137,7 +137,7 @@ fn fork_merge() {
     assert_eq!((ex.n(), ey.n()), (3, 3));
     assert_ne!(ex, ey);
     // Only read boxes at the superseded epoch are removed.
-    assert!(x.secrets.removed.keys().all(|k| k.role == Role::Read));
+    assert!(x.secrets.removed.iter().all(|k| k.role == Role::Read));
     assert_eq!(x.secrets.removed.len(), 3); // P, M and L
 
     let (mut s1, mut s2) = (base.clone(), base.clone());

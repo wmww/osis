@@ -405,14 +405,12 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 ///
 /// Invariant: once re-seals settle (every node holding the same commits finds no holder to
 /// re-seal), every node counts the same current epochs of each role, since what a rotation
-/// supersedes is read from its commit alone (`osis_keys::SecretsWrite::rotations`), and every
+/// supersedes is read from its commit alone (its keyset's list,
+/// `osis_keys::SecretsWrite::rotation_commit`, and its history box), and every
 /// holder of a role holds every current epoch of it that a node that may rotate the role holds,
 /// since a holder lacking one lacks its box there (one box per (holder, role, epoch)), and such
 /// a node holding it re-seals (issues/fork-held-by-non-rotators.md: one that may not, cannot).
-/// The exception: an epoch that had no box when the rotation superseding it was made is
-/// superseded only at the nodes that open that rotation's history box; it is never newest
-/// anywhere. `tests::forked_reseals_settle_*` and `tests::forks_with_departures_settle_*`
-/// check it.
+/// `tests::forked_reseals_settle_*` and `tests::forks_with_departures_settle_*` check it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let me = tx.core.id.tid();
     let may = may_rotate(tx.core, &me, a);
