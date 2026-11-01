@@ -218,7 +218,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
   - `[2, blob]`: blob bytes, before the first entry naming them, once per bundle;
   - `[3, label_id, blob_id, wrap, Opt(stamp)]`: an entry (no stamp: deposited);
   - `[4, label_id, blob_id]`: a deletion; `[5, label_id, blob_id, at]`: a pending timed deletion.
-- An importer verifies paths and stamps as a host does and applies the records as a peer's log events received without a cursor; it skips records of unknown kind.
+- Steps and claim sets are their canonical bytes as byte strings (as in §11.2). An importer verifies paths and stamps as a host does and applies the records as a peer's log events received without a cursor: a path record after the first for its label must pass through the current head; an entry before its blob's record, or stamped before a path record of its label (its stamp checked against that path's head), is malformed; a second format record is malformed, another bundle format parks the file; records of unknown kind are skipped.
 
 ## 13. Decoder limits
 - Any object: CBOR nesting at most 512 deep, values inside it at most 64 (spec/data-model.md §5); no array or map longer than the bytes that remain.
