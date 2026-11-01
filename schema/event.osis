@@ -1,6 +1,6 @@
 //! Calendar events (notes/std.md). Name: `name.0`; notes: `body.0`; a calendar is a tag of events.
 //! Times are wall-clock times with a zone (spec/data-model.md §3, `localtime`), days are civil dates.
-revision 1;
+version 1;
 
 /// A wall-clock time in an IANA zone (or a fixed `+HH:MM` offset); no zone: floating, the viewer's zone.
 type wall = struct { 0 time: localtime, 1 zone: option<string> };

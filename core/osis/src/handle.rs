@@ -540,8 +540,9 @@ impl Osis {
 
     /// Registers a schema: typed views for its AKs (`key`, this session), undo and large-value
     /// write-back (the engine keeps those in the store). Generated keys carry their schema and
-    /// need no registration. The newest registration of an AK types it; an app schema declares
-    /// no core AK.
+    /// need no registration. This session's newest registration of an AK types its `key`; the
+    /// engine keeps the highest version (notes/data-model.md AKs). An app schema declares no
+    /// core AK.
     pub fn register_schema(&self, s: Schema) -> Result<Arc<Schema>> {
         if s.declares_core() {
             return Err(Error::Invalid("an app schema declares no core AK".into()));

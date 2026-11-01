@@ -113,7 +113,7 @@ pub enum DiagnosticKind {
     /// was reached, or an ephemeral commit could not be built (notes/ephemeral.md Bounds).
     EphemeralRefused,
     /// A typed read found a stored value that does not match the reader's type (another
-    /// writer's data, a newer schema revision's enum case); it read as absent (the `osis` API,
+    /// writer's data, a newer schema version's enum case); it read as absent (the `osis` API,
     /// spec/versioning.md §5; `tids`: the thing).
     Mismatch,
     /// A valid snapshot copies a write of a delta held here otherwise than the delta holds it

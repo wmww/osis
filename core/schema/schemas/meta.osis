@@ -1,8 +1,8 @@
 //! The schema of schemas (spec/data-model.md §10): a parsed schema is a value of type `schema`.
-revision 1;
+version 1;
 
 type schema = struct {
-    0 revision: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
+    0 version: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
     3 doc: option<string>,
 };
 type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };

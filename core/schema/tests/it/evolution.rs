@@ -18,10 +18,10 @@ aspect n:sig.0*: int [signal];
 ";
 
 fn schema(rev: u64, body: &str) -> Schema {
-    parse("t.osis", &format!("revision {rev};\n{body}")).unwrap()
+    parse("t.osis", &format!("version {rev};\n{body}")).unwrap()
 }
 
-/// Rules broken by revision 2 of BASE with `from` replaced by `to`.
+/// Rules broken by version 2 of BASE with `from` replaced by `to`.
 fn rules(from: &str, to: &str) -> Vec<Rule> {
     assert!(BASE.contains(from), "{from}");
     let old = schema(1, BASE);
@@ -62,7 +62,7 @@ fn from_value_rejects_bad_forms() {
     s.aspects.get_mut("n:n.0").unwrap().ty = Type::named("nope");
     let e = Schema::from_value(&s.to_value()).unwrap_err();
     assert!(e.to_string().contains("unknown type nope"), "{e}");
-    // A revision that is not an int.
+    // A version that is not an int.
     let Value::Map(mut m) = good else { panic!() };
     m.insert(Value::Int(0), Value::Bytes(vec![1]));
     assert!(Schema::from_value(&Value::Map(m)).is_err());
@@ -105,7 +105,7 @@ fn additive_changes_pass_spec_versioning_4() {
     assert_eq!(check(&schema(1, BASE), &schema(1, BASE)), vec![]);
 }
 
-// spec/versioning.md §4 (additive revision)
+// spec/versioning.md §4 (additive version)
 #[test]
 fn each_rule_is_enforced_spec_versioning_4() {
     use Rule::*;
@@ -142,12 +142,12 @@ fn each_rule_is_enforced_spec_versioning_4() {
 }
 
 #[test]
-fn revision_rules_spec_versioning_4() {
+fn version_rules_spec_versioning_4() {
     let old = schema(3, BASE);
     let changed = schema(3, &format!("{BASE}aspect n:z.0: int;"));
-    assert_eq!(check(&old, &changed).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
+    assert_eq!(check(&old, &changed).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::VersionNotBumped]);
     let lower = schema(2, BASE);
-    assert_eq!(check(&old, &lower).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::RevisionNotBumped]);
+    assert_eq!(check(&old, &lower).iter().map(|v| v.rule).collect::<Vec<_>>(), vec![Rule::VersionNotBumped]);
     // A bump with no change is fine.
     assert_eq!(check(&old, &schema(4, BASE)), vec![]);
 }

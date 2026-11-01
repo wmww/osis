@@ -322,7 +322,7 @@ fn large_list_insert_chunked_spec_dm_6() {
 /// together they exceed `MAX_BLOB`.
 static WIDE: osis_schema::StaticSchema = osis_schema::StaticSchema::new("wide.osis", WIDE_SRC);
 const WIDE_SRC: &str = concat!(
-    "revision 1;\ntype wide = struct { ",
+    "version 1;\ntype wide = struct { ",
     "0 f0: string, 1 f1: string, 2 f2: string, 3 f3: string, 4 f4: string, 5 f5: string, 6 f6: string, 7 f7: string, 8 f8: string, 9 f9: string, ",
     "10 f10: string, 11 f11: string, 12 f12: string, 13 f13: string, 14 f14: string, 15 f15: string, 16 f16: string, 17 f17: string, 18 f18: string, 19 f19: string, ",
     "20 f20: string, 21 f21: string, 22 f22: string, 23 f23: string, 24 f24: string, 25 f25: string, 26 f26: string, 27 f27: string, 28 f28: string, 29 f29: string, ",
@@ -572,7 +572,7 @@ fn large_values_by_value_spec_crdt_5_5() {
     }
 }
 
-static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "revision 1; aspect w:text.0: text;\n");
+static TEXTS: osis_schema::StaticSchema = osis_schema::StaticSchema::new("write-text.osis", "version 1; aspect w:text.0: text;\n");
 const TEXT_AK: osis_schema::Aspect<Value> = osis_schema::Aspect::new("w:text.0", &TEXTS);
 
 // spec/crdt.md §5.7 (ops by index), §6.1 (a new insert lands right after its anchor), §4.6

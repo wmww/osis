@@ -710,9 +710,11 @@ fn check_synced(core: &Core, placed: &[(Tid, Tid)]) -> Result<()> {
 }
 
 /// Records schema `s` as the local schema of each AK it declares, in memory and in the store
-/// (`records::SCHEMAS`, one record per AK): replacing another one when `replace` (a
-/// registration), else only one of a lower revision (a local write). An equal one writes
-/// nothing (every open re-registers). The core schema is compiled in, never kept.
+/// (`records::SCHEMAS`, one record per AK), unless the one kept has a higher version (a stale
+/// app never downgrades it) or the same one and this is a local write, not a registration
+/// (`replace`). An equal one writes nothing (every open re-registers). Versions of unrelated
+/// schemas claiming one AK compare too: a collision is the convention's failure (spec/versioning.md
+/// §3) and this keeps the choice deterministic. The core schema is compiled in, never kept.
 pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace: bool) -> Result<()> {
     if s.declares_core() {
         return Ok(());
@@ -720,7 +722,7 @@ pub(crate) fn keep_schema(tx: &mut Tx<'_>, s: &Arc<osis_schema::Schema>, replace
     let mut bytes = None;
     for ak in s.aspects.keys() {
         if let Some(k) = tx.core.schemas.get(ak)
-            && (**k == **s || (!replace && k.revision >= s.revision))
+            && (**k == **s || k.version > s.version || (!replace && k.version == s.version))
         {
             continue;
         }

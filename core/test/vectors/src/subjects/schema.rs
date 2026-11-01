@@ -83,7 +83,7 @@ pub fn core() -> VecFile {
         Record::new()
             .with("case", "core schema")
             .with("spec", "spec/data-model.md §10")
-            .with("revision", s.revision.to_string())
+            .with("version", s.version.to_string())
             .with("value", hex(&s.canonical_bytes()))
             .with("hash", hex(&s.hash())),
     ];

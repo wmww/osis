@@ -1,6 +1,6 @@
 //! Phase C version skew (spec/versioning.md §2, §5): nodes of different builds and schema
-//! revisions share a label. A commit of a newer format version is parked, stored and relayed, and
-//! never destroyed by an old writer; a newer schema revision's fields survive an old writer's
+//! versions share a label. A commit of a newer format version is parked, stored and relayed, and
+//! never destroyed by an old writer; a newer schema version's fields survive an old writer's
 //! writes and compaction.
 
 use super::library::{add_tag, tags};
@@ -15,21 +15,21 @@ use osis_proto::{Command, Entry, LabelStore};
 use osis_schema::{Aspect, AspectKey, StaticSchema};
 use std::collections::BTreeMap;
 
-/// Revision 1 of the skew schema (the old build's).
+/// Version 1 of the skew schema (the old build's).
 pub static SKEW1: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-revision 1;
+version 1;
 type rec = struct { 0 a: string };
 aspect k:rec.0: rec;
 "#,
 );
 
-/// Revision 2: a field with a default and a new aspect.
+/// Version 2: a field with a default and a new aspect.
 pub static SKEW2: StaticSchema = StaticSchema::new(
     "skew.osis",
     r#"
-revision 2;
+version 2;
 type rec = struct { 0 a: string, 1 b: string = "" };
 aspect k:rec.0: rec;
 aspect k:new.0: string;
@@ -141,8 +141,8 @@ pub fn future_format(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A newer schema revision (spec/versioning.md §4, §5): node N writes revision 2 (a struct field
-/// with a default, a new aspect); the old node reads what it knows, writes its revision-1 struct
+/// A newer schema version (spec/versioning.md §4, §5): node N writes version 2 (a struct field
+/// with a default, a new aspect); the old node reads what it knows, writes its version-1 struct
 /// and compacts. Expected: the new field and aspect survive at every node (open structs; a
 /// writer never removes data its schema cannot read).
 pub fn newer_schema(seed: u64) -> Res<Report> {
@@ -171,7 +171,7 @@ pub fn newer_schema(seed: u64) -> Res<Report> {
     if got != Some(rec(&[(0, "n"), (1, "nb")])) {
         return Err(sim.fail(format!("the old node reads {got:?} of the newer struct")));
     }
-    // the old node writes its revision of the struct, then compacts it
+    // the old node writes its version of the struct, then compacts it
     let mut m = Mutation::new();
     m.set(t, &REC1, &rec(&[(0, "old")])).map_err(|e| sim.fail(format!("old write: {e}")))?;
     sim.commit(a, m)?;

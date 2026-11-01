@@ -14,7 +14,7 @@ pub const T0: WallMs = WallMs(1_700_000_000_000);
 pub static TEST: StaticSchema = StaticSchema::new(
     "test.osis",
     r#"
-revision 1;
+version 1;
 type item = struct { 0 name: string, 1 n: int };
 type shape = enum { 0 dot, 1 circle(int) };
 type book = struct { 0 entries: map<string, string>, 1 note: string };

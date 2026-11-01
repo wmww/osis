@@ -324,7 +324,7 @@ fn snapshot_only_attribution_api_history() {
     assert!(hc.iter().any(|e| e.commit.id == osis::ChangeId::Commit(snap) && e.kind == CommitKind::Snapshot), "the snapshot as itself: {hc:?}");
 }
 
-const DOC_SCHEMA: &str = "revision 1;\naspect x:doc.0: struct { 0 name: string, 1 tags: set<string>, 2 extra: enum { 0 none, 1 some(struct { 0 notes: set<string> }) }, 3 items: list<string> };\n";
+const DOC_SCHEMA: &str = "version 1;\naspect x:doc.0: struct { 0 name: string, 1 tags: set<string>, 2 extra: enum { 0 none, 1 some(struct { 0 notes: set<string> }) }, 3 items: list<string> };\n";
 
 fn field(id: u64) -> osis::Step {
     osis::Step::Field(id)

@@ -1,4 +1,4 @@
-//! Lock files (`<name>.osis.lock`): the last published revision, so the checker can compare a
+//! Lock files (`<name>.osis.lock`): the last published version, so the checker can compare a
 //! source file against it. Text: a header line, the canonical-form hash, then the canonical
 //! bytes in hex, 64 digits per line. `provisional` (notes/versioning.md, Open details).
 
@@ -17,7 +17,7 @@ pub struct Lock {
 /// A source file against its lock.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LockStatus {
-    /// The file is the published revision.
+    /// The file is the published version.
     Published,
     /// The file is an additive successor; publishing it rewrites the lock.
     Unpublished,

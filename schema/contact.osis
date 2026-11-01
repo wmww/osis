@@ -1,7 +1,7 @@
 //! Contacts (notes/std.md). A contact is a thing with any of these aspects, owned by whoever keeps it;
 //! a profile is the same aspects on a person's profile thing, written by that person. Display name: `name.0`;
 //! notes: `body.0`; groups: tags.
-revision 1;
+version 1;
 
 /// An entry's label (home, work, mobile, ...) and whether it is the preferred one of its kind.
 type labeled = struct { 0 label: string = "", 1 pref: bool = false };

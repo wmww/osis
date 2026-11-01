@@ -4,7 +4,7 @@
 //!
 //! ```text
 //! file    := innerdoc* item*
-//! item    := doc* ( "revision" INT ";"
+//! item    := doc* ( "version" INT ";"
 //!                 | "type" IDENT ("<" IDENT,+ ">")? "=" type ";"
 //!                 | "aspect" AK ":" type succeeds? attrs? ";"
 //!  )
@@ -149,7 +149,7 @@ impl<'a> Parser<'a> {
             doc.push(d.clone());
             self.pos += 1;
         }
-        let mut revision = None;
+        let mut version = None;
         let mut s = Schema::new(0);
         let mut locs = Locs::new();
         loop {
@@ -159,13 +159,13 @@ impl<'a> Parser<'a> {
                 Tok::Eof => break,
                 Tok::Ident(k) => k,
                 Tok::InnerDoc(_) => return self.err_at(at, "`//!` docs belong at the top of the file"),
-                _ => return self.err_at(at, "expected an item (revision, type, aspect)"),
+                _ => return self.err_at(at, "expected an item (version, type, aspect)"),
             };
             match kw.as_str() {
-                "revision" => {
-                    let r = self.int("a revision number")?;
-                    if revision.replace(r).is_some() {
-                        return self.err_at(at, "duplicate revision item");
+                "version" => {
+                    let r = self.int("a version number")?;
+                    if version.replace(r).is_some() {
+                        return self.err_at(at, "duplicate version item");
                     }
                     locs.insert("schema".into(), at);
                 }
@@ -210,9 +210,9 @@ impl<'a> Parser<'a> {
             }
             self.expect(';')?;
         }
-        s.revision = match revision {
+        s.version = match version {
             Some(r) => r,
-            None => return self.err("missing `revision <n>;`"),
+            None => return self.err("missing `version <n>;`"),
         };
         s.doc = if doc.is_empty() { None } else { Some(doc.join("\n")) };
         Ok((s, locs))

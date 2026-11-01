@@ -28,7 +28,7 @@ pub enum Error {
     Form(String),
     /// A lock file is malformed. Local.
     Lock(String),
-    /// A revision breaks the evolution rules against its lock (spec/versioning.md §4). Local.
+    /// A version breaks the evolution rules against its lock (spec/versioning.md §4). Local.
     Evolution(Vec<crate::check::Violation>),
     /// A typed read or write validation failed; class per kind.
     Path(PathError),

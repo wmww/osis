@@ -117,7 +117,7 @@ impl Schema {
                 (Value::Str(ak.clone()), st(vec![type_value(&a.ty), retention, opt(a.expires.map(Value::uint)), flags, succ, doc(&a.doc)]))
             })
             .collect();
-        st_fields(vec![(0, Value::uint(self.revision)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
+        st_fields(vec![(0, Value::uint(self.version)), (1, Value::Map(types)), (2, Value::Map(aspects)), (3, doc(&self.doc))])
     }
 
     /// Canonical form: the canonical encoding of `to_value`.

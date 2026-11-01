@@ -10,7 +10,7 @@ use osis_schema::AspectKey;
 static KEEP: osis_schema::StaticSchema = osis_schema::StaticSchema::new(
     "keep.osis",
     r#"
-revision 1;
+version 1;
 aspect k:kept.0: string [by: writer, keep_at_least: 1d];
 aspect k:short.0: string [by: writer, keep_at_most: 10m];
 "#,

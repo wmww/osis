@@ -83,7 +83,7 @@ fn typed_keys_and_paths_spec_versioning_5() {
     let d = recv(&diags);
     assert_eq!((d.tids, d.detail.as_str()), (vec![n], "note:title.0: type error at (root): expected string"));
     assert_eq!(db.get(n, ak("note:title.0")).unwrap(), Some(Value::Int(3)));
-    // one element of another shape (as a newer revision's enum case would be)
+    // one element of another shape (as a newer version's enum case would be)
     let Value::List(mut l) = notes::TASKS.encode(&vec![task("milk"), task("eggs")]) else { panic!() };
     let Some(Value::Map(m)) = l.get_mut(1) else { panic!() };
     m.insert(Value::Int(1), Value::Int(7));
@@ -111,11 +111,11 @@ fn registered_schema_key_spec_api_keys() {
     db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
     assert!(db.register_schema_source("bad.osis", "schema nonsense").is_err());
     // a schema declaring a core AK is the core schema's business, not an app's
-    assert!(db.register_schema_source("core.osis", "revision 1;\naspect name.0: int;\n").is_err());
+    assert!(db.register_schema_source("core.osis", "version 1;\naspect name.0: int;\n").is_err());
     assert_eq!(db.key("name.0").unwrap().schema().map(|s| s.declares_core()), Some(true));
     // a later registration of an AK types it
-    db.register_schema_source("n2.osis", "revision 5;\naspect note:title.0: int;\n").unwrap();
-    assert_eq!(db.key("note:title.0").unwrap().schema().map(|s| s.revision), Some(5));
+    db.register_schema_source("n2.osis", "version 5;\naspect note:title.0: int;\n").unwrap();
+    assert_eq!(db.key("note:title.0").unwrap().schema().map(|s| s.version), Some(5));
     db.register_schema_source("notes.osis", notes::SCHEMA.source()).unwrap();
     let title = db.key("note:title.0").unwrap();
     assert!(title.schema().is_some());
@@ -207,7 +207,7 @@ fn write_ops_spec_api_writes() {
     db.write_with(|w| w.at(t, notes::TASKS).path(p![0, task::PRIORITY]).set_case(osis::CaseId(1), Some(Value::Enum(2, None)))).unwrap();
     assert_eq!(db.get(t, notes::TASKS).unwrap().unwrap()[0].priority, Some(notes::Priority::High));
     // max: observe keeps the largest contribution
-    db.register_schema_source("t.osis", "revision 1;\naspect t:max.0: max<int>;\n").unwrap();
+    db.register_schema_source("t.osis", "version 1;\naspect t:max.0: max<int>;\n").unwrap();
     let mx = db.key("t:max.0").unwrap();
     db.write_with(|w| {
         w.at(t, mx.clone()).path(p![]).observe(&7i64)?;

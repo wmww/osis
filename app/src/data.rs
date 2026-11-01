@@ -152,7 +152,7 @@ impl Data {
     }
 
     /// A typed read where a value of another shape (a synced thing may hold anything, or a
-    /// newer revision's enum case) reads as absent, so one odd thing cannot fail a whole screen.
+    /// newer version's enum case) reads as absent, so one odd thing cannot fail a whole screen.
     /// Works around issues/api-lenient-reads.md.
     pub fn get<K: AspectKey>(&self, t: Tid, key: K) -> Result<Option<K::T>> {
         match self.db.get(t, key) {

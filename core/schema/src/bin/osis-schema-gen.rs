@@ -31,9 +31,9 @@ fn run() -> Result<(), Error> {
     };
     if publish && status != Some(LockStatus::Published) {
         std::fs::write(&lock_path, Lock::of(&schema).to_text()).map_err(|e| Error::Io(format!("{}: {e}", lock_path.display())))?;
-        eprintln!("published revision {} to {}", schema.revision, lock_path.display());
+        eprintln!("published version {} to {}", schema.version, lock_path.display());
     } else if status == Some(LockStatus::Unpublished) {
-        eprintln!("note: {file} differs from its lock (unpublished revision {})", schema.revision);
+        eprintln!("note: {file} differs from its lock (unpublished version {})", schema.version);
     }
     let g = generate(&schema, &file, &src)?;
     for w in &g.warnings {

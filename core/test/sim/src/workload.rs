@@ -10,7 +10,7 @@ use osis_schema::{Aspect, StaticSchema};
 pub static SIM: StaticSchema = StaticSchema::new(
     "sim.osis",
     r#"
-revision 1;
+version 1;
 aspect s:reg.0: string;
 aspect s:count.0: counter<int>;
 aspect s:hi.0: max<int>;

@@ -186,7 +186,7 @@ codec_struct! {
     pub struct Secrets { 0 boxes: BTreeMap<BoxKey, SecretBox>, 1 history: BTreeMap<HistoryKey, Vec<u8>> }
 }
 codec_struct! {
-    /// `node.0`: software revision.
+    /// `node.0`: software version.
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct NodeInfo { 0 software: String }
 }

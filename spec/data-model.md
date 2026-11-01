@@ -100,7 +100,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `label.0` | map<label ID, struct { index, steps: map<step ID, step>, hosts, replaced }> | labels of a synced group (spec/sync.md §2) |
 | `moved.0` | tid (register) | the thing this one continued as (spec/permissions.md §7) |
 | `was.0` | tid (register) | the thing this one continues (spec/permissions.md §7) |
-| `node.0` | struct { software revision } | on a node thing |
+| `node.0` | struct { software version } | on a node thing |
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
@@ -165,11 +165,11 @@ aspect tag.0: struct { 0 color: option<string> };
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas
-- A schema has a **revision** (integer, bumped on every publish), for people and tools only: no schema ID or revision travels on the wire or is attached to aspects (spec/versioning.md §3).
+- A schema has a **version** (integer, bumped on every publish), for people and tools only: no schema ID or version travels on the wire or is attached to aspects (spec/versioning.md §3).
 - A parsed schema is itself an osis value, of type `schema` below; its canonical form is the canonical encoding of that value. The core never distributes schemas.
 ```
 type schema = struct {
-    0 revision: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
+    0 version: int, 1 types: map<string, type_def>, 2 aspects: map<string, aspect_def>,   // by type name, by AK
     3 doc: option<string>,
 };
 type type_def = struct { 0 params: list<string>, 1 body: type_expr, 2 doc: option<string> };
