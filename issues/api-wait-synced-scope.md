@@ -1,3 +1,5 @@
 # `wait_synced` waits for every queued deposit, whatever its scope
 > Summary: since node-sync-caps (item 66) a grant to an offline or unregistered recipient keeps its deposit queued until it lands, and `wait_synced(scope)` waits for every queued deposit in any scope, so it fails with `Network` (timeout) for unrelated scopes until that grant lands. Options: scope the deposit wait to the asked scope, or report pending deliveries separately (a distinct outcome/status) so "my data is at the host" can be asked on its own.
 > Tags: api, node
+
+Since d1 (`All` skips NoHosts groups; a group shows its worst label's state): a group with one hosted label and one hostless (while one label replaces another) shows NoHosts and `All` skips it, so its hosted label is not waited on (fix: filter per label in `wait_synced`); `All` can return Ok before queued deliveries when the only groups left are hostless; a grant on a hostless group from a store that has hosts succeeds although the recipient can never fetch it (consider also waiting on `Group(g)` in the sharing commands).
