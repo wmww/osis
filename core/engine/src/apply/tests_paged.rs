@@ -916,3 +916,31 @@ fn unmerge_takes_paged_collection_below_invalid_entry_spec_perm_5_2() {
     });
     assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
 }
+
+/// Node 1 puts a paged map under key `big` (the skeleton then holds nothing of it), the rogue
+/// key `y`; node 3 gets both, reopens (only the skeleton cached), then the rogue's removal: the
+/// un-merge empties all that is loaded, and the state must keep `big` from its pages.
+#[test]
+fn unmerge_emptying_skeleton_keeps_paged_entry_spec_perm_5_2() {
+    let (c, _) = both(18, |w| {
+        let (t, mix) = (w.t, aks()[1].clone());
+        let mut r = Rng(121);
+        let mut m = Mutation::new();
+        m.set(t, &mix, &Value::Map(BTreeMap::from([(Value::Str("big".into()), big_map(&mut r, 0))]))).unwrap();
+        let fill = w.lp.peers[1].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &mix, PathOp { path: vec![PathSeg::Key(Value::Str("y".into()))], op: Op::Set(Value::Int(1)) }).unwrap();
+        let put = w.lp.peers[ROGUE].commit(m).unwrap().unwrap();
+        let demote = demote_peer(w, ROGUE);
+        let mut pks = packages(w, 1, &[fill]);
+        pks.extend(packages(w, ROGUE, &[put]));
+        for pk in &pks {
+            w.lp.deliver(3, pk).unwrap();
+        }
+        let p = &mut w.lp.peers[3];
+        let clock: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
+        p.engine = crate::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), crate::engine::Config::default(), clock, Box::new(osis_crypto::SeededRng::from_u64(77))).unwrap();
+        packages(w, 0, &[demote])
+    });
+    assert!(c.get("rejudge: unmerge").is_some_and(|n| *n > 0), "{c:?}");
+}
