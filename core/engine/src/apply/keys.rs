@@ -77,7 +77,7 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
     let ids: Vec<CommitId> = tx.core.ix.by_aspect.get(&(a.tid, a.ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     for id in ids {
         let Some(m) = tx.core.ix.commits.get(&id).cloned() else { continue };
-        let Some(xi) = m.header.aspects.iter().position(|x| x.tid == a.tid && x.ak == a.ak) else { continue };
+        let Some(xi) = m.aspect(&a.tid, &a.ak) else { continue };
         if m.header.kind != Kind::Role {
             continue;
         }
@@ -124,8 +124,8 @@ pub(crate) fn rebuild_intro(tx: &mut Tx<'_>, actors: &std::collections::BTreeSet
             if m.header.kind != Kind::Role {
                 continue;
             }
-            let Some(ai) = m.header.aspects.iter().position(|x| x.tid == *a && x.ak == ak) else { continue };
-            if !m.valid.get(ai).copied().unwrap_or(false) {
+            let Some(ai) = m.aspect(a, &ak) else { continue };
+            if !m.valid_at(ai) {
                 continue;
             }
             for (r, e) in m.dropped.get(&ai).map(|d| d.intros.clone()).unwrap_or_default() {
@@ -182,7 +182,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
                 tx.txn.remove_local(&crate::engine::records::own_keys_key(t, &id), Shred::No)?;
                 continue;
             };
-            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "keys.0" && m.valid.get(ai).copied().unwrap_or(false));
+            own |= m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *t && a.ak.as_str() == "keys.0" && m.valid_at(ai));
         }
         if own == tx.core.ix.own_keys.contains(t) {
             continue;

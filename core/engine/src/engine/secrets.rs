@@ -108,8 +108,8 @@ impl Core {
     /// secrets of its own has boxes: a grant whose target's `keys.0` is not held yet).
     fn valid_secrets_part(&self, tid: &Tid) -> bool {
         let Ok(ak) = osis_base::Ak::new("secrets.0") else { return false };
-        self.ix.by_aspect.get(&(*tid, ak)).into_iter().flatten().any(|(_, c)| {
-            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.view.aspects.iter().enumerate().any(|(ai, a)| a.tid == *tid && a.ak.as_str() == "secrets.0" && m.valid.get(ai).copied().unwrap_or(false)))
+        self.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
+            self.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role() && m.aspect(tid, &ak).is_some_and(|ai| m.valid_at(ai)))
         })
     }
 
@@ -455,7 +455,7 @@ impl Core {
                 .into_iter()
                 .filter(|(t, _)| {
                     let mut touched = h.aspects.iter().enumerate().filter(|(_, a)| a.tid == *t).peekable();
-                    touched.peek().is_some() && touched.all(|(i, _)| m.valid.get(i).copied().unwrap_or(false))
+                    touched.peek().is_some() && touched.all(|(i, _)| m.valid_at(i))
                 })
                 .filter(|(t, _)| crate::engine::write::role_of(self, &h.author, t, h.ts) == Some(Role::Admin))
                 .collect();

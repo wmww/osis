@@ -239,7 +239,7 @@ fn copies_held(tx: &mut Tx<'_>, t: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> 
             continue;
         }
         let Some(ai) = m.aspect(t, ak) else { continue };
-        own.extend(crate::apply::held_parts(tx, &c, ai)?.into_iter().map(Decoded::into_fragment));
+        own.extend(crate::apply::held_fragments(tx, &c, ai)?);
     }
     let own: Vec<&Fragment> = own.iter().collect();
     let core = &*tx.core;
