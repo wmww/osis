@@ -42,25 +42,54 @@ pub struct EphThing {
 }
 
 /// One ephemeral aspect: its joined state and which of its writes expire when. Expiry classes
-/// are kept as the counter ranges of this session's writes to it per expiry time (`strip` asks by
-/// dot); a class past its time stays in `expired`, so a later join that repeats one of its
-/// records is stripped again (spec/crdt.md §4.7).
+/// are kept as the counter ranges of this session's writes to it per expiry time (asked by
+/// dot); a class past its time stays in `expired`, so a later own write repeating one of its
+/// records (an undo) does not bring it back.
+///
+/// Invariant (spec/crdt.md §4.7, ephemeral data): `state` is the join of the live own writes
+/// (`own`, every class not expired) and the valid held parts. An expired or superseded write
+/// vanishes whole, resets and removals included, so two nodes holding the same ephemeral commits
+/// read the same whatever expired when and whoever held what at expiry. Writes only join into
+/// it; a removal rebuilds it (`remote::rebuild_aspect`), since a reset that goes no longer
+/// prunes what it pruned.
 #[derive(Clone, Debug, Default)]
 struct EphAspect {
     state: Fragment,
     expiring: BTreeMap<u64, Vec<(u64, u64)>>,
     expired: Vec<(u64, u64)>,
-    /// The own writes alone, kept once a held part of another commit joined (a rebuild starts
-    /// from it, `remote::rebuild_aspect`).
-    own: Option<Fragment>,
+    /// The own writes of this session, per expiry class (`None`: without expiry), each joined
+    /// apart so a class that goes at its expiry takes only its own writes with it.
+    own: BTreeMap<Option<u64>, Fragment>,
     /// Held ephemeral commit parts on this aspect: (commit, aspect index).
     parts: BTreeSet<(CommitId, usize)>,
 }
 
 impl EphAspect {
-    /// The own writes alone (the state while no held part of another commit joined).
-    fn own_writes(&self) -> &Fragment {
-        self.own.as_ref().unwrap_or(&self.state)
+    /// The live own writes, joined.
+    fn own_writes(&self) -> Fragment {
+        let mut f = Fragment::default();
+        for o in self.own.values() {
+            f.join(o.clone());
+        }
+        f
+    }
+
+    /// Joins own write `delta` of expiry class `expires` into the own writes and the state.
+    fn join_own(&mut self, delta: Fragment, expires: Option<u64>) {
+        self.own.entry(expires).or_default().join(delta.clone());
+        self.state.join(delta);
+    }
+
+    /// Removes the own writes whose dots `gone` names (superseded, spec/sync.md §9); the state
+    /// is rebuilt after.
+    fn remove_own(&mut self, gone: &dyn Fn(&osis_crdt::Dot) -> bool) {
+        for o in self.own.values_mut() {
+            if o.holds_dots(gone) {
+                o.remove_dots(gone);
+                o.prune(None, &mut osis_crdt::Changes::new());
+            }
+        }
+        self.own.retain(|_, o| !o.is_empty());
     }
 }
 
@@ -403,23 +432,23 @@ impl Engine {
         let mut changed = Vec::new();
         let mut logged = Vec::new();
         let mut written = Vec::new();
-        for r in resolved {
+        for mut r in resolved {
             self.eph.take_ctrs(&r.tid, &r.ak, r.range.1);
             let src = self.eph.src.clone();
             let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
-            let strip = !a.expired.is_empty() && r.delta.holds_dots(&|d| in_ranges(d, &src, &a.expired));
+            // an own write repeating a record of an expired own write (an undo's re-add) does
+            // not bring it back: taken out before it is joined or sent, so every holder
+            // joins what this node joins (spec/crdt.md §4.7)
+            let expired = &a.expired;
+            if !expired.is_empty() && r.delta.holds_dots(&|d| in_ranges(d, &src, expired)) {
+                r.delta.remove_dots(&|d| in_ranges(d, &src, expired));
+                r.delta.prune(None, &mut osis_crdt::Changes::new());
+            }
             if let Some((pre, schema)) = r.log {
                 logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
             }
             written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires));
-            if let Some(o) = &mut a.own {
-                o.join(r.delta.clone());
-            }
-            a.state.join(r.delta);
-            if strip {
-                let expired = &a.expired;
-                a.state.strip(&|d| in_ranges(d, &src, expired));
-            }
+            a.join_own(r.delta, r.expires);
             if let Some(t) = r.expires {
                 a.expiring.entry(t).or_default().push(r.range);
                 self.eph.timers.entry(t).or_default().insert((r.tid, r.ak.clone()));
@@ -535,10 +564,7 @@ impl Engine {
             if let Ok(Some((delta, r))) = out {
                 self.eph.take_ctrs(&g, &gak, r.hi);
                 let Some(a) = self.eph.aspects.get_mut(&g).and_then(|m| m.get_mut(&gak)) else { continue };
-                if let Some(o) = &mut a.own {
-                    o.join(delta.clone());
-                }
-                a.state.join(delta);
+                a.join_own(delta, None);
                 self.refresh_def(&g, &gak);
                 changed.push((g, gak));
             }
@@ -554,8 +580,9 @@ impl Engine {
         [self.eph.timers.keys().next().copied(), r.timers.keys().next().copied()].into_iter().flatten().min()
     }
 
-    /// Runs the ephemeral expiries due by the corrected clock: their value-carrying writes are
-    /// held value-less (spec/crdt.md §4.7), in memory.
+    /// Runs the ephemeral expiries due by the corrected clock: the expired writes vanish whole
+    /// (spec/crdt.md §4.7, ephemeral data), own ones and held parts alike, and the aspects
+    /// they were on are rebuilt.
     pub fn tick_ephemeral(&mut self) {
         let now = self.now().0;
         let mut changed = BTreeSet::new();
@@ -565,21 +592,14 @@ impl Engine {
             }
             let (t, keys) = entry.remove_entry();
             for (tid, ak) in keys {
-                let src = self.eph.src.clone();
                 let Some(a) = self.eph.aspects.get_mut(&tid).and_then(|m| m.get_mut(&ak)) else { continue };
                 let Some(ranges) = a.expiring.remove(&t) else { continue };
-                a.state.strip(&|d| in_ranges(d, &src, &ranges));
-                if let Some(o) = &mut a.own {
-                    o.strip(&|d| in_ranges(d, &src, &ranges));
-                }
+                a.own.remove(&Some(t));
                 a.expired.extend(ranges);
-                if ak.as_str() == PLACED.ak() {
-                    self.refresh_def(&tid, &ak);
-                }
                 changed.insert((tid, ak));
             }
         }
-        changed.extend(self.tick_remote(now));
+        self.tick_remote(now, &mut changed);
         if !changed.is_empty() {
             self.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
             self.core.events.flush();

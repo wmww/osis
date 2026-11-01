@@ -15,7 +15,7 @@
 //! and never race. Relay-only commits are delivered once (`delivered`, bounded)
 //! and held by nobody.
 
-use super::{EphAspect, EphThing, in_ranges};
+use super::EphThing;
 use crate::engine::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, required_role, run_ops};
@@ -332,7 +332,7 @@ impl Engine {
             return Some(false);
         }
         let me = self.tid();
-        let mut f = self.eph.aspects.get(tid).and_then(|m| m.get(ak)).map(|a| own_unexpiring(a, &self.eph.src)).unwrap_or_default();
+        let mut f = self.eph.aspects.get(tid).and_then(|m| m.get(ak)).and_then(|a| a.own.get(&None)).cloned().unwrap_or_default();
         let before = delta_len(me, &f);
         f.join(delta.clone());
         let after = delta_len(me, &f);
@@ -365,10 +365,8 @@ impl Engine {
             if !gone.is_empty()
                 && let Some(ea) = self.eph.aspects.get_mut(tid).and_then(|m| m.get_mut(ak))
             {
-                ea.state.strip(&|d| gone.contains(d));
-                if let Some(o) = &mut ea.own {
-                    o.strip(&|d| gone.contains(d));
-                }
+                ea.remove_own(&|d| gone.contains(d));
+                self.rebuild_aspect(tid, ak);
             }
         } else {
             self.eph.remote.local.insert(*tid);
@@ -446,23 +444,12 @@ impl Engine {
         let me = self.tid();
         for t in entered {
             self.eph.remote.local.remove(&t);
-            let src = &self.eph.src;
             let mut classes: Vec<(Ak, Option<u64>, Fragment)> = Vec::new();
             for (ak, a) in self.eph.aspects.get(&t).into_iter().flatten() {
-                // `None`: the writes without expiry; expiring or expired ones `own_unexpiring`
-                // keeps value-less, and a part of those alone would carry the thing's record
-                // past their expiry
-                let f = own_unexpiring(a, src);
-                if f.holds_dots(&|d| !in_ranges(d, src, &a.expired) && !a.expiring.values().any(|r| in_ranges(d, src, r))) {
-                    classes.push((ak.clone(), None, f));
-                }
-                // each expiry class: its writes alone (a value-less record of another write
-                // in an expiring part would strip that write's value at its expiry)
-                for (exp, ranges) in &a.expiring {
-                    let mut f = a.own_writes().clone();
-                    f.remove_writes(&|d| !in_ranges(d, src, ranges));
-                    if f.holds_dots(&|d| in_ranges(d, src, ranges)) {
-                        classes.push((ak.clone(), Some(*exp), f));
+                // each expiry class apart, its writes alone (the expired ones are gone)
+                for (exp, f) in &a.own {
+                    if f.holds_dots(&|_| true) {
+                        classes.push((ak.clone(), *exp, f.clone()));
                     }
                 }
             }
@@ -535,9 +522,8 @@ impl Engine {
     }
 
     /// Drops the held commits whose every part is superseded (`eph_superseders`) now that held
-    /// commit `id` supersedes one of their parts (spec/sync.md §9). A dropped commit's writes go
-    /// from the state as at their expiry (spec/crdt.md §4.7; this session's own ones are in the
-    /// own writes, which their own expiry strips: nothing reads them meanwhile); the sync layer
+    /// commit `id` supersedes one of their parts (spec/sync.md §9). A dropped commit's writes
+    /// vanish as at their expiry (spec/crdt.md §4.7), from the own writes too; the sync layer
     /// forgets it and its author deletes its entries once the superseders are held where they
     /// are (`ephemeral_absorbers`, `ephemeral_superseded`). Costs a check per held part on
     /// `id`'s aspects of its author, each about the two parts' size.
@@ -572,16 +558,16 @@ impl Engine {
                 .filter(|p| p.valid)
                 .filter_map(|p| header.aspects.get(p.ai).map(|a| (a.tid, a.ak.clone(), p.fragment.writes().into_iter().filter_map(|(d, ts)| ts.map(|_| d)).collect())))
                 .collect();
+            self.eph.remote.superseded.insert(c, by);
+            let recs = self.carried_tids(&c);
+            self.forget_held(&c);
             for (t, ak, dots) in stripped {
                 if let Some(ea) = self.eph.aspects.get_mut(&t).and_then(|m| m.get_mut(&ak)) {
-                    ea.state.strip(&|d| dots.contains(d));
-                    if let Some(o) = &mut ea.own {
-                        o.strip(&|d| dots.contains(d));
-                    }
+                    ea.remove_own(&|d| dots.contains(d));
                 }
+                self.rebuild_aspect(&t, &ak);
             }
-            self.eph.remote.superseded.insert(c, by);
-            self.forget_unused(&c);
+            self.free_unused_records(recs);
         }
     }
 
@@ -1046,15 +1032,10 @@ impl Engine {
                 self.eph.remote.timers.entry(t).or_default().insert((id, hp.ai));
             }
             let counted = hp.counted();
-            let src = self.eph.src.clone();
             let ea = self.eph.aspects.entry(a.tid).or_default().entry(a.ak.clone()).or_default();
             ea.parts.insert((id, hp.ai));
             if let Some(f) = counted {
-                if ea.own.is_none() {
-                    ea.own = Some(ea.state.clone());
-                }
                 ea.state.join(f);
-                strip_own_expired(ea, &src);
                 if a.ak.as_str() == PLACED.ak() {
                     let (t, ak) = (a.tid, a.ak.clone());
                     self.refresh_def(&t, &ak);
@@ -1517,12 +1498,12 @@ impl Engine {
         Ok(())
     }
 
-    /// Rebuilds the ephemeral state of `(t, ak)`: the own writes joined with the valid held parts,
-    /// own commits included (un-merge, spec/crdt.md §4.6).
+    /// Rebuilds the ephemeral state of `(t, ak)`: the live own writes joined with the valid held
+    /// parts, own commits included (un-merge, spec/crdt.md §4.6; expiry, §4.7).
     fn rebuild_aspect(&mut self, t: &Tid, ak: &Ak) {
         let r = &self.eph.remote;
         let Some(ea) = self.eph.aspects.get(t).and_then(|m| m.get(ak)) else { return };
-        let mut f = ea.own.clone().unwrap_or_default();
+        let mut f = ea.own_writes();
         for (id, ai) in &ea.parts {
             // own held commits too: those of an earlier session are not in the own writes
             let Some(h) = r.held.get(id) else { continue };
@@ -1530,20 +1511,18 @@ impl Engine {
                 f.join(c);
             }
         }
-        let src = self.eph.src.clone();
         if let Some(ea) = self.eph.aspects.get_mut(t).and_then(|m| m.get_mut(ak)) {
             ea.state = f;
-            strip_own_expired(ea, &src);
         }
         if ak.as_str() == PLACED.ak() {
             self.refresh_def(t, ak);
         }
     }
 
-    /// Runs the expiries of held parts due by the corrected clock: their writes are stripped
-    /// (spec/crdt.md §4.7) and the parts dropped. Returns the aspects changed.
-    pub(super) fn tick_remote(&mut self, now: u64) -> BTreeSet<(Tid, Ak)> {
-        let mut changed = BTreeSet::new();
+    /// Runs the expiries of held parts due by the corrected clock: the parts go, and with them
+    /// their writes (spec/crdt.md §4.7, ephemeral data). Adds the aspects changed to `changed`
+    /// and rebuilds all of them.
+    pub(super) fn tick_remote(&mut self, now: u64, changed: &mut BTreeSet<(Tid, Ak)>) {
         let mut gone = Vec::new();
         let mut freed = BTreeSet::new();
         while let Some(entry) = self.eph.remote.timers.first_entry() {
@@ -1566,17 +1545,8 @@ impl Engine {
                     self.eph.remote.index_lists(id);
                 }
                 let Some(a) = header.aspects.get(ai) else { continue };
-                let dots: BTreeSet<osis_crdt::Dot> = part.fragment.writes().into_iter().map(|(d, _)| d).collect();
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
                     ea.parts.remove(&(id, ai));
-                    ea.state.strip(&|d| dots.contains(d));
-                    if let Some(o) = &mut ea.own {
-                        o.strip(&|d| dots.contains(d));
-                    }
-                }
-                if a.ak.as_str() == PLACED.ak() {
-                    let (t, ak) = (a.tid, a.ak.clone());
-                    self.refresh_def(&t, &ak);
                 }
                 changed.insert((a.tid, a.ak.clone()));
                 if empty {
@@ -1590,19 +1560,18 @@ impl Engine {
                 }
             }
         }
-        for id in gone {
-            self.forget_unused(&id);
+        for id in &gone {
+            if let Some(h) = self.eph.remote.held.get(id) {
+                changed.extend(h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).map(|a| (a.tid, a.ak.clone())));
+            }
+            freed.extend(self.carried_tids(id));
+            self.forget_held(id);
+        }
+        for (t, ak) in changed.iter() {
+            self.rebuild_aspect(t, ak);
         }
         self.free_unused_records(freed);
         self.eph.remote.check_index();
-        changed
-    }
-
-    /// Forgets held commit `id`, then the records it carried that nothing here uses any more.
-    fn forget_unused(&mut self, id: &CommitId) {
-        let recs = self.carried_tids(id);
-        self.forget_held(id);
-        self.free_unused_records(recs);
     }
 
     /// The things whose records held commit `id` carried.
@@ -1988,24 +1957,6 @@ fn delta_len(me: Tid, f: &Fragment) -> usize {
 /// (`CHUNK_THRESHOLD`).
 fn fits_blob(len: usize) -> bool {
     len <= osis_base::format::MAX_BLOB.saturating_sub(osis_base::format::CHUNK_THRESHOLD)
-}
-
-/// The own writes of an aspect without the values of those that expire (a snapshot never
-/// carries those, spec/crdt.md §8; an ephemeral commit carries only its author's writes).
-fn own_unexpiring(a: &EphAspect, src: &Source) -> Fragment {
-    let mut f = a.own_writes().clone();
-    for ranges in a.expiring.values() {
-        f.strip(&|d| in_ranges(d, src, ranges));
-    }
-    f
-}
-
-/// Strips own writes already expired from an aspect's state (a join may repeat their records).
-fn strip_own_expired(a: &mut EphAspect, src: &Source) {
-    let expired = &a.expired;
-    if !expired.is_empty() && a.state.holds_dots(&|d| in_ranges(d, src, expired)) {
-        a.state.strip(&|d| in_ranges(d, src, expired));
-    }
 }
 
 /// Whether commit `h` has a part not expired at `now`.
