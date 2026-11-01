@@ -364,3 +364,48 @@ fn removed_map_key_gone_after_purge_spec_crdt_5_6() {
         assert!(!recoverable(&mut lp.peers[i], marker.as_bytes()), "peer {i}: the removed key recovered");
     }
 }
+
+// spec/crdt.md §4.7: a part of an expired delta arriving after T, later than the rest of its
+// commit, joins value-less and drops again; no local copy of its value survives
+#[test]
+fn expired_late_part_unrecoverable_spec_crdt_4_7() {
+    let mut lp = net2(78);
+    let t = new_thing(&mut lp, 0);
+    lp.sync(0, 1).unwrap();
+    let marker = "LATEEXP-MARK-3e9f";
+    let mut m = Mutation::new();
+    m.set(t, &BRIEF, &s(&big(marker))).unwrap();
+    m.set(t, &REG, &s("plain")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let brief = b.header.aspects.iter().position(|a| a.ak.as_str() == "t:brief.0").unwrap();
+    b.parts.retain(|x| x.ai != brief);
+    lp.peers[1].engine.ingest(&b.encode(), pk.blobs.clone()).unwrap();
+    filler(&mut lp, 1, 6);
+    lp.advance(3_600_001);
+    lp.peers[1].engine.tick().unwrap();
+    // taken (`retention::takes_late`): joined, then dropped again
+    assert!(matches!(lp.peers[1].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)));
+    filler(&mut lp, 1, 6);
+    assert!(!lp.peers[1].engine.body_not_dropped(&c, &t, &ak("t:brief.0")));
+    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the late part");
+}
+
+// issues/pending-past-expiry.md: a commit held pending (its thing's creation not held) past its
+// expiry keeps its values on disk
+#[test]
+#[ignore]
+fn repro_expired_while_pending_values_kept() {
+    let mut lp = net2(79);
+    let t = new_thing(&mut lp, 0);
+    let marker = "PENDEXP-MARK-5b1c";
+    let c = set(&mut lp, 0, t, &BRIEF, &big(marker));
+    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
+    filler(&mut lp, 1, 6);
+    lp.advance(3_600_001);
+    lp.peers[1].engine.tick().unwrap();
+    filler(&mut lp, 1, 6);
+    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the pending copy");
+}

@@ -407,12 +407,18 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     let (Some(d), Some(a)) = (m.dropped.get(&ai), m.header.aspects.get(ai)) else { return Ok(false) };
-    let Some(o) = Owned::of(&m.header, c, ai).filter(|_| !d.as_cover && m.header.kind.has_own_writes()) else { return Ok(false) };
-    if !tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o)) {
+    if d.as_cover || !valueless(tx.core, c, ai) {
         return Ok(false);
     }
     let key = records::residue_key(&a.tid, &a.ak, c, ai);
     Ok(tx.txn.get_local(&key)?.is_none())
+}
+
+/// Whether delta `ai` of `c` is held value-less (`make_valueless`): its body is dropped.
+fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
+    let Some(m) = core.ix.commits.get(c) else { return false };
+    let (Some(a), Some(o)) = (m.header.aspects.get(ai), Owned::of(&m.header, c, ai)) else { return false };
+    m.header.kind.has_own_writes() && core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o))
 }
 
 /// Reopens the dropped parts among `ais` of `c` (`takes_late`) for their late copies to join.
@@ -707,12 +713,18 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     Ok(())
 }
 
-/// After late parts `ais` of applied commit `id` joined: `on_apply` for them (a part reopened
-/// by `takes_late` expires or is purged again, now with its body).
+/// After late parts `ais` of applied commit `id` joined: `on_apply` for them. One held
+/// value-less (reopened by `takes_late`, or missing again after `uncover`) drops again, now
+/// keeping its residue, even if the purge that made it so is no longer judged allowed.
 pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, ais, &mut purged)?;
+    for ai in ais.iter().copied() {
+        if valueless(tx.core, id, ai) && tx.core.ix.commits.get(id).is_some_and(|m| !m.dropped.contains_key(&ai)) {
+            expire(tx, id, ai, &mut purged)?;
+        }
+    }
     purged_changed(tx, purged, changed);
     Ok(())
 }
