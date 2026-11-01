@@ -312,8 +312,15 @@ impl Track {
 }
 
 impl PageSink for Replay {
+    /// Gives a page back once; a page given back is dropped (a stream replays nested pages of
+    /// every leaf page: kept, they would add up to the whole delta).
     fn put(&mut self, plaintext: &[u8]) -> Result<osis_base::Link, crate::page::PageError> {
-        self.pages.get_mut(plaintext).and_then(std::collections::VecDeque::pop_front).ok_or(crate::page::PageError::Corrupt)
+        let q = self.pages.get_mut(plaintext).ok_or(crate::page::PageError::Corrupt)?;
+        let l = q.pop_front().ok_or(crate::page::PageError::Corrupt)?;
+        if q.is_empty() {
+            self.pages.remove(plaintext);
+        }
+        Ok(l)
     }
     fn params(&self) -> crate::page::PageParams {
         self.params
