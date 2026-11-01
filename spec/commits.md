@@ -32,7 +32,7 @@ Encoding: spec/wire.md §4. Fields:
 - A commit spanning several kinds is invalid.
 
 ## 3. Dot forms
-- **Node form**: dots `(author node, counter)`, counters per (aspect, node), contiguous.
+- **Node form**: dots `(author node, counter)`, counters per (aspect, node), contiguous; after a node opens its store, only on things whose counters it has caught up (spec/crdt.md §2.1).
 - **Commit form**: dots `(commit ID, index)`, unlinkable across commits. Any author may use it. A key actor whose key is used from more than one device (link key, recovery key) MUST use it, and every role commit (roster snapshots included) MUST use it, so no later commit of its author can void it (§4).
 - **Session form**: dots `(Session(author node, nonce), counter)` (spec/crdt.md §2.1), counters per (aspect, session), contiguous from 1; the header carries the 16-byte nonce. Only an ephemeral content commit (§2) uses it, and an ephemeral content commit MUST use it.
 

@@ -402,6 +402,49 @@ pub fn disk_loss(seed: u64) -> Res<Report> {
 }
 
 
+/// A device restored from a backup of its store (spec/crdt.md §2.1): d0 is backed up, keeps
+/// writing (random writes too) until its commits reached the host, then its store is replaced by
+/// the backup and it writes at once, before any pass. The pass brings the lost commits; no
+/// commit anywhere is void (spec/commits.md §4: overlapping counters void both).
+pub fn restore_backup(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x8b);
+    let mut sim = sim("restore_backup", seed, NetWeights::default());
+    let s = sim.add_host()?;
+    let d0 = sim.add_node(&[s], clock(&mut d))?;
+    let d1 = sim.add_node(&[s], clock(&mut d))?;
+    let p = sim.person(d0, &[s])?.person;
+    sim.pair(d0, d1, p)?;
+    let items = [sim.item(d0, p)?, sim.item(d0, p)?];
+    sim.run(80)?;
+    sim.quiet(40)?;
+    let backup = sim.backup_node(d0)?;
+    set_all(&mut sim, d0, &items, "after the backup")?;
+    sim.run(80)?;
+    sim.quiet(40)?;
+    sim.restore_node(d0, backup)?;
+    set_all(&mut sim, d0, &items, "restored")?;
+    sim.run(80)?;
+    sim.run_until_quiescent(40)?;
+    for n in [d0, d1] {
+        let void: Vec<_> = sim.engine(n)?.core.ix.void.iter().copied().collect();
+        if !void.is_empty() {
+            return Err(sim.fail(format!("node {n}: void commits {void:?}")));
+        }
+    }
+    sim.finish()
+}
+
+/// Node `n` sets `workload::REG` of each of `items` to `v`, in one commit.
+fn set_all(sim: &mut NetSim, n: usize, items: &[Tid], v: &str) -> Res<()> {
+    let mut m = Mutation::new();
+    for t in items {
+        m.set(*t, &workload::REG, &Value::Str(v.into())).map_err(|e| sim.fail(e.to_string()))?;
+    }
+    let r = sim.engine(n)?.commit(m);
+    r.map_err(|e| sim.fail(format!("node {n} write: {e}")))?;
+    sim.feed(n, Event::Local)
+}
+
 /// A grant whose inbox deposit is lost (spec/sync.md §3, §5): the admin's device crashes right
 /// after granting, before the deposit reached the host; the grant reaches the grantee once the restarted device re-sends it.
 pub fn grant_lost_on_crash(seed: u64) -> Res<Report> {

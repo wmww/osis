@@ -213,6 +213,13 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         osis_commit::verify_signature(id, &blob.signature, &vk)?;
     }
     h.validate()?;
+    // an own commit this store does not know of (it was restored from a backup) takes its
+    // counters: this node never uses them again (spec/crdt.md §2.1)
+    if h.author == tx.core.id.tid() && h.form == osis_commit::Form::Node && h.kind.has_own_writes() && h.ephemeral.is_none() {
+        for a in &h.aspects {
+            tx.txn.raise_counter(&a.tid, &a.ak, a.hi)?;
+        }
+    }
     // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
     // as its HLC, which a clock correction moving back must not turn against them
     if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {

@@ -797,3 +797,63 @@ fn add_host_scope_spec_sync_2() {
     w.run();
     assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
 }
+
+// spec/crdt.md §2.1 (a node's counters after a restore): a device restored from a backup of
+// its store keeps its signing key but an old counter. Its writes before its labels passed go
+// in commit form; the pass brings the commits written after the backup, whose counters it
+// then skips, so neither its commits nor theirs are voided (spec/commits.md §4) and every
+// write stands.
+#[test]
+fn restored_store_reuses_no_counter_spec_crdt_2_1() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let cfg = w.cfg(1, &[host]);
+    let osis::StoreAt::Memory(store) = &cfg.store else { unreachable!() };
+    let store = store.clone();
+    let (a, card) = Osis::create(cfg).unwrap();
+    w.run();
+    let t = item(&a, a.me(), a.home(), "before the backup");
+    let u = item(&a, a.me(), a.home(), "other before the backup");
+    w.run();
+    let backup = store.backup();
+    for v in ["after the backup 1", "after the backup 2"] {
+        a.write_with(|wr| wr.at(t, ak("t:x.0")).set(&s(v))).unwrap();
+        a.write_with(|wr| wr.at(u, ak("t:x.0")).set(&s(v))).unwrap();
+    }
+    w.run();
+    w.until(a.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
+    let node = a.node();
+    a.close().unwrap();
+    w.advance(1000);
+
+    let mut rc = w.cfg(2, &[host]);
+    rc.store = osis::StoreAt::Memory(backup);
+    let b = Osis::open(rc).unwrap();
+    assert_eq!(b.node(), node, "the same device identity");
+    assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
+    // written before any pass: commit form
+    let first = commit_with(&b, |wr| wr.at(t, ak("t:x.0")).set(&s("restored"))).id.commit().unwrap();
+    let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
+    assert_eq!(form(&b, first), osis_commit::Form::Commit);
+    // an undo before the pass too: of a creation, which also edits the home group's `group.0`
+    let v = item(&b, b.me(), b.home(), "made after the restore");
+    let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.commit().unwrap();
+    assert_eq!(form(&b, undo), osis_commit::Form::Commit);
+    assert_eq!(x(&b, v), None);
+    w.run();
+    assert_eq!(x(&b, t), Some(s("restored")), "the restored write stands");
+    assert_eq!(x(&b, u), Some(s("after the backup 2")), "the lost writes came back");
+    // after the pass: node form again, above every counter the lost commits used
+    let next = commit_with(&b, |wr| wr.at(u, ak("t:x.0")).set(&s("restored, caught up"))).id.commit().unwrap();
+    assert_eq!(form(&b, next), osis_commit::Form::Node);
+    w.run();
+    assert_eq!(x(&b, u), Some(s("restored, caught up")));
+    let diags = w.diagnostics(&b);
+    assert!(!diags.iter().any(|d| d.starts_with("OverlappingCounters")), "{diags:?}");
+    // a fresh device of the person reads every write
+    let card = card.unwrap();
+    let c = w.until(Osis::restore(w.cfg(3, &[]), &card), 1000, 10).unwrap();
+    w.run();
+    assert_eq!((x(&c, t), x(&c, u), x(&c, v)), (Some(s("restored")), Some(s("restored, caught up")), None));
+    assert!(!c.groups_of(v).item_of.contains(&c.home()), "the undone creation left the home group");
+}

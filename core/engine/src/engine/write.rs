@@ -469,6 +469,12 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 }
 
 impl Engine {
+    /// The labeled groups whose labels have not passed completely since the sync layer started
+    /// (`Core::counters_sure`): its writes on their things use commit form until they have.
+    pub fn set_counters_unsure(&mut self, groups: BTreeSet<Tid>) {
+        self.core.counters_unsure = Some(groups);
+    }
+
     /// A new thing owned by `owner`, created by `m` (spec/data-model.md §1).
     pub fn new_thing(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
         m.create(crate::identity::thing_record(owner, None, &mut *self.rng))
@@ -570,6 +576,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     // role commits use commit form: a later commit by the same node can never void
     // them by reusing their counters (spec/commits.md §3)
     if kind != Kind::Content {
+        m.form = Form::Commit;
+    }
+    // a thing created here has no counters elsewhere
+    if m.form == Form::Node && m.aspects.keys().any(|(t, _)| !m.creates.contains_key(t) && !tx.core.counters_sure(t)) {
         m.form = Form::Commit;
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());

@@ -838,6 +838,23 @@ impl NetSim {
         self.boot(n, engine)
     }
 
+    /// A copy of node `n`'s store as a backup takes it now.
+    pub fn backup_node(&mut self, n: usize) -> Res<(MemoryBackend, MemoryRoot)> {
+        let node = self.node(n)?;
+        Ok((node.backend.copy(), node.root.copy()))
+    }
+
+    /// Node `n` is restored from `backup`: it stops, its store is replaced by the copy, and it
+    /// starts again over it.
+    pub fn restore_node(&mut self, n: usize, (backend, root): (MemoryBackend, MemoryRoot)) -> Res<()> {
+        self.node_down(n)?;
+        let node = self.node(n)?;
+        node.backend = backend;
+        node.root = root;
+        self.note(format!("node {n} restored from a backup"));
+        self.restart_node(n)
+    }
+
     /// Node `n` loses its disk: gone for good.
     pub fn lose_disk(&mut self, n: usize) -> Res<()> {
         self.node_down(n)?;

@@ -422,6 +422,17 @@ impl SyncEngine {
         self.synced.labels.iter().filter(|(g, _)| groups.contains(g)).all(|(_, l)| self.label_passed(&l.id, super::peers::host_keys(&l.hosts), since, waited))
     }
 
+    /// Tells the engine which labeled groups have not passed completely since the start
+    /// (`Engine::set_counters_unsure`): until they have, its writes on their things use commit
+    /// form, since a pass there may bring own commits a restored store lost (spec/crdt.md
+    /// §2.1). Peers are waited for as long as for a role change at the start.
+    pub(crate) fn counters_step(&mut self) {
+        let waited = self.started.saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now();
+        let labels = self.labels();
+        let unsure = labels.iter().filter(|(_, l)| !l.replaced && !self.label_passed(&l.id, super::peers::host_keys(&l.hosts), 0, waited)).map(|(g, _)| *g).collect();
+        self.engine.set_counters_unsure(unsure);
+    }
+
     /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
     /// after its last remote role commit, or after the start when none applied in this run
     /// (`roles_at` is memory only; spec/permissions.md §3 bounds the wait after the change):

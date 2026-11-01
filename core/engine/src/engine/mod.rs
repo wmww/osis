@@ -523,6 +523,9 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Labeled groups whose labels have not passed completely since the sync layer started
+    /// (`Engine::set_counters_unsure`); `None` without one. See `Core::counters_sure`.
+    pub counters_unsure: Option<BTreeSet<Tid>>,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -633,6 +636,21 @@ impl Changed {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
 
 impl Core {
+    /// Whether this node may write node-form dots on `t` (spec/crdt.md §2.1): with no sync
+    /// layer, or once every label holding `t` passed completely since the sync layer started
+    /// (`counters_unsure`), every label for a thing no label holds. Before, a commit this
+    /// store lost (restored from a backup) may still hold the counters it would use; the pass
+    /// brings it, and its header raises the counters (`apply::examine`).
+    pub fn counters_sure(&self, t: &Tid) -> bool {
+        let Some(unsure) = &self.counters_unsure else { return true };
+        if unsure.is_empty() {
+            return true;
+        }
+        let groups = self.ix.groups.of.get(t);
+        let mut held = groups.into_iter().flatten().chain(std::iter::once(t)).filter(|g| self.ix.labeled.contains(g)).peekable();
+        held.peek().is_some() && held.all(|g| !unsure.contains(g))
+    }
+
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
     pub fn durable_on<'a>(&'a self, k: &(Tid, Ak)) -> impl Iterator<Item = CommitId> + 'a {
         self.ix.by_aspect.get(k).into_iter().flatten().map(|x| x.1).filter(|c| !self.ix.commits.get(c).is_some_and(|m| m.view.memory))
@@ -797,6 +815,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            counters_unsure: None,
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
@@ -1578,6 +1597,7 @@ impl Engine {
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.counters_unsure = self.core.counters_unsure.take();
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again

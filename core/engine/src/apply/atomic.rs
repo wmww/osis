@@ -287,6 +287,11 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         return if perm { Ok(()) } else { arrived_invalid(tx, &tid, &ak, j) };
     }
     if let Some(fr) = gives {
+        // a valid snapshot's frontier for this node: counters of own commits this store lost
+        // (restored from a backup) whose bodies are gone (spec/crdt.md §2.1)
+        if v && let Some(ctr) = fr.0.nodes.get(&tx.core.id.tid()) {
+            tx.txn.raise_counter(&tid, &ak, ctr.saturating_add(1))?;
+        }
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
     }
     // a valid snapshot carrying writes of deltas invalid here makes them count again, and
