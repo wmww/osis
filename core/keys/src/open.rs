@@ -152,7 +152,7 @@ pub fn open_histories(actor: &Tid, secrets: &Secrets, alts: &HistoryAlts, epochs
 
 /// Everything a node learns from `actor`'s `secrets.0`: the epochs named, its boxes' secrets,
 /// then older ones by history. Establishes nothing (spec/crypto.md §4): the caller runs
-/// `SecretsWrite::applied` per applied rotation commit and `snapshot_keyed` per held snapshot.
+/// `SecretsWrite::claimed` per held rotation commit and `snapshot_keyed` per held snapshot.
 /// `unchecked`: `None` when `secrets` is the applied valid state; the source for boxes of a
 /// pending commit, whose secrets are kept for reading only (spec/crypto.md §4). Returns what
 /// could not be opened.

@@ -1,5 +1,5 @@
 //! Per-role epochs of one actor as a node holds them (spec/crypto.md §4): forks kept,
-//! established (own, fixed, derived, chain of applied rotation commits, snapshot), current =
+//! established (fixed, derived, chain of applied rotation commits, snapshot), current =
 //! established and not superseded by an established rotation, newest = greatest order n, ties by
 //! lowest nonce.
 
@@ -28,17 +28,16 @@ pub fn newest_of<'a>(epochs: impl IntoIterator<Item = &'a Epoch>) -> Option<Epoc
     epochs.into_iter().max_by_key(|e| by_n(e)).copied()
 }
 
-/// How an epoch got established at this node (spec/crypto.md §4). `Own`, `Fixed` and `Derived`
-/// are set directly; `Chain` and `Snapshot` are computed by `RoleEpochs::establish`.
+/// How an epoch got established at this node (spec/crypto.md §4). `Fixed` and `Derived` are set
+/// directly; `Chain` and `Snapshot` are computed by `RoleEpochs::establish`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Provenance {
-    /// This node's own rotation.
-    Own,
     /// A key actor's fixed epoch.
     Fixed,
     /// Derived from an established epoch of the owner (a plain thing).
     Derived,
-    /// Its rotation commit is applied and valid and every epoch it supersedes is established.
+    /// Its rotation commit (this node's own included) is applied and valid and settled
+    /// (`RoleEpochs::establish`).
     Chain,
     /// A held compaction snapshot of `secrets.0` keys a box or history box with it.
     Snapshot,
@@ -47,14 +46,26 @@ pub enum Provenance {
 impl Provenance {
     /// Set directly, never recomputed.
     pub fn sticky(self) -> bool {
-        matches!(self, Provenance::Own | Provenance::Fixed | Provenance::Derived)
+        matches!(self, Provenance::Fixed | Provenance::Derived)
     }
 
     /// A re-seal may box an epoch of this provenance (spec/permissions.md §3: established
     /// through rotation commits; not by a snapshot alone).
     pub fn reseals(self) -> bool {
-        matches!(self, Provenance::Own | Provenance::Chain)
+        self == Provenance::Chain
     }
+}
+
+/// What a rotation supersedes: each epoch with the commits that wrote the boxes it removes there
+/// (the removed records' dots; empty in a write being made).
+pub type Superseded = BTreeMap<Epoch, BTreeSet<CommitId>>;
+
+/// A held rotation commit claiming an epoch (writing its keyset and history box): whether it is
+/// valid, and what it supersedes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Claim {
+    pub valid: bool,
+    pub supersedes: Superseded,
 }
 
 /// What a node knows of one epoch.
@@ -65,10 +76,10 @@ pub struct EpochInfo {
     /// Epochs its rotation superseded: from its rotation commit (removed boxes) and from its
     /// opened history box (everything listed). Counts only once established.
     pub supersedes: BTreeSet<Epoch>,
-    /// The applied valid rotation commits that claim it, each with the epochs it supersedes (the
-    /// chain condition of `establish`): a holder may re-claim an epoch in a later commit, and
-    /// invalidating that one leaves the others.
-    pub applied: BTreeMap<CommitId, BTreeSet<Epoch>>,
+    /// The held rotation commits that claim it, valid or not (the chain condition of
+    /// `establish`): a holder may re-claim an epoch in a later commit, and invalidating that one
+    /// leaves the others.
+    pub claims: BTreeMap<CommitId, Claim>,
     /// A held `secrets.0` compaction snapshot keys it.
     pub snapshot: bool,
     /// Established (spec/crypto.md §4): persisted, never inferred from the applied `secrets.0`
@@ -93,7 +104,7 @@ pub struct EpochInfo {
 
 impl Default for EpochInfo {
     fn default() -> EpochInfo {
-        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), applied: BTreeMap::new(), snapshot: false, established: None, secret: None, reading: BTreeSet::new(), order: None }
+        EpochInfo { suite: SUITE, supersedes: BTreeSet::new(), claims: BTreeMap::new(), snapshot: false, established: None, secret: None, reading: BTreeSet::new(), order: None }
     }
 }
 
@@ -219,28 +230,32 @@ impl RoleEpochs {
         self.map.get(e).is_some_and(EpochInfo::is_reading_only)
     }
 
-    /// Sets `e`'s provenance directly (`Own`, `Fixed`, `Derived`; `Chain` and `Snapshot` set
-    /// here are recomputed by the next `establish`).
+    /// Sets `e`'s provenance directly (`Fixed`, `Derived`; `Chain` and `Snapshot` set here are
+    /// recomputed by the next `establish`).
     pub fn set_established(&mut self, e: Epoch, p: Provenance) {
         self.observe(e).established = Some(p);
     }
 
-    /// Records that rotation commit `commit`, applied and valid, claims `e`, superseding
-    /// `supersedes` (`SecretsWrite::rotations`). Call `establish` after. Returns whether it is
-    /// new.
-    pub fn set_applied(&mut self, e: Epoch, commit: CommitId, supersedes: impl IntoIterator<Item = Epoch>) -> bool {
-        let sup: BTreeSet<Epoch> = supersedes.into_iter().filter(|s| s.n() < e.n()).collect();
+    /// Records that held rotation commit `commit` claims `e`, superseding `supersedes` (epoch to
+    /// the commits whose boxes it removes there, `SecretsWrite::rotations`); `valid`: applied
+    /// and valid. Only a valid claim supersedes for `current`. Call `establish` after. Returns
+    /// whether it is new.
+    pub fn set_claim(&mut self, e: Epoch, commit: CommitId, valid: bool, supersedes: Superseded) -> bool {
+        let claim = Claim { valid, supersedes: supersedes.into_iter().filter(|(s, _)| s.n() < e.n()).collect() };
         let info = self.observe(e);
-        info.supersedes.extend(sup.iter().copied());
-        let prev = info.applied.insert(commit, sup.clone());
-        prev.is_none_or(|p| p != sup)
+        if valid {
+            info.supersedes.extend(claim.supersedes.keys().copied());
+        }
+        info.claims.insert(commit, claim.clone()) != Some(claim)
     }
 
-    /// Rotation commit `commit` is no longer applied (found invalid): the epochs it claimed keep
-    /// their other claimants. Call `establish` after.
-    pub fn unset_applied(&mut self, commit: &CommitId) {
+    /// Rotation commit `commit` was found invalid: its claims stay, invalid; the epochs it
+    /// claimed keep their other claimants. Call `establish` after.
+    pub fn invalidate(&mut self, commit: &CommitId) {
         for i in self.map.values_mut() {
-            i.applied.remove(commit);
+            if let Some(c) = i.claims.get_mut(commit) {
+                c.valid = false;
+            }
         }
     }
 
@@ -250,9 +265,13 @@ impl RoleEpochs {
         !std::mem::replace(&mut self.observe(e).snapshot, true)
     }
 
-    /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint: an epoch
-    /// whose rotation commit is applied is `Chain` once every epoch that commit supersedes is
-    /// established; else `Snapshot` when a held snapshot keys it. Either only within headroom
+    /// Recomputes `Chain` and `Snapshot` establishment (spec/crypto.md §4), a fixpoint over the
+    /// held claims. A claim is settled when every epoch s it supersedes is established, or is
+    /// passed through: no valid claim of s is held, and the claim's removal at s names a held
+    /// invalid claim of s that is settled (an invalid rotation carries no departure; what it
+    /// superseded still must settle, and only a claim the superseding commit names counts, so a
+    /// made-up invalid claim of s passes nothing). An epoch with a settled valid claim is `Chain`;
+    /// else `Snapshot` when a held snapshot keys it. Either only within headroom
     /// (`within_headroom`). Sticky provenances stay. Returns whether anything changed.
     pub fn establish(&mut self) -> bool {
         let before: Vec<Option<Provenance>> = self.map.values().map(|i| i.established).collect();
@@ -261,14 +280,26 @@ impl RoleEpochs {
                 i.established = None;
             }
         }
+        // the settled invalid claims, (epoch, commit)
+        let mut passed: BTreeSet<(Epoch, CommitId)> = BTreeSet::new();
         loop {
+            let settled = |c: &Claim| {
+                c.supersedes.iter().all(|(s, named)| {
+                    self.is_established(s) || self.map.get(s).is_some_and(|si| si.claims.values().all(|x| !x.valid) && named.iter().any(|n| passed.contains(&(*s, *n))))
+                })
+            };
+            let pass: Vec<(Epoch, CommitId)> = self
+                .map
+                .iter()
+                .flat_map(|(e, i)| i.claims.iter().filter(|(c, cl)| !cl.valid && !passed.contains(&(*e, **c)) && settled(cl)).map(|(c, _)| (*e, *c)))
+                .collect();
             let ready: Vec<(Epoch, Provenance)> = self
                 .map
                 .iter()
                 // unestablished, or by snapshot (a chain beats it)
                 .filter(|(_, i)| matches!(i.established, None | Some(Provenance::Snapshot)))
                 .filter_map(|(e, i)| {
-                    let chain = i.applied.values().any(|sup| sup.iter().all(|s| self.is_established(s)));
+                    let chain = i.claims.values().any(|cl| cl.valid && settled(cl));
                     let p = if chain {
                         Provenance::Chain
                     } else if i.snapshot && i.established.is_none() {
@@ -279,9 +310,10 @@ impl RoleEpochs {
                     self.within_headroom(e).then_some((*e, p))
                 })
                 .collect();
-            if ready.is_empty() {
+            if ready.is_empty() && pass.is_empty() {
                 break;
             }
+            passed.extend(pass);
             for (e, p) in ready {
                 self.observe(e).established = Some(p);
             }
@@ -507,7 +539,7 @@ impl ActorEpochs {
                     // past the cap two owner epochs with one secret derive one epoch: it never
                     // supersedes itself
                     supersedes: i.supersedes.iter().map(id).filter(|x| x != de).collect(),
-                    applied: BTreeMap::new(),
+                    claims: BTreeMap::new(),
                     snapshot: false,
                     established: i.established.map(|_| Provenance::Derived),
                     secret: ds.clone(),
@@ -529,10 +561,10 @@ impl ActorEpochs {
         changed
     }
 
-    /// `RoleEpochs::unset_applied` for every role.
-    pub fn unset_applied(&mut self, commit: &CommitId) {
+    /// `RoleEpochs::invalidate` for every role.
+    pub fn invalidate(&mut self, commit: &CommitId) {
         for r in ROLES {
-            self.role_mut(r).unset_applied(commit);
+            self.role_mut(r).invalidate(commit);
         }
     }
 
@@ -558,6 +590,11 @@ mod tests {
         CommitId([b; 32])
     }
 
+    /// A claim's superseded epochs, naming no commit.
+    fn sup<const N: usize>(es: [Epoch; N]) -> Superseded {
+        es.into_iter().map(|e| (e, BTreeSet::new())).collect()
+    }
+
     // spec/crypto.md §4: current = not superseded by a held rotation; newest = greatest n, ties by
     // lowest nonce; forks kept.
     #[test]
@@ -567,7 +604,7 @@ mod tests {
         r.rotation(ep(2, 5), [ep(1, 0)]);
         r.rotation(ep(2, 3), [ep(1, 0)]);
         for e in [ep(1, 0), ep(2, 5), ep(2, 3)] {
-            r.set_established(e, Provenance::Own);
+            r.set_established(e, Provenance::Fixed);
         }
         assert_eq!(r.current(), vec![ep(2, 3), ep(2, 5)]);
         assert_eq!(r.newest(), Some(ep(2, 3)));
@@ -576,23 +613,23 @@ mod tests {
         r.set_secret(ep(2, 5), Secret32::from_bytes([2; 32]));
         assert_eq!(r.newest_held().map(|x| x.0), Some(ep(2, 5)));
         r.rotation(ep(3, 9), [ep(2, 5)]);
-        r.set_established(ep(3, 9), Provenance::Own);
+        r.set_established(ep(3, 9), Provenance::Fixed);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         assert_eq!(r.newest(), Some(ep(3, 9)));
         // An unestablished rotation (not applied, pending or invalid) supersedes nothing and is not
         // current.
         r.rotation(ep(4, 1), [ep(3, 9), ep(2, 3)]);
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
-        r.set_applied(ep(4, 1), cid(1), [ep(3, 9), ep(2, 3)]);
+        r.set_claim(ep(4, 1), cid(1), true, sup([ep(3, 9), ep(2, 3)]));
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(4, 1)]);
         assert_eq!(r.provenance(&ep(4, 1)), Some(Provenance::Chain));
         // a re-claim of e4 by another commit, then invalidated, leaves e4's rotation applied
-        r.set_applied(ep(4, 1), cid(2), [ep(3, 9)]);
-        r.unset_applied(&cid(2));
+        r.set_claim(ep(4, 1), cid(2), true, sup([ep(3, 9)]));
+        r.invalidate(&cid(2));
         assert!(!r.establish());
         assert_eq!(r.provenance(&ep(4, 1)), Some(Provenance::Chain));
-        r.unset_applied(&cid(1));
+        r.invalidate(&cid(1));
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(2, 3), ep(3, 9)]);
         let order: Vec<Epoch> = r.held_newest_first().into_iter().map(|x| x.0).collect();
@@ -605,18 +642,18 @@ mod tests {
     #[test]
     fn establish_fixpoint() {
         let mut r = RoleEpochs::default();
-        r.set_established(ep(1, 0), Provenance::Own);
+        r.set_established(ep(1, 0), Provenance::Fixed);
         // e3 then e2 applied (reorder): e3 waits for e2.
-        r.set_applied(ep(3, 0), cid(3), [ep(2, 0)]);
+        r.set_claim(ep(3, 0), cid(3), true, sup([ep(2, 0)]));
         assert!(!r.establish());
         assert_eq!(r.current(), vec![ep(1, 0)]);
-        r.set_applied(ep(2, 0), cid(2), [ep(1, 0)]);
+        r.set_claim(ep(2, 0), cid(2), true, sup([ep(1, 0)]));
         assert!(r.establish());
         assert_eq!(r.current(), vec![ep(3, 0)]);
         assert_eq!(r.provenance(&ep(2, 0)), Some(Provenance::Chain));
         // A chain whose base is unknown here: established only once a snapshot keys the base.
         let mut s = RoleEpochs::default();
-        s.set_applied(ep(5, 0), cid(5), [ep(4, 0)]);
+        s.set_claim(ep(5, 0), cid(5), true, sup([ep(4, 0)]));
         s.establish();
         assert!(s.current().is_empty());
         s.set_snapshot(ep(4, 0));
@@ -629,9 +666,56 @@ mod tests {
         s.establish();
         assert!(s.newest_is_snapshot());
         // A snapshot-keyed epoch whose commit then applies is chain-established.
-        s.set_applied(ep(6, 0), cid(6), [ep(5, 0)]);
+        s.set_claim(ep(6, 0), cid(6), true, sup([ep(5, 0)]));
         s.establish();
         assert_eq!(s.provenance(&ep(6, 0)), Some(Provenance::Chain));
+    }
+
+    // spec/crypto.md §4: a chain passes through a superseded epoch whose rotation commit, named
+    // by the superseding commit's removal there, is held and invalid, when nothing valid claims
+    // it and what that commit superseded is established in turn.
+    #[test]
+    fn chain_passes_invalid_rotation() {
+        let named = |c: u8| BTreeSet::from([cid(c)]);
+        let mut r = RoleEpochs::default();
+        r.set_established(ep(1, 0), Provenance::Fixed);
+        // e2 (commit 2) superseded e1; e3 (commit 3) superseded e2, naming commit 2
+        r.set_claim(ep(2, 0), cid(2), true, sup([ep(1, 0)]));
+        r.set_claim(ep(3, 0), cid(3), true, BTreeMap::from([(ep(2, 0), named(2))]));
+        r.establish();
+        assert_eq!(r.current(), vec![ep(3, 0)]);
+        // commit 2 found invalid: e2 unestablished, e3 still established through it
+        r.invalidate(&cid(2));
+        r.establish();
+        assert!(!r.is_established(&ep(2, 0)));
+        assert_eq!(r.provenance(&ep(3, 0)), Some(Provenance::Chain));
+        assert_eq!(r.current(), vec![ep(1, 0), ep(3, 0)]);
+        // not when e3's removal names another commit than e2's invalid one (e2's genuine commit
+        // not held: a made-up invalid claim of e2 passes nothing)
+        let mut x = RoleEpochs::default();
+        x.set_established(ep(1, 0), Provenance::Fixed);
+        x.set_claim(ep(3, 0), cid(3), true, BTreeMap::from([(ep(2, 0), named(2))]));
+        x.set_claim(ep(2, 0), cid(9), false, sup([]));
+        x.establish();
+        assert!(!x.is_established(&ep(3, 0)));
+        // not while a valid claim of e2 is held, unsettled
+        let mut x = r.clone();
+        x.set_claim(ep(2, 0), cid(8), true, sup([ep(1, 7)]));
+        x.establish();
+        assert!(!x.is_established(&ep(3, 0)));
+        // not when what the invalid commit superseded is not established
+        let mut x = RoleEpochs::default();
+        x.set_claim(ep(2, 0), cid(2), false, sup([ep(1, 0)]));
+        x.set_claim(ep(3, 0), cid(3), true, BTreeMap::from([(ep(2, 0), named(2))]));
+        x.establish();
+        assert!(!x.is_established(&ep(3, 0)));
+        // passing through invalid commits in a row
+        x.set_established(ep(1, 0), Provenance::Fixed);
+        x.set_claim(ep(4, 0), cid(4), true, BTreeMap::from([(ep(3, 0), named(3))]));
+        x.invalidate(&cid(3));
+        x.establish();
+        assert_eq!(x.provenance(&ep(4, 0)), Some(Provenance::Chain));
+        assert_eq!(x.current(), vec![ep(1, 0), ep(4, 0)]);
     }
 
     // spec/crypto.md §3: derived secrets take the owner's n at the epochs the nonce rule names;
@@ -788,7 +872,7 @@ mod tests {
                 if !free && i.order.is_none() {
                     i.order = Some(e.n() * 3 + 7);
                 }
-                i.established = [None, Some(Provenance::Own), Some(Provenance::Chain), Some(Provenance::Snapshot)][rnd(4) as usize];
+                i.established = [None, Some(Provenance::Fixed), Some(Provenance::Chain), Some(Provenance::Snapshot)][rnd(4) as usize];
                 match rnd(3) {
                     0 => r.set_secret(e, Secret32::from_bytes([rnd(250) as u8; 32])),
                     1 => r.set_reading_secret(e, Secret32::from_bytes([rnd(250) as u8; 32]), u(1)),

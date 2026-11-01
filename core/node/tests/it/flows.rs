@@ -2180,7 +2180,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let top = osis_crypto::Epoch::derive(&d, Role::Read, i64::MAX as u64, &top_secret).unwrap();
     let mut v = osis_keys::ActorEpochs::default();
     v.read.set_secret(top, top_secret);
-    v.read.set_established(top, osis_keys::Provenance::Own);
+    v.read.set_established(top, osis_keys::Provenance::Fixed);
     let pk = lp.peers[0].engine.get_typed(&pa, &ct::KEYS).unwrap().unwrap();
     let rc = osis_keys::Recipient { holder: pa, role: Role::Admin, keys: osis_keys::HolderKeys::from_keys(&pk).unwrap() };
     let w = osis_keys::box_holder(&d, &v, &ct::Secrets::default(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();

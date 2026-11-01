@@ -309,7 +309,7 @@ pub struct Holder {
 }
 
 /// Re-seal trigger (spec/permissions.md §3): holders lacking a box at a current epoch of a role
-/// they hold, established through its rotation commit (`Chain`, `Own`; not a snapshot alone, see
+/// they hold, established through its rotation commit (`Chain`; not a snapshot alone, see
 /// `RoleEpochs::newest_is_snapshot`), with the roles to re-seal (`reseal_holder`). Never a holder
 /// whose `until` is within `MAX_DRIFT`. The caller decides after a sync pass of the actor's
 /// labels that fetched everything, and only for roles it may rotate.

@@ -44,8 +44,7 @@ impl Core {
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let d = self.chain_epochs(tid);
         let Some(x) = self.stale_epochs(tid) else { return d };
-        // no owner's epochs held: the leftovers alone, still reading-only (this node's own
-        // invalid rotation's are `Own`)
+        // no owner's epochs held: the leftovers alone, still reading-only
         let mut d = d.unwrap_or_default();
         for r in ROLES {
             for (ep, info) in x.role(r).epochs() {
@@ -524,16 +523,32 @@ fn newest_delete_key(e: &ActorEpochs, r: Role) -> Option<VerifyingKey> {
 
 fn provenance_code(p: Provenance) -> u64 {
     match p {
-        Provenance::Own => 0,
-        Provenance::Fixed => 1,
-        Provenance::Derived => 2,
-        Provenance::Chain => 3,
-        Provenance::Snapshot => 4,
+        Provenance::Fixed => 0,
+        Provenance::Derived => 1,
+        Provenance::Chain => 2,
+        Provenance::Snapshot => 3,
     }
 }
 
 fn provenance_of(c: i64) -> Option<Provenance> {
-    [Provenance::Own, Provenance::Fixed, Provenance::Derived, Provenance::Chain, Provenance::Snapshot].get(usize::try_from(c).ok()?).copied()
+    [Provenance::Fixed, Provenance::Derived, Provenance::Chain, Provenance::Snapshot].get(usize::try_from(c).ok()?).copied()
+}
+
+/// A claim's superseded epochs: `[[epoch, [commit]]]`.
+fn encode_superseded(s: &osis_keys::Superseded) -> Value {
+    Value::List(s.iter().map(|(e, by)| Value::List(vec![e.to_wire(), Value::List(by.iter().map(|c| Value::Bytes(c.0.to_vec())).collect())])).collect())
+}
+
+fn decode_superseded(v: &Value) -> Option<osis_keys::Superseded> {
+    let Value::List(items) = v else { return None };
+    let mut out = osis_keys::Superseded::new();
+    for it in items {
+        let Value::List(it) = it else { return None };
+        let [e, Value::List(by)] = it.as_slice() else { return None };
+        let by = by.iter().map(|c| if let Value::Bytes(c) = c { Some(CommitId(c.as_slice().try_into().ok()?)) } else { None }).collect::<Option<_>>()?;
+        out.insert(Epoch::from_wire(e).ok()?, by);
+    }
+    Some(out)
 }
 
 /// Persisted as is: establishment is stored, never re-inferred on load (spec/crypto.md §4).
@@ -548,7 +563,7 @@ pub(crate) fn encode_epochs(a: &ActorEpochs) -> Vec<u8> {
                         Value::List(vec![
                             e.to_wire(),
                             Value::uint(i.suite),
-                            Value::List(i.applied.iter().map(|(c, sup)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::List(sup.iter().map(Epoch::to_wire).collect())])).collect()),
+                            Value::List(i.claims.iter().map(|(c, cl)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Bool(cl.valid), encode_superseded(&cl.supersedes)])).collect()),
                             Value::Bool(i.snapshot),
                             Value::List(i.established.iter().map(|p| Value::uint(provenance_code(*p))).collect()),
                             Value::List(i.supersedes.iter().map(Epoch::to_wire).collect()),
@@ -633,16 +648,16 @@ pub(crate) fn decode_epochs(b: &[u8]) -> Result<ActorEpochs> {
         let Value::List(items) = items else { return Err(bad()) };
         for it in items {
             let Value::List(f) = it else { return Err(bad()) };
-            let [e, Value::Int(suite), Value::List(applied), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
+            let [e, Value::Int(suite), Value::List(claims), Value::Bool(snapshot), Value::List(est), Value::List(sup), Value::List(sec), Value::List(reading)] = f.as_slice() else { return Err(bad()) };
             let e = Epoch::from_wire(e).map_err(|_| bad())?;
             let info = a.role_mut(*r).observe(e);
             info.suite = u64::try_from(*suite).map_err(|_| bad())?;
             info.snapshot = *snapshot;
-            for ap in applied {
-                let Value::List(ap) = ap else { return Err(bad()) };
-                let [Value::Bytes(c), Value::List(sup)] = ap.as_slice() else { return Err(bad()) };
+            for cl in claims {
+                let Value::List(cl) = cl else { return Err(bad()) };
+                let [Value::Bytes(c), Value::Bool(valid), sup] = cl.as_slice() else { return Err(bad()) };
                 let c = CommitId(c.as_slice().try_into().map_err(|_| bad())?);
-                info.applied.insert(c, sup.iter().map(Epoch::from_wire).collect::<std::result::Result<_, _>>().map_err(|_| bad())?);
+                info.claims.insert(c, osis_keys::Claim { valid: *valid, supersedes: decode_superseded(sup).ok_or_else(bad)? });
             }
             if let [Value::Int(p)] = est.as_slice() {
                 info.established = Some(provenance_of(*p).ok_or_else(bad)?);
@@ -701,12 +716,13 @@ mod tests {
         let mut a = ActorEpochs::default();
         let (e1, e2) = (Epoch::new(1, [1; 32]).unwrap(), Epoch::new(2, [2; 32]).unwrap());
         a.read.set_secret(e1, Secret32::from_bytes([1; 32]));
-        a.read.set_established(e1, Provenance::Own);
+        a.read.set_established(e1, Provenance::Fixed);
         let from = |n: u8| Unchecked { author: Tid::from_bytes([n; 15]), commit: osis_base::CommitId([n; 32]) };
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(1));
         a.read.set_reading_secret(e2, Secret32::from_bytes([2; 32]), from(2));
         a.read.set_established(e2, Provenance::Chain);
-        a.read.set_applied(e2, osis_base::CommitId([9; 32]), []);
+        a.read.set_claim(e2, osis_base::CommitId([9; 32]), true, osis_keys::Superseded::from([(Epoch::new(1, [3; 32]).unwrap(), [osis_base::CommitId([8; 32])].into())]));
+        a.read.set_claim(e2, osis_base::CommitId([7; 32]), false, osis_keys::Superseded::new());
         let b = decode_epochs(&encode_epochs(&a)).unwrap();
         assert_eq!(b, a);
         assert!(b.read.is_reading_only(&e2) && b.read.secret(&e2).is_none());

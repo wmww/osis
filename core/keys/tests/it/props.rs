@@ -96,7 +96,7 @@ impl Sim {
         let rot = rotate(&self.a, roles, &self.view, &self.s, &self.holders(), &mut r).unwrap();
         assert!(rot.unboxed.is_empty());
         rot.secrets.apply(&mut self.s);
-        rot.record(&mut self.view);
+        self.view = rot.preview(&self.view).unwrap();
     }
 
     fn step(&mut self, op: &Op) {
@@ -134,7 +134,7 @@ impl Sim {
                 }
                 for f in &forks {
                     f.secrets.apply(&mut self.s);
-                    f.record(&mut self.view);
+                    self.view = f.preview(&self.view).unwrap();
                 }
             }
             _ => {}

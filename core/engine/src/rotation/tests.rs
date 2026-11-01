@@ -1348,16 +1348,47 @@ fn forked_reseals(seeds: std::ops::Range<u64>) {
 // of) and removals and demotions to read of random holders by random admins, concurrent with
 // the rotations; then
 // rounds of every remaining node's re-seals and rotations until nothing is written. Then the
-// re-seal invariant (`reseal_candidates`) holds among the remaining nodes, and no peer holds
-// the epoch a remaining holder of a role it left encrypts under.
+// invariant: every remaining node agrees on the current and newest epochs, every holder holds
+// every current epoch a node that may rotate holds, and no departed holder holds an epoch a
+// remaining holder encrypts or signs under.
 // Seed 1: an admin epoch that boxed nobody, superseded through the next one's history box.
 #[test]
 fn forks_with_departures_settle_spec_permissions_3() {
     forks_with_departures(1..2);
 }
 
-/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS. Fails at seeds 51 (a leak), 243 and 336 of
-/// 0..400 until issues/superseded-invalid-epoch-strands-chain.md is fixed.
+// spec/crypto.md §4 (settled rotation commits): rotation commits turned invalid, their rotator
+// demoted concurrently. Seeds 23, 25: a demoted admin's own rotation falls at it too (at 25 it
+// stayed current there, an epoch no other node established). Seeds 51, 243, 336: a valid
+// rotation superseding one stayed unestablished but at its author, and so every one after it (at
+// 51 the older epoch stayed current with its boxes gone, an admin signing under it while a demoted
+// writer held it); 336 settles only by passing through the invalid one.
+#[test]
+fn invalid_own_rotation_falls_spec_crypto_4() {
+    forks_with_departures([23]);
+}
+
+#[test]
+fn invalid_own_rotation_falls_25_spec_crypto_4() {
+    forks_with_departures([25]);
+}
+
+#[test]
+fn chain_passes_invalid_rotation_51_spec_crypto_4() {
+    forks_with_departures([51]);
+}
+
+#[test]
+fn chain_passes_invalid_rotation_243_spec_crypto_4() {
+    forks_with_departures([243]);
+}
+
+#[test]
+fn chain_passes_invalid_rotation_336_spec_crypto_4() {
+    forks_with_departures([336]);
+}
+
+/// Seeds: OSIS_DEPART_START, OSIS_DEPART_SEEDS.
 #[test]
 #[ignore = "tier 2"]
 fn forks_with_departures_settle_large() {
@@ -1366,7 +1397,7 @@ fn forks_with_departures_settle_large() {
     forks_with_departures(s.range);
 }
 
-fn forks_with_departures(seeds: std::ops::Range<u64>) {
+fn forks_with_departures(seeds: impl IntoIterator<Item = u64>) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
     for seed in seeds {
@@ -1464,13 +1495,10 @@ fn forks_with_departures(seeds: std::ops::Range<u64>) {
             let at0 = ep(0).current();
             for &p in &stay {
                 let e = ep(p);
-                // a demoted peer's own rotation made unaware of its demotion is invalid, yet stays
-                // established (its own) at it, superseding what it superseded there:
-                // issues/own-rotation-invalidated.md
-                if e.epochs().any(|(x, i)| i.established == Some(osis_keys::Provenance::Own) && !ep(0).is_established(x)) {
-                    continue;
-                }
                 let c = e.current();
+                // peer 0's rotations are all valid: an epoch current elsewhere and unestablished
+                // there is an invalid rotation's (a demoted admin's own, made unaware)
+                assert!(c.iter().all(|x| ep(0).is_established(x)), "seed {seed}: {r:?}: peer {p} counts current {c:?}, peer 0 establishes not all");
                 if boxless {
                     // An epoch that had no box when the rotation superseding it was made is
                     // superseded only through that rotation's history box, at the nodes holding
