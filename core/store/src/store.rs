@@ -148,7 +148,7 @@ impl Store {
 ///
 /// Rows go to the memory overlay or the durable store by class (notes/local-store.md, Memory
 /// overlay): in memory mode (`set_memory`) every new row is memory; a row already held in memory
-/// stays there; every row of a memory-class aspect (`is_memory_aspect`) is memory. Reads see
+/// stays there; every row of a memory-class aspect (`is_memory_aspect`: its key's marker) is memory. Reads see
 /// both, memory first; removals remove from both.
 pub struct Transaction<'a> {
     pager: &'a mut Pager,
@@ -197,11 +197,14 @@ impl Transaction<'_> {
     pub fn is_memory(&self) -> bool {
         self.memory
     }
-    /// Whether the aspect's rows are of the memory class.
-    pub fn is_memory_aspect(&self, tid: &Tid, ak: &Ak) -> bool {
-        self.mem.o.aspects.contains(&(*tid, ak.clone()))
+    /// Whether the aspect's rows are of the memory class: its key's lifetime marker (`~` or
+    /// `*`, spec/commits.md §2), whatever this node holds.
+    pub fn is_memory_aspect(&self, _tid: &Tid, ak: &Ak) -> bool {
+        !ak.lifetime().is_durable()
     }
-    /// Whether rows of this aspect written now go to memory (marking it memory-class if so).
+    /// Whether rows of this aspect written now go to memory (recorded for `drop_memory_thing`).
+    /// In memory mode an unmarked key's rows go there too: only a writer breaking the marker
+    /// rule (tests) makes one.
     fn aspect_mem(&mut self, tid: &Tid, ak: &Ak) -> bool {
         let on = self.memory || self.is_memory_aspect(tid, ak);
         if on {

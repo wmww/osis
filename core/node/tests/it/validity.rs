@@ -417,6 +417,57 @@ fn admin_only_aspect_needs_admin_spec_perm_5_2() {
     }
 }
 
+// spec/permissions.md §5.1 (a demotion's frontier covers the aspects it puts in question): an
+// admin's `^` write the demoter had received stays valid when it demotes that admin to write;
+// one it had not received goes
+#[test]
+fn admin_only_write_covered_by_demotion_frontier_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(57);
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    let (seen, unseen) = (ak("t:seen.0^"), ak("t:unseen.0^"));
+    let mut m = Mutation::new();
+    m.set(d, &seen, &s("received")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &unseen, &s("offline")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert_eq!(lp.peers[i].engine.get(&d, &seen).unwrap(), Some(s("received")), "{i}: a covered `^` write lost");
+        assert_eq!(lp.peers[i].engine.get(&d, &unseen).unwrap(), None, "{i}");
+    }
+}
+
+// spec/permissions.md §5.2 (admin-only): a writer's compaction snapshot of a `^` aspect is
+// invalid, so it vouches for nothing it carries; the same snapshot of an unmarked aspect is valid
+#[test]
+fn admin_only_snapshot_by_writer_invalid_spec_perm_5_2() {
+    let (mut lp, d, _, _) = setup(58);
+    for (k, valid) in [("t:conf.0^", false), ("t:conf.0", true)] {
+        let key = ak(k);
+        // Alice's write reaches Carol only
+        let mut m = Mutation::new();
+        m.set(d, &key, &s("alice")).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        sync(&mut lp, 0, 2);
+        lp.advance(1_000);
+        if !valid {
+            assert!(matches!(lp.peers[2].engine.compaction_snapshot(&d, &key), Err(osis_node::Error::Permission { .. })), "the writer's node refuses it");
+        }
+        let st = lp.peers[2].engine.state(&d, &key).unwrap().unwrap();
+        let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+        let snap = forge_snapshot(&mut lp, 2, d, &key, now, st);
+        lp.peers[1].engine.ingest(&snap, Vec::new()).unwrap();
+        assert_eq!(lp.peers[1].engine.get(&d, &key).unwrap(), valid.then(|| s("alice")), "{k}");
+        lp.advance(1_000);
+    }
+}
+
 // spec/permissions.md §5.2 (a valid compaction snapshot vouches for the writes it carries):
 // Alice compacts Bob's edits, then revokes him with a frontier that covers "mon", not "x". The
 // snapshot vouches for "x": Alice (holding Bob's commit, invalid now) and Dave (holding only

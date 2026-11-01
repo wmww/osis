@@ -10,7 +10,7 @@
 use super::blobs::TxBlobs;
 use super::{Engine, Tx};
 use crate::error::{Error, Result};
-use osis_base::{Ak, BlobId, ChunkParams, CommitId, Link, Role, Tid, Value};
+use osis_base::{Ak, BlobId, ChunkParams, CommitId, Link, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::Secret32;
 use osis_label::{BlobFetch, BlobReader, BlobWriter, Framing, HashSink, LargeParams, Reuse};
@@ -573,7 +573,7 @@ impl Engine {
         let mut m = super::Mutation::new();
         m.fresh.clone_from(&held);
         for (tid, ak) in cands {
-            if is_role_class(ak.as_str()) || self.role_on(&tid).is_none_or(|r| r < Role::Write) {
+            if is_role_class(ak.as_str()) || self.role_on(&tid) < Some(crate::engine::write::required_role(ak.as_str())) {
                 continue;
             }
             // one field failing (a blob not held, a value too large) leaves the others

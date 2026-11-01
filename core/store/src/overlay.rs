@@ -19,7 +19,7 @@ pub(crate) struct Overlay {
     /// of a durable table (an index naming memory commits).
     pub tables: BTreeMap<u64, Rows>,
     pub blobs: HashMap<BlobId, Vec<u8>>,
-    /// Aspects of the memory class: every aspect-keyed row of theirs is held here.
+    /// Aspects with memory rows, by thing (`drop_memory_thing`); the class itself is the key's.
     pub aspects: HashSet<(Tid, Ak)>,
     pub next_table: u64,
 }
