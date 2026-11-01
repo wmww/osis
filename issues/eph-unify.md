@@ -94,7 +94,7 @@ Left, in order:
    - **Undo log and placements** (`log.rs`, `place.rs`) read `EphAspect` state and footprints; they move to Core state reads (mechanical).
    Reviewer cases already covered at Core level: restart, freed while pending, validity flip, forbid_writes. Not yet: node cap accounting on the new path, signal unchanged (still the old path, untouched). Estimate stands at well above +1200/-2000 once coalescing and covers are included.
 3. Routing still to check once memory commits exist (unchanged from the review): `retention::uncover` inserts `Changed::undropped` directly; a durable transaction's `mark_aspect_changed` on a memory aspect still marks; `Engine::reload` at run time reloads memory commits from the overlay (records keep their class now); `write_all` drops index tables at open only. Freeing: a freed thing's `placed.0~` entries in a durable group's state stay (the commit touching the group stays, by the rule); the receipt rows of an aspect not dropped keep a freed commit's range.
-4. Header forgetting (memory headers dropped once bodies are dropped and a valid held snapshot's frontier reaches them).
+4. Header forgetting (memory headers dropped once bodies are dropped and a valid held snapshot's frontier reaches them): built for both classes as issues/session-sources.md step 6, which goes before the swap.
 5. (seed 100013: fixed, eph-restart-seeds.)
 6. The osis watch layer reads `Event::Ephemeral { id: ChangeId::Commit(..) }` of a memory commit as a commit change (undo and `CommitInfo`: step 6).
 
