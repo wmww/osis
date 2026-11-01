@@ -165,11 +165,20 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         for p in [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
+        let prefix = records::aspect_key(records::RESIDUE, t, ak);
+        let mut residues = Vec::new();
+        tx.scan(&prefix, |k, _| {
+            residues.push([prefix.as_slice(), k].concat());
+            Ok(())
+        })?;
+        for k in residues {
+            tx.txn.remove_local(&k, Shred::Yes)?;
+        }
     }
     for t in &out.things {
         tx.txn.remove_local(&[records::SYNCING, t.as_bytes()].concat(), Shred::No)?;
     }
-    // timers and `secrets.0` waits of forgotten parts
+    // timers of forgotten parts
     let hit = |c: &CommitId, ai: usize| out.commits.contains(c) || parts.get(c).is_some_and(|s| s.contains(&ai));
     let mut stale = Vec::new();
     tx.scan(records::TIMER, |k, _| {

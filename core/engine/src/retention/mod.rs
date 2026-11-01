@@ -409,6 +409,18 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
     // the delta's writes lie where it touched the state (a page of a paged state)
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
+    // its residue outlives the body: in the state a later write may supersede it, and when that
+    // write is un-merged the residue must supersede again (`apply::atomic::rebuilt`)
+    let mut residue = Fragment::default();
+    for b in &bodies {
+        residue.join(b.clone());
+    }
+    residue.strip(&|d| o.owns(d));
+    if !residue.is_empty() {
+        let memory = tx.txn.is_memory_aspect(&a.tid, &a.ak);
+        let (key, enc) = (records::residue_key(&a.tid, &a.ak, c, ai), crate::engine::state::encode(&residue)?);
+        tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::No)?))?;
+    }
     tx.strip_bodies(&a.tid, &a.ak, &bodies, &o)?;
     Ok(Some(k))
 }
