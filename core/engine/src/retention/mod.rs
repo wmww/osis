@@ -99,7 +99,7 @@ pub(crate) fn decode_owned(b: &[u8]) -> Result<Vec<Owned>> {
 
 /// The aspect index of `(tid, ak)` in known commit `c`.
 fn aspect_index(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
-    core.ix.commits.get(c)?.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)
+    core.ix.commits.get(c)?.aspect(tid, ak)
 }
 
 /// The known compaction snapshots of `(tid, ak)`, held, dropped or missing.
@@ -179,13 +179,11 @@ pub(crate) fn bounded(a: &osis_commit::AspectEntry) -> bool {
     a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some()
 }
 
-/// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (not dropped, not
-/// still to arrive).
+/// The aspect index of `(tid, ak)` in held commit `c`, if that part is held (`Meta::holds`: a
+/// late part still to arrive is not).
 pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> {
     let m = core.ix.commits.get(c)?;
-    let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
-    // a part that never arrived (`missing`, a late part) is not held
-    (!m.dropped.contains_key(&ai) && !m.missing.contains(&ai)).then_some(ai)
+    m.aspect(tid, ak).filter(|ai| m.holds(*ai))
 }
 
 pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
@@ -254,7 +252,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let bodies: Vec<Fragment> = crate::apply::held_parts(tx, c, ai)?.into_iter().map(Decoded::into_fragment).collect();
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
-    let misstated = if snapshot && m.valid.get(ai).copied().unwrap_or(false) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak, bodies.first())? } else { BTreeSet::new() };
+    let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak, bodies.first())? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     let intros = crate::apply::keys::intro_epochs(&m.header, ai, &bodies);
     m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, intros });
@@ -270,7 +268,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     }
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     let header = m.header.clone();
-    let vouched = snapshot && m.valid.get(ai).copied().unwrap_or(false);
+    let vouched = snapshot && m.valid_at(ai);
     tx.core.ix.commits.insert(*c, m);
     crate::apply::note_gives(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
@@ -303,7 +301,7 @@ pub(crate) fn any_coverer(core: &Core, c: &CommitId, ai: usize, f: &dyn Fn(&Comm
     let (tid, ak) = (a.tid, a.ak.clone());
     let direct = |x: &CommitId| -> Vec<CommitId> {
         let Some(m) = core.ix.commits.get(x) else { return Vec::new() };
-        let xai = m.view.aspects.iter().position(|a| a.tid == tid && a.ak == ak);
+        let xai = m.aspect(&tid, &ak);
         xai.and_then(|xai| m.dropped.get(&xai)).map(|d| d.covered_by.iter().copied().collect()).unwrap_or_default()
     };
     let mut seen = BTreeSet::new();
@@ -330,8 +328,8 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     let core = &*tx.core;
     let carries = |s: &CommitId| {
         let Some(m) = core.ix.commits.get(s) else { return false };
-        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { return false };
-        let valid = m.valid.get(ai).copied().unwrap_or(false);
+        let Some(ai) = m.aspect(tid, ak) else { return false };
+        let valid = m.valid_at(ai);
         match m.dropped.get(&ai) {
             None => valid && !m.missing.contains(&ai),
             Some(d) => valid && !d.as_cover,
@@ -340,7 +338,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     let mut lost = Vec::new();
     for (_, c) in core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
-        let Some(ai) = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
         if m.dropped.get(&ai).is_some_and(|d| d.as_cover) && !any_coverer(core, c, ai, &carries) {
             lost.push((*c, ai));
         }
@@ -977,7 +975,7 @@ impl Engine {
     /// missing part too (`Engine::aspect_dump` shows which).
     pub fn body_not_dropped(&self, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
-        m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| !m.dropped.contains_key(&ai))
+        m.aspect(tid, ak).is_some_and(|ai| !m.dropped.contains_key(&ai))
     }
 
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
@@ -1021,7 +1019,7 @@ impl Engine {
                 .flatten()
                 .filter_map(|(_, c)| {
                     let m = tx.core.ix.commits.get(c)?;
-                    let ai = m.header.aspects.iter().position(|a| a.tid == tid && a.ak == ak)?;
+                    let ai = m.aspect(&tid, &ak)?;
                     m.header.aspects.get(ai)?.expires?;
                     Owned::of(&m.header, c, ai)
                 })
@@ -1029,14 +1027,14 @@ impl Engine {
             if !expiring.is_empty() {
                 st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
             }
+            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai)));
             // frontiers cover only counters whose writes this state reflects: applied, valid
             let mut frontiers = Frontiers::default();
             let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
             for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
                 let mut next = 1u64;
                 for (lo, (hi, c)) in ranges {
-                    let ok = tx.core.ix.commits.get(c).is_some_and(|m| m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak));
-                    if *lo != next || !ok {
+                    if *lo != next || !valid_on(c) {
                         break;
                     }
                     next = *hi;
@@ -1049,7 +1047,7 @@ impl Engine {
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                if by_id(m.header.kind, m.header.form) && m.header.aspects.iter().zip(&m.valid).any(|(x, v)| *v && x.tid == tid && x.ak == ak) {
+                if by_id(m.header.kind, m.header.form) && valid_on(c) {
                     absorbed.insert(*c, m.header.author);
                 }
             }
@@ -1128,7 +1126,7 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     if is_snapshot && !crate::apply::validity::snapshot_valid(tx.core, c, tid, ak) {
         let core = &*tx.core;
         for b in &mut body {
-            b.strip_copies(&|d| crate::apply::validity::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid.get(ai).copied().unwrap_or(false)));
+            b.strip_copies(&|d| crate::apply::validity::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
         }
     }
     let before = crate::engine::state::encode(snap)?;

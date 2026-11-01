@@ -124,7 +124,7 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
     let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|(ts, s, fr, abs)| (*s, *ts, fr, abs.as_slice()));
     let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| {
         let m = core.ix.commits.get(s)?;
-        let ai = m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)?;
+        let ai = m.aspect(tid, ak)?;
         let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
         Some((*s, m.view.ts, fr, abs.as_slice()))
     });

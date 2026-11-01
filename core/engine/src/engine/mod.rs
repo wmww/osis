@@ -118,6 +118,18 @@ impl Meta {
     pub(crate) fn new(header: Arc<Header>, valid: Vec<bool>, head: index::RecordHead, missing: BTreeSet<usize>) -> Meta {
         Meta { view: Arc::new(View::of(&header)), header: LazyHeader::ready(header), received: head.received, origin: head.origin, valid, dropped: head.dropped, missing }
     }
+    /// The index of aspect `(tid, ak)` in the commit.
+    pub(crate) fn aspect(&self, tid: &Tid, ak: &Ak) -> Option<usize> {
+        self.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak)
+    }
+    /// Whether part `ai` is valid here.
+    pub(crate) fn valid_at(&self, ai: usize) -> bool {
+        self.valid.get(ai).copied().unwrap_or(false)
+    }
+    /// Whether part `ai` is held: neither dropped nor missing.
+    pub(crate) fn holds(&self, ai: usize) -> bool {
+        !self.dropped.contains_key(&ai) && !self.missing.contains(&ai)
+    }
 }
 
 /// What the per-commit indexes (`apply::index_commit`, validity, the role filter) read of
@@ -814,7 +826,7 @@ impl Core {
         let Some(m) = self.ix.commits.get(id) else { return };
         for (ai, a) in m.view.aspects.iter().enumerate() {
             let k = (a.tid, a.ak.clone());
-            if m.valid.get(ai).copied().unwrap_or(false) {
+            if m.valid_at(ai) {
                 self.ix.invalid.remove(&k, id);
             } else {
                 self.ix.invalid.insert(k, *id);

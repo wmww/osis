@@ -401,8 +401,8 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
     let mut out = Vec::new();
     for c in core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten() {
         let Some(m) = core.ix.commits.get(c) else { continue };
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
-        if m.valid.get(ai).copied().unwrap_or(false) {
+        let Some(ai) = m.aspect(tid, ak) else { continue };
+        if m.valid_at(ai) {
             continue;
         }
         if m.header.kind.has_own_writes() {
@@ -1090,9 +1090,9 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
     let mut deltas: Vec<(CommitId, usize, Header)> = Vec::new();
     for (_, c) in held {
         let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
-        let Some(ai) = m.header.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
         // an invalid snapshot's body joins nothing (spec/permissions.md §5.2)
-        let snap_invalid = m.header.kind.is_compaction() && !m.valid.get(ai).copied().unwrap_or(false);
+        let snap_invalid = m.header.kind.is_compaction() && !m.valid_at(ai);
         // nor does a void import's (spec/permissions.md §7)
         if m.header.kind == osis_commit::Kind::Import && tx.core.ix.void.contains(&c) {
             continue;

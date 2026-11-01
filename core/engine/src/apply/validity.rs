@@ -787,7 +787,7 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTree
 /// `Commit(c)`, `c` itself as a commit-form commit with the aspect, else any held import of `c`
 /// with it (§7, `Core::imports`; `c` on the moved thing owns nothing there).
 pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
-    let at = |m: &Meta| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak);
+    let at = |m: &Meta| m.aspect(tid, ak);
     let d = d.owner();
     match d.src.kind() {
         osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
@@ -810,13 +810,13 @@ pub(crate) fn owner_received(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
 
 /// Whether the delta owning dot `d` on `(tid, ak)` is held here (not dropped).
 pub(crate) fn owner_held(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && !m.dropped.contains_key(&ai))
+    any_owner(core, tid, ak, d, &|_, m, ai| m.holds(ai))
 }
 
 /// Whether held snapshot `snap`'s part on `(tid, ak)` is valid (`Judge::part`: its author could
 /// write the aspect at it).
 pub(crate) fn snapshot_valid(core: &Core, snap: &CommitId, tid: &Tid, ak: &Ak) -> bool {
-    core.ix.commits.get(snap).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false)))
+    core.ix.commits.get(snap).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid_at(ai)))
 }
 
 /// Whether held commit `c` is a compaction snapshot whose part on `(tid, ak)` is invalid: its
@@ -897,7 +897,7 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 /// dropped otherwise, or under a coverer dropped for its bounds (whose writes the state alone
 /// holds), stays.
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
-    let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.view.aspects.iter().position(|x| x.tid == *tid && x.ak == *ak)) else { return Ok(Vec::new()) };
+    let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
     let mut by: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
     for d in super::held_parts(tx, snap, sai)? {
         for (d, ts) in d.fragment().writes() {
@@ -915,7 +915,7 @@ pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> 
 /// invalid snapshot's copy stays in the state only where nothing held gives the write back, so
 /// the rebuild equals the join of what is held whether the snapshot was ever valid here.
 fn regiven(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
-    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.view.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
+    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
     !owner_received(core, tid, ak, d)
         || any_owner(core, tid, ak, d, &|c, m, ai| {
             !m.missing.contains(&ai)
@@ -994,7 +994,7 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, have
     let ix = match have {
         Some(f) => Arc::new(f.copy_index()),
         None => {
-            let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.view.aspects.iter().position(|x| x.tid == *tid && x.ak == *ak)) else { return Ok(None) };
+            let Some(sai) = tx.core.ix.commits.get(s).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
             let Some(f) = super::held_parts(tx, s, sai)?.into_iter().next().map(Decoded::into_fragment) else { return Ok(None) };
             Arc::new(f.copy_index())
         }
@@ -1071,7 +1071,7 @@ pub(crate) fn misstated_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak, f:
         let found = std::cell::RefCell::new(BTreeSet::new());
         for d in ix.dots() {
             any_owner(core, tid, ak, d, &|c, m, ai| {
-                if !m.missing.contains(&ai) && !m.dropped.contains_key(&ai) && !core.ix.void.contains(c) {
+                if m.holds(ai) && !core.ix.void.contains(c) {
                     found.borrow_mut().insert((*c, ai));
                 }
                 false
@@ -1137,7 +1137,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                     continue;
                 }
                 let v = judge.part(&m.header, id, ai);
-                let old = m.valid.get(ai).copied().unwrap_or(false);
+                let old = m.valid_at(ai);
                 if v != old {
                     let n = now.get_or_insert_with(|| m.valid.clone());
                     if let Some(x) = n.get_mut(ai) {

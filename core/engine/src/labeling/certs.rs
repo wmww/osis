@@ -32,7 +32,7 @@ impl Engine {
             let Some(m) = self.core.ix.commits.get(c) else { return false };
             !self.core.ix.pending.contains_key(c)
                 && author.is_none_or(|a| m.header.author == *a)
-                && m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid.get(i).copied().unwrap_or(false))
+                && m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid_at(i))
         })
     }
 
@@ -84,7 +84,7 @@ impl Engine {
     /// on `t`, or held pending with a reading-only read candidate from it (its box opened).
     pub fn boxed_by(&self, c: &CommitId, t: &Tid) -> bool {
         if let Some(m) = self.core.ix.commits.get(c) {
-            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "secrets.0" && m.valid.get(i).copied().unwrap_or(false));
+            return m.header.aspects.iter().enumerate().any(|(i, a)| a.tid == *t && a.ak.as_str() == "secrets.0" && m.valid_at(i));
         }
         self.core.ix.pending.contains_key(c)
             && self.core.ix.secrets.get(t).is_some_and(|e| e.role(osis_base::Role::Read).epochs().any(|(_, i)| i.reading.iter().any(|u| u.commit == *c)))
@@ -307,7 +307,7 @@ impl Engine {
     /// redemption race keeps its valid removal of L beside its void grant).
     pub fn judged_valid(&self, c: &CommitId, parts: &[(usize, usize)]) -> bool {
         let Some(m) = self.core.ix.commits.get(c) else { return false };
-        if self.core.ix.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid.get(*ai).copied().unwrap_or(false)) {
+        if self.core.ix.pending.contains_key(c) || parts.iter().any(|(ai, _)| !m.valid_at(*ai)) {
             return false;
         }
         if !m.header.kind.is_role() {
