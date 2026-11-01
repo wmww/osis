@@ -12,6 +12,7 @@ use osis::{
     AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Tid, Ts,
     Value, WaitForSync,
 };
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::io::BufRead;
 use std::sync::mpsc;
@@ -326,7 +327,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Hosts(HostsCmd::Add { addr }) => Ok(db.add_host(&ctx.arg_text(&addr)?.parse()?)?),
         Cmd::Hosts(HostsCmd::Rm { addr }) => Ok(db.remove_host(&ctx.arg_text(&addr)?.parse()?)?),
-        Cmd::Serve { listen, admit, label } => serve(ctx, listen, admit, label),
+        Cmd::Hosting(HostingCmd::Show) => hosting_show(ctx),
+        Cmd::Hosting(HostingCmd::Set(f)) => set_hosting(ctx, f),
+        Cmd::Hosting(HostingCmd::Off) => Ok(db.set_hosting(None)?),
+        Cmd::Serve { host } => serve(ctx, host),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -922,12 +926,12 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let lines = s
         .groups
         .iter()
-        .map(|(g, x)| format!("{} {:?} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0))))
+        .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",")))
         .collect::<Vec<_>>();
     let j = J::Arr(
         s.groups
             .iter()
-            .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0))))]))
+            .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect()))]))
             .collect(),
     );
     ctx.emit(&lines, j)
@@ -1036,23 +1040,10 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
 /// host never prints its address, at infinity a stuck listen hangs the command silently.
 const HOST_START_WAIT: Duration = Duration::from_secs(30);
 
-fn serve(ctx: &mut Ctx<'_>, listen: Vec<String>, admit: Option<crate::args::AdmitArg>, label: Vec<String>) -> anyhow::Result<()> {
+fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
-    if !listen.is_empty() || admit.is_some() || !label.is_empty() {
-        let mut h = db.hosting().unwrap_or_default();
-        if !listen.is_empty() {
-            h.listen = listen;
-        }
-        if let Some(a) = admit {
-            h.admit = match a {
-                crate::args::AdmitArg::Own => osis::Admit::Own,
-                crate::args::AdmitArg::Open => osis::Admit::Open,
-            };
-        }
-        if !label.is_empty() {
-            h.labels = label.iter().map(|l| parse_label(l)).collect::<anyhow::Result<_>>()?;
-        }
-        db.set_hosting(Some(h))?;
+    if host.any() {
+        set_hosting(ctx, host)?;
     }
     if db.hosting().is_some() {
         let until = std::time::Instant::now() + HOST_START_WAIT;
@@ -1072,19 +1063,92 @@ fn serve(ctx: &mut Ctx<'_>, listen: Vec<String>, admit: Option<crate::args::Admi
     diag(ctx, t)
 }
 
-/// A label ID: 32 hex digits.
-fn parse_label(s: &str) -> anyhow::Result<osis::LabelId> {
-    let bad = || usage(format!("not a label ID (32 hex digits): {s}"));
-    let b = s.as_bytes();
-    if b.len() != 32 {
-        return Err(bad());
+/// Writes `host.0^`: each flag given replaces its field (one `''` clears it), the rest kept;
+/// starts hosting (`own`, no listener) when it was off.
+fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
+    let db = ctx.db.clone();
+    let mut h = db.hosting().unwrap_or_default();
+    // a flag given once as '' clears its field; otherwise its values replace it
+    let given = |v: &[String]| (!v.is_empty()).then(|| v.iter().filter(|x| !(v.len() == 1 && x.is_empty())).cloned().collect::<Vec<_>>());
+    if let Some(v) = given(&f.listen) {
+        h.listen = v;
     }
-    let mut id = [0u8; 16];
-    for (i, o) in id.iter_mut().enumerate() {
-        let hex = std::str::from_utf8(&b[2 * i..2 * i + 2]).map_err(|_| bad())?;
-        *o = u8::from_str_radix(hex, 16).map_err(|_| bad())?;
+    if let Some(a) = f.admit {
+        h.admit = match a {
+            AdmitArg::Own => osis::Admit::Own,
+            AdmitArg::Open => osis::Admit::Open,
+        };
     }
-    Ok(osis::LabelId(id))
+    if let Some(v) = given(&f.label) {
+        h.labels = BTreeSet::new();
+        for l in v {
+            h.labels.extend(labels_of(ctx, &l)?);
+        }
+    }
+    if let Some(v) = given(&f.replicate) {
+        h.replicate = hosts(ctx, &v)?;
+    }
+    if let Some(v) = given(&f.policy) {
+        h.policy = BTreeMap::new();
+        for p in v {
+            let (k, n) = p.split_once('=').ok_or_else(|| usage(format!("not NAME=N: {p}")))?;
+            h.policy.insert(k.to_string(), n.parse().map_err(|_| usage(format!("not NAME=N: {p}")))?);
+        }
+    }
+    if let Some(v) = given(&f.cap) {
+        h.caps = BTreeMap::new();
+        for c in v {
+            let bad = || usage(format!("not GROUP|ID=ENTRIES,BYTES: {c}"));
+            let (l, n) = c.rsplit_once('=').ok_or_else(bad)?;
+            let (e, b) = n.split_once(',').ok_or_else(bad)?;
+            let caps = osis::HostCaps { entries: e.parse().map_err(|_| bad())?, bytes: b.parse().map_err(|_| bad())? };
+            for id in labels_of(ctx, l)? {
+                h.caps.insert(id, caps);
+            }
+        }
+    }
+    Ok(db.set_hosting(Some(h))?)
+}
+
+/// `host.0^` as lines (`listen URL`, `admit own|open`, `label ID`, `replicate ADDR`,
+/// `policy NAME N`, `cap ID ENTRIES BYTES`) or one JSON object; exit 3 when not hosting.
+fn hosting_show(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
+    let h = ctx.db.hosting().ok_or_else(|| exit(3, "not hosting"))?;
+    let admit = match h.admit {
+        osis::Admit::Own => "own",
+        osis::Admit::Open => "open",
+    };
+    let hex = |l: &osis::LabelId| osis_schema::osis_base::hex::encode(&l.0);
+    let mut lines: Vec<String> = h.listen.iter().map(|u| format!("listen {u}")).collect();
+    lines.push(format!("admit {admit}"));
+    lines.extend(h.labels.iter().map(|l| format!("label {}", hex(l))));
+    lines.extend(h.replicate.iter().map(|a| format!("replicate {a}")));
+    lines.extend(h.policy.iter().map(|(k, n)| format!("policy {k} {n}")));
+    lines.extend(h.caps.iter().map(|(l, c)| format!("cap {} {} {}", hex(l), c.entries, c.bytes)));
+    let j = J::obj([
+        ("listen", J::Arr(h.listen.iter().map(|u| J::str(u.clone())).collect())),
+        ("admit", J::str(admit)),
+        ("labels", J::Arr(h.labels.iter().map(|l| J::str(hex(l))).collect())),
+        ("replicate", J::Arr(h.replicate.iter().map(|a| J::str(a.to_string())).collect())),
+        ("policy", J::Obj(h.policy.iter().map(|(k, n)| (k.clone(), J::int(*n))).collect())),
+        ("caps", J::Obj(h.caps.iter().map(|(l, c)| (hex(l), J::obj([("entries", J::int(c.entries)), ("bytes", J::int(c.bytes))]))).collect())),
+    ]);
+    ctx.emit(&lines, j)
+}
+
+/// A label ID (32 hex digits), or a group synced here: its labels (`status` lists them).
+fn labels_of(ctx: &mut Ctx<'_>, s: &str) -> anyhow::Result<Vec<osis::LabelId>> {
+    if let Some(b) = osis_schema::osis_base::hex::decode(s)
+        && let Ok(id) = <[u8; 16]>::try_from(b)
+    {
+        return Ok(vec![osis::LabelId(id)]);
+    }
+    let g = ctx.tid(s).map_err(|_| usage(format!("not a group or a label ID (32 hex digits): {s}")))?;
+    let ls = ctx.db.status()?.groups.remove(&g).map(|x| x.labels).unwrap_or_default();
+    if ls.is_empty() {
+        return Err(exit(3, format!("{s} is not synced here: give its label ID (`osis status` on a device that reads it)")));
+    }
+    Ok(ls)
 }
 
 /// Reads and parses a schema file (exit 7 when it does not parse); returns its file name too.

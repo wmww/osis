@@ -115,18 +115,14 @@ pub enum Cmd {
     /// Hosts this store syncs through
     #[command(subcommand)]
     Hosts(HostsCmd),
-    /// Keep the store open: sync, host as `host.0^` says (the flags write it; the host address
-    /// prints first), print diagnostics
+    /// What this node hosts (`host.0^`): show, set or stop it
+    #[command(subcommand)]
+    Hosting(HostingCmd),
+    /// Keep the store open: sync, host as `host.0^` says (the flags write it, as `hosting set`;
+    /// the host address prints first), print diagnostics
     Serve {
-        /// Listen for hosted sessions at this transport URL (repeatable; replaces the list)
-        #[arg(long, value_name = "URL")]
-        listen: Vec<String>,
-        /// Which labels this node takes: those of its own groups naming its host address, or any
-        #[arg(long, value_enum)]
-        admit: Option<AdmitArg>,
-        /// A label ID (32 hex digits) admitted besides (repeatable; replaces the set)
-        #[arg(long, value_name = "ID")]
-        label: Vec<String>,
+        #[command(flatten)]
+        host: HostFlags,
     },
     /// Create a thing, optionally setting aspects: create --owner me --in home note:title.0 '"x"'
     Create(CreateArgs),
@@ -444,6 +440,48 @@ pub enum HostsCmd {
     Rm { addr: String },
 }
 
+#[derive(Subcommand, Debug)]
+pub enum HostingCmd {
+    /// Print `host.0^` (not hosting: exit 3)
+    Show,
+    /// Start or change hosting: each flag given replaces its field, the rest kept
+    Set(HostFlags),
+    /// Stop hosting (the host address is dropped; a later start has a new one)
+    Off,
+}
+
+/// `host.0^` fields (`hosting set`, `serve`): each flag given replaces its field; a flag given
+/// once as `''` clears it.
+#[derive(clap::Args, Debug, Default)]
+pub struct HostFlags {
+    /// Listen for hosted sessions at this transport URL (repeatable)
+    #[arg(long, value_name = "URL")]
+    pub listen: Vec<String>,
+    /// Which labels this node takes: those of groups its person owns naming its host address,
+    /// or any
+    #[arg(long, value_enum)]
+    pub admit: Option<AdmitArg>,
+    /// Also admit a group's labels (a group synced here) or a label ID, 32 hex digits
+    /// (repeatable)
+    #[arg(long, value_name = "GROUP|ID")]
+    pub label: Vec<String>,
+    /// Push hosted labels to this peer host, `url#key` (repeatable)
+    #[arg(long, value_name = "ADDR")]
+    pub replicate: Vec<String>,
+    /// A host policy knob (repeatable)
+    #[arg(long, value_name = "NAME=N")]
+    pub policy: Vec<String>,
+    /// Caps for a group's labels or a label ID, in place of the policy's (repeatable)
+    #[arg(long, value_name = "GROUP|ID=ENTRIES,BYTES")]
+    pub cap: Vec<String>,
+}
+
+impl HostFlags {
+    pub fn any(&self) -> bool {
+        !self.listen.is_empty() || self.admit.is_some() || !self.label.is_empty() || !self.replicate.is_empty() || !self.policy.is_empty() || !self.cap.is_empty()
+    }
+}
+
 #[derive(Subcommand, Debug, Clone)]
 pub enum SubCmd {
     Add { g: String, sub: String },
@@ -552,7 +590,7 @@ pub enum ScriptCmd {
     Delete { t: String },
 }
 
-/// `serve --admit`.
+/// `--admit`.
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AdmitArg {
     Own,

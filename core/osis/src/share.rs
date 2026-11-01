@@ -6,7 +6,7 @@
 use crate::error::{Error, Result};
 use crate::handle::{LINKS, Locked, MadeLink, Osis, save_hosts};
 use crate::watch::{Delivery, Filter, Subscription};
-use osis_base::{Ak, Role, Tid, Value, WallMs};
+use osis_base::{Ak, LabelId, Role, Tid, Value, WallMs};
 use osis_node::flows::{self, PreSync};
 use osis_node::sync::SyncEngine;
 use osis_schema::Codec;
@@ -212,10 +212,13 @@ pub enum SyncState {
     ReceiptsOnly,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GroupSync {
     pub state: SyncState,
     pub last_sync: Option<WallMs>,
+    /// The labels this node syncs it under (several while one replaces another): what a host
+    /// admits it by (`Hosting::labels`, `caps`).
+    pub labels: Vec<LabelId>,
 }
 
 /// Sync status: hosts connected and each synced group (`groups`: groups with a label this
@@ -254,11 +257,12 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
             .and_modify(|g| {
                 g.state = g.state.max(state);
                 g.last_sync = g.last_sync.max(last);
+                g.labels.push(s.label);
             })
-            .or_insert(GroupSync { state, last_sync: last });
+            .or_insert(GroupSync { state, last_sync: last, labels: vec![s.label] });
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None });
+        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new() });
     }
     Status { connected: sync.connected(), groups }
 }
