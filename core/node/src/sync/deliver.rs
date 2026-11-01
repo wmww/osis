@@ -53,8 +53,10 @@ impl SyncEngine {
                 return Ok(());
             }
         }
+        // kept set on failure: the next change retries
+        self.drop_lost()?;
         self.left_check = None;
-        self.drop_lost()
+        Ok(())
     }
 
     /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
