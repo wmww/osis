@@ -232,6 +232,57 @@ fn undo_redo_spec_commits_7() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("b")));
 }
 
+fn big(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid) -> Option<Value> {
+    lp.peers[i].engine.tick().unwrap();
+    lp.peers[i].engine.get(&t, &ak("t:big.0")).unwrap().filter(|v| *v != Value::Map(Default::default()))
+}
+
+/// Node 0 puts `k` into `t:big.0` expiring at `at`, then removes it: the removal.
+fn put_removed(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, k: &str, at: u64) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Put(s("v")) }).unwrap();
+    m.expires(t, &BIG, WallMs(at)).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &BIG, PathOp { path: vec![], op: Op::Remove(s(k)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap()
+}
+
+// spec/crdt.md §4.6, §4.7 (an undo never extends a value's lifetime past its original expiry):
+// undoing the removal of an expiring map entry re-adds it with the entry's expiry, at both
+// nodes
+#[test]
+fn undo_of_removal_keeps_expiry_spec_crdt_4_6() {
+    let mut lp = net(2, 57);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let rm = put_removed(&mut lp, t, "k", at);
+    lp.advance(1_000);
+    let u = lp.peers[0].engine.revert(&rm).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&u).unwrap();
+    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == "t:big.0").and_then(|a| a.expires), Some(at), "the entry's expiry");
+    sync(&mut lp, 0, 1);
+    let v = Some(Value::Map([(s("k"), s("v"))].into()));
+    assert_eq!((big(&mut lp, 0, t), big(&mut lp, 1, t)), (v.clone(), v), "back at both");
+    lp.advance(5_000);
+    assert_eq!((big(&mut lp, 0, t), big(&mut lp, 1, t)), (None, None), "gone at its expiry");
+}
+
+// spec/crdt.md §4.6, §4.7: past the entry's expiry, undoing its removal re-adds nothing
+#[test]
+fn undo_of_removal_past_expiry_restores_nothing_spec_crdt_4_6() {
+    let mut lp = net(2, 58);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let at = lp.peers[0].engine.now().0 + 5_000;
+    let rm = put_removed(&mut lp, t, "j", at);
+    lp.advance(6_000);
+    let _ = lp.peers[0].engine.revert(&rm).unwrap();
+    sync(&mut lp, 0, 1);
+    assert_eq!((big(&mut lp, 0, t), big(&mut lp, 1, t)), (None, None), "nothing came back");
+}
+
 // spec/commits.md §7, spec/crdt.md §4.6 over a paged state (notes/node.md, Paged state): in a new
 // session, which loads only the pages it touches, undoing an edit of a key of a large map, an
 // edit inside an entry's nested map and a removal restores what a whole state would, and a

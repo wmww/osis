@@ -12,7 +12,7 @@ use osis_commit::{Decoded, Form, Kind};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
 use osis_schema::AspectKey;
 use osis_schema::core_types::GROUP;
-use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, PathSeg, Source, Stamp, UndoBuffer, Undone, View, Writer};
+use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, PathSeg, Source, Stamp, UndoBuffer, Undone, Writer};
 use osis_store::Shred;
 use std::cell::OnceCell;
 use std::collections::{BTreeMap, BTreeSet};
@@ -63,9 +63,9 @@ pub(crate) fn remember(tx: &mut Tx<'_>, id: &CommitId, tid: &Tid, ak: &Ak, delta
 
 /// The state before an undone commit and whether it is the whole of it (spec/crdt.md §4.6
 /// "Absent before"): rebuilt from held bodies, it is not when one is gone.
-struct Before {
-    state: Fragment,
-    complete: bool,
+pub(crate) struct Before {
+    pub state: Fragment,
+    pub complete: bool,
 }
 
 impl UndoBuffer for Before {
@@ -77,8 +77,31 @@ impl UndoBuffer for Before {
     }
 }
 
-fn undo_delta<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buf: &dyn UndoBuffer, view: &V) -> Result<Option<Fragment>> {
-    Ok(osis_crdt::undo(w, undone, state, buf, view)?)
+/// The undo delta of `undone` (spec/crdt.md §4.6) and its expiry. Invariant (§4.6, §4.7): an
+/// undo never extends a value's lifetime past its original expiry. What it writes back from
+/// `pre` (`Writer::copied`) takes the earliest expiry among the writes it copies (`expiry` of
+/// an owner dot: `Some(0)` for one gone, expired or no longer held); content whose expiry is at
+/// or before `wall` (the undo's `ts`) is stripped from `pre` and the undo run again, so none of
+/// it comes back.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mut pre: Before, schema: Option<&osis_schema::Schema>, ak: &Ak, wall: u64, expiry: &dyn Fn(&Dot) -> Option<u64>) -> Result<Option<(Fragment, CounterRange, Option<u64>)>> {
+    let view = schema.and_then(|s| s.view(ak.as_str()));
+    let start = w.clone();
+    let run = |w: &mut Writer, pre: &Before| -> Result<Option<Fragment>> {
+        Ok(match &view {
+            Some(v) => osis_crdt::undo(w, undone, state, pre, v)?,
+            None => osis_crdt::undo(w, undone, state, pre, &AnyView)?,
+        })
+    };
+    let mut out = run(&mut w, &pre)?;
+    let gone: BTreeSet<Dot> = w.copied().iter().filter(|d| expiry(d).is_some_and(|t| t <= wall)).cloned().collect();
+    if !gone.is_empty() {
+        pre.state.strip(&|d| gone.contains(d));
+        w = start;
+        out = run(&mut w, &pre)?;
+    }
+    let expires = w.copied().iter().filter_map(expiry).filter(|t| *t > wall).min();
+    Ok(out.map(|f| (f, w.range(), expires)))
 }
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6); of the things it
@@ -147,10 +170,8 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
-        let mut w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
+        let w = Writer::new(ts, Source::node(node), lo).keyed_removals(osis_schema::core_types::is_role_class(a.ak.as_str()));
         let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
-        let view = schema.as_ref().and_then(|s| s.view(a.ak.as_str()));
-        let buf: &dyn UndoBuffer = &pre;
         // a write of an undo commit in effect, with every later change of the aspect undone:
         // undo steps back through it (spec/crdt.md §4.6); judged on first use
         let core = &*tx.core;
@@ -160,13 +181,13 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
             *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.ix.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, undoers))
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
-        let out = match &view {
-            Some(v) => undo_delta(&mut w, &undone, state, buf, v)?,
-            None => undo_delta(&mut w, &undone, state, buf, &AnyView)?,
+        // a copied write's expiry: its delta's (its commit's header, kept past the body)
+        let expiry = |d: &Dot| {
+            let m = core.ix.commits.get(&core.commit_of(&a.tid, &a.ak, d)?)?;
+            m.header.aspects.iter().zip(&m.valid).find(|(x, v)| **v && x.tid == a.tid && x.ak == a.ak).and_then(|(x, _)| x.expires)
         };
-        if let Some(f) = out {
-            let r = w.range();
-            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
+        if let Some((f, r, expires)) = undo_expiring(w, &undone, state, pre, schema.as_deref(), &a.ak, ts.wall_ms().0, &expiry)? {
+            deltas.push(Resolved { tid: a.tid, ak: a.ak.clone(), fragment: f, lo: r.lo, hi: r.hi, schema, retention: None, expires, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() });
         }
     }
     unmake(tx, &made, ts, node, &mut deltas)?;

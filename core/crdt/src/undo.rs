@@ -63,8 +63,12 @@ pub fn undo<V: View>(w: &mut Writer, undone: &Undone, state: &Fragment, buffer: 
     undo_at(w, undone, undone.delta, Some(state), buffer, view, &mut path, true)
 }
 
-fn before_read(buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::Value> {
-    buffer.before(path).filter(Fragment::present).and_then(|f| f.read())
+/// The value at `path` before the commit, noted as written back (`Writer::copied`).
+fn before_read(w: &mut Writer, buffer: &dyn UndoBuffer, path: &[PathSeg]) -> Option<osis_base::Value> {
+    let f = buffer.before(path).filter(Fragment::present)?;
+    let v = f.read()?;
+    w.copy_from(&f);
+    Some(v)
 }
 
 /// Whether `o` at `path` lands in a position undo resets (§4.6 "Absent before"): a composite
@@ -116,7 +120,7 @@ fn only_from(u: &Undone, f: &Fragment) -> bool {
 /// get their own rules (the reset or case write itself gets nothing).
 fn undo_reset<V: View>(w: &mut Writer, buffer: &dyn UndoBuffer, view: &V, path: &[PathSeg]) -> Result<Option<Fragment>, Error> {
     // nothing before: making the position absent is "Absent before"'s, which declined here
-    before_read(buffer, path).map(|v| replace(w, view, &v)).transpose()
+    before_read(w, buffer, path).map(|v| replace(w, view, &v)).transpose()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -144,7 +148,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             if !won && (ow.value.is_none() || !u.steps_back((&ow.stamp, &ow.value), cur)) {
                 return Ok(None);
             }
-            match before_read(buffer, path) {
+            match before_read(w, buffer, path) {
                 Some(v) => Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: r, value: Some(v) }) }),
                 // absent before: a root is removed above; a nested register carries no reset
                 None => return Ok(None),
@@ -159,8 +163,11 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 }
                 if let Some(Fragment::Bag(prev)) = buffer.before(path).map(|f| f.chosen()) {
                     let ev = view.element();
-                    for e in prev.elems.values() {
-                        let Some(v) = e.frag.as_ref().and_then(|f| f.read()) else { continue };
+                    for (pd, e) in &prev.elems {
+                        let Some(f) = e.frag.as_deref() else { continue };
+                        let Some(v) = f.read() else { continue };
+                        w.copy_dot(pd);
+                        w.copy_from(f);
                         let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
                         elems.insert(d, e);
                     }
@@ -173,11 +180,13 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                         elems.insert(d.clone(), Elem::tomb(&r));
                     } else if e.reset.is_some() {
                         // the undone commit cancelled a contribution (an undo): re-add it (redo)
-                        let v = match &prev {
-                            Some(Fragment::Bag(p)) => p.elems.get(d).and_then(|x| x.frag.as_ref()).and_then(|f| f.read()),
+                        let f = match &prev {
+                            Some(Fragment::Bag(p)) => p.elems.get(d).and_then(|x| x.frag.as_deref()),
                             _ => None,
                         };
-                        if let Some(v) = v {
+                        if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
+                            w.copy_dot(d);
+                            w.copy_from(f);
                             let (d, e) = contribution(w, ev.as_ref(), v, &r)?;
                             elems.insert(d, e);
                         }
@@ -199,11 +208,13 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     elems.insert(d.clone(), Elem::tomb(&r));
                 } else if e.reset.is_some() {
                     // re-add the removed value with a fresh dot
-                    let v = match &prev {
-                        Some(Fragment::Set(p)) => p.elems.get(d).and_then(|e| e.frag.as_ref()).and_then(|f| f.read()),
+                    let f = match &prev {
+                        Some(Fragment::Set(p)) => p.elems.get(d).and_then(|e| e.frag.as_deref()),
                         _ => None,
                     };
-                    if let Some(v) = v {
+                    if let Some((f, v)) = f.and_then(|f| Some((f, f.read()?))) {
+                        w.copy_dot(d);
+                        w.copy_from(f);
                         let (nd, e) = crate::ops::set_elem(w, v);
                         elems.insert(nd, e);
                     }
@@ -226,7 +237,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let mut entries = BTreeMap::new();
             // removed entries, joined per key: a key held by several entries comes back as one
             // (re-adding each at the undo's one stamp would tie their registers)
-            let mut removed: BTreeMap<osis_base::Value, Fragment> = BTreeMap::new();
+            let mut removed: BTreeMap<osis_base::Value, (Fragment, Vec<Dot>)> = BTreeMap::new();
             for (id, e) in &m.entries {
                 if e.frag.is_some() && u.made(&id.dot) {
                     entries.insert(w.removal(id), Entry::tomb(&r));
@@ -257,16 +268,22 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     for x in hit {
                         let (Some(k), Some(f)) = (x.key(), p.record_frag(x)) else { continue };
                         match removed.get_mut(k) {
-                            Some(acc) => acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new()),
+                            Some((acc, dots)) => {
+                                acc.join_into(f.into_owned(), None, &mut crate::changes::Changes::new());
+                                dots.push(x.dot.clone());
+                            }
                             None => {
-                                removed.insert(k.clone(), f.into_owned());
+                                removed.insert(k.clone(), (f.into_owned(), vec![x.dot.clone()]));
                             }
                         }
                     }
                 }
             }
-            for (k, f) in removed {
+            for (k, (f, dots)) in removed {
                 let Some(v) = f.read() else { continue };
+                // the key is the creations' value (§4.7)
+                dots.iter().for_each(|d| w.copy_dot(d));
+                w.copy_from(&f);
                 entries.extend(crate::ops::new_entry(w, k, |w| create(w, &vview, &v).map(Some))?);
             }
             Fragment::Map(Map::new(Meta::default(), entries))
