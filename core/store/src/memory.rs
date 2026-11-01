@@ -20,8 +20,6 @@ struct FaultState {
     writes: u64,
     plan: Option<(u64, Fault)>,
     dead: bool,
-    /// Syncs that fail next (`fail_syncs`).
-    failing_syncs: u64,
     /// `forbid_writes`: on, and the writes refused so far.
     forbid: bool,
     forbidden: u64,
@@ -47,21 +45,6 @@ impl Faults {
         let mut s = self.lock();
         s.plan = None;
         s.dead = false;
-    }
-    /// The next `n` syncs after lazy commits fail (the commits stay visible, not durable).
-    pub fn fail_syncs(&self, n: u64) {
-        self.lock().failing_syncs = n;
-    }
-    fn check_sync(&self) -> Result<(), BackendError> {
-        let mut s = self.lock();
-        if s.dead {
-            return Err(BackendError::Crashed);
-        }
-        if s.failing_syncs > 0 {
-            s.failing_syncs -= 1;
-            return Err(BackendError::Fault);
-        }
-        Ok(())
     }
     /// Tests: while on, every durable write fails without effect and is counted in `forbidden`,
     /// so a test can assert that memory-only work never writes.
@@ -111,10 +94,8 @@ struct Data {
     blobs: HashMap<BlobId, Vec<u8>>,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
     history: Option<Vec<KeyValue>>,
-    /// Durable points so far: commits, and syncs after lazy commits (what a file backend fsyncs).
+    /// Commits so far (what a file backend fsyncs).
     syncs: u64,
-    /// A lazy commit since the last durable point.
-    lazy: bool,
 }
 
 /// In-memory backend. Clones share the data, so a test keeps a handle, "crashes" the store and
@@ -150,7 +131,7 @@ impl MemoryBackend {
     pub fn faults(&self) -> &Faults {
         &self.faults
     }
-    /// Durable points so far (`commit`, `sync` after a `commit_lazy`): a file backend's fsyncs.
+    /// Commits so far: a file backend's fsyncs.
     pub fn syncs(&self) -> u64 {
         self.lock().syncs
     }
@@ -181,18 +162,9 @@ impl Backend for MemoryBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.commit_lazy(batch)?;
-        let mut d = self.lock();
-        d.lazy = false;
-        d.syncs += 1;
-        Ok(())
-    }
-
-    /// Counted by the fault plan as a write, like `commit` (applied at once in memory).
-    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.faults.check()?;
         let mut d = self.lock();
-        d.lazy = true;
+        d.syncs += 1;
         for op in batch.ops {
             match op {
                 Op::Put(k, v) => {
@@ -211,19 +183,6 @@ impl Backend for MemoryBackend {
                     d.blobs.remove(&id);
                 }
             }
-        }
-        Ok(())
-    }
-
-    fn sync(&mut self) -> Result<(), BackendError> {
-        if !self.lock().lazy {
-            return Ok(());
-        }
-        self.faults.check_sync()?;
-        let mut d = self.lock();
-        if d.lazy {
-            d.lazy = false;
-            d.syncs += 1;
         }
         Ok(())
     }
@@ -263,13 +222,6 @@ impl<B: Backend> Backend for FaultyBackend<B> {
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         self.faults.check()?;
         self.inner.commit(batch)
-    }
-    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.faults.check()?;
-        self.inner.commit_lazy(batch)
-    }
-    fn sync(&mut self) -> Result<(), BackendError> {
-        self.inner.sync()
     }
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
         self.inner.get_blob(id)

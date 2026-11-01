@@ -1,6 +1,6 @@
 //! osis-host: hosting, a node storing and serving labels it need not read (spec/sync.md §4-§9):
-//! `HostStore` (osis-proto's `LabelStore` over an osis-store `Backend`, with the `HostPolicy`
-//! and the admission), `Hub` (sans-I/O: a serving session per connection, cross-connection
+//! `HostStore` (osis-proto's `LabelStore` over its own osis-store `Store`, removals shredded,
+//! with the `HostPolicy` and the admission), `Hub` (sans-I/O: a serving session per connection, cross-connection
 //! notices, sweeps, push replication to peer hosts) and the async `driver` over any
 //! osis-transport `Transport` (feature `driver`, default). The node runs it from its `host.0^`
 //! (`HostConfig`, public data only); osis-node depends on it, never the reverse: hosting reaches

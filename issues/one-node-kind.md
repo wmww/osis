@@ -157,7 +157,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
      - No second way to start hosting, and no "dedicated" or "standalone" hosting mode in code or notes.
      - Policy check: the reviewer adds `use osis_crypto::kdf;` to a host file once and confirms policy.py fails.
      - Read: notes/cli.md, notes/api.md (Sync configuration), notes/node.md module table, notes/networking.md (decisions 3, 5 and 6, now about hosts), spec/data-model.md §9 (`host.0` row).
-9. **Host store on osis-store `Store` (a; L, about 1.7k lines of `store.rs` rewritten).**
+9. **Host store on osis-store `Store` (a; L, about 1.7k lines of `store.rs` rewritten).** Built (notes/sync.md Implementation (osis-host); budget in notes/testing.md Performance budgets).
    - Shredded deletes; a throughput measurement against a new host budget in notes/testing.md; the architecture §2 `Backend` exception removed.
    - It may run beside other work once step 8 has merged.
    - Hunt:

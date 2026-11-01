@@ -1,9 +1,17 @@
-//! `HostStore`: osis-proto's `LabelStore` over an osis-store `Backend` (spec/sync.md §4, §5):
+//! `HostStore`: osis-proto's `LabelStore` over its own osis-store `Store` (spec/sync.md §4, §5):
 //! registration paths, entries, tombstones, per-label logs, blob bytes stored once with reference
 //! counts, timed deletes, expiry, claim-set retention, and the host policy (storage caps,
-//! deposit budget, rate limits). Every mutation is one atomic `WriteBatch`.
+//! deposit budget, rate limits). Every mutation's writes apply together to the open store
+//! transaction, committed per mutation or, deferred (`defer_durability`), once per hub batch.
 //!
-//! Rows (all cleartext metadata a host sees anyway; blobs are ciphertext):
+//! Deletion (spec/requirements.md, Deletion): every row removal shreds (`Shred::Yes`), so a
+//! deleted entry's wrap is unrecoverable once its transaction commits, even on a node that also
+//! reads the label; overwrites do not shred (a rewrap wraps the same blob key, and the entry's
+//! removal later shreds every earlier version on its path). Blob ciphertexts sit in the store's
+//! blob area, deleted for space only: without a wrap they open nowhere.
+//!
+//! Rows, in one table of the store (encrypted under the host store's own key tree; what a host
+//! sees anyway, blobs are ciphertext):
 //! `I` seed; `L label` meta; `K label` the head's earlier role keys (`HeadKeys`); `S label step`
 //! step; `C label step` claim set, `H label step key` each of its keys (the entry box or empty:
 //! an Open looks one key up instead of loading the set); path indexes `V label sync_key` the newest step registering
@@ -25,8 +33,9 @@ use osis_base::{BlobId, Clock, LabelId};
 use osis_crypto::{CryptoRngCore, Signature};
 use osis_proto::msg::{ClaimSet, Code, SecretBox, Step, StepId, WRAP_LEN};
 use osis_proto::{Budget, EntryMeta, HeadKeys, LabelStore, LogRecord, Put, StoreError};
-use osis_store::{Backend, BackendError, KeyValue, WriteBatch};
+use osis_store::{KeyValue, Shred, Store, Suspended, Table, Transaction};
 use crate::{Admission, LabelCaps};
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 
@@ -184,8 +193,106 @@ impl HostPolicy {
     }
 }
 
-fn err(e: BackendError) -> StoreError {
+fn err(e: osis_store::Error) -> StoreError {
     StoreError(e.to_string())
+}
+
+/// One mutation's writes, applied to the open transaction together.
+#[derive(Default)]
+struct Writes(Vec<Write>);
+
+enum Write {
+    Put(Vec<u8>, Vec<u8>),
+    Delete(Vec<u8>),
+    PutBlob(BlobId, Vec<u8>),
+    DeleteBlob(BlobId),
+}
+
+impl Writes {
+    fn put(&mut self, k: Vec<u8>, v: Vec<u8>) {
+        self.0.push(Write::Put(k, v));
+    }
+    fn delete(&mut self, k: Vec<u8>) {
+        self.0.push(Write::Delete(k));
+    }
+    fn put_blob(&mut self, id: BlobId, b: Vec<u8>) {
+        self.0.push(Write::PutBlob(id, b));
+    }
+    fn delete_blob(&mut self, id: BlobId) {
+        self.0.push(Write::DeleteBlob(id));
+    }
+    fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+/// The host's `Store`, its one table, and the transaction open since the last commit.
+struct Db {
+    store: Store,
+    table: Table,
+    rng: Box<dyn CryptoRngCore + Send>,
+    open: Option<Suspended>,
+}
+
+/// Name of the host's table (`Transaction::index`).
+const TABLE: &[u8] = b"host";
+
+impl Db {
+    /// Runs `f` in the open transaction (one is started if none is open).
+    fn run<R>(&mut self, f: impl FnOnce(&mut Transaction<'_>, Table) -> Result<R, osis_store::Error>) -> Result<R, osis_store::Error> {
+        let Db { store, table, rng, open } = self;
+        let mut t = match open.take() {
+            Some(s) => store.resume(s, &mut **rng),
+            None => store.transaction(&mut **rng)?,
+        };
+        let r = f(&mut t, *table);
+        *open = Some(t.suspend());
+        r
+    }
+
+    /// Applies `w` to the open transaction. A failure part way drops it (aborted: every write
+    /// since the last commit is lost) and recovers the store in place, as a failed commit does.
+    fn apply(&mut self, w: Writes) -> Result<(), osis_store::Error> {
+        let Db { store, table, rng, open } = self;
+        let r = match open.take() {
+            Some(s) => Ok(store.resume(s, &mut **rng)),
+            None => store.transaction(&mut **rng),
+        }
+        .and_then(|mut t| {
+            for op in w.0 {
+                match op {
+                    Write::Put(k, v) => t.table_put(*table, &k, v, Shred::No).map(drop)?,
+                    Write::Delete(k) => t.table_remove(*table, &k, Shred::Yes).map(drop)?,
+                    Write::PutBlob(id, b) => t.put_blob(&id, b)?,
+                    Write::DeleteBlob(id) => t.delete_blob(&id),
+                }
+            }
+            Ok(t.suspend())
+        });
+        match r {
+            Ok(s) => {
+                *open = Some(s);
+                Ok(())
+            }
+            Err(e) => {
+                // a reopen that fails leaves the store broken: every later call fails
+                let _ = store.reopen();
+                Err(e)
+            }
+        }
+    }
+
+    /// Commits the open transaction. A failed commit leaves the outcome unknown: the store is
+    /// recovered in place (`Store::reopen`) and the error returned.
+    fn commit(&mut self) -> Result<(), osis_store::Error> {
+        let Some(s) = self.open.take() else { return Ok(()) };
+        let r = self.store.resume(s, &mut *self.rng).commit();
+        if r.is_err() {
+            // a reopen that fails leaves the store broken: every later call fails
+            let _ = self.store.reopen();
+        }
+        r
+    }
 }
 
 fn corrupt(what: &str) -> StoreError {
@@ -569,7 +676,7 @@ struct Tx {
     meta: Meta,
     /// Entries and bytes before this mutation, and whether the label is new (node totals).
     before: (u64, u64, bool),
-    batch: WriteBatch,
+    batch: Writes,
     grew: bool,
 }
 
@@ -621,10 +728,13 @@ pub fn claim_set_bytes(label: &LabelId, id: &StepId, c: &ClaimSet) -> u64 {
 /// Remembered entry origins (in memory) beyond which the map is cleared.
 const MAX_ORIGINS: usize = 1 << 20;
 
-/// `LabelStore` over a `Backend`. Holds the backend, the clock for rate windows and supersession
+/// `LabelStore` over a `Store`. Holds the store, the clock for rate windows and supersession
 /// times, and the policy.
-pub struct HostStore<B: Backend> {
-    backend: B,
+pub struct HostStore {
+    /// Reads need the store mutably (`LabelStore` reads take `&self`).
+    db: RefCell<Db>,
+    /// A write failed since the last `durable`: its transaction was aborted.
+    failed: Option<osis_store::Error>,
     seed: [u8; 32],
     clock: Arc<dyn Clock>,
     policy: HostPolicy,
@@ -635,30 +745,31 @@ pub struct HostStore<B: Backend> {
     origins: HashMap<(LabelId, BlobId), [u8; 32]>,
     eph: Ephemeral,
     relays: osis_proto::RelayGate,
-    /// Commits are lazy until `durable` (`defer_durability`); one was made since.
+    /// Commits wait for `durable` (`defer_durability`).
     lazy: bool,
-    unsynced: bool,
     admission: Admission,
     caps: BTreeMap<LabelId, LabelCaps>,
 }
 
-impl<B: Backend> HostStore<B> {
-    /// Opens the store on `backend`, creating the instance seed (log IDs derive from it) with
-    /// `rng` on first use.
-    pub fn open(mut backend: B, clock: Arc<dyn Clock>, policy: HostPolicy, rng: &mut dyn CryptoRngCore) -> Result<HostStore<B>, StoreError> {
-        let seed = match backend.get(b"I").map_err(err)? {
+impl HostStore {
+    /// Opens the host store over `store` (the host's own, never the node's), creating its table
+    /// and the instance seed (log IDs derive from it) on first use. `rng` keys the store's units.
+    pub fn open(mut store: Store, clock: Arc<dyn Clock>, policy: HostPolicy, mut rng: Box<dyn CryptoRngCore + Send>) -> Result<HostStore, StoreError> {
+        let mut fresh = [0u8; 32];
+        rng.fill_bytes(&mut fresh);
+        let mut t = store.transaction(&mut *rng).map_err(err)?;
+        let table = t.index(TABLE).map_err(err)?;
+        let seed = match t.table_get(table, b"I").map_err(err)? {
             Some(s) => s.as_slice().try_into().map_err(|_| corrupt("seed"))?,
             None => {
-                let mut s = [0u8; 32];
-                rng.fill_bytes(&mut s);
-                let mut b = WriteBatch::new();
-                b.put(b"I".to_vec(), s.to_vec());
-                backend.commit(b).map_err(err)?;
-                s
+                t.table_put(table, b"I", fresh.to_vec(), Shred::No).map_err(err)?;
+                fresh
             }
         };
+        t.commit().map_err(err)?;
         let relays = osis_proto::RelayGate::default();
-        let mut s = HostStore { backend, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, unsynced: false, admission: Admission::Open, caps: BTreeMap::new() };
+        let db = RefCell::new(Db { store, table, rng, open: None });
+        let mut s = HostStore { db, failed: None, seed, clock, policy: HostPolicy::default(), rates: Rates::default(), origin: None, origins: HashMap::new(), eph: Ephemeral::default(), relays, lazy: false, admission: Admission::Open, caps: BTreeMap::new() };
         s.set_policy(policy);
         Ok(s)
     }
@@ -683,35 +794,68 @@ impl<B: Backend> HostStore<B> {
         self.caps.get(label).map_or((self.policy.cap_entries, self.policy.cap_bytes), |c| (c.entries, c.bytes))
     }
 
-    pub fn backend(&self) -> &B {
-        &self.backend
+    /// The underlying store, its open transaction committed first (tests: forensic checks of
+    /// what it holds).
+    #[doc(hidden)]
+    pub fn store_mut(&mut self) -> Result<&mut Store, StoreError> {
+        let db = self.db.get_mut();
+        db.commit().map_err(err)?;
+        Ok(&mut db.store)
     }
 
-    /// Commits from now on are visible at once and durable at the next `durable` (the hub's
-    /// batch: one fsync per handled input instead of one per entry).
+    /// Mutations from now on are visible at once and committed together at the next `durable`
+    /// (the hub's batch: one store commit, one shredding root write at most, per handled input
+    /// instead of per entry).
     pub fn defer_durability(&mut self) {
         self.lazy = true;
     }
 
-    /// Makes every commit since `defer_durability` durable and commits durably again. Nothing is
-    /// acknowledged to a peer before it returns `Ok`.
+    /// Commits every mutation since `defer_durability` and commits per mutation again. Nothing
+    /// is acknowledged to a peer before it returns `Ok`. A write that failed in between fails
+    /// it (its transaction, with every mutation since the last commit, was aborted).
     pub fn durable(&mut self) -> Result<(), StoreError> {
         self.lazy = false;
-        if self.unsynced {
-            self.backend.sync().map_err(err)?;
-            self.unsynced = false;
-        }
-        Ok(())
+        self.commit()
     }
 
-    fn write(&mut self, b: WriteBatch) -> Result<(), StoreError> {
-        if self.lazy {
-            self.backend.commit_lazy(b).map_err(err)?;
-            self.unsynced = true;
-            Ok(())
-        } else {
-            self.backend.commit(b).map_err(err)
+    /// Commits the open transaction now, deferred or not (a sweep's own failure is the sweep's).
+    /// A write that failed since the last commit fails it.
+    pub fn commit(&mut self) -> Result<(), StoreError> {
+        if let Some(e) = self.failed.take() {
+            // what was written after the failure goes with it
+            self.db.get_mut().open = None;
+            return Err(err(e));
         }
+        self.db.get_mut().commit().map_err(err)
+    }
+
+    fn write(&mut self, w: Writes) -> Result<(), StoreError> {
+        let db = self.db.get_mut();
+        let r = db.apply(w).and_then(|()| if self.lazy { Ok(()) } else { db.commit() });
+        if let Err(e) = &r
+            && self.lazy
+        {
+            self.failed = Some(e.clone());
+        }
+        r.map_err(err)
+    }
+
+    /// Rows the store holds (tests, diagnostics).
+    pub fn rows(&self) -> Result<u64, StoreError> {
+        self.db.borrow_mut().run(|t, table| t.table_len(table)).map_err(err)
+    }
+
+    fn get(&self, k: &[u8]) -> Result<Option<Vec<u8>>, StoreError> {
+        self.db.borrow_mut().run(|t, table| t.table_get(table, k)).map_err(err)
+    }
+
+    /// Up to `limit` rows with `start <= key < end` (`None`: unbounded), ascending.
+    fn scan(&self, start: &[u8], end: Option<&[u8]>, limit: usize) -> Result<Vec<KeyValue>, StoreError> {
+        self.db.borrow_mut().run(|t, table| t.table_range(table, start, end, limit)).map_err(err)
+    }
+
+    fn scan_prefix(&self, prefix: &[u8], limit: usize) -> Result<Vec<KeyValue>, StoreError> {
+        self.scan(prefix, osis_store::prefix_end(prefix).as_deref(), limit)
     }
 
     pub fn policy(&self) -> &HostPolicy {
@@ -729,7 +873,7 @@ impl<B: Backend> HostStore<B> {
     }
 
     pub fn totals(&self) -> Result<Totals, StoreError> {
-        let Some(b) = self.backend.get(b"N").map_err(err)? else { return Ok(Totals::default()) };
+        let Some(b) = self.get(b"N")? else { return Ok(Totals::default()) };
         Ok(Totals { labels: read_u64(&b, 0)?, entries: read_u64(&b, 8)?, bytes: read_u64(&b, 16)? })
     }
 
@@ -749,7 +893,7 @@ impl<B: Backend> HostStore<B> {
     }
 
     fn raw_meta(&self, label: &LabelId) -> Result<Option<Meta>, StoreError> {
-        self.backend.get(&key(b'L', &[&label.0])).map_err(err)?.map(|b| Meta::decode(&b)).transpose()
+        self.get(&key(b'L', &[&label.0]))?.map(|b| Meta::decode(&b)).transpose()
     }
 
     /// Ephemeral memory charged per label: blobs and per-entry, per-tombstone and per-record
@@ -777,7 +921,7 @@ impl<B: Backend> HostStore<B> {
         if seq > m.reserved {
             let mut raw = self.raw_meta(label)?.ok_or_else(unknown)?;
             raw.reserved = seq.saturating_add(SEQ_BLOCK);
-            let mut b = WriteBatch::new();
+            let mut b = Writes::default();
             b.put(key(b'L', &[&label.0]), raw.encode());
             self.write(b)?;
         }
@@ -997,7 +1141,7 @@ impl<B: Backend> HostStore<B> {
             }
         };
         tx.batch.put(key(b'E', &[&l, &put.blob_id.0]), row.encode());
-        self.commit(tx)?;
+        self.finish(tx)?;
         match self.origin {
             Some(o) => {
                 if self.origins.len() >= MAX_ORIGINS {
@@ -1053,7 +1197,7 @@ impl<B: Backend> HostStore<B> {
             }
         }
         if durable {
-            self.commit(tx)?;
+            self.finish(tx)?;
         }
         Ok(())
     }
@@ -1097,27 +1241,27 @@ impl<B: Backend> HostStore<B> {
 
     /// A `V` or `W` row: a step ID.
     fn step_row(&self, k: Vec<u8>) -> Result<Option<StepId>, StoreError> {
-        self.backend.get(&k).map_err(err)?.map(|b| read_arr(&b, 0).map(StepId)).transpose()
+        self.get(&k)?.map(|b| read_arr(&b, 0).map(StepId)).transpose()
     }
 
     fn row(&self, label: &LabelId, blob: &BlobId) -> Result<Option<Row>, StoreError> {
-        self.backend.get(&key(b'E', &[&label.0, &blob.0])).map_err(err)?.map(|b| Row::decode(&b)).transpose()
+        self.get(&key(b'E', &[&label.0, &blob.0]))?.map(|b| Row::decode(&b)).transpose()
     }
 
     fn tx(&self, label: &LabelId) -> Result<Tx, StoreError> {
         let meta = self.meta(label)?.ok_or_else(unknown)?;
-        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: WriteBatch::new(), grew: false })
+        Ok(Tx { label: *label, before: (meta.entries, meta.bytes, false), meta, batch: Writes::default(), grew: false })
     }
 
     /// Trims the log to `log_keep` durable records (in steps of 1/8 of it: the oldest `G` rows,
     /// scanned, so ephemeral records and reserved numbers in between cost nothing) and commits.
-    fn commit(&mut self, mut tx: Tx) -> Result<(), StoreError> {
+    fn finish(&mut self, mut tx: Tx) -> Result<(), StoreError> {
         let keep = self.policy.log_keep.max(1);
         if tx.meta.records > keep.saturating_add(keep / 8) {
             let drop = usize::try_from(tx.meta.records - keep).unwrap_or(usize::MAX);
             let prefix = key(b'G', &[&tx.label.0]);
             let end = osis_store::prefix_end(&prefix);
-            let rows = self.backend.scan(&prefix, end.as_deref(), drop).map_err(err)?;
+            let rows = self.scan(&prefix, end.as_deref(), drop)?;
             for (k, _) in &rows {
                 tx.batch.delete(k.clone());
                 tx.meta.horizon = tx.meta.horizon.max(read_u64(k, 17)?);
@@ -1165,7 +1309,7 @@ impl<B: Backend> HostStore<B> {
         }
         if let Some(t) = tombstone_at {
             // A tombstone already present keeps its first drop time row; replace it.
-            if let Some(old) = self.backend.get(&key(b'T', &[&l, &blob.0])).map_err(err)? {
+            if let Some(old) = self.get(&key(b'T', &[&l, &blob.0]))? {
                 tx.batch.delete(key(b'Y', &[&old, &l, &blob.0]));
             }
             let drop = t.saturating_add(self.policy.tombstone_ms);
@@ -1185,7 +1329,7 @@ impl<B: Backend> HostStore<B> {
 
     /// A blob's reference count and its prefix bytes (`R` row; 0 and none when not held).
     fn refs(&self, blob: &BlobId) -> Result<(u64, Vec<u8>), StoreError> {
-        let Some(b) = self.backend.get(&key(b'R', &[&blob.0])).map_err(err)? else { return Ok((0, Vec::new())) };
+        let Some(b) = self.get(&key(b'R', &[&blob.0]))? else { return Ok((0, Vec::new())) };
         Ok((read_u64(&b, 0)?, b.get(8..).unwrap_or_default().to_vec()))
     }
 
@@ -1194,7 +1338,7 @@ impl<B: Backend> HostStore<B> {
         let end = key(tag, &[&be(now.saturating_add(1))]);
         let start = [tag];
         let end = if now == u64::MAX { osis_store::prefix_end(&start) } else { Some(end) };
-        let rows = self.backend.scan(&start, end.as_deref(), limit).map_err(err)?;
+        let rows = self.scan(&start, end.as_deref(), limit)?;
         Ok(rows.into_iter().map(|(k, _)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec())).collect())
     }
 
@@ -1204,7 +1348,7 @@ impl<B: Backend> HostStore<B> {
     pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
         let mut out = Swept::default();
         let mut left = budget.max(1);
-        let mut junk = WriteBatch::new();
+        let mut junk = Writes::default();
         let mut by_label: BTreeMap<LabelId, Vec<(Vec<u8>, BlobId, bool)>> = BTreeMap::new();
         for (tag, tomb) in [(b'X', false), (b'P', true)] {
             let due = self.due(tag, now, left)?;
@@ -1229,7 +1373,7 @@ impl<B: Backend> HostStore<B> {
                 if !done.insert(blob) {
                     continue;
                 }
-                let raw = self.backend.get(&key(b'E', &[&label.0, &blob.0])).map_err(err)?;
+                let raw = self.get(&key(b'E', &[&label.0, &blob.0]))?;
                 if let Some(Ok(row)) = raw.map(|r| Row::decode(&r)) {
                     self.remove(&mut tx, &blob, &row, tomb.then_some(now))?;
                 }
@@ -1237,9 +1381,9 @@ impl<B: Backend> HostStore<B> {
             if tx.grew {
                 out.grew.insert(label);
             }
-            self.commit(tx)?;
+            self.finish(tx)?;
         }
-        let mut b = WriteBatch::new();
+        let mut b = Writes::default();
         let due = self.due(b'Y', now, left)?;
         left -= due.len();
         for (k, rest) in due {
@@ -1261,17 +1405,17 @@ impl<B: Backend> HostStore<B> {
                     continue;
                 }
             };
-            let index = self.backend.scan_prefix(&key(b'H', &[&rest]), left).map_err(err)?;
+            let index = self.scan_prefix(&key(b'H', &[&rest]), left)?;
             let all = index.len() < left;
             left -= index.len();
             let mut freed: usize = index.iter().map(|(k, v)| k.len() + v.len()).sum();
-            let mut batch = WriteBatch::new();
+            let mut batch = Writes::default();
             for (h, _) in index {
                 batch.delete(h);
             }
             if all {
                 let c = key(b'C', &[&rest]);
-                freed += self.backend.get(&c).map_err(err)?.map_or(0, |set| set.len());
+                freed += self.get(&c)?.map_or(0, |set| set.len());
                 batch.delete(c);
                 batch.delete(k);
             }
@@ -1279,12 +1423,12 @@ impl<B: Backend> HostStore<B> {
                 Ok(mut tx) => {
                     tx.meta.bytes = tx.meta.bytes.saturating_sub(freed as u64);
                     tx.batch = batch;
-                    self.commit(tx)?;
+                    self.finish(tx)?;
                 }
-                Err(_) => b.ops.extend(batch.ops),
+                Err(_) => b.0.extend(batch.0),
             }
         }
-        b.ops.extend(junk.ops);
+        b.0.extend(junk.0);
         if !b.is_empty() {
             self.write(b)?;
         }
@@ -1299,7 +1443,7 @@ impl<B: Backend> HostStore<B> {
             Some(a) => key(b'L', &[&a.0, &[0]]),
             None => b"L".to_vec(),
         };
-        let rows = self.backend.scan(&start, Some(b"M"), max).map_err(err)?;
+        let rows = self.scan(&start, Some(b"M"), max)?;
         rows.iter().map(|(k, _)| read_arr(k, 1).map(LabelId)).collect()
     }
 
@@ -1307,7 +1451,7 @@ impl<B: Backend> HostStore<B> {
     pub fn next_due(&self) -> Result<Option<u64>, StoreError> {
         let mut next: Option<u64> = self.eph_next_due();
         for tag in *b"XPYZ" {
-            if let Some((k, _)) = self.backend.scan_prefix(&[tag], 1).map_err(err)?.first() {
+            if let Some((k, _)) = self.scan_prefix(&[tag], 1)?.first() {
                 let t = read_u64(k, 1)?;
                 next = Some(next.map_or(t, |n| n.min(t)));
             }
@@ -1317,35 +1461,35 @@ impl<B: Backend> HostStore<B> {
 
     /// Log position replicated to `peer` for `label`: (log ID it refers to, sequence number).
     pub fn replica_pos(&self, peer: &[u8; 32], label: &LabelId) -> Result<Option<([u8; 16], u64)>, StoreError> {
-        let Some(b) = self.backend.get(&key(b'Q', &[peer, &label.0])).map_err(err)? else { return Ok(None) };
+        let Some(b) = self.get(&key(b'Q', &[peer, &label.0]))? else { return Ok(None) };
         Ok(Some((read_arr(&b, 0)?, read_u64(&b, 16)?)))
     }
 
     pub fn set_replica_pos(&mut self, peer: &[u8; 32], label: &LabelId, log_id: [u8; 16], seq: u64) -> Result<(), StoreError> {
-        let mut b = WriteBatch::new();
+        let mut b = Writes::default();
         b.put(key(b'Q', &[peer, &label.0]), [&log_id[..], &be(seq)].concat());
         self.write(b)
     }
 }
 
-impl<B: Backend> LabelStore for HostStore<B> {
+impl LabelStore for HostStore {
     fn head(&self, label: &LabelId) -> Result<Option<StepId>, StoreError> {
         Ok(self.meta(label)?.and_then(|m| m.head))
     }
 
     fn step(&self, label: &LabelId, id: &StepId) -> Result<Option<Step>, StoreError> {
-        let Some(b) = self.backend.get(&key(b'S', &[&label.0, &id.0])).map_err(err)? else { return Ok(None) };
+        let Some(b) = self.get(&key(b'S', &[&label.0, &id.0]))? else { return Ok(None) };
         Step::parse(&b).map(Some).map_err(|_| corrupt("step"))
     }
 
     fn claim_set(&self, label: &LabelId, id: &StepId) -> Result<Option<Arc<ClaimSet>>, StoreError> {
-        let Some(b) = self.backend.get(&key(b'C', &[&label.0, &id.0])).map_err(err)? else { return Ok(None) };
+        let Some(b) = self.get(&key(b'C', &[&label.0, &id.0]))? else { return Ok(None) };
         ClaimSet::parse(&b).map(|c| Some(Arc::new(c))).map_err(|_| corrupt("claim set"))
     }
 
     /// One `H` row read: an Open by claim or static entry costs a lookup, not the set's size.
     fn claim(&self, label: &LabelId, id: &StepId, k: &[u8; 32]) -> Result<Option<Option<SecretBox>>, StoreError> {
-        let Some(b) = self.backend.get(&key(b'H', &[&label.0, &id.0, k])).map_err(err)? else { return Ok(None) };
+        let Some(b) = self.get(&key(b'H', &[&label.0, &id.0, k]))? else { return Ok(None) };
         if b.is_empty() {
             return Ok(Some(None));
         }
@@ -1355,7 +1499,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
     fn head_keys(&self, label: &LabelId) -> Result<Option<HeadKeys>, StoreError> {
         let Some(head) = self.head(label)? else { return Ok(None) };
         let step = self.step(label, &head)?.ok_or_else(|| corrupt("head step"))?;
-        let b = self.backend.get(&key(b'K', &[&label.0])).map_err(err)?.ok_or_else(|| corrupt("head keys"))?;
+        let b = self.get(&key(b'K', &[&label.0]))?.ok_or_else(|| corrupt("head keys"))?;
         Ok(Some(HeadKeys { head: step, older: decode_older(&b)? }))
     }
 
@@ -1421,7 +1565,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
         if !self.rates.take(label, Rate::Register, self.policy.registers) {
             return Ok(Code::RATE_LIMITED);
         }
-        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: WriteBatch::new(), grew: false };
+        let mut tx = Tx { label: *label, before: (meta.entries, meta.bytes, new), meta, batch: Writes::default(), grew: false };
         tx.meta.bytes = tx.meta.bytes.saturating_add(size);
         if over {
             tx.meta.over_cap_until = self.now().saturating_add(self.policy.over_cap_step_ms);
@@ -1443,7 +1587,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
             }
         }
         tx.append(&LogRecord::Head(step));
-        self.commit(tx)?;
+        self.finish(tx)?;
         Ok(Code::OK)
     }
 
@@ -1459,14 +1603,14 @@ impl<B: Backend> LabelStore for HostStore<B> {
         if self.eph.labels.get(label).is_some_and(|e| e.tombstones.get(blob_id).is_some_and(|t| *t > now)) {
             return Ok(true);
         }
-        Ok(self.backend.get(&key(b'T', &[&label.0, &blob_id.0])).map_err(err)?.is_some())
+        Ok(self.get(&key(b'T', &[&label.0, &blob_id.0]))?.is_some())
     }
 
     fn blob(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
         if let Some((b, _)) = self.eph.blobs.get(blob_id) {
             return Ok(Some(b.clone()));
         }
-        self.backend.get_blob(blob_id).map_err(err)
+        self.db.borrow_mut().run(|t, _| t.get_blob(blob_id)).map_err(err)
     }
 
     fn blob_prefix(&self, blob_id: &BlobId) -> Result<Option<Vec<u8>>, StoreError> {
@@ -1524,7 +1668,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
             return Ok(Code::RATE_LIMITED);
         }
         self.remove(&mut tx, blob_id, &row, Some(now))?;
-        self.commit(tx)?;
+        self.finish(tx)?;
         Ok(Code::OK)
     }
 
@@ -1565,7 +1709,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
         tx.batch.put(key(b'P', &[&be(at), &l, &blob_id.0]), vec![]);
         tx.batch.put(key(b'E', &[&l, &blob_id.0]), row.encode());
         tx.append(&LogRecord::Pending(*blob_id, at));
-        self.commit(tx)?;
+        self.finish(tx)?;
         Ok(Code::OK)
     }
 
@@ -1586,7 +1730,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
         let start = key(b'G', &[&label.0, &be(after + 1)]);
         let end = key(b'G', &[&label.0, &be(m.next_seq.saturating_add(1))]);
         let end = if m.next_seq == u64::MAX { osis_store::prefix_end(&key(b'G', &[&label.0])) } else { Some(end) };
-        let rows = self.backend.scan(&start, end.as_deref(), max).map_err(err)?;
+        let rows = self.scan(&start, end.as_deref(), max)?;
         let mut out = rows.iter().map(|(k, v)| Ok((read_u64(k, 17)?, decode_record(v)?))).collect::<Result<Vec<_>, StoreError>>()?;
         // the ephemeral records in sequence order among them; where the ephemeral log was trimmed
         // past `after`, the live entries added since stand in for their add records (the
@@ -1612,7 +1756,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
             None => prefix.clone(),
         };
         let end = osis_store::prefix_end(&prefix);
-        let rows = self.backend.scan(&start, end.as_deref(), max).map_err(err)?;
+        let rows = self.scan(&start, end.as_deref(), max)?;
         let mut out = rows.iter().map(|(k, v)| Ok((BlobId(read_arr(k, 17)?), Row::decode(v)?.meta))).collect::<Result<Vec<_>, StoreError>>()?;
         if let Some(e) = self.eph.labels.get(label) {
             let range = match after {
@@ -1635,7 +1779,7 @@ impl<B: Backend> LabelStore for HostStore<B> {
             Some(u) => Some(key(b'E', &[&label.0, &u.0])),
             None => osis_store::prefix_end(&key(b'E', &[&label.0])),
         };
-        let rows = self.backend.scan(&start, end.as_deref(), usize::MAX).map_err(err)?;
+        let rows = self.scan(&start, end.as_deref(), usize::MAX)?;
         let mut out = rows.iter().map(|(k, _)| Ok(BlobId(read_arr(k, 17)?))).collect::<Result<Vec<_>, StoreError>>()?;
         if let Some(e) = self.eph.labels.get(label) {
             let eph = match upper {

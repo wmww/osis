@@ -1,5 +1,5 @@
-//! Scripted clients (osis-proto `ClientSession`) and hosts (`Hub` over `HostStore` on
-//! `MemoryBackend`) wired by in-memory byte queues; a label with rotations; blobs.
+//! Scripted clients (osis-proto `ClientSession`) and hosts (`Hub` over `HostStore` on a
+//! `MemoryBackend` and `MemoryRoot` sharing a fault plan) wired by in-memory byte queues; a label with rotations; blobs.
 #![allow(dead_code)]
 
 use osis_base::{BlobId, Clock, LabelId, ManualClock, WallMs};
@@ -7,7 +7,7 @@ use osis_crypto::{SeededRng, Secret32};
 use osis_proto::*;
 pub use osis_proto::examples::{Label, bid, blob, blob_with, salt};
 use osis_host::{HostStore, ConnId, Hub, HubOutput, HostPolicy};
-use osis_store::MemoryBackend;
+use osis_store::{Faults, MemoryBackend, MemoryRoot, Store, StoreConfig};
 use std::collections::VecDeque;
 use std::sync::Arc;
 
@@ -39,8 +39,11 @@ struct Link {
 /// Hosts and clients over in-memory links. One clock for all.
 pub struct World {
     pub clock: Arc<ManualClock>,
-    pub hubs: Vec<Hub<MemoryBackend>>,
+    pub hubs: Vec<Hub>,
+    /// Each hub's store device: rows, key root, and their fault plan.
     pub backends: Vec<MemoryBackend>,
+    pub roots: Vec<MemoryRoot>,
+    pub faults: Vec<Faults>,
     pub clients: Vec<ClientSession>,
     pub events: Vec<Vec<ClientEvent>>,
     pub diagnostics: Vec<String>,
@@ -54,7 +57,7 @@ pub fn hub_key(i: usize) -> [u8; 32] {
 
 impl World {
     pub fn new() -> World {
-        World { clock: Arc::new(ManualClock::new(WallMs(T0))), hubs: vec![], backends: vec![], clients: vec![], events: vec![], diagnostics: vec![], links: vec![], next_conn: 1 }
+        World { clock: Arc::new(ManualClock::new(WallMs(T0))), hubs: vec![], backends: vec![], roots: vec![], faults: vec![], clients: vec![], events: vec![], diagnostics: vec![], links: vec![], next_conn: 1 }
     }
 
     pub fn now(&self) -> u64 {
@@ -63,21 +66,30 @@ impl World {
 
     pub fn add_hub(&mut self, policy: HostPolicy) -> usize {
         let i = self.hubs.len();
-        let backend = MemoryBackend::new();
-        self.backends.push(backend.clone());
-        let store = HostStore::open(backend, self.clock.clone(), policy, &mut SeededRng::from_seed([i as u8; 32])).unwrap();
+        let faults = Faults::new();
+        self.backends.push(MemoryBackend::with_faults(faults.clone()));
+        self.roots.push(MemoryRoot::with_faults(faults.clone()));
+        self.faults.push(faults);
+        let store = self.host_store(i, policy, i as u8);
         self.hubs.push(Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x70 + i as u8; 32]))));
         i
     }
 
-    /// Replaces hub `i` by a fresh one over the same backend: every connection of it is gone.
+    /// A host store over hub `i`'s device (created on first use), its rng from `seed`.
+    pub fn host_store(&self, i: usize, policy: HostPolicy, seed: u8) -> HostStore {
+        let (b, r) = (Box::new(self.backends[i].clone()), Box::new(self.roots[i].clone()));
+        let store = Store::open_or_create(b, r, StoreConfig::default(), &mut SeededRng::from_seed([seed; 32])).unwrap();
+        HostStore::open(store, self.clock.clone(), policy, Box::new(SeededRng::from_seed([seed ^ 0x55; 32]))).unwrap()
+    }
+
+    /// Replaces hub `i` by a fresh one over the same store: every connection of it is gone.
     pub fn restart(&mut self, i: usize, policy: HostPolicy) {
         for l in self.links.iter_mut() {
             if matches!(l.a, End::Hub(h, _) if h == i) || matches!(l.b, End::Hub(h, _) if h == i) {
                 l.open = false;
             }
         }
-        let store = HostStore::open(self.backends[i].clone(), self.clock.clone(), policy, &mut SeededRng::from_seed([0xff; 32])).unwrap();
+        let store = self.host_store(i, policy, 0xff);
         self.hubs[i] = Hub::new(store, hub_key(i), Box::new(SeededRng::from_seed([0x90 + i as u8; 32])));
     }
 

@@ -11,14 +11,13 @@
 //! keeps it behind its own lock and hands the driver the actions of its calls).
 //! While the node hosts (`Action::Host`, from its `host.0^`) the driver runs osis-host's driver
 //! as a task beside it over the same transport: its listeners use the host secret, its store is
-//! the holder's (`Shared::host_backend`), and the node's own dials of the host address go to it
+//! its own osis-store `Store`, opened by the holder (`Shared::host_store`), and the node's own dials of the host address go to it
 //! over an in-process link pair, no socket (notes/sync.md Hosting).
 
 use super::{Action, ConnId, Event, HostStatus, SyncEngine};
 use osis_base::Clock;
 use osis_crypto::RngCore;
 use osis_host::{HostConfig, driver as host};
-use osis_store::Backend;
 use osis_transport::link::{self, Link, LinkTx, blocking};
 use osis_transport::lan::Announce;
 use osis_transport::{Address, ListenConfig, Listener, StaticSecret, Transport};
@@ -127,10 +126,11 @@ struct Conn {
 pub trait Shared: Send + Sync + 'static {
     /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
-    /// Opens the store the node's host keeps (once per start of hosting; closed when it stops).
-    /// In memory unless the holder says otherwise.
-    fn host_backend(&self) -> Result<Box<dyn Backend>, String> {
-        Ok(Box::new(osis_store::MemoryBackend::new()))
+    /// Opens the store the node's host keeps, its own beside the node's (once per start of
+    /// hosting; closed when it stops). In memory unless the holder says otherwise.
+    fn host_store(&self) -> Result<osis_store::Store, String> {
+        let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
+        osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
 }
 
@@ -138,7 +138,7 @@ pub trait Shared: Send + Sync + 'static {
 struct HostTask {
     cfg: HostConfig,
     ctl: mpsc::Sender<host::Control>,
-    task: JoinHandle<osis_host::Hub<Box<dyn Backend>>>,
+    task: JoinHandle<osis_host::Hub>,
 }
 
 /// A holder owning the engine (`run`).
@@ -672,7 +672,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             }
             _ => {
                 let shared = &self.shared;
-                let opened = blocking(|| shared.host_backend().and_then(|b| osis_host::HostStore::open(b, self.clock.clone(), cfg.policy.clone(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())));
+                let opened = blocking(|| shared.host_store().and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
                 match opened {
                     Ok(store) => osis_host::Hub::new(store, cfg.key, Box::new(osis_crypto::OsRng)),
                     Err(e) => return self.host_status(HostStatus::Failed(format!("host store: {e}"))),

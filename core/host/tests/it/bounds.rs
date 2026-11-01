@@ -1,17 +1,15 @@
 //! Resource bounds and replication robustness (spec/sync.md §5: hosts cap storage; spec/wire.md
 //! §11.2 Register Error 12): connection cap, Hello deadline, node-wide caps, bounded sweeps,
-//! sweep failures, retry after refusals, mutual replication.
+//! retry after refusals, mutual replication.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::common;
 
 use common::*;
-use osis_base::{BlobId, ManualClock, WallMs};
-use osis_crypto::SeededRng;
+use osis_base::BlobId;
 use osis_proto::*;
-use osis_host::{HostStore, Hub, HubOutput, HostPolicy};
-use osis_store::{Backend, Fault, Faults, MemoryBackend, WriteBatch};
-use std::sync::Arc;
+use osis_host::{HostPolicy, HubOutput};
+use osis_store::Fault;
 
 fn live(w: &World, h: usize, l: &Label) -> Vec<BlobId> {
     LabelStore::live_ids(w.hubs[h].store(), &l.id).unwrap()
@@ -92,9 +90,10 @@ fn partial_frames_bounded() {
 }
 
 // spec/requirements.md (peer input never causes unbounded work): a message's entries reach disk
-// with one durable point (one fsync on a file backend), not one per entry
+// in one store commit (one durable backend write, or two around the root write when it shreds),
+// not one per entry
 #[test]
-fn one_fsync_per_message() {
+fn one_commit_per_message() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     let c = w.connect(h);
@@ -103,15 +102,15 @@ fn one_fsync_per_message() {
     let before = w.backends[h].syncs();
     let ev = w.run(c, Command::Upload { label: l.id, entries: (0..1024).map(|n| l.entry(blob(n))).collect() });
     assert_eq!(statuses(&ev), vec![Code::OK; 1024]);
-    assert_eq!(w.backends[h].syncs() - before, 1);
+    assert!(w.backends[h].syncs() - before <= 2, "{} durable writes", w.backends[h].syncs() - before);
     assert_eq!(live(&w, h, &l).len(), 1024);
 }
 
-// spec/requirements.md (durability): nothing is acknowledged or pushed before its input's sync:
-// when the sync fails, the uploader gets no status and the subscriber no push, both are closed,
-// and the uploader's retry is taken once syncs work again
+// spec/requirements.md (durability): nothing is acknowledged or pushed before its input's commit:
+// when the commit fails, the uploader gets no status and the subscriber no push, both are
+// closed, nothing of it is kept, and the uploader's retry is taken once writes work again
 #[test]
-fn failed_sync_sends_nothing() {
+fn failed_commit_sends_nothing() {
     let mut w = World::new();
     let h = w.add_hub(HostPolicy::default());
     // client index = link index
@@ -121,14 +120,12 @@ fn failed_sync_sends_nothing() {
     w.open(c, &l);
     w.run(c, Command::Subscribe { labels: vec![l.id] });
     w.take(c);
-    let synced = w.backends[h].syncs();
-    w.backends[h].faults().fail_syncs(1);
+    w.faults[h].at(0, Fault::Fail);
     let ev = w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] });
     assert!(statuses(&ev).is_empty(), "{ev:?}");
     assert!(events_of(&w.take(c)).0.is_empty());
     assert!(!w.link_open(a) && !w.link_open(c));
-    // the next input (here the closes) syncs what the failed one left visible
-    assert!(w.backends[h].syncs() > synced);
+    assert!(live(&w, h, &l).is_empty(), "the failed commit was rolled back");
     let a2 = w.connect(h);
     w.open(a2, &l);
     assert_eq!(statuses(&w.run(a2, Command::Upload { label: l.id, entries: vec![l.entry(blob(1))] })), vec![Code::OK]);
@@ -171,28 +168,6 @@ fn sweeps_are_bounded() {
     w.settle();
     assert!(live(&w, h, &l).is_empty());
     assert_eq!(w.hubs[h].store().totals().unwrap().entries, 0);
-}
-
-// spec: none (sweep robustness): an unparsable index row is dropped; a failing sweep backs off instead of spinning
-#[test]
-fn sweep_junk_and_failures() {
-    let faults = Faults::new();
-    let mut backend = MemoryBackend::with_faults(faults.clone());
-    let clock = Arc::new(ManualClock::new(WallMs(T0)));
-    let mut b = WriteBatch::new();
-    b.put([&b"X"[..], &0u64.to_be_bytes(), &[1, 2, 3]].concat(), vec![]);
-    backend.commit(b).unwrap();
-    let store = HostStore::open(backend.clone(), clock, HostPolicy::default(), &mut SeededRng::from_seed([1; 32])).unwrap();
-    let mut hub = Hub::new(store, [1; 32], Box::new(SeededRng::from_seed([2; 32])));
-    assert_eq!(hub.next_due(T0), Some(0));
-    faults.at(0, Fault::Fail);
-    let out = hub.tick(T0);
-    assert!(out.iter().any(|o| matches!(o, HubOutput::Diagnostic(d) if d.starts_with("sweep"))), "{out:?}");
-    assert_eq!(hub.next_due(T0), Some(T0 + 1_000));
-    assert!(hub.tick(T0 + 999).is_empty());
-    assert!(hub.tick(T0 + 1_000).is_empty());
-    assert_eq!(hub.next_due(T0 + 1_000), None);
-    assert!(backend.scan_prefix(b"X", 10).unwrap().is_empty());
 }
 
 // spec/sync.md §5: a replication batch refused for now (code 12) does not advance the position; the label is retried and converges once the peer has room

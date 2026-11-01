@@ -7,17 +7,17 @@
 
 use crate::common;
 
-use common::driven::Host;
+use common::driven::{Host, mem_store, store_on};
 use common::*;
 use osis_proto::*;
-use osis_store::MemoryBackend;
+use osis_store::{MemoryBackend, MemoryRoot};
 use osis_transport::Net;
 
 // spec/sync.md §5, §8, §10: clients through the driver (multi-thread runtime: hub calls in block_in_place): register, open, upload, download, subscription push
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn clients_end_to_end() {
     let net = Net::new(1);
-    let host = Host::start(net.endpoint("s"), "mem://s", 0x51, MemoryBackend::new(), vec![]).await;
+    let host = Host::start(net.endpoint("s"), "mem://s", 0x51, mem_store(), vec![]).await;
     let clients = net.endpoint("clients");
     let (mut a, mut b) = (host.client(&clients).await, host.client(&clients).await);
     let l = Label::new(3);
@@ -41,22 +41,22 @@ async fn clients_end_to_end() {
 async fn hosts_replicate_through_dialed_links() {
     let net = Net::new(1);
     let clients = net.endpoint("clients");
-    let s2 = Host::start(net.endpoint("s2"), "mem://s2", 0x52, MemoryBackend::new(), vec![]).await;
+    let s2 = Host::start(net.endpoint("s2"), "mem://s2", 0x52, mem_store(), vec![]).await;
     let l = Label::new(3);
     // a reader of the label waits at the peer, subscribed
     let mut b = s2.client(&clients).await;
     b.run(l.register_cmd(0)).await;
     b.run(Command::Open { label: l.id, key: OpenKey::Sync(l.head_keys().sync.clone()) }).await;
     b.run(Command::Subscribe { labels: vec![l.id] }).await;
-    let backend = MemoryBackend::new();
-    let s1 = Host::start(net.endpoint("s1"), "mem://s1", 0x51, backend.clone(), vec![s2.addr.clone()]).await;
+    let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
+    let s1 = Host::start(net.endpoint("s1"), "mem://s1", 0x51, store_on(&backend, &root), vec![s2.addr.clone()]).await;
     let mut a = s1.client(&clients).await;
     a.run(l.register_cmd(0)).await;
     a.run(Command::Upload { label: l.id, entries: (0..5).map(|n| l.entry(blob(n))).collect() }).await;
     assert_eq!(b.pushed(5).await, sorted((0..5).map(bid).collect()));
     // restart s1 over the same storage: only the new entry travels
     s1.stop().await;
-    let s1 = Host::start(net.endpoint("s1"), "mem://s1", 0x51, backend, vec![s2.addr.clone()]).await;
+    let s1 = Host::start(net.endpoint("s1"), "mem://s1", 0x51, store_on(&backend, &root), vec![s2.addr.clone()]).await;
     let mut a = s1.client(&clients).await;
     a.run(Command::Upload { label: l.id, entries: vec![l.entry(blob(5))] }).await;
     let (evs, _) = events_of(&b.next().await);
@@ -74,7 +74,7 @@ async fn flood_does_not_delay_others() {
     const BLOB: usize = 16 << 10;
     const FLOOD: u64 = 1500;
     let net = Net::new(1);
-    let host = Host::start(net.endpoint("s"), "mem://s", 0x51, MemoryBackend::new(), vec![]).await;
+    let host = Host::start(net.endpoint("s"), "mem://s", 0x51, mem_store(), vec![]).await;
     let l = Label::new(3);
     let mut a = host.client(&net.endpoint("a")).await;
     a.run(l.register_cmd(0)).await;

@@ -12,8 +12,7 @@ fn io(e: impl std::fmt::Display) -> BackendError {
     BackendError::Io(e.to_string())
 }
 
-/// A redb database file. `commit` and `sync` use redb's immediate durability (fsync before
-/// returning); `commit_lazy` none (made durable by the next of those).
+/// A redb database file. `commit` uses redb's immediate durability (fsync before returning).
 pub struct RedbBackend {
     db: Database,
 }
@@ -63,15 +62,7 @@ impl Backend for RedbBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.write(batch, redb::Durability::Immediate)
-    }
-
-    fn commit_lazy(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.write(batch, redb::Durability::None)
-    }
-
-    fn sync(&mut self) -> Result<(), BackendError> {
-        self.write(WriteBatch::new(), redb::Durability::Immediate)
+        self.write(batch)
     }
 
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
@@ -89,9 +80,9 @@ impl Backend for RedbBackend {
 }
 
 impl RedbBackend {
-    fn write(&mut self, batch: WriteBatch, durability: redb::Durability) -> Result<(), BackendError> {
+    fn write(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
         let mut w = self.db.begin_write().map_err(io)?;
-        w.set_durability(durability);
+        w.set_durability(redb::Durability::Immediate);
         {
             let mut kv = w.open_table(KV).map_err(io)?;
             let mut blobs = w.open_table(BLOBS).map_err(io)?;

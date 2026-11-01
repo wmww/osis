@@ -8,37 +8,12 @@ use crate::common;
 use common::*;
 use osis_base::{BlobId, CommitId, LabelId};
 use osis_crypto::SeededRng;
-use osis_store::{AspectUnit, PendingKind, Shred, Store, forensic_node_keys, forensic_open};
-use std::collections::HashSet;
+use osis_store::{AspectUnit, PendingKind, Shred, Store, forensic_plaintexts};
 
 /// Everything an attacker decrypts: start from the keys the current tree yields, open every
 /// row ever written with every key, harvest keys from opened tree nodes, until nothing new.
 fn attack(s: &mut Store, history: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
-    let mut keys: Vec<[u8; 32]> = s.forensic_keys().unwrap();
-    let mut known: HashSet<[u8; 32]> = keys.iter().copied().collect();
-    let mut opened = vec![None; history.len()];
-    let mut tried = 0;
-    while tried < keys.len() {
-        let batch: Vec<[u8; 32]> = keys[tried..].to_vec();
-        tried = keys.len();
-        for (i, (row, value)) in history.iter().enumerate() {
-            if opened[i].is_some() {
-                continue;
-            }
-            for k in &batch {
-                if let Some(plain) = forensic_open(row, value, k) {
-                    for nk in forensic_node_keys(row, &plain) {
-                        if known.insert(nk) {
-                            keys.push(nk);
-                        }
-                    }
-                    opened[i] = Some(plain);
-                    break;
-                }
-            }
-        }
-    }
-    opened.into_iter().flatten().collect()
+    forensic_plaintexts(s.forensic_keys().unwrap(), history)
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {

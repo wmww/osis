@@ -409,3 +409,87 @@ fn memory_rows_never_spill() {
     assert_eq!(t.table_len(tb).unwrap(), 200);
     assert_eq!(t.table_len(ix).unwrap(), 200);
 }
+
+// spec/commits.md §4: a transaction set aside (`suspend`) and continued (`resume`) across calls
+// is one transaction: its reads see its writes, spills included, and it commits or aborts whole
+#[test]
+fn suspended_transaction_is_one() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(11);
+    let cfg = StoreConfig { spill_bytes: 100, ..cfg() };
+    let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    let mut held = t.suspend();
+    for i in 0..20u32 {
+        let mut t = s.resume(held, &mut rng);
+        t.table_put(tb, &i.to_be_bytes(), vec![1; 30], Shred::No).unwrap();
+        t.put_blob(&BlobId([i as u8; 32]), vec![i as u8; 40]).unwrap();
+        assert_eq!(t.table_len(tb).unwrap(), u64::from(i) + 1);
+        held = t.suspend();
+    }
+    // dropped while set aside: aborted, the spills rolled back by the next transaction
+    drop(held);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.table(&tid(1), &ak("t.0"), 0).unwrap(), None);
+    assert_eq!(t.get_blob(&BlobId([3; 32])).unwrap(), None);
+    let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+    let mut held = t.suspend();
+    for i in 0..20u32 {
+        let mut t = s.resume(held, &mut rng);
+        t.table_put(tb, &i.to_be_bytes(), vec![2; 30], Shred::No).unwrap();
+        held = t.suspend();
+    }
+    s.resume(held, &mut rng).commit().unwrap();
+    assert!(s.backend().scan_prefix(b"j", 10).unwrap().is_empty(), "no journal left");
+    drop(s);
+    let mut s = Store::open_or_create(dev.backend(), dev.root(), cfg, &mut rng).unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    assert_eq!(t.table_len(tb).unwrap(), 20);
+    assert_eq!(t.table_get(tb, &7u32.to_be_bytes()).unwrap(), Some(vec![2; 30]));
+}
+
+// spec/commits.md §4: after a failed commit the store recovers in place (`reopen`): the failed
+// transaction is gone, earlier ones kept, and it takes commits again
+#[test]
+fn reopen_after_failed_commit() {
+    let dev = MemDevice::new();
+    let mut rng = SeededRng::from_u64(12);
+    let mut s = create(&dev, &mut rng);
+    // writes `k`, removing `gone` when `shred` is given
+    let put = |s: &mut Store, rng: &mut SeededRng, k: &[u8], shred: Option<Shred>| {
+        let mut t = s.transaction(rng).unwrap();
+        let tb = t.create_table(&tid(1), &ak("t.0"), 0).unwrap();
+        t.table_put(tb, k, k.to_vec(), Shred::No).unwrap();
+        if let Some(shred) = shred {
+            t.table_remove(tb, b"gone", shred).unwrap();
+        }
+        t.commit()
+    };
+    put(&mut s, &mut rng, b"gone", None).unwrap();
+    for (n, shred) in [(0, Shred::No), (0, Shred::Yes), (1, Shred::Yes), (2, Shred::Yes)] {
+        dev.faults.at(n, Fault::Fail);
+        assert!(put(&mut s, &mut rng, b"failed", Some(shred)).is_err());
+        assert_eq!(s.transaction(&mut rng).err(), Some(Error::Broken));
+        s.reopen().unwrap();
+        let mut t = s.transaction(&mut rng).unwrap();
+        let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+        // a shredding commit writes batch A, the root (its commit point), then batch B: failing
+        // at batch B it is committed
+        let landed = n == 2;
+        assert_eq!(t.table_get(tb, b"failed").unwrap().is_some(), landed, "fault at {n}");
+        assert_eq!(t.table_get(tb, b"gone").unwrap().is_some(), !landed, "fault at {n}");
+        if landed {
+            t.table_remove(tb, b"failed", Shred::No).unwrap();
+            t.table_put(tb, b"gone", vec![], Shred::No).unwrap();
+            t.commit().unwrap();
+        }
+    }
+    put(&mut s, &mut rng, b"after", None).unwrap();
+    drop(s);
+    let mut s = reopen(&dev);
+    let mut t = s.transaction(&mut rng).unwrap();
+    let tb = t.table(&tid(1), &ak("t.0"), 0).unwrap().unwrap();
+    assert_eq!(t.table_get(tb, b"after").unwrap(), Some(b"after".to_vec()));
+}

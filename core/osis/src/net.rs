@@ -287,11 +287,12 @@ impl Shared for OsisShared {
         Some(Vec::new())
     }
 
-    fn host_backend(&self) -> std::result::Result<Box<dyn osis_store::Backend>, String> {
-        match &self.1 {
-            crate::StoreAt::Memory(m) => Ok(Box::new(m.host.clone())),
-            crate::StoreAt::Dir(p) => osis_store::RedbBackend::open(&p.join("host.redb")).map(|b| Box::new(b) as Box<dyn osis_store::Backend>).map_err(|e| e.to_string()),
-        }
+    fn host_store(&self) -> std::result::Result<osis_store::Store, String> {
+        let (b, r): (Box<dyn osis_store::Backend>, Box<dyn osis_store::RootStorage>) = match &self.1 {
+            crate::StoreAt::Memory(m) => (Box::new(m.host.clone()), Box::new(m.host_root.clone())),
+            crate::StoreAt::Dir(p) => (Box::new(osis_store::RedbBackend::open(&p.join("host.redb")).map_err(|e| e.to_string())?), Box::new(osis_store::FileRoot::new(p.join("host.root")))),
+        };
+        osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
 }
 
