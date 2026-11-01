@@ -513,6 +513,10 @@ fn local_sync_surface_spec_api_sync() {
     assert!("".parse::<osis::HostAddr>().is_err());
     let a = osis::HostAddr::new("quic://h:1", [7; 32]);
     assert_eq!(a.to_string().parse::<osis::HostAddr>().unwrap(), a);
+    // a `quic://` URL without a port is :4040 (spec/sync.md §10), kept spelled out
+    let d = osis::HostAddr::new("quic://h:4040", [7; 32]);
+    assert_eq!(d.to_string().replace(":4040", "").parse::<osis::HostAddr>().unwrap(), d);
+    assert_eq!(osis::HostAddr::new("quic://h", [7; 32]), d);
     db.add_host(&a).unwrap();
     assert!(matches!(common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(1))), Err(Error::Network(_))));
     drop(db);
