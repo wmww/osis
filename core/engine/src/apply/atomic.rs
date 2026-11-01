@@ -216,6 +216,14 @@ pub(super) fn each_piece(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &Comm
         // counted: tests read how many pieces streamed
         let _s = crate::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;
+        #[cfg(test)]
+        if let Some(n) = tx.core.piece_fault.as_mut() {
+            if *n == 0 {
+                failed = Some(Error::Corrupt("test: piece fault"));
+                return Err(STOPPED);
+            }
+            *n -= 1;
+        }
         f(&mut tx, piece).map_err(|e| {
             failed = Some(e);
             STOPPED
@@ -698,6 +706,8 @@ fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<Com
 /// Rebuilds `aspects` once the commit is stored, so its own body joins too (`vouching`).
 fn rebuild_all(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, changed: &mut BTreeSet<(Tid, Ak)>, touched: &mut Touched) -> Result<()> {
     for (tid, ak) in aspects {
+        // counted: tests read whether a snapshot vouched
+        let _s = crate::costs::span("apply: vouched rebuild");
         rebuild(tx, tid, ak)?;
         crate::retention::mark_deaths_due(tx, tid, ak)?;
         tx.core.mark_aspect_changed(tid, ak);

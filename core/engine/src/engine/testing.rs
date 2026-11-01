@@ -65,6 +65,20 @@ impl Engine {
         self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
+    /// Writes the stored pages of `(tid, ak)` hold that their skeleton prunes
+    /// (`pages::stale_in_pages`; 0 unpaged). Tests: a join that skipped a page write.
+    #[cfg(test)]
+    pub fn stale_page_writes(&mut self, tid: &Tid, ak: &Ak) -> Result<usize> {
+        let k = (*tid, ak.clone());
+        self.run(|tx| {
+            tx.load_lazy(&k.0, &k.1)?;
+            match (tx.core.pages.get(&k), tx.core.states.get(&k)) {
+                (Some(idx), Some(Some(f))) => super::pages::stale_in_pages(&mut tx.txn, &k.0, &k.1, idx, f),
+                _ => Ok(0),
+            }
+        })
+    }
+
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
     /// dropped parts' frontiers (`Dropped::gives`). Tests: what a random history reached.
     #[doc(hidden)]

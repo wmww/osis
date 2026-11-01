@@ -101,6 +101,13 @@ impl PageIndex {
     pub fn whole(&self) -> bool {
         self.sets.values().all(|s| s.whole)
     }
+    /// Whether a page not loaded may still hold elements of the paged state whose loaded part
+    /// is `f`: a collection not loaded whole that `f` reaches, or that lies below another one
+    /// not loaded whole (its path runs through pages). One `f` no longer reaches (pruned with
+    /// the position holding it) holds nothing.
+    pub fn unloaded_reached(&self, f: &Fragment) -> bool {
+        self.sets.iter().any(|(p, s)| !s.whole && (f.at_steps(p).is_some() || self.sets.iter().any(|(q, t)| q.len() < p.len() && p.starts_with(q) && !t.whole)))
+    }
     /// How many collections are paged.
     #[cfg(test)]
     pub fn sets(&self) -> usize {
@@ -1639,6 +1646,26 @@ pub fn join_reset(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &mut PageI
         return Ok(Reset::Laid { state: (!m.is_empty()).then_some(m), changes });
     }
     Ok(Reset::Paged { skeleton, unit, changes })
+}
+
+/// Tests: the writes the stored pages of the paged state `f` hold that their own skeleton
+/// prunes (a page left unwritten by a join that changed it; a join of a page under the
+/// skeleton's spine along its path reports them as deaths). Loading prunes them again, so reads
+/// never show them.
+#[cfg(test)]
+pub fn stale_in_pages(txn: &mut Transaction<'_>, tid: &Tid, ak: &Ak, idx: &PageIndex, f: &Fragment) -> Result<usize> {
+    let t = table(txn, tid, ak)?;
+    let s0 = f.reduced(&idx.paths);
+    let mut n = 0;
+    for (p, set) in &idx.sets {
+        let spine = s0.spine(p, None);
+        for key in set_rows(txn, t, set)? {
+            let Some(row) = txn.table_get(t, &key)? else { continue };
+            let mut g = spine.clone();
+            n += g.join(Fragment::wrap(&set.path, parse_page_row(&row)?.1)).deaths().len();
+        }
+    }
+    Ok(n)
 }
 
 /// The unit state of the paged state `f` (its skeleton and sets).

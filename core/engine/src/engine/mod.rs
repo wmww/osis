@@ -514,6 +514,9 @@ pub struct Core {
     /// the differential's oracle.
     #[cfg(test)]
     pub whole_apply: bool,
+    /// Tests: the streamed apply fails after this many more pieces (`apply::atomic::each_piece`).
+    #[cfg(test)]
+    pub piece_fault: Option<usize>,
     /// Key actors other than the node whose seed this node holds for now (a recovery key from
     /// its card, a link key; role flows): they sign commits (`Mutation::sign_as`) and
     /// open their boxes. In memory only.
@@ -779,6 +782,8 @@ impl Core {
             check_ingest: false,
             #[cfg(test)]
             whole_apply: false,
+            #[cfg(test)]
+            piece_fault: None,
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
@@ -1043,9 +1048,10 @@ impl Tx<'_> {
     }
 
     /// A joined state `st` of `(tid, ak)` as it is cached: `None` when empty, unless paged with
-    /// a page not loaded (what is loaded may be empty while other pages hold elements).
+    /// a page not loaded that it still reaches (what is loaded may be empty while other pages
+    /// hold elements; `PageIndex::unloaded_reached`).
     pub fn kept(&self, tid: &Tid, ak: &Ak, st: osis_crdt::Fragment) -> Option<osis_crdt::Fragment> {
-        (!st.is_empty() || self.held_in_part(tid, ak)).then_some(st)
+        (!st.is_empty() || self.core.pages.get(&(*tid, ak.clone())).is_some_and(|i| i.unloaded_reached(&st))).then_some(st)
     }
 
     /// Drops the loaded pages of the cached state of `(tid, ak)`, keeping its skeleton
