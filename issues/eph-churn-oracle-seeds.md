@@ -15,3 +15,6 @@ Fixed earlier on this oracle: 203 (eph-restart-seeds); 154, 169, 118077, 119026,
 140170 and 140188 never finish (on main too): not ephemeral, a re-seal livelock (issues/reseal-livelock-concurrent-epochs.md). Run the oracle with `OSIS_SEED_TIMEOUT_SECS=60` around them.
 
 Each seed found later goes here with its class; the oracle is a periodic check until this list is empty.
+
+
+Coordinator decision (round 13): option (a). An expired ephemeral write vanishes completely at every node, its resets and removals included: ephemeral data is memory-only and has no carrier for value-less leftovers, so (b) needs (a) as a fallback anyway. Spec: state it in spec/crdt.md §4.7 (durable keeps value-less records; ephemeral leaves nothing). Owner to be told; reversible before stability.
