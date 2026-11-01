@@ -18,8 +18,9 @@ pub struct Hosting {
     /// Transport URLs to listen on (`quic://0.0.0.0:7400`); the node's own sessions to its host
     /// need none.
     pub listen: Vec<String>,
-    /// `Own`: the labels of groups this node reads whose hosts name its host address, plus
-    /// `labels`; `Open`: any label within the caps.
+    /// `Own`: the labels of groups this node's person owns (the owner chain reaches the
+    /// person or an actor it admins; a group only read or co-administered is not) whose hosts
+    /// name its host address, plus `labels`; `Open`: any label within the caps.
     pub admit: Admit,
     pub labels: BTreeSet<LabelId>,
     /// Peer hosts its labels are pushed to.

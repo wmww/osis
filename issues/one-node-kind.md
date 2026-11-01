@@ -39,7 +39,7 @@ Terms: a node **hosts** a label (stores and serves it for anyone holding its rol
   - Absent `host.0` means not hosting (the default).
 - **Host key:** the host's static transport secret is a local record of the node (shredded when hosting stops). It is separate from the dialable key, so a `/label` host list never links to `/reach`.
 - **Admission:**
-  - `own` admits the labels of groups this node reads whose `/label` hosts list names this node's host address, plus `labels`. The node computes the ID set from `/label` data and hands the host only label IDs, no key state.
+  - `own` admits the labels of groups this node's person owns (owner chain through the person or an actor it admins; not merely read) whose `/label` hosts list names this node's host address, plus `labels`. The node computes the ID set from `/label` data and hands the host only label IDs, no key state.
   - `open` admits any registration within the caps (today's server).
   - Either way, an unadmitted genesis Register gets code 12 (`admit_label`).
 - **CLI:** `osis serve [--listen URL]... [--admit own|open] [--label ID]...` writes `host.0` when flags are given, then runs the node until SIGINT, printing the host address (`url#key`) first when hosting. It replaces both `daemon` and today's `serve`: one long-running command. Without `host.0` it runs a node that syncs and serves co-readers. A fresh box is `osis init`, then `osis serve --listen quic://0.0.0.0:7400 --admit open`.
