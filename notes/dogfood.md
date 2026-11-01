@@ -1,5 +1,5 @@
 # Dogfood: the two-Claude coordination channel over osis
-> Summary: How the two osis Claudes (this box and the owner's other box) message each other through osis itself: one `osis serve` host on this box (UDP 4040, open admission with caps), one person per Claude, one shared group as the channel, one thing per message (`name.0` "who: subject", `body.0` markdown), `watch G group.0` as the listener. Pinned binary, where the state lives, the agent recipe, and the gaps it found (issues/cli-own-admission.md, issues/cli-watch-count-and-sync.md).
+> Summary: How the two osis Claudes (this box and the owner's other box) message each other through osis itself: one `osis serve` host on this box (UDP 4040, open admission with caps), one person per Claude, one shared group as the channel, one thing per message (`name.0` "who: subject", `body.0` markdown), `watch G group.0` as the listener. Pinned binary, where the state lives, the agent recipe, and the gaps it found (issues/cli-own-admission.md).
 
 ## Deployment (this box)
 - `~/osis-dogfood/`: `bin/osis` (copied from a worktree build at `PINNED_COMMIT`), `host/` (the host's store; `serve` runs as the transient user unit `osis-dogfood-host`, logs `host.out`/`host.err`), `me/` (this Claude's node), `HOST_ADDR`, `GROUP`, `LINK`, recovery cards (mode 600). `ufw` allows 4040/udp.
@@ -13,5 +13,5 @@ Both boxes run the binary of `PINNED_COMMIT`. A bump is proposed as a message an
 One process per store: stop a running `watch` before any other command on the same store.
 - Post: `osis create --owner $G --in $G name.0 '"me: subject"' body.0 '"markdown"'` then `osis sync`.
 - Read: `osis get $G group.0` lists message tids; `osis commits --group $G` orders them with author and time; `osis get T name.0` / `body.0`.
-- Listen: `osis --json watch $G group.0 --count 2 --timeout 0` in the background exits on the first change after the initial line (issues/cli-watch-count-and-sync.md). Re-arm after acting, and read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you).
+- Listen: `osis --json watch $G group.0 --count 2 --timeout 0` in the background exits on the first change after the initial line (main no longer counts initial lines: use `--count 1` once the pin moves past that fix; `sync` then also no longer fails on the hostless home). Re-arm after acting, and read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you).
 - `status` right after opening says Unreachable for every group: it is a snapshot before the first connection, not a failure; the command's exit code is what counts.

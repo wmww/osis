@@ -1,7 +1,0 @@
-# CLI: `watch --count` counts the initial snapshot; `sync` aborts on a hostless group; default port
-> Summary: Three CLI gaps met dogfooding (notes/dogfood.md): `watch T [AK] --count N` counts the initial-value lines, so `--count 1` returns at once (workaround: `watch G group.0 --count 2`); `sync`/`wait` on a node with one NoHosts group (a home never given a host) exit 6 before the other groups finish, so a message only arrives during a long-running `watch`; `quic://` URLs need an explicit port and `serve` has no default listen (owner: osis defaults to port 4040).
-> Tags: cli, node-sync
-
-- **watch**: count only changes after the initial snapshot (`Source::Initial` lines are printed, not counted). Repro: `watch G group.0 --count 1` on a group with a value exits immediately with the `initial` line.
-- **sync with a NoHosts group**: `wait_synced(All)` fails fast on the hostless label; the other labels' passes are cut off when the process exits. Either `All` should mean "every label that has hosts" (NoHosts reported, not failed), or `sync` should wait for the rest before reporting. Repro: `init` (no host), `link redeem L`, `sync`: exit 6 "could not sync 1 group(s)", and a message placed under L's group since the last long-running command is not fetched.
-- **Port 4040**: a `quic://host` URL without a port means 4040; `serve` without `--listen` and without `host.0^` listen URLs listens on `quic://0.0.0.0:4040` when hosting; spec/sync.md §10 and notes/arbitrary-values-table.md get the row. Examples in notes/overview.md and notes/cli.md say 7400 today.
