@@ -18,8 +18,14 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           Refresh,    \* TRUE: every rotation refreshes the deposit seed (a MAY)
           Offs,       \* offline transitions in a run
           Plants,     \* adversary: boxes planted by a non-holder in a run
-          InOrder     \* TRUE: one source, the host's log order (cursor sync);
+          InOrder,    \* TRUE: one source, the host's log order (cursor sync);
                       \* FALSE: any order, and co-reader peers serve rotations
+          Groups,     \* readers that are holder actors: a device d of one may
+                      \* leave it (its keyset moves from epoch 0 to 1)
+          Withhold,   \* admins the host and peers withhold every removal and
+                      \* keyset change from, forever
+          OwnNames,   \* negative control: a rotation names only itself
+          KeysetNames \* FALSE: negative control, no keyset names
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -45,32 +51,36 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = holders the
           inRot,    \* rotation commits in flight by inbox: <<holder, rotation>>
           via,      \* via[x]: co-reader peers x received rotation commits from
           stranded, \* holders whose stranded heartbeat is under the label
-          enc,      \* content written: <<epoch, departures the writer knew>>
+          enc,      \* content written: <<epoch, departures the writer knew,
+                    \* whether it knew d left the group>>
           leakP,    \* TRUE once something was encrypted under a planted secret
+          left,     \* TRUE once device d left the group (its keyset epoch 1)
+          ks,       \* ks[x]: the group's keyset epochs x holds ({0} or {0, 1})
           online, budget
 vars == <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-          steps, inbox, inRot, via, stranded, enc, leakP, online, budget>>
+          steps, inbox, inRot, via, stranded, enc, leakP, left, ks, online, budget>>
 
 ep_n(e) == ep[e].n
 \* crypto §4: newest = greatest n, ties by lowest nonce (here: lowest id).
 Newer(e, f) == ep_n(e) > ep_n(f) \/ (ep_n(e) = ep_n(f) /\ e < f)
 NewestOf(S) == CHOOSE e \in S : \A f \in S \ {e} : Newer(e, f)
-\* crypto §4: an epoch is established at x when x applied its rotation commit
-\* and every epoch it supersedes is established (own rotations are in kn at
-\* once and supersede established epochs only; no rotation commit is invalid
-\* here, ASSUMPTIONS.md).
-\* Epoch 0 is the derived epoch. No secrets.0 snapshots (ASSUMPTIONS.md). A
-\* rotation supersedes lower ids only, so one pass in id order is the fixpoint.
-Est(x) == LET f[i \in Ids] == IF i = 0 THEN TRUE
-                              ELSE i \in kn[x] /\ \A j \in ep[i].sup : j < i /\ f[j]
-          IN {i \in Ids : f[i]}
-\* crypto §4: current = established, and no established rotation supersedes it.
-Cur(x) == LET E == Est(x) IN {e \in E : ~\E f \in E : e \in ep[f].sup}
 \* crypto §4: "A secret learned only from a pending or invalid commit is kept
 \* for reading and never encrypted under until an applied valid box carries
 \* it." Enc(x) is what x may encrypt under: secrets from applied valid boxes
 \* only, never fsec (README: negative control with sec[x] \cup fsec[x]).
 Enc(x) == sec[x]
+\* The group's keyset epoch x boxes it at: its newest held (crypto §4).
+GK(x) == IF 1 \in ks[x] THEN 1 ELSE 0
+\* crypto §4: an epoch is established at x when x applied its rotation commit
+\* and, if x holds its secret, its names are met: x holds every removal its
+\* rotator held (ep[i].nm, rotation commits; the commit itself carries its own:
+\* the departs mark) and the group's keyset epoch its box to the group named
+\* (ep[i].nk). Own rotations are in kn at once; no rotation commit is invalid
+\* and there are no epoch starts (roster snapshots) nor secrets.0 snapshots
+\* (ASSUMPTIONS.md). Epoch 0 is the derived epoch.
+Est(x) == {0} \cup {i \in kn[x] : i \notin Enc(x) \/ (ep[i].nm \subseteq kn[x] /\ ep[i].nk \subseteq ks[x])}
+\* crypto §4: current = established, and no established rotation supersedes it.
+Cur(x) == LET E == Est(x) IN {e \in E : ~\E f \in E : e \in ep[f].sup}
 HeldCur(x) == Cur(x) \cap Enc(x)
 \* crypto §5: an uploader wraps under the newest current read epoch whose
 \* secret it holds; a node holding none uses the newest established secret it
@@ -81,11 +91,17 @@ EncEp(x) == NewestOf(IF HeldCur(x) # {} THEN HeldCur(x) ELSE Enc(x) \cap Est(x))
 \* the actor's labels, so every node learns its boxes).
 Holders(x, e) == (IF e \in kn[x] THEN ep[e].ob ELSE {})
                  \cup {b.m : b \in {c \in rd[x] : e \in c.eps}}
-\* crypto §4: an epoch covers a departure of M if it holds no box for M. A
+\* The group's keyset epochs x knows a box at e to a group names.
+GBoxes(x, e) == (IF e \in kn[x] /\ ep[e].ob \cap Groups # {} THEN {ep[e].gk} ELSE {})
+                \cup {b.gk : b \in {c \in rd[x] : e \in c.eps /\ c.m \in Groups}}
+\* crypto §4: an epoch covers a departure of M if it holds no box for M, and
+\* d's departure inside the group if its box to the group names the group's
+\* newest keyset epoch x holds, which covers it (1, made by d's removal). A
 \* rotator always boxes itself, so "an epoch whose rotation commit was written
 \* by a departed party does not cover that party's departure" adds nothing
-\* here (no departures inside a holder, ASSUMPTIONS.md).
-Covers(x, e) == \A m \in dep[x] : m \notin Holders(x, e)
+\* here (the group's keyset change is by its own admin, ASSUMPTIONS.md).
+Covers(x, e) == /\ \A m \in dep[x] : m \notin Holders(x, e)
+                /\ 1 \in ks[x] => 0 \notin GBoxes(x, e)
 \* crypto §5: a rotation commit is wrapped under the newest epoch it supersedes.
 WrapOf(k) == NewestOf(ep[k].sup)
 Top == steps[Len(steps)]
@@ -109,10 +125,12 @@ CanOpen(x) ==
 
 \* Download of rotation commit k: readable under its wrap epoch. From the
 \* host (after an open; InOrder: in log order) or, if ~InOrder, from an
-\* online co-reader peer y that holds it.
-Readable(x, k) == k \notin kn[x] /\ WrapOf(k) \in sec[x]
+\* online co-reader peer y that holds it. A removal never reaches Withhold:
+\* the host's log skips it for them.
+Withheld(x, k) == x \in Withhold /\ ep[k].rem # {}
+Readable(x, k) == k \notin kn[x] /\ WrapOf(k) \in sec[x] /\ ~Withheld(x, k)
 FromHost(x, k) == /\ CanOpen(x) /\ k \in hostRot /\ Readable(x, k)
-                  /\ InOrder => \A j \in before[k] : WrapOf(j) \in sec[x] => j \in kn[x]
+                  /\ InOrder => \A j \in before[k] : WrapOf(j) \in sec[x] /\ ~Withheld(x, j) => j \in kn[x]
 FromPeer(x, y, k) == ~InOrder /\ y # x /\ online[y] /\ k \in kn[y] /\ Readable(x, k)
 
 \* permissions §3: re-seal is decided "at the end of a complete sync pass of
@@ -137,8 +155,10 @@ ResealWanted(a, m) ==
 -----------------------------------------------------------------------------
 Init ==
   /\ ep = [e \in Ids |-> IF e = 0
-             THEN [n |-> 0, sup |-> {}, ob |-> Nodes \ Late, hist |-> {}, rem |-> {}]
-             ELSE [n |-> 0, sup |-> {}, ob |-> {}, hist |-> {}, rem |-> {}]]
+             THEN [n |-> 0, sup |-> {}, ob |-> Nodes \ Late, hist |-> {}, rem |-> {},
+                   nm |-> {}, nk |-> {}, gk |-> 0, k1 |-> FALSE]
+             ELSE [n |-> 0, sup |-> {}, ob |-> {}, hist |-> {}, rem |-> {},
+                   nm |-> {}, nk |-> {}, gk |-> 0, k1 |-> FALSE]]
   /\ made = {0}
   /\ kn = [x \in Nodes |-> {0}]
   /\ sec = [x \in Nodes |-> IF x \in Late THEN {} ELSE {0}]
@@ -150,6 +170,7 @@ Init ==
   /\ steps = <<[ep |-> 0, cl |-> Nodes \ Late, dr |-> FALSE]>>
   /\ inbox = {} /\ inRot = {} /\ via = [x \in Nodes |-> {}] /\ stranded = {}
   /\ enc = {} /\ leakP = FALSE
+  /\ left = FALSE /\ ks = [x \in Nodes |-> {0}]
   /\ online = [x \in Nodes |-> TRUE]
   /\ budget = [w |-> 0, off |-> 0, p |-> 0]
 
@@ -159,6 +180,9 @@ Init ==
 \* (commits §2: a removal and the rotation it requires are one commit).
 \* permissions §3: a holder it boxes that holds no box at a current read epoch
 \* before it (as the rotator knows) also gets the rotation by inbox.
+\* crypto §4 names: the removals the rotator holds (its applied rotation
+\* commits carrying one; OwnNames: none, the negative control), and per group
+\* boxed the keyset epoch its box names.
 RotateR(a, R) ==
   /\ online[a] /\ Cardinality(made) <= MaxE
   /\ LET k == Cardinality(made)
@@ -166,7 +190,10 @@ RotateR(a, R) ==
          d == dep[a] \cup R
          ob == hld[a] \ d
      IN /\ ep' = [ep EXCEPT ![k] = [n |-> 1 + Max({ep[e].n : e \in sup}),
-                    sup |-> sup, ob |-> ob, hist |-> Hist(a), rem |-> R]]
+                    sup |-> sup, ob |-> ob, hist |-> Hist(a), rem |-> R,
+                    nm |-> IF OwnNames THEN {} ELSE {j \in kn[a] : ep[j].rem # {}},
+                    nk |-> IF KeysetNames /\ ob \cap Groups # {} THEN {GK(a)} ELSE {},
+                    gk |-> GK(a), k1 |-> 1 \in ks[a]]]
         /\ made' = made \cup {k}
         /\ kn' = [kn EXCEPT ![a] = @ \cup {k}]
         /\ sec' = [sec EXCEPT ![a] = @ \cup {k}]
@@ -176,7 +203,7 @@ RotateR(a, R) ==
                                    \A e \in sup : y \notin Holders(a, e)}}
         /\ leakP' = (leakP \/ ~(Hist(a) \subseteq sec[a]))
   /\ UNCHANGED <<fsec, hld, granted, hostRot, before, bx, rd, steps, inbox, via, stranded, enc,
-                 online, budget>>
+                 left, ks, online, budget>>
 Rotate(a) == RotateR(a, {})
 Remove(m) == m \in Departing \ removed /\ RotateR(Remover, {m})
 \* permissions §3 / crypto §4: MUST rotate before encrypting under an epoch
@@ -194,7 +221,7 @@ Register(a) ==
   /\ steps' = Append(steps, [ep |-> EncEp(a), cl |-> Holders(a, EncEp(a)), dr |-> FALSE])
   /\ leakP' = (leakP \/ ~({Top.ep, EncEp(a)} \subseteq sec[a]))
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-                 inbox, inRot, via, stranded, enc, online, budget>>
+                 inbox, inRot, via, stranded, enc, online, budget, left, ks>>
 
 \* sync §5: rotation commits go up under the head's keys (write key never
 \* rotated here), before the step.
@@ -205,7 +232,7 @@ UploadRot(a, k) ==
   /\ hostRot' = hostRot \cup {k}
   /\ before' = [before EXCEPT ![k] = hostRot]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, bx, rd, steps, inbox,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+                 inRot, via, stranded, enc, leakP, online, budget, left, ks>>
 
 \* A grant or re-seal commit b by a: placed under the label (wrapped under a's
 \* newest epoch), read by a at once, boxes delivered to b.m by inbox.
@@ -223,9 +250,9 @@ Grant(a, m) ==
   /\ \A e \in HeldCur(a) : Covers(a, e)
   /\ granted' = granted \cup {m}
   /\ hld' = [hld EXCEPT ![a] = @ \cup {m}]
-  /\ PlaceBox(a, [m |-> m, eps |-> HeldCur(a), w |-> EncEp(a), g |-> TRUE])
+  /\ PlaceBox(a, [m |-> m, eps |-> HeldCur(a), w |-> EncEp(a), g |-> TRUE, gk |-> GK(a)])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, hostRot, before, steps, inRot, via,
-                 stranded, enc, online, budget>>
+                 stranded, enc, online, budget, left, ks>>
 
 \* Reading a grant or re-seal commit from the label: a grant teaches the
 \* holder; the boxed holder itself takes the secrets and history boxes.
@@ -236,18 +263,18 @@ RecvBox(x, b) ==
   /\ sec' = IF b.m = x THEN [sec EXCEPT ![x] = @ \cup b.eps \cup UNION {ep[e].hist : e \in b.eps}]
             ELSE sec
   /\ UNCHANGED <<ep, made, kn, fsec, dep, removed, granted, hostRot, before, bx, steps,
-                 inbox, inRot, via, stranded, enc, leakP, online, budget>>
+                 inbox, inRot, via, stranded, enc, leakP, online, budget, left, ks>>
 
 \* crypto §4: never encrypt under an epoch that does not cover a known
 \* departure; crypto §5: a node holding no current secret writes nothing.
 WriteContent(a) ==
   /\ online[a] /\ budget.w < Writes /\ ~NeedsReg(a) /\ HeldCur(a) # {}
   /\ Covers(a, EncEp(a))
-  /\ enc' = enc \cup {<<EncEp(a), dep[a]>>}
+  /\ enc' = enc \cup {<<EncEp(a), dep[a], 1 \in ks[a]>>}
   /\ leakP' = (leakP \/ EncEp(a) \notin sec[a])
   /\ budget' = [budget EXCEPT !.w = @ + 1]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-                 steps, inbox, inRot, via, stranded, online>>
+                 steps, inbox, inRot, via, stranded, online, left, ks>>
 
 \* A box for x gives the new secret and, by the history box, every secret the
 \* rotator held; the removals it carries become known.
@@ -258,18 +285,18 @@ Apply(x, k) ==
 RecvHost(x, k) ==
   /\ online[x] /\ FromHost(x, k) /\ Apply(x, k)
   /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, hostRot, before, bx, rd, steps, inbox,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+                 inRot, via, stranded, enc, leakP, online, budget, left, ks>>
 RecvPeer(x, y, k) ==
   /\ online[x] /\ FromPeer(x, y, k) /\ Apply(x, k)
   /\ via' = [via EXCEPT ![x] = @ \cup {y}]
   /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, hostRot, before, bx, rd, steps, inbox,
-                 inRot, stranded, enc, leakP, online, budget>>
+                 inRot, stranded, enc, leakP, online, budget, left, ks>>
 \* permissions §3: a rotation delivered by inbox (no label access needed).
 InboxRot(x, k) ==
-  /\ online[x] /\ <<x, k>> \in inRot /\ Apply(x, k)
+  /\ online[x] /\ <<x, k>> \in inRot /\ ~Withheld(x, k) /\ Apply(x, k)
   /\ inRot' = inRot \ {<<x, k>>}
   /\ UNCHANGED <<ep, made, fsec, hld, removed, granted, hostRot, before, bx, rd, steps, inbox,
-                 via, stranded, enc, leakP, online, budget>>
+                 via, stranded, enc, leakP, online, budget, left, ks>>
 Recv(x, k) == RecvHost(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 
 \* permissions §3: SHOULD re-seal (treated as done: fair), with the epochs'
@@ -280,10 +307,10 @@ Recv(x, k) == RecvHost(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 Reseal(a, m) ==
   /\ ResealWanted(a, m) /\ HeldCur(a) # {}
   /\ \A e \in ResealE(a, m) \cup {EncEp(a)} : Covers(a, e)
-  /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE])
+  /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE, gk |-> GK(a)])
   /\ stranded' = stranded \ {m}
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, steps,
-                 inRot, via, enc, online, budget>>
+                 inRot, via, enc, online, budget, left, ks>>
 
 \* crypto §4: the grant or re-seal re-writes each boxed epoch's history box.
 InboxRecv(m, e) ==
@@ -291,7 +318,7 @@ InboxRecv(m, e) ==
   /\ sec' = [sec EXCEPT ![m] = @ \cup {e} \cup ep[e].hist]
   /\ inbox' = inbox \ {<<m, e>>}
   /\ UNCHANGED <<ep, made, kn, fsec, dep, hld, removed, granted, hostRot, before, bx, rd, steps,
-                 inRot, via, stranded, enc, leakP, online, budget>>
+                 inRot, via, stranded, enc, leakP, online, budget, left, ks>>
 
 \* Adversary (crypto §4): anyone can seal a box to a holder's keys.0 in a
 \* commit that stays pending or is invalid, naming an existing epoch with a
@@ -301,7 +328,7 @@ Plant(x, e) ==
   /\ fsec' = [fsec EXCEPT ![x] = @ \cup {e}]
   /\ budget' = [budget EXCEPT !.p = @ + 1]
   /\ UNCHANGED <<ep, made, kn, sec, dep, hld, removed, granted, hostRot, before, bx, rd, steps,
-                 inbox, inRot, via, stranded, enc, leakP, online>>
+                 inbox, inRot, via, stranded, enc, leakP, online, left, ks>>
 
 \* permissions §4: MUST place a stranded heartbeat when it cannot read the
 \* current epoch: it reached the head and after a complete pass there cannot
@@ -318,22 +345,35 @@ Heartbeat(x) ==
   /\ stranded' = stranded \cup {x}
   /\ leakP' = (leakP \/ NewestOf(Enc(x) \cap Est(x)) \notin sec[x])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-                 steps, inbox, inRot, via, enc, online, budget>>
+                 steps, inbox, inRot, via, enc, online, budget, left, ks>>
 
 \* sync §4: a superseded step's claim set is kept ROLE_KEEP, then may go.
 Drop(i) ==
   /\ DropClaims /\ i < Len(steps) /\ ~steps[i].dr
   /\ steps' = [steps EXCEPT ![i].dr = TRUE]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-                 inbox, inRot, via, stranded, enc, leakP, online, budget>>
+                 inbox, inRot, via, stranded, enc, leakP, online, budget, left, ks>>
+
+\* Device d leaves group g: g's admin (outside this model) rotates its
+\* keyset to epoch 1, which d does not hold; its keys.0 write carries the
+\* departure. Unfair, once.
+GLeave == /\ Groups # {} /\ ~left /\ left' = TRUE
+          /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx,
+                         rd, steps, inbox, inRot, via, stranded, enc, leakP, ks, online, budget>>
+\* An admin reads the group's new keyset (published under the labels of what
+\* the group holds); never one in Withhold.
+LearnK(x) == /\ left /\ x \notin Withhold /\ 1 \notin ks[x] /\ ks' = [ks EXCEPT ![x] = @ \cup {1}]
+             /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before,
+                            bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, left, online,
+                            budget>>
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
             /\ online' = [online EXCEPT ![x] = FALSE] /\ budget' = [budget EXCEPT !.off = @ + 1]
             /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before,
-                           bx, rd, steps, inbox, inRot, via, stranded, enc, leakP>>
+                           bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, left, ks>>
 GoOn(x) == /\ ~online[x] /\ online' = [online EXCEPT ![x] = TRUE]
            /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before,
-                          bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, budget>>
+                          bx, rd, steps, inbox, inRot, via, stranded, enc, leakP, budget, left, ks>>
 
 Next ==
   \/ \E a \in Admins : Rotate(a) \/ Register(a) \/ WriteContent(a)
@@ -345,6 +385,7 @@ Next ==
                                          \/ Plant(x, k))
                       \/ (\E b \in bx : RecvBox(x, b))
   \/ \E i \in 1..Len(steps) : Drop(i)
+  \/ GLeave \/ \E a \in Admins : LearnK(a)
 
 \* Weak fairness of honest steps; eager rotation, removal, grants, writes,
 \* claim-set drops, going offline and planting are unfair.
@@ -352,6 +393,7 @@ Fairness ==
   /\ \A a \in Admins : /\ WF_vars(RotateForced(a)) /\ WF_vars(Register(a))
                        /\ \A k \in Ids : WF_vars(UploadRot(a, k))
                        /\ \A m \in Nodes : WF_vars(Reseal(a, m))
+                       /\ WF_vars(LearnK(a))
   /\ \A x \in Nodes : /\ WF_vars(Heartbeat(x)) /\ WF_vars(GoOn(x))
                       /\ \A k \in Ids : /\ WF_vars(Recv(x, k)) /\ WF_vars(InboxRecv(x, k))
                                        /\ WF_vars(InboxRot(x, k))
@@ -363,6 +405,7 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 GCur == {e \in made : ~\E f \in made : e \in ep[f].sup}
 
 TypeOK == /\ made \subseteq Ids /\ removed \subseteq Departing /\ granted \subseteq Late
+          /\ Groups \subseteq Readers /\ Withhold \subseteq Admins
           /\ \A x \in Nodes : sec[x] \subseteq made /\ kn[x] \subseteq made
                               /\ fsec[x] \subseteq made /\ via[x] \subseteq Nodes
                               /\ rd[x] \subseteq bx
@@ -373,6 +416,17 @@ NoLeak == \A c \in enc : \A m \in c[2] : c[1] \notin sec[m]
 \* permissions §3 "requires rotating every role secret M could open": a
 \* departed holder never holds an epoch whose rotation did not box it.
 DepartedLocked == \A m \in removed : \A e \in sec[m] : m \in ep[e].ob
+\* The epochs device d opens after leaving its group: those boxed to the group
+\* at keyset epoch 0 (by a rotation, grant or re-seal), with their history.
+DevBoxed == {e \in made : ep[e].ob \cap Groups # {} /\ ep[e].gk = 0}
+            \cup UNION {b.eps : b \in {c \in bx : c.m \in Groups /\ c.gk = 0}}
+DevSec == UNION {{e} \cup ep[e].hist : e \in DevBoxed}
+\* permissions §3 for a departure inside a holder (crypto §4 covers rule):
+\* d never opens an epoch whose rotator held the group's keyset after d left.
+DevLocked == \A e \in DevSec : ~ep[e].k1
+\* ... nor content written while its writer knew d left.
+DevNoLeak == \A c \in enc : c[3] => c[1] \notin DevSec
+
 \* crypto §4: a secret from a planted box (a non-holder's pending or invalid
 \* commit) never becomes an encrypting key: nothing was wrapped, boxed,
 \* history-boxed or signed under it.

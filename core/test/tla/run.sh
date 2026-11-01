@@ -30,6 +30,10 @@ instances=(
   "rotation Rotation MC_safety.cfg small pass"
   "rotation Rotation MC_fork.cfg small pass"
   "rotation Rotation MC_fork_reorder.cfg all pass"
+  "rotation Rotation MC_withhold.cfg all pass"
+  "rotation Rotation MC_names_own.cfg small fail"       # negative control: own removals only
+  "rotation Rotation MC_keyset.cfg small pass"
+  "rotation Rotation MC_keyset_nonames.cfg small fail"  # negative control: no keyset names
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"
