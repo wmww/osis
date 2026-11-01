@@ -117,24 +117,33 @@ fn admitted(db: &Osis) -> BTreeSet<LabelId> {
     }
 }
 
-// spec/data-model.md §9 (`host.0^` `own`), spec/requirements.md Untrusted nodes: `own` admits
-// the groups Alice's person owns (the owner chain reaches her person, or an actor her person
-// admins), not every group she reads. Bob, a contact, grants her read, then admin, on a group he
-// owns that names her host: not admitted. A group owned by an actor her person admins is.
-#[test]
-fn own_admits_only_owned_groups_spec_data_model_9() {
+/// Alice (hosting under `own` on a test host) and Bob, contacts both ways: (world, alice, bob,
+/// base host, Alice's host address, Alice's person as Bob knows it, Bob's as Alice knows it).
+fn own_pair(seed: u64) -> (World, Osis, Osis, usize, HostAddr, Tid, Tid) {
     let mut w = World::new();
     let base = w.add_host();
-    let (alice, _) = w.person(1, &[base]);
-    let (bob, _) = w.person(2, &[base]);
+    let (alice, _) = w.person(seed * 2 + 1, &[base]);
+    let (bob, _) = w.person(seed * 2 + 2, &[base]);
     w.run();
     alice.set_hosting(Some(Hosting { listen: vec!["quic://alice:1".into()], admit: Admit::Own, ..Default::default() })).unwrap();
     w.run();
     let ha = alice.host_address().unwrap().expect("listening");
-    let hosts = [w.addr(base).unwrap(), ha.clone()];
-    let card = alice.contact_card().unwrap();
+    let (ca, cb) = (alice.contact_card().unwrap(), bob.contact_card().unwrap());
     w.run();
-    let a = w.until(bob.import_contact(&card), 1000, 10).unwrap();
+    let a = w.until(bob.import_contact(&ca), 1000, 10).unwrap();
+    let b = w.until(alice.import_contact(&cb), 1000, 10).unwrap();
+    (w, alice, bob, base, ha, a, b)
+}
+
+// spec/data-model.md §9 (`host.0^` `own`), spec/requirements.md Untrusted nodes: `own` admits
+// the groups whose owner chain reaches Alice's person, not every group she reads. Bob, a contact,
+// grants her person read, then admin, and her node admin, on a group he owns that names her
+// host: not admitted; nor a group under an actor of Bob's that Bob made her person admin of
+// (grants need no consent). A group under an actor her person owns is.
+#[test]
+fn own_admits_only_owned_groups_spec_data_model_9() {
+    let (mut w, alice, bob, base, ha, a, _) = own_pair(0);
+    let hosts = [w.addr(base).unwrap(), ha.clone()];
 
     // Bob's group naming Alice's host, Alice a reader: not hers
     let x = group_of(&bob, bob.me(), bob.home(), &hosts);
@@ -149,6 +158,10 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     w.run();
     assert_eq!(alice.role_on(x), Some(Role::Admin));
     assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns that Alice co-administers");
+    // nor when Bob grants her node admin directly
+    bob.grant(x, alice.node(), Role::Admin, Default::default()).unwrap();
+    w.run();
+    assert!(!admitted(&alice).contains(&lx), "own: a group Bob owns, Alice's node its admin");
     for _ in 0..3 {
         w.advance(120_000);
     }
@@ -156,16 +169,133 @@ fn own_admits_only_owned_groups_spec_data_model_9() {
     let s = w.host_of(ai).unwrap();
     assert!(!hosted(&w, s).contains(&lx), "own: refused at registration");
 
-    // a group owned by an actor Alice's person admins (a family actor Bob made): hers
+    // an actor Bob made and made Alice's person admin of: still Bob's
     let fam = group_of(&bob, bob.me(), bob.home(), &[]);
     bob.grant(fam, a, Role::Admin, Default::default()).unwrap();
     let shared = group_of(&bob, fam, fam, &hosts);
     w.run();
     let ls = label_of(&alice, shared);
-    assert!(admitted(&alice).contains(&ls), "own: owned by an actor Alice's person admins");
+    assert!(!admitted(&alice).contains(&ls), "own: owned by an actor Bob made Alice's person admin of");
 
-    // her own group naming her host
+    // her own group naming her host, and one under an actor she owns
     let mine = group_of(&alice, alice.me(), alice.home(), &hosts);
+    let y = group_of(&alice, alice.me(), alice.home(), &[]);
+    let under = group_of(&alice, y, y, &hosts);
     w.run();
-    assert!(admitted(&alice).contains(&label_of(&alice, mine)), "own: Alice's own group");
+    let got = admitted(&alice);
+    assert!(got.contains(&label_of(&alice, mine)), "own: Alice's own group");
+    assert!(got.contains(&label_of(&alice, under)), "own: under an actor Alice's person owns");
+}
+
+// spec/data-model.md §9 (`host.0^` `own`): the invariant (`SyncEngine::owns`) over random ownership and grant graphs: Alice
+// admits exactly the groups she reads that name her host and whose owner chain (as created)
+// reaches her person, whatever read or admin edges Bob gives her person or node, or she gives
+// Bob (who then creates under her actors). Seeds picked so each fails with the rule that also
+// counted admin edges (on the group, or on an owner above it).
+#[test]
+fn own_admits_owner_chain_random_0_spec_data_model_9() {
+    own_random(2);
+}
+
+// spec/data-model.md §9: as above, another seed.
+#[test]
+fn own_admits_owner_chain_random_1_spec_data_model_9() {
+    own_random(3);
+}
+
+// spec/data-model.md §9: as above, another seed.
+#[test]
+fn own_admits_owner_chain_random_2_spec_data_model_9() {
+    own_random(7);
+}
+
+fn own_random(seed: u64) {
+    {
+        let (mut w, alice, bob, base, ha, a, b) = own_pair(10 + seed);
+        let (plain, named) = (vec![w.addr(base).unwrap()], vec![w.addr(base).unwrap(), ha.clone()]);
+        let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move |n: usize| {
+            rng ^= rng << 13;
+            rng ^= rng >> 7;
+            rng ^= rng << 17;
+            (rng % n as u64) as usize
+        };
+        // created groups: owner, whether they name Alice's host
+        let mut owner: std::collections::BTreeMap<Tid, Tid> = Default::default();
+        let mut names: BTreeSet<Tid> = BTreeSet::new();
+        // direct admin edges given to Bob's person (by Alice)
+        let mut bob_admin: BTreeSet<Tid> = BTreeSet::new();
+        let mut granted: BTreeSet<(Tid, Tid)> = BTreeSet::new();
+        let chain = |owner: &std::collections::BTreeMap<Tid, Tid>, g: Tid| std::iter::successors(Some(g), |t| owner.get(t).copied()).collect::<Vec<_>>();
+        let mut ops = Vec::new();
+        for _ in 0..10 {
+            let groups: Vec<Tid> = owner.keys().copied().collect();
+            let op = [0, 0, 1, 1, 2, 2, 2, 4][next(8)];
+            let hosts = if next(2) == 0 { &plain } else { &named };
+            match op {
+                // Alice creates under her person or one of her own groups
+                0 => {
+                    let mine: Vec<Tid> = std::iter::once(alice.me()).chain(groups.iter().copied().filter(|g| chain(&owner, *g).contains(&alice.me()))).collect();
+                    let o = mine[next(mine.len())];
+                    let g = group_of(&alice, o, if o == alice.me() { alice.home() } else { o }, hosts);
+                    owner.insert(g, o);
+                    if hosts.len() > 1 {
+                        names.insert(g);
+                    }
+                    ops.push(format!("alice creates {g:?} under {o:?} named {}", hosts.len() > 1));
+                }
+                // Bob creates under his person or a group he admins
+                1 => {
+                    let his: Vec<Tid> = std::iter::once(bob.me()).chain(groups.iter().copied().filter(|g| chain(&owner, *g).iter().any(|x| *x == bob.me() || bob_admin.contains(x)))).collect();
+                    let o = his[next(his.len())];
+                    if bob.role_on(o) != Some(Role::Admin) {
+                        continue;
+                    }
+                    let g = group_of(&bob, o, if o == bob.me() { bob.home() } else { o }, hosts);
+                    owner.insert(g, o);
+                    if hosts.len() > 1 {
+                        names.insert(g);
+                    }
+                    ops.push(format!("bob creates {g:?} under {o:?} named {}", hosts.len() > 1));
+                }
+                // Bob grants Alice's person read or admin, or her node admin, on a group he admins
+                2 => {
+                    let his: Vec<Tid> = groups.iter().copied().filter(|g| bob.role_on(*g) == Some(Role::Admin)).collect();
+                    if his.is_empty() {
+                        continue;
+                    }
+                    let g = his[next(his.len())];
+                    let (who, role) = match next(3) {
+                        0 => (a, Role::Read),
+                        1 => (a, Role::Admin),
+                        _ => (alice.node(), Role::Admin),
+                    };
+                    // one edge per holder: a change down would be a demotion
+                    if !granted.insert((g, who)) {
+                        continue;
+                    }
+                    bob.grant(g, who, role, Default::default()).unwrap();
+                    ops.push(format!("bob grants {who:?} {role:?} on {g:?}"));
+                }
+                // Alice grants Bob's person admin on one of her groups
+                _ => {
+                    let mine: Vec<Tid> = groups.iter().copied().filter(|g| chain(&owner, *g).contains(&alice.me())).collect();
+                    if mine.is_empty() {
+                        continue;
+                    }
+                    let g = mine[next(mine.len())];
+                    if !bob_admin.insert(g) {
+                        continue;
+                    }
+                    alice.grant(g, b, Role::Admin, Default::default()).unwrap();
+                    ops.push(format!("alice grants bob admin on {g:?}"));
+                }
+            }
+            w.run();
+        }
+        let got = admitted(&alice);
+        let reads: Vec<(Tid, LabelId)> = alice.sync_engine(|s| s.labels().into_iter().map(|(g, l)| (g, l.id)).collect());
+        let want: BTreeSet<LabelId> = reads.iter().filter(|(g, _)| names.contains(g) && chain(&owner, *g).contains(&alice.me())).map(|(_, l)| *l).collect();
+        assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
+    }
 }

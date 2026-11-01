@@ -63,7 +63,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |
 | `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
-| `status [--watch]` / `sync` / `wait` | `status`, `watch_status` (lines `group state last_sync labels`, labels comma-separated) / `sync_now`, `wait_synced` | now |
+| `status [--watch]` / `sync` / `wait` | `status`, `watch_status` (lines `group state last_sync labels`, labels comma-separated, `-` for none) / `sync_now`, `wait_synced` | now |
 | `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |
 | `bundle export/import` | `export_bundle` / `import_bundle` | now |
 | `inspect thing/group/actor/commit` | `Internals::engine` (`osis::internals`, doc-hidden), `read`, `knows` | now |

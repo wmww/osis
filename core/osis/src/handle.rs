@@ -344,6 +344,7 @@ impl Osis {
             }
         }
         let node = sync.engine().tid();
+        sync.set_person(Some(me));
         let events = sync.engine_mut().subscribe();
         let dispatch = Dispatch::new(&cfg.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
