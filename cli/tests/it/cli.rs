@@ -488,3 +488,32 @@ fn every_api_method_has_a_command_plan_cli_tests() {
     let missing: Vec<&String> = methods.iter().filter(|m| !table.contains(&format!("`{m}`"))).collect();
     assert!(missing.is_empty(), "API methods without a command (notes/cli.md table): {missing:?}");
 }
+
+// notes/cli.md Command table `hosting`: `host.0^` written field by field, shown, stopped; a
+// group names its labels (as `status` lists them), a label ID works too, `''` clears a field.
+#[test]
+fn hosting_commands_plan_cli_4() {
+    let s = S::mem();
+    assert_eq!(s.code(&["hosting", "show"]), 3, "not hosting");
+    s.ok(&["hosting", "set", "--listen", "quic://0.0.0.0:7400", "--label", "home", "--policy", "cap_entries=10", "--cap", "home=5,500"]);
+    let st = s.ok(&["--json", "status"]).out;
+    let home_label = st.split("\"labels\":[\"").nth(1).unwrap().split('"').next().unwrap().to_string();
+    assert_eq!(home_label.len(), 32, "{st}");
+    let show = s.ok(&["hosting", "show"]).out;
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\nadmit own\nlabel {home_label}\npolicy cap_entries 10\ncap {home_label} 5 500\n"));
+    // one flag replaces its field, the rest kept; '' clears
+    let other = "00112233445566778899aabbccddeeff";
+    s.ok(&["hosting", "set", "--admit", "open", "--label", other, "--policy", ""]);
+    let show = s.ok(&["hosting", "show"]).out;
+    assert_eq!(show, format!("listen quic://0.0.0.0:7400\nadmit open\nlabel {other}\ncap {home_label} 5 500\n"));
+    let j = s.ok(&["--json", "hosting", "show"]).out;
+    assert!(j.contains(&format!("\"labels\":[\"{other}\"]")) && j.contains("\"admit\":\"open\""), "{j}");
+    // bad input: an unknown knob (Invalid), a group not synced here, not a label
+    assert_eq!(s.code(&["hosting", "set", "--policy", "no_such_knob=1"]), 7);
+    let t = s.thing();
+    assert_eq!(s.code(&["hosting", "set", "--label", &t]), 3);
+    assert_eq!(s.code(&["hosting", "set", "--label", "abc"]), 2);
+    assert_eq!(s.code(&["hosting", "set", "--cap", "home=5"]), 2);
+    s.ok(&["hosting", "off"]);
+    assert_eq!(s.code(&["hosting", "show"]), 3);
+}

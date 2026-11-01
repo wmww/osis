@@ -14,7 +14,8 @@
 - **`edit` on a terminal**: the value goes to a new temp file (`create_new`, random name, mode 0600, in `$XDG_RUNTIME_DIR` when set), then `$EDITOR`; the file is removed whatever the editor does.
 - **Delivering commands** (`grant`, `edge`, `leave`, `share-into`, `remove-edge-of`, `link make`, `card show`, `group sync`): their API call queues inbox deposits or a new label's first commits that the engine holds only in memory, so they open with sync on and end with `sync_now` + `wait_synced(All)` within `--timeout` (exit 6 "done locally, not yet at the hosts"); skipped for a store without hosts. Other writes stay local and go out with the next networked command.
 - **Write output**: `create` prints the tid; other writes print the commit id (nothing when nothing changed).
-- **`serve [--listen URL]… [--admit own|open] [--label ID]…`**: the one long-running command. Flags given write the node's `host.0^` (`set_hosting`; each flag replaces its field, the rest kept); then, while it hosts, the host address `<url>#<key>` is the first stdout line (`{"host": …}` with `--json`; exit 6 if it does not listen within 30 s); then sync and diagnostics until SIGINT or `--timeout`. Without `host.0^` it is a node that syncs and serves co-readers. A fresh box: `osis init`, then `osis serve --listen quic://0.0.0.0:7400 --admit open`. Label IDs are 32 hex digits. The host store is `<store>/host.redb`.
+- **Hosting**: `hosting show` prints `host.0^` (lines `listen URL`, `admit own|open`, `label ID`, `replicate ADDR`, `policy NAME N`, `cap ID ENTRIES BYTES`; one JSON object; exit 3 when not hosting), `hosting off` stops (`set_hosting(None)`), `hosting set FLAGS` writes it: `--listen URL`, `--admit own|open`, `--label GROUP|ID`, `--replicate ADDR`, `--policy NAME=N`, `--cap GROUP|ID=ENTRIES,BYTES`, each repeatable; a flag given replaces its whole field, the rest kept, and one `''` clears it; from off it starts with `own` and no listener. A label is 32 hex digits or a group synced here, standing for its current labels (`status` lists them per group: the owner of a group gives them to a host that does not read it); a label set by ID or group stops matching once the group's label is replaced. Policy knobs are osis-host `HostPolicy` field names (unknown: exit 7). These stay local (the host runs under `serve`).
+- **`serve [HOSTING FLAGS]`**: the one long-running command. Flags given write `host.0^` first, as `hosting set`; then, while it hosts, the host address `<url>#<key>` is the first stdout line (`{"host": …}` with `--json`; exit 6 if it does not listen within 30 s); then sync and diagnostics until SIGINT or `--timeout`. Without `host.0^` it is a node that syncs and serves co-readers. A fresh box: `osis init`, then `osis serve --listen quic://0.0.0.0:7400 --admit open`. The host store is `<store>/host.redb`.
 - **`inspect`** is `Debug` dumps over `osis::internals::Internals::engine` (commits per aspect, CRDT state, items of a group, pending commits, actor epochs, headers). Not stable.
 
 ## Deviations from the original design (the deleted CLI plan)
@@ -38,7 +39,8 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |
 | `hosts ls/add/rm` | `hosts`, `add_host`, `remove_host` | now |
-| `serve [--listen URL]… [--admit own\|open] [--label ID]…` | `hosting`, `set_hosting`, `host_address`, then as `diag --follow` | now |
+| `hosting show/set/off` | `hosting` / `set_hosting` (`--label GROUP`: `status`'s labels) / `set_hosting(None)` | now |
+| `serve [hosting set flags]` | `hosting`, `set_hosting`, `host_address`, then as `diag --follow` | now |
 | `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in`/`--group` alone are ephemeral writes) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
 | `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |
 | `set` / `replace` / `rm T AK [PATH] [V]` | `AspectWrite::set/replace/remove`, path ops; `set --stream` (value on stdin): `set_stream` | now |
@@ -61,7 +63,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |
 | `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
-| `status [--watch]` / `sync` / `wait` | `status`, `watch_status` / `sync_now`, `wait_synced` | now |
+| `status [--watch]` / `sync` / `wait` | `status`, `watch_status` (lines `group state last_sync labels`, labels comma-separated) / `sync_now`, `wait_synced` | now |
 | `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |
 | `bundle export/import` | `export_bundle` / `import_bundle` | now |
 | `inspect thing/group/actor/commit` | `Internals::engine` (`osis::internals`, doc-hidden), `read`, `knows` | now |
