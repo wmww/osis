@@ -1,0 +1,9 @@
+# A keyset name is met by an epoch start, which carries no keyset
+> Summary: A name may be met by the node's epoch start of its thing being ordered after it (spec/crypto.md §4). For a keyset name (the commit that wrote holder actor M's keyset a box names) that is unsound: a roster snapshot of M carries M's roster, not its `keys.0`. Y holding a roster snapshot of M made after R_P (a device's removal from M, rotating M) but not R_P knows of no departure from M, holds M's old keyset only, and boxes M there with the epoch in history: the departed device opens it. Also unnamed when the rotator holds M's keyset only from a `keys.0` compaction snapshot (`epoch_intro` unknown).
+> Tags: security, keys, engine
+
+Reproduced: `rotation::tests::holder_keyset_name_not_met_by_roster_snapshot_spec_crypto_4` (osis-engine, ignored until fixed). The common shape is a person actor (devices) holding or owning A: the owner is boxed like any holder actor, so a roster snapshot of a person made after a device removal is enough.
+
+Not fixable inside `Held::met`: names carry no kind, and an audit name's thing can be the same actor (an owner-chain demotion on M, which the epoch start does stand in for). Dropping the escape for keyset names alone (a separate list) strands late joiners once K's `keys.0` delta is dropped (`ROLE_KEEP` after a later keyset write) and no node serves K.
+
+Direction (not tried): a keyset name names M's keyset epoch (M, role, epoch), not its commit; met when the node holds that keyset epoch of M (`epoch_intro`, its `keys.0` state, a `keys.0` compaction snapshot) or a keyset of M for that role whose `supersedes` lists it. No epoch-start escape; the rotator always knows the epoch it boxes to, so there is no "when held" gap either. Wire: history box names get a second list `[[thing, role, n, nonce]*]`.

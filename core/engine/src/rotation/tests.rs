@@ -1982,7 +1982,10 @@ fn holder_actor_keyset_named_spec_crypto_4() {
 fn withheld_departures_leak_nothing_large() {
     let s = osis_base::testenv::Seeds::from_env("OSIS_DEPART_START", "OSIS_DEPART_SEEDS", 0..100);
     let replay = |s: u64| format!("OSIS_DEPART_START={s} OSIS_DEPART_SEEDS=1 cargo test -p osis-engine --lib rotation::tests::withheld_departures_leak_nothing_large -- --ignored --exact");
-    s.run("rotation::tests::withheld_departures_leak_nothing_large", replay, withheld_departures);
+    s.run("rotation::tests::withheld_departures_leak_nothing_large", replay, |seed| {
+        withheld_departures(seed, false);
+        withheld_departures(seed, true);
+    });
 }
 
 // spec/crypto.md §4 (names; a node uses an epoch only once it holds every departure its rotator
@@ -1994,11 +1997,24 @@ fn withheld_departures_leak_nothing_large() {
 #[test]
 fn withheld_departures_leak_nothing() {
     for seed in [59, 69] {
-        withheld_departures(seed);
+        withheld_departures(seed, false);
     }
 }
 
-fn withheld_departures(seed: u64) {
+// As `withheld_departures_leak_nothing`, `more` also: grants by admins, an `until` soon set on a
+// holder's edge at its role, and the clock moving on. Seed 3 leaks with the `until` names
+// ignored. (The audit names matter only for a demotion on another thing, an owner chain's:
+// `audit_dropped_grant_named_spec_crypto_4`.)
+#[test]
+fn withheld_departures_audits_and_expiries_leak_nothing() {
+    for seed in WITHHELD_MORE {
+        withheld_departures(seed, true);
+    }
+}
+
+const WITHHELD_MORE: [u64; 1] = [3];
+
+fn withheld_departures(seed: u64, more: bool) {
     const N: usize = 5;
     let roles = [Role::Read, Role::Write, Role::Admin];
     let mut rng = Rng(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1);
@@ -2041,7 +2057,29 @@ fn withheld_departures(seed: u64) {
                 continue;
             }
             let before = seen(&lp, i);
-            match rng.next(5) {
+            let kind = if more { rng.next(7) } else { rng.next(5) };
+            match kind {
+                5 if ri == Role::Admin => {
+                    // a grant (raise)
+                    let j = 1 + rng.next(N as u64 - 1) as usize;
+                    let r = roles[rng.next(3) as usize];
+                    if j != i && lp.peers[i].engine.core.role_now(&tids[j], &g) < Some(r) {
+                        let _ = lp.peers[i].engine.grant(&g, &tids[j], &edge(r));
+                    }
+                }
+                6 if ri == Role::Admin => {
+                    // an `until` soon on a holder's edge, at its role now
+                    let j = 1 + rng.next(N as u64 - 1) as usize;
+                    let until = WallMs(lp.peers[i].engine.core.now().0 + 1 + rng.next(500));
+                    if j != i
+                        && let Some(r) = lp.peers[i].engine.core.role_now(&tids[j], &g)
+                    {
+                        let e = ct::Edge { role: r, until: Some(until), invite: None, since: None, tied: None };
+                        if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: Some(e), presync: PreSync::Synced }) {
+                            departing.extend(d.commits);
+                        }
+                    }
+                }
                 0 | 1 if ri == Role::Admin => {
                     let j = 1 + rng.next(N as u64 - 1) as usize;
                     let new = (rng.next(2) == 0).then_some(Role::Read);
@@ -2076,6 +2114,9 @@ fn withheld_departures(seed: u64) {
                 lp.sync(a, b).unwrap();
             }
         }
+        if more {
+            lp.advance(rng.next(2_000));
+        }
     }
     // X: an admin that stays one at peer 0 (the owner never departs), given everything but
     // some departing commits (and, rarely, others), re-seals and rotates
@@ -2100,11 +2141,17 @@ fn withheld_departures(seed: u64) {
         record(&mut made, &lp, x, &before);
     }
     lp.sync_all().unwrap();
-    // each departed peer's departure: the last write on its edge, in the converged timeline
+    // each departed peer's departure, in the converged timeline: the last applied write on its
+    // edge, or a later demotion whose audit dropped a write on it
     let tl = lp.peers[0].engine.core.timelines.get(&g).unwrap();
+    let on_edge = |c: &osis_base::CommitId, d: &Tid| tl.role_commit(c).is_some_and(|mc| mc.ops.iter().any(|op| op.target == g && op.holder == *d));
     let last_write: Vec<Option<osis_base::CommitId>> = tids
         .iter()
-        .map(|d| tl.applied().values().filter(|a| a.target == g && tl.role_commit(&a.point.commit).is_some_and(|mc| mc.ops.iter().any(|op| op.target == g && op.holder == *d))).map(|a| a.point).max().map(|p| p.commit))
+        .map(|d| {
+            let applied = tl.applied().values().filter(|a| a.target == g && on_edge(&a.point.commit, d)).map(|a| a.point);
+            let dropped = tl.dropped().iter().filter(|(w, _)| matches!(w, osis_perm::WriteId::Op(c, _) if on_edge(c, d))).map(|(_, p)| *p);
+            applied.chain(dropped).max().map(|p| p.commit)
+        })
         .collect();
     let state = lp.peers[0].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
     for d in 0..N {
@@ -2122,3 +2169,125 @@ fn withheld_departures(seed: u64) {
     }
 }
 
+
+// spec/crypto.md §4 (a name is met when its commit is applied: its edge write on the name's
+// thing held): owner A (0) removes reader M (2) (R_s), then rotates read to e (naming R_s). X
+// (3, an admin) holds R_s without its `roles.0` delta on G (a projection: a certificate copy or
+// another label's parts), so it still sees M as a reader: e must not be established there.
+// Once R_s arrives whole, e is.
+#[test]
+fn named_commit_without_its_edge_write_unmet_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_961, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (g, tids, r_s, _) = removed_reader(&mut lp, false);
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    let all = lp.packages(0).unwrap();
+    for pk in all.clone() {
+        let bytes = if r_s.contains(&pk.id) {
+            let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|a| a.tid == g && a.ak.as_str() == "roles.0")).encode()
+        } else {
+            pk.bytes.clone()
+        };
+        let _ = lp.peers[3].engine.ingest(&bytes, pk.blobs.clone());
+    }
+    assert!(r_s.iter().all(|c| lp.peers[3].engine.core.ix.commits.contains_key(c)), "R_s held");
+    assert!(lp.peers[3].engine.core.role_now(&tids[2], &g).is_some(), "M still a reader at X");
+    let at_x = lp.peers[3].engine.epochs(&g).unwrap();
+    let cands = lp.peers[3].engine.run(|tx| super::reseal_candidates(tx, &g)).unwrap();
+    assert!(at_x.read.secret(&e).is_some(), "X holds e's secret");
+    assert!(!at_x.read.is_established(&e), "e established at X, which sees M a reader; re-seal candidates: {cands:?}");
+    withheld_arrives(&mut lp, 3, g, e, &all, &r_s);
+}
+
+// spec/crypto.md §4 (a keyset name stands for the holder actor's keyset, which no roster
+// snapshot carries): as `holder_actor_keyset_named_spec_crypto_4`, but X's owner then makes a
+// roster snapshot of X (S, after R_P). Y holds S but not R_P: its epoch start of X is after R_P,
+// yet it holds X's keyset X_p only and (S's roster lacking M) knows of no departure from X. e
+// must not be established at Y: Y's rotation of G would box X at X_p, which M opens.
+#[test]
+#[ignore = "issues/keyset-names-start-escape.md: fails, M opens e"]
+fn holder_keyset_name_not_met_by_roster_snapshot_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_971, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let x = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&x, &tids[2], &edge(Role::Read)).unwrap();
+    lp.sync(1, 2).unwrap();
+    // 0 and 3 read no X: X's `secrets.0` deltas never reach them
+    deliver_without_secrets(&mut lp, 1, 0, x);
+    deliver_without_secrets(&mut lp, 1, 3, x);
+    let g = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &x, &edge(Role::Read)).unwrap();
+    for j in 1..4 {
+        lp.sync(0, j).unwrap();
+    }
+    let m_x = lp.peers[2].engine.epochs(&x).unwrap();
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.demote(&x, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let r_p: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    lp.advance(1_000);
+    lp.peers[1].engine.roster_snapshot(&x, None).unwrap();
+    deliver_without_secrets(&mut lp, 1, 0, x);
+    // A's epoch start of X (S) hides M's departure from it: it rotates G for its own reasons
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    // Y reads no X: X's `secrets.0` deltas never reach it
+    for pk in all.iter().filter(|p| !r_p.contains(&p.id)) {
+        let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let cut = osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|a| a.tid == x && a.ak.as_str() == "secrets.0"));
+        let _ = lp.peers[3].engine.ingest(&cut.encode(), pk.blobs.clone());
+    }
+    assert!(lp.peers[3].engine.core.role_now(&tids[2], &x).is_none(), "Y's roster of X (S) lacks M");
+    let at_y = lp.peers[3].engine.epochs(&g).unwrap();
+    assert!(at_y.read.secret(&e).is_some() && !at_y.read.is_established(&e), "e established at Y without R_P");
+    rotate_leaving_out(&mut lp, 3, g, &BTreeSet::from([Role::Read]), &[]);
+    let state = lp.peers[3].engine.run(|tx| crate::flows::secrets_in(tx, &g)).unwrap();
+    let mut got = osis_keys::ActorEpochs::default();
+    osis_keys::ingest(&g, &state, &osis_keys::Opener::Actor { holder: x, epochs: &m_x }, &mut got, None).unwrap();
+    assert!(got.read.reading_secret(&e).is_none(), "M opens e through Y's rotation");
+}
+
+// spec/crypto.md §4 (names: every commit whose demotion's audit dropped an edge write on the
+// actor, named by the thing the demotion is on): G is owned by actor O (peer 0's); W (1) an
+// admin of O grants D (2) read on G through the owner chain (C). Owner A demotes W to write on
+// O, not having received C (its frontier misses it), so C is audited away; A then gets C and
+// rotates G's read to e: no edge write on G departs anyone, and O's read keyset is unchanged, so
+// only the audit names W's demotion. X (3, G's admin) holds C but not the demotion: e must not
+// be established there (X sees D a reader and would re-seal e to it). Once it arrives, e is.
+#[test]
+fn audit_dropped_grant_named_spec_crypto_4() {
+    let mut lp = LocalPeer::new(4, 3_981, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let o = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, o);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&g).unwrap();
+    lp.peers[0].engine.grant(&g, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+    let c: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced }).unwrap();
+    let dem: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    lp.sync(1, 0).unwrap();
+    assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "C audited away at A");
+    rotate_leaving_out(&mut lp, 0, g, &BTreeSet::from([Role::Read]), &[]);
+    let e = newest_read(&lp, 0, g).unwrap();
+    let mut all = lp.packages(0).unwrap();
+    all.extend(lp.packages(1).unwrap());
+    for pk in all.iter().filter(|p| !dem.contains(&p.id)) {
+        let _ = lp.peers[3].engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    assert!(c.iter().all(|x| lp.peers[3].engine.core.ix.commits.contains_key(x)));
+    assert!(lp.peers[3].engine.core.role_now(&tids[2], &g).is_some(), "X sees D a reader");
+    withheld_then_arrives(&mut lp, 3, g, e, &all, &dem);
+}
