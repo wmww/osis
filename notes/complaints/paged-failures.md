@@ -1,3 +1,5 @@
 # paged-failures
 - A failure inside the engine (the un-merge debug assertion) or in `seen`'s stale-pages assert prints no step and no history; `differential` only prints the log when states differ. Each seed needed a hand-made debug patch (eprintln of every step, commit and delivery) to see what happened. A panic hook or `catch_unwind` around each step that prints `log` would save that.
 - The engine's in-place un-merge debug check fired mid-stream (after one piece of an invalid delta), looking like a product bug; it was a check placed per piece, not per part.
+- Review: the paged differential's two worlds share the paged store, so a loss in the store itself (`Tx::kept` dropping a valid paged map) shows only through the in-place un-merge debug check; its random histories never put a paged collection under a record whose only other content is a rogue's, so it could not reach that case. Found by reading.
+- Review: tier-1 `paged_apply_matches_whole_spec_crdt_8` takes 65-100 s at load 30, so each fix-disabled probe over `tests_paged::` cost 1.5-2 min; filtering the probe to the new tests would have saved most of it.
