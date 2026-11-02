@@ -1710,3 +1710,54 @@ fn stale_copy_beside_a_thing_not_synced_reads_as_never_received_spec_commits_5()
     assert_eq!(q.engine.state_digest(&x, &brief).unwrap(), p.engine.state_digest(&x, &brief).unwrap(), "as from the other order");
     assert_eq!(q.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap());
 }
+
+// spec/commits.md §4, §5: beside a part past its expiry, a part bad by itself or parked and a true one,
+// with a relay's junk on two of the slots: in any order, each true copy delivered again at the end, the
+// node reads alike, whatever it syncs.
+#[test]
+fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() {
+    use crate::common::*;
+    for (n, how) in [Made::Bad, Made::Parked].into_iter().enumerate() {
+        let mut f = forge_setup(83 + n as u64);
+        let (x, y, z) = (f.x, f.y, f.z);
+        let b = forge(&mut f, &[(x, "t:brief.0", Made::Good, Some(1000)), (y, "t:reg.0", how, None), (z, "t:reg.0", Made::Good, None)]);
+        let now = osis_base::WallMs(f.lp.peers[0].engine.now().0 + 5000);
+        let junk = |t: Tid, fill: u8| {
+            let mut c = b.clone();
+            let h = c.header.clone();
+            c.parts.retain(|p| h.aspects[p.ai].tid == t);
+            for p in &mut c.parts {
+                p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![fill; 40])]));
+            }
+            c.encode()
+        };
+        let items = [cut(&b, &[x]), cut(&b, &[y]), cut(&b, &[z]), junk(x, 1), junk(z, 2)];
+        let mut orders: Vec<Vec<usize>> = vec![Vec::new()];
+        for i in 0..items.len() {
+            orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut o = q.clone(); o.insert(at, i); o })).collect();
+        }
+        for sync in [None, Some(x), Some(y), Some(z)] {
+            let mut seen = std::collections::BTreeMap::<String, Vec<usize>>::new();
+            for order in &orders {
+                let mut p = Peer::new(FRESH, now).unwrap();
+                if let Some(t) = sync {
+                    p.engine.set_syncing(t, true).unwrap();
+                }
+                for pk in &f.setup {
+                    let _ = p.engine.ingest(&pk.bytes, Vec::new());
+                }
+                for i in order {
+                    let _ = p.engine.ingest(&items[*i], Vec::new());
+                    p.engine.reexamine().unwrap();
+                }
+                for i in [0, 1, 2] {
+                    let _ = p.engine.ingest(&items[i], Vec::new());
+                    p.engine.reexamine().unwrap();
+                }
+                let got = format!("applied {} pending {:?} flags {:?} reads {:?} {:?} {:?}", p.engine.commit_ids().contains(&b.id()), p.engine.pending(), p.engine.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), p.engine.get(&x, &ak("t:brief.0")).unwrap(), p.engine.get(&y, &ak("t:reg.0")).unwrap(), p.engine.get(&z, &ak("t:reg.0")).unwrap());
+                seen.entry(got).or_insert_with(|| order.clone());
+            }
+            assert_eq!(seen.len(), 1, "made {n}, sync {:?}: {seen:#?}", sync.map(|t| t == x));
+        }
+    }
+}

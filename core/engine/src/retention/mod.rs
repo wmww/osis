@@ -744,10 +744,11 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 /// `expire`), flagged suspect (`flag`); node-sync then forgets the blobs holding it
 /// (`mark_changed`).
 fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool) -> Result<()> {
+    // also of a commit no longer pending: `apply::pend_aside` judges its parts after `unpend`
+    forget_stripped(tx, c, Some(ai))?;
     if !tx.core.ix.pending.contains_key(c) {
         return Ok(());
     }
-    forget_stripped(tx, c, Some(ai))?;
     let Some((kind, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
     let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
     let n = blob.parts.len();
