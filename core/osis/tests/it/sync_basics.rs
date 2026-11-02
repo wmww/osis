@@ -87,6 +87,23 @@ fn invite_to_a_label_not_yet_at_its_host_looks_again_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")), "{:?}", w.diagnostics(&b));
 }
 
+// spec/sync.md §3 (a grantee device places a certificate copy): a grant to a group its granter owns: the group's inbox is the granter's, so its own deposit comes back naming a commit it holds, and that alone must start the group's label's pass: the group's member reads the chat with no clock passing
+#[test]
+fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
+    let mut w = World::new();
+    let h0 = w.add_host();
+    let (a, b, bob) = pair(&mut w, &[h0]);
+    let faction = chat(&a, &[]);
+    a.grant(faction, bob, Role::Write, Default::default()).unwrap();
+    w.run();
+    let g = chat(&a, &[]);
+    let m = message(&a, g, "hello");
+    w.run();
+    a.grant(g, faction, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(says(&b, m), Some(s("hello")));
+}
+
 // spec: none (API surface, notes/api.md Sync configuration and status): a live node polled by `sync_now` stays Synced, so an app's polling cannot hold `wait_synced` back; a write made meanwhile still goes. It sends nothing but a ping, once a connection is quiet for `retry_ms`
 #[test]
 fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
