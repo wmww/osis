@@ -79,7 +79,7 @@ fn tier_is_the_transport_types() {
     assert!(!got.iter().any(|x| matches!(x, Action::Request { .. })), "{got:?}");
 }
 
-// spec/wire.md §11.2, notes/client-port.md §8 (b): Auths pipelined by a keyed peer, one per input, are each refused (Error 1) by the sync engine; none reaches the port worker
+// spec/wire.md §11.2, notes/client-port.md §3: Auths pipelined by a keyed peer, one per input, are each refused (Error 1) by the sync engine; none reaches the port worker
 #[test]
 fn keyed_auth_flood_never_goes_up() {
     let mut net = Net::new();
@@ -99,7 +99,7 @@ fn keyed_auth_flood_never_goes_up() {
     assert_eq!(refused, 20_000);
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §8 (b): clients have their own pool (max_clients): a newcomer evicts the oldest unauthenticated client, never a keyed session; with every client authenticated the newcomer is refused; an authenticated client outlives serve_idle_ms; its end is reported
+// spec/sync.md §10 (client port), notes/client-port.md §3: clients have their own pool (max_clients): a newcomer evicts the oldest unauthenticated client, never a keyed session; with every client authenticated the newcomer is refused; an authenticated client outlives serve_idle_ms; its end is reported
 #[test]
 fn client_pool_idle_and_end() {
     let mut net = Net::new();

@@ -220,7 +220,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
 /// `delete` of the same thing (seed 48), which fails when `commit` reorders path ops.
 const CASES: u64 = 64;
 
-// notes/client-port.md §8 (a): a `Write` records API ops and builds the engine mutation at
+// notes/client-port.md §1: a `Write` records API ops and builds the engine mutation at
 // commit; a random op list (sets, edits, path ops, typed writes with schema defaults, expiry,
 // group ops, `make_group`, `delete`, creates) commits to the state its ops reach one batch each.
 // spec: none (API surface, notes/api.md Writes)

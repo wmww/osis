@@ -653,7 +653,7 @@ impl Worker {
         Ok(initial)
     }
 
-    /// A `wait_synced` as a subscription (notes/client-port.md §8): the node's own wait (its
+    /// A `wait_synced` as a subscription (notes/client-port.md §2): the node's own wait (its
     /// waiter, polled under the lock after every change as a local app's is), never blocking
     /// this worker; the Reply carries the outcome when it is known at once, else the one Notify.
     fn sub_synced(&mut self, db: &Osis, conn: ConnId, id: Id, max_reply: usize, scope: crate::share::SyncScope, ms: u64) -> Value {
