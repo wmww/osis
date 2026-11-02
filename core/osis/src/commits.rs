@@ -351,8 +351,8 @@ impl Osis {
 
     /// Changes matching `q`, newest first (by `ts`, then ID).
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
-        if let crate::handle::Source::Remote = self.route_scope(q.scope.as_ref()) {
-            let v = self.rcall(crate::port::method::COMMITS, vec![crate::port::codec::query_v(q)])?;
+        if let crate::sources::Source::Remote(r) = self.route_scope(q.scope.as_ref())? {
+            let v = r.call(crate::port::method::COMMITS, vec![crate::port::codec::query_v(q)])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(crate::port::codec::entry).collect();
         }
         let (mut found, aks) = self.found(q.scope.as_ref())?;
@@ -388,8 +388,8 @@ impl Osis {
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Committed>> {
-        if let crate::handle::Source::Remote = self.route_scope(Some(scope)) {
-            let v = self.remote_once(crate::port::method::UNDO, crate::port::codec::scope_value(scope))?;
+        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+            let v = self.remote_once(&r, crate::port::method::UNDO, crate::port::codec::scope_value(scope))?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
         self.step(scope, false)
@@ -398,8 +398,8 @@ impl Osis {
     /// Redoes this actor's newest undo in effect in `scope`, unless a new change of this actor
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Committed>> {
-        if let crate::handle::Source::Remote = self.route_scope(Some(scope)) {
-            let v = self.remote_once(crate::port::method::REDO, crate::port::codec::scope_value(scope))?;
+        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+            let v = self.remote_once(&r, crate::port::method::REDO, crate::port::codec::scope_value(scope))?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
         self.step(scope, true)
@@ -410,8 +410,8 @@ impl Osis {
     /// as one). An ephemeral change without a log here (another node's, or from before a
     /// restart) is `Invalid`.
     pub fn revert(&self, id: ChangeId) -> Result<Committed> {
-        if let crate::handle::Source::Remote = self.route_change(id) {
-            return crate::port::codec::committed(self.remote_once(crate::port::method::REVERT, crate::port::codec::change_v(&id))?);
+        if let crate::sources::Source::Remote(r) = self.route_change(id)? {
+            return crate::port::codec::committed(self.remote_once(&r, crate::port::method::REVERT, crate::port::codec::change_v(&id))?);
         }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
@@ -451,7 +451,10 @@ impl Osis {
     fn revert_one(&self, target: ChangeId) -> Result<Committed> {
         let me = self.me();
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
-        self.engine(|e| {
+        self.locked(|l| {
+            // what the revert writes is still this engine's (a move since the route was decided)
+            self.guard_change(l, target)?;
+            let e = l.engine();
             if let ChangeId::Commit(c) = target {
                 let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
                 if h.kind != Kind::Content {

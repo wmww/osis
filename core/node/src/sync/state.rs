@@ -33,6 +33,8 @@ const CARRIER: &[u8] = b"y/s";
 const REACH: &[u8] = b"y/r";
 /// The host secret (`SyncEngine::host_secret`).
 const HOST_SECRET: &[u8] = b"y/z";
+/// The client listener's secret (`SyncEngine::client_listen_secret`).
+const CLIENT_LISTEN: &[u8] = b"y/2";
 const TOMB: &[u8] = b"y/x";
 const OUTBOX: &[u8] = b"y/o";
 /// Things forgotten whose inbox blobs this node has not checked yet (`SyncEngine::forget_inbox`).
@@ -244,6 +246,7 @@ pub struct State {
     pub reach_secret: Option<Secret32>,
     /// The transport secret its host listens with, while it hosts.
     pub host_secret: Option<Secret32>,
+    pub client_listen: Option<Secret32>,
     /// The label logs co-reader-peer sessions see (in memory).
     pub feed: super::serve::Feed,
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
@@ -455,6 +458,7 @@ impl State {
                 }
                 b"r" => s.reach_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"z" => s.host_secret = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
+                b"2" => s.client_listen = Some(Secret32::from_bytes(Rd::new(&v).arr()?)),
                 b"o" => {
                     // not rebuildable: a record that does not decode fails the load, named
                     let (k, o) = decode_out(rest, &v).map_err(|_| Error::Corrupt("sync outbox record"))?;
@@ -617,7 +621,7 @@ impl State {
             for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
-                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) { Shred::Yes } else { Shred::No })?,
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) || k.starts_with(CLIENT_LISTEN) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -720,6 +724,14 @@ impl State {
     }
 
     /// Sets or shreds the host secret.
+    pub fn set_client_listen(&mut self, s: Option<Secret32>) {
+        match &s {
+            Some(s) => self.put(CLIENT_LISTEN.to_vec(), s.expose().to_vec()),
+            None => self.del(CLIENT_LISTEN.to_vec()),
+        }
+        self.client_listen = s;
+    }
+
     pub fn set_host_secret(&mut self, s: Option<Secret32>) {
         match &s {
             Some(s) => self.put(HOST_SECRET.to_vec(), s.expose().to_vec()),

@@ -5,7 +5,7 @@
 //! ordinary dispatcher registrations whose callbacks only set dirty flags (and queue fired
 //! signals and diagnostics within `SIGNAL_BYTES`); the worker materializes dirty subscriptions
 //! when push room opens (`Action::Room`). Writes carry a nonce: outcomes are kept per (tier
-//! identity, session) under the node epoch, so a retry is answered once.
+//! identity, session), so a retry is answered once.
 //!
 //! **Invariant** (notes/client-port.md §3): every row of a thin client's session runs on a handle
 //! acting as that client's actor, never as this node's account, and that client's authority ends
@@ -46,6 +46,17 @@ pub(crate) enum Job {
     Woke(ConnId, Id),
 }
 
+impl Job {
+    /// The connection whose job this is.
+    fn conn(&self) -> Option<ConnId> {
+        match self {
+            Job::Act(Action::Request { conn, .. } | Action::Room { conn, .. } | Action::Ended { conn }) => Some(*conn),
+            Job::Act(_) => None,
+            Job::Dirty(c) | Job::Woke(c, _) => Some(*c),
+        }
+    }
+}
+
 /// Wakes the worker for a `wait_synced` subscription (from under the handle lock: only a send).
 struct Wake {
     tx: Sender<Job>,
@@ -59,23 +70,31 @@ impl std::task::Wake for Wake {
     }
 }
 
-/// The port of one database: its node epoch, the jobs queued under the lock, the worker.
+thread_local! {
+    static ON_WORKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether this thread is a port worker, which serves every client of its node one call at a time
+/// and so never waits on another node (`crate::sources`).
+pub(crate) fn on_worker() -> bool {
+    ON_WORKER.get()
+}
+
+/// The port of one database: the jobs queued under the lock, the worker.
 pub(crate) struct Port {
-    pub epoch: [u8; 16],
+    /// A test's way to reach `Worker::panicked`: no client input is known to.
+    pub panic_next: std::sync::atomic::AtomicBool,
+    /// Likewise after a Call ran, before its reply: the reply is lost, the write stays applied.
+    pub panic_after_call: std::sync::atomic::AtomicBool,
+    /// A test's way into the gap between a write's route and its lock.
+    pub after_route: Mutex<Option<Box<dyn Fn() + Send>>>,
     queued: Mutex<Vec<Job>>,
     tx: Mutex<Option<Sender<Job>>>,
 }
 
 impl Port {
-    /// A fresh node epoch: 16 random bytes per process start (never from a test seed: a node
-    /// restarted with the same seed must not repeat it).
     pub fn new() -> Port {
-        let mut epoch = [0u8; 16];
-        {
-            use osis_crypto::RngCore;
-            osis_crypto::OsRng.fill_bytes(&mut epoch);
-        }
-        Port { epoch, queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
+        Port { panic_next: false.into(), panic_after_call: false.into(), after_route: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
     }
 
     /// Queues actions (under the handle lock).
@@ -95,10 +114,17 @@ impl Port {
             let weak = WeakOsis(Arc::downgrade(inner));
             let mine = t.clone();
             let spawned = std::thread::Builder::new().name("osis-port".into()).spawn(move || {
+                ON_WORKER.set(true);
                 let mut w = Worker { db: weak, tx: mine, conns: BTreeMap::new(), nonces: BTreeMap::new(), schemas: BTreeMap::new(), tick: 0 };
                 while let Ok(j) = rx.recv() {
-                    if !w.job(j) {
-                        return;
+                    // a panic ends the connection it served, not the port: its session's other
+                    // jobs find no session, every other client goes on. A write's nonce stays
+                    // spent (`top` is set before it runs), so its retry is `OutcomeUnknown`.
+                    let conn = j.conn();
+                    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| w.job(j))) {
+                        Ok(true) => {}
+                        Ok(false) => return,
+                        Err(_) => w.panicked(conn),
                     }
                 }
             });
@@ -172,6 +198,10 @@ struct Nonces {
     done: BTreeMap<u64, Outcome>,
     top: u64,
     used: u64,
+    /// This entry was born from a resend: the session's earlier state is gone, so no resent nonce
+    /// that `done` does not hold may run, whatever `top` says (until the session's next new write,
+    /// after which every later nonce was sent under this entry).
+    lost: bool,
 }
 
 struct Worker {
@@ -194,6 +224,7 @@ impl Worker {
     /// Runs a job; `false` once the database is gone.
     fn job(&mut self, j: Job) -> bool {
         let Some(db) = self.db.hold() else { return false };
+        assert!(!db.inner.port.panic_next.swap(false, Ordering::AcqRel), "port worker: test panic");
         match j {
             Job::Act(Action::Request { conn, tier, msg }) => self.request(&db, conn, tier, *msg),
             Job::Act(Action::Room { conn, budget }) => {
@@ -212,6 +243,19 @@ impl Worker {
             Job::Woke(conn, id) => self.woke(&db, conn, id),
         }
         true
+    }
+
+    /// A job of `conn` panicked: that session ends at once (its client sees the connection drop
+    /// and reconnects), reported as a diagnostic. Its calls do not wait out a stall timeout.
+    fn panicked(&mut self, conn: Option<ConnId>) {
+        let Some(db) = self.db.hold() else { return };
+        if let Some(c) = conn {
+            self.conns.remove(&c);
+        }
+        db.engine(|e| e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("client port: a request panicked (connection {conn:?} ended)") }));
+        if let Some(conn) = conn {
+            self.feed(&db, Event::End { conn });
+        }
     }
 
     /// Polls a `wait_synced` subscription's outcome; once known, it is queued as the
@@ -275,7 +319,7 @@ impl Worker {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
                 }
                 let seq = db.locked(|l| l.seq);
-                self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::bytes(&db.inner.port.epoch) }));
+                self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::List(vec![]) }));
             }
             Message::Call { id, method, args, .. } => {
                 let Some(h) = self.session(db, conn) else { return self.reply(db, conn, id, Err(Code::REFUSED)) };
@@ -291,6 +335,7 @@ impl Worker {
                     return self.want_room(db, conn);
                 }
                 let r = self.call(db, conn, method, args);
+                assert!(!db.inner.port.panic_after_call.swap(false, Ordering::AcqRel), "port worker: test panic");
                 let seq = db.locked(|l| l.seq);
                 let out = match r {
                     Ok(value) => Outcome::Ok { seq, value },
@@ -328,9 +373,14 @@ impl Worker {
     }
 
     /// The outcome of a write under `nonce` of this connection's session: a remembered one
-    /// again, `Invalid("outcome unknown")` for one at or below the highest seen and no longer
-    /// remembered, else `run`'s, remembered.
+    /// again, `OutcomeUnknown` for one at or below the highest seen and no longer remembered, else
+    /// `run`'s, remembered.
+    ///
+    /// A nonce marked as sent again (`NONCE_RESENT`) in a session whose state this node lost is
+    /// unknown too, each of them: the state may have been evicted after the first send ran.
     fn once(&mut self, conn: ConnId, nonce: u64, run: impl FnOnce() -> Result<Value>) -> Result<Value> {
+        let resent = nonce & super::client::NONCE_RESENT != 0;
+        let nonce = nonce & !super::client::NONCE_RESENT;
         let Some((who, session)) = self.conns.get(&conn).and_then(|c| Some((if let Tier::Client(a) = c.tier { Some(a) } else { None }, c.session?))) else { return Err(Error::Invalid("no session".into())) };
         self.tick += 1;
         let tick = self.tick;
@@ -346,8 +396,10 @@ impl Worker {
         {
             self.nonces.remove(&old);
         }
+        let fresh = !self.nonces.contains_key(&key);
         let n = self.nonces.entry(key).or_default();
         n.used = tick;
+        n.lost |= fresh && resent;
         if let Some(o) = n.done.get(&nonce) {
             return match o.clone() {
                 Outcome::Ok { value, .. } => Ok(value),
@@ -355,9 +407,13 @@ impl Worker {
             };
         }
         if nonce == 0 || nonce <= n.top {
-            return Err(Error::Invalid("outcome unknown".into()));
+            return Err(Error::OutcomeUnknown);
         }
         n.top = nonce;
+        if resent && n.lost {
+            return Err(Error::OutcomeUnknown);
+        }
+        n.lost = false;
         let r = run();
         let o = match &r {
             Ok(v) => Outcome::Ok { seq: 0, value: v.clone() },
@@ -446,6 +502,7 @@ impl Worker {
             method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::opt(x.until, |w| Value::uint(w.0))])).collect()),
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
+            method::ROTATE_CLIENT_KEY => Value::List(db.rotate_client_key()?.iter().map(|h| Value::Str(h.to_string())).collect()),
             method::HOSTS => Value::List(db.hosts().iter().map(|h| Value::Str(h.to_string())).collect()),
             method::SYNC_NOW => {
                 db.sync_now()?;
@@ -518,6 +575,12 @@ impl Worker {
             _ => return Err(c::bad("filter")),
         };
         a.end()?;
+        // the Owner's handle routes; this subscription would watch this engine's stale copy
+        if let (None, Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t)) = (acting, &kind)
+            && !db.is_local(*t)
+        {
+            return Err(unsupported("a watch of a group this node reads at another node"));
+        }
         let pending: Arc<Mutex<Pending>> = Arc::default();
         let tx = self.tx.clone();
         let p = pending.clone();
@@ -543,6 +606,7 @@ impl Worker {
                 None => g.dirty = Some(s),
             }
         };
+        let moved = pending.clone();
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
@@ -553,6 +617,8 @@ impl Worker {
                 // a fired signal carries a fifth item: delivered even when equal to the last
                 Delivery::Fired { tid, ak, source, value } => queue(Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
                 Delivery::Roster | Delivery::Status(_) => mark(None, crate::watch::Source::Initial),
+                // this node's own source for it moved: the client's subscription ends
+                Delivery::Moved => lock(&moved).lapsed = true,
                 Delivery::Diagnostic(x) => queue(c::diag_v(&x)),
                 Delivery::Initial => return,
                 _ => return,

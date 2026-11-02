@@ -272,6 +272,17 @@ impl Net {
         }
     }
 
+    /// Replaces the client listeners (notes/client-port.md §5).
+    pub fn client_listen(&self, urls: driver::ClientUrls) -> Result<Vec<osis_transport::Address>> {
+        let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client listener needs one (Config.runtime)".into())) };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ctl.send(Control::ClientListen { urls, reply: tx }).map_err(|_| Error::Network("sync stopped".into()))?;
+        match blocking(|| rx.blocking_recv()) {
+            Ok(r) => r.map_err(Error::Network),
+            Err(_) => Err(Error::Network("sync stopped".into())),
+        }
+    }
+
     /// Runs `f` on the runtime after `d`; `false` (and `f` dropped) without one.
     pub fn after(&self, d: Duration, f: Box<dyn FnOnce() + Send>) -> bool {
         let Net::Driver { handle, .. } = self else { return false };
@@ -502,11 +513,31 @@ impl crate::Osis {
         self.inner.net.listen(url)
     }
 
-    /// The node epoch of the attached node (`None`: not attached): 16 random bytes per node
-    /// process start (notes/client-port.md §2 Writes).
-    #[doc(hidden)]
-    pub fn node_epoch(&self) -> Option<[u8; 16]> {
-        self.remote().map(|r| r.epoch)
+    /// Serves thin clients at `urls` (`quic://host:port`, notes/client-port.md §5) with a key of
+    /// the client listener's own, made on first use and kept in the store: it never rotates with
+    /// `rotate_reach` and links to neither the dialable key nor the signing key. Returns each
+    /// `url#key` to hand clients (with its real port). Replaces the listeners of an earlier call
+    /// (their sessions end; clients reconnect by themselves). No URL: stops listening, ends those sessions, shreds the key (a later
+    /// call makes a new one, so clients need a new address). All or none: on an error nothing
+    /// listens. Needs a runtime. Listening does not last past this process: call it at each start.
+    pub fn client_listen(&self, urls: &[String]) -> crate::Result<Vec<crate::HostAddr>> {
+        self.local_only("client_listen")?;
+        let a = self.inner.net.client_listen(driver::ClientUrls::Listen(urls.to_vec()))?;
+        Ok(a.into_iter().map(|a| crate::HostAddr::new(&a.url, a.key)).collect())
+    }
+
+    /// A new client listener key (by hand only, notes/client-port.md §5): the old one is shredded,
+    /// its listeners and sessions end, and the same addresses listen under the new one, returned
+    /// here. A client holding the old address sees `Network` on every call and `connected: false`
+    /// until it attaches to a new address, handed to it out of band. No listener up (a process
+    /// that has not called `client_listen`): only the key changes. Needs a runtime.
+    pub fn rotate_client_key(&self) -> crate::Result<Vec<crate::HostAddr>> {
+        if self.attached() {
+            let v = self.rcall(crate::port::method::ROTATE_CLIENT_KEY, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
+        }
+        let a = self.inner.net.client_listen(driver::ClientUrls::Rotate)?;
+        Ok(a.into_iter().map(|a| crate::HostAddr::new(&a.url, a.key)).collect())
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with

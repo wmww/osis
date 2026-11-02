@@ -524,7 +524,7 @@ impl Net {
                 }
                 Action::Wake { at } => self.nodes[n].wake = Some(at),
                 // peers are found by their current `reach.0`
-                Action::Reach | Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
+                Action::Reach | Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } | Action::Authed { .. } => {}
             }
         }
     }

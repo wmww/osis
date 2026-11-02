@@ -89,7 +89,7 @@ impl Osis {
     /// `Config::transport`) for the timer. Nothing outlives the process: after a restart the app
     /// calls this again.
     pub fn keep_alive<K: AspectKey, U: Codec>(&self, tid: Tid, key: K, path: Path, value: &U) -> Result<KeepAlive> {
-        if let crate::handle::Source::Remote = self.route_any() {
+        if let crate::sources::Source::Remote(_) = self.route(tid) {
             return Err(Error::Unsupported("keep_alive through the attached node".into()));
         }
         let d = key.defaults();

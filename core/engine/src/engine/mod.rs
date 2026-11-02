@@ -611,6 +611,12 @@ pub struct Core {
     /// Aspects whose receipts came from headers alone in this run (`Engine::record_header`, a
     /// receipts-only read): a demotion's frontier reads them besides its scope's held aspects.
     pub header_receipts: BTreeSet<(Tid, Ak)>,
+    /// Groups this node holds for receipts only (set by node sync,
+    /// `SyncEngine::set_receipts_only`): what is here of them is behind (`readable_by`).
+    pub receipts_only: BTreeSet<Tid>,
+    /// Groups the handle reads and writes at another node (`osis` routes): what is here of them
+    /// may be behind, syncing or not (`readable_by`).
+    pub routed_away: BTreeSet<Tid>,
 }
 
 /// `Core::published`: the counts it was taken at, the published things per actor.
@@ -859,6 +865,8 @@ impl Core {
             published: None,
             links: None,
             header_receipts: BTreeSet::new(),
+            receipts_only: BTreeSet::new(),
+            routed_away: BTreeSet::new(),
         }
     }
 

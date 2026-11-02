@@ -44,6 +44,13 @@ pub struct Global {
     /// The file holding the thin client's secret (64 hex digits, as `clients add` printed it)
     #[arg(long = "client-secret", global = true, value_name = "FILE", requires = "node")]
     pub client_secret: Option<PathBuf>,
+    /// Beside this store, be attached to this node as a thin client (URL#KEY; needs --remote-secret):
+    /// for the groups `group source` routes there
+    #[arg(long, global = true, value_name = "ADDR", requires = "remote_secret", conflicts_with = "node")]
+    pub remote: Option<String>,
+    /// The file holding that thin client's secret (64 hex digits)
+    #[arg(long = "remote-secret", global = true, value_name = "FILE", requires = "remote")]
+    pub remote_secret: Option<PathBuf>,
 }
 
 /// Write flags of `set`, `replace`, `rm`, `op`.
@@ -132,6 +139,10 @@ pub enum Cmd {
     Serve {
         #[command(flatten)]
         host: HostFlags,
+        /// Serve thin clients at this URL, with the client listener's own key (repeatable): a
+        /// line `client URL#KEY` per listener prints after the host address
+        #[arg(long = "client-listen", value_name = "URL")]
+        client_listen: Vec<String>,
     },
     /// Create a thing, optionally setting aspects: create --owner me --in home note:title.0 '"x"'
     Create(CreateArgs),
@@ -465,6 +476,9 @@ pub enum ClientsCmd {
     Rm { actor: String },
     /// A new secret for one (printed only here); the old one and its connections end
     Rotate { actor: String },
+    /// A new client listener key: clients need the new addresses, printed here; through a daemon
+    /// its listeners and clients move at once
+    RotateKey,
 }
 
 #[derive(Subcommand, Debug)]
@@ -554,6 +568,9 @@ pub enum GroupCmd {
         host: Vec<String>,
     },
     Unsync { g: String },
+    /// Where G's calls go: `local`, or ADDR (URL#KEY) of the node attached by --remote; held in the
+    /// store. Local: this store syncs it, and it is caught up before calls come home
+    Source { g: String, to: String },
     Policy {
         g: String,
         #[arg(long, value_name = "BOOL")]

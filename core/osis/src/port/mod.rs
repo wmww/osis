@@ -91,6 +91,8 @@ pub(crate) mod method {
     pub const REMOVE_CLIENT: u64 = 37;
     /// `[actor]` -> secret
     pub const ROTATE_CLIENT_SECRET: u64 = 38;
+    /// `[]` -> `[node addr text*]`
+    pub const ROTATE_CLIENT_KEY: u64 = 39;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this

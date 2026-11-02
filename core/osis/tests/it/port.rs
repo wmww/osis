@@ -78,7 +78,12 @@ fn attached_handle_works_at_the_node() {
     assert_eq!(c.created(t), n.created(t));
     assert_eq!(c.changed(t), n.changed(t));
     assert!(c.same_thing(t, t));
-    assert_eq!(c.status().unwrap(), n.status().unwrap());
+    // a client's status adds its attachment
+    let mut cs = c.status().unwrap();
+    assert_eq!(cs.remotes.len(), 1);
+    assert!(cs.remotes[0].connected);
+    cs.remotes.clear();
+    assert_eq!(cs, n.status().unwrap());
     // an unknown thing's write fails as locally
     let ghost = osis::Tid::from_bytes([9; 15]);
     assert!(matches!(c.write_with(|w| w.at(ghost, title.clone()).set(&Value::Int(1))), Err(osis::Error::UnknownThing { .. })));
@@ -248,9 +253,9 @@ pub(crate) fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: V
 
 const WRITE: u64 = 11;
 
-// spec/wire.md §11.2 (Auth node_epoch), notes/client-port.md §2 Writes: a repeated nonce is answered with its first result and applies once; one at or below the highest seen and not remembered is "outcome unknown"; two sessions keep separate ranges; a restarted node has another epoch (a client never retries across it)
+// spec/wire.md §11.2, notes/client-port.md §2 Writes: a repeated nonce is answered with its first result and applies once; one at or below the highest seen and not remembered is outcome unknown; two sessions keep separate ranges; a restarted node remembers nothing: a marked resend is unknown, never run
 #[test]
-fn write_nonces_per_session_and_epoch() {
+fn write_nonces_per_session() {
     let d = Dir::new();
     let sock = d.0.join("n.sock");
     let net = osis_transport::Net::new(1);
@@ -259,7 +264,7 @@ fn write_nonces_per_session_and_epoch() {
     let k = ak("note:n.0");
     let t = n.write_with(|w| w.create(n.me())).unwrap();
     let mut r = Raw::unix(&sock);
-    let Ok(Outcome::Ok { value: epoch, .. }) = r.auth([1; 16]) else { panic!() };
+    assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
     let first = r.call(1, WRITE, set_batch(1, n.me(), t, &k, Value::Int(1)));
     assert!(matches!(first, Outcome::Ok { .. }), "{first:?}");
     let commits = |n: &Osis| n.commits(&CommitQuery::new().scope(Scope::Thing(t))).unwrap().len();
@@ -274,7 +279,7 @@ fn write_nonces_per_session_and_epoch() {
     assert!(matches!(r3, Outcome::Ok { .. }));
     // nonce 2 was skipped: below the highest seen and not remembered
     let unknown = r.call(4, WRITE, set_batch(2, n.me(), t, &k, Value::Int(9)));
-    assert!(matches!(&unknown, Outcome::Err { code: 8, detail } if detail == &vec![Value::Str("outcome unknown".into())]), "{unknown:?}");
+    assert!(matches!(&unknown, Outcome::Err { code: 12, .. }), "{unknown:?}");
     // another session of the same Owner: its own range
     let mut r2 = Raw::unix(&sock);
     r2.auth([2; 16]).unwrap();
@@ -283,18 +288,22 @@ fn write_nonces_per_session_and_epoch() {
     // the first session's memory survives its reconnect within the same node process
     drop(r);
     let mut r = Raw::unix(&sock);
-    let Ok(Outcome::Ok { value: same, .. }) = r.auth([1; 16]) else { panic!() };
-    assert_eq!(same, epoch);
+    assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
     let again = r.call(1, WRITE, set_batch(1, n.me(), t, &k, Value::Int(5)));
     let (Outcome::Ok { value: a, .. }, Outcome::Ok { value: b, .. }) = (&first, &again) else { panic!() };
     assert_eq!(a, b);
     drop((r, r2));
-    // a restart: another epoch, so a client fails its unanswered writes "outcome unknown"
+    // a restart: nothing remembered, so a resend of what ran is unknown, every one of them
     n.close().unwrap();
     let n = node(&store, &net, &sock, false);
     let mut r = Raw::unix(&sock);
-    let Ok(Outcome::Ok { value: other, .. }) = r.auth([1; 16]) else { panic!() };
-    assert_ne!(other, epoch);
+    assert!(matches!(r.auth([1; 16]), Ok(Outcome::Ok { .. })));
+    let resent = 1u64 << 62;
+    for (i, nonce) in [1u64, 3].into_iter().enumerate() {
+        let o = r.call(5 + i as u64, WRITE, set_batch(nonce | resent, n.me(), t, &k, Value::Int(9)));
+        assert!(matches!(&o, Outcome::Err { code: 12, .. }), "{o:?}");
+    }
+    assert_ne!(n.get(t, k.clone()).unwrap(), Some(Value::Int(9)));
     drop(r);
     n.close().unwrap();
 }

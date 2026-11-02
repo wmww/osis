@@ -122,4 +122,6 @@ impl ApiCode {
     pub const STORAGE: u64 = 9;
     pub const NETWORK: u64 = 10;
     pub const UNSUPPORTED: u64 = 11;
+    /// No detail: the write may or may not have applied.
+    pub const OUTCOME_UNKNOWN: u64 = 12;
 }

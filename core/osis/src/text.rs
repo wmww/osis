@@ -149,7 +149,7 @@ impl Osis {
     /// Opens a text session on the string at `path` of an aspect (`Path::root()` for the whole
     /// aspect). An absent position starts empty.
     pub fn edit_text<K: AspectKey>(&self, tid: Tid, key: K, path: Path) -> Result<TextSession> {
-        if let crate::handle::Source::Remote = self.route_any() {
+        if let crate::sources::Source::Remote(_) = self.route(tid) {
             return Err(Error::Unsupported("edit_text through the attached node".into()));
         }
         let seq = matches!(crate::large::type_of(&key, &path)?, Some(Type::Text));

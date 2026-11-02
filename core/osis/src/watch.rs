@@ -74,8 +74,8 @@ pub(crate) enum Filter {
     Roster(Tid),
     Diagnostics,
     Status,
-    /// A subscription at the attached node, by its token (`port::client`).
-    Port(u64),
+    /// A subscription at an attached node, by its token (`port::client`), and the thing it is on.
+    Port(u64, Option<Tid>),
 }
 
 /// What a subscription at the attached node delivers (`port::client`), in wire order.
@@ -84,7 +84,8 @@ pub(crate) enum PortEvent {
     /// The Sub's reply: the initial value.
     Initial(Value),
     Notify(osis_proto::Payload),
-    /// The connection is gone: nothing more comes.
+    /// The connection is gone: nothing more until a reconnect's `Initial`; none for a
+    /// subscription that ended.
     Closed,
 }
 
@@ -102,6 +103,9 @@ pub(crate) enum Delivery {
     Diagnostic(Diagnostic),
     Status(crate::share::Status),
     Port(PortEvent),
+    /// The group's source moved (`Osis::group_source`): the last call of this subscription, which
+    /// would otherwise go silent.
+    Moved,
 }
 
 pub(crate) enum Msg {
@@ -109,6 +113,8 @@ pub(crate) enum Msg {
     Initial(u64),
     Status(crate::share::Status),
     Port(u64, PortEvent),
+    /// This subscription's source moved.
+    Moved(u64),
     Barrier(Sender<()>),
 }
 
@@ -233,6 +239,19 @@ impl Dispatch {
         }
     }
 
+    /// What live subscriptions are on: (id or token, whether a token, thing).
+    pub fn subs_on(&self) -> Vec<(u64, bool, Tid)> {
+        lock(&self.shared.registry)
+            .subs
+            .values()
+            .filter_map(|s| match &s.filter {
+                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) => Some((s.id, false, *t)),
+                Filter::Port(token, Some(t)) => Some((*token, true, *t)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Live registrations (`Internals::watches`).
     pub fn registrations(&self) -> usize {
         lock(&self.shared.registry).subs.len()
@@ -305,6 +324,9 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
     if let Msg::Initial(id) = m {
         return lock(&sh.registry).subs.get(id).map(|s| (s.clone(), Pre::Ready(Delivery::Initial))).into_iter().collect();
     }
+    if let Msg::Moved(id) = m {
+        return lock(&sh.registry).subs.remove(id).map(|s| (s, Pre::Ready(Delivery::Moved))).into_iter().collect();
+    }
     let live: Vec<Arc<Sub>> = lock(&sh.registry).subs.values().filter(|s| s.since <= seq).cloned().collect();
     let to = |f: &dyn Fn(&Filter) -> bool, d: Delivery| live.iter().filter(|s| f(&s.filter)).map(|s| (s.clone(), Pre::Ready(d.clone()))).collect();
     if let Some((changed, source)) = aspect_event(m) {
@@ -347,7 +369,7 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Roster(*thing), Delivery::Roster),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
-        Msg::Port(t, ev) => to(&|f| *f == Filter::Port(*t), Delivery::Port(ev.clone())),
+        Msg::Port(t, ev) => to(&|f| matches!(f, Filter::Port(x, _) if x == t), Delivery::Port(ev.clone())),
         _ => Vec::new(),
     }
 }
@@ -496,6 +518,14 @@ struct WState {
 impl WatchState {
     pub fn new(value: Result<Option<Value>>) -> Arc<WatchState> {
         Arc::new(WatchState { m: Mutex::new(WState { value, version: 0, wakers: Vec::new() }), cv: Condvar::new() })
+    }
+
+    /// `update`, unless something newer was stored since this state was made (a remote watch's
+    /// first value: a Notify after it may already have run on the dispatcher).
+    pub fn first(&self, v: Result<Option<Value>>) {
+        if lock(&self.m).version == 0 {
+            self.update(v);
+        }
     }
 
     /// Stores a new value if it differs from the held one; an error counts every time.

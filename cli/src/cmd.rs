@@ -201,6 +201,8 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Sync { .. }
             | Cmd::Wait { .. }
             | Cmd::Serve { .. }
+            | Cmd::Group(GroupCmd::Source { .. })
+            | Cmd::Clients(ClientsCmd::RotateKey)
             | Cmd::Watch { .. }
             | Cmd::Roster { watch: true, .. }
             | Cmd::Diag { follow: true }
@@ -386,7 +388,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Hosting(HostingCmd::Set(f)) => set_hosting(ctx, f),
         Cmd::Hosting(HostingCmd::Off) => Ok(db.set_hosting(None)?),
         Cmd::Clients(c) => clients(ctx, &c),
-        Cmd::Serve { host } => serve(ctx, host),
+        Cmd::Serve { host, client_listen } => serve(ctx, host, &client_listen),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
         Cmd::Set(a) => one_write(ctx, ScriptCmd::Set(a)),
@@ -577,6 +579,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             Ok(db.sync(g, &s)?)
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
+        Cmd::Group(GroupCmd::Source { g, to }) => {
+            let g = ctx.tid(&g)?;
+            let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Remote(to.parse()?) };
+            match block_on(db.group_source(g, to), ctx.timeout()?) {
+                Some(r) => Ok(r?),
+                None => Err(exit(6, "timed out: where it was, unless the move finished")),
+            }
+        }
         Cmd::Group(GroupCmd::Policy { .. }) => Err(not_supported("sync_policy (issues/api-deferred.md)")),
         Cmd::Bundle(BundleCmd::Export { groups }) => {
             let gs = groups.iter().map(|g| ctx.tid(g)).collect::<anyhow::Result<Vec<_>>>()?;
@@ -1141,7 +1151,7 @@ const HOST_START_WAIT: Duration = Duration::from_secs(30);
 /// What `serve` listens on when hosting with no listen URL (osis's default port, spec/sync.md §10).
 const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
-fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
+fn serve(ctx: &mut Ctx<'_>, host: HostFlags, client_listen: &[String]) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     // other invocations on this store become its clients (notes/cli.md Design)
     let _sock = crate::listen(&ctx.sel, &db)?;
@@ -1164,6 +1174,13 @@ fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
             std::thread::sleep(Duration::from_millis(20));
         };
         ctx.emit(&[a.to_string()], J::obj([("host", J::str(a.to_string()))]))?;
+        ctx.out.flush()?;
+    }
+    if !client_listen.is_empty() {
+        for a in db.client_listen(client_listen)? {
+            let a = a.to_string();
+            ctx.emit(&[format!("client {a}")], J::obj([("client", J::str(a.clone()))]))?;
+        }
         ctx.out.flush()?;
     }
     // the address line above is a hard failure; the diagnostics after it are best effort (a
@@ -1237,6 +1254,11 @@ fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
         ClientsCmd::Rm { actor } => {
             let a = ctx.tid(actor)?;
             if ctx.db.remove_client(a)? { Ok(()) } else { Err(exit(3, "no such client")) }
+        }
+        ClientsCmd::RotateKey => {
+            let a: Vec<String> = ctx.db.rotate_client_key()?.iter().map(ToString::to_string).collect();
+            let j = J::Arr(a.iter().map(|x| J::str(x.clone())).collect());
+            ctx.emit(&a, j)
         }
         ClientsCmd::Rotate { actor } => {
             let a = ctx.tid(actor)?;

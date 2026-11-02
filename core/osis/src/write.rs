@@ -7,7 +7,8 @@
 //! each as it is recorded; `commit` builds the engine `Mutation` from them under the lock.
 
 use crate::error::{Error, Result};
-use crate::handle::{Osis, Source};
+use crate::handle::Osis;
+use crate::sources::Source;
 use crate::keys::Key;
 use crate::read::{Reader, ak_of};
 use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
@@ -157,13 +158,13 @@ impl<'d> Write<'d> {
     /// `t` after moves; recorded as given when the batch goes to a remote node, which
     /// resolves it as it replays the batch (`Osis::replay`).
     fn resolve(&self, t: Tid) -> Tid {
-        if self.created.contains(&t) || self.db.attached() { t } else { self.db.read_local(|r| r.resolve(t)) }
+        if self.created.contains(&t) || !self.db.is_local(t) { t } else { self.db.read_local(|r| r.resolve(t)) }
     }
 
     /// `t` resolved, failing `UnknownThing` when it is not held; a remote node checks at replay.
     fn known(&self, t: Tid) -> Result<Tid> {
         let t = self.resolve(t);
-        if self.created.contains(&t) || self.db.attached() || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || !self.db.is_local(t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
@@ -290,26 +291,38 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// The batch's source: that of the first thing it names (creates only: where calls on no
-    /// thing go).
-    fn source(&self) -> Source {
-        self.ops.iter().find_map(WriteOp::tid).map_or(self.db.route_any(), |t| self.db.route(t))
+    /// The things that decide the batch's source: those it names but does not create; creates
+    /// only: their owners.
+    fn deciders(&self) -> Vec<Tid> {
+        let named: Vec<Tid> = self.ops.iter().filter_map(WriteOp::tid).filter(|t| !self.created.contains(t)).collect();
+        if !named.is_empty() {
+            return named;
+        }
+        self.ops.iter().filter_map(|o| if let WriteOp::Create(CreationRecord::Thing { owner, .. }) = o { Some(*owner) } else { None }).filter(|t| !self.created.contains(t)).collect()
     }
 
     /// Writes every op: the durable ones as one atomic commit, the ephemeral ones in memory;
     /// `None` when nothing changes. Fails before anything applies with `Permission`,
-    /// `UnknownThing` or `Invalid`.
+    /// `UnknownThing` or `Invalid`; `OutcomeUnknown`, only through another node, may have applied:
+    /// read before repeating it (crate::port::client).
     pub fn commit(self) -> Result<Option<Committed>> {
-        if let Source::Remote = self.source() {
+        let deciders = self.deciders();
+        if let Source::Remote(r) = self.db.route_all(&deciders)? {
             let db = self.db;
             if self.alive.is_some() {
                 return Err(Error::Unsupported("text sessions through a remote node".into()));
             }
-            return db.remote_write(self.wire()?);
+            return db.remote_write(&r, self.wire(&r)?);
         }
         let db = self.db;
+        db.after_route();
         let limit = db.inner.limit;
-        let (r, unplaced) = db.engine(|e| {
+        let (r, unplaced) = db.locked(|l| {
+            // the routing invariant's second half: under the lock this commit takes, every thing it
+            // writes is still this engine's. A write decided Local before a move fails here, never
+            // lands in a group that no longer syncs (crate::sources)
+            db.guard_local(l, &deciders)?;
+            let e = l.engine();
             if let Some(t) = self.alive
                 && !crate::read::knows_in(e, t)
             {
@@ -337,7 +350,7 @@ impl<'d> Write<'d> {
     }
 
     /// The batch in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*]]`.
-    fn wire(&self) -> Result<Vec<Value>> {
+    fn wire(&self, there: &crate::port::client::Remote) -> Result<Vec<Value>> {
         use crate::port::codec::{op_v, retention_v, u};
         if self.ops.len() > crate::port::MAX_BATCH_OPS {
             return Err(Error::Invalid(format!("a batch to a remote node holds at most {} ops", crate::port::MAX_BATCH_OPS)));
@@ -359,7 +372,9 @@ impl<'d> Write<'d> {
                 }))
             })
             .collect::<Result<Vec<Value>>>()?;
-        Ok(vec![t(self.actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops)])
+        // not named by `act_as`: whoever this process is at that node
+        let actor = if self.actor == self.db.me() { there.acts_as().unwrap_or(self.actor) } else { self.actor };
+        Ok(vec![t(actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops)])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).

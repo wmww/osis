@@ -101,7 +101,9 @@ impl Osis {
     /// demotion went, so a failure or a crash halfway is retried by calling this again.
     ///
     /// No pre-sync: a client actor's commits are all this node's own (one node serves a client),
-    /// so there is nothing elsewhere to wait for. A demotion this node may not make fails here.
+    /// so there is nothing elsewhere to wait for. A demotion this node may not make fails here, as
+    /// does a grant on a thing this node reads at another node (`Unsupported`, the sessions ended,
+    /// the entry staying: move its group home and call this again).
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
         if self.attached() {
             let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;
@@ -115,7 +117,8 @@ impl Osis {
             self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).put(&actor, &ct::Client { until: ended, ..e }))?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
-            let done = self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced }))?;
+            self.not_routed("remove_client", t)?;
+            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced })?))?;
             self.carry(done)?;
         }
         self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).remove_key(&actor))?;
