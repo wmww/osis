@@ -13,7 +13,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts a host's word.
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
-- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order.
+- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives.
 - A change may touch any number of things, of any owners and reader sets, with no size limit. A node applies all the parts it may read and syncs at once, or none of them.
 - Each part of a change is authorized on its own thing. Revoking the author on one thing removes only that part.
 
@@ -55,7 +55,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Data may carry an expiry at which every node, untrusted ones included, drops it with nobody online.
 - Purge is prompt: no honest node keeps purged content once it has seen the deletion. No batching. Undo never brings back what another party purged. Purged content is recoverable only from nodes whose retention still holds it; no node keeps a bin.
 - Untrusted nodes act on their own only for expiry and for deletes scheduled when a value is replaced. Every other retention bound takes effect at them when a right holder next syncs.
-- Erasure is final: a body dropped at its keep-at-most bound stays dropped if the write that replaced it later turns invalid. This is the one place where nodes holding the same data may read differently: whether that erased value shows again.
+- A body dropped at its keep-at-most bound stays dropped only at nodes that cannot get it back: if the write that replaced it turns out invalid, the value is live and returns from any node that still holds it. Expired and purged content never returns.
 - Granularity is one edit of one aspect. Part of a value's history can be purged. An author's purge of a large value removes at untrusted nodes only the chunks that author wrote; an admin's removes all of them.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy. Deduplication is therefore only against content the writer already holds.
 - Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read.

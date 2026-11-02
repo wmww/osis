@@ -106,3 +106,6 @@ Owner sign-off needed, in plain words:
 - Deletion: "a value erased at its keep-at-most bound stays erased even if its replacement turns out invalid" becomes "it stays erased only at nodes that cannot get it back; if its replacement was invalid the value is live and comes back from any device that still has it." Expired and purged content never comes back; this changes nothing there.
 - Decentralization "Deterministic"/"Convergence": add "nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives", replacing the "one place" exception.
 - pending-past-expiry: A plus suspect flag instead of the chosen C.
+
+## Owner decisions (round 13)
+All three sign-offs given ("good"): the Deletion and Determinism sentences of spec/requirements.md are rewritten as above; pending-past-expiry is A plus suspect. Build R1, detection and suspect repair.
