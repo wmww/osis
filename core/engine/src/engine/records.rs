@@ -23,6 +23,10 @@ pub const VALUELESS: &[u8] = b"v/";
 /// with every value stripped (spec/crdt.md §4.7), one row per delta: `w/` + aspect key + commit
 /// ID + aspect index (4 bytes).
 pub const RESIDUE: &[u8] = b"w/";
+/// A waiting part a held purge request names, held value-less (`retention::strip_purged`): `j/` +
+/// commit ID + aspect index + delta index (4 bytes each), the delta's nonce and its stripped
+/// fragment. Its pending copy's slot holds an empty delta (`retention::emptied`) while this is kept.
+pub const STRIPPED: &[u8] = b"j/";
 /// Purge items waiting for the deltas they name: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
@@ -85,6 +89,10 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
 
 pub fn residue_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
     [aspect_key(RESIDUE, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()
+}
+
+pub fn stripped_key(id: &CommitId, ai: usize, di: usize) -> Vec<u8> {
+    [STRIPPED, &id.0[..], &(ai as u32).to_be_bytes(), &(di as u32).to_be_bytes()].concat()
 }
 
 pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {

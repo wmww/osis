@@ -828,7 +828,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
             let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
             // a part pending at its expiry counts as never received: its aspect, flagged, may differ
             // from one that applied it before T (spec/commits.md §5)
-            let expired: Vec<String> = p.engine.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingDrop as u8 != 0).map(|(t, a, _, _)| format!("aspect {t} {}", a.as_str())).collect();
+            let expired: Vec<String> = p.engine.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| format!("aspect {t} {}", a.as_str())).collect();
             (seen, roster, expired)
         };
         // the state read with the blobs away, and read once they came
