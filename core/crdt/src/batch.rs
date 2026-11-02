@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 /// A field, key or index step adds one level, a case step two (tag and array); a map key sits
 /// one below its map, a set element two, a list item one. Checked before resolving, which
 /// recurses per level.
-fn out_of_profile(op: &PathOp) -> bool {
+fn out_of_profile<V: View>(op: &PathOp, view: &V) -> bool {
     use crate::ops::Op;
     use osis_base::format::MAX_VALUE_DEPTH;
     // `v` read at depth `at`
@@ -35,9 +35,25 @@ fn out_of_profile(op: &PathOp) -> bool {
         Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Remove(v) | Op::Inc(v) => bad(v, at),
         Op::Add(v) => bad(v, at + 2),
         Op::Edit { base, new } => bad(base, at) || bad(new, at),
-        // a text's strings are its chars, read at the text's depth
-        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(|v| bad(v, if matches!(v, Value::Str(_)) { at } else { at + 1 })),
+        // a text's strings are its chars, read at the text's depth; a list's items one below
+        Op::Insert { items, .. } | Op::InsertAfter { items, .. } => {
+            let item_at = if at <= MAX_VALUE_DEPTH && is_text(view, &op.path) { at } else { at + 1 };
+            items.iter().any(|v| bad(v, item_at))
+        }
         Op::RemoveAspect | Op::Delete { .. } | Op::Move { .. } | Op::Paste { .. } | Op::DeleteDots { .. } => at > MAX_VALUE_DEPTH,
+    }
+}
+
+/// Whether the position at `path` below `view` is a text (`path` at most `MAX_VALUE_DEPTH` long).
+fn is_text<V: View>(view: &V, path: &[PathSeg]) -> bool {
+    match path.split_first() {
+        None => view.encoding() == Some(Encoding::Text),
+        Some((s, rest)) => match s {
+            PathSeg::Field(id) => view.field(*id),
+            PathSeg::Case(id) => view.case(*id),
+            PathSeg::Key(_) | PathSeg::Index(_) => view.element(),
+        }
+        .is_some_and(|v| is_text(&v, rest)),
     }
 }
 
@@ -143,7 +159,7 @@ impl<'s> Batch<'s> {
 
     /// Applies `op` under the writer's `view` (of the aspect root).
     pub fn apply<V: View>(&mut self, op: &PathOp, view: &V) -> Result<(), Error> {
-        if out_of_profile(op) {
+        if out_of_profile(op, view) {
             return Err(Error::Mismatch("value nested deeper than MAX_VALUE_DEPTH or enum case above i64::MAX"));
         }
         let point = seq_point(&op.path, &op.op).map(|(n, index)| (op.path.get(..n).unwrap_or_default().to_vec(), index));
