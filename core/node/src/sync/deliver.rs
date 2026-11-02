@@ -138,6 +138,20 @@ impl SyncEngine {
         self.touched.full = true;
         self.state.feed = feed;
         self.state.now = now;
+        // owed records are taken at start only; a copy waiting to rotate a forgotten group is moot
+        self.state.owed.clear();
+        let mut moot = Vec::new();
+        for x in std::mem::take(&mut self.deferred) {
+            // `place_certificate_in` places nothing there any more
+            if self.engine.group_labels(&x.0).is_ok_and(|ls| ls.iter().all(|l| l.replaced)) {
+                moot.extend(x.3);
+            } else {
+                self.deferred.push(x);
+            }
+        }
+        for k in moot {
+            self.settle_owed(k);
+        }
         let gone = |l: &LabelId| f.labels.contains(l);
         for l in &f.labels {
             self.state.feed.forget(l);
