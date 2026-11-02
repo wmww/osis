@@ -5,3 +5,5 @@
 spec/permissions.md §1: a delta on a thing more than `MAX_OWNER_DEPTH` owner links below its top is invalid, ephemeral things included. Local writes go through `write::within_depth` over the whole chain (ephemeral records, then held ones). Remote ephemeral parts go through `ephemeral/remote.rs` `eph_write_valid`, which walks the ephemeral records up to the nearest durable thing `cur` and then checks `validity::too_deep(cur)`: the links below `cur` are not counted, so ephemeral things stacked under a durable thing near the limit pass. The `owner == node` return (an ephemeral owner that is the author) skips the depth check entirely.
 
 Fix shape: require `owner_chain(tid, record_of).end()` to be a top before the walk (then `too_deep(cur)` is implied). Check what re-judges a remote part when a missing record above the author arrives: today such a part is valid without that record. Needs a test with an ephemeral chain over a durable chain at depth 60.
+
+Coordinator: `remote.rs` goes whole in eph-unify step B2, so fix this there (Core judges ephemeral writes like durable ones, `within_depth` included) rather than patching `eph_write_valid`.
