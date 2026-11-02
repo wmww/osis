@@ -7,10 +7,9 @@ use super::state::{Entry, Kind, HostKey};
 use super::{Action, ConnId, Phase, SyncEngine};
 use crate::error::{Error, Result};
 use crate::labeling::seal_body;
-use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
 use osis_label::{Address, InboxLabel, InboxPayload, InboxThing};
-use osis_perm::{At, PurgeBy};
+use osis_perm::At;
 use osis_proto::Command;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
@@ -83,7 +82,6 @@ impl SyncEngine {
         if self.engine.carrier_only(&s, t, ak) {
             return Ok(Vec::new());
         }
-        let me = self.engine.tid();
         let now = self.engine.now();
         let held: Vec<CommitId> = match only {
             Some(o) => o.to_vec(),
@@ -108,19 +106,8 @@ impl SyncEngine {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
-            let Some(a) = h.aspects.iter().find(|x| x.tid == *t && x.ak == *ak) else { continue };
-            let by = PurgeBy::from_code(a.retention.by as u64).unwrap_or(PurgeBy::Nobody);
-            let ts = Ts::make(now, 0).unwrap_or_default();
-            let may = match self.engine.core.timelines.get(t) {
-                Some(tl) => tl.may_purge(&me, t, by, &h.actor, At::now(ts)),
-                None => by != PurgeBy::Nobody && self.engine.role_on(t) >= Some(Role::Admin),
-            };
-            if !may {
-                continue;
-            }
-            // MAX_DRIFT past the bound: a node whose clock lags by up to that still holds the
-            // body must-hold and would place it again
-            let due = self.engine.body_keep(&c, t, ak)?.at_least.saturating_add(MAX_DRIFT_MS);
+            // this node's right and keep-at-least bound, as a demotion's frontier judges them
+            let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
             if due > now.0 {
                 left.at(due, c);
                 continue;
