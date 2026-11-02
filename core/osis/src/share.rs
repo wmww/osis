@@ -216,7 +216,8 @@ pub enum SyncState {
     Unreachable,
     NoHosts,
     /// A host does not admit it (yet: code 14, spec/wire.md §11.2; `GroupSync::not_admitted`
-    /// names them); registered again after a back-off. Ranks above `NoHosts`, below `Stranded`.
+    /// names them) and no other host has it open; registered again after a back-off. Ranks
+    /// above `NoHosts`, below `Stranded`.
     Refused,
     /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
     /// its worst label's state; `wait_synced` judges each label on its own).
@@ -232,7 +233,8 @@ pub struct GroupSync {
     /// The labels this node syncs it under (several while one replaces another): what a host
     /// admits it by (`Hosting::labels`, `caps`).
     pub labels: Vec<LabelId>,
-    /// Hosts that do not admit one of those labels (yet), state `Refused`.
+    /// Hosts that do not admit one of those labels (yet): state `Refused` when no other host
+    /// has it open, else informational.
     pub not_admitted: Vec<HostAddr>,
 }
 
@@ -260,7 +262,7 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
         SyncState::NoHosts
     } else if s.stranded {
         SyncState::Stranded
-    } else if !s.not_admitted.is_empty() {
+    } else if !s.not_admitted.is_empty() && s.open == 0 {
         SyncState::Refused
     } else if s.refused && s.open == 0 {
         SyncState::Unreachable
