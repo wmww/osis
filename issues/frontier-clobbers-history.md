@@ -1,0 +1,7 @@
+# A demotion's frontier may leave out history a snapshot does not keep
+> Summary: spec/permissions.md §5.1 lets a demoter leave out a commit covered by a snapshot, and `covered_here` (engine apply/receipt.rs) does. A snapshot keeps live content only, so a superseded write the frontier omits turns invalid: current content survives, history is judged invalid, whatever the write's retention. Any writer can write such a snapshot just before a kick. Found by reading (notes/chat-designs/e-review.md), not run.
+> Tags: security, spec, permissions, engine
+
+Owner: incorrect, and especially wrong for a thing set so admins cannot erase history. Candidate rule: a frontier may leave out only a commit whose body its retention lets be dropped now (past keep at least, right holder); keep-forever writes are always listed. Then the frontier is O(surviving writes) forever for such aspects: see the hash chain idea in e-review.md and the size limit (8 MiB, about 2.5x10^5 commits).
+
+Related limit to decide: the frontier is the demoter's own word, so a hostile admin can list nothing and make every write of the demoted member invalid, under any retention. Bodies stay must-hold (`must_hold` does not read validity) and a re-grant revives them, but state and any validity-filtered read lose them. So "admin cannot erase history" holds for bodies, not for validity. Is that acceptable, and should a history read show such writes as disputed instead of absent? Requirements Permissions (edits the revoker had not received are lost until re-grant) accepts the honest case.
