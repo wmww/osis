@@ -487,8 +487,8 @@ fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
 }
 
 // spec/permissions.md §8, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
-// arrives. Nodes that had dropped the body keep it dropped (issues/purge-before-demotion.md), but
-// nobody shows a purge any more and a new device reads the message from the holder that kept it.
+// arrives. Nodes that had dropped the body take it again from the holder that kept it, no purge is
+// shown, and a new device reads the message; nobody deletes it again, no upload and delete for good.
 #[test]
 fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
     let mut net = Net::new();
@@ -521,6 +521,21 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
     net.run();
     assert!(net.engine(n).body_not_dropped(&m, &t, &k()));
     assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
+    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing.is_empty() && c.dropped.is_empty());
+    // not the demoted admin: it reads the label no more
+    for x in [a, b, n] {
+        assert!(holds(&mut net, x), "at {x}: the body is back");
+        assert!(net.engine(x).named_permanent_count().unwrap() == 0, "at {x}: no lasting note");
+    }
+    let before = known_entries(&mut net, a, host);
+    for _ in 0..6 {
+        net.advance(120_000);
+        net.run();
+    }
+    assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
+    for x in [a, b, n] {
+        assert!(holds(&mut net, x), "at {x}: still");
+    }
 }
 
 /// Admin `a`, writer `b`, reader `n` offline, and thing `u` of a second group: its label and hosts
@@ -705,9 +720,50 @@ fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
     net.labels_at(host).into_iter().map(|l| net.sync(n).entries(&l).len()).sum()
 }
 
-// spec/sync.md §6: a purge that fell after every holder applied it. The holders go on judging its
-// header and the message's lasting (issues/purge-before-demotion.md), a node that had the demotion
-// first does not: it leaves them there, no upload and delete for good.
+// spec/sync.md §6, spec/permissions.md §8: a holder that held the demotion first comes back to find
+// the purge's delete at the host: the message has no live write (a later write killed it), so a
+// delete would keep it out; but the request falls there, so the holder places it again and the
+// writer that dropped it takes it.
+#[test]
+fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, x, h) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(5, &[host]));
+    let g = net.group(a, &[(b, Role::Write), (x, Role::Admin), (h, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let m = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    msg(&mut net, b, t, "later", permanent());
+    net.run();
+    assert!(net.engine(h).body_not_dropped(&m, &t, &k()));
+    net.set_online(a, false);
+    net.set_online(h, false);
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced };
+    net.engine(a).demote(&g, &d).unwrap();
+    let packs: Vec<_> = net.engine(a).commit_ids().into_iter().filter_map(|id| net.engine(a).package(&id).unwrap()).collect();
+    for pk in &packs {
+        let _ = net.engine(h).ingest(&pk.bytes, pk.blobs.clone());
+    }
+    net.advance(5_000);
+    purge(&mut net, x, t, m, permanent());
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&m, &t, &k()), "the writer dropped it");
+    assert!(net.engine(h).body_not_dropped(&m, &t, &k()), "the holder knows better");
+    net.set_online(h, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    let holds = |net: &mut Net, x: usize| net.engine(x).core.ix.commits.get(&m).is_some_and(|c| c.missing.is_empty() && c.dropped.is_empty());
+    for n in [b, h] {
+        assert!(holds(&mut net, n), "at {n}");
+        assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty(), "at {n}");
+    }
+}
+
+// spec/sync.md §6, spec/permissions.md §8: a purge that fell after every holder dropped the body: it
+// is gone for good (no holder), the part missing at each, no purge shown. The header-only blobs up
+// by then stay, judged lasting by nobody: no upload and delete for good.
 #[test]
 fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     let mut net = Net::new();
@@ -730,7 +786,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     net.actions(d2, acts);
     net.run();
     assert!(net.engine(a).purged_on(&t, &k()).unwrap().is_empty());
-    assert!(net.engine(d2).commit_ids().contains(&m) && !net.engine(a).body_not_dropped(&m, &t, &k()));
+    assert!(net.engine(d2).commit_ids().contains(&m) && net.engine(a).core.ix.commits.get(&m).unwrap().missing.len() == 1);
     net.advance(120_000);
     let before = known_entries(&mut net, a, host);
     for _ in 0..6 {

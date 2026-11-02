@@ -260,7 +260,7 @@ fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<
     if a.ak.lifetime() != class_of(h) {
         return Ok(true);
     }
-    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::known_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai) || validity::removed_author(tx.core, h, id, a) || validity::breaks_a_held_setting(tx.core, h, id, a))
+    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai) || validity::removed_author(tx.core, h, id, a) || validity::breaks_a_held_setting(tx.core, h, id, a))
 }
 
 /// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be

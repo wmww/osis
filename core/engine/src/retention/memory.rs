@@ -113,7 +113,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                 if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
                     continue;
                 }
-                super::drop_part_as(tx, &c, ai, true)?;
+                super::drop_part_for(tx, &c, ai, super::DropFor::Cover)?;
                 dropped.insert(c);
                 break;
             }

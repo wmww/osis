@@ -239,9 +239,9 @@ impl SyncEngine {
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }
-                // a lasting header this node does not judge lasting: nodes may differ for good over a
-                // purge that fell after one applied it (issues/purge-before-demotion.md). Deleting
-                // what the other must hold would never end: it stays (spec/sync.md §6)
+                // a lasting header this node does not judge lasting: a node may yet judge it so, or
+                // it is left from a purge that fell. Deleting what another must hold would not end:
+                // it stays (spec/sync.md §6)
                 if parts.is_empty() && (!h.purge.is_empty() || (h.ephemeral.is_none() && h.aspects.iter().any(|a| a.permanent()))) {
                     return Ok(None);
                 }

@@ -357,7 +357,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact, also }),
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Message { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Message { by, t, v }),
-        Purge { by, t, of, back, v } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
+        Purge { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
         PurgeAuthor { by, t, of } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
         Undo { by, back } => {
             // one of the author's last content commits
@@ -457,6 +457,8 @@ pub(crate) struct Played {
     tally: Tally,
     /// What the fresh nodes sync (`Syncs`).
     sync: Syncs,
+    /// Bodies of a fallen purge given again and judged alike (`alike_exchanged`).
+    restored: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1053,7 +1055,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default() }
 }
 
 /// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
@@ -1482,7 +1484,9 @@ fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
 /// arrives again joins (spec/commits.md §5), so they then hold the same bodies and judge alike
 /// with no exception for the drop.
 fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], rng: Option<Rng>, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
-    let apart = drop_flips(want, got);
+    let fallen = purge_flips(played, want, got);
+    let mut apart = drop_flips(want, got);
+    apart.extend(fallen.iter().cloned());
     if apart.is_empty() {
         return alike(want, got, flips);
     }
@@ -1498,7 +1502,24 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
         p.engine.reexamine().unwrap();
     }
     let (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
-    alike(&wj, &gj, flips).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"))
+    let diff = alike(&wj, &gj, flips).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
+    if diff.is_none() {
+        played.restored.fetch_add(fallen.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    }
+    diff
+}
+
+/// The commits (as `facts_text` prints them) with a part on an aspect some purge request names
+/// that is missing at one node and not at the other: the purge fell after one applied it, and the
+/// part counts as never received there (spec/permissions.md §8), as `drop_flips` for keep bounds.
+fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String> {
+    let (Some(w), Some(g)) = (&want.index, &got.index) else { return BTreeSet::new() };
+    let header = |p: &Package| osis_commit::CommitBlob::decode(&p.bytes).ok().map(|b| b.header);
+    let named: BTreeSet<(Tid, osis_base::Ak)> = played.packs.iter().filter_map(header).flat_map(|h| h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect::<Vec<_>>()).collect();
+    played.packs.iter().filter(|p| {
+        let (Some(x), Some(y), Some(h)) = (w.commits.get(&p.id), g.commits.get(&p.id), header(p)) else { return false };
+        x.missing.symmetric_difference(&y.missing).any(|ai| h.aspects.get(*ai).is_some_and(|a| named.contains(&(a.tid, a.ak.clone()))))
+    }).map(|p| format!("{:?}", p.id)).collect()
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -1861,6 +1882,8 @@ struct Seen {
     tombstones: u64,
     /// Deltas the reference node shows purged by a request by author, over the held sets.
     by_author: u64,
+    /// Bodies of a purge that fell after a node applied it, given again and judged alike.
+    restored: u64,
 }
 
 impl Seen {
@@ -1873,6 +1896,7 @@ impl Seen {
         self.fallen += o.fallen;
         self.tombstones += o.tombstones;
         self.by_author += o.by_author;
+        self.restored += o.restored;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -1898,6 +1922,8 @@ impl Seen {
         assert!(!self.tally.kinds.contains_key("PurgeAuthor") || self.by_author > 0, "order::{name}: no delta purged by author: {self:?}");
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
         assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
+        // a purge whose right fell after a node applied it (spec/permissions.md §8)
+        assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0, "order::{name}: no fallen purge restored: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
         // a history setting required retentions reaches a delta breaking one
@@ -2083,6 +2109,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
         }
     }
+    seen.restored = synced.restored.load(std::sync::atomic::Ordering::Relaxed);
     Ok(seen)
 }
 
@@ -2533,9 +2560,9 @@ fn arrival_order_alike_large_spec_permissions_5_2() {
     run("arrival_order_alike_large_spec_permissions_5_2", 1000..1060, 60, LARGE, history);
 }
 
-/// `history` with permanent messages and purges by the owner mixed in, on their own draws (`history`'s
-/// seeds replay as they were). Only the owner purges: its right cannot fall, and a purge whose right
-/// falls after it applied still depends on arrival order (issues/purge-before-demotion.md).
+/// `history` with permanent messages and purges by anyone mixed in, on their own draws (`history`'s
+/// seeds replay as they were). A purge whose right falls after it applied counts as never received
+/// (spec/permissions.md §8): `alike_exchanged` gives both nodes its bodies again.
 fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut out = Vec::new();
@@ -2544,7 +2571,7 @@ fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
         let (by, t, v) = (rng.below(3) as usize, rng.below(8) as usize, rng.below(10) as u8);
         match rng.below(8) {
             0 | 1 => out.push(Step::Aim(Box::new(Step::Message { by, t, v }))),
-            2 => out.push(Step::Aim(Box::new(Step::Purge { by: 0, t, of: by, back: rng.below(4) as u8, v }))),
+            2 => out.push(Step::Aim(Box::new(Step::Purge { by: rng.below(3) as usize, t, of: by, back: rng.below(4) as u8, v }))),
             _ => {}
         }
     }
@@ -2590,6 +2617,13 @@ fn arrival_order_purge_author_large_spec_perm_8() {
 #[test]
 fn arrival_order_purge_small_spec_commits_5() {
     run("arrival_order_purge_small_spec_commits_5", 0..4, 8, SMALL, purge_history);
+}
+
+// spec/commits.md §4: a roster snapshot's `tenures.0` part arriving before its `roles.0` part does
+// not show who stays, so it counts no removed author's delta as held yet (seed 3050, no purge needed).
+#[test]
+fn partial_roster_snapshot_removes_nobody_seed_3050() {
+    run("partial_roster_snapshot_removes_nobody_seed_3050", 3050..3051, 60, LARGE, purge_history);
 }
 
 #[test]

@@ -359,6 +359,14 @@ fn purge_tombstones() {
     ok("purge_tombstones", 1);
 }
 
+// spec/permissions.md §8: a purge falling through a host: the body comes back, no upload and delete
+// loop. Both seeds of the stamp.
+#[test]
+fn purge_falls() {
+    ok("purge_falls", 1);
+    ok("purge_falls", 2);
+}
+
 // spec/versioning.md §1, §2: a newer format version is parked, relayed, never destroyed.
 #[test]
 #[ignore = "tier 2"]

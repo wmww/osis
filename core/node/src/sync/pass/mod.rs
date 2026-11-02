@@ -781,7 +781,7 @@ impl SyncEngine {
             }
             // a right holder deleted it here: its keep bounds, dated by its own deaths, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(b, &needed, snaps, &mut note)? {
+            if !here && self.delete_stands(l, b, &needed, snaps, &mut note)? {
                 continue;
             }
             // another node's commit not at this host: its author (or a co-writer) first
@@ -968,7 +968,7 @@ impl SyncEngine {
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`)
-                if self.state.body_deleted(*l, b.commit, &b.parts) && self.live_carried(b, &needed, &snaps, &mut note)? {
+                if self.delete_stands(*l, b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));
@@ -1321,6 +1321,12 @@ impl SyncEngine {
 
     /// Whether each of `parts` of body `b` has no live write or a snapshot under the label
     /// (`snaps`) covering it.
+    /// Whether a delete took body `b` from `l` and it stays out: its live writes are carried there
+    /// and no purge that fell may have been what took it (spec/sync.md §6).
+    fn delete_stands(&mut self, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        Ok(self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(b, parts, snaps, note)? && !self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
+    }
+
     fn live_carried(&mut self, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         for p in parts {

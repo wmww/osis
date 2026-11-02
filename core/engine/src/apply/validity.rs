@@ -974,7 +974,8 @@ pub(crate) fn removed_author(core: &Core, h: &Header, id: &CommitId, a: &osis_co
         let lowered = |r: &&Arc<RoleCommit>| !is_author(&r.author) && unlisted(&r.frontier) && r.ops.iter().any(|o| o.target == t && is_author(&o.holder) && o.edge.as_ref().is_none_or(|e| e.role < required));
         // an entry ends a tenure; a tenure or roster edge of `required` or above starting at its end means no lowering
         let stays = |s: &RosterSnapshot, l: &osis_perm::Tenure| s.roster.get(&l.holder).is_some_and(|e| e.role >= required && e.since == Some(l.until)) || s.ledger.iter().any(|n| n.holder == l.holder && n.role >= required && n.since == Some(l.until) && n.until > l.until);
-        let in_ledger = |s: &&Arc<RosterSnapshot>| s.ledger.iter().any(|l| is_author(&l.holder) && l.role >= required && unlisted(&l.frontier) && !stays(s, l));
+        // a snapshot whose `roles.0` part is still to come may not show who stays: it says nothing yet
+        let in_ledger = |s: &&Arc<RosterSnapshot>| !s.roster.is_empty() && s.ledger.iter().any(|l| is_author(&l.holder) && l.role >= required && unlisted(&l.frontier) && !stays(s, l));
         let signers = core.ix.held.commits_on(&t).iter().filter(lowered).map(|r| r.author).chain(core.ix.held.snapshots_of(&t).iter().filter(in_ledger).map(|s| s.author));
         signed_by_possible_admin(core, &t, signers)
     })
@@ -1580,6 +1581,12 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             super::keys::revalidated(tx, &c, ai)?;
         } else {
             super::keys::invalidated(tx, &c, ai)?;
+        }
+    }
+    // a request's right rests on the same timelines (spec/permissions.md §8)
+    if rebuild {
+        for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
+            crate::retention::rejudge_purges(tx, &tid, &ak, &mut flipped)?;
         }
     }
     Ok(flipped.into_iter().collect())
