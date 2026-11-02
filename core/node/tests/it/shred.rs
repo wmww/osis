@@ -588,3 +588,108 @@ fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
     assert_eq!(reads[0][0], None, "the value-less write wins over \"old\"");
     assert!(reads.iter().all(|r| *r == reads[0]), "{reads:?}");
 }
+
+// spec/commits.md §5, spec/requirements.md (Deterministic): commit `c` writes `t` (reg, list) and `t2`;
+// node 1 syncs `t2`, not `t`, and gets `c` as two copies (one without the list part, one of it alone, as
+// blobs of two retention classes would bring it): with the first alone `c` applies its `t2` part and the
+// reg part waits alone for its unit. A purge request naming the reg part, in every order: the node holds
+// `t` as its author does and flags nothing.
+#[test]
+fn purge_of_a_part_waiting_aside_reads_alike_spec_commits_5() {
+    for order in [[0usize, 1, 2], [1, 0, 2], [0, 2, 1], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let mut lp = net2(141);
+        let t = new_thing(&mut lp, 0);
+        let t2 = new_thing(&mut lp, 0);
+        let t3 = new_thing(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        lp.peers[1].engine.set_syncing(t2, true).unwrap();
+        lp.peers[1].engine.set_syncing(t3, true).unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("SECRET-R4e1")).unwrap();
+        m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+        m.set(t2, &REG, &s("other")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t3, &REG, &s("other3")).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        let p = lp.peers[0].commit(m).unwrap().unwrap();
+        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+        let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+        let list = part.header.aspects.iter().position(|a| a.tid == t && a.ak == ak("t:list.0")).unwrap();
+        let mut rest = part.clone();
+        part.parts.retain(|q| q.ai != list);
+        rest.parts.retain(|q| q.ai == list);
+        for g in order {
+            match g {
+                0 => drop(lp.peers[1].engine.ingest(&part.encode(), Vec::new()).unwrap()),
+                1 => drop(lp.deliver(1, &request).unwrap()),
+                _ => drop(lp.peers[1].engine.ingest(&rest.encode(), Vec::new()).unwrap()),
+            }
+            lp.peers[1].engine.reexamine().unwrap();
+            assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "order {order:?} after {g}: held value-less, not dropped");
+        }
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
+        assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
+        assert!(e.suspects().unwrap().is_empty(), "order {order:?}: {:?}", e.suspects().unwrap());
+        for a in [ak("t:reg.0"), ak("t:list.0")] {
+            let author = lp.peers[0].engine.state_digest(&t, &a).unwrap();
+            assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
+        }
+        assert!(!recoverable(&mut lp.peers[1], b"SECRET-R4e1"), "order {order:?}");
+    }
+}
+
+// spec/commits.md §5: a waiting part a held purge request names, its value large (chunks) or its delta
+// paged (a map of many big entries), keeps no purged value while it waits or once applied
+#[test]
+fn purged_while_pending_large_or_paged_unrecoverable_spec_commits_5() {
+    let marker = "PEND-LARGE-MARK-5a9b";
+    for (large, request_first) in [(true, true), (true, false), (false, true), (false, false)] {
+        let mut lp = net2(151 + 2 * u64::from(large) + u64::from(request_first));
+        let t = new_thing(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+        let t2 = new_thing(&mut lp, 0);
+        let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
+        lp.peers[1].engine.set_syncing(t, true).unwrap();
+        lp.peers[1].engine.set_syncing(t2, true).unwrap();
+        let (a, mut m) = (if large { ak("t:blob.0") } else { ak("t:gonemap.0") }, Mutation::new());
+        if large {
+            let mut v = vec![0u8; 300 * 1024];
+            osis_crypto::RngCore::fill_bytes(&mut SeededRng::from_u64(9), &mut v);
+            v[150_000..150_000 + marker.len()].copy_from_slice(marker.as_bytes());
+            m.set(t, &BLOB, &Value::Bytes(v)).unwrap();
+        } else {
+            let mut fill: std::collections::BTreeMap<Value, Value> = (0..66).map(|i| (s(&format!("k{i:03}")), s(&"f".repeat(1100)))).collect();
+            fill.insert(s("k030"), s(&big(marker)));
+            m.set(t, &GONEMAP, &Value::Map(fill)).unwrap();
+        }
+        m.set(t2, &REG, &s("other")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("public")).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+        let p = lp.peers[0].commit(m).unwrap().unwrap();
+        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+        let order = if request_first { [&request, &whole] } else { [&whole, &request] };
+        for pk in order {
+            lp.deliver(1, pk).unwrap();
+            lp.peers[1].engine.reexamine().unwrap();
+        }
+        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "large {large} request first {request_first}: it waits for t2");
+        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "large {large} request first {request_first}: recovered while waiting");
+        for pk in &rec {
+            lp.deliver(1, pk).unwrap();
+        }
+        lp.peers[1].engine.reexamine().unwrap();
+        assert!(lp.peers[1].engine.pending().is_empty(), "large {large} request first {request_first}");
+        assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), lp.peers[0].engine.state_digest(&t, &a).unwrap(), "large {large} request first {request_first}");
+        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "large {large} request first {request_first}: recovered once applied");
+    }
+}

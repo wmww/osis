@@ -562,9 +562,15 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: &[Fragment]) -
 }
 
 /// Holds delta `ai` of `c` value-less (`make_valueless`) and drops its body: at expiry, or
-/// purged. A memory delta vanishes whole instead (`memory::vanish`).
-fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
-    strip_pending(tx, c, ai, true)?;
+/// `purged`. A memory delta vanishes whole instead (`memory::vanish`). A part of it waiting in
+/// the stored pending copy goes at expiry (`strip_pending`); purged, it is held value-less, as
+/// `pending_drops` holds it (`purge_pending`).
+fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    if purged {
+        purge_pending(tx, c, ai)?;
+    } else {
+        strip_pending(tx, c, ai, true)?;
+    }
     if !tx.core.ix.commits.contains_key(c) {
         return Ok(());
     }
@@ -664,6 +670,18 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         tx.txn.put_pending(id, kind, &b.encode())?;
     }
     Ok(())
+}
+
+/// The parts of aspect `ai` waiting in the stored pending copy of applied commit `c` (aside), a
+/// purge request naming them just applied (`purge_one`): held as `pending_drops` holds them.
+fn purge_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    let Some(h) = tx.core.ix.commits.get(c).map(|m| (*m.header).clone()).filter(|_| tx.core.ix.pending.contains_key(c)) else { return Ok(()) };
+    if h.ephemeral.is_some() {
+        return strip_pending(tx, c, ai, false);
+    }
+    let Some((_, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
+    let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
+    strip_purged(tx, c, &mut blob, &h, ai)
 }
 
 /// What the slot of a part held value-less holds in the pending copy (`strip_purged`): an empty
@@ -906,7 +924,7 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
         return Ok(());
     }
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    expire(tx, c, ai, changed)?;
+    expire(tx, c, ai, true, changed)?;
     // snapshots carrying the purged values (spec/commits.md §5)
     if let Some(o) = Owned::of(&m.header, c, ai) {
         for s in snapshots_of(tx.core, &a.tid, &a.ak) {
@@ -999,7 +1017,7 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
     }
     for ai in ais.iter().copied() {
         if valueless(tx.core, id, ai) && tx.core.ix.commits.get(id).is_some_and(|m| !m.dropped.contains_key(&ai)) {
-            expire(tx, id, ai, &mut purged)?;
+            expire(tx, id, ai, false, &mut purged)?;
         }
     }
     // a body dropped for its keep bounds and joined again: its bound judged again (deaths the
@@ -1020,7 +1038,7 @@ fn on_parts(tx: &mut Tx<'_>, id: &CommitId, h: &Header, ais: &BTreeSet<usize>, p
         let Some(a) = h.aspects.get(ai) else { continue };
         if let Some(t) = a.expires {
             if t <= tx.now().0 {
-                expire(tx, id, ai, purged)?;
+                expire(tx, id, ai, false, purged)?;
             } else {
                 tx.put_timer(t, id, ai, T_EXPIRY)?;
             }
@@ -1105,7 +1123,7 @@ impl Engine {
                     tx.core.mark_changed(c);
                     tx.txn.remove_local(&[records::TIMER, &k].concat(), Shred::No)?;
                     match kind {
-                        T_EXPIRY => expire(tx, &c, ai, &mut ch)?,
+                        T_EXPIRY => expire(tx, &c, ai, false, &mut ch)?,
                         // judged again: liveness may have changed since the timer was set
                         _ => check_at_most(tx, &c, ai)?,
                     }
