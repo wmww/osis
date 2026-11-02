@@ -16,6 +16,17 @@ pub struct Key {
     pub commit: CommitId,
 }
 
+/// The commit ID of an expiry's key (`Key::expiry`): no commit has it.
+pub const EXPIRY: CommitId = CommitId([0; 32]);
+
+impl Key {
+    /// The key a departure by `holder`'s edge passing its `until` (at `ts`, the first `ts` at
+    /// `until`) is named by (spec/crypto.md §4): the holder in place of the node, no commit.
+    pub fn expiry(ts: u64, holder: Tid) -> Key {
+        Key { ts, node: holder, commit: EXPIRY }
+    }
+}
+
 /// One named departure: the thing whose epoch start can stand in for it, and its commit's key.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Name {
@@ -120,6 +131,13 @@ impl Names {
             keysets.insert(k);
         }
         Some(Names { list, keysets, departs })
+    }
+}
+
+impl Names {
+    /// Every name, keyset name and the departs mark met under `held` (spec/crypto.md §4).
+    pub fn met(&self, held: &dyn Held) -> bool {
+        self.list.iter().all(|x| held.met(x)) && self.keysets.iter().all(|k| held.keyset(k)) && self.departs.is_none_or(|o| held.departed(&o))
     }
 }
 

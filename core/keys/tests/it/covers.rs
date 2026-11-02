@@ -1,12 +1,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! The covers rule and re-seal trigger scenarios (spec/crypto.md §3, §4; spec/permissions.md §3).
+//! The covers rule (by names) and re-seal trigger scenarios (spec/crypto.md §3, §4;
+//! spec/permissions.md §3).
 
 use crate::common;
 use common::*;
 use osis_base::{Role, Tid, WallMs};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, Departure, Holder, MemoryHeldActors, HolderKeys, Opener, ROLES, Recipient, box_holder, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate, rotate_first,
+    ActorEpochs, AllHeld, Departure, Holder, HolderKeys, Key, Name, Names, Opener, ROLES, Recipient, box_holder, ingest, may_encrypt_under, reseal_needed, roles_up_to, rotate,
+    rotate_first,
 };
 use osis_schema::core_types::Secrets;
 use std::collections::BTreeSet;
@@ -17,6 +19,15 @@ fn owner_rcpt(p: Tid, pe: &ActorEpochs) -> Recipient {
 
 fn read() -> BTreeSet<Role> {
     [Role::Read].into_iter().collect()
+}
+
+/// A departure's name: commit `b`'s key, on `thing`.
+fn name(thing: Tid, b: u8) -> Name {
+    Name { thing, key: Key { ts: u64::from(b), node: tid(9), commit: osis_base::CommitId([b; 32]) } }
+}
+
+fn naming(n: Name) -> Names {
+    Names { list: [n].into(), ..Names::default() }
 }
 
 /// Actor `a` owned by P after its own-secrets switch boxing `extra` holders too.
@@ -31,41 +42,39 @@ fn switched(a: Tid, p: Tid, pe: &ActorEpochs, extra: &[Recipient]) -> (ActorEpoc
     (view, s)
 }
 
-// spec/crypto.md §4 (departure inside a holder) and §3 (derived secrets): a device removed from
-// person P makes P rotate; a thing T with secrets of its own still boxes P under P's old secret,
-// so T's epochs do not cover it and a node that may rotate T rotates first; a plain thing owned
-// by P derives from P's new epoch and needs nothing.
+// spec/crypto.md §4 (departure inside a holder, covers by names) and §3 (derived secrets): a
+// device removed from person P; a thing T with secrets of its own whose epochs do not name it
+// does not cover it, so a node that may rotate T rotates first; T's rotation naming it covers it;
+// a plain thing owned by P derives from P's new epoch and needs nothing.
 #[test]
 fn lost_device_owner_rotation() {
     let (t, p) = (tid(1), tid(2));
     let pe = person(0x20);
-    let (tview, ts) = switched(t, p, &pe, &[]);
-    // P rotates every role after the device removal.
+    let (tview, _) = switched(t, p, &pe, &[]);
+    let removal = name(p, 7);
+    let deps = [Departure::inside(p, &Departure::holder(tid(9), Role::Read).at(Some(removal)))];
+    let all = roles_up_to(Role::Admin);
+    for r in ROLES {
+        let (e, _) = tview.role(r).newest_held().unwrap();
+        assert!(!may_encrypt_under(&t, &tview, r, &e, &deps, &AllHeld));
+    }
+    assert_eq!(rotate_first(&t, &tview, &all, &all, &deps, &AllHeld), all);
+    // A writer of T may rotate read and write only.
+    let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
+    assert_eq!(rotate_first(&t, &tview, &all, &rw, &deps, &AllHeld), rw);
+    // T rotates naming the removal: covered. Naming something else covers nothing.
     let mut pe2 = pe.clone();
     for (i, r) in ROLES.into_iter().enumerate() {
         pe2.role_mut(r).rotation(ep(2, 0x21), [ep(1, 0x20)]);
         pe2.role_mut(r).set_established(ep(2, 0x21), osis_keys::Provenance::Fixed);
         pe2.role_mut(r).set_secret(ep(2, 0x21), Secret32::from_bytes([0x90 + i as u8; 32]));
     }
-    // P's own secrets.0 after the rotation hold no box for the device.
-    let mut newest = MemoryHeldActors::default();
-    newest.map.insert(p, (Secrets::default(), pe2.clone()));
-    let deps = [Departure::inside(p, &Departure::holder(tid(9), Role::Read))];
-    let all = roles_up_to(Role::Admin);
-    for r in ROLES {
-        let (e, _) = tview.role(r).newest_held().unwrap();
-        assert!(!may_encrypt_under(&tid(0), &ts, &tview, r, &e, &deps, &newest));
+    let ts = osis_schema::core_types::Secrets::default();
+    for (names, covered) in [(naming(name(p, 8)), false), (naming(removal), true)] {
+        let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &names, &mut rng(2)).unwrap();
+        let tv2 = r.preview(&tview).unwrap();
+        assert_eq!(rotate_first(&t, &tv2, &all, &all, &deps, &AllHeld).is_empty(), covered);
     }
-    assert_eq!(rotate_first(&tid(0), &ts, &tview, &all, &all, &deps, &newest), all);
-    // A writer of T may rotate read and write only.
-    let rw: BTreeSet<Role> = [Role::Read, Role::Write].into_iter().collect();
-    assert_eq!(rotate_first(&tid(0), &ts, &tview, &all, &rw, &deps, &newest), rw);
-    // T rotates, boxing P under its new secrets: covered.
-    let r = rotate(&t, &all, &tview, &ts, &[owner_rcpt(p, &pe2)], &osis_keys::Names::default(), &mut rng(2)).unwrap();
-    let (mut tv2, mut ts2) = (tview.clone(), ts.clone());
-    r.secrets.apply(&mut ts2);
-    tv2 = r.preview(&tv2).unwrap();
-    assert!(rotate_first(&tid(0), &ts2, &tv2, &all, &all, &deps, &newest).is_empty());
     // A plain thing U owned by P: its derived epoch is at P's newest's n.
     let u = ActorEpochs::derived(&pe2, &tid(3));
     let s = osis_crypto::thing_role_secret(pe2.read.secret(&ep(2, 0x21)).unwrap(), Role::Read, &tid(3));
@@ -112,33 +121,33 @@ fn rotation_held_before_the_removal() {
     let (pe, me) = (person(0x20), person(0x30));
     let (view, base) = switched(a, p, &pe, &[actor_rcpt(m, Role::Read, &me)]);
     let with_m = [owner_rcpt(p, &pe), actor_rcpt(m, Role::Read, &me)];
-    let eager = rotate(&a, &read(), &view, &base, &with_m, &osis_keys::Names::default(), &mut rng(6)).unwrap();
-    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &osis_keys::Names::default(), &mut rng(7)).unwrap();
-    let none = MemoryHeldActors::default();
+    let removed = name(a, 7);
+    let eager = rotate(&a, &read(), &view, &base, &with_m, &Names::default(), &mut rng(6)).unwrap();
+    let removal = rotate(&a, &read(), &view, &base, &with_m[..1], &naming(removed), &mut rng(7)).unwrap();
     // Before the removal: only the eager rotation held, no departure known.
     let (mut s, mut v) = (base.clone(), view.clone());
     eager.secrets.apply(&mut s);
     v = eager.preview(&v).unwrap();
     let e2 = eager.rotated[0].epoch;
-    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &[], &none));
+    assert!(may_encrypt_under(&a, &v, Role::Read, &e2, &[], &AllHeld));
     // The removal commit arrives with its rotation.
     removal.secrets.apply(&mut s);
     v = removal.preview(&v).unwrap();
     let e2r = removal.rotated[0].epoch;
-    let deps = [Departure::holder(m, Role::Read)];
-    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2, &deps, &none));
-    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e2r, &deps, &none));
-    let first = rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &none);
+    let deps = [Departure::holder(m, Role::Read).at(Some(removed))];
+    assert!(!may_encrypt_under(&a, &v, Role::Read, &e2, &deps, &AllHeld));
+    assert!(may_encrypt_under(&a, &v, Role::Read, &e2r, &deps, &AllHeld));
+    let first = rotate_first(&a, &v, &read(), &read(), &deps, &AllHeld);
     assert_eq!(first.contains(&Role::Read), v.read.newest() == Some(e2));
     // Rotating past both forks excludes M.
-    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &osis_keys::Names::default(), &mut rng(8)).unwrap();
+    let heal = rotate(&a, &read(), &v, &s, &with_m[..1], &naming(removed), &mut rng(8)).unwrap();
     let history: BTreeSet<_> = v.read.held_established().map(|x| x.0).collect();
     assert!(history.contains(&e2) && history.contains(&e2r));
     assert_eq!(heal.rotated[0].supersedes, history);
     heal.secrets.apply(&mut s);
     v = heal.preview(&v).unwrap();
     let e3 = heal.rotated[0].epoch;
-    assert!(may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &deps, &none));
+    assert!(may_encrypt_under(&a, &v, Role::Read, &e3, &deps, &AllHeld));
     let mut mv = ActorEpochs::default();
     ingest(&a, &s, &Opener::Actor { holder: m, epochs: &me }, &mut mv, None).unwrap();
     assert!(mv.read.secret(&e3).is_none());
@@ -146,34 +155,44 @@ fn rotation_held_before_the_removal() {
     let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
     let w = box_holder(&a, &v, &s, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
     w.apply(&mut s);
-    let kdep = [Departure::holder(k, Role::Read)];
-    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &e3, &kdep, &none));
+    let kdep = [Departure::holder(k, Role::Read).at(Some(name(a, 10)))];
+    assert!(!may_encrypt_under(&a, &v, Role::Read, &e3, &kdep, &AllHeld));
     assert!(reseal_needed(&s, &v, &[Holder { holder: k, role: Role::Write, until: None }], WallMs(0)).is_empty());
 }
 
-// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M". A
-// key actor K granted write while another node rotated write only (not knowing the grant) keeps
-// its box at the current read epoch: after K leaves (`until`, self-removal) that read epoch does
-// not cover K.
+// spec/crypto.md §4 (boxes decide nothing; study C2): an epoch whose rotation left M unboxed
+// (its rotator had not read M's grant) does not cover M's later removal: a re-sealer that knows
+// the grant but not the removal boxes M there. Only an epoch naming the removal covers it; one
+// whose names are not met here covers nothing; a departure no rotation can name (`at` none)
+// is covered by none.
 #[test]
-fn raced_grant_box_still_uncovers() {
-    let (a, p) = (tid(1), tid(2));
+fn missing_box_covers_nothing() {
+    let (a, p, m) = (tid(1), tid(2), tid(3));
     let pe = person(0x20);
     let (view, base) = switched(a, p, &pe, &[]);
-    let (k, seed) = (tid(6), Secret32::from_bytes([0x60; 32]));
-    let grant = box_holder(&a, &view, &base, &key_rcpt(k, Role::Write, &seed), &roles_up_to(Role::Write), &mut rng(9)).unwrap().unwrap();
-    let write: BTreeSet<Role> = [Role::Write].into_iter().collect();
-    let rot = rotate(&a, &write, &view, &base, &[owner_rcpt(p, &pe)], &osis_keys::Names::default(), &mut rng(7)).unwrap();
-    let (mut s, mut v) = (base.clone(), view.clone());
-    grant.apply(&mut s);
-    rot.secrets.apply(&mut s);
-    v = rot.preview(&v).unwrap();
-    let r0 = v.read.newest().unwrap();
-    let mut kv = ActorEpochs::default();
-    ingest(&a, &s, &Opener::KeyActor { holder: k, seed: &seed }, &mut kv, None).unwrap();
-    assert!(kv.read.reading_secret(&r0).is_some());
-    let deps = [Departure::holder(k, Role::Read)];
-    let none = MemoryHeldActors::default();
-    assert!(!may_encrypt_under(&tid(0), &s, &v, Role::Read, &r0, &deps, &none));
-    assert_eq!(rotate_first(&tid(0), &s, &v, &read(), &read(), &deps, &none), read());
+    let rot = rotate(&a, &read(), &view, &base, &[owner_rcpt(p, &pe)], &Names::default(), &mut rng(7)).unwrap();
+    let v = rot.preview(&view).unwrap();
+    let e1 = rot.rotated[0].epoch;
+    let removed = name(a, 7);
+    let dep = [Departure::holder(m, Role::Read).at(Some(removed))];
+    assert!(!may_encrypt_under(&a, &v, Role::Read, &e1, &dep, &AllHeld));
+    assert_eq!(rotate_first(&a, &v, &read(), &read(), &dep, &AllHeld), read());
+    let named = rotate(&a, &read(), &v, &base, &[owner_rcpt(p, &pe)], &naming(removed), &mut rng(8)).unwrap();
+    let v2 = named.preview(&v).unwrap();
+    let e2 = named.rotated[0].epoch;
+    assert!(may_encrypt_under(&a, &v2, Role::Read, &e2, &dep, &AllHeld));
+    struct Unmet;
+    impl osis_keys::Held for Unmet {
+        fn met(&self, _: &Name) -> bool {
+            false
+        }
+        fn keyset(&self, _: &osis_keys::KeysetName) -> bool {
+            true
+        }
+        fn departed(&self, _: &osis_keys::Own) -> bool {
+            true
+        }
+    }
+    assert!(!osis_keys::covers(&a, &v2, Role::Read, &e2, &dep[0], &Unmet));
+    assert!(!may_encrypt_under(&a, &v2, Role::Read, &e2, &[Departure::holder(m, Role::Read)], &AllHeld));
 }

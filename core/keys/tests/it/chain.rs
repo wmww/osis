@@ -1,14 +1,15 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
-//! A departure two hops below a doc (spec/crypto.md §4 covers rule, recursive; spec/permissions.md
-//! §3 top-down rotation): device D removed from person P, P holder of team T, T holder of doc U.
+//! A departure two hops below a doc (spec/crypto.md §4 covers rule by names; spec/permissions.md
+//! §3 top-down rotation and the box judgement of a holder actor's keyset, recursive): device D
+//! removed from person P, P holder of team T, T holder of doc U.
 
 use crate::common;
 use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, Departure, HolderKeys, MemoryGraph, MemoryHeldActors, Opener, Recipient, ingest, may_encrypt_under, plan_departure, roles_up_to,
-    rotate,
+    ActorEpochs, AllHeld, Departure, HolderKeys, Key, MemoryGraph, MemoryHeldActors, Name, Names, Opener, Recipient, boxes_cover, ingest, may_encrypt_under, plan_departure,
+    roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
 
@@ -34,7 +35,11 @@ fn holder(a: &Actor, role: Role) -> Recipient {
 }
 
 fn rotated(a: &Actor, holders: &[Recipient], seed: u64) -> Actor {
-    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, holders, &osis_keys::Names::default(), &mut rng(seed)).unwrap();
+    rotated_naming(a, holders, seed, &Names::default())
+}
+
+fn rotated_naming(a: &Actor, holders: &[Recipient], seed: u64, names: &Names) -> Actor {
+    let r = rotate(&a.tid, &roles_up_to(Role::Admin), &a.view, &a.s, holders, names, &mut rng(seed)).unwrap();
     let (mut view, mut s) = (a.view.clone(), a.s.clone());
     r.secrets.apply(&mut s);
     view = r.preview(&view).unwrap();
@@ -54,10 +59,11 @@ fn held(actors: &[&Actor]) -> MemoryHeldActors {
     h
 }
 
-// spec/crypto.md §4: a departure inside a holder is covered only if the holder's box names its
-// newest keyset epoch and that epoch covers the departure, recursively; spec/permissions.md §3:
-// the chain rotates top-down (P, T, U), and the removed device, holding P's old secrets, opens
-// nothing at U's new epoch.
+// spec/permissions.md §3 (Left out): a holder actor's box keeps a departure inside it out only if
+// it names the holder's newest keyset epoch and that epoch's boxes keep it out, recursively;
+// spec/crypto.md §4: an epoch covers the departure only once its names name it; the chain rotates
+// top-down (P, T, U), and the removed device, holding P's old secrets, opens nothing at U's new
+// epoch.
 #[test]
 fn two_hop_departure() {
     let (dt, d2t) = (tid(0xd1), tid(0xd2));
@@ -75,27 +81,37 @@ fn two_hop_departure() {
     let plan = plan_departure(&g, p.tid, dt, Role::Read, Role::Admin);
     let order: Vec<Tid> = plan.required().into_iter().map(|(x, _)| *x).collect();
     assert_eq!(order, vec![p.tid, t.tid, u.tid]);
-    let deps: Vec<Departure> = plan.entries[&u.tid].departures.iter().cloned().collect();
-    assert_eq!(deps, vec![Departure::inside(t.tid, &Departure::inside(p.tid, &Departure::holder(dt, Role::Read)))]);
+    let removal = Name { thing: p.tid, key: Key { ts: 4, node: tid(0xd2), commit: osis_base::CommitId([4; 32]) } };
+    let named = |d: &Departure| d.clone().at(Some(removal));
+    let deps: Vec<Departure> = plan.entries[&u.tid].departures.iter().map(named).collect();
+    assert_eq!(deps, vec![Departure::inside(t.tid, &Departure::inside(p.tid, &Departure::holder(dt, Role::Read).at(Some(removal))))]);
+    let names = Names { list: [removal].into(), ..Names::default() };
 
     // D removed from P: P rotates in the removal commit.
-    let p2 = rotated(&p, &[owner(), dev(d2t, &d2seed)], 4);
-    let read_ok = |a: &Actor, h: &MemoryHeldActors, deps: &[Departure]| {
+    let p2 = rotated_naming(&p, &[owner(), dev(d2t, &d2seed)], 4, &names);
+    let boxes_ok = |a: &Actor, h: &MemoryHeldActors, deps: &[Departure]| {
         let (e, _) = a.view.read.newest_held().unwrap();
-        may_encrypt_under(&a.tid, &a.s, &a.view, Role::Read, &e, deps, h)
+        deps.iter().all(|d| boxes_cover(&a.s, Role::Read, &e, d, h))
     };
-    // T unrotated: U's epoch does not cover (T's box names T's newest, which does not).
-    assert!(!read_ok(&u, &held(&[&p2, &t]), &deps));
+    let read_ok = |a: &Actor, deps: &[Departure]| {
+        let (e, _) = a.view.read.newest_held().unwrap();
+        may_encrypt_under(&a.tid, &a.view, Role::Read, &e, deps, &AllHeld)
+    };
+    // T unrotated: U's boxes do not keep it out (T's box names T's newest, which does not).
+    assert!(!boxes_ok(&u, &held(&[&p2, &t]), &deps));
     // Nor without what the node holds of the chain.
-    assert!(!read_ok(&u, &held(&[]), &deps));
-    let tdeps: Vec<Departure> = plan.entries[&t.tid].departures.iter().cloned().collect();
-    assert!(!read_ok(&t, &held(&[&p2]), &tdeps));
-    let t2 = rotated(&t, &[owner(), holder(&p2, Role::Write)], 5);
-    assert!(read_ok(&t2, &held(&[&p2]), &tdeps));
+    assert!(!boxes_ok(&u, &held(&[]), &deps));
+    let tdeps: Vec<Departure> = plan.entries[&t.tid].departures.iter().map(named).collect();
+    assert!(!boxes_ok(&t, &held(&[&p2]), &tdeps) && !read_ok(&t, &tdeps));
+    // T rotated without naming the removal: its boxes keep D out, but it covers nothing.
+    let t1 = rotated(&t, &[owner(), holder(&p2, Role::Write)], 7);
+    assert!(boxes_ok(&t1, &held(&[&p2]), &tdeps) && !read_ok(&t1, &tdeps));
+    let t2 = rotated_naming(&t, &[owner(), holder(&p2, Role::Write)], 5, &names);
+    assert!(boxes_ok(&t2, &held(&[&p2]), &tdeps) && read_ok(&t2, &tdeps));
     // T rotated: U still names T's old keyset.
-    assert!(!read_ok(&u, &held(&[&p2, &t2]), &deps));
-    let u2 = rotated(&u, &[owner(), holder(&t2, Role::Write)], 6);
-    assert!(read_ok(&u2, &held(&[&p2, &t2]), &deps));
+    assert!(!boxes_ok(&u, &held(&[&p2, &t2]), &deps) && !read_ok(&u, &deps));
+    let u2 = rotated_naming(&u, &[owner(), holder(&t2, Role::Write)], 6, &names);
+    assert!(boxes_ok(&u2, &held(&[&p2, &t2]), &deps) && read_ok(&u2, &deps));
 
     // D holds P's old secrets; following the chain it opens nothing new.
     let mut dp = ActorEpochs::default();

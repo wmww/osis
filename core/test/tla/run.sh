@@ -38,7 +38,20 @@ instances=(
   "rotation Rotation MC_keyset_forge_rot.cfg all pass"
   "rotation Rotation MC_keyset_forge_nogroup.cfg small fail"  # negative control: no group names
   "rotation Rotation MC_keyset_forge_commit.cfg small fail"   # negative control: commit-named keysets
-  "rotation Rotation MC_keyset_forge_write.cfg small fail"    # issues/unestablished-successor-history.md
+  "rotation Rotation MC_keyset_forge_write.cfg all pass"      # R18, closed by frozen coverage
+  "rotation Rotation MC_c2_box.cfg small fail"         # study C2 under the box-inspection rule
+  "rotation Rotation MC_c2.cfg all pass"               # C2 under frozen coverage
+  "rotation Rotation MC_c2_boxcovers.cfg small fail"   # negative control: no box counts as covering
+  "rotation Rotation MC_c1_box.cfg all fail"           # study C1 under the box rule
+  "rotation Rotation MC_c1.cfg all pass"
+  "rotation Rotation MC_c1f_box.cfg small fail"        # study C1' under the box rule
+  "rotation Rotation MC_c1f.cfg all pass"
+  "rotation Rotation MC_c3_box.cfg small fail"         # study C3 under the box rule
+  "rotation Rotation MC_c3_current.cfg small fail"     # the study's box-names rule: a grant leaving g out
+  "rotation Rotation MC_c3_boxed.cfg small fail"       # ... a grant at an epoch no longer current
+  "rotation Rotation MC_c3.cfg all pass"               # names tied to the grant
+  "rotation Rotation MC_c3_lean.cfg all pass"          # MC_c3 without the fork of g
+  "rotation Rotation MC_c3_nonames.cfg small fail"     # negative control: grants carry no names
   "roles Roles MC_core.cfg small pass"
   "roles Roles MC_multi.cfg small pass"
   "roles Roles MC_group.cfg all pass"

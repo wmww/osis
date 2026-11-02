@@ -488,13 +488,6 @@ impl Timeline {
         self.input.snaps.get(id)
     }
 
-    /// The highest role edge (`holder`, `target`) held anywhere in the walk (its initial state
-    /// and every change).
-    pub fn highest_edge(&self, holder: &Tid, target: &Tid) -> Option<Role> {
-        let init = self.walked.initial.get(holder, target).map(|e| e.role);
-        self.walked.history.iter().filter(|c| c.holder == *holder && c.target == *target).filter_map(|c| c.edge.map(|e| e.role)).chain(init).max()
-    }
-
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
         let Some(p) = point else { return EdgesAt::new(&self.walked.edges) };
@@ -551,12 +544,6 @@ impl Timeline {
             m.insert(*node, r);
         }
         out
-    }
-
-    /// Effective role over the paths that do not pass `avoid`.
-    pub fn role_avoiding(&self, node: &Tid, thing: &Tid, avoid: &Tid, at: At) -> Option<Role> {
-        let edges = self.edges_at(at.point);
-        View::at(&self.input.owners, &edges, at.ts).roles_avoiding(node, Some(avoid)).0.get(thing).copied()
     }
 
     /// Authority class (§5.1 step 3).

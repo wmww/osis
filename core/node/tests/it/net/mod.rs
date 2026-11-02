@@ -845,24 +845,27 @@ pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId
 /// A rotation of every role of `a` boxing `recipients`, with a deposit seed when `seed`.
 pub fn rotation(e: &mut Engine, a: Tid, recipients: &[Recipient], rng: u64, seed: bool) -> CommitId {
     let mut m = Mutation::new();
-    rotation_ops(e, &mut m, a, recipients, rng, seed);
+    rotation_ops(e, &mut m, a, recipients, rng, seed, &osis_keys::Names::default());
     e.commit(m).unwrap().unwrap()
 }
 
 /// Removes `holder` from `a` with the rotation boxing `recipients`, in one role commit
-/// (spec/permissions.md §3).
+/// (spec/permissions.md §3), naming itself (its departs mark, spec/crypto.md §4) as the engine's
+/// removal does.
 pub fn remove_holder(e: &mut Engine, a: Tid, holder: Tid, recipients: &[Recipient], rng: u64) -> CommitId {
     let mut m = Mutation::new();
     m.op(a, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    rotation_ops(e, &mut m, a, recipients, rng, false);
+    let ts = m.take_ts(e);
+    let names = osis_keys::Names { departs: Some(osis_keys::Own { ts: ts.to_u64(), node: e.tid() }), ..osis_keys::Names::default() };
+    rotation_ops(e, &mut m, a, recipients, rng, false, &names);
     e.commit(m).unwrap().unwrap()
 }
 
-fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipient], rng: u64, seed: bool) {
+fn rotation_ops(e: &mut Engine, m: &mut Mutation, a: Tid, recipients: &[Recipient], rng: u64, seed: bool, names: &osis_keys::Names) {
     let roles = BTreeSet::from([Role::Read, Role::Write, Role::Admin]);
     let view = e.epochs(&a).unwrap();
     let state = e.get_typed(&a, &ct::SECRETS).unwrap().unwrap_or_default();
-    let r = rotate(&a, &roles, &view, &state, recipients, &osis_keys::Names::default(), &mut SeededRng::from_u64(rng)).unwrap();
+    let r = rotate(&a, &roles, &view, &state, recipients, names, &mut SeededRng::from_u64(rng)).unwrap();
     for (k, b) in &r.secrets.boxes {
         m.op(a, &ct::SECRETS, PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(k.to_value())], op: Op::Set(b.to_value()) }).unwrap();
     }

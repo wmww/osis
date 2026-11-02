@@ -140,8 +140,13 @@ impl EpochInfo {
     /// the epoch's secret, so only its holders write one (they could leak it anyway). A secret not
     /// held needs nothing (nothing is boxed or encrypted under it).
     fn names_met(&self, held: &dyn Held) -> bool {
-        self.checked().is_none()
-            || self.names.iter().any(|n| n.list.iter().all(|x| held.met(x)) && n.keysets.iter().all(|k| held.keyset(k)) && n.departs.is_none_or(|o| held.departed(&o)))
+        self.checked().is_none() || self.met_names(held).next().is_some()
+    }
+
+    /// The names of its history entries whose names are all met under `held`: what a node relies
+    /// on it for (spec/crypto.md §4, covers).
+    pub fn met_names<'a>(&'a self, held: &'a dyn Held) -> impl Iterator<Item = &'a Names> + 'a {
+        self.names.iter().filter(move |n| n.met(held))
     }
 }
 

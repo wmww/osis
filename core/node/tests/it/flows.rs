@@ -956,7 +956,7 @@ fn devices_and_alice(seed: u64) -> (LocalPeer, Tid, Tid, osis_label::RecoveryCar
     (lp, p.person, pa, p.card)
 }
 
-// spec/permissions.md §3, spec/crypto.md §4 (recursive covers rule; the TLC two-hop scenario):
+// spec/permissions.md §3, spec/crypto.md §4 (covers by names, the recursive box judgement; the TLC two-hop scenario):
 // device d1 removed from person P, P a writer of team T, T a writer of doc U. Before P's other
 // device encrypts under U it rotates T, then U, top-down; d1 holds neither new secret.
 #[test]
@@ -1549,8 +1549,8 @@ fn spread_hiding(lp: &mut LocalPeer, to: usize, hidden: Tid) {
     }
 }
 
-// spec/crypto.md §4 (covers rule; a node holding no secret of M judges by M's newest `keys.0`
-// keyset), spec/permissions.md §3: after alice removes o0 from K1 and rotates K1 and C, a
+// spec/crypto.md §4 (the box judgement; a node holding no secret of M judges by M's newest
+// `keys.0` keyset), spec/permissions.md §3: after alice removes o0 from K1 and rotates K1 and C, a
 // writer of C that never read K1 sees C covered and rotates nothing.
 #[test]
 fn unheld_holder_judged_by_keyset_spec_crypto_4() {
@@ -2226,7 +2226,7 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     let w = osis_keys::box_holder(&d, &v, &ct::Secrets::default(), &rc, &BTreeSet::from([Role::Read]), &mut osis_crypto::SeededRng::from_u64(5)).unwrap().unwrap();
     let mut s = ct::Secrets::default();
     w.apply(&mut s);
-    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49] });
+    let junk = ct::SecretBox::Symmetric(ct::SymmetricBox { epoch: osis_keys::aspects::to_schema(&top), wrap: vec![0; 49], names: None });
     for i in 0..100u64 {
         let e = osis_crypto::Epoch::new(i64::MAX as u64 - 1 - i, [2; 32]).unwrap();
         s.boxes.insert(osis_keys::aspects::box_key(pb, Role::Read, &e), junk.clone());

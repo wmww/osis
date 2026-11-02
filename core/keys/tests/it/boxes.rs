@@ -207,7 +207,7 @@ fn lying_box(f: &Forked, holder: osis_base::Tid, keyset: Option<(osis_crypto::Ep
     ]));
     let raw = osis_crypto::seal(pk, &slot.ad(form).unwrap(), &payload, &mut rng(1)).unwrap();
     let mut s = Secrets::default();
-    s.boxes.insert(box_key(holder, Role::Read, &f.forks[0]), SecretBox::Sealed(SealedBox { keyset: Some(to_schema(&ks)), suite: 1, sealed: Sealed::X25519MlKem768(raw) }));
+    s.boxes.insert(box_key(holder, Role::Read, &f.forks[0]), SecretBox::Sealed(SealedBox { keyset: Some(to_schema(&ks)), suite: 1, sealed: Sealed::X25519MlKem768(raw), names: None }));
     s
 }
 
@@ -224,7 +224,7 @@ fn sizes() {
     }
     for (k, b) in f.s.boxes.iter().filter(|(k, _)| k.holder == tid(2)) {
         let enc = osis_base::cbor::encode(&osis_schema::Codec::to_value(b));
-        assert!(enc.len() < 100, "{k:?} {}", enc.len());
+        assert!(enc.len() < 110, "{k:?} {}", enc.len());
     }
 }
 

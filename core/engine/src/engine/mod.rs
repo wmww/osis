@@ -106,7 +106,7 @@ pub struct Dropped {
     pub overreach: bool,
     /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
     /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
-    /// introduced an epoch is a judgment the covers rule needs); every valid one's count in
+    /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in
     /// `keyset_epochs` (keyset names, spec/crypto.md §4).
     pub keysets: Vec<KeysetRec>,
 }
@@ -463,8 +463,8 @@ indexes! {
     /// Keyed boxes per holder: holder -> (actor, box key), from `secrets.0` entries seen.
     pub boxes_to: JSetMap<Tid, (Tid, osis_base::Value)>,
     /// The earliest valid held commit writing an epoch's keyset in `keys.0` (its rotation):
-    /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
-    /// introducer is unknown (`rotation`).
+    /// (actor, role, epoch) -> (`ts`, commit). Absent: unknown. The box judgement of a holder
+    /// actor's keyset reads which commit set it (`rotation::held_actors`).
     pub epoch_intro: EpochIntro,
     /// The keyset epochs held per actor (spec/crypto.md §4, keyset names): each epoch a held
     /// valid `keys.0` body (a role commit's delta or a compaction snapshot; kept once dropped,
@@ -650,8 +650,8 @@ impl Changed {
     }
 }
 
-/// (actor, role, epoch) -> the commit that introduced it: (ts, author node, actor, commit ID).
-pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, Tid, Tid, CommitId)>;
+/// (actor, role, epoch) -> the commit that introduced it: (ts, commit ID).
+pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, CommitId)>;
 
 impl Core {
     /// Whether this node may write node-form dots on `t` (spec/crdt.md §2.1): with no sync
