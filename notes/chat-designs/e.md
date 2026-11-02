@@ -1,6 +1,8 @@
 # Chat design E: the chat's history is the chat
 > Summary: A chat C is one thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author` with keep at least forever; the sender is the signed header's actor, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, tombstones and kicks fall out of existing rules; new: a history read API, and "add without history" as a chain of chats. Citations: `e-evidence.md`.
 
+**Status:** reviewed, corrections pending; e-review.md overrides this file where they differ (sender verification, frontier cost, snapshots, tombstones).
+
 **Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement: C's machinery plus a tid log. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it.
 
 ## What is different
