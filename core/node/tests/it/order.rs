@@ -1501,7 +1501,21 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
         }
         p.engine.reexamine().unwrap();
     }
-    let (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
+    let (mut wj, mut gj) = (judged(&mut w, played), judged(&mut g, played));
+    // a commit waiting past that copy, a part of it stripped for a purge that fell, applies later and
+    // only then counts it missing (`index_later`): node-sync fetches it then (`Changed::undropped`)
+    let later = purge_flips(played, &wj, &gj);
+    if !later.is_empty() {
+        let again = packs_of(played, &later);
+        for p in [&mut w, &mut g] {
+            for &i in &again {
+                let pk = &played.packs[i];
+                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            }
+            p.engine.reexamine().unwrap();
+        }
+        (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
+    }
     let diff = alike(&wj, &gj, flips).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
     if diff.is_none() {
         played.restored.fetch_add(fallen.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -2617,6 +2631,14 @@ fn arrival_order_purge_author_large_spec_perm_8() {
 #[test]
 fn arrival_order_purge_small_spec_commits_5() {
     run("arrival_order_purge_small_spec_commits_5", 0..4, 8, SMALL, purge_history);
+}
+
+// spec/permissions.md §8: a waiting commit's part stripped for a purge that falls before it applies
+// comes back from a copy given after it applied.
+#[test]
+#[ignore = "tier 2"]
+fn stripped_while_waiting_purge_falls_seed_890044() {
+    run("stripped_while_waiting_purge_falls_seed_890044", 890044..890045, 60, LARGE, purge_history);
 }
 
 // spec/commits.md §4: a roster snapshot's `tenures.0` part arriving before its `roles.0` part does

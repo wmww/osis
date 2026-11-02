@@ -162,16 +162,20 @@ impl Engine {
         if osis_commit::verify_signature(&id, &c.signature, &vk).is_err() || h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
+        // a request also counts where it names (any demotion there lists it, `frontier`): noted under
+        // the thing's `roles.0`, which every demotion's scope reads
+        let roles = Ak::new("roles.0").map_err(|_| crate::error::Error::Corrupt("roles.0"))?;
+        let aspects: Vec<(Tid, Ak)> = h.aspects.iter().map(|a| (a.tid, a.ak.clone())).chain(h.purge.iter().map(|i| (*i.tid(), roles.clone()))).collect();
         self.run(|tx| {
-            for a in &h.aspects {
-                let mut r = get(tx, &a.tid, &a.ak)?;
+            for (t, ak) in &aspects {
+                let mut r = get(tx, t, ak)?;
                 // a header read again keeps its first receipt time (`as_of` frontiers)
                 r.commits.entry(id).or_insert((h.author, now.0));
-                put(tx, &a.tid, &a.ak, &r)?;
+                put(tx, t, ak, &r)?;
             }
             Ok(())
         })?;
-        self.core.header_receipts.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+        self.core.header_receipts.extend(aspects);
         Ok(true)
     }
 
@@ -187,7 +191,8 @@ impl Engine {
     /// header alone at the record's), memory commits never, and held ones whose every delta is
     /// held or dropped here and whose part there is droppable here (`droppable_here`) left out;
     /// and, where it falls below write, its held commits acting for that thing, each left out
-    /// under the same rule on every delta but `created.0`. This node's own receipts only;
+    /// under the same rule on every delta but `created.0`; and every purge request of a demoted
+    /// node on a thing in question. This node's own receipts only;
     /// `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
@@ -259,6 +264,17 @@ impl Engine {
                                 break;
                             }
                         }
+                    }
+                }
+            }
+            // a request's right ends with the role unless the frontier lists it (spec/permissions.md
+            // §8): one this node received stays rightful, whatever became of its body and on
+            // whatever aspect its own delta lies
+            for (node, things) in &scope.roles {
+                for pc in crate::retention::requests_on(tx, things)? {
+                    let Some(m) = tx.core.ix.commits.get(&pc) else { continue };
+                    if m.received.0 <= as_of.0 && !m.view.memory && (m.view.author == *node || m.header.actor == *node) {
+                        f.commits.insert(pc);
                     }
                 }
             }

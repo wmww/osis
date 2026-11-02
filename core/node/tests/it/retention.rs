@@ -1938,3 +1938,216 @@ fn keep_at_most_rejudged_on_rise_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(s("late")));
     assert_eq!(held(&mut lp), 1, "the replaced body, its bound passed");
 }
+
+/// Peers 0 (owner), `x` (1, admin) and `w` (2, writer) of a new thing; `w`'s message `c` and `x`'s
+/// request naming it, its own delta on another aspect if `beside`, all synced.
+fn rightful(seed: u64, beside: bool) -> (LocalPeer, osis_base::Tid, osis_base::CommitId, osis_base::CommitId) {
+    let mut lp = net(3, seed);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let c = set(&mut lp, 2, t, &REG, "kept");
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    if beside {
+        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    } else {
+        m.set(t, &REG, &s("after")).unwrap();
+    }
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")));
+    (lp, t, c, p)
+}
+
+fn stays_purged(lp: &mut LocalPeer, t: osis_base::Tid, c: osis_base::CommitId) {
+    for i in [0, 2] {
+        let e = &mut lp.peers[i].engine;
+        assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "peer {i}: the demotion brought it back");
+        assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().len(), 1, "peer {i}");
+    }
+}
+
+// spec/permissions.md §5.1, §8: a demotion lists the requests its author received, so a demotion
+// by one that held them leaves every rightful purge standing: to a writer (whose frontier holds no
+// content commit otherwise), and out altogether, whatever aspect the request's own delta is on.
+#[test]
+fn honest_demotion_keeps_rightful_purges_spec_perm_8() {
+    for (seed, new, beside) in [(0x71, Some(Role::Write), false), (0x72, None, false), (0x73, Some(Role::Write), true), (0x74, None, true)] {
+        let (mut lp, t, c, p) = rightful(seed, beside);
+        let x = lp.peers[1].engine.tid();
+        let d = osis_node::flows::Demotion { holder: x, new: new.map(edge), presync: osis_node::flows::PreSync::Synced };
+        let done = lp.peers[0].engine.demote(&t, &d).unwrap();
+        lp.sync_all().unwrap();
+        stays_purged(&mut lp, t, c);
+        assert!(frontier_lists(&lp.peers[0].engine, &done, &p), "{new:?}");
+    }
+}
+
+// spec/permissions.md §5.1: a request's body dropped as covered is no reason to leave it out, as it is
+// for a write.
+#[test]
+fn request_dropped_as_covered_stays_listed_spec_perm_5_1() {
+    let (mut lp, t, c, p) = rightful(0x75, false);
+    let k = ak("t:reg.0");
+    lp.advance(100 * 86_400_000);
+    lp.peers[0].engine.compaction_snapshot(&t, &k).unwrap().unwrap();
+    lp.peers[0].engine.drop_body(&p, &t, &k).unwrap();
+    let x = lp.peers[1].engine.tid();
+    let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = lp.peers[0].engine.demote(&t, &d).unwrap();
+    assert!(frontier_lists(&lp.peers[0].engine, &done, &p));
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &k));
+}
+
+fn frontier_lists(e: &osis_node::Engine, done: &osis_node::flows::Done, p: &osis_base::CommitId) -> bool {
+    done.commits.iter().filter_map(|c| e.header(c)).filter_map(|h| h.frontier.clone()).any(|f| osis_schema::core_types::Frontier::from_value(&f).unwrap().commits.contains(p))
+}
+
+// spec/permissions.md §5.1: a request read by header alone (a receipts-only read) lists too.
+#[test]
+fn request_read_by_header_alone_is_listed_spec_perm_5_1() {
+    let mut lp = net(2, 0x76);
+    lp.sync_all().unwrap();
+    let x = lp.peers[1].engine.tid();
+    let t = new_thing(&mut lp, 1);
+    let c = set(&mut lp, 1, t, &REG, "kept");
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&p).unwrap().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.record_header(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap()).unwrap());
+    let mut scope = osis_perm::DemotionScope::default();
+    scope.roles.entry(x).or_default().insert(t);
+    let now = e.now();
+    assert!(e.frontier(&scope, now).unwrap().commits.contains(&p));
+}
+
+// spec/sync.md §6: a request no signer could ever hold the right for explains no delete: a plain
+// writer's aspect-wide request leaves the keep-out rule alone.
+#[test]
+fn a_writers_request_explains_no_delete_spec_sync_6() {
+    let (mut lp, t, _, _) = rightful(0x78, false);
+    let k = ak("t:reg.0");
+    let c2 = set(&mut lp, 0, t, &REG, "owner's");
+    lp.sync_all().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Aspect { tid: t, ak: k.clone() });
+    m.set(t, &REG, &s("w's")).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    let e = &mut lp.peers[0].engine;
+    assert!(e.body_not_dropped(&c2, &t, &k), "no right over another's delta");
+    assert!(!e.named_by_a_fallen_purge(&c2, &[(0, 0)]).unwrap());
+}
+
+// spec/permissions.md §8: a snapshot dropped for carrying two purged deltas, one purge falling: it
+// is fetched again, and goes on arrival as it carries the other's value, which stays gone; given
+// the bodies again it all reads alike with a node that never saw the fallen purge stand.
+#[test]
+fn snapshot_of_two_purges_one_falls_spec_perm_8() {
+    let mut lp = net(5, 0x79);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let k = ak("t:map.0");
+    let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let mut ids = Vec::new();
+    for key in ["one", "two", "live"] {
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.op(t, &MAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(key))], op: Op::Set(item(key, 1)) }).unwrap();
+        ids.push(lp.peers[2].commit(m).unwrap().unwrap());
+    }
+    lp.advance(5);
+    let snap = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    let pks: Vec<_> = ids.iter().chain([&snap]).map(|c| lp.peers[2].engine.package(c).unwrap().unwrap()).collect();
+    lp.advance(5);
+    let purge = |lp: &mut LocalPeer, i: usize, c: osis_base::CommitId| {
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:map.0") });
+        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+        let p = lp.peers[i].commit(m).unwrap().unwrap();
+        lp.peers[i].engine.package(&p).unwrap().unwrap()
+    };
+    let p1 = purge(&mut lp, 1, ids[0]);
+    let p2 = purge(&mut lp, 0, ids[1]);
+    lp.advance(5);
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let pd = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    let all = lp.packages(0).unwrap();
+    let skip = [ids[0], ids[1], ids[2], snap, p1.id, p2.id, d];
+    let read = |lp: &mut LocalPeer, i: usize| lp.peers[i].engine.get(&t, &k).unwrap();
+    for n in [3, 4] {
+        for pk in all.iter().filter(|pk| !skip.contains(&pk.id)) {
+            let _ = lp.deliver(n, pk);
+        }
+        for pk in &pks {
+            lp.deliver(n, pk).unwrap();
+        }
+        lp.peers[n].engine.drop_body(&ids[2], &t, &k).unwrap();
+    }
+    // 3 sees p1 stand, then fall; 4 has the demotion first
+    for pk in [&p1, &p2, &pd] {
+        lp.deliver(3, pk).unwrap();
+    }
+    for pk in [&pd, &p1, &p2] {
+        lp.deliver(4, pk).unwrap();
+    }
+    assert!(!lp.peers[3].engine.body_not_dropped(&ids[1], &t, &k), "the other purge stands");
+    assert_eq!(lp.peers[3].engine.core.ix.commits.get(&snap).unwrap().missing.len(), 1);
+    lp.deliver(3, &pks[3]).unwrap();
+    assert!(!lp.peers[3].engine.body_not_dropped(&snap, &t, &k), "it carries the other's value");
+    assert!(!lp.peers[3].engine.body_not_dropped(&ids[1], &t, &k));
+    for pk in [&pks[0], &pks[2]] {
+        lp.deliver(3, pk).unwrap();
+    }
+    assert_eq!(read(&mut lp, 3), read(&mut lp, 4));
+    let two = lp.peers[3].engine.get(&t, &k).unwrap().unwrap();
+    assert!(!format!("{two:?}").contains("two"), "{two:?}");
+}
+
+// spec/permissions.md §8: the right held through another actor: `x` is admin of the thing only through
+// `via`, on which it holds admin, and the demotion of `via` or of `x` on it leaves the purge standing.
+#[test]
+fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_8() {
+    for on_via in [false, true] {
+        let mut lp = net(3, 0x7a);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let via = new_thing(&mut lp, 0);
+        let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, via, x, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, via, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let c = set(&mut lp, 2, t, &REG, "kept");
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        m.set(t, &REG, &s("after")).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        assert!(!lp.peers[0].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), "the right holds through the path");
+        lp.advance(5);
+        let (on, holder) = if on_via { (via, x) } else { (t, via) };
+        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced };
+        lp.peers[0].engine.demote(&on, &d).unwrap();
+        lp.sync_all().unwrap();
+        stays_purged(&mut lp, t, c);
+    }
+}

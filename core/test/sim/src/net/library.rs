@@ -970,8 +970,17 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
 /// node left takes the body again and shows no purge, and nobody deletes it again (`sim.finish`
 /// fails on a loop).
 pub fn purge_falls(seed: u64) -> Res<Report> {
+    purge_falls_how("purge_falls", seed, false)
+}
+
+/// `purge_falls` with nodes and the host crashing and restarting while it falls.
+pub fn purge_falls_churn(seed: u64) -> Res<Report> {
+    purge_falls_how("purge_falls_churn", seed, true)
+}
+
+fn purge_falls_how(name: &str, seed: u64, churn: bool) -> Res<Report> {
     let mut d = Dice::new(seed ^ 0x7c);
-    let mut sim = sim("purge_falls", seed, NetWeights { crash: 0, restart: 0, partition: 0, heal: 0, ..NetWeights::default() });
+    let mut sim = sim(name, seed, NetWeights { crash: 0, restart: 0, partition: 0, heal: 0, ..NetWeights::default() });
     let s = sim.add_host()?;
     let a = sim.add_node(&[s], clock(&mut d))?;
     let x = sim.add_node(&[s], clock(&mut d))?;
@@ -1022,6 +1031,12 @@ pub fn purge_falls(seed: u64) -> Res<Report> {
         sim.heal(p, q);
     }
     sim.reconnect_all();
+    if churn {
+        let w = sim.cfg.weights;
+        sim.cfg.weights = NetWeights { crash: 2, restart: 6, host_crash: 1, host_restart: 4, ..w };
+        sim.run(60)?;
+        sim.cfg.weights = NetWeights { crash: 0, host_crash: 0, ..sim.cfg.weights };
+    }
     sim.run(40)?;
     sim.run_until_quiescent(40)?;
     for n in [a, b] {
