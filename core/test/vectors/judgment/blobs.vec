@@ -86,40 +86,12 @@ thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT6
 aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1edbd24a977e7e296591729b60a11e98996b3f3528e60f3952b4231db9f10491 read=d2b33c80478de686e2fc4f297d5477e317bb7631027dff40c528a4a4b625a8ab
 aspect 7loH6i_G7GA9WPnGkkf7 t:blob.0: state=00c99e5b43a064c70dfc8bab1276e6fc62ab5a67b223d6c8b6d1827a187a8376 read=61e82554d7a9acd9f05d12b0ea7852ff6a11844f67814dbab9d13ab6cb4e9555
 
-case: large atomic value, reversed
-spec: spec/commits.md §4, spec/data-model.md §6
-source: hand-picked: 1 writes a value above CHUNK_THRESHOLD; the bundle leaves out its chunks, which nothing waits for: the commit applies
-read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
-now: 1700000000000
-bundle: as in large atomic value, as made
-order: 0,1,2,3,4,5,6,7,8,9,10,11,12,13
-body 215aeeae7fc53a8ba0f970ab1348b47a692f6181bc573043d7c68e961f8ba12f 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-body 9f59f847dbdd8489de888ae809afc2e1eca0dbdda7e1debeb4f2bf597eea47a3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-body 9441ce1e68437f232a49f60cedec103a24e7ae7f42e93a684524380d1fa93349 7loH6i_G7GA9WPnGkkf7 t:blob.0: valid held covered-by=-
-waiting: -
-thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1edbd24a977e7e296591729b60a11e98996b3f3528e60f3952b4231db9f10491 read=d2b33c80478de686e2fc4f297d5477e317bb7631027dff40c528a4a4b625a8ab
-aspect 7loH6i_G7GA9WPnGkkf7 t:blob.0: state=00c99e5b43a064c70dfc8bab1276e6fc62ab5a67b223d6c8b6d1827a187a8376 read=61e82554d7a9acd9f05d12b0ea7852ff6a11844f67814dbab9d13ab6cb4e9555
-
 case: demotion with a linked frontier, its blobs not held, as made
 spec: spec/commits.md §4, spec/wire.md §4
 source: hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays
 read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
 now: 1700000000000
 bundle: 00000221820259021c018f82e9ff5a71a8b17c5e2c58e3276b0b0000000000000000000101e05e5a4e05283c64e1286d823e36ec58a9e627df9a9cf1c0926fe5a87511c5cc4af4150d6386397583b864537f6f9dbd2e5fd1d2223657f24145dba18f4f459ca51b20462888cff23bbc813270c937ec6b938f328f4734ec244e6fbad6db87545aa728a43e1c0f82a1d504f649aea301aec9cfb1ff3b3babc6cd1ad1d05ce1026f25004fc5afee15c600c7c4901fb517551cd74e154b488be86990906f63b1d93a737ca2c935e4baa3b6a8f1d9bd898d976a7f036ecd9942df9a22cbf0f64967c5d0179c77561ba1e2b976907a5740956d6ce4f0524e96c6d9d8ee9e090245b06284d8ddd4b238ab86c0a15b7b9de8d46fff6188ec85a75badc873d82a20ee3179a47d2a92bbc525d951a4a16e8ea4fe90a87219c6c65d60c16be6082934970c6e4ecfd4ed7fbe328383fbca2f0e7a61bd2f1c82630abb704c508b928dc57b13c42bd896959f6e97bc64dd6f40d60a4965516a327b5be4293ef7570586828e70f317ce3c7e35e96df93fe0d833e1ae1aa43309b02ca4d50e4b0ca73fad557a82646314ab23d0f975ee851ba70f51e2fb2da1a6196cb3c01b0c386f4aec97dab45b4f104448d0c9baf8a9589c7e4d31b2a9de7603e00f8e8521b471bc0eabbe63820ee7659ade37ca5886996d6d55e597a53a0a63bc4edc641bcc2e82c2d51d1d63ce8858c0d579e317f8381bb97a0d858a531e69b4a1eef6f9bd84490bce99e7000000ab850350d3031a3e8dd7a762b0ad78fb8243b75c5820752f40b28532c7369bbd1a2957b1f231a5a9ff368b4aa365404a1bc723a033285831d34a7f060f9bf31a1a9673a694adaf8d114b08f582f9a0e8d09650f813ffc38830c6c5a40d8de37b58d25719c781c1acce8158409444db58b6b83b094e2c1013a3fdc7aac5c4b2a14f9130eae7af0a225e96bd0b314438c3da62448a1c94581974a970fa760cec98b0216af4c989b57f2cae030c
-order: 0,1,2,3,4,5,6,7,8,9,10,11,12,13
-body 215aeeae7fc53a8ba0f970ab1348b47a692f6181bc573043d7c68e961f8ba12f 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-body 9f59f847dbdd8489de888ae809afc2e1eca0dbdda7e1debeb4f2bf597eea47a3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
-waiting: fc55096daf4b1f8e5e369d7877afa50635e681ce297c5668f1e2ffd6b7355113
-thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
-aspect 7loH6i_G7GA9WPnGkkf7 roles.0: state=1edbd24a977e7e296591729b60a11e98996b3f3528e60f3952b4231db9f10491 read=d2b33c80478de686e2fc4f297d5477e317bb7631027dff40c528a4a4b625a8ab
-
-case: demotion with a linked frontier, its blobs not held, reversed
-spec: spec/commits.md §4, spec/wire.md §4
-source: hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays
-read-secret: 0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a
-now: 1700000000000
-bundle: as in demotion with a linked frontier, its blobs not held, as made
 order: 0,1,2,3,4,5,6,7,8,9,10,11,12,13
 body 215aeeae7fc53a8ba0f970ab1348b47a692f6181bc573043d7c68e961f8ba12f 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 9f59f847dbdd8489de888ae809afc2e1eca0dbdda7e1debeb4f2bf597eea47a3 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none

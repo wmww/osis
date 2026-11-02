@@ -300,11 +300,11 @@ impl Engine {
         self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| matches!(w, osis_perm::WriteId::Op(x, _) if x == c)))
     }
 
-    /// Whether an edge write of commit `c` on `t` (a roster snapshot's included) applies in the
-    /// settled walk, in the drop set or not applied at all otherwise (tests).
+    /// Whether an edge write of commit `c` on `t` applies in the settled walk, or a roster
+    /// snapshot of `t` applied at its position, its start or not (spec/permissions.md §6) (tests).
     #[doc(hidden)]
     pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
-        self.core.timelines.get(t).is_some_and(|tl| tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
+        self.core.timelines.get(t).is_some_and(|tl| tl.snapshot_applied(c).is_some_and(|a| a.target == *t) || tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
     }
 
     /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).

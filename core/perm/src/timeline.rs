@@ -463,6 +463,10 @@ impl Timeline {
     pub fn is_applied(&self, w: &WriteId) -> bool {
         self.walked.applied.contains_key(w)
     }
+    /// A roster snapshot that applied at its position (§6), its thing's epoch start or not.
+    pub fn snapshot_applied(&self, c: &CommitId) -> Option<&Applied> {
+        self.walked.candidates.get(c)
+    }
     /// The epoch start of `thing` (§6), if one applies.
     pub fn epoch_start(&self, thing: &Tid) -> Option<CommitId> {
         self.epoch_starts.get(thing).copied()

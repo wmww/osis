@@ -561,9 +561,8 @@ fn starts() -> Vec<Scenario> {
             steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), invite: None, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],
             orders: None,
         },
-        // spec/permissions.md §2: an invite grant adds an edge up to the author's invite (the
-        // other half, a grant beyond it, has no case: `Engine::grant` refuses to make one, so it
-        // needs a hand-built commit)
+        // spec/permissions.md §2: an invite grant adds an edge up to the author's invite (beyond
+        // it: `invites()`)
         Scenario {
             name: "invite grant",
             spec: "spec/permissions.md §2, §5.1",
@@ -795,6 +794,11 @@ fn linked_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(
     ]
 }
 
+/// A history of one body and what it references: only the order it was made in.
+fn made_only(_: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+    vec![("as made", (0..of.len()).map(Tok::In).collect())]
+}
+
 /// Commits that reference blobs: a paged delta, a large atomic value, a linked frontier.
 fn blobs() -> Vec<Scenario> {
     use Step::*;
@@ -812,7 +816,7 @@ fn blobs() -> Vec<Scenario> {
             spec: "spec/commits.md §4, spec/data-model.md §6",
             source: "hand-picked: 1 writes a value above CHUNK_THRESHOLD; the bundle leaves out its chunks, which nothing waits for: the commit applies",
             steps: vec![Large { by: 1, t: 0 }],
-            orders: None,
+            orders: Some(made_only),
         },
         // the demotion's own blobs are left out of the bundle: it only waits here
         Scenario {
@@ -820,7 +824,7 @@ fn blobs() -> Vec<Scenario> {
             spec: "spec/commits.md §4, spec/wire.md §4",
             source: "hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays",
             steps: vec![LinkedDemote { by: 0, t: 0, holder: 1 }],
-            orders: None,
+            orders: Some(made_only),
         },
         Scenario {
             name: "ledger with a linked frontier",
@@ -838,8 +842,8 @@ fn blobs() -> Vec<Scenario> {
 /// thing; not the digests). Kept only where it shows a rule no other case does (a history adds
 /// 5-25 KB); left out: 1024 and 47289 (keep-at-most finality, as `rules()` and 1053), 1291,
 /// 64197 and 7855 (dead bodies dropped after an undo or compaction, as 2700027), 1173, 1006,
-/// 12161, 15085, 61165 and 93004 (un-merges of nested writes, as `rules()`'s; re-merges have no
-/// case), 583175 (a snapshot vouches for nothing, as models.vec), 3401073, 24111 and 27039
+/// 12161, 15085, 61165 and 93004 (un-merges of nested writes, as `rules()`'s; re-merges: a
+/// simplified shape in `remerges()`), 583175 (a snapshot vouches for nothing, as models.vec), 3401073, 24111 and 27039
 /// (11-23 KB each); earlier: 1053's shorter shrink, 12236, 1042, 583188 and 845143 (other
 /// shapes of 12161, 1006 and 47289), 1085 (under `SEED` it shows 1024's case).
 fn found() -> Vec<Scenario> {
@@ -963,11 +967,33 @@ fn repro_chainless_part_order_spec_commits_4() {
     assert_eq!(judge(&two), judge(&[two[1], two[0]]));
 }
 
+// spec/requirements.md Decentralization, spec/commits.md §4: the same with a role commit: 2 (admin
+// on G, a read edge on H not delivered) sets 1's edge on G and H. The G part first changes G's
+// roster, the H part first does not.
+#[test]
+#[ignore]
+fn repro_chainless_role_part_order_spec_commits_4() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);
+    let laid = bundle(&played, true);
+    let (edge, last) = (played.base + 1, played.packs.len() - 1);
+    let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
+    let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
+    let roster = |parts: &[usize]| {
+        let order: Vec<Tok> = rest.iter().chain(parts).map(|e| Tok::In(*e)).collect();
+        replay(&laid.bytes, &read_secrets(true), played.now, &order).into_iter().find(|(k, _)| *k == format!("thing {}", played.things[0])).unwrap().1
+    };
+    assert_eq!(roster(&two), roster(&[two[1], two[0]]));
+}
+
 // spec: none (a check of the judgment vectors): in every case, flipping its first own verdict and
-// dropping the last step of its order each make the replay report that case.
+// dropping the last step of its order each make the replay report that case; an `s<tid>` step is
+// never last, so the one case that waits only through it loses it too.
 #[test]
 #[ignore]
 fn judgment_vectors_can_fail() {
+    let mut synced = false;
     for (path, text) in files() {
         let f = VecFile::parse(&text).unwrap();
         for c in f.live() {
@@ -986,8 +1012,15 @@ fn judgment_vectors_can_fail() {
             let shorter = &order[..order.rfind(',').unwrap()];
             let e = replay_cases(path, &in_case("order", shorter), Some(name)).expect_err(&format!("{name}: a shorter order passes"));
             assert!(e.contains(name), "{e}");
+            if name == "content commit over two labels, one label, the other's thing synced" {
+                synced = true;
+                let unsynced: Vec<&str> = order.split(',').filter(|t| !t.starts_with('s')).collect();
+                let e = replay_cases(path, &in_case("order", &unsynced.join(",")), Some(name)).expect_err("a dropped sync step passes");
+                assert!(e.contains(name), "{e}");
+            }
         }
     }
+    assert!(synced, "the sync case is gone");
 }
 
 // spec: none (the judgment vectors' generator).
