@@ -160,8 +160,103 @@ fn refused_step_backs_off_spec_sync_5() {
     }
     let sent = net.sent_kinds.get(&7).copied().unwrap_or(0) - before;
     assert!(sent <= 2, "{sent} registrations sent in 2 s");
-    // nothing else goes before the step (issues/refused-step-blocks-pass.md)
-    assert_ne!(net.read(b, t), Some(s("v19")));
+}
+
+// spec/sync.md §5 Re-registration (a step refused for now holds back nothing else): at a full host
+// refusing the child step (a second removal within `over_cap_step_ms`), the admin still deletes
+// there what the label must not hold, which is what frees room.
+#[test]
+fn refused_step_deletes_still_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let d = net.node(4, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[host]);
+    net.item(a, g, g, "x");
+    let u = net.item(a, g, g, "y");
+    net.run();
+    let cu = net.write(a, u, "z");
+    net.run();
+    let l = net.label(a);
+    let blobs: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cu)).map(|(id, _)| id).collect();
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    net.restart_host_with(host, osis_host::HostPolicy { max_bytes: 1, ..osis_host::HostPolicy::default() });
+    net.run();
+    let (at, bt, ct_, dt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(d));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
+    remove_holder(e, g, ct_, &rs, 41);
+    net.run();
+    net.advance(60_000);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_holder(e, g, dt, &rs, 42);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.host_path(host, &l).len(), 2, "the second step waits");
+    // u leaves the group: its own commit's bodies go from the label while the step waits
+    let e = net.engine(a);
+    let mut grp = e.get_typed(&g, &ct::GROUP).unwrap().unwrap();
+    grp.items.remove(&u);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &grp).unwrap();
+    e.commit(m).unwrap();
+    net.run();
+    net.advance(1_000);
+    assert_eq!(net.host_path(host, &l).len(), 2, "the step still waits");
+    let ids = net.host_ids(host, &l);
+    assert!(blobs.iter().all(|id| !ids.contains(id)), "deleted while the step waits");
+}
+
+// spec/sync.md §5 Re-registration (a step refused for now holds back nothing else): while a host
+// refuses the child step for its rate (code 4), the admin's new writes go up under the host's
+// head, wrapped under the newest read epoch: the remaining writer reads them, the removed reader,
+// whose sync key still opens that head, cannot.
+#[test]
+fn refused_step_uploads_still_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    assert_eq!(net.read(c, t), Some(s("before")));
+    let l = net.label(a);
+    net.restart_host_with(host, osis_host::HostPolicy { registers: 0, ..osis_host::HostPolicy::default() });
+    net.run();
+    net.advance(60_000);
+    let old_c = net.engine(c).read_secrets(&g);
+    net.set_online(c, false);
+    let (at, bt, ct_) = (net.tid(a), net.tid(b), net.tid(c));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_holder(e, g, ct_, &rs, 41);
+    net.run();
+    net.advance(1_000);
+    assert_eq!(net.host_path(host, &l).len(), 1, "the step is refused");
+    let diag = net.sync(a).take_diagnostics();
+    assert!(diag.iter().any(|x| x.contains("step refused for now (code 4)")), "{diag:?}");
+    let cw = net.write(a, t, "after");
+    net.run();
+    let ids: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == cw)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty());
+    for id in &ids {
+        let (w, _) = net.sync(a).entry_meta(&l, id).unwrap();
+        assert!(osis_label::unwrap_any(old_c.iter(), id, &w).is_none(), "wrapped under the new read epoch");
+    }
+    net.advance(1_000);
+    assert_eq!(net.host_path(host, &l).len(), 1, "the step still waits");
+    assert!(ids.iter().all(|id| net.host_ids(host, &l).contains(id)), "uploaded under the host's head");
+    assert_eq!(net.read(b, t), Some(s("after")));
+    // the removed reader comes back: it opens the old head there, but cannot read the new write
+    net.blocked_peers.extend([(a, c), (b, c)]);
+    net.set_online(c, true);
+    net.advance(10_000);
+    assert_ne!(net.read(c, t), Some(s("after")), "nothing new readable to the removed reader");
 }
 
 // spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded
@@ -198,6 +293,7 @@ fn reregistration_after_rotation_spec_sync_5() {
     assert_eq!(net.read(a, t), Some(s("from b")), "the writer stamps under the new step");
     // the removed holder comes back: walked to the new step, claim refused, stranded heartbeat
     let n_before = net.host_ids(host, &l).len();
+    net.blocked_peers.extend([(a, c), (b, c)]);
     net.set_online(c, true);
     net.advance(10_000);
     assert_eq!(net.read(c, t), Some(s("before")), "nothing new readable");

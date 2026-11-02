@@ -488,14 +488,16 @@ impl SyncEngine {
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
             (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
-            // a pass's step refused for now (a full host, the rate, not admitted): the open stays
-            // and a later pass registers again after a back-off (else every pass sent it again)
+            // a pass's step refused for now (a full host, the rate, not admitted): the open stays,
+            // a later pass registers again after a back-off (else every pass sent it again), and
+            // the pass that waited for the step runs now under the host's head
             (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 let (now, first, cap) = (self.raw_now(), self.cfg.retry_ms, self.cfg.resync_ms);
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                     lc.step_retry = now.saturating_add(backoff(first, cap, lc.step_refusals));
                     lc.step_refusals = lc.step_refusals.saturating_add(1);
+                    lc.dirty = true;
                     let at = lc.step_retry;
                     self.settle_by(at);
                 }
