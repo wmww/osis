@@ -600,7 +600,7 @@ impl NetSim {
                 }
                 Action::Wake { at } => self.node(n)?.wake = Some(at),
                 // the simulated transport finds a node by its current `reach.0`
-                Action::Reach | Action::Host(_) => {}
+                Action::Reach | Action::Host(_) | Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
             }
         }
         Ok(())

@@ -162,6 +162,9 @@ impl ServedLabel {
 /// An incoming peer session.
 pub(crate) struct Served {
     conn: ServingSession,
+    tier: super::Tier,
+    /// It made a client-port request (`Action::Ended` when it goes).
+    ported: bool,
     /// The dialer's authenticated key (budgets are charged to it).
     peer: [u8; 32],
     /// Raw ms of the last bytes received (idle sessions are closed).
@@ -493,14 +496,26 @@ impl SyncEngine {
     /// checked as a host checks them, plus co-reader proofs by the dialable key of a node
     /// thing currently reading the label (spec/sync.md §5).
     pub fn accept(&mut self, local: [u8; 32], peer: [u8; 32]) -> (ConnId, Vec<Action>) {
+        self.accept_peer(local, osis_transport::Peer::Key(peer))
+    }
+
+    /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session is a
+    /// client in the Owner tier (notes/client-port.md §0, §5), in its own pool of
+    /// `SyncConfig.max_clients` (an authenticated one counts as opened); every other session is
+    /// keyed, in `max_served`.
+    pub fn accept_peer(&mut self, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Action>) {
+        let (tier, peer, cap) = match peer {
+            osis_transport::Peer::Unix { uid } => (super::Tier::Owner, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
+            osis_transport::Peer::Key(k) => (super::Tier::Keyed, k, self.cfg.max_served),
+        };
         let conn = self.next_conn;
         self.next_conn += 1;
         let mut out = Vec::new();
-        if self.served.len() >= self.cfg.max_served {
-            let idle = self.served.iter().filter(|(_, s)| s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
+        if self.served.values().filter(|s| s.tier == tier).count() >= cap {
+            let idle = self.served.iter().filter(|(_, s)| s.tier == tier && s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
             match idle {
                 Some(old) => {
-                    self.served.remove(&old);
+                    self.end_served(old, &mut out);
                     out.push(Action::Close { conn: old });
                 }
                 None => {
@@ -513,7 +528,7 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }), peer, last, since: last });
+        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }).with_port(), tier, ported: false, peer, last, since: last });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -617,7 +632,15 @@ impl SyncEngine {
         let peer = s.conn.co_reader().unwrap_or(s.peer);
         let proven = s.conn.co_reader();
         let co_reader = proven.is_some_and(|k| reach.contains_key(&k));
-        if !s.conn.is_closed() {
+        let (tier, closed) = (s.tier, s.conn.is_closed());
+        if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
+            s.ported = true;
+        }
+        if closed {
+            if s.ported {
+                out.push(Action::Ended { conn });
+            }
+        } else {
             self.served.insert(conn, s);
         }
         self.charges.full |= acc.full;
@@ -665,7 +688,8 @@ impl SyncEngine {
                 ServingOutput::Relay(r) => relays.push(r),
                 ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
                 ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
-                ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
+                ServingOutput::Request(msg) => out.push(Action::Request { conn, tier, msg }),
+                ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the
@@ -698,8 +722,15 @@ impl SyncEngine {
             .map(|(c, _)| *c)
             .collect();
         for c in stale {
-            self.served.remove(&c);
+            self.end_served(c, out);
             out.push(Action::Close { conn: c });
+        }
+    }
+
+    /// Forgets served session `conn`; one that made client-port requests reports `Ended`.
+    pub(crate) fn end_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        if self.served.remove(&conn).is_some_and(|s| s.ported) {
+            out.push(Action::Ended { conn });
         }
     }
 
@@ -732,9 +763,11 @@ impl SyncEngine {
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
+        // an authenticated client is exempt from the idle bound while its connection is up
+        // (notes/client-port.md §3)
+        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| !s.conn.authed() && s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
         for c in stale {
-            self.served.remove(&c);
+            self.end_served(c, out);
             out.push(Action::Close { conn: c });
         }
         let wall = self.state.now;
@@ -758,6 +791,6 @@ impl SyncEngine {
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
         let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
-        self.served.values().map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
+        self.served.values().filter(|s| !s.conn.authed()).map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
     }
 }

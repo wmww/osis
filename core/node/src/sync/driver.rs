@@ -91,6 +91,9 @@ pub enum Control {
     /// listener's key and `relays` (spec/data-model.md §9). For iroh, `url` lists the relays the
     /// listener registers at (`peer_url(relays)`).
     Reach { url: String, relays: Vec<String>, reply: Option<oneshot::Sender<Result<Address, String>>> },
+    /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
+    /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
+    Listen { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
     /// Run the LAN loop (feature `lan`; ignored without it).
     Lan(LanConfig),
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
@@ -352,6 +355,8 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 Action::Wake { at } => self.wake = Some(at),
                 Action::Reach => self.relisten = true,
                 Action::Host(_) => {}
+                // the client port is the engine holder's (`osis`); a bare driver answers none
+                Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
             }
         }
     }
@@ -460,13 +465,13 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// A peer's session on the listener of key `key`.
     fn accepted(&mut self, key: [u8; 32], l: Link) {
-        let Link { peer_key, tx, rx, .. } = l;
+        let Link { peer, tx, rx, .. } = l;
         // the connection exists before its first actions are carried out
         let mut conn = None;
         let shared = &self.shared;
         let acts = blocking(|| {
             shared.with(&mut |s| {
-                let (c, acts) = s.accept(key, peer_key);
+                let (c, acts) = s.accept_peer(key, peer);
                 conn = Some(c);
                 acts
             })
@@ -639,6 +644,14 @@ impl<T: Transport, H: Shared> Driver<T, H> {
             Some(Control::Apply(acts)) => self.apply(acts),
             Some(Control::Reach { url, relays, reply }) => {
                 let r = self.reach(url, relays).await;
+                if let Some(reply) = reply {
+                    let _ = reply.send(r);
+                }
+            }
+            Some(Control::Listen { url, reply }) => {
+                let mut k = [0u8; 32];
+                osis_crypto::OsRng.fill_bytes(&mut k);
+                let r = self.listen(ListenConfig { url, secret: StaticSecret::from_bytes(k) }).await;
                 if let Some(reply) = reply {
                     let _ = reply.send(r);
                 }

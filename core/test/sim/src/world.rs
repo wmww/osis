@@ -362,6 +362,8 @@ impl World {
                     }
                 }
                 Action::Host(cfg) => self.host(d, cfg),
+                // no client port in the sim
+                Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
                 Action::Wake { .. } | Action::Reach => {}
             }
         }
@@ -433,6 +435,7 @@ impl World {
                             Action::Wake { .. } => "wake",
                             Action::Reach => "reach",
                             Action::Host(_) => "host",
+                            Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => "port",
                         };
                         *seen.entry(format!("db {d} action {k}")).or_default() += 1;
                     }
