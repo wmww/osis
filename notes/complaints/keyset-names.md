@@ -10,3 +10,5 @@
 - frozen-coverage: `tools/bin-at` checks REV out in the worktree while it builds; a parallel agent (the TLA fork) editing files there sees them flip to REV's content for ~2.5 min. Never run bin-at while another agent shares the worktree.
 - frozen-coverage: the node test helper `remove_holder` built removals whose rotation named nothing; any rule reading names treats those as unaware rotations. Hand-made rotations in test helpers drift from the engine's; prefer engine flows.
 - frozen-coverage: tier 1 took ~9 min wall at load 31-37 (machine shared).
+- Review 3: rebasing onto main conflicted in `rotation/mod.rs` (main added `pub use lost::…` beside the branch's dropped `Judge` export) and in the later-admin-path issue; local `main` lagged `origin/main` (the study answer was only on origin), so `git rebase main` alone would have missed it.
+- Review 3: re-running a removed harness branch needs a probe commit restoring it plus a second worktree for the old base (TLC was reading this worktree's `.tla` files, so checking out the base here was not safe); a pinned "dropped branch" env switch in the harness would make such re-checks one command.
