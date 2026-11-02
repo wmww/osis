@@ -153,6 +153,36 @@ fn watch_status_and_stranded_spec_permissions_3() {
     assert!(recv(&stranded).contains(&home));
 }
 
+// spec/permissions.md §4 (stranded heartbeat), §9: the sharer's other device opens a link's
+// K label as soon as it is registered, before K's own secrets reach the host (it sees K as
+// deriving from the person then); it deposits no heartbeat under a key the head does not
+// register, and reads K once they arrive (they are boxed to the person).
+#[test]
+fn sharers_other_device_deposits_no_foreign_heartbeat_spec_permissions_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let join = Osis::pair(w.cfg(2, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let dev = join.finish(&reply).unwrap();
+    w.run();
+    let (tx, rx) = std::sync::mpsc::channel();
+    dev.on_diagnostic(move |_, d| {
+        let _ = tx.send(d.detail.clone());
+    })
+    .detach();
+    let g = group(&alice);
+    alice.make_link(g, Role::Read, Default::default()).unwrap();
+    let k = alice.links(g)[0].id;
+    w.run();
+    w.advance(70_000);
+    w.run();
+    let refused: Vec<String> = rx.try_iter().filter(|d| d.contains("deposit refused")).collect();
+    assert!(refused.is_empty(), "{refused:?}");
+    assert_eq!(dev.status().unwrap().groups.get(&k).map(|s| s.state), Some(SyncState::Synced));
+    assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && e.group_actor(&k) == k), "the device reads K");
+}
+
 // spec/sync.md §11, notes/api.md Sync (bundles): a device that cannot reach the host takes
 // what it misses from a bundle another device exported.
 #[test]

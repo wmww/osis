@@ -1699,17 +1699,25 @@ impl SyncEngine {
 
     /// A stranded heartbeat (spec/permissions.md §4; spec/sync.md §5): the label cannot be read
     /// here; deposited, wrapped under the newest established read secret held, no open needed.
+    /// Only under the deposit key of the host's head as this node knows it: a deposit seed that
+    /// does not derive it (an actor whose `keys.0` has not arrived yet, a link's K seen as
+    /// deriving from its owner) is refused, so nothing is sent.
     pub(crate) fn stranded(&mut self, conn: ConnId, g: Tid, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         if self.state.stranded.get(&l).is_some_and(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > self.now()) {
             return Ok(());
         }
-        let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
+        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let Some(head) = self.lc(conn, &l).and_then(|x| x.head.clone()).or_else(|| self.state.heads.get(&(host, l)).cloned()) else { return Ok(()) };
         let Some(seed) = self.engine.deposit_seed(&g)? else { return Ok(()) };
+        let d = osis_crypto::deposit_key(&seed, &l);
+        if d.verifying_key() != head.keys.deposit {
+            return Ok(());
+        }
+        let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
         let Some(c) = self.heartbeat_commit(true)? else { return Ok(()) };
         for b in self.engine.partial_bodies(&c, &BTreeSet::from([0usize]))? {
             let s = seal_body(&b, &mut *self.rng)?;
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
-            let d = osis_crypto::deposit_key(&seed, &l);
             let sig = osis_label::sign_deposit(&d, &l, &s.id, &wrap);
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;
         }
