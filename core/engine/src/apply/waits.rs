@@ -4,8 +4,8 @@
 //!
 //! A commit waits for a creation record (`UnknownCreated`, `MissingChain`) or for deltas
 //! (`WaitDeltas`). Its examination read the commit (fixed), the held set, what the node syncs,
-//! the corrected clock (drift, expiry) and, for missing deltas, the receipt and purge records
-//! of their aspects. Kept only for commits whose header is inline (no header-list blobs) and
+//! the corrected clock (drift, expiry) and, for missing deltas, the held snapshots and purge
+//! records of their aspects. Kept only for commits whose header is inline (no header-list blobs) and
 //! that carry no `secrets.0` part (pending boxes are read at every examination), within byte
 //! bounds (a record wait keeps its order key and things, a delta wait its header too); the
 //! others are examined at every `reexamine`, as all were.
@@ -14,8 +14,8 @@
 //!   (`Held::edges`: edge writes and owner links, the author's certificates) and `t`'s record is still held or not as
 //!   before; records held only accumulate, so every lookup that found one finds the same.
 //! - A delta wait is judged again (`still_waits`, without reading the commit) once anything of
-//!   the held set changed (perm judges purge rights), a receipt or purge record of a missing
-//!   delta's aspect was written (`Waits::wake`), or the earliest expiry of its missing deltas
+//!   the held set changed (perm judges purge rights), a snapshot part or purge record of a
+//!   missing delta's aspect was applied or written (`Waits::wake`), or the earliest expiry of its missing deltas
 //!   passed; the rest of the examination (records, chain, signature) gave the same answer.
 //! - A wait on a thing the node starts or stops syncing is dropped (examined in full); every
 //!   pending commit is examined once the held edges changed or the clock is below the latest
@@ -90,7 +90,7 @@ pub(crate) struct Waits {
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Delta waits by the earliest expiry or bound of their missing deltas (`next_expiry`).
     expiring: BTreeSet<(u64, CommitId)>,
-    /// Waits whose inputs changed since examined: receipt or purge records of a delta wait's
+    /// Waits whose inputs changed since examined: held snapshots or purge records of a delta wait's
     /// aspect.
     woken: BTreeSet<CommitId>,
     /// Pending commits set since `reexamine` last looked, and pending commits without a wait.
@@ -151,7 +151,7 @@ impl Waits {
         *self = Waits::default();
     }
 
-    /// A receipt or purge record of `(tid, ak)` was written, or a commit on it applied.
+    /// A compaction snapshot's part or a purge record of `(tid, ak)` was applied or written, or a commit on it applied.
     pub fn wake(&mut self, tid: &Tid, ak: &Ak) {
         if let Some(s) = self.by_aspect.get(&(*tid, ak.clone())) {
             self.woken.extend(s.iter().copied());
