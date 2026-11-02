@@ -116,6 +116,7 @@ RULES = [
     ("spec/commits.md", "3", "shared key commit form", "(link key, recovery key) MUST use it"),
     ("spec/commits.md", "3", "session form", "an ephemeral content commit MUST use it"),
     ("spec/commits.md", "4", "signature", "signature MUST verify"),
+    ("spec/commits.md", "4", "copies", "MUST keep each differing copy"),
     ("spec/commits.md", "5", "keep at least", "compaction MUST NOT drop it"),
     ("spec/commits.md", "5", "keep at most", "every node MUST drop the body"),
     ("spec/commits.md", "5", "covering copies", "Every write the covering snapshot holds under a dot the body holds a write of"),

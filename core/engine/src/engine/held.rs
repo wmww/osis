@@ -14,8 +14,12 @@ enum Undo {
     Created(Tid, Option<Rec>),
     AddedCommit(Arc<RoleCommit>),
     AddedSnapshot(Arc<RosterSnapshot>),
-    Removed(Vec<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>),
+    AddedWithheld(Arc<RosterSnapshot>),
+    Removed(Taken),
 }
+
+/// A commit ID's edge commit, walked snapshots and withheld snapshots.
+type Taken = (Vec<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>, Vec<Arc<RosterSnapshot>>);
 
 /// A held creation record and whether it is memory class (an ephemeral thing's, carried by a
 /// memory commit or made here; gone at restart, notes/ephemeral.md).
@@ -25,8 +29,9 @@ struct Rec {
     memory: bool,
 }
 
-/// What one commit ID holds: its edge commit and its roster snapshots (one per thing).
-type Records = (Option<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>);
+/// What one commit ID holds: its edge commit, its roster snapshots (one per thing) and those withheld
+/// from the walk (`add_withheld`).
+type Records = (Option<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>, Vec<Arc<RosterSnapshot>>);
 
 #[derive(Debug, Default)]
 pub struct Held {
@@ -190,9 +195,17 @@ impl Held {
         self.ids.entry(s.id).or_default().1.push(s);
     }
 
+    fn put_withheld(&mut self, s: Arc<RosterSnapshot>) {
+        self.touched.insert(s.thing);
+        self.count(named_snapshot(&s), true);
+        self.generation += 1;
+        self.edges += 1;
+        self.ids.entry(s.id).or_default().2.push(s);
+    }
+
     /// Takes out every commit and snapshot with this ID (exactly these Arcs).
-    fn take(&mut self, id: &CommitId) -> (Vec<Arc<RoleCommit>>, Vec<Arc<RosterSnapshot>>) {
-        let Some((c, ss)) = self.ids.remove(id) else { return (Vec::new(), Vec::new()) };
+    fn take(&mut self, id: &CommitId) -> Taken {
+        let Some((c, ss, ws)) = self.ids.remove(id) else { return Taken::default() };
         self.generation += 1;
         self.edges += 1;
         let mut cs = Vec::new();
@@ -219,7 +232,11 @@ impl Held {
             self.touched.insert(s.thing);
             self.count(named_snapshot(s), false);
         }
-        (cs, ss)
+        for s in &ws {
+            self.touched.insert(s.thing);
+            self.count(named_snapshot(s), false);
+        }
+        (cs, ss, ws)
     }
 
     /// Adds a creation record under its tid, durable (a memory one held becomes durable:
@@ -253,8 +270,8 @@ impl Held {
     pub fn add_commit(&mut self, c: RoleCommit) {
         // an ID is held once: a re-derived commit replaces the earlier
         let removed = self.take(&c.id);
-        if !removed.0.is_empty() || !removed.1.is_empty() {
-            self.log.push(Undo::Removed(removed.0, removed.1));
+        if !removed.0.is_empty() || !removed.1.is_empty() || !removed.2.is_empty() {
+            self.log.push(Undo::Removed(removed));
         }
         let c = Arc::new(c);
         self.put_commit(c.clone());
@@ -267,6 +284,21 @@ impl Held {
         self.log.push(Undo::AddedSnapshot(s));
     }
 
+    /// A held snapshot out of the walk (spec/permissions.md §6): perm does not see it, but the
+    /// holders it names stay named (`holders_of`): an applied part's holder leads the search of
+    /// `validity::reaches` whether the walk applies it or not (spec/commits.md §4), so what applies
+    /// never reads whether a snapshot is withheld.
+    pub fn add_withheld(&mut self, s: RosterSnapshot) {
+        let s = Arc::new(s);
+        self.put_withheld(s.clone());
+        self.log.push(Undo::AddedWithheld(s));
+    }
+
+    /// Whether snapshot `id` of `thing` is in the walk.
+    pub fn walks(&self, id: &CommitId, thing: &Tid) -> bool {
+        self.ids.get(id).is_some_and(|r| r.1.iter().any(|s| s.thing == *thing))
+    }
+
     /// The edge commit held under this ID.
     pub fn edge_commit(&self, id: &CommitId) -> Option<&RoleCommit> {
         self.ids.get(id).and_then(|r| r.0.as_deref())
@@ -274,8 +306,8 @@ impl Held {
 
     /// Drops every commit and snapshot with this ID.
     pub fn remove(&mut self, id: &CommitId) {
-        let (cs, ss) = self.take(id);
-        self.log.push(Undo::Removed(cs, ss));
+        let taken = self.take(id);
+        self.log.push(Undo::Removed(taken));
     }
 
     /// Things whose creation record was added since the last call.
@@ -286,6 +318,20 @@ impl Held {
     /// Things whose held inputs changed since the last call.
     pub fn take_touched(&mut self) -> BTreeSet<Tid> {
         std::mem::take(&mut self.touched)
+    }
+}
+
+impl Held {
+    fn put_back(&mut self, (cs, ss, ws): Taken) {
+        for c in cs {
+            self.put_commit(c);
+        }
+        for s in ss {
+            self.put_snapshot(s);
+        }
+        for s in ws {
+            self.put_withheld(s);
+        }
     }
 }
 
@@ -306,25 +352,14 @@ impl Journaled for Held {
                 Undo::AddedCommit(c) => {
                     self.take(&c.id);
                 }
-                Undo::AddedSnapshot(s) => {
+                Undo::AddedSnapshot(s) | Undo::AddedWithheld(s) => {
                     // only this snapshot: others of the ID stay
-                    let (cs, mut ss) = self.take(&s.id);
+                    let (cs, mut ss, mut ws) = self.take(&s.id);
                     ss.retain(|x| !Arc::ptr_eq(x, &s));
-                    for c in cs {
-                        self.put_commit(c);
-                    }
-                    for x in ss {
-                        self.put_snapshot(x);
-                    }
+                    ws.retain(|x| !Arc::ptr_eq(x, &s));
+                    self.put_back((cs, ss, ws));
                 }
-                Undo::Removed(cs, ss) => {
-                    for c in cs {
-                        self.put_commit(c);
-                    }
-                    for s in ss {
-                        self.put_snapshot(s);
-                    }
-                }
+                Undo::Removed(taken) => self.put_back(taken),
             }
         }
     }

@@ -3186,13 +3186,15 @@ fn padded_durable_created_refused_spec_commits_2() {
     for (k, (ops, typed)) in padded.into_iter().enumerate() {
         let t = ts(&mut lp, k as u64 + 1);
         let b = forge_created(&mut lp, 1, &rec, t, 1000 * (k as u64 + 1), &ops, typed).unwrap();
-        assert_eq!(lp.peers[0].engine.ingest(&b, Vec::new()).unwrap_err().class(), osis_base::ErrorClass::BadInput, "typed {typed}");
+        // no record comes of it; until a record tells its hash the part cannot be judged, so it waits
+        assert!(matches!(lp.peers[0].engine.ingest(&b, Vec::new()), Ok(Ingested::Pending(..))), "typed {typed}");
         assert!(created(&mut lp).is_none());
     }
     let t = ts(&mut lp, 10);
     let one = forge_created(&mut lp, 1, &rec, t, 5000, &[PathOp { path: Vec::new(), op: Op::Set(r) }], true).unwrap();
     assert!(matches!(lp.peers[0].engine.ingest(&one, Vec::new()).unwrap(), Ingested::Applied(_)));
     assert_eq!(created(&mut lp), Some(rec.clone()));
+    assert!(lp.peers[0].engine.pending().is_empty(), "with the record the padded ones are bad, and go");
     send(&mut lp, 1, 0, &[honest]);
     assert_eq!(lp.peers[0].engine.get(&x, &ak("t:reg.0")).unwrap(), Some(s("x")));
     assert_eq!(created(&mut lp), Some(rec));

@@ -485,6 +485,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
                 return Err(Error::Misuse("counter moved under the writer"));
             }
         }
+        // hostile test authors only (`Engine::commit_forged`): the header hashes what is sent
+        let bytes = if tx.core.forge_bad.contains(&(d.tid, d.ak.clone())) { bytes.iter().map(|_| osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Int(1)]))).collect() } else { bytes };
         writes.push(AspectWrite { tid: d.tid, ak: d.ak, lo: d.lo, hi: d.hi, deltas: bytes, retention, expires, chunks, records: d.records });
     }
     let mut b = CommitBuilder::new(plan.kind, plan.ts, node, plan.actor, plan.form);
@@ -508,6 +510,9 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     };
     let built = built?;
     let id = built.commit.id();
+    if !tx.core.forge_bad.is_empty() {
+        tx.core.forged = Some(built.commit.encode());
+    }
     let received = tx.now();
     crate::apply::apply_local(tx, &built.commit, received)?;
     Ok(id)

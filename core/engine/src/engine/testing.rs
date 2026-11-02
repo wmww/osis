@@ -21,6 +21,29 @@ impl Engine {
         r
     }
 
+    /// `commit_hostile` with every delta on the aspects `bad` replaced by bytes that do not decode
+    /// (the header hashing them), and the blob as sent: this node's own copy drops them.
+    #[doc(hidden)]
+    pub fn commit_forged(&mut self, m: crate::Mutation, bad: std::collections::BTreeSet<(osis_base::Tid, osis_base::Ak)>) -> Result<Option<(CommitId, Vec<u8>)>> {
+        self.core.forge_bad = bad;
+        let r = self.commit_hostile(m);
+        self.core.forge_bad = Default::default();
+        let forged = self.core.forged.take();
+        Ok(r?.zip(forged))
+    }
+
+    /// The bytes of the unsettled copies kept for pending commit `id` (`apply::copies`).
+    #[doc(hidden)]
+    pub fn unsettled_copies_bytes(&mut self, id: &CommitId) -> Result<usize> {
+        let id = *id;
+        self.run(|tx| Ok(tx.txn.get_local(&[super::records::COPIES, &id.0[..]].concat())?.map_or(0, |b| b.len())))
+    }
+
+    #[doc(hidden)]
+    pub fn has_unsettled_copies(&mut self, id: &CommitId) -> Result<bool> {
+        Ok(self.unsettled_copies_bytes(id)? > 0)
+    }
+
     /// Stops `reexamine` here, so what pends stays pending whatever else happens. For what a
     /// pending commit does to the rest of the node: the only wait a role commit's one part has
     /// once its author and thing are known is the clock's (spec/commits.md §4).

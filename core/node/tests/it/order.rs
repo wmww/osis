@@ -99,6 +99,14 @@ pub(crate) enum Step {
     /// raising its own edge on `a`; a roster snapshot of `a` holding what the author likes. The
     /// author is told of a thing it does not know first, so it may hold no chain to it.
     Forged { by: usize, a: usize, b: usize, how: u8, op: u8, k: u8, v: u8 },
+    /// A commit past the writer's rules with a part that hashes right and is bad by itself, `how` % 4:
+    /// a content write on `a` and `b`, `b`'s part not decoding; an edge write on both, `b`'s not
+    /// decoding; a roster snapshot of `a`, its ledger not decoding; one with a ledger entry linking a
+    /// frontier outside its chunk list.
+    BadPart { by: usize, a: usize, b: usize, how: u8 },
+    /// `Demote` to no role with a frontier padded past `CHUNK_THRESHOLD`: a roster snapshot of `t`
+    /// after it links its frontier.
+    BigDemote { by: usize, t: usize, holder: usize },
     // scripted only (`random_step` never draws these), for the judgment vectors:
     /// A new thing owned by peer `by` itself: no edge of G reaches it.
     NewTop { by: usize },
@@ -523,6 +531,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
+    // the blobs of `BadPart`, with what their authors' own copies dropped
+    let mut forged: BTreeMap<CommitId, Vec<u8>> = BTreeMap::new();
     for st in steps {
         let aimed;
         let st = match st {
@@ -726,6 +736,80 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 no = why(&lp.peers[by].engine.commit_hostile(m));
                 Some(by)
             }
+            Step::BadPart { by, a, b, how } => {
+                let (a, b) = (th(a), th(b));
+                for x in [a, b] {
+                    if !lp.peers[by].engine.knows(&x)
+                        && let Some((from, id)) = made_by.get(&x)
+                        && let Some(pk) = lp.peers[*from].engine.package(id).unwrap()
+                    {
+                        let _ = lp.deliver(by, &pk);
+                    }
+                }
+                let other = ids[(by + 1) % 3];
+                let mut m = Mutation::new();
+                let roles = osis_schema::core_types::ROLES;
+                let tenures = osis_schema::core_types::TENURES;
+                let mut bad = BTreeSet::new();
+                let roster = |m: &mut Mutation, ledger: osis_schema::core_types::Tenures| {
+                    let holders: osis_schema::core_types::Holders = [(ids[by], edge(Role::Admin))].into_iter().collect();
+                    m.replace(a, &roles, &holders).unwrap();
+                    m.replace(a, &tenures, &ledger).unwrap();
+                    m.roster_for_tests();
+                };
+                let at = osis_schema::core_types::EdgeKey { ts: osis_base::Ts::make(T0, 0).unwrap(), node: other, commit: CommitId([0; 32]) };
+                match how % 4 {
+                    0 => {
+                        m.set(a, &REG, &s("beside bad")).unwrap();
+                        m.set(b, &REG, &s("bad")).unwrap();
+                        bad.insert((b, Ak::new("t:reg.0").unwrap()));
+                    }
+                    1 => {
+                        for x in [a, b] {
+                            m.op(x, &roles, PathOp { path: vec![PathSeg::Key(Value::Tid(other))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+                        }
+                        bad.insert((b, Ak::new("roles.0").unwrap()));
+                    }
+                    2 => {
+                        roster(&mut m, osis_schema::core_types::Tenures(vec![osis_schema::core_types::Tenure { holder: other, role: Role::Write, since: None, until: at, frontier: None }]));
+                        bad.insert((a, Ak::new("tenures.0").unwrap()));
+                    }
+                    _ => {
+                        let fake = osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] };
+                        let f = osis_schema::Chunked::Link(fake);
+                        roster(&mut m, osis_schema::core_types::Tenures(vec![osis_schema::core_types::Tenure { holder: other, role: Role::Write, since: None, until: at, frontier: Some(f) }]));
+                        // a part that decodes: `commit_forged` needs some aspect to keep the blob
+                        bad.insert((Tid::from_bytes([0; 15]), Ak::new("roles.0").unwrap()));
+                    }
+                }
+                match lp.peers[by].engine.commit_forged(m, bad) {
+                    Ok(Some((id, bytes))) => {
+                        forged.insert(id, bytes);
+                    }
+                    Ok(None) => {}
+                    Err(e) => no = why(&Err::<(), _>(e)),
+                }
+                Some(by)
+            }
+            Step::BigDemote { by, t, holder } => {
+                let t = th(t);
+                let now = lp.peers[by].engine.now();
+                let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]) };
+                let f = lp.peers[by].engine.frontier(&scope, now);
+                no = why(&f);
+                if let Ok(mut f) = f {
+                    for i in 0..4000u32 {
+                        let b = i.to_be_bytes();
+                        let mut c = [7u8; 32];
+                        c[..4].copy_from_slice(&b);
+                        f.commits.insert(CommitId(c));
+                    }
+                    let mut m = edge_write(t, ids[holder], None);
+                    m.frontier(f.to_value());
+                    no = why(&lp.peers[by].commit(m));
+                }
+                Some(by)
+            }
             Step::Advance { who, ms } => {
                 match who {
                     Some(i) => lp.peers[i].clock.advance(ms),
@@ -872,6 +956,11 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     tally.commits = (packs.len() - base) as u64;
     // the fresh nodes' clock: the latest of the writers' (nothing parks for drift)
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
+    for pk in &mut packs {
+        if let Some(b) = forged.get(&pk.id) {
+            pk.bytes = b.clone();
+        }
+    }
     Played { packs, authors, base, things, now, tally, sync: Syncs::None }
 }
 
