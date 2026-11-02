@@ -466,6 +466,9 @@ impl SyncEngine {
     /// a slot left empty. So a commit's names run out, a true copy's slot goes to it, and in steady state
     /// this costs nothing. Should the invariant ever fail, a commit past one visit per entry waits for the
     /// next step rather than spin here: a bound on work, never on what is looked at.
+    ///
+    /// A copy brings no slot counting as never received (`Engine::settled_slots`: a body dropped for its
+    /// keep bounds, a part past its expiry, spec/commits.md §5): such a slot comes back only as a new copy.
     pub(crate) fn redeliver(&mut self) -> Result<()> {
         if std::mem::take(&mut self.start_look) {
             self.name_after_crash();
@@ -490,7 +493,7 @@ impl SyncEngine {
                 later.push(c);
                 continue;
             }
-            let mut held = self.engine.held_slots(&c)?;
+            let mut held = self.engine.settled_slots(&c)?;
             for b in entries {
                 let Some(r) = self.state.blobs.get(&b) else { continue };
                 let (parts, key) = (r.parts.clone(), r.key.clone());
@@ -536,13 +539,16 @@ impl SyncEngine {
 
     /// A crash may have lost what the engine named (`redeliver`). Looked at once per start: what pends,
     /// a commit with an entry that is neither applied nor pending (gone with a junk signature or all its
-    /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot gone).
+    /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot gone)
+    /// or with several deltas on one aspect: `missing` is per aspect and such a commit (a roster snapshot,
+    /// spec/permissions.md §5.2) may hold some of them. The index cannot tell, so `redeliver` reads what
+    /// it holds. A projection of first deltas alone is not looked at: the commit's whole body is.
     fn name_after_crash(&mut self) {
         let ix = &self.engine.core.ix;
         let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
         named.extend(self.state.by_commit.iter().filter(|(c, blobs)| match ix.commits.get(c) {
             None => true,
-            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(&p.0))),
+            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| p.1 > 0 || m.missing.contains(&p.0))),
         }).map(|(c, _)| *c));
         for c in named {
             self.engine.name_redeliver(c);

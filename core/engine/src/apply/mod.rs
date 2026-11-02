@@ -773,6 +773,11 @@ fn proves_itself(h: &Header, id: &CommitId, p: &osis_commit::Part) -> bool {
     minted_record(h, id, p, &a.tid, &mut Interner::new()).is_ok_and(|r| osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) == *want)
 }
 
+/// Every slot of aspect `ai`.
+fn out_of(h: &Header, ai: usize) -> impl Iterator<Item = (usize, usize)> {
+    (0..h.aspects.get(ai).map_or(0, |a| a.hashes.len())).map(move |di| (ai, di))
+}
+
 /// `a` with the parts of `b` on slots it lacks.
 fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
     for p in b.parts {
@@ -956,13 +961,31 @@ impl Engine {
         self.core.redeliver.insert(id);
     }
 
-    /// The slots commit `id` holds here, applied or pending.
-    pub fn held_slots(&mut self, id: &CommitId) -> Result<BTreeSet<(usize, usize)>> {
+    /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
+    /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which only
+    /// a new copy brings back (`SyncEngine::redeliver`).
+    pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<(usize, usize)>> {
         let id = *id;
         self.run(|tx| {
-            let mut out: BTreeSet<(usize, usize)> = tx.get_commit(&id)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default();
-            if let Some(b) = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()) {
+            let now = tx.now().0;
+            let mut out: BTreeSet<(usize, usize)> = BTreeSet::new();
+            let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok());
+            if let Some(b) = &pending {
                 out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
+                for (ai, a) in b.header.aspects.iter().enumerate() {
+                    if a.expires.is_some_and(|t| t <= now) {
+                        out.extend(out_of(&b.header, ai));
+                    }
+                }
+            }
+            if let Some(b) = tx.get_commit(&id)? {
+                out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
+            }
+            if let Some(m) = tx.core.ix.commits.get(&id) {
+                let ais: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.dropped.contains_key(ai) || m.header.aspects.get(*ai).is_some_and(|a| a.expires.is_some_and(|t| t <= now))).collect();
+                for ai in ais {
+                    out.extend(out_of(&m.header, ai));
+                }
             }
             Ok(out)
         })
@@ -1138,9 +1161,10 @@ impl Engine {
                     Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
                     Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
                     Ok(Exam::Parked) => debug_assert!(false, "pending commit {id:?} left out of reexamine would park"),
-                    // a delta wait is not woken by the record that proves its stored copies junk: they
-                    // go when the wait ends (`examine`), nothing else of it having changed
-                    Err(Error::BadInput("delta hash")) if want == Some(Reason::WaitDeltas) => {}
+                    // no wait is woken by a record that only proves stored copies junk, a commit waiting
+                    // for another record or for deltas: they go when the wait ends (`examine`) or a copy
+                    // comes, the reason being unchanged by them
+                    Err(Error::BadInput("delta hash")) => {}
                     Err(e) => debug_assert!(false, "pending commit {id:?} left out of reexamine: {e}"),
                 }
             }

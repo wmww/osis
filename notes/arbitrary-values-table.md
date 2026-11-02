@@ -94,6 +94,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
 | registration refused for now: back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | re-registers every tick / a label the host admits later never syncs on that connection |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
+| `SyncEngine::redeliver` visits per commit per round, 1 + its entries | R (past it the name waits for the next step; 0 would look at nothing, infinity spins should a name's invariant fail) | one look per copy |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |
 | `PENDING_SHARE` 4, `RELAYS_REMEMBERED` 2^16, `WAITING_MAX` 2^12, `UNFIT_MAX` 2^12, `SHARE_REFUSED_MAX` 2^12 | R (commented) | |
 | `MAX_PEER_STEPS` 64, `LAN_HEARD` 4, `LAN_BOUND` 64 (announcements bound to their source per co-reader; past it only a self-flooding co-reader reopens replays of its own), `LAN_CHANGE_MS` 5 s | R | |
