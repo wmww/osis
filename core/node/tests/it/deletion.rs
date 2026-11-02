@@ -1041,3 +1041,206 @@ fn imported_author_only_spec_perm_7() {
     net.pair(b, a);
     assert!(!net.engine(a).body_not_dropped(&imp, &copy, &k), "the origin author's purge holds");
 }
+
+fn demote(net: &mut Net, a: usize, g: osis_base::Tid, holder: osis_base::Tid, to: Role) {
+    use osis_node::flows::{Demotion, PreSync};
+    let new = ct::Edge { role: to, until: None, invite: None, since: None, tied: None, keyset: None };
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Synced }).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+}
+
+fn insert(net: &mut Net, n: usize, t: osis_base::Tid, v: &str) -> osis_base::CommitId {
+    use osis_crdt::{Op, PathOp};
+    let mut m = Mutation::new();
+    m.op(t, &SEQ, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![s(v)] } }).unwrap();
+    net.engine(n).commit(m).unwrap().unwrap()
+}
+
+fn latest_snapshot(net: &mut Net, n: usize, t: osis_base::Tid, k: &Ak, acts: Vec<osis_node::sync::Action>) -> osis_base::CommitId {
+    net.actions(n, acts);
+    let e = net.engine(n);
+    let me = e.tid();
+    e.commit_ids().into_iter().filter(|c| e.header(c).is_some_and(|h| h.author == me && h.kind == osis_commit::Kind::ContentSnapshot && h.aspects.iter().any(|a| a.tid == t && a.ak == *k))).max_by_key(|c| e.header(c).map(|h| h.ts)).unwrap()
+}
+
+// spec/commits.md §5: a right holder that dropped a body under a snapshot and learns later that its
+// actor had lost the right has only history less: the snapshot stands (demoted to write) and all
+// read alike, a device coming later too, with nothing uploaded again; or the snapshot falls
+// (demoted to read), the kept copies come back and all read alike.
+#[test]
+fn stale_drop_reads_alike_spec_commits_5() {
+    for to in [Role::Write, Role::Read] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, x, b, w, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]), net.node(4, &[host]), net.node(5, &[host]));
+        let g = net.group(a, &[(x, Role::Admin), (b, Role::Write), (w, Role::Write), (f, Role::Read)], &[host]);
+        let t = net.item(a, g, g, "x");
+        net.run();
+        net.set_online(f, false);
+        let l = net.label(a);
+        let k = Ak::new(SEQ.ak()).unwrap();
+        let c = insert(&mut net, b, t, "b's");
+        net.run();
+        let blobs = blobs_of(&mut net, b, &l, c);
+        // the demotion stays at a; x, not knowing, writes and compacts after it
+        net.set_online(a, false);
+        let xt = net.tid(x);
+        demote(&mut net, a, g, xt, to);
+        net.advance(1_000);
+        insert(&mut net, x, t, "x's");
+        let acts = net.sync(x).compact(&t, &k).unwrap();
+        let snap = latest_snapshot(&mut net, x, t, &k, acts);
+        net.run();
+        net.advance(2 * 3_600_000);
+        net.run();
+        assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "the author dropped it, {to:?}");
+        assert!(net.engine(w).body_not_dropped(&c, &t, &k), "a plain writer did not, {to:?}");
+        assert!(blobs.iter().all(|id| !net.host_ids(host, &l).contains(id)), "gone at the host, {to:?}");
+        net.set_online(a, true);
+        net.run();
+        net.advance(61_000);
+        net.run();
+        for n in [a, b, w] {
+            assert!(!net.engine(n).snapshot_right(&snap, &c, &t, &k), "node {n}: no right now, {to:?}");
+        }
+        assert!(net.engine(a).body_not_dropped(&c, &t, &k), "the admin keeps it, {to:?}");
+        let there = net.engine(b).body_not_dropped(&c, &t, &k) && !net.engine(b).core.ix.commits.get(&c).unwrap().missing.iter().next().is_some();
+        let read = |net: &mut Net, n: usize| net.engine(n).get_typed(&t, &SEQ).unwrap();
+        let want = read(&mut net, a);
+        assert_eq!(read(&mut net, b), want, "{to:?}");
+        assert_eq!(read(&mut net, w), want, "{to:?}");
+        match to {
+            Role::Read => {
+                assert_eq!(want, Some(s("b's")), "the fallen snapshot's own write goes");
+                assert!(there, "the holder uploaded it again and the author took it");
+            }
+            _ => {
+                assert_eq!(want, Some(s("x'sb's")));
+                assert!(!there, "history stays less");
+                let live = net.host_ids(host, &l);
+                assert!(blobs_of(&mut net, a, &l, c).iter().all(|id| !live.contains(id)), "not uploaded again");
+            }
+        }
+        // a device that was away for all of it reads alike, whatever it finds
+        net.set_online(f, true);
+        net.run();
+        net.advance(61_000);
+        net.run();
+        assert_eq!(read(&mut net, f), want, "away, {to:?}");
+    }
+}
+
+// spec/permissions.md §5.2, spec/commits.md §5: the snapshot a body dropped under falls while another
+// without the right, which it does not cover and which arrived after the drop, still covers the
+// body: no one uploads the body (may-hold), the dropper reads alike through that snapshot's copies.
+#[test]
+fn snapshot_falls_rightless_one_covers_spec_perm_5_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, x, b, w) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]), net.node(4, &[host]));
+    let g = net.group(a, &[(x, Role::Admin), (b, Role::Write), (w, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let k = Ak::new(SEQ.ak()).unwrap();
+    let c = insert(&mut net, b, t, "b's");
+    net.run();
+    net.set_online(a, false);
+    net.set_online(w, false);
+    let xt = net.tid(x);
+    demote(&mut net, a, g, xt, Role::Read);
+    net.advance(1_000);
+    insert(&mut net, x, t, "x's");
+    let acts = net.sync(x).compact(&t, &k).unwrap();
+    let s1 = latest_snapshot(&mut net, x, t, &k, acts);
+    net.run();
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &k));
+    insert(&mut net, w, t, "w's");
+    let acts = net.sync(w).compact(&t, &k).unwrap();
+    let s2 = latest_snapshot(&mut net, w, t, &k, acts);
+    net.set_online(w, true);
+    net.run();
+    assert!(!net.engine(b).snapshot_right(&s2, &c, &t, &k));
+    assert_eq!(net.engine(b).covered(&s2, &s1, &t, &k).unwrap(), Some(false));
+    net.set_online(a, true);
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let read = |net: &mut Net, n: usize| net.engine(n).get_typed(&t, &SEQ).unwrap();
+    let want = read(&mut net, a);
+    assert_eq!(want, Some(s("w'sb's")));
+    assert_eq!(read(&mut net, b), want);
+    assert_eq!(read(&mut net, w), want);
+    assert!(net.engine(b).core.ix.commits.get(&c).unwrap().missing.len() == 1, "no one uploads it: may-hold");
+    assert!(net.engine(b).suspects().unwrap().is_empty(), "the flag is dormant: the held snapshot lists it");
+}
+
+// spec/commits.md §5: the right a node learns of late (the snapshot's author's raise arriving after
+// the snapshot): nothing lost, the body may stay until the next judgment, and goes then.
+#[test]
+fn right_learned_late_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, x, n, b) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]), net.node(4, &[host]));
+    let g = net.group(a, &[(x, Role::Write), (n, Role::Admin), (b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let k = Ak::new(SEQ.ak()).unwrap();
+    let c = insert(&mut net, b, t, "b's");
+    net.run();
+    net.set_online(n, false);
+    let xt = net.tid(x);
+    set_edge(net.engine(a), g, xt, Role::Admin);
+    net.run();
+    net.advance(1_000);
+    let acts = net.sync(x).compact(&t, &k).unwrap();
+    let snap = latest_snapshot(&mut net, x, t, &k, acts);
+    net.run();
+    let pk = net.engine(x).package(&snap).unwrap().unwrap();
+    net.engine(n).ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert!(!net.engine(n).snapshot_right(&snap, &c, &t, &k));
+    net.advance(2 * 3_600_000);
+    net.set_online(n, true);
+    net.run();
+    net.advance(61_000);
+    net.run();
+    assert!(net.engine(n).snapshot_right(&snap, &c, &t, &k));
+    // a connection's first pass judges everything; any later snapshot would too
+    assert!(!net.engine(n).body_not_dropped(&c, &t, &k));
+}
+
+// issues/atomic-wait-snapshot-gap.md: a device that never held a body another's compaction dropped
+// has a frontier stopping at the gap, so its own snapshot covers none of that author's later bodies.
+// Safe, only less compaction: nothing drops and reads stay alike.
+#[test]
+fn fresh_snapshot_stops_at_a_gap_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
+    let g = net.group(a, &[(b, Role::Write), (f, Role::Admin)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    net.set_online(f, false);
+    let k = Ak::new(SEQ.ak()).unwrap();
+    insert(&mut net, b, t, "1");
+    net.run();
+    let acts = net.sync(b).compact(&t, &k).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.advance(2 * 3_600_000);
+    net.run();
+    let c = insert(&mut net, b, t, "2");
+    net.run();
+    net.set_online(f, true);
+    net.run();
+    assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), Some(s("21")));
+    let acts = net.sync(f).compact(&t, &k).unwrap();
+    let snap = latest_snapshot(&mut net, f, t, &k, acts);
+    assert!(net.engine(f).snapshot_right(&snap, &c, &t, &k));
+    assert_eq!(net.engine(f).covered(&snap, &c, &t, &k).unwrap(), Some(false));
+    net.run();
+    assert!(net.engine(f).body_not_dropped(&c, &t, &k));
+    assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), net.engine(a).get_typed(&t, &SEQ).unwrap());
+}

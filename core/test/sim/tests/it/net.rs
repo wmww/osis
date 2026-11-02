@@ -189,6 +189,15 @@ fn coverer_revoked() {
     ok("coverer_revoked", 1);
 }
 
+// spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §8: each purge set under a mix of
+// compacters, a device coming fresh: kept bodies stay available, reads alike, the labels go quiet.
+#[test]
+fn snapshot_rights() {
+    for seed in 1..=2 {
+        ok("snapshot_rights", seed);
+    }
+}
+
 // notes/ephemeral.md, spec/sync.md §9: ephemeral (expiring ones included) and signal writes on a
 // window and a durable item under faults; holders converge, a refreshed cursor stays up while its
 // author is there and goes by its expiry after, signals once.

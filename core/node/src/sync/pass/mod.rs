@@ -1283,9 +1283,9 @@ impl SyncEngine {
         keys.deposit.is_some() && b.role_commit && self.own(&b.commit)
     }
 
-    /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, or
-    /// established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
-    /// must hold to hold the body (all of them before keep-at-least, else those of the aspects
+    /// Must-hold for a closure body (spec/sync.md §6): before its keep-at-least bound, under
+    /// `nobody` while kept, or established uncovered by the label's snapshots. Must-hold: the parts a blob of the commit
+    /// must hold to hold the body (all of them before keep-at-least or under `nobody`, else those of the aspects
     /// no snapshot covers).
     fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
@@ -1297,7 +1297,7 @@ impl SyncEngine {
             // no right holder will ever drop a `nobody` body: must-hold while kept, covered or not
             let nobody = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).is_some_and(|x| x.retention.by == osis_base::PurgeBy::Nobody);
             before = nobody || at_least > now;
-            if before {
+            if at_least > now {
                 note.at(at_least);
             }
         }
