@@ -176,38 +176,72 @@ impl SyncEngine {
     }
 
     /// Records a flow's deliveries; the next step sends them.
+    ///
+    /// Invariant: after any crash, the placements and direct sends this node makes are those
+    /// it would have made without the crash. Every delivery but an inbox blob is recorded in the
+    /// transaction of the commit that owes it (`flows::owe`, `y/y`); its record goes in the
+    /// sync state's flush that holds what carrying it out wrote (entries, certificates, outbox,
+    /// direct lists), or, while a copy waits for a rotation (`deferred`), once the last such
+    /// copy is placed. What is recorded at start is carried out again (`take_owed`); copies
+    /// already placed are skipped (`State::certs`). Inbox blobs: `State::note_unsent`.
     pub(crate) fn take_done(&mut self, done: Done) -> Result<()> {
         for d in done.deliveries {
-            match d {
-                // sealed and sent from its record (`send_inbox`)
-                Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.holder, resend.commit, resend.things, resend.edge_only),
-                Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
-                Delivery::First { commits, under } => {
-                    for c in &commits {
-                        self.first.insert(*c);
-                    }
-                    for t in under {
-                        for g in self.groups_holding(&t) {
-                            for c in &commits {
-                                self.place_chain(&g, c)?;
-                            }
+            let k = super::state::owed_key(&d);
+            self.deliver(d, k)?;
+            if let Some(k) = k {
+                self.settle_owed(k);
+            }
+        }
+        Ok(())
+    }
+
+    /// Carries out the deliveries owed at start (`take_done`).
+    pub(crate) fn take_owed(&mut self) -> Result<()> {
+        for (k, d) in std::mem::take(&mut self.state.owed) {
+            self.deliver(d, Some(k))?;
+            self.settle_owed(k);
+        }
+        Ok(())
+    }
+
+    /// Drops owed delivery `k`'s record unless a copy of it still waits for a rotation.
+    pub(crate) fn settle_owed(&mut self, k: [u8; 32]) {
+        if !self.deferred.iter().any(|x| x.3 == Some(k)) {
+            self.state.settle_owed(k);
+        }
+    }
+
+    /// Carries out one delivery, owed as `k` (copies waiting for a rotation keep it).
+    fn deliver(&mut self, d: Delivery, k: Option<[u8; 32]>) -> Result<()> {
+        match d {
+            // sealed and sent from its record (`send_inbox`)
+            Delivery::Inbox { resend, .. } => self.state.note_unsent(resend.holder, resend.commit, resend.things, resend.edge_only),
+            Delivery::Direct { to, commits } => self.state.add_direct(to, &commits),
+            Delivery::First { commits, under } => {
+                for c in &commits {
+                    self.first.insert(*c);
+                }
+                for t in under {
+                    for g in self.groups_holding(&t) {
+                        for c in &commits {
+                            self.place_chain(&g, c, k)?;
                         }
                     }
                 }
-                Delivery::Certificate { commits, under } => {
-                    for c in &commits {
-                        self.place_chain(&under, c)?;
-                    }
+            }
+            Delivery::Certificate { commits, under } => {
+                for c in &commits {
+                    self.place_chain(&under, c, k)?;
                 }
-                Delivery::Deposit { commit, under } => {
-                    for g in self.groups_holding(&under) {
-                        self.place_aspects(&g, &commit, |_| true)?;
-                    }
+            }
+            Delivery::Deposit { commit, under } => {
+                for g in self.groups_holding(&under) {
+                    self.place_aspects(&g, &commit, k, |_| true)?;
                 }
-                Delivery::Removal { commit, under } => {
-                    for g in self.groups_holding(&under) {
-                        self.place_aspects(&g, &commit, |a| !matches!(a.ak.as_str(), "secrets.0" | "keys.0"))?;
-                    }
+            }
+            Delivery::Removal { commit, under } => {
+                for g in self.groups_holding(&under) {
+                    self.place_aspects(&g, &commit, k, |a| !matches!(a.ak.as_str(), "secrets.0" | "keys.0"))?;
                 }
             }
         }
@@ -218,21 +252,21 @@ impl SyncEngine {
     /// things outside `g`'s closure as a certificate copy under `g`'s labels; deltas on things
     /// inside it go up as its closure bodies (a whole copy duplicated them, and carried
     /// `secrets.0` boxes the label's readers cannot open).
-    pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId) -> Result<()> {
+    pub(crate) fn place_chain(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>) -> Result<()> {
         let closure = self.engine.closure(g);
-        self.place_aspects(g, c, |a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
+        self.place_aspects(g, c, owed, |a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "keys.0" | "created.0") && !closure.contains(&a.tid))
     }
 
     /// Places the aspects of `c` that `keep` admits as a certificate copy under the labels of
     /// `g` (`Delivery::Deposit`: all of them; `Delivery::Removal`: all but `secrets.0` and
     /// `keys.0`); nothing when it admits none.
-    fn place_aspects(&mut self, g: &Tid, c: &CommitId, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Result<()> {
+    fn place_aspects(&mut self, g: &Tid, c: &CommitId, owed: Option<[u8; 32]>, keep: impl Fn(&osis_commit::AspectEntry) -> bool) -> Result<()> {
         let Some(h) = self.engine.header(c) else { return Ok(()) };
         let ais: BTreeSet<usize> = h.aspects.iter().enumerate().filter(|(_, a)| keep(a)).map(|(i, _)| i).collect();
         if ais.is_empty() {
             return Ok(());
         }
-        self.place_certificate_in(g, c, &ais)
+        self.place_certificate_in(g, c, &ais, owed)
     }
 
     /// Whether commit `c` is this node's own (made here, a held key actor's included).

@@ -545,3 +545,21 @@ fn removed_holder_invite_is_request_spec_sync_3() {
     assert_eq!(requests(&mut net, b), vec![x], "a removed holder's invite waits");
     assert!(!holds(&mut net, b, &x));
 }
+
+// spec/sync.md §3 (direct packages kept until the app takes them): a crash between pairing's
+// commit and carrying it out loses no direct package: the same commits wait for the new device
+// after the restart.
+#[test]
+fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
+    let (mut net, host, _, b, _, bob, _, _) = alice_and_bob();
+    let b2 = net.node(3, &[host]);
+    net.pair(b2, b);
+    let b2t = net.tid(b2);
+    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let want: Vec<osis_base::CommitId> = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Direct { to, commits } = d { (*to == b2t).then(|| commits.clone()) } else { None }).unwrap();
+    drop(done);
+    net.restart(b, 77);
+    net.run();
+    let got: Vec<osis_base::CommitId> = net.sync(b).take_direct_for(&b2t).iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().id()).collect();
+    assert_eq!(got, want, "the pairing's direct packages after the restart");
+}
