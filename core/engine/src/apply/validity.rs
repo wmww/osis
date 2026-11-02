@@ -23,7 +23,7 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
 
 pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     let e = ct::Edge::from_value(&typed(v, "edge")?).ok()?;
-    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm) };
+    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of) };
     edge.well_formed().then_some(edge)
 }
 
@@ -56,15 +56,6 @@ pub(crate) fn perm_ak(ak: &str) -> bool {
 fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
     let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) else { return Vec::new() };
     m.entries().map(|(d, _, k, f)| (d.clone(), k.cloned(), f.cloned())).collect()
-}
-
-/// The `keyset` a `roles.0` delta's edge write on `holder` carries (spec/crypto.md §4): the key
-/// of the `keys.0` commit of the holder actor its granter sealed to.
-pub(crate) fn edge_keyset(f: &Fragment, holder: &Tid) -> Option<ct::EdgeKey> {
-    entries(f).into_iter().find_map(|(_, k, x)| match (k, x) {
-        (Some(Value::Tid(m)), Some(x)) if m == *holder => x.read().as_ref().and_then(|v| typed(v, "edge")).and_then(|v| ct::Edge::from_value(&v).ok()).and_then(|e| e.keyset),
-        _ => None,
-    })
 }
 
 /// A `roles.0` entry as perm's adaptation reads it: dot, the holder its key names (`None`: a

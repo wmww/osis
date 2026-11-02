@@ -276,10 +276,12 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
-    // and the names its boxes carry (`keys::names_of`)
+    // and the names its boxes to the holders its edge writes put carry (`keys::names_of`: a
+    // grant's or raise's, which a later boxer of the holder must hold)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
-    let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies);
+    let put: BTreeSet<Tid> = tx.core.timelines.get(&a.tid).and_then(|tl| tl.role_commit(c)).map(|mc| mc.ops.iter().filter(|op| op.target == a.tid && op.edge.is_some()).map(|op| op.holder).collect()).unwrap_or_default();
+    let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies, &put);
     // what of the state holds copies of the dropped deltas' writes, shredded a piece at a time
     // while the part is still stored (none held: the state alone)
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
