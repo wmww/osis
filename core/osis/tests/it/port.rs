@@ -1,4 +1,4 @@
-//! The client port (notes/client-port.md, step (b)): a node serving its unix socket, a second
+//! The client port (notes/client-port.md): a node serving its unix socket, a second
 //! handle attached to it as Owner; raw protocol sessions for the nonce and tier rules.
 
 use crate::common::ak;
