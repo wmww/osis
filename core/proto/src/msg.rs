@@ -30,8 +30,10 @@ pub const MAX_STEP_BYTES: usize = 323;
 /// Request ids are below 2^32 (spec/wire.md §11.1).
 pub type Id = u32;
 
-/// Deepest array nesting of any v1 message (FetchReply).
-const MESSAGE_DEPTH: usize = 6;
+/// Deepest nesting of any v1 message: a sync message is at most 6 deep (FetchReply); a Call's
+/// args or a Reply's value hold values (64 deep, spec/data-model.md §5) inside at most 16 levels
+/// of call structure (a write batch: message, args, batch, op, path, step).
+const MESSAGE_DEPTH: usize = osis_base::format::MAX_VALUE_DEPTH + 16;
 /// CBOR data items in one message, counted before any is decoded (spec/wire.md §13). Resource
 /// bound: a decoded item costs about 100 bytes (`Value`), so a frame of one-byte items would
 /// otherwise cost about 2 GB; the densest message an engine sends (a reply of deletion or pending
@@ -182,6 +184,15 @@ pub enum Message {
     Subscribe { id: Id, labels: Vec<LabelId> },
     Unsubscribe { id: Id, labels: Vec<LabelId> },
     Push { label: LabelId, events: Vec<Event>, cursor: Cursor },
+    /// Client port (notes/client-port.md §2): an Owner session sends no key and no signature.
+    Auth { id: Id, client_pk: Option<[u8; 32]>, session: [u8; 16], sig: Option<Signature> },
+    /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.
+    Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
+    Reply { id: Id, outcome: crate::api::Outcome },
+    /// The request id names the subscription until its Unsub is answered or it lapsed.
+    Sub { id: Id, max_reply: u64, filter: Value },
+    Unsub { id: Id, sub: Id },
+    Notify { sub: Id, payload: crate::api::Payload },
 }
 
 /// A frame body that is not a valid message: its kind and request id when readable (else 0).
@@ -209,7 +220,7 @@ impl Rejected {
 
 /// Kinds that are requests (spec/wire.md §11.2: those with `->`).
 pub fn is_request_kind(kind: u64) -> bool {
-    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22)
+    matches!(kind, 2 | 4 | 7 | 8 | 10 | 12 | 14 | 15 | 17 | 19 | 21 | 22 | 24 | 25 | 27 | 28)
 }
 
 fn step_value(s: &Step) -> Value {
@@ -248,6 +259,12 @@ impl Message {
             Subscribe { .. } => 21,
             Unsubscribe { .. } => 22,
             Push { .. } => 23,
+            Auth { .. } => 24,
+            Call { .. } => 25,
+            Reply { .. } => 26,
+            Sub { .. } => 27,
+            Unsub { .. } => 28,
+            Notify { .. } => 29,
         }
     }
 
@@ -255,8 +272,8 @@ impl Message {
     pub fn id(&self) -> Id {
         use Message::*;
         match self {
-            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } => *id,
-            Push { .. } => 0,
+            Error { id, .. } | Ok { id } | Ping { id, .. } | Pong { id, .. } | Open { id, .. } | Opened { id, .. } | Step { id, .. } | Register { id, .. } | Path { id, .. } | PathReply { id, .. } | Upload { id, .. } | Status { id, .. } | Deposit { id, .. } | Budget { id, .. } | Delete { id, .. } | Sync { id, .. } | SyncReply { id, .. } | Reconcile { id, .. } | ReconcileReply { id, .. } | Fetch { id, .. } | FetchReply { id, .. } | Subscribe { id, .. } | Unsubscribe { id, .. } | Auth { id, .. } | Call { id, .. } | Reply { id, .. } | Sub { id, .. } | Unsub { id, .. } => *id,
+            Push { .. } | Notify { .. } => 0,
         }
     }
 
@@ -306,6 +323,12 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
+            M::Auth { client_pk, session, sig, .. } => vec![k, id, Value::opt(client_pk.as_ref().map(|p| Value::bytes(p))), Value::bytes(session), Value::opt(sig.as_ref().map(|s| Value::bytes(&s.0)))],
+            M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
+            M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
+            M::Sub { max_reply, filter, .. } => vec![k, id, Value::uint(*max_reply), filter.clone()],
+            M::Unsub { sub, .. } => vec![k, id, Value::uint(u64::from(*sub))],
+            M::Notify { sub, payload } => vec![k, id, Value::uint(u64::from(*sub)), payload.to_value()],
         };
         Value::List(items)
     }
@@ -338,9 +361,9 @@ impl Message {
 fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
-        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 => 3,
-        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 => 4,
-        7 | 23 => 5,
+        0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 => 3,
+        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 | 27 | 29 => 4,
+        7 | 23 | 24 | 25 => 5,
         12 => 6,
         15 | 16 => 7,
         _ => return Err(Error::UnknownKind(kind)),
@@ -348,8 +371,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     // Push has no reply (id 0); every request and reply has a real id; an Error answering a
     // broken frame may carry 0.
     match (kind, id) {
-        (23, 0) | (0, _) => {}
-        (23, _) => return Err(Error::Malformed("id of a message without reply")),
+        (23 | 29, 0) | (0, _) => {}
+        (23 | 29, _) => return Err(Error::Malformed("id of a message without reply")),
         (_, 0) => return Err(Error::Malformed("id 0")),
         _ => {}
     }
@@ -402,10 +425,38 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         21 => Message::Subscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
         22 => Message::Unsubscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
         23 => Message::Push { label: label(&mut f)?, events: events(f.list(1, usize::MAX, "events")?)?, cursor: cursor(f.next()?)? },
+        24 => Message::Auth {
+            id,
+            client_pk: f.opt()?.map(|v| dec::fixed(v, "client key")).transpose()?,
+            session: f.fixed()?,
+            sig: f.opt()?.map(|v| dec::fixed(v, "auth sig").map(Signature)).transpose()?,
+        },
+        25 => Message::Call { id, max_reply: max_reply(&mut f)?, method: f.uint()?, args: f.list(0, usize::MAX, "args")? },
+        26 => Message::Reply { id, outcome: crate::api::Outcome::from_value(f.next()?)? },
+        27 => Message::Sub { id, max_reply: max_reply(&mut f)?, filter: f.next()? },
+        28 => Message::Unsub { id, sub: sub_id(&mut f)? },
+        29 => Message::Notify { sub: sub_id(&mut f)?, payload: crate::api::Payload::from_value(f.next()?)? },
         _ => return Err(Error::UnknownKind(kind)),
     };
     f.end()?;
     Ok(msg)
+}
+
+/// A reply allowance: `SMALL_REPLY..=REPLY_BUDGET` (spec/wire.md §11.2).
+fn max_reply(f: &mut Fields) -> Result<u64, Error> {
+    let m = f.uint()?;
+    if m < crate::client::SMALL_REPLY as u64 || m > crate::serving::REPLY_BUDGET as u64 {
+        return Err(Error::Malformed("max_reply"));
+    }
+    Ok(m)
+}
+
+/// A subscription's id: a nonzero request id.
+fn sub_id(f: &mut Fields) -> Result<Id, Error> {
+    match f.uint()? {
+        0 => Err(Error::Malformed("sub id 0")),
+        n => Id::try_from(n).map_err(|_| Error::Malformed("sub id")),
+    }
 }
 
 fn label(f: &mut Fields) -> Result<LabelId, Error> {

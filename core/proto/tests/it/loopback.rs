@@ -77,7 +77,7 @@ impl Net {
                         self.host_out(j, so);
                     }
                 }
-                ServingOutput::Close | ServingOutput::PeerError(_) => {}
+                ServingOutput::Close | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
                 ServingOutput::StoreError(e) => panic!("{e}"),
             }
         }

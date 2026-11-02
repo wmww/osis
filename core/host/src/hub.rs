@@ -297,6 +297,8 @@ impl Hub {
                 }
                 ServingOutput::PeerError(e) => out.push(HubOutput::Diagnostic(format!("connection {id}: {e}"))),
                 ServingOutput::StoreError(e) => out.push(HubOutput::Diagnostic(e.to_string())),
+                // a host serves no client port (its sessions answer those kinds Error 11)
+                ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
             }
         }
     }

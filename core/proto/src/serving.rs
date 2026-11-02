@@ -68,6 +68,15 @@ pub enum ServingInput {
     /// delivers instantly (no push is held back); one that does reports it before input bytes,
     /// at ticks, and every `PUSH_POLL_MS` while `held`.
     Taken(u64),
+    /// The answer to a client-port request handed out as `ServingOutput::Request` (Auth, Call,
+    /// Sub): a Reply, or an Error with this code (Auth refused: 1). A reply above the request's
+    /// `max_reply` goes as `TooLarge`.
+    Reply { id: Id, reply: Result<crate::api::Outcome, Code> },
+    /// Notify pushes, sent in order (as many as the last `ServingOutput::Room` allowed); one for
+    /// a subscription no longer live is dropped, one above its `max_reply` goes as `Lapsed`.
+    Notify(Vec<(Id, crate::api::Payload)>),
+    /// The upper layer has Notifies to send: `ServingOutput::Room` when the push rule allows.
+    WantRoom,
 }
 
 /// A relay-only entry (spec/sync.md §5): accepted by stamp, pushed to the label's current
@@ -94,6 +103,11 @@ pub enum ServingOutput {
     /// The peer broke a protocol rule (diagnostic).
     PeerError(Error),
     StoreError(StoreError),
+    /// A client-port request (Auth, Call, Sub) to answer by `ServingInput::Reply`; an Unsub
+    /// (already answered: drop the subscription).
+    Request(Message),
+    /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
+    Room { budget: usize },
 }
 
 fn key_of_role(r: LabelRole) -> StepKey {
@@ -181,6 +195,18 @@ pub struct ServingSession {
     /// Subscribed labels whose pushes wait for room in the send queue (from their position in
     /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
     owed: VecDeque<LabelId>,
+    /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub)
+    /// and reply bound.
+    asked: BTreeMap<Id, (u64, usize)>,
+    /// Live subscriptions by id (reserved from their Sub until Unsub or a lapse) with their
+    /// `max_reply`.
+    api_subs: BTreeMap<Id, usize>,
+    /// An Auth was answered by a Reply.
+    authed: bool,
+    /// The upper layer waits for push room (`WantRoom`).
+    room_wanted: bool,
+    /// Client-port kinds are served (`with_port`); else they get Error 11 (a host).
+    port: bool,
 }
 
 /// The label's head keys, reloaded when the head changed (a store read, never the path); none
@@ -244,7 +270,30 @@ impl ServingSession {
             written: 0,
             taken: None,
             owed: VecDeque::new(),
+            asked: BTreeMap::new(),
+            api_subs: BTreeMap::new(),
+            authed: false,
+            room_wanted: false,
+            port: false,
         }
+    }
+
+    /// Serves the client-port kinds (a node's listeners; notes/client-port.md §5): they are
+    /// handed out as `ServingOutput::Request`.
+    pub fn with_port(mut self) -> ServingSession {
+        self.port = true;
+        self
+    }
+
+    /// Whether an Auth was answered by a Reply (notes/client-port.md §3): the session counts as
+    /// opened and is exempt from the idle timeout.
+    pub fn authed(&self) -> bool {
+        self.authed
+    }
+
+    /// Live subscriptions (client port).
+    pub fn subs(&self) -> usize {
+        self.api_subs.len()
     }
 
     /// The dialable key of the last co-reader proof that opened a label here (spec/sync.md §5).
@@ -265,7 +314,7 @@ impl ServingSession {
 
     /// Whether no label is opened on this connection (as `opened`).
     pub fn none_opened(&self) -> bool {
-        self.opened.is_empty()
+        self.opened.is_empty() && !self.authed
     }
 
     /// Whether `label` is opened and its open holds at the head: under the head's sync key, or
@@ -309,7 +358,16 @@ impl ServingSession {
 
     /// Whether pushes wait for the transport to take bytes (`ServingInput::Taken`).
     pub fn held(&self) -> bool {
-        !self.owed.is_empty()
+        !self.owed.is_empty() || self.room_wanted
+    }
+
+    /// Push room for Notifies: what fits `REPLY_BUDGET` behind the unwritten bytes, or all of it
+    /// when none are unwritten; none below `SMALL_REPLY`.
+    fn room(&self, out: &[ServingOutput]) -> Option<usize> {
+        match self.backlog(out) {
+            0 => Some(REPLY_BUDGET),
+            b => Some(REPLY_BUDGET.saturating_sub(b)).filter(|r| *r >= crate::client::SMALL_REPLY),
+        }
     }
 
     /// Queues `label`'s pushes behind those already held (`owed`).
@@ -428,6 +486,58 @@ impl ServingSession {
                         break;
                     }
                 }
+                if self.room_wanted
+                    && let Some(budget) = self.room(out)
+                {
+                    self.room_wanted = false;
+                    out.push(ServingOutput::Room { budget });
+                }
+            }
+            ServingInput::WantRoom => match self.room(out) {
+                Some(budget) if self.owed.is_empty() => out.push(ServingOutput::Room { budget }),
+                _ => self.room_wanted = true,
+            },
+            ServingInput::Reply { id, reply } => self.api_reply(id, reply, out),
+            ServingInput::Notify(notes) => {
+                for (sub, payload) in notes {
+                    let Some(max) = self.api_subs.get(&sub).copied() else { continue };
+                    let mut m = Message::Notify { sub, payload };
+                    let mut body = m.encode();
+                    if body.len() > max {
+                        m = Message::Notify { sub, payload: crate::api::Payload::Lapsed };
+                        body = m.encode();
+                    }
+                    if matches!(m, Message::Notify { payload: crate::api::Payload::Lapsed, .. }) {
+                        self.api_subs.remove(&sub);
+                    }
+                    out.push(ServingOutput::Send(encode_frame(&body)));
+                }
+            }
+        }
+    }
+
+    /// Answers a client-port request: the reply bounded by its `max_reply`; a refused or failed
+    /// Sub frees its id; a Reply to Auth authenticates the session.
+    fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<ServingOutput>) {
+        let Some((kind, max)) = self.asked.remove(&id) else { return };
+        let ok = matches!(reply, Ok(crate::api::Outcome::Ok { .. }));
+        if kind == 27 && !ok {
+            self.api_subs.remove(&id);
+        }
+        match reply {
+            Err(code) => send(out, Message::Error { id, code }),
+            Ok(outcome) => {
+                if kind == 24 && ok {
+                    self.authed = true;
+                }
+                let mut body = Message::Reply { id, outcome }.encode();
+                if body.len() > max {
+                    if kind == 27 {
+                        self.api_subs.remove(&id);
+                    }
+                    body = Message::Reply { id, outcome: crate::api::Outcome::too_large(max) }.encode();
+                }
+                out.push(ServingOutput::Send(encode_frame(&body)));
             }
         }
     }
@@ -490,6 +600,9 @@ impl ServingSession {
 
     fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
         use Message as M;
+        if matches!(msg, M::Auth { .. } | M::Call { .. } | M::Sub { .. } | M::Unsub { .. }) {
+            return Ok(self.api_request(msg, out));
+        }
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
@@ -570,6 +683,50 @@ impl ServingSession {
             // Replies and pushes: this side sends no requests.
             _ => return Ok(None),
         }))
+    }
+
+    /// A client-port request (spec/wire.md §11.2): handed out for the upper layer to answer,
+    /// except what the protocol answers itself: a Call or Sub before Auth (Error 1), a Sub
+    /// reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok).
+    fn api_request(&mut self, msg: Message, out: &mut Vec<ServingOutput>) -> Option<Message> {
+        use Message as M;
+        let id = msg.id();
+        if !self.port {
+            return Some(M::Error { id, code: Code::UNSUPPORTED });
+        }
+        if self.asked.contains_key(&id) {
+            return Some(M::Error { id, code: Code::MALFORMED });
+        }
+        match &msg {
+            M::Auth { .. } => {
+                self.asked.insert(id, (24, crate::client::SMALL_REPLY));
+            }
+            M::Call { max_reply, .. } | M::Sub { max_reply, .. } => {
+                let sub = matches!(msg, M::Sub { .. });
+                if !self.authed {
+                    return Some(M::Error { id, code: Code::REFUSED });
+                }
+                if sub && self.api_subs.contains_key(&id) {
+                    return Some(M::Error { id, code: Code::MALFORMED });
+                }
+                if sub && self.api_subs.len() >= crate::api::MAX_SUBS {
+                    return Some(M::Error { id, code: Code::RATE_LIMITED });
+                }
+                let max = usize::try_from(*max_reply).unwrap_or(usize::MAX);
+                if sub {
+                    self.api_subs.insert(id, max);
+                }
+                self.asked.insert(id, (msg.kind(), max));
+            }
+            M::Unsub { sub, .. } => {
+                self.api_subs.remove(sub);
+                out.push(ServingOutput::Request(msg));
+                return Some(M::Ok { id });
+            }
+            _ => return None,
+        }
+        out.push(ServingOutput::Request(msg));
+        None
     }
 
     fn open(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, proof: Proof) -> Result<Message, StoreError> {

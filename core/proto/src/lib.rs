@@ -4,6 +4,7 @@
 //! Layer 5 (notes/architecture.md). Notes: notes/sync.md (Protocol implementation).
 #![forbid(unsafe_code)]
 
+pub mod api;
 pub mod bundle;
 pub mod client;
 mod dec;
@@ -18,6 +19,7 @@ pub mod relay;
 pub mod serving;
 pub mod store;
 
+pub use api::{ApiCode, MAX_SUBS, Outcome, Payload};
 pub use client::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command, OpenKey, Request};
 pub use error::Error;
 pub use serving::{Relayed, ServingConfig, ServingSession, ServingInput, ServingOutput};

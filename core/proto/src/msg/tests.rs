@@ -32,7 +32,7 @@ fn round_trip_every_kind() {
     let ms = messages();
     let mut kinds: Vec<u64> = ms.iter().map(|(_, m)| m.kind()).collect();
     kinds.dedup();
-    // kind 24 (the old signal) is retired
+    // kinds 24-29 (client port): tests/it/port.rs
     assert_eq!(kinds, (0..=23).collect::<Vec<_>>());
     for (name, m) in ms {
         assert_eq!(Message::decode(&m.encode()), Ok(m.clone()), "{name}");
@@ -120,8 +120,8 @@ fn reconcile_rules() {
 fn heads() {
     let r = rejected(Value::List(vec![Value::Int(99), Value::Int(7)]));
     assert_eq!((r.id, r.code()), (7, Code::UNSUPPORTED));
-    // id 0 only on Error and Push; kind 24 is retired
-    assert_eq!(rejected(Value::List(vec![Value::Int(24), Value::Int(0)])).code(), Code::UNSUPPORTED);
+    // id 0 only on Error, Push and Notify; kind 30 is unknown
+    assert_eq!(rejected(Value::List(vec![Value::Int(30), Value::Int(0)])).code(), Code::UNSUPPORTED);
     assert_eq!(rejected(Value::List(vec![Value::Int(2), Value::Int(0), Value::Int(1)])).error, Error::Malformed("id 0"));
     assert_eq!(rejected(Value::List(vec![Value::Int(1), Value::Int(0)])).error, Error::Malformed("id 0"));
     assert!(Message::decode(&enc(Value::List(vec![Value::Int(0), Value::Int(0), Value::Int(2)]))).is_ok());
