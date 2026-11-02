@@ -600,8 +600,9 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`on_apply`). A header whose aspects
 /// are not resolved yet is judged once they are. The commit's other parts apply when they would
-/// have with the part held: a commit left with no part waits for its things like one with a held
-/// part (`apply::examine`).
+/// have with the part held, but a part past its expiry never decides that
+/// (`apply::waits_without_expired`): a commit left with no part waits for its things like one with
+/// a held part (`apply::examine`).
 pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     for ai in ais {
