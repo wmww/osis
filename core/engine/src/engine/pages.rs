@@ -1511,8 +1511,9 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
 /// memory, rewrites those pages shredded and drops the index rows of map entries left without
 /// their key and set elements without their value (an index entry derived from a dropped write,
 /// spec/commits.md §5).
-/// `Ok(false)`: it does not fit the pages (strip and write whole).
-pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool, merged: &mut bool) -> Result<bool> {
+/// `Ok(None)`: it does not fit the pages (strip and write whole); else `Fragment::strip_merging`'s
+/// answer.
+pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<Option<bool>> {
     let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
     for t in touches {
         for (p, dots) in &t.elems {
@@ -1526,12 +1527,12 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     // a map record whose key goes (spec/crdt.md §4.7) moves to its dot's key-erased record: a
     // paged collection below it changes path, so the caller strips the whole state
     if idx.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if id.key.is_some() && pred(id.dot.owner())))) {
-        return Ok(false);
+        return Ok(None);
     }
-    *merged |= f.strip_merging(pred);
+    let merged = f.strip_merging(pred);
     for t in touches {
         if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
-            return Ok(false);
+            return Ok(None);
         }
     }
     if let Some(kt) = txn.table(tid, ak, KEY_TABLE)? {
@@ -1542,7 +1543,7 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
             }
         }
     }
-    Ok(true)
+    Ok(Some(merged))
 }
 
 /// Drops the loaded pages of the paged state `f` (written already: the store holds them),
@@ -1842,7 +1843,7 @@ mod tests {
         let pred = move |d: &Dot| d.owner().src == a;
         let t = touch_of(&body, Some(&idx)).unwrap();
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred, &mut false).unwrap();
+        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap().is_some();
         assert!(!done, "a paged map under an erased key moves");
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         f.strip(&pred);
@@ -2262,7 +2263,7 @@ mod tests {
                         let t = touch.clone().unwrap();
                         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
                         let done = if k == 0 {
-                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred, &mut false).unwrap()
+                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap().is_some()
                         } else {
                             // a dropped body: the same content, pages rewritten shredded
                             write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::Yes).unwrap().is_some()
