@@ -102,7 +102,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `was.0` | tid (register) | the thing this one continues (spec/permissions.md §7) |
 | `node.0` | struct { software version } | on a node thing |
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
-| `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
+| `seen.0` | struct { ts: timestamp, stranded: bool, suspect: set<suspect> } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`; a group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies; `open`: of any label. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5). `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
 | `clients.0^` | map<client actor tid, struct { secret_hash, until }> | on a node thing: the thin clients it serves (spec/sync.md §10). `secret_hash`: BLAKE3 of the client's 32-byte bearer secret; `until`: when its sessions end. The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles. Never part of the node card |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
@@ -120,6 +120,7 @@ type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 by
 type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte host static key
 type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, author node, 32-byte commit ID) of a write
 type source = enum { 0 node(tid), 1 commit(blob) };             // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID
+type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };   // digest: 16 bytes (spec/permissions.md §4)
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
 type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie> };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch> };   // suite ID of the epoch (spec/crypto.md §4, §8); delete key: spec/crypto.md §7; supersedes: superseded epochs (spec/crypto.md §4)
@@ -154,7 +155,7 @@ aspect moved.0: tid;
 aspect was.0: tid;
 aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
-aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
+aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };    // ts: wall ms of the commit's ts
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
 aspect clients.0^: map<tid, client>;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };

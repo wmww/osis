@@ -497,6 +497,9 @@ pub struct SyncEngine {
     pub(crate) capped: BTreeSet<(HostKey, LabelId, osis_base::BlobId)>,
     /// Stranded heartbeats already answered by a re-seal.
     pub(crate) resealed: BTreeSet<osis_base::CommitId>,
+    /// Suspect entries of heartbeats already judged for repair (`repair_suspects`): (heartbeat
+    /// commit, thing, aspect). In memory: after a restart each is judged once more.
+    pub(crate) repaired: BTreeSet<(osis_base::CommitId, Tid, osis_base::Ak)>,
     /// Links whose finalization failed in this run (`finalize_links`): not tried again.
     pub(crate) links_failed: BTreeSet<Tid>,
     /// Tied edges to remove (`untie_unplaced`): what changed since they were last derived
@@ -639,6 +642,7 @@ impl SyncEngine {
             deposit_seen: BTreeMap::new(),
             capped: BTreeSet::new(),
             resealed: BTreeSet::new(),
+            repaired: BTreeSet::new(),
             links_failed: BTreeSet::new(),
             tied: deliver::TiedWork { all: true, ..Default::default() },
             synced: Synced::default(),

@@ -50,6 +50,15 @@ pub fn delta_hash(dedup: &Secret32, delta: &[u8]) -> [u8; 32] {
     *kdf(kdf::DELTA, dedup.expose(), delta).expose()
 }
 
+/// Keyed state digest of an aspect: the first 16 bytes of `kdf("state", dedup secret, AK || 0 ||
+/// state bytes)` (spec/permissions.md §4).
+pub fn state_digest(dedup: &Secret32, ak: &str, state: &[u8]) -> [u8; 16] {
+    let h = kdf(kdf::STATE, dedup.expose(), &[ak.as_bytes(), &[0], state].concat());
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&h.expose()[..16]);
+    out
+}
+
 /// Link content hash of a chunk, page or link page: `kdf("link", d, bytes)` (spec/wire.md §6).
 pub fn link_hash(dedup: &Secret32, bytes: &[u8]) -> [u8; 32] {
     *kdf(kdf::LINK, dedup.expose(), bytes).expose()

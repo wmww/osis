@@ -58,6 +58,8 @@ pub const WRAP: &str = "wrap";
 /// Keyed content hashes (spec/crypto.md §6).
 pub const DELTA: &str = "delta";
 pub const LINK: &str = "link";
+/// A suspect aspect's state digest (spec/permissions.md §4).
+pub const STATE: &str = "state";
 pub const LINK_TREE: &str = "link tree";
 /// Delete keys, their blinding factor and blinded signing nonce (spec/crypto.md §7).
 pub const DELETE_KEY: &str = "delete key";

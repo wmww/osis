@@ -20,7 +20,7 @@ use osis_base::testenv::{caught, par_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
-use osis_node::engine::{CommitDigest, IndexDigest, IndexField};
+use osis_node::engine::IndexDigest;
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
 use osis_schema::{Bound, Codec, PurgeBy, Retention};
@@ -939,7 +939,9 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
 fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
     let (mine, _) = facts_of(&facts_text(&mut p.engine));
     let (theirs, inv) = facts_of(&o.facts);
-    let flipped: BTreeSet<(String, String)> = theirs.keys().filter(|k| mine.get(*k).is_some_and(|m| flip(&theirs, &mine, &inv, k) && m.held != theirs[*k].held)).map(|k| (k.1.clone(), k.2.clone())).collect();
+    let mut flipped: BTreeSet<(String, String)> = theirs.keys().filter(|k| mine.get(*k).is_some_and(|m| flip(&theirs, &mine, &inv, k) && m.held != theirs[*k].held)).map(|k| (k.1.clone(), k.2.clone())).collect();
+    // a part held pending at its expiry counts as never received here (spec/commits.md §5)
+    flipped.extend(expired_pending(&mut p.engine));
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
     ids.sort();
@@ -1022,6 +1024,9 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
 struct Judged {
     index: Option<IndexDigest>,
     parts: Vec<(&'static str, String)>,
+    /// Aspects (as `facts_text` prints them) the node flags suspect for a part it held pending
+    /// at its expiry (counts as never received, spec/commits.md §5): not compared.
+    expired_pending: BTreeSet<(String, String)>,
 }
 
 impl Judged {
@@ -1052,6 +1057,12 @@ fn plain_state(state: &str) -> String {
     out
 }
 
+/// The aspects (as `facts_text` prints them) node `e` flags suspect for a part it held pending
+/// at its expiry.
+fn expired_pending(e: &mut osis_node::Engine) -> BTreeSet<(String, String)> {
+    e.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
+}
+
 /// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
 /// aspect, rosters, pending set, timelines, body facts. Deaths are the node's own (`dating`).
 fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
@@ -1076,7 +1087,8 @@ fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
     let scratch = e.perm_digest(true);
     let facts = facts_text(e);
     let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)];
-    Judged { index: None, parts }
+    let expired_pending = expired_pending(e);
+    Judged { index: None, parts, expired_pending }
 }
 
 /// The persisted index as a day after `played.now` (every keep-at-most bound past: which bodies
@@ -1181,41 +1193,54 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
     w.held != g.held && w.at_most && (own || killer)
 }
 
+/// The commits with a body held at one node and dropped at the other where that is a drop
+/// before a validity flip (`flip`), as `facts_text` prints their IDs: a body dropped for its keep
+/// bounds counts as never received (spec/commits.md §5), so the two nodes hold the same bodies
+/// once each is given these again (`alike_exchanged`).
+fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
+    let ((wf, inv), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
+    if wf.keys().ne(gf.keys()) {
+        return BTreeSet::new();
+    }
+    wf.keys().filter(|k| flip(&wf, &gf, &inv, k)).map(|k| k.0.clone()).collect()
+}
+
 /// Whether two nodes holding the same commits judged alike (`None`), else the first difference.
 /// Values, validity, rosters, pending sets, timelines and the index a day later are compared
-/// exactly; held bodies too, except what spec/commits.md §5 allows: a body under a relative
-/// keep at most (deaths are dated per node; `dating` checks them, and that a dead body under
-/// at most 0 with no live write is dropped), and the drop before a
-/// validity flip: a body dropped at one node and held at the other where a write of its aspect
-/// is invalid (a drop made before its killer, or its own write, turned invalid stays): its
-/// commit line's dropped parts, and that aspect's reads and state (where the kept body's write
-/// is back). Also a drop, then a validity flip and back (`flips`: one of the two orders judged a
-/// body of the aspect valid and invalid on the way, `flipped`): the states may then differ in the creation stamps of map entries whose body (keep at most) the
+/// exactly; held bodies too, except under a relative keep at most (deaths are dated per node;
+/// `dating` checks them, and that a dead body under at most 0 with no live write is dropped).
+/// A body dropped before a validity flip is no exception: callers give both nodes such bodies
+/// again first (`alike_exchanged`). Also a drop, then a validity flip and back (`flips`: one of
+/// the two orders judged a body of the aspect valid and invalid on the way, `flipped`): the
+/// states may then differ in the creation stamps of map entries whose body (keep at most) the
 /// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
 /// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
 fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
-    let ((wf, inv), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
+    // a part held pending at its expiry counts as never received at that node (spec/commits.md
+    // §5): what such an aspect reads, its bodies and its commits' index lines, may differ
+    // (repaired by a writer's snapshot, spec/sync.md §7)
+    let expired: BTreeSet<(String, String)> = want.expired_pending.union(&got.expired_pending).cloned().collect();
+    let ((mut wf, _), (mut gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
+    let all: BTreeSet<BodyKey> = wf.keys().chain(gf.keys()).cloned().collect();
+    wf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
+    gf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     if wf.keys().ne(gf.keys()) {
-        return first_diff_parts(&[("facts", want.part("facts").into())], &[("facts", got.part("facts").into())]);
+        let k = wf.keys().find(|k| !gf.contains_key(*k)).or_else(|| gf.keys().find(|k| !wf.contains_key(*k)));
+        return Some(format!("body {k:?} known at one node only"));
     }
-    let flip = |k: &BodyKey| flip(&wf, &gf, &inv, k);
-    let flipped: BTreeSet<(String, String)> = wf.keys().filter(|k| flip(k)).map(|k| (k.1.clone(), k.2.clone())).collect();
-    if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx && !flip(k)) {
+    let on_expired = |id: &str| all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())));
+    if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx) {
         return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
     }
-    // commit `c` has a body held at one node only, and each such is a drop before a flip
-    let drop_flip = |c: &CommitId| {
-        let id = format!("{c:?}");
-        let changed: Vec<&BodyKey> = wf.keys().filter(|k| k.0 == id && wf[*k].held != gf[*k].held).collect();
-        !changed.is_empty() && changed.iter().all(|k| flip(k))
-    };
+    // a commit with a part dropped at its expiry while pending may apply at another time at
+    // each node, so the index is compared only where no part was (`expired` empty)
     match (&want.index, &got.index) {
-        (Some(w), Some(g)) => {
-            if let Some(f) = w.diff(g).into_iter().find(|f| !index_exempt(w, g, f, &drop_flip)) {
+        (Some(w), Some(g)) if expired.is_empty() => {
+            if let Some(f) = w.diff(g).into_iter().next() {
                 return Some(format!("index {f:?}:\n  want {}\n  got  {}", w.show(&f).unwrap_or("<none>".into()), g.show(&f).unwrap_or("<none>".into())));
             }
         }
-        (None, None) => {}
+        (Some(_), Some(_)) | (None, None) => {}
         _ => return Some("index judged at one node only".into()),
     }
     for ((name, x), (_, y)) in want.parts.iter().zip(&got.parts) {
@@ -1223,6 +1248,13 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
             continue;
         }
         let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
+        if *name == "pending" {
+            let rest = |ls: &[&str]| -> Vec<String> { ls.iter().filter(|l| !on_expired(l.split(' ').next().unwrap_or(""))).map(|l| l.to_string()).collect() };
+            if rest(&xl) != rest(&yl) {
+                return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
+            }
+            continue;
+        }
         if *name == "reads" || *name == "states" {
             // keyed by thing and aspect: one may lack an aspect the other shows
             let keyed = |ls: &[&str]| -> BTreeMap<(String, String), String> {
@@ -1240,7 +1272,7 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
                 *name == "states" && xs == ys && xd.iter().filter(|d| !yd.contains(d)).all(|d| dropped(d, &gf)) && yd.iter().filter(|d| !xd.contains(d)).all(|d| dropped(d, &wf)) && flips(&k.0, &k.1)
             };
             for k in a.keys().chain(b.keys()) {
-                if a.get(k) != b.get(k) && !flipped.contains(k) && !stamps_only(k) {
+                if a.get(k) != b.get(k) && !stamps_only(k) && !expired.contains(k) {
                     return Some(format!("{name} on {k:?}:\n  want {:?}\n  got  {:?}", a.get(k), b.get(k)));
                 }
             }
@@ -1251,25 +1283,34 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
     None
 }
 
-/// The index differences `alike` tolerates, by name (spec/commits.md §5); `drop_flip(c)`: commit
-/// `c` has a body held at one node only, each such a drop before a validity flip.
-fn index_exempt(w: &IndexDigest, g: &IndexDigest, f: &IndexField, drop_flip: &dyn Fn(&CommitId) -> bool) -> bool {
-    // a commit differing in its dropped parts and what dropped snapshots keep (`gives`) alone
-    let dropped_parts = |c: &CommitId| {
-        let bare = |x: &CommitDigest| CommitDigest { dropped: Default::default(), gives: Default::default(), ..x.clone() };
-        matches!((w.commits.get(c), g.commits.get(c)), (Some(x), Some(y)) if bare(x) == bare(y))
-    };
-    // a snapshot dropped at one node only leaves the snapshot indexes there
-    fn one_side<V>(a: &BTreeMap<CommitId, V>, b: &BTreeMap<CommitId, V>, c: &CommitId) -> bool {
-        a.contains_key(c) != b.contains_key(c)
+/// The packs of the commits `ids` (as `facts_text` prints them).
+fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
+    (0..played.packs.len()).filter(|&i| ids.contains(&format!("{:?}", played.packs[i].id))).collect()
+}
+
+/// `alike` of the judgements `want` (a node given `want_order`) and `got` (one given `got_order`,
+/// split by `rng` as `deliver_split`), after both nodes are given once more the commits of
+/// every body one dropped before a validity flip and the other holds (`drop_flips`): a copy that
+/// arrives again joins (spec/commits.md §5), so they then hold the same bodies and judge alike
+/// with no exception for the drop.
+fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], rng: Option<Rng>, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    let apart = drop_flips(want, got);
+    if apart.is_empty() {
+        return alike(want, got, flips);
     }
-    match f {
-        IndexField::Commit(c) => dropped_parts(c) && drop_flip(c),
-        IndexField::Snapshots(c) => one_side(&w.snapshots, &g.snapshots, c) && drop_flip(c),
-        IndexField::DroppedSnapshots(c) => one_side(&w.dropped_snapshots, &g.dropped_snapshots, c) && drop_flip(c),
-        IndexField::Carried(c) => one_side(&w.carried, &g.carried, c) && drop_flip(c),
-        IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
+    let again = packs_of(played, &apart);
+    let mut rng = rng;
+    let mut w = deliver_with(played, want_order, None, &mut |_| {});
+    let mut g = deliver_with(played, got_order, rng.as_mut(), &mut |_| {});
+    for p in [&mut w, &mut g] {
+        for &i in &again {
+            let pk = &played.packs[i];
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        p.engine.reexamine().unwrap();
     }
+    let (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
+    alike(&wj, &gj, flips).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"))
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -1661,7 +1702,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
                 let flips = |t: &str, a: &str| flipped(played, &(0..n).collect::<Vec<_>>(), None, t, a) || flipped(played, &order, None, t, a);
-                if let Some(d) = alike(f, &judged(&mut p, played), &flips) {
+                let whole: Vec<usize> = (0..n).collect();
+                if let Some(d) = alike_exchanged(played, f, &whole, &judged(&mut p, played), &order, None, &flips) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
@@ -1717,7 +1759,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 let copy = rng.clone();
                 let mut p = deliver_split(played, order, rng);
                 let flips = |t: &str, a: &str| flipped(played, &orders[0], None, t, a) || flipped(played, order, Some(copy.clone()), t, a);
-                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, played), &flips)) {
+                return match dating(&mut p, &o, played.now).or_else(|| alike_exchanged(played, &want, &orders[0], &judged(&mut p, played), order, Some(copy.clone()), &flips)) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
@@ -1733,7 +1775,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
             got.index = Some(index_later(&mut p, played));
-            match alike(&want, &got, &|t, a| flipped(played, &orders[0], None, t, a) || flipped(played, order, None, t, a)) {
+            match alike_exchanged(played, &want, &orders[0], &got, order, None, &|t, a| flipped(played, &orders[0], None, t, a) || flipped(played, order, None, t, a)) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
             }
@@ -2551,13 +2593,13 @@ fn invalid_snapshot_owner_late_seed_1042() {
     check(1042, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
 }
 
-// spec/commits.md §5 (a keep-at-most drop is final): histories the harness found with holders
-// writing keep-at-most ops (shrunk), where a body is dropped at one node and held at another:
-// seeds 1053, 1024 (its killer turned invalid), 1085, 1200 (its own write turned invalid, the op
-// 17 bound passed). They pass `alike`, though the judged texts differ; the same held-or-dropped
-// difference on an aspect with no invalid write fails it.
+// spec/commits.md §5 (a body dropped for its keep bounds counts as never received: a copy that
+// arrives again joins): histories the harness found with holders writing keep-at-most ops
+// (shrunk), where a body is dropped at one node and held at another: seeds 1053, 1024 (its
+// killer turned invalid), 1085, 1200 (its own write turned invalid, the op 17 bound passed).
+// Given those bodies again, both nodes judge alike with no exception for the drop.
 #[test]
-fn drop_before_flip_tolerated_spec_commits_5() {
+fn drop_before_flip_joins_again_spec_commits_5() {
     use Step::*;
     let flips = vec![
         (1053, vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }]),
@@ -2568,28 +2610,35 @@ fn drop_before_flip_tolerated_spec_commits_5() {
     for (seed, h) in &flips {
         check(*seed, h, LARGE).unwrap_or_else(|e| panic!("seed {seed}: {e}"));
     }
-    // seed 1053 as made against reversed: they differ, only by the tolerated drop
-    let (seed, h) = &flips[0];
-    let played = play(*seed, h);
+}
+
+// The owner's example (notes/convergence-study.md §1 hole 1), seed 1053: C writes a keep-at-most-0
+// register, B's later write kills it, then A's demotion of B (its frontier not covering that
+// write) makes B's write invalid. As made, a node drops C's body when B's write lands and then
+// un-merges B's write: the register reads empty. In reverse, B's write is invalid on arrival
+// and C's value stays. Given C's commit again, the first node joins it (it counts as never
+// received) and both read C's value.
+#[test]
+fn keep_at_most_drop_joins_again_after_flip_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }];
+    let played = play(1053, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
-    let want = judged(&mut deliver(&played, &made), &played);
-    let got = judged(&mut deliver(&played, &made.iter().rev().copied().collect::<Vec<_>>()), &played);
-    assert!(first_diff(&want, &got).is_some(), "the orders differ");
-    assert_eq!(alike(&want, &got, &|_, _| false), None);
-    // with every write judged valid, the same difference is a failure
-    // with every write judged valid, or the invalid ones stamped before every body (none can
-    // have killed it), the same difference is a failure
-    let edit = |j: &Judged, f: &dyn Fn(Vec<&str>) -> Option<String>| -> Judged { Judged { index: j.index.clone(), parts: j.parts.iter().map(|(n, t)| (*n, if *n == "facts" { t.lines().filter_map(|l| f(l.split('|').collect())).collect::<Vec<_>>().join("\n") } else { t.clone() })).collect() } };
-    let all_valid = |f: Vec<&str>| (f[0] != "inv").then(|| format!("{}|true|{}", f[..5].join("|"), f[6..].join("|")));
-    assert!(alike(&edit(&want, &all_valid), &edit(&got, &all_valid), &|_, _| false).is_some(), "a drop difference with no invalid write passed");
-    let early = |mut f: Vec<&str>| {
-        if f[0] == "inv" {
-            f[4] = "Ts(0)";
-        }
-        Some(f.join("|"))
-    };
-    assert!(edit(&want, &early).part("facts").contains("inv|"), "an invalid write");
-    assert!(alike(&edit(&want, &early), &edit(&got, &early), &|_, _| false).is_some(), "a drop difference with only earlier invalid writes passed");
+    let rev: Vec<usize> = made.iter().rev().copied().collect();
+    let (want, got) = (judged(&mut deliver(&played, &made), &played), judged(&mut deliver(&played, &rev), &played));
+    assert!(alike(&want, &got, &|_, _| false).is_some(), "the orders differ until the body is given again");
+    let apart = drop_flips(&want, &got);
+    assert_eq!(apart.len(), 1, "one body dropped before the flip: {apart:?}");
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
+    // the node that dropped it holds it again once a copy arrives
+    let mut p = deliver(&played, &made);
+    let again = packs_of(&played, &apart);
+    let c = played.packs[again[0]].id;
+    let a = p.engine.header(&c).unwrap().aspects[0].clone();
+    assert!(!p.engine.body_not_dropped(&c, &a.tid, &a.ak), "dropped as made");
+    let pk = &played.packs[again[0]];
+    p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert!(p.engine.body_not_dropped(&c, &a.tid, &a.ak), "held again: its write is live");
 }
 
 // spec/commits.md §5 (under at most 0 the kill that leaves a body no live write drops it in that
@@ -2664,8 +2713,9 @@ fn next_perm(v: &[usize]) -> Option<Vec<usize>> {
     Some(v)
 }
 
-// spec/commits.md §5 (a drop is final: nodes holding the same commits may differ in whether a
-// dropped body's writes are in the state), order seeds 47289, 583188 and 845143. B's entry in a
+// spec/commits.md §5 (a body dropped at both nodes, no copy left to join again: their states
+// may differ in a dropped body's creation stamp, reads alike), order seeds 47289, 583188 and
+// 845143. B's entry in a
 // keep-at-most-0 map (its body dropped once B's own later write inside it killed the value, the
 // bound passed); B's later write is valid with every commit held, invalid before the re-grant:
 // where it arrived valid, then turned invalid and valid again, the un-merge left the entry no
@@ -2778,13 +2828,13 @@ fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
     }
 }
 
-// spec/commits.md §5 (a drop is final; a snapshot dropped other than as covered keeps its
-// frontiers), order seed 3401073: B's write kills A's keep-at-most-0 write (and so A's snapshot
-// of it) where it arrives before B's demotion, which makes it invalid; the snapshot dropped there
-// keeps its frontiers (`gives`) and leaves the snapshot indexes, all part of the tolerated drop
-// (was a failure: only the dropped parts were excused on its commit line).
+// spec/commits.md §5 (a body dropped for its keep bounds counts as never received; a snapshot
+// dropped other than as covered keeps its frontiers), order seed 3401073: B's write kills A's
+// keep-at-most-0 write (and so A's snapshot of it) where it arrives before B's demotion, which
+// makes it invalid; the snapshot dropped there keeps its frontiers (`gives`) and leaves the
+// snapshot indexes until a copy arrives again and joins.
 #[test]
-fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
+fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     use Step::*;
     let h = vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
     let played = play(3401073, &h);
@@ -2794,7 +2844,7 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let got = judged(&mut deliver(&played, &order), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gone.0")).unwrap().clone();
     assert!(snap(&want).gives.is_empty() && !snap(&got).gives.is_empty(), "dropped in one order only, keeping its frontiers");
-    assert_eq!(alike(&want, &got, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
     let h2 = vec![Roster { by: 0, t: 2 }, Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Roster { by: 0, t: 0 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
@@ -2803,17 +2853,17 @@ fn snapshot_dropped_before_flip_keeps_frontiers_tolerated_spec_commits_5() {
     let order = [3, 8, 13, 30, 20, 4, 27, 0, 11, 2, 28, 26, 14, 16, 18, 10, 5, 6, 21, 1, 17, 7, 23];
     let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
     assert_ne!(want.index.as_ref().unwrap().carried, got.index.as_ref().unwrap().carried, "the carried index differs");
-    assert_eq!(alike(&want, &got, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &order, None, &|_, _| false), None);
 }
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
-// its `ts`; a drop is final), order seed 21187: A's keep-at-most-0 snapshot carries B's entry,
-// which B's undo (stamped before the snapshot, unseen by A) killed; A's demotion of B then makes
-// the undo invalid. Held after the undo, the snapshot dropped (keeping its frontiers); with the
-// demotion first, it stays. A tolerated drop before a flip, though the invalid killer is stamped
-// before the snapshot (was a failure: only killers stamped at or after a body were counted).
+// its `ts`; a copy of a body dropped for its keep bounds joins again), order seed 21187: A's
+// keep-at-most-0 snapshot carries B's entry, which B's undo (stamped before the snapshot, unseen
+// by A) killed; A's demotion of B then makes the undo invalid. Held after the undo, the snapshot
+// dropped (keeping its frontiers); with the demotion first, it stays. A drop before a flip,
+// though the invalid killer is stamped before the snapshot (`flip` counts such killers).
 #[test]
-fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
+fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     use Step::*;
     let h = vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }];
     let played = play(21187, &h);
@@ -2823,7 +2873,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_tolerated_spec_commits_5() {
     let got = judged(&mut deliver(&played, &rev), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gonemap.0")).unwrap().clone();
     assert!(!snap(&want).dropped.is_empty() && !snap(&want).gives.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, keeping its frontiers");
-    assert_eq!(alike(&want, &got, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
     check(21187, &h, LARGE).unwrap();
 }
 
@@ -2838,11 +2888,17 @@ fn expired_residue_survives_unmerge_spec_crdt_4_6() {
     let h = vec![Write { by: 1, t: 7, op: 12, k: 2, v: 5 }, Write { by: 1, t: 5, op: 0, k: 2, v: 4 }, New { by: 0, parent: 3, write: false }, Write { by: 0, t: 0, op: 12, k: 2, v: 1 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Undo { by: 1, back: 0 }, Undo { by: 0, back: 1 }, Advance { who: None, ms: 7126221 }, Undo { by: 1, back: 2 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }];
     let played = play(24111, &h);
     let made: Vec<usize> = (0..played.packs.len()).collect();
-    let rev: Vec<usize> = made.iter().rev().copied().collect();
+    // the setup first: in full reverse the expiring commit pends on its thing's creation past T
+    // and counts as never received there (flagged suspect)
+    let rev: Vec<usize> = (0..played.base).chain((played.base..played.packs.len()).rev()).collect();
     for o in [made, rev] {
         let mut p = deliver(&played, &o);
         assert_eq!(p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap(), None, "order {o:?}");
     }
+    let all: Vec<usize> = (0..played.packs.len()).rev().collect();
+    let mut p = deliver(&played, &all);
+    let suspect = p.engine.suspects().unwrap().iter().any(|x| x.0 == played.things[0] && x.1.as_str() == "t:brief.0");
+    assert!(suspect || p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap().is_none(), "differs unflagged");
     check(24111, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
 }
 

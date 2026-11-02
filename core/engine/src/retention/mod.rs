@@ -28,6 +28,7 @@ mod deaths;
 mod oracle;
 pub(crate) mod forget;
 pub(crate) mod memory;
+pub mod suspect;
 
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
@@ -376,6 +377,8 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     let any = !lost.is_empty();
     if any {
         tx.core.forget_live(tid, ak);
+        // until each comes back, this node may read less than one that kept it
+        suspect::raise(tx, tid, ak, suspect::Why::Uncovered)?;
     }
     for (c, ai) in lost {
         // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
@@ -419,12 +422,17 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
 }
 
 /// Makes dropped part `ai` of `c` missing, as at a node that never received it: what its body
-/// judged goes too (`Dropped::role`; the header's one-delta rule for `secrets.0` stays,
+/// judged or gave goes too (`Dropped::role`; the header's one-delta rule for `secrets.0` stays,
 /// `validity::note_required`). Its meta after.
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    m.dropped.remove(&ai);
+    // a snapshot dropped for its keep bounds gives what it gave no more (`Dropped::gives`)
+    if m.dropped.remove(&ai).is_some_and(|d| d.gives.is_some())
+        && let Some(a) = m.view.aspects.get(ai)
+    {
+        tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);
+    }
     m.missing.insert(ai);
     tx.core.ix.rotation_role.remove(&(*c, ai));
     let several = m.header.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0" && a.hashes.len() != 1);
@@ -440,15 +448,23 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
     Ok(Some(m))
 }
 
-/// Whether a late copy of dropped part `ai` of `c` joins (spec/crdt.md §4.7: a copy arriving
-/// after T or the purge is stripped and joined): its delta is held value-less and none of its
-/// writes were kept, as when it was missing at expiry or purge (no residue). Reopened
-/// (`reopen_late`), the copy joins and `on_late` drops it again, keeping its residue.
+/// Whether a late copy of dropped part `ai` of `c` joins. A body dropped for its keep bounds (or
+/// as its writes died, or for carrying purged values) counts as never received (spec/commits.md
+/// §5): its copy joins and is judged again (`on_late`: dropped at once if dead past its bound,
+/// expired or purged; held if a validity flip made its write live again), so nodes holding the
+/// same bodies read alike. One held value-less (spec/crdt.md §4.7: a copy arriving after T or
+/// the purge is stripped and joined) joins only if none of its writes were kept, as when it was
+/// missing at expiry or purge (no residue); `on_late` drops it again, keeping its residue. One
+/// dropped as covered joins only once no cover carries it (`uncover` makes it missing). A memory
+/// part vanished whole and stays gone (`memory::forget_if_spent` forgets a spent commit).
 pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     let (Some(d), Some(a)) = (m.dropped.get(&ai), m.header.aspects.get(ai)) else { return Ok(false) };
-    if d.as_cover || !valueless(tx.core, c, ai) {
+    if d.as_cover || m.view.memory {
         return Ok(false);
+    }
+    if !valueless(tx.core, c, ai) {
+        return Ok(true);
     }
     let key = records::residue_key(&a.tid, &a.ak, c, ai);
     Ok(tx.txn.get_local(&key)?.is_none())
@@ -534,6 +550,10 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
 /// Holds delta `ai` of `c` value-less (`make_valueless`) and drops its body: at expiry, or
 /// purged. A memory delta vanishes whole instead (`memory::vanish`).
 fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    strip_pending(tx, c, ai)?;
+    if !tx.core.ix.commits.contains_key(c) {
+        return Ok(());
+    }
     if tx.is_memory_commit(c) {
         changed.extend(memory::vanish(tx, c, ai)?);
         // what is left of it may be superseded whole now (spec/sync.md §9); its caller forgets it
@@ -544,6 +564,62 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
         changed.insert(k);
     }
     drop_part(tx, c, ai)
+}
+
+/// Parts of commit `id` held pending (stored as `blob`, header `h`) whose expiry has passed count
+/// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
+/// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
+/// here, where a node that applied them before T keeps them). The others get a timer doing the
+/// same at T (`expire`). A header whose aspects are not resolved yet is timed once they are.
+pub(crate) fn pending_expiry(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
+    let now = tx.now().0;
+    let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
+    for ai in ais {
+        let Some(a) = h.aspects.get(ai) else { continue };
+        let Some(t) = a.expires else { continue };
+        if t <= now {
+            blob.parts.retain(|p| p.ai != ai);
+            strip_pending(tx, id, ai)?;
+            flag_expired(tx, h)?;
+        } else {
+            tx.put_timer(t, id, ai, T_EXPIRY)?;
+        }
+    }
+    Ok(())
+}
+
+/// Flags every aspect of a commit a part of which went at its expiry while pending: that part's
+/// non-value writes never join here, and its other parts may apply at another time than at a
+/// node that applied the commit before T.
+fn flag_expired(tx: &mut Tx<'_>, h: &Header) -> Result<()> {
+    for a in &h.aspects {
+        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
+    }
+    Ok(())
+}
+
+/// Part `ai` of the stored pending copy of `c`, if any, goes at its expiry (`pending_expiry`).
+fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    if !tx.core.ix.pending.contains_key(c) {
+        return Ok(());
+    }
+    let Some((osis_store::PendingKind::Pending, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
+    let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
+    let n = blob.parts.len();
+    blob.parts.retain(|p| p.ai != ai);
+    if blob.parts.len() == n {
+        return Ok(());
+    }
+    tx.core.touch();
+    tx.txn.remove_pending(c, Shred::Yes)?;
+    tx.txn.put_pending(c, osis_store::PendingKind::Pending, &blob.encode())?;
+    // examined again: what it waits for may have changed
+    tx.core.waits.pended(c);
+    match tx.core.ix.commits.get(c).map(|m| m.header.clone()) {
+        Some(h) => flag_expired(tx, &h)?,
+        None => flag_expired(tx, &blob.header)?,
+    }
+    Ok(())
 }
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
@@ -779,6 +855,13 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
     for ai in ais.iter().copied() {
         if valueless(tx.core, id, ai) && tx.core.ix.commits.get(id).is_some_and(|m| !m.dropped.contains_key(&ai)) {
             expire(tx, id, ai, &mut purged)?;
+        }
+    }
+    // a body dropped for its keep bounds and joined again: its bound judged again (deaths the
+    // join met are noted by it, `note_deaths`; a bound passed with a live write drops it too)
+    for ai in ais.iter().copied() {
+        if tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai)) {
+            check_at_most(tx, id, ai)?;
         }
     }
     purged_changed(tx, purged, changed);

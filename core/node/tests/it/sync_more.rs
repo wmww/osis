@@ -1467,3 +1467,45 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
     assert!(net.hosts[host].hub.connections() >= 3);
     assert_eq!(net.sent_kinds.get(&17).copied().unwrap_or(0), reconciles, "no reconciliation");
 }
+
+// spec/permissions.md §4 (suspect), spec/sync.md §7 (repair), spec/commits.md §5 (a part pending
+// at its expiry counts as never received): reader c, offline, gets a's expiring write of a new
+// thing before the thing's creation record; T passes while it pends, so c drops the part and
+// flags the aspect. Writer b holds the write's value-less residue (it applied it before T), so
+// its digest differs from the one c's heartbeat reports: b re-snapshots the aspect, c joins
+// the snapshot, its flag clears and both hold the same state.
+#[test]
+fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    net.run();
+    net.set_online(c, false);
+    let t = net.item(a, g, g, "v1");
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("v2")).unwrap();
+    m.expires(t, &REG, osis_base::WallMs(net.now() + 60_000)).unwrap();
+    let w = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let pk = net.engine(a).package(&w).unwrap().unwrap();
+    assert!(matches!(net.engine(c).ingest(&pk.bytes, pk.blobs.clone()).unwrap(), osis_node::Ingested::Pending(..)));
+    net.advance(120_000);
+    // offline, its own timers still fire
+    net.engine(c).tick().unwrap();
+    let reg = Ak::new(REG.ak()).unwrap();
+    assert!(net.engine(c).suspects().unwrap().iter().any(|x| x.0 == t && x.1 == reg), "flagged at T");
+    net.set_online(c, true);
+    net.run();
+    assert_ne!(net.engine(b).state_digest(&t, &reg).unwrap(), net.engine(c).state_digest(&t, &reg).unwrap(), "c lacks the residue");
+    for _ in 0..3 {
+        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    }
+    let diags = net.diagnostics(b);
+    assert!(diags.iter().any(|d| d.contains("Repair") && d.contains("re-snapshotted")), "{diags:?}");
+    assert_eq!(net.engine(b).state_digest(&t, &reg).unwrap(), net.engine(c).state_digest(&t, &reg).unwrap(), "repaired");
+    assert!(net.engine(c).suspects().unwrap().is_empty(), "the flag cleared");
+    assert_eq!(net.read(c, t), net.read(b, t));
+}

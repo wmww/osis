@@ -198,9 +198,14 @@ codec_struct! {
     pub struct Reach { 0 dialable: [u8; 32], 1 relays: Vec<String>, 2 lan_secret: [u8; 32] }
 }
 codec_struct! {
-    /// `seen.0`: heartbeat (wall ms of the commit's ts).
+    /// `seen.0`: heartbeat (wall ms of the commit's ts), the aspects its node reports suspect.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Seen { 0 ts: WallMs, 1 stranded: bool }
+    pub struct Seen { 0 ts: WallMs, 1 stranded: bool, 2 suspect: BTreeSet<Suspect> }
+}
+codec_struct! {
+    /// A suspect aspect in a heartbeat: thing, AK, keyed state digest (spec/permissions.md §4).
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+    pub struct Suspect { 0 thing: Tid, 1 ak: String, 2 digest: [u8; 16] }
 }
 codec_enum! {
     /// `host.0^` admission: `own` takes the labels of groups this node's person owns that name
