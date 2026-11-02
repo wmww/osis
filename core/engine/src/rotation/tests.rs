@@ -3411,7 +3411,7 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.tid()).collect();
-    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();

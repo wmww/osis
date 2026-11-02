@@ -193,7 +193,7 @@ fn junk_signature_with_the_author_away_spec_commits_4() {
         let (a, g, b) = (x.a, x.g, x.b);
         let t = x.h;
         let mut m = osis_node::Mutation::new();
-        m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(dt))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None })) }).unwrap();
+        m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(dt))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None })) }).unwrap();
         x.net.engine(a).commit(m).unwrap();
         for id in x.net.engine(a).commit_ids() {
             let pk = x.net.engine(a).package(&id).unwrap().unwrap();
@@ -265,7 +265,7 @@ fn no_repeated_redelivery_spec_commits_4() {
 }
 
 fn edge_op(holder: Tid) -> osis_crdt::PathOp {
-    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None })) }
+    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None })) }
 }
 
 // spec/commits.md §4 (copies), crash: a role commit applied, its part on a thing whose record is away
@@ -425,7 +425,7 @@ fn redelivery_leaves_a_dropped_body_spec_commits_5() {
 /// A roster snapshot of `t`, one delta per edge, by `by`, whatever its rights.
 fn roster_snapshot(net: &mut Net, by: usize, t: Tid, holders: [Tid; 2]) -> CommitId {
     let mut m = osis_node::Mutation::new();
-    let edge = || osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None });
+    let edge = || osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None });
     m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Map(holders.into_iter().map(|h| (Value::Tid(h), edge())).collect())) }).unwrap();
     m.op(t, &osis_schema::core_types::TENURES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Set(Default::default())) }).unwrap();
     m.roster_for_tests();
