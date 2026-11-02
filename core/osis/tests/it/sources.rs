@@ -1098,6 +1098,24 @@ fn every_resent_nonce_of_a_lost_session_is_unknown() {
     drop(x.host);
 }
 
+// spec/wire.md §11.2 (a thing the actor may not read answers as one the node does not know), notes/client-port.md §3: a move of a group ends a client's watch of what it reads there, while its watch of a thing it never could read stays as silent as one of an unknown tid
+#[test]
+fn a_move_tells_a_client_nothing_of_what_it_never_read() {
+    let x = world();
+    let (_, sec) = x.p.add_client(None).unwrap();
+    let pc = x.p.client_listen(&["mem://p-clients".to_string()]).unwrap().remove(0);
+    let mut c = Config::memory();
+    c.transport = Some(Transport::InProcess(x.net.endpoint("pc")));
+    let client = Osis::attach_client(&pc, &sec, c).unwrap();
+    assert_eq!(client.get(x.t, title()).unwrap(), None);
+    let w = client.at(x.t, title()).watch().unwrap();
+    x.attach_p();
+    x.to_remote();
+    client.settle();
+    assert_eq!(w.current().unwrap(), None);
+    drop(x.host);
+}
+
 // spec/sync.md §10, notes/client-port.md §6, §3: while a group's move home catches up, the node's own clients read nothing of it: the route stands, the copy here is behind
 #[test]
 fn a_nodes_client_reads_nothing_during_the_catch_up() {

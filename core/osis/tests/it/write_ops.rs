@@ -1,4 +1,4 @@
-//! The `Write` recorder (notes/client-port.md §1, §8 (a)): a batch of API ops commits to the
+//! The `Write` recorder (notes/client-port.md §1): a batch of API ops commits to the
 //! same state as the same ops committed one batch each, for random op lists.
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 

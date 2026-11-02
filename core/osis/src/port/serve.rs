@@ -207,6 +207,15 @@ struct Conn {
     settles: Vec<Id>,
 }
 
+impl Conn {
+    /// Ends a subscription; what it still held is freed with it.
+    fn end_sub(&mut self, id: Id) {
+        if let Some(s) = self.subs.remove(&id) {
+            lock(&s.pending).clear(&self.held);
+        }
+    }
+}
+
 /// Whose write outcomes: the Owner's, or a client actor's (a session id of one identity never
 /// reads another's).
 type Identity = Option<Tid>;
@@ -366,7 +375,7 @@ impl Worker {
                 // answers it TooLarge and frees the id (`MAX_SUBS` counts live ones only)
                 if (Message::Reply { id, outcome: out.clone() }).encode().len() > max {
                     if let Some(c) = self.conns.get_mut(&conn) {
-                        c.subs.remove(&id);
+                        c.end_sub(id);
                     }
                     out = Outcome::too_large(max);
                 }
@@ -374,7 +383,7 @@ impl Worker {
             }
             Message::Unsub { sub, .. } => {
                 if let Some(c) = self.conns.get_mut(&conn) {
-                    c.subs.remove(&sub);
+                    c.end_sub(sub);
                 }
             }
             _ => {}
@@ -678,13 +687,9 @@ impl Worker {
         let mut gone = Vec::new();
         for (id, s) in &mut cn.subs {
             let mut g = lock(&s.pending);
-            if g.lapsed {
-                notes.push((*id, Payload::Lapsed));
-                gone.push(*id);
-                continue;
-            }
             // what its actor may read now (the module's invariant): a thing it could read and no
-            // longer can ends the subscription; nothing of one it cannot read is sent
+            // longer can ends the subscription; nothing of one it cannot read is sent, its lapse
+            // neither (a move's would tell the thing is there)
             if let (Some(_), Some(t)) = (db.acting, s.kind.thing()) {
                 if db.read_local(|r| r.hidden(t)) {
                     if s.seen {
@@ -696,6 +701,11 @@ impl Worker {
                     continue;
                 }
                 s.seen = true;
+            }
+            if g.lapsed {
+                notes.push((*id, Payload::Lapsed));
+                gone.push(*id);
+                continue;
             }
             let out = due(db, &s.kind, &g);
             let queued = g.queue.len();
@@ -735,10 +745,7 @@ impl Worker {
             }
         }
         for id in gone {
-            // what it still held is freed with it
-            if let Some(s) = cn.subs.remove(&id) {
-                lock(&s.pending).clear(&cn.held);
-            }
+            cn.end_sub(id);
         }
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
         if !notes.is_empty() {
