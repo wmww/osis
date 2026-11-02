@@ -26,8 +26,8 @@ pub enum Why {
     Flip = 1,
     /// A body dropped as covered is missing again (its cover turned invalid).
     Uncovered = 2,
-    /// A part held pending at its expiry was dropped (counts as never received).
-    PendingExpiry = 4,
+    /// A part held pending was dropped at its expiry or for a purge (counts as never received).
+    PendingDrop = 4,
 }
 
 /// A body a flag is about: its commit, aspect index and `Why` bits.

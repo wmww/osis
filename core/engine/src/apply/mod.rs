@@ -459,7 +459,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // delta of nor syncs (another's private thing in a mixed commit) is not applied here
     let held_ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     // a commit no part of which is held (a pending part went at its expiry,
-    // `retention::pending_expiry`; a header-only blob) waits whole for every thing and delta of it,
+    // `retention::pending_drops`; a header-only blob) waits whole for every thing and delta of it,
     // synced or not: whether it is recorded applied must not read what the node syncs when it comes
     let whole = blob.parts.is_empty() && !never_whole;
     for (ai, a) in h.aspects.iter().enumerate() {
@@ -749,9 +749,9 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ingested::Applied(id)
         }
         Exam::Pending(r, others) => {
-            // parts past their expiry count as never received: examined again without them
+            // parts past their expiry or purged count as never received: examined again without them
             let (h, n) = (blob.header.clone(), blob.parts.len());
-            crate::retention::pending_expiry(tx, &id, &mut blob, &h)?;
+            crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
             if blob.parts.len() != n {
                 return ingest_class(tx, blob, origin);
             }
@@ -762,6 +762,11 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ingested::Pending(id, r)
         }
         Exam::Parked => {
+            let (h, n) = (blob.header.clone(), blob.parts.len());
+            crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
+            if blob.parts.len() != n {
+                return ingest_class(tx, blob, origin);
+            }
             pend(tx, &id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
             Ingested::Parked(id)
         }
@@ -783,9 +788,9 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
     let mut rest = applied.clone();
     rest.parts = w.parts;
-    // a part past its expiry counts as never received (`retention::pending_expiry`)
+    // a part past its expiry or purged counts as never received (`retention::pending_drops`)
     let h = rest.header.clone();
-    crate::retention::pending_expiry(tx, id, &mut rest, &h)?;
+    crate::retention::pending_drops(tx, id, &mut rest, &h)?;
     if rest.parts.is_empty() {
         return Ok(());
     }
@@ -935,7 +940,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             // what `examine` dropped of the waiting parts goes from the stored copy too
             blob.parts.retain(|p| merged.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)).is_ok());
             let n = blob.parts.len();
-            crate::retention::pending_expiry(tx, id, &mut blob, &merged.header)?;
+            crate::retention::pending_drops(tx, id, &mut blob, &merged.header)?;
             if blob.parts.len() != n {
                 return late_parts(tx, id, blob);
             }
@@ -949,6 +954,11 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             Ingested::Pending(*id, r)
         }
         Exam::Parked => {
+            let n = blob.parts.len();
+            crate::retention::pending_drops(tx, id, &mut blob, &merged.header)?;
+            if blob.parts.len() != n {
+                return late_parts(tx, id, blob);
+            }
             pend(tx, id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
             Ingested::Parked(*id)
         }
@@ -1070,8 +1080,8 @@ impl Engine {
     }
 
     /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
-    /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which only
-    /// a new copy brings back (`SyncEngine::redeliver`).
+    /// counting as never received (spec/commits.md §5), its body dropped, past its expiry or purged
+    /// while pending, which only a new copy brings back (`SyncEngine::redeliver`).
     pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<(usize, usize)>> {
         let id = *id;
         self.run(|tx| {
@@ -1080,8 +1090,8 @@ impl Engine {
             let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok());
             if let Some(b) = &pending {
                 out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
-                for (ai, a) in b.header.aspects.iter().enumerate() {
-                    if a.expires.is_some_and(|t| t <= now) {
+                for ai in 0..b.header.aspects.len() {
+                    if crate::retention::pending_gone(tx, &id, &b.header, ai)? {
                         out.extend(out_of(&b.header, ai));
                     }
                 }
@@ -1096,6 +1106,41 @@ impl Engine {
                 }
             }
             Ok(out)
+        })
+    }
+
+    /// Whether copy `copy` of commit `id`, held pending and not applied, holds a part that went from
+    /// the node (`retention::pending_gone`: past its expiry, purged; spec/commits.md §5) and nothing
+    /// a copy may still be needed for (`SyncEngine::redeliver`): its every other part went too, is
+    /// in the pending copy alike, or provably does not hash to its header entry. Node-sync then
+    /// forgets the copy's blob and key; one that may hold the only true copy of a part a junk copy
+    /// holds the slot of stays until that is judged.
+    pub fn spent_copy(&mut self, id: &CommitId, copy: &CommitBlob) -> Result<bool> {
+        if self.core.ix.commits.contains_key(id) {
+            return Ok(false);
+        }
+        self.run(|tx| {
+            let Some(held) = tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()) else { return Ok(false) };
+            let h = &held.header;
+            let mut gone = false;
+            for p in &copy.parts {
+                if crate::retention::pending_gone(tx, id, h, p.ai)? {
+                    gone = true;
+                    continue;
+                }
+                if held.parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di) && q.delta == p.delta) {
+                    continue;
+                }
+                let junk = match h.aspects.get(p.ai).map(|a| (a.hashes.get(p.di), tx.core.created(&a.tid))) {
+                    None | Some((None, _)) => true,
+                    Some((Some(want), Some(r))) => osis_crypto::delta_hash(&dedup_secret(r.nonce()), &p.delta) != *want,
+                    Some((Some(_), None)) => false,
+                };
+                if !junk {
+                    return Ok(false);
+                }
+            }
+            Ok(gone)
         })
     }
 

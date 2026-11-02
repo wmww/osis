@@ -527,7 +527,8 @@ impl SyncEngine {
             self.engine.name_redeliver(c);
         }
         self.reread_boxes |= self.secrets_count() != before;
-        Ok(())
+        // a copy kept for what a junk one held out of a pending commit may be spent now
+        self.forget_dropped(Some(&visits.into_keys().collect()))
     }
 
     fn ingest_again(&mut self, c: &CommitId, plaintext: &[u8]) {
@@ -1021,23 +1022,42 @@ impl SyncEngine {
     /// would store what a sender floods and deletes, and the deletion is what a body's holders repair
     /// by uploading it again.
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
-        let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
-        let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
+        let Some(r) = self.state.blobs.get(b).cloned() else { return Ok(()) };
         let unused = !self.state.named(b);
-        if dropped || unused && (r.cert || !self.engine.core.ix.commits.contains_key(&r.commit)) {
-            // its entries stay (deletes at hosts need no copy) with their wraps shredded
-            let ls: Vec<LabelId> = self.state.labels_of(b);
-            for l in ls {
-                if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
-                    e.wrap = [0; osis_crypto::WRAP_LEN];
-                    e.stamp = None;
-                    self.state.set_entry(l, *b, e);
-                }
-            }
-            self.state.remove_blob(b);
-            self.delete_blobs(&[*b])?;
+        if unused && (r.cert || !self.engine.core.ix.commits.contains_key(&r.commit)) || self.dropped(b, &r)? {
+            self.drop_blob(b)?;
         }
         Ok(())
+    }
+
+    /// Forgets commit blob `b`'s key and ciphertext; its entries stay (deletes at hosts need no
+    /// copy) with their wraps shredded.
+    fn drop_blob(&mut self, b: &BlobId) -> Result<()> {
+        let ls: Vec<LabelId> = self.state.labels_of(b);
+        for l in ls {
+            if let Some(mut e) = self.state.entries.get(&(l, *b)).cloned() {
+                e.wrap = [0; osis_crypto::WRAP_LEN];
+                e.stamp = None;
+                self.state.set_entry(l, *b, e);
+            }
+        }
+        self.state.remove_blob(b);
+        self.delete_blobs(&[*b])
+    }
+
+    /// Whether commit blob `b` (`r`) holds a delta that went from the node (spec/commits.md §5): one
+    /// the engine dropped of an applied commit, or for a commit held pending one past its expiry or
+    /// purged, the blob holding nothing a redelivery may need (`Engine::spent_copy`).
+    fn dropped(&mut self, b: &BlobId, r: &BlobRec) -> Result<bool> {
+        if let Some(m) = self.engine.core.ix.commits.get(&r.commit) {
+            return Ok(r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
+        }
+        if !self.engine.core.ix.pending.contains_key(&r.commit) {
+            return Ok(false);
+        }
+        let Some(bytes) = self.engine.blob(b)? else { return Ok(false) };
+        let Ok((_, copy)) = open_commit(&bytes, &r.key) else { return Ok(false) };
+        self.engine.spent_copy(&r.commit, &copy)
     }
 
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
@@ -1074,16 +1094,18 @@ impl SyncEngine {
     /// most, compaction): key and ciphertext (spec/commits.md §5). Only those of `commits`
     /// when given (the commits a change may have dropped deltas of).
     pub(crate) fn forget_dropped(&mut self, commits: Option<&BTreeSet<osis_base::CommitId>>) -> Result<()> {
-        let dropped = |s: &Self, r: &super::state::BlobRec| s.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
         let fresh = std::mem::take(&mut self.state.new_blobs);
         let commits: Option<BTreeSet<osis_base::CommitId>> = commits.map(|c| c.union(&fresh).copied().collect());
         let commits = commits.as_ref();
         let ids: Vec<BlobId> = match commits {
-            None => self.state.blobs.iter().filter(|(_, r)| dropped(self, r)).map(|(id, _)| *id).collect(),
-            Some(cs) => cs.iter().flat_map(|c| self.state.by_commit.get(c).into_iter().flatten()).filter(|id| self.state.blobs.get(id).is_some_and(|r| dropped(self, r))).copied().collect(),
+            None => self.state.blobs.keys().copied().collect(),
+            Some(cs) => cs.iter().flat_map(|c| self.state.by_commit.get(c).into_iter().flatten()).copied().collect(),
         };
         for id in ids {
-            self.forget_blob(&id)?;
+            let Some(r) = self.state.blobs.get(&id).cloned() else { continue };
+            if self.dropped(&id, &r)? {
+                self.drop_blob(&id)?;
+            }
         }
         // chunks of dropped deltas no label entry names (never uploaded, or deleted everywhere)
         let listed: BTreeSet<BlobId> = match commits {

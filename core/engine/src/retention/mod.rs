@@ -576,36 +576,44 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
     drop_part(tx, c, ai)
 }
 
-/// Parts of commit `id` held pending (stored as `blob`, header `h`) whose expiry has passed count
-/// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
-/// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
-/// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`expire`). A header whose aspects are not resolved yet is timed once they are. The
-/// commit's other parts apply when they would have with the part held: a commit left with no
-/// part waits for its things like one with a held part (`apply::examine`).
-pub(crate) fn pending_expiry(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
-    let now = tx.now().0;
+/// Whether part `ai` of commit `c` (header `h`), held while it waits, goes from the node
+/// (spec/commits.md §5): past its expiry, or named by a held purge request whose author may purge
+/// it (judged once the header names the aspect and the thing's roles are held).
+pub(crate) fn pending_gone(tx: &mut Tx<'_>, c: &CommitId, h: &Header, ai: usize) -> Result<bool> {
+    let Some(a) = h.aspects.get(ai) else { return Ok(false) };
+    Ok(a.expires.is_some_and(|t| t <= tx.now().0) || known_purged(tx, h, c, ai)?)
+}
+
+/// Parts of commit `id` held pending (stored as `blob`, header `h`) that go (`pending_gone`) count
+/// as never received (spec/commits.md §5: no copy past T, none of a purged delta): they leave the
+/// stored copy before it is kept, and their aspects are flagged suspect (`suspect`: their
+/// non-value writes never join here, where a node that applied them first keeps them). An
+/// expiring other gets a timer doing the same at T (`expire`); a purge request applied later
+/// wakes the commit (`on_apply`). A header whose aspects are not resolved yet is judged once they
+/// are. The commit's other parts apply when they would have with the part held: a commit left
+/// with no part waits for its things like one with a held part (`apply::examine`).
+pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
     for ai in ais {
         let Some(a) = h.aspects.get(ai) else { continue };
-        let Some(t) = a.expires else { continue };
-        if t <= now {
+        if pending_gone(tx, id, h, ai)? {
             blob.parts.retain(|p| p.ai != ai);
             strip_pending(tx, id, ai)?;
-            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*id, ai)])?;
-        } else {
+            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingDrop, &[(*id, ai)])?;
+        } else if let Some(t) = a.expires {
             tx.put_timer(t, id, ai, T_EXPIRY)?;
         }
     }
     Ok(())
 }
 
-/// Part `ai` of the stored pending copy of `c`, if any, goes at its expiry (`pending_expiry`).
+/// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes
+/// (`pending_drops`, `expire`); node-sync then forgets the blobs holding it (`mark_changed`).
 fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     if !tx.core.ix.pending.contains_key(c) {
         return Ok(());
     }
-    let Some((osis_store::PendingKind::Pending, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
+    let Some((kind, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
     let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
     let n = blob.parts.len();
     blob.parts.retain(|p| p.ai != ai);
@@ -613,12 +621,13 @@ fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
         return Ok(());
     }
     tx.core.touch();
+    tx.core.mark_changed(*c);
     tx.txn.remove_pending(c, Shred::Yes)?;
-    tx.txn.put_pending(c, osis_store::PendingKind::Pending, &blob.encode())?;
+    tx.txn.put_pending(c, kind, &blob.encode())?;
     // examined again: what it waits for may have changed
     tx.core.waits.pended(c);
     if let Some(a) = blob.header.aspects.get(ai) {
-        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
+        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingDrop, &[(*c, ai)])?;
     }
     Ok(())
 }
@@ -845,6 +854,8 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
                 purge_one(tx, id, item, &c, ai, &mut purged)?;
             }
         }
+        // pending commits holding a part it names: examined again, the part going (`pending_drops`)
+        tx.core.waits.wake_thing(item.tid());
         let key = records::aspect_key(records::PURGES, item.tid(), item.ak());
         let mut b = tx.txn.get_local(&key)?.unwrap_or_default();
         if !b.chunks(32).any(|x| x == id.0) {
