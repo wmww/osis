@@ -455,6 +455,37 @@ mod tests {
         RosterSnapshot { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, thing: on, roster: BTreeMap::from([(to, Edge::new(role))]), ledger: Vec::new() }
     }
 
+    fn ledger(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RosterSnapshot {
+        let mut s = roster(id, by, on, to, Role::Read);
+        s.roster.clear();
+        s.ledger.push(osis_perm::Tenure { holder: to, role, since: None, until: osis_perm::Point { ts: s.ts, node: by, commit: s.id }, frontier: None });
+        s
+    }
+
+    /// The definition (spec/commits.md §4) by brute force, to judge the worklist by.
+    fn least(h: &Held, t: Tid) -> BTreeSet<Tid> {
+        let mut set = BTreeSet::from([t]);
+        loop {
+            let mut next = set.clone();
+            for c in &set {
+                if let Some(Owner::Actor(x) | Owner::Ownerless(x)) = h.created(c).map(CreationRecord::owner_link) {
+                    next.insert(x);
+                }
+                for r in h.commits_on(c).iter().filter(|r| set.contains(&r.author)) {
+                    next.extend(r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| o.holder));
+                }
+                for s in h.snapshots_of(c).iter().filter(|s| set.contains(&s.author)) {
+                    next.extend(s.roster.iter().filter(|(_, e)| e.role >= Role::Admin).map(|(x, _)| *x));
+                    next.extend(s.ledger.iter().filter(|l| l.role >= Role::Admin).map(|l| l.holder));
+                }
+            }
+            if next == set {
+                return set;
+            }
+            set = next;
+        }
+    }
+
     #[derive(Clone)]
     enum In {
         G(RoleCommit),
@@ -486,7 +517,11 @@ mod tests {
             let mut inputs: Vec<In> = (0..rng(14)).map(|i| {
                 let (by, on, to) = (a[rng(5) as usize], ids[rng(4) as usize], ids[rng(7) as usize]);
                 let role = if rng(4) == 0 { Role::Write } else { Role::Admin };
-                if rng(4) == 0 { In::S(roster(i, by, on, to, role)) } else { In::G(grant(i, by, on, to, role)) }
+                match rng(6) {
+                    0 => In::S(roster(i, by, on, to, role)),
+                    1 => In::S(ledger(i, by, on, to, role)),
+                    _ => In::G(grant(i, by, on, to, role)),
+                }
             }).collect();
             let base = |h: &mut Held| {
                 for x in actors.iter().chain([&g, &t]) {
@@ -497,6 +532,7 @@ mod tests {
             base(&mut one);
             inputs.iter().for_each(|i| add(&mut one, i));
             let want = one.ever_admins(&t.tid());
+            assert_eq!(want, least(&one, t.tid()));
             // a shuffled order: every prefix a subset, the end alike
             for k in (1..inputs.len()).rev() {
                 inputs.swap(k, rng(k as u64 + 1) as usize);

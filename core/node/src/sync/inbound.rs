@@ -655,6 +655,9 @@ impl SyncEngine {
             self.engine.note_delete_hints(id, &payload.things)?;
             e.kind = Kind::Inbox(Some(id));
             commits.push((pt, c));
+            // the home labels' passes place its copy (`inbox_copies`); applying starts them only
+            // if the commit is new here, and a sender's own deposit under its own inbox is not
+            self.mark_dirty();
         }
         self.state.set_entry(l, b, e);
         Ok(())
