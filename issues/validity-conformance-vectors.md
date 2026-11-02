@@ -1,10 +1,10 @@
-# Judgment vectors cover a first slice only
-> Summary: `core/test/vectors/judgment/` (format: its README; generated and replayed by osis-node `tests/it/judgment.rs`) holds the roles model's reference scenarios and one scenario per rule family; still missing: the order harness's other shrunk seeds and pinned histories, epoch starts (no roster-snapshot scenario yet), referenced blobs (pages, chunks: the generator asserts none), multi-label bundles; each case still lists the setup commits' bodies.
+# Judgment vectors: what is still missing
+> Summary: `core/test/vectors/judgment/` (format: its README; generated and replayed by osis-node `tests/it/judgment.rs`) holds the roles model's reference scenarios, one scenario per rule family (epoch starts, `until`, invites included) and 21 pinned order-harness histories; still missing: referenced blobs, multi-label bundles, ledger chains across several starts; rules.vec is 650 KB (each case repeats the setup's body lines, role commits' secrets dominate bundles).
 > Tags: tests, permissions, retention, spec
 
 ## Left
-- Replay more pinned histories as `Scenario`s: order harness seeds in `order::arrival_order_found_histories_spec_crdt_4_6` (1558, 1053, 1173, 93004, 12161, 12236, 61165, 583175, 15085, 2700027) and the other order.rs pins (7855, 1291, 1006, 1042, ...). Each is a few lines, but a file shares one setup (`judgment.rs` `SEED`, 1038): a history pinned under another seed is replayed under 1038 only if it still shows its bug there (check), else it needs its own file.
-- Roster snapshots and epoch starts (every `start=` is `-` today), `until`, invites, ledgers: scenarios exist in roles-model `snapshot.rs`/`edges.rs` but need translating to engine steps (abstract ts and receipts).
+- Referenced blobs (pages, chunk trees, linked header lists, linked frontiers) as bundle blob records without entries (the generator asserts none).
+- Epoch starts beyond one snapshot: a second start carrying the ledger forward, an excluded start (§6 rounds), a demotion after the start auditing pre-start writes.
+- Invites beyond the invite: the engine's grant flow refuses an over-invite grant locally, so a vector needs a hand-built commit.
 - crdt-model's pinned cases (`tests/props.proptest-regressions`) are join properties, not judgments: no vector.
-- Referenced blobs (pages, chunk trees, linked header lists) as bundle blob records without entries.
-- Size: a file's bundles share one `setup` header (about 26 KB of hex), so a history adds 2-4 KB of bundle plus about 4 KB of expected fields per order; the setup commits' `body`/`aspect` lines repeat in every case. If files grow, judge the setup once per file or shrink it (fewer identities per scenario).
+- Size: models.vec 124 KB, rules.vec 650 KB. Each case repeats about 3 KB of the setup commits' `body`/`aspect` lines (judging the setup once per file would save about 200 KB); a history's bundle is 3-24 KB, more with role commits' secrets and boxes (the invite case 48 KB). Order seeds left out as other shapes (12236, 1042, 583188, 845143) or not shown under seed 1038 (1085: shows 1024's case) could go in a file of their own if wanted.

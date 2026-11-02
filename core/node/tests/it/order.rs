@@ -50,6 +50,10 @@ pub(crate) enum Step {
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
+    /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
+    /// invite level: an edge write, or with `flow` through the engine's grant flow (secrets and
+    /// rotations; an invite grant needs it); scripted only (`random_step` never draws it).
+    Grant { by: usize, t: usize, holder: usize, role: Role, until: Option<u64>, invite: Option<Role>, flow: bool },
     /// An explicit demotion (removal, or to read) with a frontier as of one of the holder's
     /// writes (`at`: 0 before all of them, backdated; the last: now).
     Demote { by: usize, t: usize, holder: usize, at: u8, to_read: bool },
@@ -202,11 +206,11 @@ fn random_step(rng: &mut Rng) -> Step {
 }
 
 /// `holder`'s edge on `t` as remove + put (`None`: removed), spec/permissions.md §2.
-fn edge_write(t: Tid, holder: Tid, role: Option<Role>) -> Mutation {
+fn edge_write(t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> Mutation {
     let mut m = Mutation::new();
     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(holder)) }).unwrap();
-    if let Some(role) = role {
-        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge(role).to_value()) }).unwrap();
+    if let Some(e) = e {
+        m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
     }
     m
 }
@@ -281,7 +285,16 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Edge { by, t, holder, role } => {
-                let _ = lp.peers[by].commit(edge_write(th(t), ids[holder], role));
+                let _ = lp.peers[by].commit(edge_write(th(t), ids[holder], role.map(edge)));
+                Some(by)
+            }
+            Step::Grant { by, t, holder, role, until, invite, flow } => {
+                let e = osis_schema::core_types::Edge { until: until.map(|ms| WallMs(lp.peers[by].engine.now().0 + ms)), invite, ..edge(role) };
+                if flow {
+                    let _ = lp.peers[by].engine.grant(&th(t), &ids[holder], &e);
+                } else {
+                    let _ = lp.peers[by].commit(edge_write(th(t), ids[holder], Some(e)));
+                }
                 Some(by)
             }
             Step::Demote { by, t, holder, at, to_read } => {
@@ -301,7 +314,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 };
                 let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], below)]) };
                 if let Ok(f) = lp.peers[by].engine.frontier(&scope, as_of) {
-                    let mut m = edge_write(t, ids[holder], to_read.then_some(Role::Read));
+                    let mut m = edge_write(t, ids[holder], to_read.then_some(edge(Role::Read)));
                     m.frontier(f.to_value());
                     let _ = lp.peers[by].commit(m);
                 }
