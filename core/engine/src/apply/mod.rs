@@ -427,10 +427,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }
-    // the slots a held purge request emptied while they waited (`retention::strip_purged`): their
-    // stripped deltas, checked when kept, join in their place
+    // the slots a held purge request emptied while they waited (`retention::strip_purged`; perhaps just
+    // now, before the commit is first stored): their stripped deltas, checked when kept, join in their place
     let emptied = crate::retention::emptied();
-    let stripped = if blob.parts.iter().any(|p| p.delta == emptied) && tx.core.ix.pending.contains_key(id) { crate::retention::stripped_of(tx, id)? } else { BTreeMap::new() };
+    let stripped = if blob.parts.iter().any(|p| p.delta == emptied) { crate::retention::stripped_of(tx, id)? } else { BTreeMap::new() };
     let kept = |p: &osis_commit::Part| p.delta == emptied && stripped.contains_key(&(p.ai, p.di));
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
     // of the wrong storage class (core keys are unmarked but `placed.0~`) is never applied: dropped
@@ -756,7 +756,20 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let received = tx.now();
     let inline = blob.header.is_resolved();
     let _s = crate::costs::span("examine");
-    let out = match examine(tx, &mut blob, &id, &BTreeSet::new())? {
+    // what `waits_without_expired` judges: `examine` takes bad parts and those waiting out of `blob`
+    let held = (!inline || blob.header.aspects.iter().any(|a| a.expires.is_some())).then(|| blob.parts.clone());
+    let exam = examine(tx, &mut blob, &id, &BTreeSet::new())?;
+    if let (Exam::Ready(_), Some(held)) = (&exam, held)
+        && let Some(rest) = waits_without_expired(tx, &blob, &held, &id)?
+    {
+        let h = blob.header.clone();
+        blob.parts = held;
+        // those past their expiry go, a purged one is held value-less (its slot kept as stripped)
+        crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
+        blob.parts.retain(|p| rest.contains(&(p.ai, p.di)));
+        return ingest_class(tx, blob, origin);
+    }
+    let out = match exam {
         Exam::Ready(parts) => {
             let w = parts.waiting.as_ref().map(Waiting::copy);
             let was_pending = unpend(tx, &id)?;
@@ -793,6 +806,26 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
         }
     };
     Ok(out)
+}
+
+/// The slots of commit `id` that stay, if it would wait without the parts of `held` past their expiry.
+/// Such a part decides nothing (spec/commits.md §4): one on a thing that waits has gone when the rest is
+/// examined (`retention::pending_drops`), so whether the commit applies must not read one that has not.
+/// `held`: as they came to `examine`, a bad part among them answering its wait as in any other copy;
+/// `blob`: for its resolved header. A rest `examine` refuses (only junk or bad parts) came to nothing.
+fn waits_without_expired(tx: &mut Tx<'_>, blob: &CommitBlob, held: &[osis_commit::Part], id: &CommitId) -> Result<Option<BTreeSet<(usize, usize)>>> {
+    let h = &blob.header;
+    let parts: Vec<osis_commit::Part> = held.iter().filter(|p| !crate::retention::pending_expired(tx, h, p.ai)).cloned().collect();
+    if parts.len() == held.len() {
+        return Ok(None);
+    }
+    let mut rest = CommitBlob { header: h.clone(), signature: blob.signature, parts };
+    match examine(tx, &mut rest, id, &BTreeSet::new()) {
+        Ok(Exam::Ready(_)) => Ok(None),
+        Ok(_) => Ok(Some(rest.parts.iter().map(|p| (p.ai, p.di)).collect())),
+        Err(e) if e.class() == ErrorClass::BadInput => Ok(Some(BTreeSet::new())),
+        Err(e) => Err(e),
+    }
 }
 
 /// Keeps commit `id` pending (`bytes` as stored) for `reason`.
