@@ -51,7 +51,9 @@ pub(crate) mod method {
     pub const LEN: u64 = 18;
     /// `[tid, ak, path, offset, n]` -> bytes (`n` at most `STREAM_CHUNK`)
     pub const STREAM_READ: u64 = 19;
-    /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`)
+    /// `[]` -> `[]` once every Notify for changes before it went (`Osis::settle`). The worker
+    /// runs the node's `settle`, waiting for its dispatcher: a callback in the node's process
+    /// that waits on the port worker (an attached handle of its own node) deadlocks it.
     pub const SETTLE: u64 = 20;
     /// `[]` -> wall ms
     pub const NOW: u64 = 21;
