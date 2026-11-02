@@ -8,3 +8,5 @@ Design points, from chat design reviews (notes/chat-designs/c.md, e-review.md):
 - `forget` also clears `syncing`, sync records and ciphertext; `deliver.rs` returns early when nothing was forgotten. So split "stop syncing" from "shred units". `compute_labels` skips a group with no read secret, so no session or `wait_synced(All)` hang. Upload filters on `may_read`. Unfetched lazy attachments become unreachable.
 - Re-grant is then like a long-offline holder, not a fresh node. Re-sealing a kept commit's body on re-grant: not checked.
 - Spec: permissions §3 and requirements line on Deletion.
+
+Owner: chat defaults to keep, as most platforms do.
