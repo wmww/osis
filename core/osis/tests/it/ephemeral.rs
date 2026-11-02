@@ -376,7 +376,7 @@ fn bench_ephemeral_sets() {
     assert_eq!(db.get(t, k).unwrap(), (n > 0).then(|| Value::Int(n - 1)));
 }
 
-// The write path's batch cost (notes/client-port.md §8 (a)): `OSIS_BENCH_N` map puts into one
+// The write path's batch cost (notes/client-port.md §1): `OSIS_BENCH_N` map puts into one
 // durable aspect in one batch: recording, building the mutation, one commit. spec: none (cost)
 #[test]
 #[ignore = "bench: release, by hand"]

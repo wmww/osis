@@ -1226,7 +1226,7 @@ impl Osis {
     /// grant on one, a non-writer's write under its label). `All`: every label with hosts
     /// (`status` shows the `NoHosts` ones) and every delivery.
     ///
-    /// On an attached handle the node waits (a subscription, notes/client-port.md §8), with the
+    /// On an attached handle the node waits (a subscription, notes/client-port.md §2), with the
     /// same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
         let r = match scope {

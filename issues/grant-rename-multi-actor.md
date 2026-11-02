@@ -4,4 +4,4 @@
 
 Owner direction. The rename is textual plus type and method names (`Edge`, `change_edge`, `edge` CLI command, `EdgeKey`); no wire change. The multi-actor part is the same machinery the client port needs (a node acting as a thin client's actor): design it once in notes/client-port.md §3 and expose it as `Osis::act_as(actor) -> Osis` (a handle that writes as that actor and reads what it may), then pairing a second account into an existing node is a flow over it.
 
-Built so far: crate-internal `Osis::act_as` for the client port's rows (reads, writes, reverts; notes/client-port.md §8 Built (c)). To make it public: the sharing, sync and process-wide calls must honour it (the engine's grant and demote flows act with the node's authority and take no actor).
+Built so far: crate-internal `Osis::act_as` for the client port's rows (reads, writes, reverts; notes/client-port.md §3). To make it public: the sharing, sync and process-wide calls must honour it (the engine's grant and demote flows act with the node's authority and take no actor).

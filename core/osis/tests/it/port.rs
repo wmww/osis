@@ -432,7 +432,7 @@ fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock
     db
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §8 (wait_synced through the port), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, Network after the deadline when the host is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §2 (wait_synced), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, Network after the deadline when the host is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
 #[test]
 fn attached_wait_synced_as_at_the_node() {
     use crate::common::block_on;
@@ -542,7 +542,7 @@ fn too_large_sub_is_not_kept() {
     n.close().unwrap();
 }
 
-// spec: none (API surface); notes/client-port.md §8 (b): an attached handle's calls with no row fail Unsupported rather than answer as if done: sync_policy, group_policy, rotate_reach
+// spec: none (API surface); notes/client-port.md §1: an attached handle's calls with no row fail Unsupported rather than answer as if done: sync_policy, group_policy, rotate_reach
 #[test]
 fn attached_policy_calls_are_unsupported() {
     let d = Dir::new();
