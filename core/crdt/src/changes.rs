@@ -38,7 +38,7 @@ impl Changes {
         self.deaths
     }
     /// A text element's write joined out of order or as a copy of one held (§5.7: a flag no
-    /// newer than the held one, a creation under a flag), whose effect on deaths the state
+    /// newer than a held undelete, a creation under a flag), whose effect on deaths the state
     /// cannot show, so they are dated from the held bodies (spec/commits.md §5).
     pub fn undated(&self) -> bool {
         self.undated

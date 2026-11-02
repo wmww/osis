@@ -1148,3 +1148,39 @@ fn undo_expiry_history(seed: u64) {
         }
     }
 }
+
+// spec/commits.md §5, spec/crdt.md §4.8: two writers delete the same char of a kept text; the
+// older delete arriving after the newer one supersedes nothing new (the insert died at the newer
+// delete, a superseder arriving later does not move it), so it is no reason to date the aspect's
+// deaths again from every body (an O(history) replay per concurrent delete).
+#[test]
+fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let r = Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
+    let mut lp = net(2, 0x5e9);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let b = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    let op = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, op: Op| {
+        let mut m = Mutation::new();
+        m.op(t, &TEXT, PathOp { path: vec![], op }).unwrap();
+        m.retention(t, &TEXT, r).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let ins = op(&mut lp, 0, Op::Insert { at: 0, items: vec![s("ab")] });
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    let older = op(&mut lp, 1, Op::Delete { at: 0, len: 1 });
+    lp.advance(10);
+    let newer = op(&mut lp, 0, Op::Delete { at: 0, len: 1 });
+    let ts = lp.peers[0].engine.header(&newer).unwrap().ts;
+    let pk = lp.packages(1).unwrap().into_iter().find(|p| p.id == older).unwrap();
+    osis_node::costs::take();
+    lp.deliver(0, &pk).unwrap();
+    lp.peers[0].engine.settle_deaths().unwrap();
+    let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
+    assert_eq!(recomputes, 0, "no recompute of the aspect's deaths");
+    assert_eq!(lp.peers[0].engine.deaths(&ins, &t, &ak("t:text.0")).unwrap(), Some((ts, ts)));
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s("b")));
+}

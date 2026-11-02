@@ -54,7 +54,7 @@ Companion edits: §3 names the lockout recovery (remove or demote the rotator wi
 - Double-removal residual (round 13, accepted): c left out because Y's snapshot Z covered it; Y later removed with a frontier not listing Z; c's live writes go even where c is held. Narrower now (c had to be droppable).
 - Loss of writes the revoker never received (pre-sync, hole 19): unchanged.
 - issues/writer-rotates-to-itself.md: the writer-side flow still refuses to stamp without a current secret; after the omission the previous epoch is current again at the demoter, so the flow must judge under the new frontier before choosing epochs to rotate from.
-- issues/equivocation-after-snapshot.md: an un-merge bug, untouched by any frontier rule.
+- The equivocation-after-snapshot un-merge bug (fixed by seq-order): untouched by any frontier rule.
 - Mixed aspects (some writes permanent, some not, per-write override): fall back to IDs; a schema may want to forbid the mix.
 
 ## 8. Build steps

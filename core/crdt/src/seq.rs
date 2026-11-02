@@ -345,16 +345,17 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     // creation write is dead once a delete newer than it is held (§4.8). The join dates it where
     // the arriving write is newer than all the record holds: a delete raising the flag (over an
     // undelete too: a replay in `ts` order meets the same raise), or the creation arriving where
-    // the element is deleted and no copy of it was held. Anything else, out of order or a copy
-    // held already (a flag older than the held one, or equal to it; a creation under an undelete,
-    // whose delete is gone from the state; a copy of a held creation), is dated from the bodies
-    // alone. An embedded char (§7) dies with its register's write: only a delete raised on it
-    // counts.
+    // the element is deleted and no copy of it was held. A flag no newer than a held delete
+    // kills nothing new (the creation died at the held delete, a superseder arriving later does
+    // not move it). Anything else, out of order or a copy held already (a flag no newer than a
+    // held undelete, whose delete may be gone from the state; a creation under an undelete; a
+    // copy of a held creation), is dated from the bodies alone. An embedded char (§7) dies with
+    // its register's write: only a delete raised on it counts.
     if text && let (Some((c, _)), Some((f, del))) = (&se.created, &se.deleted) {
         let derived = d.src.is_derived();
         if *del && (raised || (creates && !held && !derived)) {
             ch.died(c, f);
-        } else if !derived && (creates || (flagged && !raised)) {
+        } else if !derived && (creates || (flagged && !raised && !*del)) {
             ch.undatable();
         }
     }
