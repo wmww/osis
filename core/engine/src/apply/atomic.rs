@@ -1072,7 +1072,7 @@ fn unmerge_part(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, fell: Option<Fragment>) -> 
 fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     #[cfg(debug_assertions)]
     {
-        let want = rebuilt(tx, tid, ak, &[])?.0;
+        let want = rebuilt(tx, tid, ak, &[], &BTreeSet::new())?.0;
         debug_assert!(tx.state(tid, ak)? == want.as_ref(), "in-place un-merge of {tid:?} {ak:?} differs from a rebuild");
     }
     #[cfg(not(debug_assertions))]
@@ -1093,7 +1093,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 /// writes nested under them stay): what a snapshot turned invalid gave
 /// (`validity::given_by`). Reports each valid snapshot misstating a held delta.
 pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<()> {
-    let (st, misstating) = rebuilt(tx, tid, ak, gone)?;
+    let (st, misstating) = rebuilt(tx, tid, ak, gone, &BTreeSet::new())?;
     let now = tx.now();
     for s in misstating {
         let peer = tx.core.ix.commits.get(&s).map(|m| m.view.author);
@@ -1134,8 +1134,9 @@ fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
 /// delta's writes under a dot a held valid snapshot misstates (`validity::misstated_in`) count
 /// for nothing: the snapshots' copies govern, joined by the copy order (spec/permissions.md
 /// §5.2). Under a dot any held snapshot misstates the current state's writes go first, so the
-/// held bodies give them again.
-fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
+/// held bodies give them again. The held bodies of `skip` are left out (their writes must be in
+/// `gone`).
+pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip: &BTreeSet<CommitId>) -> Result<(Option<Fragment>, BTreeSet<CommitId>)> {
     let held: Vec<(osis_base::Ts, CommitId)> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).map(|s| s.iter().copied().collect()).unwrap_or_default();
     // the bodies that join (with their aspect index), the held snapshots (valid or not: an
     // invalid one joins nothing, spec/permissions.md §5.2) and the held deltas
@@ -1143,6 +1144,9 @@ fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<(Optio
     let mut snaps: Vec<(CommitId, bool)> = Vec::new();
     let mut deltas: Vec<(CommitId, usize, Header)> = Vec::new();
     for (_, c) in held {
+        if skip.contains(&c) {
+            continue;
+        }
         let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(tid, ak)) else { continue };
         // stored: a commit being applied joins once stored
         if !super::stores_part(tx, &c, ai)? {

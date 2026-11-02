@@ -13,7 +13,7 @@ mod remote;
 
 pub use log::{LoggedChange, Reverted};
 pub(crate) use place::gains;
-pub(crate) use place::{ITEMS, SUBGROUPS};
+pub(crate) use place::{ITEMS, SUBGROUPS, def_of};
 pub use remote::{COVER_FACTOR, EphCommit, EphIngest};
 
 use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};

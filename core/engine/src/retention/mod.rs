@@ -743,6 +743,7 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     if h.ephemeral.is_some() {
         let aspects = h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect();
         changed.extend(memory::drop_superseded(tx, &aspects, Some(h.author), Some(id))?);
+        memory::drop_covered(tx, &aspects, Some(id))?;
     }
     for item in &h.purge {
         let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
@@ -773,6 +774,7 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
     if h.ephemeral.is_some() {
         let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
         changed.extend(memory::drop_superseded(tx, &aspects, Some(h.author), Some(id))?);
+        memory::drop_covered(tx, &aspects, Some(id))?;
     }
     for ai in ais.iter().copied() {
         if valueless(tx.core, id, ai) && tx.core.ix.commits.get(id).is_some_and(|m| !m.dropped.contains_key(&ai)) {
@@ -1060,18 +1062,29 @@ impl Engine {
         if ak.as_str() == "created.0" {
             return Err(Error::Misuse("created.0 is kept forever, never compacted"));
         }
+        // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
+        // held
+        let memory = match ak.lifetime() {
+            osis_schema::Lifetime::Durable => false,
+            osis_schema::Lifetime::Ephemeral => true,
+            osis_schema::Lifetime::Signal => return Err(Error::Misuse("a signal aspect holds no state to compact")),
+        };
         self.run(|tx| {
+            if memory {
+                tx.set_memory();
+            }
             let node = tx.core.id.tid();
             let ts = tx.core.hlc.next();
             // a snapshot needs the strictest role a write it carries could need (tests may write
             // one a receiver judges invalid)
             let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
-            crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
-            let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
-            if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
-                return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
+            if !(memory && tx.core.skip_writer_rules) {
+                crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
             }
-            let expiring: Vec<Owned> = tx
+            if tx.state(&tid, &ak)?.is_none() {
+                return Ok(None);
+            }
+            let expiring: Vec<(CommitId, Owned)> = tx
                 .core
                 .ix.by_aspect
                 .get(&(tid, ak.clone()))
@@ -1081,22 +1094,57 @@ impl Engine {
                     let m = tx.core.ix.commits.get(c)?;
                     let ai = m.aspect(&tid, &ak)?;
                     m.header.aspects.get(ai)?.expires?;
-                    Owned::of(&m.header, c, ai)
+                    Some((*c, Owned::of(&m.header, c, ai)?))
                 })
                 .collect();
-            if !expiring.is_empty() {
-                st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
+            let st = if memory {
+                // an expiring memory write vanishes whole at T (spec/crdt.md §4.7): no snapshot
+                // carries it, nor counts it received, so it goes from every holder alike
+                let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
+                let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
+                let (st, _) = crate::apply::rebuilt(tx, &tid, &ak, &gone, &skip)?;
+                let Some(st) = st else { return Ok(None) };
+                st
+            } else {
+                let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
+                if !expiring.is_empty() {
+                    st.strip(&|d| expiring.iter().any(|o| o.1.owns(d)));
+                }
+                st
+            };
+            if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+                return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
             }
             // a part still missing gives this state nothing (applied without it, spec/commits.md
             // §4): an expiring one's writes would go value-less here anyway
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))));
+            let left_out = |c: &CommitId| memory && expiring.iter().any(|x| x.0 == *c);
             // frontiers cover only counters whose writes this state reflects: applied, valid
+            // (and for memory, not expiring). A memory commit is forgotten once covered, its
+            // counters with it: there the held valid snapshots' frontiers count as reflected (their
+            // writes are joined), and own ranges continue from them
             let mut frontiers = Frontiers::default();
+            if memory {
+                for (_, s, fr, _) in tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten() {
+                    if valid_on(s) {
+                        for (src, f) in fr.sources() {
+                            if f > frontiers.of(&src) {
+                                frontiers.insert(&src, f);
+                            }
+                        }
+                    }
+                }
+            }
             let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
             for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
-                let mut next = 1u64;
+                let mut next = frontiers.of(n).saturating_add(1);
                 for (lo, (hi, c)) in ranges {
-                    if *lo != next || !valid_on(c) {
+                    if memory && *hi <= next {
+                        continue;
+                    }
+                    // contiguous (a memory range may start below a snapshot's frontier)
+                    let joins = *lo == next || (memory && *lo < next);
+                    if !joins || !valid_on(c) || left_out(c) {
                         break;
                     }
                     next = *hi;
@@ -1109,19 +1157,32 @@ impl Engine {
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
-                if by_id(m.header.kind, m.header.form) && valid_on(c) {
+                if by_id(m.header.kind, m.header.form) && valid_on(c) && !left_out(c) {
                     absorbed.insert(*c, m.header.author);
                 }
             }
             let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
             // bounds from the retention of the writes it carries, schema known here or not
-            // (spec/commits.md §5)
-            let retention = osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0);
+            // (spec/commits.md §5); a memory one's are `writer` without bounds (spec/commits.md §2)
+            let retention = if memory {
+                osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }
+            } else {
+                osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0)
+            };
             if compaction && osis_commit::retention::carrier_only(&retention) {
                 return Ok(None);
             }
-            let plan = CommitPlan { kind, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
-            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records: Vec::new() };
+            // the records of the memory things it is on or places beside it (spec/commits.md §2)
+            let records = if memory {
+                let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
+                crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter())
+            } else {
+                Vec::new()
+            };
+            // a memory snapshot is commit form (spec/commits.md §3)
+            let form = if memory { Form::Commit } else { Form::Node };
+            let plan = CommitPlan { kind, ts, actor: node, form, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }

@@ -488,8 +488,8 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
     b.frontier = plan.frontier;
     b.blind = Some(plan.blind);
     b.origins = plan.origins;
-    // a session-form commit is a memory commit (spec/commits.md §2, §3)
-    b.ephemeral = matches!(plan.form, Form::Session(_)).then_some(osis_commit::EphClass::Plain);
+    // a commit built in a memory transaction is a memory commit (spec/commits.md §2, §3)
+    b.ephemeral = tx.txn.is_memory().then_some(osis_commit::EphClass::Plain);
     let built = {
         let core: &Core = tx.core;
         let secrets = CommitSecrets { core, actor: plan.actor, created: &plan.creates, published: &published };
@@ -696,7 +696,15 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         if let Some(s) = &am.schema {
             keep_schema(tx, s, false)?;
         }
-        let records = if memory { memory_records(tx.core, &tid, &ak, &am.ops) } else { Vec::new() };
+        let records = if memory {
+            let placed = am.ops.iter().filter_map(|o| match &o.op {
+                Op::Add(Value::Tid(x)) => Some(*x),
+                _ => None,
+            });
+            memory_records(tx.core, &tid, &ak, placed)
+        } else {
+            Vec::new()
+        };
         deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
@@ -730,16 +738,14 @@ pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
 }
 
 /// The records a memory commit carries beside its delta on `(tid, ak)` (spec/commits.md §2):
-/// the memory chains of `tid` and, on `placed.0~`, of the things its ops place that have `tid`'s
-/// reader (a record names its nonce, its dedup secret: never shown to another reader).
-fn memory_records(core: &Core, tid: &Tid, ak: &Ak, ops: &[PathOp]) -> Vec<CreationRecord> {
+/// the memory chains of `tid` and, on `placed.0~`, of the things `placed` its delta places that
+/// have `tid`'s reader (a record names its nonce, its dedup secret: never shown to another
+/// reader).
+pub(crate) fn memory_records(core: &Core, tid: &Tid, ak: &Ak, placed: impl Iterator<Item = Tid>) -> Vec<CreationRecord> {
     let mut things = vec![*tid];
     if ak.as_str() == osis_schema::core_types::PLACED.ak() {
         let reader = core.reader_of(tid);
-        things.extend(ops.iter().filter_map(|o| match &o.op {
-            Op::Add(Value::Tid(x)) if core.reader_of(x) == reader => Some(*x),
-            _ => None,
-        }));
+        things.extend(placed.filter(|x| core.reader_of(x) == reader));
     }
     let recs: BTreeMap<Tid, CreationRecord> = things.iter().flat_map(|t| memory_chain(core, t)).collect();
     recs.into_values().collect()

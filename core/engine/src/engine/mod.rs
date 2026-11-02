@@ -1202,11 +1202,11 @@ impl Tx<'_> {
             unit.undo.clear();
         }
         self.txn.put_aspect(tid, ak, &unit, shred)?;
-        let ik = records::aspect_key(records::ASPECTS, tid, ak);
+        // the state-list row is the aspect's class (its key's marker), whatever the transaction
         if f.is_some() {
-            self.txn.put_local(&ik, &[], Shred::No)?;
+            self.put_aspect_local(records::ASPECTS, tid, ak, &[])?;
         } else {
-            self.txn.remove_local(&ik, Shred::No)?;
+            self.txn.remove_local(&records::aspect_key(records::ASPECTS, tid, ak), Shred::No)?;
         }
         self.core.states.insert((*tid, ak.clone()), f);
         Ok(())

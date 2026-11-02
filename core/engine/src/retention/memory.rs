@@ -74,6 +74,59 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
     Ok(changed)
 }
 
+/// spec/sync.md §9 (Compaction, memory class): on `aspects`, each held memory body a valid held
+/// memory snapshot covers (`covered`, spec/commits.md §5) is dropped as covered at once, its keep
+/// bounds aside (memory class keeps none), and its commit forgotten once spent (`keep` aside: the
+/// commit being applied, its caller forgets it). Of covered-equal snapshots the higher commit ID
+/// goes, as on the durable path. A function of the commits held, so holders of the same ones
+/// keep the same bodies. Run when a memory commit applies and when parts of a memory aspect turn
+/// valid. The commits dropped from.
+pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
+    let mut dropped = BTreeSet::new();
+    for (tid, ak) in aspects {
+        let held: Vec<(CommitId, usize, bool)> = tx
+            .core
+            .ix
+            .by_aspect
+            .get(&(*tid, ak.clone()))
+            .into_iter()
+            .flatten()
+            .filter_map(|(_, c)| {
+                let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
+                let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
+                Some((*c, ai, m.view.kind.is_compaction()))
+            })
+            .collect();
+        let snaps: Vec<CommitId> = held.iter().filter(|x| x.2 && crate::apply::validity::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| x.0).collect();
+        if snaps.is_empty() {
+            continue;
+        }
+        let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
+        for (c, ai, is_snapshot) in held {
+            for s in &snaps {
+                if *s == c || !holds(tx, s) || !holds(tx, &c) {
+                    continue;
+                }
+                if super::covered(tx, s, &c, tid, ak)? != Some(true) {
+                    continue;
+                }
+                if is_snapshot && c < *s && super::covered(tx, &c, s, tid, ak)? == Some(true) {
+                    continue;
+                }
+                super::drop_part_as(tx, &c, ai, true)?;
+                dropped.insert(c);
+                break;
+            }
+        }
+    }
+    for c in &dropped {
+        if keep != Some(c) {
+            forget_if_spent(tx, c)?;
+        }
+    }
+    Ok(dropped)
+}
+
 /// After a part of memory commit `c` vanished at its expiry: `c` vanishes whole when every part
 /// it still holds is superseded (`drop_superseded` on its aspects; else a node that held it when
 /// its superseders came keeps the rest, while one receiving it after the expiry drops it on

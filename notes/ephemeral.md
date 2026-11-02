@@ -220,5 +220,8 @@ Covers never take expiring writes, so before this a cursor kept alive with `Keep
 - Tests: osis-node `ephemeral::slow_host_holds_nothing_back_spec_sync_9` (`Net::held_hosts`), `ephemeral::burst_coalesced_while_upload_in_flight_spec_sync_9`, `ephemeral::signals_not_held_back_spec_sync_9`, `ephemeral::random_window_inflight_*` (half the steps end after one hop, `Net::round`).
 - Re-review: `Lane::orphans` holds at most one delete per upload in flight on a connection (bounded by the uploads a 2 min request timeout lets pile up on a silent host) and goes with the connection; then plain covered entries are deleted when the next connection announces them again (absorbed replay). A copy refused while an orphan is held has the same blob ID, so the same bytes: nothing newer is refused. An orphan answered with a code other than OK is dropped without a delete (a replacement refused by rate leaves the entry there until a replay or expiry). Tests: `ephemeral::covered_while_slow_deleted_{once_answered,after_reconnect}_spec_sync_9`.
 
+## Memory snapshots in Core (eph-unify step B1, hidden path)
+- `Engine::snapshot` of a `~` aspect writes a memory compaction snapshot (commit form, ephemeral marker, the whole state's writes of every author, frontiers over sessions, no expiring delta carried or covered); `ingest_memory` takes them; every holder drops the memory bodies a valid held one covers at once and forgets them (`retention::memory::drop_covered`). Replaces own covers once B2 swaps the lane over (issues/eph-unify.md Step B1 as built, Step B2): an author's covers become ordinary snapshots by the aspect's compactor, coalescing a snapshot of the unsent own commits.
+
 ## Open (owner)
 - See issues/ephemeral-data.md.

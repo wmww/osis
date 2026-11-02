@@ -4817,7 +4817,22 @@ fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
 // review; a few here)
 #[test]
 fn memory_random_histories_read_alike_spec_crdt_4_7() {
-    for seed in 0u64..6 {
+    memory_random_histories(0..6, false);
+}
+
+// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered), issues/eph-unify.md
+// step B: `memory_random_histories_read_alike_spec_crdt_4_7` with memory snapshots among the
+// writes (any writer or the admin, of the aspect's whole state at that node): each holder drops
+// what the snapshots it holds cover and forgets it, and all still read alike
+#[test]
+fn memory_random_histories_with_snapshots_read_alike_spec_sync_9() {
+    memory_random_histories(0..6, true);
+}
+
+/// Random memory histories over four nodes (`memory_random_histories_read_alike_spec_crdt_4_7`),
+/// with memory snapshots among the writes when `snapshots`.
+fn memory_random_histories(seeds: std::ops::Range<u64>, snapshots: bool) {
+    for seed in seeds {
         let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut rnd = move |n: u64| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x % n };
         let mut lp = crate::common::net(4, 1000 + seed);
@@ -4834,8 +4849,22 @@ fn memory_random_histories_read_alike_spec_crdt_4_7() {
         let steps = 14;
         for step in 0..steps {
             let w = 1 + rnd(2) as usize;
+            if snapshots && rnd(4) == 0 {
+                let by = if rnd(3) == 0 { 0 } else { w };
+                let e = &mut lp.peers[by].engine;
+                // none when a held covered-equal snapshot with a lower ID made it go at once
+                let c = e.snapshot(&d, &eph(ak)).unwrap().and_then(|id| e.package(&id).unwrap().map(|p| (id, p.bytes)));
+                log.push(format!("{step}: snapshot by {by}: {:?}", c.as_ref().map(|c| c.0)));
+                for to in (0..4).filter(|to| *to != by) {
+                    if let Some(c) = &c {
+                        queue.push((step + rnd(6), to, c.clone()));
+                    }
+                }
+                lp.advance(1 + rnd(300));
+                continue;
+            }
             let k = s(&format!("k{}", rnd(3)));
-            let exp = if rnd(5) == 0 { None } else { Some(200 + rnd(3000)) };
+            let exp = if rnd(if snapshots { 2 } else { 5 }) == 0 { None } else { Some(200 + rnd(3000)) };
             let (path, op) = match rnd(10) {
                 0 => (Vec::new(), Op::Remove(k)),
                 1 => (Vec::new(), Op::Replace(Value::Map([(k, s(&format!("r{step}")))].into()))),
@@ -4931,4 +4960,129 @@ fn memory_partly_expired_commit_superseded_alike_spec_sync_9() {
     for i in [0, 2] {
         assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map(BTreeMap::new())), "{i}");
     }
+}
+
+/// Peer `i` snapshots `t:tags.0~` of `t` (a memory compaction snapshot), packaged.
+fn memory_snapshot(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid) -> (osis_base::CommitId, Vec<u8>) {
+    let e = &mut lp.peers[i].engine;
+    let id = e.snapshot(&t, &eph("t:tags.0~")).unwrap().unwrap();
+    (id, e.package(&id).unwrap().unwrap().bytes)
+}
+
+// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered): a memory snapshot of
+// an aspect's whole state is a memory commit; each holder drops the bodies it covers at once and
+// forgets their headers, at the writer, at a holder of them all and at one receiving them after
+// the snapshot; an expiring write is neither carried nor covered and vanishes at T alike;
+// nothing durable written
+#[test]
+fn memory_snapshot_covers_held_bodies_spec_sync_9() {
+    let (mut lp, d) = memory_trio(49);
+    let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
+    faults.iter().for_each(|f| f.forbid_writes(true));
+    let a1 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a1")), None);
+    let a2 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a2")), None);
+    let b1 = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("b1")), None);
+    let e1 = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("e1")), Some(30_000));
+    for c in [&a1, &a2, &e1] {
+        memory_deliver(&mut lp, 1, c);
+    }
+    for c in [&b1, &e1] {
+        memory_deliver(&mut lp, 0, c);
+    }
+    memory_deliver(&mut lp, 2, &a1);
+    let snap = memory_snapshot(&mut lp, 0, d);
+    assert!(lp.peers[0].engine.core.ix.commits.get(&snap.0).is_some_and(|m| m.view.memory && m.header.ephemeral.is_some()));
+    for c in [&a1, &a2, &b1] {
+        assert!(!holds_commit(&lp, 0, &c.0), "the writer drops what its snapshot covers");
+    }
+    assert!(holds_commit(&lp, 0, &e1.0), "an expiring write is not covered");
+    memory_deliver(&mut lp, 1, &snap);
+    memory_deliver(&mut lp, 2, &snap);
+    assert!(!holds_commit(&lp, 2, &a1.0));
+    for c in [&a2, &b1, &e1] {
+        memory_deliver(&mut lp, 2, c);
+    }
+    let all = Some(Value::Set([s("a1"), s("a2"), s("b1"), s("e1")].into()));
+    for i in 0..3 {
+        for c in [&a1, &a2, &b1] {
+            assert!(!holds_commit(&lp, i, &c.0), "{i}: covered, forgotten");
+        }
+        assert!(holds_commit(&lp, i, &snap.0) && holds_commit(&lp, i, &e1.0), "{i}");
+        assert_eq!(memory_tags(&mut lp, i, d), all, "{i}");
+    }
+    // a covered commit arriving again is covered again
+    memory_deliver(&mut lp, 1, &a1);
+    assert!(!holds_commit(&lp, 1, &a1.0));
+    // a later snapshot covers the earlier one, whose bodies are forgotten
+    let a3 = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a3")), None);
+    let snap2 = memory_snapshot(&mut lp, 0, d);
+    assert!(!holds_commit(&lp, 0, &snap.0) && !holds_commit(&lp, 0, &a3.0), "the newer snapshot covers the older one");
+    for i in [1, 2] {
+        memory_deliver(&mut lp, i, &a3);
+        memory_deliver(&mut lp, i, &snap2);
+        assert!(!holds_commit(&lp, i, &snap.0) && !holds_commit(&lp, i, &a3.0), "{i}");
+    }
+    lp.advance(31_000);
+    let left = Some(Value::Set([s("a1"), s("a2"), s("a3"), s("b1")].into()));
+    for i in 0..3 {
+        lp.peers[i].engine.tick().unwrap();
+        assert_eq!(memory_tags(&mut lp, i, d), left, "{i}: the expiring write vanished");
+    }
+    assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
+}
+
+// spec/sync.md §7 (covered-equal snapshots: only the higher commit ID goes), memory class: two
+// writers snapshot the same state; each covers the other and every holder keeps the lower one
+#[test]
+fn memory_covered_equal_snapshots_keep_lower_spec_sync_7() {
+    let (mut lp, d) = memory_trio(51);
+    let a = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a")), None);
+    memory_deliver(&mut lp, 1, &a);
+    let s0 = memory_snapshot(&mut lp, 0, d);
+    let s1 = memory_snapshot(&mut lp, 1, d);
+    memory_deliver(&mut lp, 1, &s0);
+    memory_deliver(&mut lp, 0, &s1);
+    memory_deliver(&mut lp, 2, &s1);
+    memory_deliver(&mut lp, 2, &s0);
+    let (lo, hi) = if s0.0 < s1.0 { (s0.0, s1.0) } else { (s1.0, s0.0) };
+    for i in 0..3 {
+        assert!(holds_commit(&lp, i, &lo) && !holds_commit(&lp, i, &hi), "{i}");
+        assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("a")].into())), "{i}");
+    }
+}
+
+// spec/permissions.md §5.2 (a snapshot turning invalid gives nothing; a body dropped under its
+// cover counts as never received and joins when it arrives again), memory class
+// (issues/eph-cover-invalidated-loses-absorbed.md at Core level): w writes X, removes itself,
+// then snapshots X past the removal. Holder a gets the snapshot before the removal (drops X as
+// covered, then the snapshot turns invalid), b the removal first (snapshot invalid on arrival, X
+// kept). Each reads what it holds; once X arrives again a reads as b.
+#[test]
+fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
+    let (mut lp, d) = memory_trio(53);
+    let wt = lp.peers[1].engine.tid();
+    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    lp.advance(10);
+    let dm = osis_node::flows::Demotion { holder: wt, new: None, presync: osis_node::flows::PreSync::Synced };
+    let r = *lp.peers[1].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
+    let rp = lp.peers[1].engine.package(&r).unwrap().unwrap();
+    lp.advance(10);
+    lp.peers[1].engine.core.skip_writer_rules = true;
+    let c = memory_snapshot(&mut lp, 1, d);
+    lp.peers[1].engine.core.skip_writer_rules = false;
+    let (a, b) = (0, 2);
+    memory_deliver(&mut lp, a, &x);
+    memory_deliver(&mut lp, a, &c);
+    assert!(!holds_commit(&lp, a, &x.0), "a drops X under the snapshot");
+    lp.deliver(a, &rp).unwrap();
+    memory_deliver(&mut lp, b, &x);
+    lp.deliver(b, &rp).unwrap();
+    memory_deliver(&mut lp, b, &c);
+    assert!(holds_commit(&lp, b, &x.0));
+    let xs = Some(Value::Set([s("X")].into()));
+    assert_eq!(memory_tags(&mut lp, b, d), xs);
+    assert_eq!(memory_tags(&mut lp, a, d), None, "the invalid snapshot gives nothing, X is not held");
+    memory_deliver(&mut lp, a, &x);
+    assert!(holds_commit(&lp, a, &x.0), "an invalid snapshot covers nothing");
+    assert_eq!(memory_tags(&mut lp, a, d), xs, "a reads as b once X is back");
 }
