@@ -408,7 +408,7 @@ fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock
     db
 }
 
-// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §8 (wait_synced through the port), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, Network after the deadline when the host is unreachable; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §8 (wait_synced through the port), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, Network after the deadline when the host is unreachable; at most `MAX_WAITS` waits at once per connection; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
 #[test]
 fn attached_wait_synced_as_at_the_node() {
     use crate::common::block_on;
@@ -470,6 +470,17 @@ fn attached_wait_synced_as_at_the_node() {
     let short = Duration::from_millis(500);
     assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
     assert!(matches!(block_on(m.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
+    // at most 16 waits at once per connection (each a waiter the node checks per change); an
+    // ended one frees its place
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut waits: Vec<_> = (0..16).map(|_| Box::pin(cm.wait_synced(SyncScope::All, W))).collect();
+    for w in &mut waits {
+        assert!(w.as_mut().poll(&mut cx).is_pending());
+    }
+    assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Invalid(_))));
+    waits.pop();
+    assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
+    drop(waits);
     drop((c, cm));
     m.close().unwrap();
     n.close().unwrap();

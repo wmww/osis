@@ -8,7 +8,7 @@
 //! identity, session) under the node epoch, so a retry is answered once.
 
 use super::codec::{self as c, Args, outcome_err, u};
-use super::{MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
+use super::{MAX_SCHEMA_BYTES, MAX_WAITS, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, WeakOsis};
 use crate::watch::{Delivery, Filter, Subscription, lock};
@@ -429,6 +429,9 @@ impl Worker {
             filter::SYNCED => {
                 let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
                 a.end()?;
+                if c.subs.values().filter(|s| matches!(s.kind, Kind::Synced(Some(_)))).count() >= MAX_WAITS {
+                    return Err(Error::Invalid(format!("at most {MAX_WAITS} waits at once per connection")));
+                }
                 return Ok(self.sub_synced(db, conn, id, max_reply, scope, ms));
             }
             filter::ASPECT => Kind::Aspect(a.tid()?, a.ak()?),

@@ -106,6 +106,10 @@ pub const SIGNAL_BYTES: usize = 1 << 20;
 /// Schema source bytes a connection may register. Resource bound: 0 forbids typed sets through
 /// the port, infinity lets one client fill memory.
 pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
+/// `wait_synced` subscriptions per connection still waiting (each is a waiter the node checks
+/// after every change, O(labels)). Resource bound: 0 forbids waiting through the port, infinity
+/// (`MAX_SUBS`) multiplies the per-change cost of the lock the sync driver needs. Past it `Invalid`.
+pub const MAX_WAITS: usize = 16;
 /// Bytes of a `stream_read` page. Performance switch: 0 moves nothing, infinity is one page
 /// bounded by `REPLY_BUDGET`.
 pub const STREAM_CHUNK: usize = 1 << 20;

@@ -104,6 +104,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_SUBS` 4096 per connection (osis-proto `api`, spec/wire.md §11.2) | R (code 4; counted apart from open labels) | no remote watching / one connection grows the dirty-flag table and per-change filter walk without bound |
 | `SMALL_REPLY` 64 KiB (`MAX_MESSAGE` − `REPLY_BUDGET`; the smallest `max_reply`, Auth's and Unsub's allowance) | R (a larger reply is `TooLarge`; the client asks again under a larger `max_reply`) | every reply `TooLarge` / one reply per window |
 | `WRITE_NONCES` 64 per session (osis `port`) | R (an older nonce is "outcome unknown") | every retry an unknown outcome / unbounded per session |
+| `MAX_WAITS` 16 per connection (osis `port`, `wait_synced` subscriptions still waiting) | R (`Invalid`; a finished wait counts no more) | no waiting through the port / `MAX_SUBS` waiters each O(labels) per change under `eng` |
 | `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
 | `MAX_SCHEMA_BYTES` 1 MiB per connection (osis `port`) | R (`TooLarge`) | no typed set through the port / one client fills memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
