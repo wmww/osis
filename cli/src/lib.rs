@@ -213,9 +213,13 @@ fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<O
 }
 
 /// The daemon serving the store at `d`: its socket named by `<store>/sock`, attached as Owner
-/// (notes/client-port.md §5). None when there is no live one.
+/// (notes/client-port.md §5). None when there is no live one, or the file names another
+/// socket than the store's (`socket_path`): another store's daemon is not this one.
 fn daemon(d: &Path, g: &Global) -> Option<Osis> {
     let sock = std::fs::read_to_string(d.join(osis::SOCK_FILE)).ok()?;
+    if Path::new(sock.trim_end()) != osis::socket_path(d).ok()? {
+        return None;
+    }
     let mut cfg = Config::memory();
     if let Some(l) = g.limit {
         cfg.materialize_limit = l;
@@ -227,7 +231,16 @@ fn daemon(d: &Path, g: &Global) -> Option<Osis> {
 /// `<store>/sock` (removed when the guard drops). A memory store has none.
 pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<Option<SockFile>> {
     let StoreSel::Dir(d) = sel else { return Ok(None) };
-    let sock = osis::socket_path(d)?;
+    // a socket directory another user made first (no XDG_RUNTIME_DIR, `/tmp/osis-<uid>`) costs
+    // the clients, never the daemon
+    let sock = match osis::socket_path(d) {
+        Ok(s) => s,
+        Err(e) => {
+            let _ = std::fs::remove_file(d.join(osis::SOCK_FILE));
+            eprintln!("warning: serving without a client socket: {e}");
+            return Ok(None);
+        }
+    };
     db.listen_unix(&sock)?;
     let f = d.join(osis::SOCK_FILE);
     std::fs::write(&f, format!("{}\n", sock.display()))?;
