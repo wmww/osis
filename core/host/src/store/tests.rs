@@ -268,6 +268,45 @@ fn log_trimmed_by_age() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
+// spec/sync.md §4: an expiry's trim point leaves a later deletion's tombstone of the same blob
+// its full lifetime
+#[test]
+fn expiry_trim_keeps_later_tombstone() {
+    let mut e = env(HostPolicy::default());
+    let l = e.f.label;
+    e.store.put(&l, put(&blob(1), true, Some(T0 + 10))).unwrap();
+    e.store.sweep(T0 + 10, 1024).unwrap();
+    assert_eq!(e.store.entry(&l, &id(1)).unwrap(), None);
+    e.clock.set(WallMs(T0 + DAY_MS));
+    e.store.put(&l, Put { now: T0 + DAY_MS, ..put(&blob(1), true, None) }).unwrap();
+    assert_eq!(e.store.delete(&l, &id(1), T0 + DAY_MS).unwrap(), Code::OK);
+    e.store.sweep(T0 + 10 + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
+    assert!(e.store.tombstoned(&l, &id(1)).unwrap(), "the deletion's tombstone outlives the expiry's trim");
+    e.store.sweep(T0 + DAY_MS + TOMBSTONE_LIFETIME_MS, 1024).unwrap();
+    assert!(!e.store.tombstoned(&l, &id(1)).unwrap());
+}
+
+// a sweep whose budget the due trim rows fill still trims: no label's trim starves
+#[test]
+fn log_trim_progresses_when_trim_rows_fill_budget() {
+    let mut e = env(HostPolicy::default());
+    let labels: Vec<LabelId> = (0..4u8).map(|n| {
+        let g = Fixture::new(0x20 + n);
+        e.store.push_step(&g.label, g.genesis.clone(), None).unwrap();
+        e.store.put(&g.label, put(&blob(1), true, None)).unwrap();
+        assert_eq!(e.store.delete(&g.label, &id(1), T0).unwrap(), Code::OK);
+        g.label
+    }).collect();
+    let mut sweeps = 0;
+    while e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS, labels.len()).unwrap().more {
+        sweeps += 1;
+        assert!(sweeps < 100, "the trim makes progress");
+    }
+    for l in &labels {
+        assert_eq!(e.store.log_after(l, 0, 1).unwrap(), None, "trimmed");
+    }
+}
+
 // spec/sync.md §4: a claim set is kept until its step has been superseded for ROLE_KEEP
 #[test]
 fn claim_sets_dropped_after_role_keep() {
