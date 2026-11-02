@@ -4,7 +4,7 @@
 use crate::commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
 use crate::error::{Error, Result};
 use crate::read::{Edge, GroupsOf, Roster, Stamp};
-use crate::share::{GroupSync, HostAddr, Status, SyncState};
+use crate::share::{EdgeOpts, GroupReach, GroupSync, HostAddr, LinkInfo, Share, Status, SyncScope, SyncState};
 use crate::watch::{CommitInfo, Source};
 use crate::write::Committed;
 use osis_base::{Ak, CommitId, LabelId, Role, Tid, Ts, Value, WallMs};
@@ -81,6 +81,10 @@ impl Args {
             1 => Ok(l.pop()),
             _ => Err(bad("option")),
         }
+    }
+    /// A tid if one is left.
+    pub fn opt_tid(&mut self) -> Result<Option<Tid>> {
+        self.0.next().map(|v| tid(&v)).transpose()
     }
     /// The positions not read yet.
     pub fn rest(&mut self) -> Vec<Value> {
@@ -589,6 +593,117 @@ pub(crate) fn retention(v: Value) -> Result<Retention> {
     let r = Retention { by, at_least: bound(a.next()?)?, at_most: bound(a.next()?)? };
     a.end()?;
     Ok(r)
+}
+
+/// Edge options: `[Opt(until), Opt(invite)]`.
+pub(crate) fn edge_opts_v(o: &EdgeOpts) -> Value {
+    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.invite, role_v)])
+}
+
+pub(crate) fn edge_opts(v: Value) -> Result<EdgeOpts> {
+    let mut a = Args::new(v)?;
+    let until = a.opt()?.map(|w| wall(&w)).transpose()?;
+    let invite = a.opt()?.map(|r| role(&r)).transpose()?;
+    a.end()?;
+    Ok(EdgeOpts { until, invite })
+}
+
+/// A share: `[0, role]` tied, `[1, role]` untied, `[2]` excluded.
+pub(crate) fn share_v(s: Share) -> Value {
+    Value::List(match s {
+        Share::Tied(r) => vec![u(0), role_v(r)],
+        Share::Untied(r) => vec![u(1), role_v(r)],
+        Share::Excluded => vec![u(2)],
+    })
+}
+
+pub(crate) fn share(v: Value) -> Result<Share> {
+    let mut a = Args::new(v)?;
+    let s = match a.uint()? {
+        0 => Share::Tied(role(&a.next()?)?),
+        1 => Share::Untied(role(&a.next()?)?),
+        2 => Share::Excluded,
+        _ => return Err(bad("share")),
+    };
+    a.end()?;
+    Ok(s)
+}
+
+pub(crate) fn reach_v(r: &[GroupReach]) -> Value {
+    Value::List(r.iter().map(|x| Value::List(vec![Value::Tid(x.group), Value::Bool(x.placed), share_v(x.share)])).collect())
+}
+
+pub(crate) fn reach(v: Value) -> Result<Vec<GroupReach>> {
+    Args::of(vec![v]).list()?.into_iter().map(|x| {
+        let mut a = Args::new(x)?;
+        let r = GroupReach { group: a.tid()?, placed: a.bool()?, share: share(a.next()?)? };
+        a.end()?;
+        Ok(r)
+    }).collect()
+}
+
+pub(crate) fn pairs_v(p: &[(Tid, Tid)]) -> Value {
+    Value::List(p.iter().map(|(a, b)| Value::List(vec![Value::Tid(*a), Value::Tid(*b)])).collect())
+}
+
+pub(crate) fn pairs(v: Value) -> Result<Vec<(Tid, Tid)>> {
+    Args::of(vec![v]).list()?.into_iter().map(|x| {
+        let mut a = Args::new(x)?;
+        let r = (a.tid()?, a.tid()?);
+        a.end()?;
+        Ok(r)
+    }).collect()
+}
+
+pub(crate) fn links_v(l: &[LinkInfo]) -> Value {
+    Value::List(l.iter().map(|x| Value::List(vec![Value::Tid(x.id), Value::Tid(x.target), role_v(x.role), opt(x.until, |w| u(w.0)), Value::Bool(x.single_use)])).collect())
+}
+
+pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
+    Args::of(vec![v]).list()?.into_iter().map(|x| {
+        let mut a = Args::new(x)?;
+        let r = LinkInfo { id: a.tid()?, target: a.tid()?, role: role(&a.next()?)?, until: a.opt()?.map(|w| wall(&w)).transpose()?, single_use: a.bool()? };
+        a.end()?;
+        Ok(r)
+    }).collect()
+}
+
+/// A sync scope: `[]` all, `[tid]` the groups holding it.
+pub(crate) fn sync_scope_v(s: SyncScope) -> Value {
+    Value::List(match s {
+        SyncScope::All => vec![],
+        SyncScope::Group(t) => vec![Value::Tid(t)],
+    })
+}
+
+pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
+    let mut a = Args::new(v)?;
+    let s = match a.opt_tid()? {
+        None => SyncScope::All,
+        Some(t) => SyncScope::Group(t),
+    };
+    a.end()?;
+    Ok(s)
+}
+
+/// A unit result: `[0]` or an error outcome.
+pub(crate) fn done_v(r: &Result<()>) -> Value {
+    match r {
+        Ok(()) => Value::List(vec![u(0)]),
+        Err(e) => outcome_err(e).to_value(),
+    }
+}
+
+pub(crate) fn done(v: Value) -> Result<Result<()>> {
+    let mut a = Args::new(v)?;
+    match a.uint()? {
+        0 => a.end().map(Ok),
+        1 => {
+            let code = a.uint()?;
+            Ok(Err(error_of(code, a.rest())))
+        }
+        _ => Err(bad("result")),
+    }
 }
 
 /// An error as a Reply outcome (spec/wire.md §11.2 codes).

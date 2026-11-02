@@ -317,7 +317,7 @@ impl Osis {
 
     /// A remote result of a call whose signature cannot fail: the default when the node could
     /// not answer, reported as a diagnostic.
-    fn infallible<T: Default>(&self, r: Result<T>) -> T {
+    pub(crate) fn infallible<T: Default>(&self, r: Result<T>) -> T {
         r.unwrap_or_else(|e| {
             self.engine(|x| x.report(Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("attached node: {e}") }));
             T::default()

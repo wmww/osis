@@ -17,6 +17,7 @@ use osis_node::sync::{Action, ConnId, Event, Tier};
 use osis_proto::msg::Id;
 use osis_proto::{Code, Message, Outcome, Payload};
 use std::collections::{BTreeMap, VecDeque};
+use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{Sender, channel};
@@ -31,6 +32,21 @@ pub(crate) enum Job {
     Act(Action),
     /// A subscription of this connection has something to send.
     Dirty(ConnId),
+    /// A `wait_synced` subscription's outcome may be known.
+    Woke(ConnId, Id),
+}
+
+/// Wakes the worker for a `wait_synced` subscription (from under the handle lock: only a send).
+struct Wake {
+    tx: Sender<Job>,
+    conn: ConnId,
+    id: Id,
+}
+
+impl std::task::Wake for Wake {
+    fn wake(self: Arc<Self>) {
+        let _ = self.tx.send(Job::Woke(self.conn, self.id));
+    }
 }
 
 /// The port of one database: its node epoch, the jobs queued under the lock, the worker.
@@ -109,13 +125,15 @@ enum Kind {
     Roster(Tid),
     Status,
     Diagnostics,
+    /// One `wait_synced` at this node, until its outcome went.
+    Synced(Option<crate::net::Pending<Result<()>>>),
 }
 
 struct PortSub {
     max_reply: usize,
     kind: Kind,
     pending: Arc<Mutex<Pending>>,
-    _sub: Subscription,
+    _sub: Option<Subscription>,
 }
 
 struct Conn {
@@ -170,8 +188,22 @@ impl Worker {
             }
             Job::Act(_) => {}
             Job::Dirty(conn) => self.want_room(&db, conn),
+            Job::Woke(conn, id) => self.woke(&db, conn, id),
         }
         true
+    }
+
+    /// Polls a `wait_synced` subscription's outcome; once known, it is queued as the
+    /// subscription's one Notify.
+    fn woke(&mut self, db: &Osis, conn: ConnId, id: Id) {
+        let tx = self.tx.clone();
+        let Some(s) = self.conns.get_mut(&conn).and_then(|c| c.subs.get_mut(&id)) else { return };
+        let Kind::Synced(Some(p)) = &mut s.kind else { return };
+        let waker = std::task::Waker::from(Arc::new(Wake { tx, conn, id }));
+        let std::task::Poll::Ready(r) = std::pin::Pin::new(p).poll(&mut std::task::Context::from_waker(&waker)) else { return };
+        s.kind = Kind::Synced(None);
+        lock(&s.pending).queue.push_back((Value::List(vec![c::done_v(&r)]), 0));
+        self.want_room(db, conn);
     }
 
     fn feed(&self, db: &Osis, ev: Event) {
@@ -341,6 +373,47 @@ impl Worker {
             }
             method::NOW => u(db.now().0),
             method::HOSTS => Value::List(db.hosts().iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::SYNC_NOW => {
+                db.sync_now()?;
+                Value::List(vec![])
+            }
+            method::SYNC => {
+                let g = a.tid()?;
+                let hosts = a.list()?.into_iter().map(|h| c::Args::of(vec![h]).text()?.parse()).collect::<Result<Vec<crate::HostAddr>>>()?;
+                db.sync(g, &hosts)?;
+                Value::List(vec![])
+            }
+            method::UNSYNC => {
+                db.unsync(a.tid()?)?;
+                Value::List(vec![])
+            }
+            method::GRANT | method::CHANGE_EDGE => {
+                let (t, h, r, o) = (a.tid()?, a.tid()?, c::role(&a.next()?)?, c::edge_opts(a.next()?)?);
+                if m == method::GRANT { db.grant(t, h, r, o)? } else { db.change_edge(t, h, r, o)? }
+                Value::List(vec![])
+            }
+            method::SHARE_INTO => {
+                let (t, g, r) = (a.tid()?, a.tid()?, c::role(&a.next()?)?);
+                let o = crate::ShareOpts { subgroup: a.bool()?, place_anyway: a.bool()? };
+                c::share_v(db.share_into(t, g, r, o)?)
+            }
+            method::REMOVE_EDGE_OF => {
+                db.remove_edge_of(a.tid()?, a.tid()?)?;
+                Value::List(vec![])
+            }
+            method::LEAVE => {
+                db.leave(a.tid()?)?;
+                Value::List(vec![])
+            }
+            method::REACH => c::reach_v(&db.reach(a.tid()?)),
+            method::HOLDER_PATH => c::pairs_v(&db.holder_path(a.tid()?, a.tid()?)),
+            method::LINKS => c::links_v(&db.links(a.tid()?)),
+            method::MAKE_LINK => {
+                let (t, r) = (a.tid()?, c::role(&a.next()?)?);
+                let until = a.opt()?.map(|w| w.as_uint().map(osis_base::WallMs).ok_or_else(|| c::bad("time"))).transpose()?;
+                let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
+                Value::Str(db.make_link(t, r, o)?.to_string())
+            }
             _ => return Err(unsupported(&format!("method {m}"))),
         };
         Ok(v)
@@ -353,6 +426,11 @@ impl Worker {
         let held = c.held.clone();
         let mut a = Args::new(f)?;
         let kind = match a.uint()? {
+            filter::SYNCED => {
+                let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
+                a.end()?;
+                return Ok(self.sub_synced(db, conn, id, max_reply, scope, ms));
+            }
             filter::ASPECT => Kind::Aspect(a.tid()?, a.ak()?),
             filter::THING => Kind::Thing(a.tid()?),
             filter::ROSTER => Kind::Roster(a.tid()?),
@@ -411,6 +489,7 @@ impl Worker {
             }
             Kind::Status => (Filter::Status, None),
             Kind::Diagnostics => (Filter::Diagnostics, None),
+            Kind::Synced(_) => return Err(c::bad("filter")),
         };
         let sub = db.subscribe(filter, false, |r| {
             initial = match &kind {
@@ -420,7 +499,7 @@ impl Worker {
                     Value::List(r.aspects(t).unwrap_or_default().iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(t, ak))])).collect())
                 }
                 Kind::Roster(_) => c::roster_v(&r.roster(tid.unwrap_or(db.me()))),
-                Kind::Status | Kind::Diagnostics => Value::List(vec![]),
+                Kind::Status | Kind::Diagnostics | Kind::Synced(_) => Value::List(vec![]),
             };
             let _ = limit;
             cb
@@ -435,9 +514,26 @@ impl Worker {
             k => k,
         };
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.subs.insert(id, PortSub { max_reply, kind, pending, _sub: sub });
+            c.subs.insert(id, PortSub { max_reply, kind, pending, _sub: Some(sub) });
         }
         Ok(initial)
+    }
+
+    /// A `wait_synced` as a subscription (notes/client-port.md §8): the node's own wait (its
+    /// waiter, polled under the lock after every change as a local app's is), never blocking
+    /// this worker; the Reply carries the outcome when it is known at once, else the one Notify.
+    fn sub_synced(&mut self, db: &Osis, conn: ConnId, id: Id, max_reply: usize, scope: crate::share::SyncScope, ms: u64) -> Value {
+        let mut p = db.wait_synced_pending(scope, std::time::Duration::from_millis(ms));
+        let waker = std::task::Waker::from(Arc::new(Wake { tx: self.tx.clone(), conn, id }));
+        let now = std::pin::Pin::new(&mut p).poll(&mut std::task::Context::from_waker(&waker));
+        let (kind, initial) = match now {
+            std::task::Poll::Ready(r) => (Kind::Synced(None), c::opt(Some(r), |r| c::done_v(&r))),
+            std::task::Poll::Pending => (Kind::Synced(Some(p)), Value::List(vec![])),
+        };
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.subs.insert(id, PortSub { max_reply, kind, pending: Arc::default(), _sub: None });
+        }
+        initial
     }
 
     /// Sends what dirty subscriptions of `conn` have, within `budget` bytes; asks for room again

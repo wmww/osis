@@ -591,6 +591,37 @@ impl Osis {
         self.remote_sub(Value::List(vec![u(super::filter::STATUS)]), cb).map(|x| x.0).unwrap_or_else(|_| self.dead_sub())
     }
 
+    /// `wait_synced` at the attached node: a subscription the node answers once with the
+    /// outcome of its own `wait_synced(scope, timeout)` (its rule, its clock and deadline); no
+    /// Call waits and nothing holds the node's worker. The connection ending is `Network`.
+    pub(crate) fn remote_wait_synced(&self, scope: crate::share::SyncScope, timeout: Duration) -> Result<(Subscription, crate::net::Pending<Result<()>>)> {
+        use crate::watch::{Delivery, PortEvent};
+        let (pending, slot) = crate::net::Pending::new();
+        // the first outcome stands (a later end of the connection does not replace it)
+        let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let put = move |r: Result<()>| {
+            if !first.swap(true, Ordering::AcqRel) {
+                slot.put(r);
+            }
+        };
+        let p2 = put.clone();
+        let cb: Callback = Box::new(move |_, d| match d {
+            Delivery::Port(PortEvent::Notify(Payload::Delivery { value, .. })) => {
+                if let Ok(Some(v)) = c::Args::of(vec![value]).opt() {
+                    p2(c::done(v).unwrap_or_else(Err));
+                }
+            }
+            Delivery::Port(PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) | PortEvent::Closed) => p2(Err(net(LOST))),
+            _ => {}
+        });
+        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+        let (sub, initial) = self.remote_sub(Value::List(vec![u(super::filter::SYNCED), c::sync_scope_v(scope), u(ms)]), cb)?;
+        if let Some(v) = c::Args::of(vec![initial]).opt()? {
+            put(c::done(v)?);
+        }
+        Ok((sub, pending))
+    }
+
     /// A subscription that never fires (a remote watch whose Sub failed on a call that cannot
     /// return an error).
     fn dead_sub(&self) -> Subscription {

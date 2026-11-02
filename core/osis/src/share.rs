@@ -385,7 +385,7 @@ impl Osis {
     /// else `UnknownActor`. The grant reaches the holder's devices through its inbox.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("grant through the attached node".into()));
+            return self.rcall(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
         }
         let (target, holder) = (self.resolved(target), self.resolved(holder));
         if !self.holds(target) {
@@ -412,7 +412,7 @@ impl Osis {
     /// `Permission` before anything is written, unless `opts.place_anyway` (then `Excluded`).
     pub fn share_into(&self, tid: Tid, group: Tid, role: Role, opts: ShareOpts) -> Result<Share> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("share_into through the attached node".into()));
+            return crate::port::codec::share(self.rcall(crate::port::method::SHARE_INTO, vec![Value::Tid(tid), Value::Tid(group), crate::port::codec::role_v(role), Value::Bool(opts.subgroup), Value::Bool(opts.place_anyway)])?);
         }
         let (t, g) = (self.resolved(tid), self.resolved(group));
         for x in [t, g] {
@@ -482,7 +482,7 @@ impl Osis {
     /// when it is no admin of `group`; nothing is written when there is no such edge.
     pub fn remove_edge_of(&self, group: Tid, target: Tid) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("remove_edge_of through the attached node".into()));
+            return self.rcall(crate::port::method::REMOVE_EDGE_OF, vec![Value::Tid(group), Value::Tid(target)]).map(drop);
         }
         let (g, t) = (self.resolved(group), self.resolved(target));
         if !self.roster(t).contains_key(&g) {
@@ -501,7 +501,7 @@ impl Osis {
     /// a tied edge on it that no longer lists it (`placed: false`, until that edge goes).
     pub fn reach(&self, tid: Tid) -> Vec<GroupReach> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Vec::new();
+            return self.infallible(self.rcall(crate::port::method::REACH, vec![Value::Tid(tid)]).and_then(crate::port::codec::reach));
         }
         let t = self.resolved(tid);
         let (gs, roster) = self.read_local(|r| (r.groups_of(t), r.roster(t)));
@@ -514,7 +514,7 @@ impl Osis {
     /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
     pub fn change_edge(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("change_edge through the attached node".into()));
+            return self.rcall(crate::port::method::CHANGE_EDGE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
         }
         let (t, m) = (self.resolved(target), self.resolved(holder));
         if let Some(e) = self.roster(t).get(&m)
@@ -577,7 +577,7 @@ impl Osis {
     /// K), (K, actor)]` for a link joiner; empty when it is none.
     pub fn holder_path(&self, target: Tid, actor: Tid) -> Vec<(Tid, Tid)> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Vec::new();
+            return self.infallible(self.rcall(crate::port::method::HOLDER_PATH, vec![Value::Tid(target), Value::Tid(actor)]).and_then(crate::port::codec::pairs));
         }
         let (t, a) = (self.resolved(target), self.resolved(actor));
         self.read_local(|r| {
@@ -668,7 +668,7 @@ impl Osis {
     /// Removes this person's own edge on `target` (a self-removal; no pre-sync).
     pub fn leave(&self, target: Tid) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("leave through the attached node".into()));
+            return self.rcall(crate::port::method::LEAVE, vec![Value::Tid(target)]).map(drop);
         }
         let t = self.resolved(target);
         let me = self.me();
@@ -680,7 +680,10 @@ impl Osis {
     /// on this database's hosts. Anyone holding the link can redeem it until `until` or
     /// `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
-        self.local_only("make_link")?;
+        if self.attached() {
+            let v = self.rcall(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
+            return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
+        }
         let t = self.resolved(target);
         let hosts = self.host_addrs();
         let me = self.me();
@@ -776,7 +779,7 @@ impl Osis {
     /// The links this node made to `target` that still work.
     pub fn links(&self, target: Tid) -> Vec<LinkInfo> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Vec::new();
+            return self.infallible(self.rcall(crate::port::method::LINKS, vec![Value::Tid(target)]).and_then(crate::port::codec::links));
         }
         let t = self.resolved(target);
         self.locked(|x| {
@@ -1084,7 +1087,7 @@ impl Osis {
     /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
     pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("sync through the attached node".into()));
+            return self.rcall(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(hosts.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
         }
         let g = self.resolved(group);
         if !self.holds(g) {
@@ -1114,7 +1117,7 @@ impl Osis {
     /// the group stays in other synced groups it is placed in).
     pub fn unsync(&self, group: Tid) -> Result<()> {
         if let crate::handle::Source::Remote = self.route_any() {
-            return Err(Error::Unsupported("unsync through the attached node".into()));
+            return self.rcall(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
         }
         let g = self.resolved(group);
         self.engine(|e| -> Result<()> {
@@ -1170,8 +1173,22 @@ impl Osis {
     /// `Unsynced`, unless replaced beside another) and the deliveries about `t`, a thing it holds or one of those groups (a
     /// grant on one, a non-writer's write under its label). `All`: every label with hosts
     /// (`status` shows the `NoHosts` ones) and every delivery.
+    ///
+    /// On an attached handle the node waits (a subscription, notes/client-port.md §8), with the
+    /// same outcomes.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
-        self.local_only("wait_synced")?;
+        if self.attached() {
+            let (sub, p) = self.remote_wait_synced(scope, timeout)?;
+            let r = p.await;
+            drop(sub);
+            return r;
+        }
+        self.wait_synced_pending(scope, timeout).await
+    }
+
+    /// `wait_synced` as a future holding no handle (the client port serves it so).
+    pub(crate) fn wait_synced_pending(&self, scope: SyncScope, timeout: Duration) -> crate::net::Pending<Result<()>> {
+        use crate::net::Pending;
         let (groups, about) = match scope {
             SyncScope::All => {
                 // nothing to wait for: done, also without a runtime
@@ -1180,7 +1197,7 @@ impl Osis {
                     x.sync.deliveries_pending() == 0 && !x.sync.label_status().iter().any(|s| s.hosts > 0 && !skip.contains(&s.group))
                 });
                 if idle {
-                    return Ok(());
+                    return Pending::ready(Ok(()));
                 }
                 (None, BTreeSet::new())
             }
@@ -1196,18 +1213,22 @@ impl Osis {
                     (groups, about)
                 });
                 if groups.is_empty() {
-                    return Err(Error::Unsynced { groups: vec![t] });
+                    return Pending::ready(Err(Error::Unsynced { groups: vec![t] }));
                 }
                 (Some(groups), about)
             }
         };
-        self.sync_now()?;
-        self.groups_synced(groups, Vec::new(), timeout, Some(about)).await
+        if let Err(e) = self.sync_now() {
+            return Pending::ready(Err(e));
+        }
+        self.groups_synced(groups, Vec::new(), timeout, Some(about))
     }
 
     /// Asks every host to sync every open label now.
     pub fn sync_now(&self) -> Result<()> {
-        self.local_only("sync_now")?;
+        if self.attached() {
+            return self.rcall(crate::port::method::SYNC_NOW, vec![]).map(drop);
+        }
         self.act(|x| x.sync.sync_now());
         Ok(())
     }

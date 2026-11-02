@@ -396,3 +396,81 @@ fn socket_dir_rules() {
     assert!(p.as_os_str().len() <= osis_transport::unix::MAX_PATH, "{p:?}");
     assert!(p.extension().is_some_and(|e| e == "sock"));
 }
+
+/// A node on `net` at endpoint `ep` with `hosts` and a runtime, serving the client port at `sock`.
+fn node_on(net: &osis_transport::Net, ep: &str, hosts: Vec<osis::HostAddr>, sock: &std::path::Path) -> Osis {
+    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
+    c.runtime = Runtime::Own;
+    c.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.hosts = hosts;
+    let db = Osis::create(c).unwrap().0;
+    db.listen_unix(sock).unwrap();
+    db
+}
+
+// spec/wire.md §11.2 (Sub, Notify), notes/client-port.md §8 (wait_synced through the port), notes/api.md Sync status: an attached handle's `wait_synced` has the node's outcomes: Ok once synced (All, and Group after `sync` through the port), Unsynced for a group without a label, Network after the deadline when the host is unreachable; `sync`, `grant`, `make_link`, `sync_now` and the sharing reads go through too
+#[test]
+fn attached_wait_synced_as_at_the_node() {
+    use crate::common::block_on;
+    use osis::{Role, SyncScope};
+    let d = Dir::new();
+    let net = osis_transport::Net::new(2);
+    // a host hosting any label
+    let mut hc = Config::at(StoreAt::Memory(MemStore::new()));
+    hc.runtime = Runtime::Own;
+    hc.transport = Some(Transport::InProcess(net.endpoint("s")));
+    hc.peers = false;
+    let host = Osis::create(hc).unwrap().0;
+    host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".into()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    let end = std::time::Instant::now() + W;
+    let addr = loop {
+        if let Some(a) = host.host_address().unwrap() {
+            break a;
+        }
+        assert!(std::time::Instant::now() < end, "the host did not listen");
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    let sock = d.0.join("n.sock");
+    let n = node_on(&net, "n", vec![addr], &sock);
+    let c = attach(&sock);
+    block_on(c.wait_synced(SyncScope::All, W)).unwrap();
+    // a group without a label: Unsynced naming it, at once, as at the node
+    let (g, t) = c
+        .write_with(|w| {
+            let g = w.create(c.me())?;
+            w.make_group(g)?;
+            let t = w.create(g)?;
+            w.at(t, ak("note:title.0")).set(&Value::Str("a".into()))?;
+            w.place(t, g)?;
+            Ok((g, t))
+        })
+        .unwrap();
+    let r = block_on(c.wait_synced(SyncScope::Group(t), W));
+    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if groups == &vec![t]), "{r:?}");
+    assert_eq!(format!("{r:?}"), format!("{:?}", block_on(n.wait_synced(SyncScope::Group(t), W))));
+    // synced through the port, with a grant and a link delivered: Group and All resolve
+    c.sync(g, &[]).unwrap();
+    c.grant(g, n.node(), Role::Read, Default::default()).unwrap();
+    let link = c.make_link(g, Role::Read, Default::default()).unwrap();
+    assert!(!link.to_string().is_empty());
+    // the sharing reads agree with the node's
+    assert_eq!(c.links(g).len(), 1);
+    assert_eq!(c.links(g), n.links(g));
+    assert_eq!(c.reach(t), n.reach(t));
+    assert!(!c.holder_path(g, n.node()).is_empty());
+    assert_eq!(c.holder_path(g, n.node()), n.holder_path(g, n.node()));
+    c.sync_now().unwrap();
+    block_on(c.wait_synced(SyncScope::Group(t), W)).unwrap();
+    block_on(c.wait_synced(SyncScope::All, W)).unwrap();
+    assert_eq!(n.status().unwrap().groups[&g].state, osis::SyncState::Synced);
+    // a node whose only host nobody serves: Network after the deadline, as at the node
+    let sock2 = d.0.join("m.sock");
+    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &sock2);
+    let cm = attach(&sock2);
+    let short = Duration::from_millis(500);
+    assert!(matches!(block_on(cm.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
+    assert!(matches!(block_on(m.wait_synced(SyncScope::All, short)), Err(osis::Error::Network(_))));
+    drop((c, cm));
+    m.close().unwrap();
+    n.close().unwrap();
+}

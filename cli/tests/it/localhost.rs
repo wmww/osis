@@ -197,12 +197,23 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --owner me --in home --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`); `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally); `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
+    // a host, and Bob on it, a contact of the daemon's person both ways (before it serves)
+    let sd = dir("daemon-host");
+    osis(&sd, &["init"]);
+    let (_hosting, addr) = serve(&sd, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
     let s = dir("daemon");
-    osis(&s, &["init"]);
+    osis(&s, &["init", "--host", &addr]);
+    let b = dir("daemon-bob");
+    osis(&b, &["init", "--host", &addr]);
+    let card = osis(&b, &["card", "show"]);
+    let bob = osis(&s, &["card", "import", &card]);
+    // contacts both ways: Bob takes the grant without an invite request
+    let scard = osis(&s, &["card", "show"]);
+    osis(&b, &["card", "import", &scard]);
     let local = dir("daemon-local");
     osis(&local, &["init"]);
     // the same commands locally first, for the expected forms
@@ -256,9 +267,36 @@ fn daemon_clients_localhost() {
         wout.read_line(&mut second).unwrap();
         assert!(second.contains("\"y\""), "{second}");
         assert!(w.wait().unwrap().success());
+        // sharing and sync through the daemon: a synced group, a grant Bob receives, `sync`
+        // and `wait` (which wait at the node); a group without a label fails `wait` as locally
+        let mut unsynced = None;
+        if xdg {
+            let g = osis(&s, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            assert_eq!(osis(&s, &["group", "sync", &g]), "");
+            let gt = osis(&s, &["create", "--owner", &g, "--in", &g, "t:x.0", "\"shared\""]);
+            assert_eq!(osis(&s, &["grant", &g, &bob, "read"]), "");
+            assert_eq!(osis(&s, &["sync"]), "");
+            assert_eq!(osis(&s, &["wait", "--group", &gt]), "");
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            loop {
+                osis(&b, &["sync"]);
+                if run(&b, &["get", &gt, "t:x.0"]).1.trim_end() == "\"shared\"" {
+                    break;
+                }
+                assert!(std::time::Instant::now() < end, "Bob never received the grant");
+            }
+            let h = osis(&s, &["create", "--owner", "me", "--group", "t:made.0", "true"]);
+            let ht = osis(&s, &["create", "--owner", &h, "--in", &h, "t:x.0", "\"local\""]);
+            let w = run(&s, &["wait", "--group", &ht]);
+            assert_ne!(w.0, 0, "{}", w.2);
+            unsynced = Some((ht, w));
+        }
         // inspect needs the store itself
         assert_eq!(run(&s, &["inspect", "thing", &t]).0, 8);
         drop(host);
+        if let Some((ht, w)) = unsynced {
+            assert_eq!(run(&s, &["wait", "--group", &ht]), w, "the local run's outcome");
+        }
         // the daemon was killed: its pointer stays, stale; the store opens locally again
         assert_eq!(osis(&s, &["get", &t, "note:title.0"]), "\"y\"");
         osis(&s, &["set", &t, "note:title.0", "\"x\""]);
