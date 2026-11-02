@@ -60,10 +60,14 @@ fn auth(net: &mut Net, n: usize, conn: ConnId, cs: &mut ClientSession) -> Vec<Ac
 fn tier_is_the_transport_types() {
     let mut net = Net::new();
     let a = net.node(1, &[]);
-    let uid = 1000;
+    let uid = osis_transport::unix::own_uid().unwrap();
     let (c, mut cs, _) = client(&mut net, a, Peer::Unix { uid });
     let got = auth(&mut net, a, c, &mut cs);
     assert!(got.iter().any(|x| matches!(x, Action::Request { conn, tier: Tier::Owner, msg } if *conn == c && matches!(**msg, Message::Auth { .. }))), "{got:?}");
+    // a unix peer of another uid (whatever listener let it in) is never Owner
+    let (o, mut os, _) = client(&mut net, a, Peer::Unix { uid: uid.wrapping_add(1) });
+    let got = auth(&mut net, a, o, &mut os);
+    assert!(!got.iter().any(|x| matches!(x, Action::Request { .. })), "{got:?}");
     // a keyed peer presenting the very key a unix peer stands for is still keyed
     let (k, mut ks, _) = client(&mut net, a, Peer::Key(osis_transport::unix::uid_key(uid)));
     let got = auth(&mut net, a, k, &mut ks);
@@ -96,19 +100,20 @@ fn client_pool_idle_and_end() {
     let mut net = Net::new();
     let cfg = SyncConfig { max_clients: 1, max_served: 1, serve_idle_ms: 1_000, serve_open_ms: 1_000_000, ..SyncConfig::default() };
     let a = net.add_node(1, cfg);
+    let uid = osis_transport::unix::own_uid().unwrap();
     let (keyed, _, _) = client(&mut net, a, Peer::Key([9; 32]));
-    let (c1, _, _) = client(&mut net, a, Peer::Unix { uid: 7 });
-    let (c2, _, got) = client(&mut net, a, Peer::Unix { uid: 7 });
+    let (c1, _, _) = client(&mut net, a, Peer::Unix { uid });
+    let (c2, _, got) = client(&mut net, a, Peer::Unix { uid });
     assert!(got.contains(&Action::Close { conn: c1 }) && !got.contains(&Action::Close { conn: keyed }), "{got:?}");
-    let acts = net.sync(a).accept_peer(LOCAL, Peer::Unix { uid: 7 }).1;
+    let acts = net.sync(a).accept_peer(LOCAL, Peer::Unix { uid }).1;
     assert!(acts.contains(&Action::Close { conn: c2 }), "{acts:?}");
-    let (c3, mut cs3, _) = client(&mut net, a, Peer::Unix { uid: 7 });
+    let (c3, mut cs3, _) = client(&mut net, a, Peer::Unix { uid });
     let got = auth(&mut net, a, c3, &mut cs3);
     let Some(Action::Request { msg, .. }) = got.into_iter().find(|x| matches!(x, Action::Request { .. })) else { panic!() };
     let Message::Auth { id, .. } = *msg else { panic!() };
     let acts = net.sync(a).handle(Event::Reply { conn: c3, id, reply: Ok(Outcome::Ok { seq: 0, value: Value::Bytes(vec![0; 16]) }) });
     feed(&mut net, a, c3, &mut cs3, Vec::new(), acts);
-    let (c4, acts) = net.sync(a).accept_peer(LOCAL, Peer::Unix { uid: 7 });
+    let (c4, acts) = net.sync(a).accept_peer(LOCAL, Peer::Unix { uid });
     assert!(acts.contains(&Action::Close { conn: c4 }) && !acts.contains(&Action::Close { conn: c3 }), "{acts:?}");
     net.clock.advance(5_000);
     let acts = net.sync(a).handle(Event::Tick);

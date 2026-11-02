@@ -499,13 +499,14 @@ impl SyncEngine {
         self.accept_peer(local, osis_transport::Peer::Key(peer))
     }
 
-    /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session is a
-    /// client in the Owner tier (notes/client-port.md §0, §5), in its own pool of
-    /// `SyncConfig.max_clients` (an authenticated one counts as opened); every other session is
-    /// keyed, in `max_served`.
+    /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session of this
+    /// process's uid is a client in the Owner tier (notes/client-port.md §0, §5), in its own
+    /// pool of `SyncConfig.max_clients` (an authenticated one counts as opened); every other
+    /// session is keyed, in `max_served` (another uid's too, whatever its listener let in).
     pub fn accept_peer(&mut self, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Action>) {
         let (tier, peer, cap) = match peer {
-            osis_transport::Peer::Unix { uid } => (super::Tier::Owner, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
+            osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => (super::Tier::Owner, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
+            osis_transport::Peer::Unix { uid } => (super::Tier::Keyed, osis_transport::unix::uid_key(uid), self.cfg.max_served),
             osis_transport::Peer::Key(k) => (super::Tier::Keyed, k, self.cfg.max_served),
         };
         let conn = self.next_conn;
