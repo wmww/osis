@@ -1512,7 +1512,7 @@ pub fn write_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
 /// their key and set elements without their value (an index entry derived from a dropped write,
 /// spec/commits.md §5).
 /// `Ok(false)`: it does not fit the pages (strip and write whole).
-pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool) -> Result<bool> {
+pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, ak: &Ak, f: &mut Fragment, touches: &[PagedTouch], pred: &dyn Fn(&Dot) -> bool, merged: &mut bool) -> Result<bool> {
     let mut before: Vec<(Vec<Step>, Dot, Value)> = Vec::new();
     for t in touches {
         for (p, dots) in &t.elems {
@@ -1528,7 +1528,7 @@ pub fn strip_touched(txn: &mut Transaction<'_>, idx: &mut PageIndex, tid: &Tid, 
     if idx.sets.keys().any(|p| p.iter().any(|s| matches!(s, Step::Entry(id) if id.key.is_some() && pred(id.dot.owner())))) {
         return Ok(false);
     }
-    f.strip(pred);
+    *merged |= f.strip_merging(pred);
     for t in touches {
         if write_touched(txn, idx, tid, ak, f, t, Shred::Yes)?.is_none() {
             return Ok(false);
@@ -1842,7 +1842,7 @@ mod tests {
         let pred = move |d: &Dot| d.owner().src == a;
         let t = touch_of(&body, Some(&idx)).unwrap();
         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
-        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap();
+        let done = strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred, &mut false).unwrap();
         assert!(!done, "a paged map under an erased key moves");
         load_all(&mut txn, &tid, &ak, &mut idx, &mut f).unwrap();
         f.strip(&pred);
@@ -2262,7 +2262,7 @@ mod tests {
                         let t = touch.clone().unwrap();
                         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
                         let done = if k == 0 {
-                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred).unwrap()
+                            strip_touched(&mut txn, &mut idx, &tid, &ak, &mut f, std::slice::from_ref(&t), &pred, &mut false).unwrap()
                         } else {
                             // a dropped body: the same content, pages rewritten shredded
                             write_touched(&mut txn, &mut idx, &tid, &ak, &f, &t, Shred::Yes).unwrap().is_some()

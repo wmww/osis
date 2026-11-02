@@ -1184,3 +1184,32 @@ fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
     assert_eq!(lp.peers[0].engine.deaths(&ins, &t, &ak("t:text.0")).unwrap(), Some((ts, ts)));
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:text.0")).unwrap(), Some(s("b")));
 }
+
+// spec/commits.md §5 (deaths dated from the bodies only where the state cannot date them): an
+// expiring put into a keep-at-most map, overwritten by a kept put, expires; the expiry moves the
+// entry's records to its key-erased record with nothing beaten across them, so the aspect's
+// deaths are not recomputed (each such expiry recomputing cost O(bodies) per tick).
+#[test]
+fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
+    let mut lp = net(1, 57);
+    let t = new_thing(&mut lp, 0);
+    let now = lp.peers[0].engine.now();
+    for (i, k) in ["a", "b"].into_iter().enumerate() {
+        let mut m = Mutation::new();
+        m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("old")) }).unwrap();
+        m.expires(t, &SHORTMAP, WallMs(now.0 + 1000 + 100 * i as u64)).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.op(t, &SHORTMAP, PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: Op::Set(s("new")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+    }
+    osis_node::costs::take();
+    for _ in 0..2 {
+        lp.advance(1000);
+        lp.peers[0].engine.tick().unwrap();
+    }
+    let recomputes = osis_node::costs::take().iter().find(|x| x.0 == "deaths: recompute").map_or(0, |x| x.2);
+    assert_eq!(recomputes, 0);
+    // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:shortmap.0")).unwrap(), Some(Value::Map(Default::default())));
+}
