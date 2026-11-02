@@ -496,3 +496,21 @@ fn repro_forged_key_hidden_by_erased_reset() {
     y.join(s);
     assert_eq!(y.read(), x.read(), "valued copy wins");
 }
+
+/// §5.7, §3.3 rule 7: a text char is the creation's payload (an undelete's rides its `FlagW`), so
+/// a run carrying `Content` chars without a `Creation` is rejected, and a record holding one in
+/// memory joins as if it held none: folded into a held creation it would read by arrival order.
+#[test]
+fn creationless_text_char_spec_5_7() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
+    let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
+    let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
+    let made = mk(SeqElem { created: Some((s1.clone(), Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(s1.clone(), Anchor::Head, None)], ..SeqElem::bare() });
+    let bad = mk(SeqElem { content: SeqContent::Char('z'), pos: vec![(st(2, 9, 1), Anchor::Head, None)], ..SeqElem::bare() });
+    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: bad.clone(), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &cx, None).unwrap();
+    assert!(decode_snapshot(&bytes, &cx, &mut Interner::new(), None).is_err());
+    all_orders(&[made, bad], Some(Value::Str("a".into())));
+}

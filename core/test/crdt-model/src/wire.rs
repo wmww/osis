@@ -1162,6 +1162,10 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
                 if s.is_empty() {
                     return Err(Error::Bad("empty content string"));
                 }
+                // a text char is the creation's payload (an undelete's rides its `FlagW`, §3.2)
+                if elems.iter().any(|e| e.created.is_none()) {
+                    return Err(Error::Bad("text content without a creation"));
+                }
                 let live: Vec<usize> = (0..n).filter(|i| !elems[*i].deleted.as_ref().map_or(false, |d| d.1)).collect();
                 let cs: Vec<char> = s.chars().collect();
                 if cs.len() != live.len() {

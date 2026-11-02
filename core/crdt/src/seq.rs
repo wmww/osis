@@ -305,6 +305,8 @@ pub(crate) fn top2(s: &mut Vec<PosW>) {
 /// Joins record `de` into existing record `se` under `e` (§5.7 Join).
 fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
     let mut de = de;
+    // a text char without a creation is no one's payload (§5.7)
+    content_rule(&mut de, text);
     // one creation per dot: copies under other stamps are one write, the greater stamp wins
     // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
     // copies of one stamp the greater anchor and the greater char (§4.1 copy order)

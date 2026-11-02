@@ -145,7 +145,7 @@ proptest! {
         for x in &dead {
             let mut e = crate::seq::SeqElem::bare();
             e.deleted = Some((st.clone(), false));
-            e.content = sq.elems()[x].content.clone();
+            e.undel = sq.elems()[x].char();
             d.elems_mut().insert(x.clone(), e);
         }
         let cx = DeltaCtx { ts: ts(1 << 30), own: src, range: CounterRange { lo: 1, hi: 2 }, kind: DeltaKind::Writer };
@@ -154,7 +154,10 @@ proptest! {
         full.join(u.clone());
         boot.join(u);
         prop_assert_eq!(full.read(), boot.read());
-        prop_assert_eq!(as_carried(&full), boot);
+        // the bootstrapped node holds the undelete's copy of each char, the full one both copies
+        let mut j = full.clone();
+        j.join(boot);
+        prop_assert_eq!(j, full);
     }
 
     /// §3.3 rule 7: mutated sequence deltas are rejected or decode, never panic.
@@ -610,10 +613,10 @@ fn accepts(f: Value, cx: &DeltaCtx) -> Fragment {
 fn accepts_valid_runs_spec_3_2() {
     let f = accepts(text_with(vec![run(i(3), 3, created(3), s("abc"), vec![], vec![])]), &wcx());
     assert_eq!(f.read(), Some(s("abc")));
-    // a flag write on earlier elements, a position write, an undelete carrying content
+    // a flag write on earlier elements, a position write, an undelete carrying its chars
     accepts(text_with(vec![run(i(1), 2, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(1), i(0), Value::Bool(true)])])]), &wcx());
     accepts(text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![l(vec![i(0), l(vec![i(0), i(4)]), i(2)])], vec![])]), &wcx());
-    accepts(text_with(vec![run(i(1), 2, l(vec![]), s("xy"), vec![], vec![l(vec![i(0), i(1), i(0), Value::Bool(false)])])]), &wcx());
+    accepts(text_with(vec![run(i(1), 2, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(1), i(0), Value::Bool(false), s("xy")])])]), &wcx());
     let f = accepts(list_with(vec![run(i(3), 2, created(2), l(vec![reg(1), reg(2)]), vec![], vec![])]), &wcx());
     assert_eq!(f.read(), Some(l(vec![i(1), i(2)])));
 }
@@ -628,6 +631,12 @@ fn rejects_bad_runs_spec_3_3() {
     bad(text_with(vec![run(i(1), 2, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(2), i(0), Value::Bool(true)])])]));
     bad(text_with(vec![run(i(1), 2, l(vec![]), l(vec![]), vec![], vec![l(vec![i(1), i(0), i(0), Value::Bool(true)])])]));
     bad(text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![l(vec![i(1), l(vec![i(0), i(4)]), i(2)])], vec![])]));
+    // text chars without a creation (an undelete's ride its flag write), chars on a delete,
+    // undelete chars short of or beyond the range
+    bad(text_with(vec![run(i(1), 2, l(vec![]), s("xy"), vec![], vec![l(vec![i(0), i(1), i(0), Value::Bool(false)])])]));
+    bad(text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), i(0), Value::Bool(true), s("x")])])]));
+    bad(text_with(vec![run(i(1), 2, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(1), i(0), Value::Bool(false), s("x")])])]));
+    bad(text_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), i(0), Value::Bool(false), s("xy")])])]));
     // an undelete in a list run
     bad(list_with(vec![run(i(1), 1, l(vec![]), l(vec![]), vec![], vec![l(vec![i(0), i(0), i(0), Value::Bool(false)])])]));
     // content length differs from the content-carrying elements
@@ -996,7 +1005,7 @@ fn ranges_split_where_writes_land_spec_6() {
     let at = Anchor::Dot(Dot::new(n(1), 1000));
     let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, undel: None, span: 1 });
     let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
-    let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), content: SeqContent::Char('u'), ..SeqElem::bare() });
+    let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), undel: Some('u'), ..SeqElem::bare() });
     // creations of t = 1 below (1, node 1, 3000) go: a reset inside the chain
     let reset = seq_of(BTreeMap::new(), Some(st(1, 1, 3_000)));
     let (mut a, mut b) = (ranged.clone(), flat.clone());
@@ -1376,6 +1385,16 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
         }
         writes.extend(d);
     }
+    // a char without a creation (no wire form: rejected, §3.3 rule 7) joins as none
+    for w in &mut writes {
+        if let MFrag::Seq { text: true, elems, .. } = w {
+            for e in elems.values_mut().filter(|e| e.created.is_none()) {
+                if r.chance(1, 4) {
+                    e.content = Content::Char(char::from(b'a' + r.below(4) as u8));
+                }
+            }
+        }
+    }
     let mut reference = None;
     for w in &writes {
         mapply(&mut reference, w.clone());
@@ -1446,6 +1465,27 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
             fast.prune(None, &mut crate::Changes::new());
         }
         assert_eq!(fast, ours, "in-place un-merge agrees");
+    }
+    // expiry of node 1's early dots (§4.7): stripping commutes with join, undeletes' chars
+    // of those creations included
+    let gone = crate::testutil::source(&MSource::node(1));
+    let exp = |d: &Dot| d.src == gone && d.ctr <= 6;
+    let mut late = crate::testutil::ostate(&reference);
+    late.strip(&exp);
+    for order in [writes.iter().collect::<Vec<_>>(), writes.iter().rev().collect()] {
+        let mut early = Fragment::default();
+        for w in order {
+            let mut b = frag(w);
+            b.strip(&exp);
+            early.join(b);
+            early.strip(&exp);
+        }
+        assert_eq!(early, late, "expiry commutes with join");
+    }
+    if let Fragment::Seq(sq) = &late {
+        for (d, e) in sq.elems() {
+            assert!(!exp(d.owner()) || e.char().is_none(), "an expired creation's char outlives it: {d:?}");
+        }
     }
 }
 

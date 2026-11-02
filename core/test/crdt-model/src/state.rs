@@ -419,6 +419,12 @@ impl Frag {
                         }
                         Some(mut na) => {
                             let mut nb = nb;
+                            // a text char without a creation is no one's payload (§5.7)
+                            for x in [&mut na, &mut nb] {
+                                if text && x.created.is_none() {
+                                    x.content = Content::None;
+                                }
+                            }
                             // one creation per dot: copies under other stamps are one write, the greater stamp wins
                             // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join)
                             if let (Some(a), Some(b)) = (&na.created, &nb.created) {
