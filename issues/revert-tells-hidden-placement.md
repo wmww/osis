@@ -1,0 +1,3 @@
+# A client's revert of a creation tells of a placement it may not see
+> Summary: `Engine::revert_as` refuses reverting a creation when the thing is also placed in a group the actor may not write (`unmake_ops`, `unmake_ephemeral` list every group the node may write), so Permission against success tells the client its thing is listed in some such group, possibly a hidden one (no name, one bit). `Write::delete` has no such signal: it skips groups the actor may not write and leaves the listing. Making a confined revert do the same closes it, but changes what `revert_of_a_creation_needs_what_the_delete_writes` pins and the spec's "every group the node may write" (spec/wire.md §11.2).
+> Tags: security, engine

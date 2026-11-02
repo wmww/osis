@@ -344,6 +344,13 @@ fn remove_client_revokes() {
     assert!(x.n.clients().unwrap().is_empty());
     assert!(matches!(x.attach(&s), Err(Error::Unsupported(_))));
     assert!(c.get(x.t, ak("name.0")).is_err());
+    // the entry on its way out read ended under any clock (undoing its removal shows that write): a half removal revives under no clock (half_removed_client_stays_ended)
+    let node_thing = x.n.node();
+    let last = x.n.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(node_thing, ak("clients.0^"))]))).unwrap()[0].commit.id;
+    x.n.revert(last).unwrap();
+    assert_eq!(x.n.get(node_thing, ct::CLIENTS).unwrap().unwrap().remove(&a).unwrap().until, Some(WallMs(0)));
+    assert!(matches!(x.attach(&s), Err(Error::Unsupported(_))));
+    assert!(x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(a).unwrap());
     assert!(!x.n.remove_client(x.n.me()).unwrap(), "only a registered client: never a demotion of something else");
     assert!(x.n.roster(x.n.me()).contains_key(&x.n.node()));
@@ -456,6 +463,21 @@ fn watches_and_rows() {
     x.n.write_with(|w| w.at(x.out, sig.clone()).set(&Value::Int(9))).unwrap();
     c.settle();
     assert!(srx.try_recv().is_err(), "a signal of what it cannot read");
+    // one past the connection's signal budget: a signal of what it reads lapses its watch, one of what it cannot read takes no budget (a lapse would tell)
+    let (ltx, lrx) = channel();
+    let vis = ak("t:sigv.0*");
+    let _v = c.at(x.t, vis.clone()).on_change(move |_, ch: osis::Change<Value>| { let _ = ltx.send(ch.value.is_ok()); }).unwrap();
+    lrx.recv_timeout(Duration::from_secs(20)).unwrap();
+    let huge = Value::Str("s".repeat(osis::SIGNAL_BYTES + 1));
+    let live = x.n.watches();
+    x.n.write_with(|w| w.at(x.out, sig.clone()).set(&huge)).unwrap();
+    c.settle();
+    assert_eq!(x.n.watches(), live, "a hidden signal past the budget lapses nothing");
+    assert!(srx.try_recv().is_err());
+    x.n.write_with(|w| w.at(x.t, vis.clone()).set(&huge)).unwrap();
+    c.settle();
+    x.until(|x| x.n.watches() == live - 1);
+    c.settle();
     // diagnostics: those naming only what it reads
     let (dtx, drx) = channel();
     let _d = c.on_diagnostic(move |_, d| dtx.send(d.detail).unwrap());
@@ -707,6 +729,11 @@ fn a_client_writes_no_link() {
         ("t:b.0", x.t, vec![], vec![n(0), bogus.clone()]),
         ("t:b.0", x.t, vec![], vec![n(1), in_list.clone()]),
         ("t:b.0", x.t, vec![], vec![n(2), in_map]),
+        ("t:b.0", x.t, vec![], vec![n(0), Value::Map([(n(0), bogus.clone())].into_iter().collect())]),
+        ("t:b.0", x.t, vec![], vec![n(0), Value::Enum(1, Some(Box::new(bogus.clone())))]),
+        ("t:b.0", x.t, vec![], vec![n(0), Value::List(vec![Value::Map([(n(0), Value::Set([bogus.clone()].into_iter().collect()))].into_iter().collect())])]),
+        ("t:b.0", x.t, vec![], vec![n(4), bogus.clone()]),
+        ("t:b.0", x.t, vec![], vec![n(6), bogus.clone()]),
         ("t:b.0", x.t, vec![], vec![n(10), n(0), in_list.clone()]),
         ("t:b.0", x.t, vec![], vec![n(7), n(0), in_list]),
         ("t:b.0", x.t, vec![key(bogus.clone())], vec![n(0), n(1)]),
@@ -724,6 +751,69 @@ fn a_client_writes_no_link() {
     // a large value the ordinary way: the node chunks it
     c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Str("r".repeat(1 << 20)))).unwrap();
     assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Str("r".repeat(1 << 20))));
+    assert!(matches!(x.n.engine(|e| e.get(&x.t, &name)).unwrap().unwrap(), Value::Link(_)), "stored chunked");
+    // nested too, and a read's value written back
+    let big = |c: char| Value::Str(c.to_string().repeat(1 << 20));
+    let k = ak("t:big.0");
+    let nested = Value::Map([(n(0), Value::List(vec![big('a'), big('b')])), (n(1), Value::Enum(2, Some(Box::new(big('c')))))].into_iter().collect());
+    c.write_with(|w| w.at(x.t, k.clone()).set(&nested)).unwrap();
+    assert_eq!(x.n.get(x.t, k.clone()).unwrap(), Some(nested.clone()));
+    let read: Value = c.get(x.t, k.clone()).unwrap().unwrap();
+    assert_eq!(read, nested);
+    c.write_with(|w| w.at(x.t, ak("t:big2.0")).set(&read)).unwrap();
+    assert_eq!(x.n.get(x.t, ak("t:big2.0")).unwrap(), Some(nested));
+}
+
+// spec/wire.md §11.2: a revert's answer does not depend on a body dropped of what the actor may not read: refused the same with or without
+#[test]
+fn revert_tells_no_hidden_body_dropped() {
+    let x = node();
+    let name = ak("name.0");
+    let (_, _, c) = x.client(Role::Write);
+    let id = {
+        let mut w = x.n.write();
+        w.at(x.t, name.clone()).set(&Value::Int(7)).unwrap();
+        w.at(x.out, name.clone()).set(&Value::Int(7)).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    x.n.write_with(|w| w.at(x.out, name.clone()).set(&Value::Int(8))).unwrap();
+    x.n.write_with(|w| w.at(x.out, name.clone()).purge()).unwrap();
+    assert!(!x.n.engine(|e| e.body_not_dropped(&match id { osis::ChangeId::Commit(c) => c, _ => unreachable!() }, &x.out, &name)), "the body went");
+    assert!(matches!(x.n.revert(id), Err(Error::NotUndoable { .. })), "the node sees it");
+    let r = c.revert(id);
+    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
+}
+
+// spec/wire.md §11.2, notes/client-port.md §3: an undo refused for what it may not read blocks that scope's undo (nothing older is undone instead, as for a compacted change) and nothing else: a narrower scope and a revert by id reach older changes; once it may read the name, the undo runs
+#[test]
+fn refused_undo_blocks_only_its_scope() {
+    let x = node();
+    let name = ak("name.0");
+    let (a, _, c) = x.client(Role::Write);
+    let set = |v: i64| {
+        let mut w = c.write();
+        w.at(x.t, name.clone()).set(&Value::Int(v)).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    set(1);
+    let older = set(2);
+    let unplaced = {
+        let mut w = c.write();
+        w.unplace(x.placed, x.g).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    for _ in 0..2 {
+        assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
+        assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Int(2)), "nothing older instead");
+    }
+    c.undo(&Scope::Thing(x.t)).unwrap().unwrap();
+    assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Int(1)));
+    c.redo(&Scope::Thing(x.t)).unwrap().unwrap();
+    c.revert(older).unwrap();
+    assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Int(1)));
+    x.n.grant(x.placed, a, Role::Read, Default::default()).unwrap();
+    c.revert(unplaced).unwrap();
+    assert!(x.n.groups_of(x.placed).item_of.contains(&x.g));
 }
 
 // spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, owned elsewhere, ephemeral
@@ -830,6 +920,23 @@ fn revert_lists_nothing_hidden() {
     let id = unplaced(mine);
     c.revert(id).unwrap();
     assert!(listed(mine));
+    // both halves of one change: the durable half refused after the ephemeral one was built: nothing of either, nothing logged, no commit
+    x.n.write_with(|w| w.place(x.out, x.g)).unwrap();
+    let eph = ak("t:e.0~");
+    let both = {
+        let mut w = x.n.write();
+        w.unplace(x.out, x.g).unwrap();
+        w.at(x.t, eph.clone()).set(&Value::Int(5)).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    let (held, logged) = (x.n.commits(&CommitQuery::new()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len()));
+    let r = c.revert(both);
+    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.g || tid == x.t), "{r:?}");
+    assert!(!listed(x.out));
+    assert_eq!(x.n.get(x.t, eph.clone()).unwrap(), Some(Value::Int(5)));
+    assert_eq!((x.n.commits(&CommitQuery::new()).unwrap().len(), x.n.engine(|e| e.ephemeral_log().len())), (held, logged));
+    c.write_with(|w| w.at(x.t, eph.clone()).set(&Value::Int(6))).unwrap();
+    assert_eq!(x.n.get(x.t, eph.clone()).unwrap(), Some(Value::Int(6)), "its counters still run");
     // the node may, what the actor may not
     x.n.write_with(|w| w.place(x.out, x.g)).unwrap();
     let id = unplaced(x.out);
