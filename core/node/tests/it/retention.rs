@@ -172,9 +172,6 @@ fn compaction_snapshot_spec_commits_5() {
     }
     let want = lp.peers[0].engine.get(&t, &ak("t:keptset.0")).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:keptset.0")).unwrap(), want);
-    // its frontiers count only on headers held (spec/crdt.md §8): none here
-    let r = lp.peers[1].engine.receipt(&t, &ak("t:keptset.0")).unwrap();
-    assert_eq!(r.contiguous(&osis_crdt::Source::node(me0), u64::MAX), 0);
     // spec/commits.md §5 (deaths per body): a write dying later dies in every body carrying
     // it, the snapshot's included, also where its own body was never held
     lp.advance(10);

@@ -1129,8 +1129,8 @@ impl Engine {
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
     /// unchanged, and for a node-form body, the snapshot's frontier holds its counters, for a
     /// body judged by commit ID, the snapshot lists it as absorbed (so every holder of the
-    /// snapshot counts the body as received once it is dropped, spec/crdt.md §8). A carrier
-    /// only covers none. `None` when either is not held (nothing is established).
+    /// snapshot counts the dropped body's delta as listed in atomic apply, spec/crdt.md §8). A
+    /// carrier only covers none. `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {
@@ -1171,7 +1171,7 @@ fn by_id(kind: Kind, form: Form) -> bool {
 /// the body's part at the piece's positions: a copy lies where its write does). Cost: the body
 /// and the snapshot's part at its positions, about twice the body; both whole only with a
 /// pull decoder walking them side by side (issues/durable-decode-bound.md).
-fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); a
     // carrier only covers none (spec/commits.md §5)
@@ -1233,7 +1233,7 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
             return Ok(Some(false));
         }
         // a snapshot covers another only if its frontiers hold the other's too: otherwise a
-        // holder of it alone does not count what the other's frontier gave as received
+        // holder of it alone does not count as listed what the other's frontier listed
         if let Some((ofr, oabs)) = &other
             && (ofr.sources().any(|(s, f)| fr.of(&s) < f) || oabs.keys().any(|c| !abs.iter().any(|x| x.0 == *c)))
         {

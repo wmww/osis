@@ -89,46 +89,17 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     }
 }
 
-/// The dots of a write on one aspect (spec/commits.md §3).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum Dots {
-    /// Node form: counters `[lo, hi)` of the author node on the aspect.
-    Node { lo: u64, hi: u64 },
-    /// Commit form: dots `(commit ID, index)`.
-    Commit,
-}
-
 /// What a demoter had received (spec/permissions.md §5.1; spec/data-model.md §9 `frontier`).
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct Frontier {
-    /// tid -> AK -> author node -> counter up to which (inclusive) writes were received
-    /// contiguously.
-    pub writes: BTreeMap<Tid, BTreeMap<String, BTreeMap<Tid, u64>>>,
-    /// Commit IDs of commit-form writes received and of the demoter's chain writes.
+    /// Commit IDs of the demoted nodes' commits the demoter received, and of its chain writes.
     pub commits: BTreeSet<CommitId>,
 }
 
 impl Frontier {
-    /// Whether the frontier covers the dots `dots` of commit `commit` by `node` on `(tid, ak)`:
-    /// its commit ID is listed, or it is a node-form range whose last counter is covered (an
-    /// empty range, a commit with no own writes such as an import, only by its ID).
-    pub fn covers(&self, tid: &Tid, ak: &str, node: &Tid, dots: Dots, commit: &CommitId) -> bool {
-        if self.commits.contains(commit) {
-            return true;
-        }
-        match dots {
-            Dots::Node { lo, hi } if lo < hi => {
-                let got = self.writes.get(tid).and_then(|m| m.get(ak)).and_then(|m| m.get(node));
-                got.is_some_and(|&c| c >= hi - 1)
-            }
-            _ => false,
-        }
-    }
-
-    /// Its sizes (tids, counters, commit IDs): how a walk's input compares and tags it (its
-    /// content is fixed by the record holding it, `HeldSet`).
-    pub(crate) fn shape(&self) -> (usize, usize, usize) {
-        (self.writes.len(), self.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum(), self.commits.len())
+    /// Whether the frontier covers the writes of `commit`: it lists the commit's ID.
+    pub fn covers(&self, commit: &CommitId) -> bool {
+        self.commits.contains(commit)
     }
 }
 
@@ -172,7 +143,7 @@ impl RoleCommit {
 fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.shape() == b.shape(),
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.commits.len() == b.commits.len(),
         _ => false,
     }
 }

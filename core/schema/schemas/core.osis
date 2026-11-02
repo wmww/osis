@@ -22,10 +22,7 @@ type box = enum {
     1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 names: option<blob> }),     // epoch of s; wrap, names: spec/wire.md §7
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
-type frontier = struct {
-    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> counter
-    1 commits: set<blob>,                                       // commit IDs of commit-form writes
-};
+type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs of what the demoter received (spec/permissions.md §5.1)
 type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };

@@ -7,12 +7,10 @@ use crate::common;
 use common::*;
 use osis_base::Role::{Admin, Write};
 use osis_base::{Role, Tid};
-use osis_perm::{Dots, Edge, Point, Timeline, Validity};
-
-const DOC: &str = "doc.0";
+use osis_perm::{Edge, Point, Timeline, Validity};
 
 fn valid(tl: &Timeline, p: Point, thing: Tid, required: Role) -> bool {
-    tl.delta_valid(p, &thing, DOC, Dots::Commit, required) == Validity::Valid
+    tl.delta_valid(p, &thing, required) == Validity::Valid
 }
 
 /// Owner O (node 0) owns N; A (node 1) admin, X (node 2) writer.
@@ -43,7 +41,7 @@ fn frontier_decides_pre_revoke_edits() {
         let tl = Timeline::evaluate(&w.held());
         assert_eq!((valid(&tl, e1, d, Write), valid(&tl, e2, d, Write)), expect, "seen {seen} regrant {regrant}");
         if !seen && !regrant {
-            let by = tl.delta_valid(e1, &d, DOC, Dots::Commit, Write);
+            let by = tl.delta_valid(e1, &d, Write);
             assert_eq!(by, Validity::Invalid { by: Some(Point { ts: ts(4), node: a, commit: r }) });
         }
     }

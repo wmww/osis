@@ -62,6 +62,16 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
     }
 }
 
+/// A compaction snapshot's held parts may count a waiting commit's missing delta of their
+/// aspects as dropped (`receipt::listed`): those waits are judged again.
+fn wake_listed(core: &mut Core, h: &Header, held: &BTreeSet<usize>) {
+    if h.kind.is_compaction() {
+        for a in held.iter().filter_map(|ai| h.aspects.get(*ai)) {
+            core.waits.wake(&a.tid, &a.ak);
+        }
+    }
+}
+
 /// Adds a commit to the per-aspect and node-form range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
@@ -547,11 +557,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     tx.core.ix.commits.insert(id, meta.clone());
     tx.core.index_validity(&id);
 
-    // receipt record (spec/permissions.md §5.1; spec/crdt.md §8)
-    {
-        let _s = crate::costs::span("apply: receipt");
-        super::receipt::record(tx, &h, &id, &parts.ais(), received)?;
-    }
+    wake_listed(tx.core, &h, &parts.ais());
 
     if origin == Origin::Local && h.kind == osis_commit::Kind::Content {
         let order = in_order(&parts);
@@ -747,9 +753,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     meta.missing.retain(|ai| !parts.has(*ai));
     tx.core.ix.commits.insert(*id, meta.clone());
     let uncarried = validity::uncarry(tx.core, id, &h, &|ai| parts.has(ai));
-    let received = tx.now();
     let late = parts.ais();
-    super::receipt::record(tx, &h, id, &late, received)?;
+    wake_listed(tx.core, &h, &late);
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
     validity::note_imports(tx.core, id, &h);
     let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));

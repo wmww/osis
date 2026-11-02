@@ -20,7 +20,7 @@ fn key(k: osis_perm::Point) -> EdgeKey {
 }
 
 fn frontier(f: &osis_perm::Frontier) -> ct::Frontier {
-    ct::Frontier { writes: f.writes.clone(), commits: f.commits.clone() }
+    ct::Frontier { commits: f.commits.clone() }
 }
 
 impl Engine {

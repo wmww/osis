@@ -140,7 +140,6 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `PART_OVERHEAD` 2048 (engine `apply/memory.rs`, node cap charge per held part) | R, measured estimate (commented; `scale::eph_decoded_memory`) | |
 | `ITEM_BYTES` 512, `BYTE_BYTES` 3 (osis-crdt `decoded_bound`: a pre-decode bound on `approx_bytes`, per CBOR item and per byte of a run's text content, and per byte; plus a whole value B-tree node, three times, per map head and set tag, from `size_of::<Value>()`; the node cap's per-part decode check, engine `part_bound`) | R, measured estimate (commented; worst seen about 300 per item outside map and set heads, 380 per text character, a map key's bytes held three times; 0 lets a blob decode past the cap, infinity refuses every blob) | |
 | events `PER_PEER` 64 per `WINDOW_MS` 60 s, `DEDUP` 1024 | M (diagnostics) | |
-| `GRANULARITY_MS` 60 s | M | |
 | perm `CHECKPOINT` 32, `FORWARD_MAX` 4, `SHADOW_SHARE` 8 (512), debug `check_scratch` above 400 | P | |
 | crdt `BLOCK` 256, `STEP` 8, `SIBS` 256, `isqrt().max(64)`, work `max(1024)`, `LIN_MIN` 64, `MAX_D` 512, `CTX` 32 | P | |
 | store `arity` 256, `depth` 5 | R: 2^40 unit slots, never reused; exhaustion refuses writes for good, after about 35 years at 1000 unit writes/s | |

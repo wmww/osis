@@ -680,7 +680,7 @@ fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Optio
     let certs = tl.certificates(&author, &target);
     let own: BTreeSet<osis_base::CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| received.contains(c)).collect();
     let frontier = |s: &osis_perm::DemotionScope| {
-        let mut f = Frontier { commits: own.clone(), ..Frontier::default() };
+        let mut f = Frontier { commits: own.clone() };
         for (id, by, on) in &writes {
             let listed = |m: &BTreeMap<Tid, BTreeSet<Tid>>| m.get(by).is_some_and(|ts| on.iter().any(|t| ts.contains(t)));
             if received.contains(id) && (listed(&s.roles) || listed(&s.content)) {

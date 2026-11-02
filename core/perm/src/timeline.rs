@@ -62,7 +62,7 @@ pub struct Timeline {
 /// `first_held` by (node, thing, role).
 type FirstHeld = BTreeMap<(Tid, Tid, Role), Option<Option<Point>>>;
 /// `delta_valid` by its arguments.
-type Valid = BTreeMap<(Point, Tid, String, crate::types::Dots, Role), crate::content::Validity>;
+type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
 
 /// Memoized layer-2 answers.
 #[derive(Default)]

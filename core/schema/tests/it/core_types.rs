@@ -40,10 +40,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };
-    let frontier = Frontier {
-        writes: BTreeMap::from([(tid(19), BTreeMap::from([("note:body.0".to_string(), BTreeMap::from([(tid(20), 3)]))]))]),
-        commits: BTreeSet::from([CommitId([21; 32])]),
-    };
+    let frontier = Frontier { commits: BTreeSet::from([CommitId([21; 32])]) };
     let tenures = Tenures(vec![Tenure { holder: tid(18), role: Role::Write, since: None, until: edge_key(), frontier: Some(Chunked::Inline(frontier)) }]);
     let labels: Labels = BTreeMap::from([(
         LabelId([22; 16]),

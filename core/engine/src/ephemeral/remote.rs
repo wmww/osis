@@ -28,7 +28,7 @@ use osis_base::{Ak, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, DELTA_PAST_BLOB, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
-use osis_perm::{Dots, Point, Validity};
+use osis_perm::{Point, Validity};
 use osis_schema::AspectKey;
 use osis_schema::core_types::PLACED;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
@@ -780,7 +780,7 @@ impl Engine {
                 }
                 let Some(tl) = self.core.timelines.get(&cur) else { return false };
                 let point = Point { ts, node, commit: *commit };
-                return tl.delta_valid(point, &cur, ak, Dots::Commit, required_role(ak)) == Validity::Valid;
+                return tl.delta_valid(point, &cur, required_role(ak)) == Validity::Valid;
             }
             match self.record_of(&cur, carried) {
                 Some(CreationRecord::Thing { owner, .. }) if *owner == node => return true,

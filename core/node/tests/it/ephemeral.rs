@@ -4129,7 +4129,8 @@ fn bench_local_writes() {
 
 // spec/commits.md §3 (session form), issues/eph-unify.md step 3: a memory commit is session
 // form under the open's session with the ephemeral marker; its dots are `(Session(node,
-// nonce), ctr)`, counted per aspect from 1, received and owned by that source, never a node's.
+// nonce), ctr)`, counted per aspect from 1, owned by that source, never a node's; no demotion
+// frontier lists it.
 #[test]
 fn memory_commit_session_form_spec_commits_3() {
     let mut lp = crate::common::net(1, 5);
@@ -4150,9 +4151,10 @@ fn memory_commit_session_form_spec_commits_3() {
     let a = h.aspects.iter().find(|a| a.ak == reg).unwrap();
     assert_eq!((a.lo, a.hi), (2, 3), "counters per aspect and session, from 1");
     let src = osis_crdt::Source::session(session);
-    let r = e.receipt(&t, &reg).unwrap();
-    assert_eq!(r.contiguous(&src, u64::MAX), 2);
-    assert_eq!(r.contiguous(&osis_crdt::Source::node(me), u64::MAX), 0, "no node counters");
+    // a demotion's frontier lists no memory commit (spec/permissions.md §5.2)
+    let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
+    let now = e.now();
+    assert!(e.frontier(&scope, now).unwrap().commits.iter().all(|c| !ids.contains(c)));
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src.clone(), 1)), Some(ids[0]));
     assert_eq!(e.core.commit_of(&t, &reg, &osis_crdt::Dot::new(src, 2)), Some(ids[1]));
     assert_eq!(e.get(&t, &reg).unwrap(), Some(Value::Set([Value::Str("v1".into())].into())));

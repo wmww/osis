@@ -423,7 +423,7 @@ impl Engine {
                 loop {
                     let mut f = self.frontier(&scope, as_of)?;
                     f.commits.extend(own.iter().copied());
-                    let pf = osis_perm::Frontier { writes: f.writes.clone(), commits: f.commits.clone() };
+                    let pf = osis_perm::Frontier { commits: f.commits.clone() };
                     let probe = self.demotion_probe(who, ops.clone(), pf);
                     let s = self.core.timelines.get(&t).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
                     if scope.covers(&s) {

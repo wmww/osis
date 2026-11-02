@@ -1,83 +1,31 @@
-//! The receipt record (spec/permissions.md §5.1, notes/permissions.md Revocation): per aspect
-//! and author node, the counter ranges received with their receipt time, plus commit-form
-//! commits by ID. Adjacent ranges merge with the later time (a coarser record only shrinks a
-//! frontier). Pending and parked commits are not received. Held snapshots' frontiers (`[1,
-//! ctr]`) and `Absorbed` (spec/crdt.md §8) are not recorded: `received` adds those of the
-//! snapshots valid now, at their receipt time, as far as held headers justify them, so a snapshot turning invalid takes them back
-//! whatever the arrival order (spec/permissions.md §5.2); a snapshot dropped other than as
-//! covered keeps them in its record (`Dropped::gives`, spec/commits.md §5). Demotions read it "as
-//! of T" for their frontier.
+//! Receipts (spec/permissions.md §5.1, notes/permissions.md Revocation): what a demotion's
+//! frontier lists, by commit ID only. A held commit counts as received at its meta's receipt
+//! time; the receipt record (`r/` per aspect) keeps only the commits a receipts-only read
+//! verified without keeping them (`Engine::record_header`). Pending and parked commits are not
+//! received; snapshot frontiers and `Absorbed` are no receipts (spec/crdt.md §8).
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::{Engine, Tx};
 use crate::error::Result;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
-use osis_commit::{CommitBlob, Form, Header};
+use osis_commit::{CommitBlob, Header};
+use osis_crdt::Frontiers;
 use osis_crypto::VerifyingKey;
-use osis_crdt::{Frontiers, Source};
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-/// Receipt-time granularity (local policy): adjacent ranges received within one bucket merge.
-pub const GRANULARITY_MS: u64 = 60_000;
-
+/// The receipt record of one aspect: commits verified by header alone (receipts-only reads).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Receipt {
-    /// counted source (a node, a session) -> sorted disjoint `(lo, hi, received)`.
-    pub sources: BTreeMap<Source, Vec<(u64, u64, u64)>>,
-    /// commit-form commits: ID -> (author, received).
+    /// ID -> (author, received).
     pub commits: BTreeMap<CommitId, (Tid, u64)>,
 }
 
 impl Receipt {
-    pub fn add(&mut self, src: &Source, lo: u64, hi: u64, t: u64) {
-        if lo >= hi {
-            return;
-        }
-        let v = self.sources.entry(src.clone()).or_default();
-        // counters already held keep their earlier receipt time
-        let mut pieces = vec![(lo, hi)];
-        for (a, b, _) in v.iter() {
-            pieces = pieces.into_iter().flat_map(|(x, y)| [(x, y.min(*a)), (x.max(*b), y)]).filter(|(x, y)| x < y).collect();
-        }
-        v.extend(pieces.into_iter().map(|(x, y)| (x, y, t)));
-        v.sort_unstable();
-        let mut out: Vec<(u64, u64, u64)> = Vec::with_capacity(v.len());
-        for (a, b, t) in v.drain(..) {
-            match out.last_mut() {
-                Some(l) if a == l.1 && l.2 / GRANULARITY_MS == t / GRANULARITY_MS => {
-                    l.1 = b;
-                    l.2 = l.2.max(t);
-                }
-                _ => out.push((a, b, t)),
-            }
-        }
-        *v = out;
-    }
-
-    /// Last counter (inclusive) of `src` received contiguously from 1 by time `t`; 0 if none.
-    pub fn contiguous(&self, src: &Source, t: u64) -> u64 {
-        let mut next = 1u64;
-        for (lo, hi, at) in self.sources.get(src).into_iter().flatten() {
-            if *lo > next || *at > t {
-                break;
-            }
-            next = next.max(*hi);
-        }
-        next - 1
-    }
-
     fn encode(&self) -> Vec<u8> {
-        let mut w = Wr::new().u32(self.sources.len() as u32);
-        for (n, v) in &self.sources {
-            w = crate::retention::write_source(w, n).u32(v.len() as u32);
-            for (a, b, t) in v {
-                w = w.u64(*a).u64(*b).u64(*t);
-            }
-        }
-        w = w.u32(self.commits.len() as u32);
+        let mut w = Wr::new().u32(self.commits.len() as u32);
         for (c, (a, t)) in &self.commits {
             w = w.raw(&c.0).raw(a.as_bytes()).u64(*t);
         }
@@ -88,14 +36,6 @@ impl Receipt {
         let mut r = Rd::new(b);
         let mut out = Receipt::default();
         for _ in 0..r.u32()? {
-            let n = crate::retention::read_source(&mut r)?;
-            let mut v = Vec::new();
-            for _ in 0..r.u32()? {
-                v.push((r.u64()?, r.u64()?, r.u64()?));
-            }
-            out.sources.insert(n, v);
-        }
-        for _ in 0..r.u32()? {
             let c = CommitId(r.arr()?);
             let a = r.tid()?;
             out.commits.insert(c, (a, r.u64()?));
@@ -105,7 +45,7 @@ impl Receipt {
     }
 }
 
-pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
+fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
     match tx.txn.get_local(&records::aspect_key(records::RECEIPT, tid, ak))? {
         Some(b) => Receipt::decode(&b),
         None => Ok(Receipt::default()),
@@ -113,7 +53,6 @@ pub(crate) fn get(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Receipt> {
 }
 
 fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
-    tx.core.waits.wake(tid, ak);
     tx.put_aspect_local(records::RECEIPT, tid, ak, &r.encode())
 }
 
@@ -131,74 +70,27 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
     held.chain(kept)
 }
 
-/// The held snapshots of `(tid, ak)` valid now.
-fn valid_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
-    held_snapshots(core, tid, ak).filter(move |s| super::validity::snapshot_valid(core, &s.0, tid, ak))
-}
-
-/// What this node had received of `(tid, ak)` by `as_of`: the record's entries received by
-/// then, plus what the held snapshots valid now that it received by then justify (an invalid
-/// one's count as not received, spec/permissions.md §5.2). A snapshot's frontier `[1, ctr]` for
-/// node N counts only on the counters of N's node-form commits on the aspect whose header this
-/// node holds, and its `Absorbed` only the listed commits with a delta of the aspect whose header
-/// it holds, by that header's author (spec/crdt.md §8: a claim never covers a write that does
-/// not exist yet), each from the later of the snapshot part's and the header's receipt. Cost:
-/// the aspect's held and kept snapshots plus the claimed nodes' commits on it.
-pub(crate) fn received(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, as_of: u64) -> Result<Receipt> {
-    let mut r = get(tx, tid, ak)?;
-    for v in r.sources.values_mut() {
-        v.retain(|x| x.2 <= as_of);
+/// Whether held commit `c`'s part on `(tid, ak)` is covered here: dropped as covered, or held
+/// and covered by a held valid snapshot stamped after it (spec/commits.md §5). A demoter leaves
+/// such a commit out of its frontier: the covering snapshot vouches for its live writes
+/// (spec/permissions.md §5.2).
+fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+    let Some(ai) = m.aspect(tid, ak) else { return Ok(false) };
+    if let Some(d) = m.dropped.get(&ai) {
+        return Ok(d.as_cover);
     }
-    r.commits.retain(|_, x| x.1 <= as_of);
-    let core = &*tx.core;
-    // valid ones received by `as_of`, at their part's receipt time (`record`; a late part's,
-    // not its header's)
-    let mut claims: BTreeMap<Source, Vec<(u64, u64)>> = BTreeMap::new();
-    let mut absorbed: Vec<(CommitId, u64)> = Vec::new();
-    for (s, _, fr, abs) in valid_snapshots(core, tid, ak) {
-        let Some(at) = r.commits.get(&s).map(|c| c.1) else { continue };
-        for (n, c) in fr.sources() {
-            claims.entry(n).or_default().push((c, at));
-        }
-        absorbed.extend(abs.iter().map(|(c, _)| (*c, at)));
+    if m.missing.contains(&ai) {
+        return Ok(false);
     }
-    for (c, at) in absorbed {
-        let Some(m) = core.ix.commits.get(&c) else { continue };
-        let t = at.max(m.received.0);
-        if t <= as_of && m.view.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak) {
-            let e = r.commits.entry(c).or_insert((m.view.author, t));
-            e.1 = e.1.min(t);
+    let ts = m.view.ts;
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c).map(|x| x.1).collect();
+    for s in snaps {
+        if crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) {
+            return Ok(true);
         }
     }
-    // per node: each held range's counters at or below a claim, from the earliest claim
-    // reaching them (suffix minimum of claim times by counter) or the header, the later
-    let mut adds = Vec::new();
-    for (n, mut cl) in claims {
-        cl.sort_unstable();
-        let mut m = u64::MAX;
-        let mut first: Vec<u64> = cl.iter().rev().map(|x| { m = m.min(x.1); m }).collect();
-        first.reverse();
-        let top = cl.last().map_or(0, |x| x.0);
-        let Some(rs) = core.ix.ranges.get(&(*tid, ak.clone(), n.clone())) else { continue };
-        for (lo, (hi, c)) in rs.range(..=top) {
-            let Some(hr) = core.ix.commits.get(c).map(|m| m.received.0) else { continue };
-            let mut x = *lo;
-            while x < *hi {
-                let i = cl.partition_point(|e| e.0 < x);
-                let (Some((ctr, _)), Some(t0)) = (cl.get(i), first.get(i)) else { break };
-                let end = (*hi).min(ctr.saturating_add(1));
-                let t = (*t0).max(hr);
-                if t <= as_of {
-                    adds.push((n.clone(), x, end, t));
-                }
-                x = end;
-            }
-        }
-    }
-    for (n, lo, hi, t) in adds {
-        r.add(&n, lo, hi, t);
-    }
-    Ok(r)
+    Ok(false)
 }
 
 /// Whether a held snapshot of `(tid, ak)`, any validity, stamped after commit `id` lists its
@@ -215,28 +107,6 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
                 None => abs.iter().any(|x| x.0 == *id),
             }
     })
-}
-
-/// Records what an applied commit's held parts gave this node (a snapshot: its ID; what it
-/// carries counts through `received`).
-pub(crate) fn record(tx: &mut Tx<'_>, h: &Header, id: &CommitId, held: &BTreeSet<usize>, received: WallMs) -> Result<()> {
-    for ai in held.iter().copied() {
-        let Some(a) = h.aspects.get(ai) else { continue };
-        let mut r = get(tx, &a.tid, &a.ak)?;
-        if h.kind.has_own_writes() {
-            match h.form {
-                Form::Commit => {
-                    r.commits.insert(*id, (h.author, received.0));
-                }
-                f => r.add(&f.own_source(h.author, *id), a.lo, a.hi, received.0),
-            }
-        } else {
-            // imports count by commit ID (spec/permissions.md §5.1 frontier coverage)
-            r.commits.insert(*id, (h.author, received.0));
-        }
-        put(tx, &a.tid, &a.ak, &r)?;
-    }
-    Ok(())
 }
 
 impl Engine {
@@ -261,9 +131,6 @@ impl Engine {
         if osis_commit::verify_signature(&id, &c.signature, &vk).is_err() || h.validate().is_err() || h.ts.wall_ms().0 > now.0.saturating_add(MAX_DRIFT_MS) {
             return Ok(false);
         }
-        // by commit ID, never by counters: this node keeps none of it, so a commit its author
-        // later signs on the same counters (overlap voids both, spec/commits.md §4) would meet
-        // no holder of this one and be covered (spec/permissions.md §5.1)
         self.run(|tx| {
             for a in &h.aspects {
                 let mut r = get(tx, &a.tid, &a.ak)?;
@@ -277,16 +144,18 @@ impl Engine {
         Ok(true)
     }
 
-    /// What this node received of one aspect, held valid snapshots' frontiers included.
+    /// The receipt record of one aspect: commits verified by header alone.
     pub fn receipt(&mut self, tid: &Tid, ak: &Ak) -> Result<Receipt> {
         let (tid, ak) = (*tid, ak.clone());
-        self.run(|tx| received(tx, &tid, &ak, u64::MAX))
+        self.run(|tx| get(tx, &tid, &ak))
     }
 
-    /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1): per aspect the
-    /// scope puts in question and per demoted node, the last counter received contiguously as
-    /// of `as_of`, plus that node's commit-form commits received by then. This node's own
-    /// receipts only; `as_of` earlier than now gives a backdated revoke's frontier.
+    /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
+    /// per aspect the scope puts in question and per demoted node, that node's commits this
+    /// node received by `as_of` (held ones at their meta's receipt time, those verified by
+    /// header alone at the record's), memory commits never, and held ones whose part there is
+    /// covered here (`covered_here`) left out. This node's own receipts only; `as_of` earlier
+    /// than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
@@ -302,8 +171,8 @@ impl Engine {
             }
         }
         // aspects known only from headers (receipts-only reads): this node cannot tell which
-        // the scope reaches, so each demoted node's commits on them are listed by ID; one
-        // where its class did not fall is never consulted (spec/permissions.md §5.1)
+        // the scope reaches, so each demoted node's commits on them are listed; one where its
+        // class did not fall is never consulted (spec/permissions.md §5.1)
         for (tid, ak) in &self.core.header_receipts {
             let admin = admin_class(ak);
             for node in scope.content.keys().chain(scope.roles.keys().filter(|_| admin)) {
@@ -312,63 +181,22 @@ impl Engine {
         }
         aspects.sort();
         aspects.dedup();
-        // things of groups held for receipts only: this node keeps what it applied there (their
-        // role commits) but never uploads it again, so no holder of such a commit voids
-        // another its author signs later on the same counters after deleting it at the host;
-        // its held commits there are listed by ID, never by counters (spec/permissions.md §5.1)
-        let by_id: BTreeSet<Tid> = self.core.receipts_only.clone().into_iter().flat_map(|g| self.closure(&g).iter().copied().chain([g]).collect::<Vec<_>>()).collect();
         self.run(|tx| {
             let mut f = Frontier::default();
             for (node, t, ak) in aspects {
-                let r = received(tx, &t, &ak, as_of.0)?;
-                if by_id.contains(&t) {
-                    for (_, c) in tx.core.ix.ranges.get(&(t, ak.clone(), Source::node(node))).into_iter().flat_map(|rs| rs.values()) {
-                        if tx.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0) {
-                            f.commits.insert(*c);
-                        }
-                    }
-                } else {
-                    let c = r.contiguous(&Source::node(node), as_of.0);
-                    if c > 0 {
-                        f.writes.entry(t).or_default().entry(ak.as_str().to_string()).or_default().insert(node, c);
+                for (id, (a, at)) in get(tx, &t, &ak)?.commits {
+                    if a == node && at <= as_of.0 {
+                        f.commits.insert(id);
                     }
                 }
-                // never a memory commit (a session's counters are not asked for either)
-                for (id, (a, _)) in &r.commits {
-                    if *a == node && !tx.core.ix.commits.get(id).is_some_and(|m| m.view.memory) {
-                        f.commits.insert(*id);
+                let held: Vec<CommitId> = tx.core.durable_on(&(t, ak.clone())).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.author == node && m.received.0 <= as_of.0)).collect();
+                for c in held {
+                    if !covered_here(tx, &c, &t, &ak)? {
+                        f.commits.insert(c);
                     }
                 }
             }
             Ok(f)
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // spec/permissions.md §5.1: a frontier covers what was received contiguously as of T.
-    // spec/permissions.md §5.1 (frontier received)
-    #[test]
-    fn contiguous_as_of_spec_5_1() {
-        let n = Source::node(Tid::from_bytes([1; 15]));
-        let mut r = Receipt::default();
-        r.add(&n, 1, 3, 10);
-        r.add(&n, 5, 6, 11);
-        assert_eq!(r.contiguous(&n, 100), 2);
-        r.add(&n, 3, 5, 200_000);
-        assert_eq!(r.contiguous(&n, 300_000), 5);
-        assert_eq!(r.contiguous(&n, 15), 2);
-        // a repeat keeps the earlier time
-        r.add(&n, 1, 3, 400_000);
-        assert_eq!(r.contiguous(&n, 15), 2);
-        // a session's counters are its own
-        let s = Source::session(osis_crdt::Session { node: Tid::from_bytes([1; 15]), nonce: [7; 16] });
-        r.add(&s, 1, 9, 10);
-        assert_eq!(r.contiguous(&n, 15), 2);
-        assert_eq!(r.contiguous(&s, 15), 8);
-        assert_eq!(Receipt::decode(&r.encode()).unwrap(), r);
     }
 }

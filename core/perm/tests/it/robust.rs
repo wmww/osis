@@ -8,7 +8,7 @@ use crate::common;
 use common::*;
 use roles_model::Rng;
 use osis_base::{Role, Tid, WallMs};
-use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
+use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, Point, RosterSnapshot, Tenure, Timeline};
 use std::sync::Arc;
 
 fn pick<T: Copy>(rng: &mut Rng, v: &[T]) -> T {
@@ -39,10 +39,9 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             since: (rng.below(3) == 0).then(|| Point { ts: ts(rng.below(12) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }), tied: None,
         })
     };
-    let frontier = |rng: &mut Rng, tids: &[Tid]| -> Option<Arc<Frontier>> {
+    let frontier = |rng: &mut Rng| -> Option<Arc<Frontier>> {
         (rng.below(2) == 0).then(|| {
             let mut f = Frontier::default();
-            f.writes.entry(pick(rng, tids)).or_default().entry("roles.0".into()).or_default().insert(pick(rng, tids), pick(rng, &[0, 3, u64::MAX]));
             f.commits.insert(cid(rng.below(40) as u32));
             Arc::new(f)
         })
@@ -54,7 +53,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             ops.push(EdgeOp { target: pick(rng, &tids), holder: pick(rng, &tids), edge: any_edge(rng) });
         }
         let author = pick(rng, &tids);
-        h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng, &tids), ops });
+        h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng), ops });
     }
     for i in 0..rng.below(4) {
         let mut roster = std::collections::BTreeMap::new();
@@ -69,7 +68,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
                 role: pick(rng, &roles),
                 since: (rng.below(2) == 0).then(|| Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }),
                 until: Point { ts: ts(rng.below(14) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) },
-                frontier: frontier(rng, &tids),
+                frontier: frontier(rng),
             })
             .collect();
         let author = pick(rng, &tids);
@@ -91,7 +90,7 @@ fn junk_never_panics() {
                     let _ = (tl.role(x, t, at), tl.invite(x, t, at), tl.class(x, t, at), tl.roster(t, at));
                 }
                 let p = Point { ts: ts(rng.below(12) as u64), node: *x, commit: cid(3) };
-                let _ = tl.delta_valid(p, t, "doc.0", Dots::Node { lo: 0, hi: u64::MAX }, Role::Write);
+                let _ = tl.delta_valid(p, t, Role::Write);
             }
         }
     }
