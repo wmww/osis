@@ -283,8 +283,8 @@ pub fn with_names(actor: &Tid, holder: &Tid, w: &mut SecretsWrite, names: &Names
     Ok(())
 }
 
-/// The sealed names box `b` carries, if any.
-fn names_of(b: &SecretBox) -> Option<&Vec<u8>> {
+/// The sealed names box `b` carries, if any (`open_names` opens them).
+pub fn names_of(b: &SecretBox) -> Option<&Vec<u8>> {
     match b {
         SecretBox::Sealed(x) => x.names.as_ref(),
         SecretBox::Symmetric(x) => x.names.as_ref(),
@@ -299,8 +299,14 @@ pub fn carries_names(b: &SecretBox) -> bool {
 /// The names box `b` at key `k` of `actor` carries, opened under `secret` (its epoch's): `None`
 /// when it carries none or they do not open to well-formed names.
 pub fn box_names(actor: &Tid, k: &BoxKey, b: &SecretBox, secret: &Secret32) -> Option<Names> {
+    open_names(actor, k, names_of(b)?, secret)
+}
+
+/// Sealed names `sealed` of the box at key `k` of `actor`, opened under `secret` (its epoch's):
+/// `None` when they do not open to well-formed names.
+pub fn open_names(actor: &Tid, k: &BoxKey, sealed: &[u8], secret: &Secret32) -> Option<Names> {
     let e = from_schema(&k.epoch).ok()?;
-    let v = open_box_names(secret, actor, &k.holder, k.role, &e, names_of(b)?).ok()?;
+    let v = open_box_names(secret, actor, &k.holder, k.role, &e, sealed).ok()?;
     Names::from_value(&v)
 }
 
