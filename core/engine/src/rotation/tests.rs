@@ -3044,6 +3044,111 @@ fn conflicting_grant_keyset_recovers_spec_crypto_4() {
     }
 }
 
+// spec/crypto.md §4 (a put whose boxes this node lacks is an earlier sealer): X, bound in
+// `projection_world` (the grant's boxes never reach it), removes N and re-grants it. Were the
+// re-grant free (no edge), X would seal N at its newest keyset at X, D's forgery (C3 again); it
+// is bound by the grant it lacks the boxes of: N's holders of f open, D does not.
+#[test]
+fn projection_holder_regrant_stays_bound_spec_crypto_4() {
+    let (mut lp, a, n, _, d_n, _) = projection_world(4_171, false);
+    lp.peers[3].clock.advance(1_000);
+    lp.peers[3].engine.demote(&a, &Demotion { holder: n, new: None, presync: PreSync::Synced }).unwrap();
+    lp.peers[3].clock.advance(1_000);
+    lp.peers[3].engine.grant(&a, &n, &edge(Role::Read)).unwrap();
+    let x_e = newest_read(&lp, 3, a).unwrap();
+    assert!(opens_through(&mut lp, 3, a, n, &d_n).read.reading_secret(&x_e).is_none(), "D opens X's re-grant: X sealed N at D's forged keyset");
+    let n_n = lp.peers[1].engine.epochs(&n).unwrap();
+    assert!(opens_through(&mut lp, 3, a, n, &n_n).read.reading_secret(&x_e).is_some(), "N left out of X's re-grant");
+    let entry = lp.peers[3].engine.roster(&a).get(&n).copied().unwrap();
+    assert!(entry.keyset.is_some(), "the re-grant's edge names the keyset it was bound to");
+}
+
+// spec/crypto.md §4 (only valid parts of applied puts carry a sealer's names): Z, a reader of
+// A and an admin of N, writes a grant-shaped commit of N on A: a rewrite of N's edge unchanged
+// (a self-removal through N, which applies) and a box to N at X's current epoch carrying empty
+// names (a `secrets.0` write a reader may not make: invalid). X, bound in `projection_world`,
+// holds it whole. Its box frees nobody: X stays bound and seals N at f, not at D's forgery.
+#[test]
+fn invalid_grant_box_frees_nobody_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let (mut lp, a, n, x_e, d_n, _) = projection_world(4_173, false);
+    let z = lp.peers[4].engine.tid();
+    // X (knowing no departure, so rotating nothing) grants Z read: Z holds X's epoch current
+    lp.peers[3].engine.grant(&a, &z, &edge(Role::Read)).unwrap();
+    send_skipping(&mut lp, 3, 4, &BTreeSet::new());
+    assert!(lp.peers[4].engine.epochs(&a).unwrap().read.is_current(&x_e), "Z holds X's epoch current");
+    assert!(lp.peers[4].engine.departures(&n).unwrap().is_empty(), "Z knows no departure from N");
+    lp.peers[4].clock.advance(1_000);
+    let mut mu = lp.peers[4]
+        .engine
+        .run(|tx| {
+            let epochs = tx.core.epochs(&a).unwrap();
+            let secrets = crate::flows::secrets_in(tx, &a)?;
+            let rcpt = crate::flows::recipient(tx, n, Role::Read)?;
+            let mut w = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, &read, &mut *tx.rng)?.unwrap();
+            osis_keys::with_names(&a, &n, &mut w, &osis_keys::Names::default(), &epochs, &mut *tx.rng)?;
+            let standing = tx.core.timelines.get(&a).and_then(|tl| tl.edges_at(None).get(&n, &a).and_then(|o| o.keyset)).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
+            let mut mu = Mutation::new();
+            crate::flows::put_edge(&mut mu, a, n, &ct::Edge { keyset: standing, ..edge(Role::Read) })?;
+            crate::flows::put_secrets(&mut mu, a, &w, false)?;
+            Ok(mu)
+        })
+        .unwrap();
+    mu.unchecked();
+    lp.peers[4].engine.core.skip_writer_rules = true;
+    let fake = lp.peers[4].commit(mu).unwrap().unwrap();
+    let mut others = commit_ids(&mut lp, 4);
+    others.remove(&fake);
+    send_skipping(&mut lp, 4, 3, &others);
+    assert!(lp.peers[3].engine.departures(&a).unwrap().is_empty(), "X knows no departure");
+    let meta = lp.peers[3].engine.core.ix.commits.get(&fake).expect("X holds the fake grant");
+    assert_eq!(meta.valid, vec![true, false], "the put is held, its boxes part invalid");
+    assert!(lp.peers[3].engine.core.timelines.get(&a).unwrap().is_applied(&osis_perm::WriteId::Op(fake, 0)), "the unchanged rewrite applies as a self-removal through N");
+    assert!(lp.peers[3].engine.roster(&a).get(&n).copied().unwrap().keyset.is_some(), "N's keyset binding stands");
+    rotate_leaving_out(&mut lp, 3, a, &read, &[]);
+    let x_e2 = newest_read(&lp, 3, a).unwrap();
+    assert_ne!(x_e2, x_e);
+    assert!(opens_through(&mut lp, 3, a, n, &d_n).read.reading_secret(&x_e2).is_none(), "D opens X's epoch: a reader's invalid grant freed X");
+    let n_n = lp.peers[1].engine.epochs(&n).unwrap();
+    assert!(opens_through(&mut lp, 3, a, n, &n_n).read.reading_secret(&x_e2).is_some(), "N left out of X's epoch");
+}
+
+// spec/permissions.md §2, spec/crypto.md §4 (a self-removal keeps `keyset`): a member of N
+// (Z, 4; D equally, a member as far as X knows) rewrites N's edge on A through N (the
+// self-removal shape: role unchanged) naming D's forged `keys.0` commit in `keyset`. Were that
+// a self-removal, X, bound, would seal N at D's forgery; the changed `keyset` makes it an
+// explicit write Z has no authority for, so it does not apply and X stays bound to C_N.
+#[test]
+fn self_removal_cannot_move_keyset_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let (mut lp, a, n, x_e, d_n, _) = projection_world(4_175, false);
+    let x_d = d_n.read.newest_held().unwrap().0;
+    let forged = lp.peers[3].engine.core.ix.epoch_intro.get(&(n, Role::Read, x_d)).map(|x| x.1).expect("D's forgery introduced x_d at X");
+    let v = lp.peers[3].engine.core.ix.commits.get(&forged).unwrap().view.clone();
+    let bound_to = lp.peers[3].engine.roster(&a).get(&n).copied().unwrap().keyset.expect("X bound");
+    assert_ne!(bound_to.commit, forged);
+    // Z learns A as X holds it (C_N's `keys.0` part only: no departure)
+    send_skipping(&mut lp, 3, 4, &BTreeSet::new());
+    assert!(lp.peers[4].engine.departures(&n).unwrap().is_empty(), "Z knows no departure from N");
+    lp.peers[4].clock.advance(1_000);
+    let mut mu = Mutation::new();
+    crate::flows::put_edge(&mut mu, a, n, &ct::Edge { keyset: Some(ct::EdgeKey { ts: v.ts, node: v.author, commit: forged }), ..edge(Role::Read) }).unwrap();
+    mu.unchecked();
+    lp.peers[4].engine.core.skip_writer_rules = true;
+    let moved = lp.peers[4].commit(mu).unwrap().unwrap();
+    let mut others = commit_ids(&mut lp, 4);
+    others.remove(&moved);
+    send_skipping(&mut lp, 4, 3, &others);
+    assert!(lp.peers[3].engine.core.timelines.get(&a).unwrap().role_commit(&moved).is_some(), "X holds Z's write");
+    assert_eq!(lp.peers[3].engine.roster(&a).get(&n).copied().unwrap().keyset.map(|k| k.commit), Some(bound_to.commit), "Z's write moved N's keyset binding");
+    rotate_leaving_out(&mut lp, 3, a, &read, &[]);
+    let x_e2 = newest_read(&lp, 3, a).unwrap();
+    assert_ne!(x_e2, x_e);
+    assert!(opens_through(&mut lp, 3, a, n, &d_n).read.reading_secret(&x_e2).is_none(), "D opens X's epoch: it moved the binding to its forgery");
+    let n_n = lp.peers[1].engine.epochs(&n).unwrap();
+    assert!(opens_through(&mut lp, 3, a, n, &n_n).read.reading_secret(&x_e2).is_some(), "N left out of X's epoch");
+}
+
 /// N's read keyset epoch in `keys.0` at peer `i`.
 fn newest_read_keys(lp: &mut LocalPeer, i: usize, n: Tid) -> Option<osis_crypto::Epoch> {
     lp.peers[i].engine.get_typed(&n, &ct::KEYS).ok().flatten().and_then(|k| k.read).and_then(|ks| osis_keys::aspects::from_schema(&ks.epoch).ok())
