@@ -389,14 +389,15 @@ impl Osis {
     /// text sessions, a `Joining`), returns once the database is closed (every commit is already
     /// durable), so the store can be opened again at once; a callback or sync engine call still
     /// running ends first, and so does background sync, the host included (its store is closed
-    /// too): with `Runtime::Own` its runtime is shut down (bounded, about 10 s at worst), with
-    /// `Runtime::Tokio` on a multi-thread runtime its task ends (so the app may shut that runtime
-    /// down); on a current-thread runtime `close` does not wait for sync, which ends once the app
-    /// drives that runtime again. While other handles keep it open, this one is closed
-    /// and it fails `StillOpen` at once. From a callback (the dispatcher, which holds the database
-    /// while it runs) it fails `Invalid` at once: drop the handle instead. Never call it while
-    /// holding something a running callback may wait for (a lock, a channel it awaits): close
-    /// waits for that callback.
+    /// too): with `Runtime::Own` its runtime is shut down (about 10 s at worst; a task still
+    /// running then may keep the host store a little longer), with `Runtime::Tokio` on a
+    /// multi-thread runtime its task ends (so the app may shut that runtime down); on a
+    /// current-thread runtime `close` does not wait for sync, which ends once the app drives that
+    /// runtime again. While other handles keep it open, this one is closed and it fails
+    /// `StillOpen` at once. From a callback (the dispatcher, which holds the database while it
+    /// runs) it fails `Invalid` at once: drop the handle instead. Never call it while holding
+    /// something a running callback may wait for (a lock, a channel it awaits): close waits for
+    /// that callback.
     pub fn close(self) -> Result<()> {
         if self.inner.dispatch.shared.on_dispatcher() {
             return Err(Error::Invalid("close() from a callback would wait on itself; drop the handle".into()));
