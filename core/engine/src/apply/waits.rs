@@ -10,9 +10,10 @@
 //! bounds (a record wait keeps its order key and things, a delta wait its header too); the
 //! others are examined at every `reexamine`, as all were.
 //!
-//! - A record wait for `t` stands while what `validity::reaches` reads is the same
-//!   (`Held::edges`: edge writes and owner links, the author's certificates) and `t`'s record is still held or not as
-//!   before; records held only accumulate, so every lookup that found one finds the same.
+//! - A record wait stands while what `validity::reaches` reads is the same (`Held::edges`: edge
+//!   writes and owner links, the author's certificates) and each record it names (several: parts
+//!   on things waiting for different ones) is still held or not as before; records held only
+//!   accumulate, so every lookup that found one finds the same. Any of them wakes it.
 //! - A delta wait is judged again (`still_waits`, without reading the commit) once anything of
 //!   the held set changed (perm judges purge rights), a snapshot part or purge record of a
 //!   missing delta's aspect was applied or written (`Waits::wake`), or the earliest expiry of its missing deltas
