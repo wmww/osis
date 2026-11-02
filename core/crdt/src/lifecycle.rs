@@ -6,6 +6,7 @@ use crate::fragment::{Bag, Elem, Fragment, Map, Register, Set, Slots};
 use crate::remap::{Next, Rec, Visit, walk};
 use crate::seq::{self, SeqContent};
 use crate::stamp::{Dot, Stamp};
+use osis_base::Value;
 use std::collections::BTreeMap;
 
 impl Fragment {
@@ -71,13 +72,15 @@ impl Fragment {
     /// or a `prune`, which give it canonical form (it may keep a map entry holding only its
     /// creation, and a `Slots` position without its register's embedding).
     pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, &|_| false);
+        self.remove_dots_in(pred, &|_, _| false);
     }
 
     /// `remove_dots`, except that a record created by a matching dot `keep` accepts keeps
     /// others' writes nested in it (a map entry's or list element's content): the record stays
-    /// in the state, a valid snapshot's copy keeping it (§4.6).
-    pub fn remove_dots_keeping(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+    /// in the state, a valid snapshot's copy keeping it (§4.6). `keep` is asked with the
+    /// record's dot and, for a keyed map entry record, its key (records of one dot with
+    /// different keys are independent, §5.6).
+    pub fn remove_dots_keeping(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
         self.remove_dots_in(pred, keep);
     }
 
@@ -85,10 +88,10 @@ impl Fragment {
     /// in a record a matching dot created: a snapshot's copies of writes played elsewhere, the
     /// others still superseding there.
     pub fn remove_writes(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, &|_| true);
+        self.remove_dots_in(pred, &|_, _| true);
     }
 
-    pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+    pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
         let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
         match self {
             Fragment::Slots(_) => {
@@ -152,7 +155,7 @@ impl Fragment {
                 }
                 if pred(d.owner()) {
                     en.created = None;
-                    if !keep(d.owner()) {
+                    if !keep(d.owner(), id.key()) {
                         en.frag = None;
                     }
                 }
@@ -378,12 +381,12 @@ impl Visit for DotsIn<'_> {
     }
 }
 
-fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
     elems.retain(|d, el| {
         if el.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
             el.reset = None;
         }
-        if pred(d.owner()) && !keep(d.owner()) {
+        if pred(d.owner()) && !keep(d.owner(), None) {
             el.frag = None;
         } else if let Some(f) = &mut el.frag {
             f.remove_dots_in(pred, keep);

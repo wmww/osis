@@ -221,14 +221,14 @@ impl Fragment {
     /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
     /// snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2).
     pub fn strip_copies(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, &|_| true);
+        self.remove_dots_in(pred, &|_, _| true);
         self.drop_creations(pred, false);
     }
 
     /// `strip_copies`, the keys of the entries `pred` accepts included: writes under dots a
     /// snapshot misstates (`misstated`), whose key may be forged too.
     pub fn strip_forged(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, &|_| true);
+        self.remove_dots_in(pred, &|_, _| true);
         self.drop_creations(pred, true);
     }
 
@@ -335,6 +335,17 @@ impl CopyIndex {
     /// Every owner dot indexed.
     pub fn dots(&self) -> impl Iterator<Item = &Dot> {
         self.0.keys()
+    }
+    /// The records holding the writes indexed under owner dots of `src` with a counter in
+    /// `lo..hi`, as (dot, key): a map entry creation's copy names its record's key (records of
+    /// one dot with different keys are independent, §5.6), any other write `None`.
+    pub fn records_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = (&Dot, Option<&Value>)> {
+        self.0.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).flat_map(|(d, ws)| {
+            ws.iter().map(move |(k, v)| match (&k.1, v) {
+                (Kind::Entry, Some(Val::V(key))) => (d, Some(key)),
+                _ => (d, None),
+            })
+        })
     }
     /// Whether a write is indexed under owner dot `d`.
     pub fn holds(&self, d: &Dot) -> bool {
