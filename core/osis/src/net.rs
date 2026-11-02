@@ -468,21 +468,19 @@ pub struct GroupPolicy {
 
 impl crate::Osis {
     /// `group`'s sync policy as set (`sync_policy`; the default when never set).
-    pub fn group_policy(&self, group: osis_base::Tid) -> GroupPolicy {
-        if let crate::handle::Source::Remote = self.route_any() {
-            return GroupPolicy::default();
-        }
-        self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) })
+    /// `Unsupported` on an attached handle (no row yet).
+    pub fn group_policy(&self, group: osis_base::Tid) -> crate::Result<GroupPolicy> {
+        self.local_only("group_policy")?;
+        Ok(self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) }))
     }
 
     /// Sets `group`'s whole sync policy (stored): fields left at their default are reset, so to
     /// change one, start from `group_policy`. Co-readers of groups without `reach.0` are not
     /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
-    pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
-        if let crate::handle::Source::Remote = self.route_any() {
-            return;
-        }
+    /// `Unsupported` on an attached handle (no row yet).
+    pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) -> crate::Result<()> {
+        self.local_only("sync_policy")?;
         self.act(|l| {
             let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
             if l.sync.receipts_only().contains(&group) != policy.receipts_only {
@@ -490,6 +488,7 @@ impl crate::Osis {
             }
             acts
         });
+        Ok(())
     }
 
     /// Serves the client port at the unix socket `path` (notes/client-port.md §5): processes of
@@ -516,7 +515,10 @@ impl crate::Osis {
     /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
     /// still open lose first contact (they still work through hosts). Done by itself when a
     /// group holding its `reach.0` stops qualifying and when a direct link ends.
-    pub fn rotate_reach(&self) {
+    /// `Unsupported` on an attached handle (process-wide: no row).
+    pub fn rotate_reach(&self) -> crate::Result<()> {
+        self.local_only("rotate_reach")?;
         self.act(|l| l.sync.rotate_reach());
+        Ok(())
     }
 }

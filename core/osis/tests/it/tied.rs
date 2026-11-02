@@ -213,7 +213,7 @@ fn receipts_only_scope_left_to_holders() {
     bob.sync(sub, &[]).unwrap();
     assert_eq!(bob.share_into(sub, g, Role::Read, ShareOpts::default()).unwrap(), Share::Tied(Role::Read));
     w.run();
-    phone.sync_policy(sub, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    phone.sync_policy(sub, osis::GroupPolicy { receipts_only: true, ..Default::default() }).unwrap();
     w.run();
     assert_eq!(phone.roster(sub).get(&g).map(|e| e.tied), Some(true));
     w.set_online(&alice, false);

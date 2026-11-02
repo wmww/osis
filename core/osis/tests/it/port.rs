@@ -517,3 +517,20 @@ fn too_large_sub_is_not_kept() {
     drop(r);
     n.close().unwrap();
 }
+
+// notes/client-port.md §8 (b): an attached handle's calls with no row fail Unsupported rather than answer as if done: sync_policy, group_policy, rotate_reach
+#[test]
+fn attached_policy_calls_are_unsupported() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let c = attach(&sock);
+    let g = n.home();
+    let unsupported = |r: osis::Result<()>| assert!(matches!(r, Err(osis::Error::Unsupported(_))), "{r:?}");
+    unsupported(c.sync_policy(g, osis::GroupPolicy { publish_reach: Some(false), ..Default::default() }));
+    unsupported(c.group_policy(g).map(|_| ()));
+    unsupported(c.rotate_reach());
+    drop(c);
+    n.close().unwrap();
+}
