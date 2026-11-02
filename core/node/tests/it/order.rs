@@ -3335,5 +3335,5 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     let mut p = deliver(&played, &order);
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("g")), "the older value shows: nothing valid carries the expired write");
     let flagged = p.engine.suspects().unwrap();
-    assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
+    assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingDrop as u8 != 0), "{flagged:?}");
 }
