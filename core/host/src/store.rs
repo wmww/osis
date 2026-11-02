@@ -20,8 +20,8 @@
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
 //! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
-//! `Y t label blob` (a removed entry's tombstone drop and log trim, holding the log position
-//! it went at), `Z t label step` (claim-set drop, with its `H` rows);
+//! `Y t label blob` (a removed entry's log trim, and its tombstone drop after a deletion: the log
+//! position it went at, then 1 for a deletion, 0 for an expiry), `Z t label step` (claim-set drop, with its `H` rows);
 //! `Q peer label` replication position; `N` host-wide totals (labels, entries, bytes).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
@@ -1324,7 +1324,7 @@ impl HostStore {
         } else {
             tx.meta.next_seq
         };
-        tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), be(seq).to_vec());
+        tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), [be(seq).as_slice(), &[u8::from(tombstone)]].concat());
         let (refs, prefix) = self.refs(blob)?;
         if refs <= 1 {
             tx.batch.delete(key(b'R', &[&blob.0]));
@@ -1391,28 +1391,30 @@ impl HostStore {
             }
             self.finish(tx)?;
         }
-        // removals past their lifetime: the tombstone goes, and the label's log up to the
-        // highest position an entry went at (spec/sync.md §4; each record once over the log's
-        // life), its `G` rows counted against the budget; a trim the budget cuts short keeps that
-        // highest `Y` row and its tombstone for the next sweep
+        // removals past their lifetime: a deletion's tombstone goes, and the label's log up to
+        // the highest position an entry went at (spec/sync.md §4; each record once over the log's
+        // life); the `Y` and `G` rows dropped count against the budget, so a sweep whose budget
+        // the due `Y` rows fill still drops some; a trim the budget cuts short keeps that highest
+        // `Y` row (and its tombstone) for the next sweep
         let mut b = Writes::default();
-        let due = self.due(b'Y', now, left)?;
-        left -= due.len();
-        let mut trim: BTreeMap<LabelId, (u64, Vec<u8>, Vec<u8>)> = BTreeMap::new();
-        for (k, rest, v) in due {
-            if let (Ok(l), Ok(seq)) = (read_arr(&rest, 0).map(LabelId), read_u64(&v, 0))
-                && trim.get(&l).is_none_or(|t| t.0 <= seq)
-            {
-                if let Some((_, k, rest)) = trim.insert(l, (seq, k, rest)) {
-                    b.delete(key(b'T', &[&rest]));
-                    b.delete(k);
-                }
-                continue;
+        let drop_y = |b: &mut Writes, (k, rest, v): Due| {
+            if v.get(8) == Some(&1) {
+                b.delete(key(b'T', &[&rest]));
             }
-            b.delete(key(b'T', &[&rest]));
             b.delete(k);
+        };
+        let mut trim: BTreeMap<LabelId, (u64, Due)> = BTreeMap::new();
+        for row in self.due(b'Y', now, left)? {
+            let gone = match (read_arr(&row.1, 0).map(LabelId), read_u64(&row.2, 0)) {
+                (Ok(l), Ok(seq)) if row.1.len() == 48 && trim.get(&l).is_none_or(|t| t.0 <= seq) => trim.insert(l, (seq, row)).map(|t| t.1),
+                _ => Some(row),
+            };
+            if let Some(row) = gone {
+                drop_y(&mut b, row);
+                left -= 1;
+            }
         }
-        for (label, (seq, k, rest)) in trim {
+        for (label, (seq, row)) in trim {
             let mut done = true;
             if let Ok(mut tx) = self.tx(&label)
                 && seq > tx.meta.horizon
@@ -1433,8 +1435,8 @@ impl HostStore {
                 self.finish(tx)?;
             }
             if done {
-                b.delete(key(b'T', &[&rest]));
-                b.delete(k);
+                drop_y(&mut b, row);
+                left = left.saturating_sub(1);
             }
         }
         // a dropped claim set's bytes, its index rows' included, leave the label's and the
