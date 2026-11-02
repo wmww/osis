@@ -1539,7 +1539,9 @@ impl SyncEngine {
         let labels = self.wanted_labels();
         for (conn, host) in conns {
             for (g, l, hosts) in &labels {
-                let known = self.conns.get(&conn).is_some_and(|c| c.labels.contains_key(l));
+                // failed under another thing (a hint's sender named this label under it): no Open
+                // is in flight, so it starts again under the thing that wants it now
+                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || x.phase != Phase::Failed);
                 if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
