@@ -3263,12 +3263,18 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     use Step::*;
     let h = vec![Aim(Box::new(Typed { by: 0, t: 3, op: 27, k: 0, v: 8 })), Sync { from: 0, to: 2 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 5, to_read: false })), Forged { by: 1, a: 5, b: 7, how: 4, op: 26, k: 1, v: 9 }, Forged { by: 0, a: 4, b: 3, how: 1, op: 15, k: 0, v: 3 }, Aim(Box::new(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: false })), Aim(Box::new(Compact { by: 2, t: 3, op: 0 })), Aim(Box::new(Nested { by: 2, other: 0, t: 1, k: 1, text: false, compact: true, also: true })), Forged { by: 2, a: 0, b: 1, how: 1, op: 0, k: 0, v: 2 }, Aim(Box::new(Typed { by: 1, t: 1, op: 17, k: 2, v: 5 })), Forged { by: 1, a: 1, b: 7, how: 0, op: 10, k: 1, v: 9 }, Aim(Box::new(Compact { by: 0, t: 1, op: 28 })), Aim(Box::new(Typed { by: 0, t: 5, op: 4, k: 2, v: 4 })), Aim(Box::new(Write { by: 2, t: 5, op: 6, k: 1, v: 0 })), NewTop { by: 2 }, Advance { who: None, ms: 5744313 }, Aim(Box::new(Leave { by: 1, t: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 7, k: 2, text: true, compact: true, also: true }))];
     check(4208, &h, LARGE).unwrap();
-    // the expiring part first (pending, gone at T), then the rest as made: the snapshot that
-    // lists it, then the demotion that voids the snapshot
+    // the expiring part first (pending, gone at T), then the rest as made but node 2's demotion
+    // (the role commit made just before node 2's snapshot) last: the snapshot joins valid and
+    // settles the flag, then turns invalid (as made, it joins invalid and settles nothing)
     let played = play(4208, &h);
     let g = played.things[0];
-    let expiring = (0..played.packs.len()).find(|&i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.tid == g && a.ak == ak("t:reg.0") && a.expires.is_some())).unwrap();
-    let order: Vec<usize> = std::iter::once(expiring).chain((0..played.packs.len()).filter(|&i| i != expiring)).collect();
+    let n = played.packs.len();
+    let header = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header;
+    let expiring = (0..n).find(|&i| header(i).aspects.iter().any(|a| a.tid == g && a.ak == ak("t:reg.0") && a.expires.is_some())).unwrap();
+    let snap = (0..n).find(|&i| header(i).kind == osis_commit::Kind::ContentSnapshot).unwrap();
+    let demote = snap - 1;
+    assert_eq!(header(demote).kind, osis_commit::Kind::Role);
+    let order: Vec<usize> = std::iter::once(expiring).chain((0..n).filter(|&i| i != expiring && i != demote)).chain([demote]).collect();
     let mut p = deliver(&played, &order);
     assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("g")), "the older value shows: nothing valid carries the expired write");
     let flagged = p.engine.suspects().unwrap();
