@@ -12,3 +12,4 @@
 - frozen-coverage: tier 1 took ~9 min wall at load 31-37 (machine shared).
 - Review 3: rebasing onto main conflicted in `rotation/mod.rs` (main added `pub use lost::…` beside the branch's dropped `Judge` export) and in the later-admin-path issue; local `main` lagged `origin/main` (the study answer was only on origin), so `git rebase main` alone would have missed it.
 - Review 3: re-running a removed harness branch needs a probe commit restoring it plus a second worktree for the old base (TLC was reading this worktree's `.tla` files, so checking out the base here was not safe); a pinned "dropped branch" env switch in the harness would make such re-checks one command.
+- Review 3: `MC_c3` reached 29M distinct states in 63 min (4 workers, load 25-40) with its queue still growing at depth 21; it is not finishable as a review oracle. A smaller C3 cfg (one forge or one fork, not both) would be.
