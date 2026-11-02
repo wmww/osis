@@ -339,14 +339,12 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let dir = std::env::temp_dir().join(format!("osis-host-erase-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let net = osis_transport::Net::new(41);
-    // the app's runtime: `close` returns once the driver, and with it the host, ended
-    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
     let at = |i: u64, run: bool| {
         let mut c = osis::Config::at(osis::StoreAt::Dir(dir.clone()));
         c.seed = Some(i);
         c.peers = false;
         if run {
-            c.runtime = osis::Runtime::Tokio(rt.handle().clone());
+            c.runtime = osis::Runtime::Own;
             c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("e{i}"))));
         }
         c
@@ -398,5 +396,35 @@ fn stop_hosting_erases_host_store_spec_data_model_9() {
     let db = Osis::open(at(7, true)).unwrap();
     wait_for("the host store erased", || !files());
     db.close().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// notes/api.md Handle and sync: `close` with `Runtime::Own` returns once the driver, and with it
+// the host, is gone, so the host store is free: reopening at once hosts again (not "Database
+// already open"). spec: none (an API property)
+#[test]
+fn own_runtime_close_frees_host_store() {
+    let dir = std::env::temp_dir().join(format!("osis-host-reopen-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let net = osis_transport::Net::new(42);
+    let at = |i: u64| {
+        let mut c = osis::Config::at(osis::StoreAt::Dir(dir.clone()));
+        c.seed = Some(i);
+        c.peers = false;
+        c.runtime = osis::Runtime::Own;
+        c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("o{i}"))));
+        c
+    };
+    // `host_address` fails once the host could not open its store
+    let listening = |db: &Osis| wait_for("listening", || db.host_address().unwrap().is_some());
+    let db = Osis::create(at(0)).unwrap().0;
+    db.set_hosting(Some(Hosting { listen: vec!["mem://o".into()], admit: Admit::Open, ..Default::default() })).unwrap();
+    listening(&db);
+    db.close().unwrap();
+    for i in 1..6 {
+        let db = Osis::open(at(i)).unwrap();
+        listening(&db);
+        db.close().unwrap();
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
