@@ -461,12 +461,16 @@ fn inspect_and_diag_plan_cli_4() {
     s.ok(&["diag"]);
 }
 
-/// Public `Osis` methods (`pub fn` / `pub async fn` in `impl Osis` blocks of core/osis/src).
+/// Public `Osis` methods (`pub fn` / `pub async fn` in `impl Osis` blocks under core/osis/src).
 fn osis_methods() -> Vec<String> {
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/osis/src");
+    let mut files = vec![PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../core/osis/src")];
     let mut out = Vec::new();
-    for f in std::fs::read_dir(dir).unwrap() {
-        let text = std::fs::read_to_string(f.unwrap().path()).unwrap();
+    while let Some(p) = files.pop() {
+        if p.is_dir() {
+            files.extend(std::fs::read_dir(p).unwrap().map(|f| f.unwrap().path()));
+            continue;
+        }
+        let text = std::fs::read_to_string(p).unwrap();
         let mut inside = false;
         for l in text.lines() {
             if l.starts_with("impl Osis {") {

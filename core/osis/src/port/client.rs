@@ -100,6 +100,18 @@ pub(crate) struct Remote {
     limit: usize,
 }
 
+/// A call sent whose connection ended before its reply.
+const LOST: &str = "connection to the node ended before the reply";
+
+/// A nonce'd call's error: one whose reply was lost may or may not have applied (no reconnect
+/// in step (b), so no retry under its nonce).
+fn once_err(e: Error) -> Error {
+    match e {
+        Error::Network(m) if m == LOST => Error::Invalid("outcome unknown".into()),
+        e => e,
+    }
+}
+
 fn net(m: impl std::fmt::Display) -> Error {
     Error::Network(m.to_string())
 }
@@ -137,7 +149,7 @@ impl Remote {
             Ok(Err(Code::REFUSED)) => Err(Error::Unsupported("refused by the node (no Owner session)".into())),
             Ok(Err(Code::UNSUPPORTED)) => Err(Error::Unsupported("node too old".into())),
             Ok(Err(code)) => Err(net(format!("node answered error {}", code.0))),
-            Err(_) => Err(net("connection to the node closed")),
+            Err(_) => Err(net(LOST)),
         }
     }
 
@@ -355,7 +367,7 @@ impl Osis {
     pub(crate) fn remote_write(&self, mut wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
         let r = self.rem();
         wire.insert(0, u(r.nonce()));
-        let v = r.call(method::WRITE, wire)?;
+        let v = r.call(method::WRITE, wire).map_err(once_err)?;
         let o = c::Args::of(vec![v]).opt()?;
         o.map(c::committed).transpose()
     }
@@ -363,7 +375,7 @@ impl Osis {
     /// A nonce'd undo/redo/revert at the attached node.
     pub(crate) fn remote_once(&self, m: u64, arg: Value) -> Result<Value> {
         let r = self.rem();
-        r.call(m, vec![u(r.nonce()), arg])
+        r.call(m, vec![u(r.nonce()), arg]).map_err(once_err)
     }
 
     /// Registers `cb` for a subscription at the attached node: its Reply (`PortEvent::Initial`)

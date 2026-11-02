@@ -180,3 +180,66 @@ fn own_host_device_localhost() {
     assert_eq!(o.status.code(), Some(6), "{err}");
     assert!(err.contains(&format!("host {addr} does not admit group {} (yet)", field(&home, "home"))), "{err}");
 }
+
+/// Runs `osis` once; (exit code, stdout, stderr).
+fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
+    let o = Command::new(OSIS).arg("-s").arg(store).args(args).stdin(Stdio::null()).output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
+}
+
+// notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's; `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+#[test]
+#[ignore]
+fn daemon_clients_localhost() {
+    let s = dir("daemon");
+    osis(&s, &["init"]);
+    let local = dir("daemon-local");
+    osis(&local, &["init"]);
+    // the same commands locally first, for the expected forms
+    let lt = osis(&local, &["create", "--owner", "me", "note:title.0", "\"x\""]);
+    let lget = run(&local, &["get", &lt, "note:title.0"]);
+    let lmiss = run(&local, &["get", &lt, "note:none.0"]);
+    for xdg in [true, false] {
+        // a killed daemon's pointer stays (stale): wait for the new one
+        let _ = std::fs::remove_file(s.join("sock"));
+        let mut c = Command::new(OSIS);
+        if !xdg {
+            c.env_remove("XDG_RUNTIME_DIR");
+        }
+        let child = c.arg("-s").arg(&s).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        let host = Host(child);
+        // `serve` names its socket in the store once it listens
+        let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !s.join("sock").exists() {
+            assert!(std::time::Instant::now() < end, "serve did not listen");
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let sock = std::fs::read_to_string(s.join("sock")).unwrap();
+        if !xdg {
+            assert!(sock.starts_with("/tmp/osis-"), "{sock}");
+        }
+        let t = osis(&s, &["create", "--owner", "me", "note:title.0", "\"x\""]);
+        assert!(t.starts_with("osis://"), "{t}");
+        let get = run(&s, &["get", &t, "note:title.0"]);
+        assert_eq!((get.0, get.1.as_str()), (lget.0, lget.1.as_str()));
+        let miss = run(&s, &["get", &t, "note:none.0"]);
+        assert_eq!((miss.0, miss.1.as_str()), (lmiss.0, lmiss.1.as_str()));
+        // a watch through the daemon: its initial line, then the change another client makes
+        let mut w = Command::new(OSIS).arg("-s").arg(&s).args(["--timeout", "60s", "watch", &t, "note:title.0", "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut wout = BufReader::new(w.stdout.take().unwrap());
+        let mut first = String::new();
+        wout.read_line(&mut first).unwrap();
+        assert!(first.contains("\"x\""), "{first}");
+        osis(&s, &["set", &t, "note:title.0", "\"y\""]);
+        let mut second = String::new();
+        wout.read_line(&mut second).unwrap();
+        assert!(second.contains("\"y\""), "{second}");
+        assert!(w.wait().unwrap().success());
+        // inspect needs the store itself
+        assert_eq!(run(&s, &["inspect", "thing", &t]).0, 8);
+        drop(host);
+        // the daemon was killed: its pointer stays, stale; the store opens locally again
+        assert_eq!(osis(&s, &["get", &t, "note:title.0"]), "\"y\"");
+        osis(&s, &["set", &t, "note:title.0", "\"x\""]);
+    }
+}

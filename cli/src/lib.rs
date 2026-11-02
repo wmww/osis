@@ -185,14 +185,23 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
     }
 }
 
-/// Opens an existing store (exit 8 when missing or locked).
-fn open(sel: &StoreSel, g: &Global, net: bool) -> anyhow::Result<Osis> {
+/// Opens an existing store (exit 8 when missing or locked). Locked by a daemon (`osis serve`)
+/// whose socket answers, the invocation is that daemon's client instead (`attach`, unless the
+/// command must hold the store itself: `inspect`).
+fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<Osis> {
     match sel {
         StoreSel::Dir(d) => {
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
-            let db = Osis::open(config(sel, g, net)).map_err(|e| lock_err(d, e))?;
+            let db = match Osis::open(config(sel, g, net)) {
+                Ok(db) => db,
+                Err(Error::Storage(m)) if attach && m.contains("already open") => match daemon(d, g) {
+                    Some(db) => return Ok(db),
+                    None => return Err(lock_err(d, Error::Storage(m))),
+                },
+                Err(e) => return Err(lock_err(d, e)),
+            };
             let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
             Ok(db)
         }
@@ -200,6 +209,37 @@ fn open(sel: &StoreSel, g: &Global, net: bool) -> anyhow::Result<Osis> {
             Error::Storage(m) if m.contains("not an osis database") => exit(8, "no store (run osis init)"),
             e => e.into(),
         }),
+    }
+}
+
+/// The daemon serving the store at `d`: its socket named by `<store>/sock`, attached as Owner
+/// (notes/client-port.md §5). None when there is no live one.
+fn daemon(d: &Path, g: &Global) -> Option<Osis> {
+    let sock = std::fs::read_to_string(d.join(osis::SOCK_FILE)).ok()?;
+    let mut cfg = Config::memory();
+    if let Some(l) = g.limit {
+        cfg.materialize_limit = l;
+    }
+    Osis::attach(Path::new(sock.trim_end()), cfg).ok()
+}
+
+/// Serves the client port while `serve` runs: listens on the store's socket and names it in
+/// `<store>/sock` (removed when the guard drops). A memory store has none.
+pub(crate) fn listen(sel: &StoreSel, db: &Osis) -> anyhow::Result<Option<SockFile>> {
+    let StoreSel::Dir(d) = sel else { return Ok(None) };
+    let sock = osis::socket_path(d)?;
+    db.listen_unix(&sock)?;
+    let f = d.join(osis::SOCK_FILE);
+    std::fs::write(&f, format!("{}\n", sock.display()))?;
+    Ok(Some(SockFile(f)))
+}
+
+/// Removes `<store>/sock` on drop.
+pub(crate) struct SockFile(PathBuf);
+
+impl Drop for SockFile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.0);
     }
 }
 

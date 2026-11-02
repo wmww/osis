@@ -289,7 +289,7 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             stdin.read_line(&mut line)?;
             join.finish(&line.parse()?)?
         }
-        c => open(&sel, &g, needs_net(c))?,
+        c => open(&sel, &g, needs_net(c), !matches!(c, Cmd::Inspect(_) | Cmd::Serve { .. }))?,
     };
     if let Some(c) = card {
         writeln!(out, "{c}")?;
@@ -1142,6 +1142,8 @@ const DEFAULT_LISTEN: &str = "quic://0.0.0.0:4040";
 
 fn serve(ctx: &mut Ctx<'_>, host: HostFlags) -> anyhow::Result<()> {
     let db = ctx.db.clone();
+    // other invocations on this store become its clients (notes/cli.md Design)
+    let _sock = crate::listen(&ctx.sel, &db)?;
     if host.any() {
         set_hosting(ctx, host)?;
     }
