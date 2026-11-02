@@ -174,6 +174,8 @@ Each step merges alone, passes the gate, and updates the spec sections it change
 
 Item 193 code: deleted in step 2, except `Form::Node`/`Source::Node` arms (step 4).
 
-## Owner
-- Decision (a) is closed by a different rule than the candidate (rule 7). It costs 32 B per uncompacted commit of the removed device in its demotion frontier, and accepts the double-removal residual above.
-- Step 3, yes or no: with it, demotion frontiers stay tiny but X's content can blink out at a node that gets the demotion before the demoter's snapshot. Without it, no blink, and frontiers list X's commits written since the last compaction.
+## Owner decisions (round 13)
+- Rule 7 in place of the earlier candidate for decision (a): accepted ("seems fine"), with its 32 B per uncompacted commit and the double-removal residual.
+- Step 3 (compact before an explicit demotion): left to the coordinator, who chose **no** for now: nothing blinks out, and frontiers stay bounded by compaction cadence. Revisit if demotion frontiers measure large.
+- issues/atomic-wait-carrierless-drop.md: count a carrierless-dropped dead part as held, accepted ("fine").
+- Owner earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.
