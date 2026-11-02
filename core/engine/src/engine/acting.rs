@@ -33,12 +33,15 @@ impl Engine {
     /// Whether `actor` may read `t` now: the permission model's entitlement (spec/sync.md §3); a
     /// thing ephemeral here by its owner chain. False for what this node does not know.
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
-        // held only through groups that stopped syncing here, or still catching up on their way
-        // home: stale here, and this node would serve it to a client as if current
-        // (notes/client-port.md §6)
+        // in a group read at another node or still catching up on its way home, or held only
+        // through groups that stopped syncing here: stale here, and this node would serve it to a
+        // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
             let gs = self.durable_groups_of(t);
-            let out = |g: &Tid| self.core.receipts_only.contains(g) || self.core.routed_away.contains(g);
+            if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
+                return false;
+            }
+            let out = |g: &Tid| self.core.receipts_only.contains(g);
             if (out(t) || gs.iter().any(out)) && !gs.iter().chain([t]).any(|g| !out(g) && self.core.ix.labeled.contains(g)) {
                 return false;
             }
