@@ -1140,3 +1140,80 @@ pub(crate) use crate::seq_wire::{decode_elems, encode_elems};
 
 pub(crate) use crate::seq_diff::{diff, diff_values};
 pub(crate) use crate::seq_ops::{create, element_at, op, overlay, undo, wrap_element};
+
+/// The text deletes (`true` flags) of the fragments a replay joined, per element (its text's
+/// path and its dot, §4.8): a creation it meets after them (a snapshot's copy whose own delta
+/// does not play) dies at the earliest one newer than it, which the state's flag (the last
+/// write) no longer shows.
+#[derive(Default)]
+pub struct TextDeletes(BTreeMap<(Vec<At>, Dot), std::collections::BTreeSet<Stamp>>);
+
+/// A step to a nested text (`TextDeletes`): a field, a case, a map entry, a list element's
+/// content, an encoding's slot.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum At {
+    Field(u64),
+    Case(u64),
+    Entry(crate::fragment::Eid),
+    Elem(Dot),
+    Slot(Encoding),
+}
+
+impl TextDeletes {
+    /// Adds every text delete `f` holds, at any depth.
+    pub fn add(&mut self, f: &Fragment) {
+        text_records(f, &mut Vec::new(), &mut |p, d, e| {
+            if let Some((s, true)) = &e.deleted {
+                for k in 0..e.span {
+                    self.0.entry((p.to_vec(), nth(d, k))).or_default().insert(s.clone());
+                }
+            }
+        });
+    }
+
+    /// The deaths of the text element creations `f` holds at the earliest delete here newer
+    /// than each (an embedded char, §7, dies with its register's write).
+    pub fn deaths(&self, f: &Fragment) -> Vec<crate::Death> {
+        let mut out = Vec::new();
+        if self.0.is_empty() {
+            return out;
+        }
+        text_records(f, &mut Vec::new(), &mut |p, d, e| {
+            let Some((c, _)) = &e.created else { return };
+            for k in 0..e.span {
+                let c = if k == 0 { c.clone() } else { Stamp { ts: c.ts, dot: nth(d, k) } };
+                let first = self.0.get(&(p.to_vec(), nth(d, k))).and_then(|s| s.range((std::ops::Bound::Excluded(&c), std::ops::Bound::Unbounded)).next());
+                if let Some(x) = first {
+                    out.push(crate::Death { stamp: c, at: x.ts, by: x.dot.clone(), element: true });
+                }
+            }
+        });
+        out
+    }
+}
+
+/// Every text record `f` holds at any depth with its text's path, but under a derived dot (an
+/// embedded char, §7).
+fn text_records(f: &Fragment, path: &mut Vec<At>, each: &mut dyn FnMut(&[At], &Dot, &SeqElem)) {
+    let sub = |at: At, x: &Fragment, path: &mut Vec<At>, each: &mut dyn FnMut(&[At], &Dot, &SeqElem)| {
+        path.push(at);
+        text_records(x, path, each);
+        path.pop();
+    };
+    match f {
+        Fragment::Seq(s) => {
+            for (d, e) in s.elems() {
+                match &e.content {
+                    SeqContent::Frag(x) => sub(At::Elem(d.clone()), x, path, each),
+                    _ if s.text && !d.src.is_derived() => each(path, d, e),
+                    _ => {}
+                }
+            }
+        }
+        Fragment::Struct(crate::fragment::Struct { fields, .. }) => fields.iter().for_each(|(i, x)| sub(At::Field(*i), x, path, each)),
+        Fragment::Enum(crate::fragment::Enum { payloads, .. }) => payloads.iter().for_each(|(i, x)| sub(At::Case(*i), x, path, each)),
+        Fragment::Map(m) => m.entries.iter().filter_map(|(id, e)| Some((id, e.frag.as_deref()?))).for_each(|(id, x)| sub(At::Entry(id.clone()), x, path, each)),
+        Fragment::Slots(s) => s.slots.iter().for_each(|(k, x)| sub(At::Slot(*k), x, path, each)),
+        Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
+    }
+}
