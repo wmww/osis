@@ -80,6 +80,38 @@ pub(crate) enum Step {
     Send { from: usize, to: usize, back: u8 },
     /// Time passes (`who`: one peer's clock, else every one).
     Advance { who: Option<usize>, ms: u64 },
+    // scripted only (`random_step` never draws these), for the judgment vectors:
+    /// A new thing owned by peer `by` itself: no edge of G reaches it.
+    NewTop { by: usize },
+    /// `by` gives thing `holder` (an actor) `role` on `t`.
+    EdgeTo { by: usize, t: usize, holder: usize, role: Role },
+    /// A bare edge write past the writer's rules (`Engine::commit_hostile`):
+    /// `holder`'s edge on `t` set to `role` with `invite`, or removed.
+    Hostile { by: usize, t: usize, holder: usize, role: Option<Role>, invite: Option<Role> },
+    /// `by` removes `holder`'s edge on `t` through `Engine::demote` (a removal of an absent edge
+    /// writes through it alone), its frontier as of before the history: covering nothing.
+    Removal { by: usize, t: usize, holder: usize },
+    /// A roster snapshot of `t` by `by` holding exactly `keep`, whatever the timeline says.
+    HostileRoster { by: usize, t: usize, keep: Vec<(usize, Role)> },
+    /// A register write on `t`, unchecked.
+    HostileWrite { by: usize, t: usize, v: u8 },
+    /// One content commit of a register write on each of things `a` and `b`, unchecked.
+    Two { by: usize, a: usize, b: usize, v: u8 },
+    /// One role commit setting `holder`'s edge on both things `a` and `b`, unchecked.
+    TwoEdges { by: usize, a: usize, b: usize, holder: usize, role: Role },
+    /// `by` puts `item("v1", 1)` at key `k` of `t:map.0`, sends that commit to `other` alone,
+    /// which sets the entry's field 1 to 7 and compacts. `Nested` writes untyped, so its entries
+    /// hold a map encoding where a field write holds a struct's.
+    NestedTyped { by: usize, other: usize, t: usize, k: u8 },
+    /// `by` sets field 1 of entry `k` of `t:map.0` to `v`.
+    TypedField { by: usize, t: usize, k: u8, v: u8 },
+    /// A write with a paged delta (spec/crdt.md §8).
+    Paged { by: usize, t: usize },
+    /// A write of a large atomic value (spec/data-model.md §6).
+    Large { by: usize, t: usize },
+    /// A removal of `holder` on `t` with its frontier as of now, padded past `CHUNK_THRESHOLD`
+    /// with things nobody holds, so it goes by link.
+    LinkedDemote { by: usize, t: usize, holder: usize },
 }
 
 const OPS: u8 = 30;
@@ -224,7 +256,7 @@ pub(crate) struct Played {
     authors: Vec<usize>,
     /// How many of `packs` are the setup (identities, G, the first grants).
     pub(crate) base: usize,
-    things: Vec<Tid>,
+    pub(crate) things: Vec<Tid>,
     pub(crate) now: WallMs,
 }
 
@@ -400,6 +432,118 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     None => lp.advance(ms),
                 }
                 None
+            }
+            Step::NewTop { by } => {
+                let mut m = Mutation::new();
+                let t = lp.peers[by].engine.new_thing(&mut m, ids[by]);
+                m.set(t, &REG, &s("top")).unwrap();
+                lp.peers[by].commit(m).unwrap().expect("a creation writes");
+                things.push(t);
+                Some(by)
+            }
+            Step::EdgeTo { by, t, holder, role } => {
+                let holder = th(holder);
+                lp.peers[by].commit(edge_write(th(t), holder, Some(edge(role)))).unwrap().expect("a grant writes");
+                Some(by)
+            }
+            Step::Hostile { by, t, holder, role, invite } => {
+                let m = edge_write(th(t), ids[holder], role.map(|r| osis_schema::core_types::Edge { invite, ..edge(r) }));
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("an edge write writes");
+                Some(by)
+            }
+            Step::Removal { by, t, holder } => {
+                let d = osis_node::flows::Demotion { holder: ids[holder], new: None, presync: osis_node::flows::PreSync::Backdated(T0) };
+                lp.peers[by].engine.demote(&th(t), &d).unwrap();
+                Some(by)
+            }
+            Step::HostileRoster { by, t, keep } => {
+                let roster: osis_schema::core_types::Holders = keep.iter().map(|(h, r)| (ids[*h], edge(*r))).collect();
+                let mut m = Mutation::new();
+                m.replace(th(t), &osis_schema::core_types::ROLES, &roster).unwrap();
+                m.replace(th(t), &osis_schema::core_types::TENURES, &osis_schema::core_types::Tenures(Vec::new())).unwrap();
+                m.roster_for_tests();
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a snapshot writes");
+                Some(by)
+            }
+            Step::HostileWrite { by, t, v } => {
+                let mut m = Mutation::new();
+                m.set(th(t), &REG, &s(&format!("v{v}"))).unwrap();
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("a write");
+                Some(by)
+            }
+            Step::Two { by, a, b, v } => {
+                let mut m = Mutation::new();
+                m.set(th(a), &REG, &s(&format!("v{v}"))).unwrap();
+                m.set(th(b), &REG, &s(&format!("v{v}"))).unwrap();
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("two writes");
+                Some(by)
+            }
+            Step::TwoEdges { by, a, b, holder, role } => {
+                let mut m = Mutation::new();
+                for x in [th(a), th(b)] {
+                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[holder])) }).unwrap();
+                    m.op(x, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(ids[holder]))], op: Op::Set(edge(role).to_value()) }).unwrap();
+                }
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("two edge writes");
+                Some(by)
+            }
+            Step::NestedTyped { by, other, t, k } => {
+                let key = PathSeg::Key(s(&format!("k{k}")));
+                let mut m = Mutation::new();
+                m.op(th(t), &MAP, PathOp { path: vec![key.clone()], op: Op::Set(item("v1", 1)) }).unwrap();
+                let id = lp.peers[by].commit(m).unwrap().expect("a put");
+                let pk = lp.peers[by].engine.package(&id).unwrap().unwrap();
+                lp.deliver(other, &pk).unwrap();
+                lp.peers[other].clock.advance(1);
+                let mut m = Mutation::new();
+                m.op(th(t), &MAP, PathOp { path: vec![key, PathSeg::Field(1)], op: Op::Set(Value::Int(7)) }).unwrap();
+                lp.peers[other].commit(m).unwrap().expect("a write");
+                lp.peers[other].clock.advance(1);
+                lp.peers[other].engine.snapshot(&th(t), &ak("t:map.0")).unwrap();
+                collect(&mut lp, by, &mut seen, &mut packs, &mut authors, &mut own);
+                Some(other)
+            }
+            Step::TypedField { by, t, k, v } => {
+                let mut m = Mutation::new();
+                m.op(th(t), &MAP, PathOp { path: vec![PathSeg::Key(s(&format!("k{k}"))), PathSeg::Field(1)], op: Op::Set(Value::Int(v as i64)) }).unwrap();
+                lp.peers[by].commit(m).unwrap().expect("a write");
+                Some(by)
+            }
+            Step::Paged { by, t } => {
+                let big: BTreeMap<Value, Value> = (0..1100).map(|i| (s(&format!("key-{i:05}")), s(&"x".repeat(40)))).collect();
+                let mut m = Mutation::new();
+                m.set(th(t), &BIG, &Value::Map(big)).unwrap();
+                let id = lp.peers[by].commit(m).unwrap().expect("a write");
+                assert!(!lp.peers[by].engine.header(&id).unwrap().chunks.is_empty(), "paged");
+                Some(by)
+            }
+            Step::Large { by, t } => {
+                let mut m = Mutation::new();
+                m.set(th(t), &BLOB, &Value::Bytes(vec![7; osis_base::format::CHUNK_THRESHOLD + 1])).unwrap();
+                let id = lp.peers[by].commit(m).unwrap().expect("a write");
+                assert!(!lp.peers[by].engine.header(&id).unwrap().chunks.is_empty(), "chunked");
+                Some(by)
+            }
+            Step::LinkedDemote { by, t, holder } => {
+                let t = th(t);
+                let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]) };
+                let as_of = lp.peers[by].engine.now();
+                let mut f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
+                let pad = BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(ids[holder], 5)]))]);
+                // just past the threshold: these go in the vectors
+                let mut i = 0u32;
+                while osis_base::encode(&f.to_value()).len() <= osis_base::format::CHUNK_THRESHOLD {
+                    for _ in 0..50 {
+                        let b = i.to_be_bytes();
+                        f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), pad.clone());
+                        i += 1;
+                    }
+                }
+                let mut m = edge_write(t, ids[holder], None);
+                m.frontier(f.to_value());
+                let id = lp.peers[by].commit(m).unwrap().expect("a removal");
+                assert!(lp.peers[by].engine.header(&id).unwrap().links.frontier.is_some(), "the frontier goes by link");
+                Some(by)
             }
         };
         if let Some(i) = acted {

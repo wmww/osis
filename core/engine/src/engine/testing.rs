@@ -9,6 +9,18 @@ use osis_store::Shred;
 use std::collections::BTreeMap;
 
 impl Engine {
+    /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
+    /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
+    /// no writer makes can be tested so.
+    #[doc(hidden)]
+    pub fn commit_hostile(&mut self, mut m: crate::Mutation) -> Result<Option<CommitId>> {
+        m.unchecked();
+        let was = std::mem::replace(&mut self.core.skip_writer_rules, true);
+        let r = self.commit(m);
+        self.core.skip_writer_rules = was;
+        r
+    }
+
     /// Every key the store's current tree yields: what an attacker holding the device starts
     /// from. Shredding tests.
     #[doc(hidden)]
@@ -286,6 +298,13 @@ impl Engine {
     #[doc(hidden)]
     pub fn edge_applied(&self, t: &Tid, c: &CommitId) -> bool {
         self.core.timelines.get(t).is_some_and(|tl| tl.applied().keys().any(|w| matches!(w, osis_perm::WriteId::Op(x, _) if x == c)))
+    }
+
+    /// Whether an edge write of commit `c` on `t` (a roster snapshot's included) applies in the
+    /// settled walk, in the drop set or not applied at all otherwise (tests).
+    #[doc(hidden)]
+    pub fn edge_write_applied(&self, t: &Tid, c: &CommitId) -> bool {
+        self.core.timelines.get(t).is_some_and(|tl| tl.applied().iter().any(|(w, a)| w.commit() == *c && a.target == *t))
     }
 
     /// Sets the least component saved (`WALK_CACHE_MIN`) for this session (tests).
