@@ -237,6 +237,8 @@ pub(crate) struct LConn {
     pub dirty: bool,
     /// A child step sent for registration.
     pub registering: Option<(Step, osis_label::ClaimSet)>,
+    /// A child step refused for now: no pass registers one before this (raw ms).
+    pub step_retry: u64,
     /// What the next pass judges (`work`).
     pub work: work::Work,
     pub budget: Option<u64>,
