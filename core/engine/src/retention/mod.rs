@@ -378,7 +378,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     if any {
         tx.core.forget_live(tid, ak);
         // until each comes back, this node may read less than one that kept it
-        suspect::raise(tx, tid, ak, suspect::Why::Uncovered)?;
+        suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &lost)?;
     }
     for (c, ai) in lost {
         // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
@@ -582,7 +582,7 @@ pub(crate) fn pending_expiry(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_com
         if t <= now {
             blob.parts.retain(|p| p.ai != ai);
             strip_pending(tx, id, ai)?;
-            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
+            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*id, ai)])?;
         } else {
             tx.put_timer(t, id, ai, T_EXPIRY)?;
         }
@@ -608,7 +608,7 @@ fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     // examined again: what it waits for may have changed
     tx.core.waits.pended(c);
     if let Some(a) = blob.header.aspects.get(ai) {
-        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
+        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry, &[(*c, ai)])?;
     }
     Ok(())
 }

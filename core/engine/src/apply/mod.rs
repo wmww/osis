@@ -633,15 +633,16 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         Exam::Ready(mut parts) => {
             let waiting = parts.waiting.take();
             let was_pending = unpend(tx, id)?;
-            let again: Vec<usize> = parts.ais().into_iter().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| m.dropped.contains_key(ai))).collect();
-            crate::retention::reopen_late(tx, id, &parts.ais())?;
+            let ais = parts.ais();
+            crate::retention::reopen_late(tx, id, &ais)?;
             atomic::join_late(tx, id, &merged, parts)?;
-            // a dropped body back and held: what the aspect lacked for it is back
-            for ai in again {
+            // a body back and held (dropped for its keep bounds, uncovered): what the aspect
+            // lacked for it is back
+            for ai in ais {
                 if tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai))
                     && let Some(a) = merged.header.aspects.get(ai)
                 {
-                    crate::retention::suspect::clear(tx, &a.tid, &a.ak)?;
+                    crate::retention::suspect::body_back(tx, id, ai, &a.tid, &a.ak)?;
                 }
             }
             match waiting {

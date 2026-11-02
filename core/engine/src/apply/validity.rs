@@ -1239,8 +1239,9 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 // a write fell where a body dropped for its keep bounds may have died for it:
                 // its value may be live again here, gone with the body (spec/commits.md §5)
-                if fell.contains_key(&k) && crate::retention::suspect::keep_dropped(tx.core, tid, ak) {
-                    crate::retention::suspect::raise(tx, tid, ak, crate::retention::suspect::Why::Flip)?;
+                if fell.contains_key(&k) {
+                    let dropped = crate::retention::suspect::keep_dropped(tx.core, tid, ak);
+                    crate::retention::suspect::raise(tx, tid, ak, crate::retention::suspect::Why::Flip, &dropped)?;
                 }
                 crate::retention::mark_deaths_due(tx, tid, ak)
             })?;
