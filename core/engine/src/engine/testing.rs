@@ -8,6 +8,16 @@ use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
+/// One row of `Engine::body_page`.
+#[doc(hidden)]
+pub struct HeldBody {
+    pub id: CommitId,
+    pub author: Tid,
+    pub ts: osis_base::Ts,
+    pub valid: bool,
+    pub value: Option<osis_base::Value>,
+}
+
 impl Engine {
     /// Commits `m` past the writer's rules, as a hostile node would: its role check, commit
     /// shape rules and refusal to emit a delta it judges invalid. A receiver's judgment of what
@@ -135,6 +145,50 @@ impl Engine {
     pub fn invalid_writes(&self, tid: &Tid, ak: &Ak) -> Vec<(CommitId, osis_base::Ts)> {
         let k = (*tid, ak.clone());
         self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
+    }
+
+    /// Skips `retention::any_bounded`'s scan, answering no: only for a node holding no body with
+    /// a relative bound (`scale::long_aspect`: what remains without the scan,
+    /// issues/long-aspect-cost.md).
+    #[doc(hidden)]
+    pub fn assume_unbounded(&mut self, on: bool) {
+        self.core.assume_unbounded = on;
+    }
+
+    /// The held bodies of `(tid, ak)`, oldest first (tests: nothing was dropped).
+    #[doc(hidden)]
+    pub fn held_bodies(&self, tid: &Tid, ak: &Ak) -> usize {
+        self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|(_, c)| crate::retention::held_part(&self.core, c, tid, ak).is_some()).count()
+    }
+
+    /// A page of `n` held bodies of `(tid, ak)` by `(ts, ID)`, read as a history read would:
+    /// `skip` from the newest or the oldest end, each with its author, its `ts`, its validity
+    /// and its value (benches: there is no history API yet, `scale::long_aspect`).
+    #[doc(hidden)]
+    pub fn body_page(&mut self, tid: &Tid, ak: &Ak, newest: bool, skip: usize, n: usize) -> Result<Vec<HeldBody>> {
+        let k = (*tid, ak.clone());
+        let set = self.core.ix.by_aspect.get(&k);
+        let page: Vec<(osis_base::Ts, CommitId)> = match set {
+            Some(s) if newest => s.iter().rev().skip(skip).take(n).copied().collect(),
+            Some(s) => s.iter().skip(skip).take(n).copied().collect(),
+            None => Vec::new(),
+        };
+        let (tid, ak) = (*tid, ak.clone());
+        self.run(|tx| {
+            let mut out = Vec::new();
+            for (ts, c) in &page {
+                let Some(m) = tx.core.ix.commits.get(c) else { continue };
+                let Some(ai) = m.aspect(&tid, &ak) else { continue };
+                let (author, valid) = (m.header.actor, m.valid_at(ai));
+                let mut v = None;
+                crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+                    v = f.read();
+                    Ok(())
+                })?;
+                out.push(HeldBody { id: *c, author, ts: *ts, valid, value: v });
+            }
+            Ok(out)
+        })
     }
 
     /// Writes the stored pages of `(tid, ak)` hold that their skeleton prunes

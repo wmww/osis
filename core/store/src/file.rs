@@ -62,7 +62,7 @@ impl Backend for RedbBackend {
     }
 
     fn commit(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
-        self.write(batch)
+        self.write(batch, redb::Durability::Immediate)
     }
 
     fn get_blob(&self, id: &BlobId) -> Result<Option<Vec<u8>>, BackendError> {
@@ -80,9 +80,16 @@ impl Backend for RedbBackend {
 }
 
 impl RedbBackend {
-    fn write(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+    /// A commit without its fsync, lost in a crash until the next durable one (filling a store
+    /// for a bench: `scale::long_aspect`).
+    #[doc(hidden)]
+    pub fn commit_unsynced(&mut self, batch: WriteBatch) -> Result<(), BackendError> {
+        self.write(batch, redb::Durability::None)
+    }
+
+    fn write(&mut self, batch: WriteBatch, durability: redb::Durability) -> Result<(), BackendError> {
         let mut w = self.db.begin_write().map_err(io)?;
-        w.set_durability(redb::Durability::Immediate);
+        w.set_durability(durability);
         {
             let mut kv = w.open_table(KV).map_err(io)?;
             let mut blobs = w.open_table(BLOBS).map_err(io)?;
