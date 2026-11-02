@@ -8,3 +8,4 @@
 - Review: the rebase applied cleanly but main had added a `Why::PendingExpiry` use in order.rs; only the build caught it. Grep for renamed identifiers after a rebase.
 - Round 2 (purge strip): a pending copy whose bytes `CommitBlob::decode` refuses (a part delta that is not a CBOR list) is skipped silently by `read_pending` and `check_unchanged`: the commit stays in `ix.pending` and is never examined again. Cost a debug round (an empty placeholder delta); now the placeholder is an empty list.
 - Guessed background task IDs for `claudewait` twice; take the ID from the launch message.
+- Review 2: `cargo test -p X --test it shred:: parts_relay::` (two filters before `--`) is a cargo usage error, silently eaten by a `grep` pipe; filters go after `--`. Exhaustive order took 462 s at load 35-40 (doc says 63 s at load 14).

@@ -770,7 +770,7 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ingested::Applied(id)
         }
         Exam::Pending(r, others) => {
-            // parts past their expiry or purged count as never received: examined again without them
+            // parts past their expiry (or a memory commit's purged ones) count as never received: examined again without them
             let (h, n) = (blob.header.clone(), blob.parts.len());
             crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
             if blob.parts.len() != n {
@@ -809,7 +809,7 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
     let mut rest = applied.clone();
     rest.parts = w.parts;
-    // a part past its expiry or purged counts as never received (`retention::pending_drops`)
+    // a part past its expiry counts as never received, a purged one is held value-less (`retention::pending_drops`)
     let h = rest.header.clone();
     crate::retention::pending_drops(tx, id, &mut rest, &h)?;
     if rest.parts.is_empty() {
@@ -931,6 +931,7 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
     blob = with_pending(tx, id, blob)?;
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
+        crate::retention::forget_stripped(tx, id, None)?;
         unpend(tx, id)?;
         return Ok(Ingested::Duplicate(*id));
     }
