@@ -1309,7 +1309,11 @@ impl Tx<'_> {
     pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<bool> {
         let pred = |d: &osis_crdt::Dot| owned.owns(d);
         let mut merged = false;
-        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| pages::strip_touched(txn, idx, tid, ak, f, touches, &pred, &mut merged))?;
+        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| {
+            let r = pages::strip_touched(txn, idx, tid, ak, f, touches, &pred)?;
+            merged |= r == Some(true);
+            Ok(r.is_some())
+        })?;
         if !done {
             self.load(tid, ak)?;
             if let Some(mut st) = self.take_cached(tid, ak) {
