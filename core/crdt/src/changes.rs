@@ -65,6 +65,10 @@ impl Changes {
     pub(crate) fn take_changed(&mut self) -> bool {
         std::mem::take(&mut self.changed)
     }
+    /// Records deaths another join found without changing this one's read (`state::cross_deaths`).
+    pub(crate) fn report(&mut self, deaths: Vec<Death>) {
+        self.deaths.extend(deaths);
+    }
     /// Records that the write stamped `stamp` died, superseded by the write stamped `by`.
     pub(crate) fn died(&mut self, stamp: &Stamp, by: &Stamp) {
         self.changed = true;

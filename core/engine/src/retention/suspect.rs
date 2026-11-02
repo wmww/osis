@@ -4,11 +4,14 @@
 //! where it holds a body dropped for its keep bounds (the body joins again if a copy comes,
 //! §5), a body dropped as covered missing again (spec/permissions.md §5.2), a part held pending
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
-//! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about and goes
-//! as each comes back: held again, or listed as included by a valid snapshot of the aspect
-//! (`receipt::listed_by`: it carried that delta's writes, value-less copies of an expired one).
-//! A snapshot that lists none of them (any writer's compaction, stamped whenever) clears
-//! nothing: it repaired nothing.
+//! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
+//! goes as its body comes back (held again: what the aspect lacked for it is in), and is dormant
+//! while a held snapshot valid here lists its delta as included (`receipt::listed_by_valid`: it
+//! carried that delta's writes, value-less copies of an expired one). Dormancy is judged when
+//! the flags are read, from what is held then: a snapshot that turns invalid gives nothing
+//! (spec/permissions.md §5.2), so the flag it had settled shows again. A snapshot that lists
+//! none of them (any writer's compaction, stamped whenever) settles nothing: it repaired
+//! nothing.
 
 use crate::engine::records;
 use crate::engine::{Core, Engine, Tx};
@@ -99,26 +102,15 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
     Ok(())
 }
 
-/// Valid snapshot `s` of `(tid, ak)` joined: the flag is no longer about the bodies it lists as
-/// included (spec/commits.md §4: it carried their writes).
-pub(crate) fn settled_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
-    // an invalid snapshot gives nothing (spec/permissions.md §5.2)
-    if !tx.core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false))) {
-        return Ok(());
-    }
-    let Some((at, all)) = load(tx, tid, ak)? else { return Ok(()) };
-    let mut kept = Vec::new();
-    for e in all {
-        let h = match tx.core.ix.commits.get(&e.0) {
-            Some(m) => Some(osis_commit::Header::clone(&m.header)),
-            // a part dropped while pending: its header is in the stored copy
-            None => tx.txn.get_pending(&e.0)?.and_then(|(_, b)| osis_commit::CommitBlob::decode(&b).ok()).map(|b| b.header),
-        };
-        if !h.is_some_and(|h| crate::apply::receipt::listed_by(tx.core, s, &h, &e.0, usize::from(e.1))) {
-            kept.push(e);
-        }
-    }
-    store(tx, tid, ak, at, &kept)
+/// Whether flag entry `e` is dormant: a held snapshot valid here lists its delta as included
+/// (spec/commits.md §4).
+fn dormant(tx: &mut Tx<'_>, e: &Entry) -> Result<bool> {
+    let h = match tx.core.ix.commits.get(&e.0) {
+        Some(m) => Some(osis_commit::Header::clone(&m.header)),
+        // a part dropped while pending: its header is in the stored copy
+        None => tx.txn.get_pending(&e.0)?.and_then(|(_, b)| osis_commit::CommitBlob::decode(&b).ok()).map(|b| b.header),
+    };
+    Ok(h.is_some_and(|h| crate::apply::receipt::listed_by_valid(tx.core, &h, &e.0, usize::from(e.1))))
 }
 
 /// The parts of `(tid, ak)` dropped other than as covered, at expiry or by a purge: their
@@ -143,14 +135,26 @@ impl Engine {
     /// and why (`Why` bits over the bodies it is about).
     pub fn suspects(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
         self.run(|tx| {
-            let mut out = Vec::new();
+            let mut flags = Vec::new();
             tx.scan(records::SUSPECT, |k, v| {
                 let mut r = records::Rd::new(k);
                 let (tid, ak) = (r.tid()?, r.ak()?);
                 let (at, bodies) = read(&v);
-                out.push((tid, ak, at, bodies.iter().fold(0, |w, e| w | e.2)));
+                flags.push((tid, ak, at, bodies));
                 Ok(())
             })?;
+            let mut out = Vec::new();
+            for (tid, ak, at, bodies) in flags {
+                let mut why = 0;
+                for e in &bodies {
+                    if !dormant(tx, e)? {
+                        why |= e.2;
+                    }
+                }
+                if why != 0 {
+                    out.push((tid, ak, at, why));
+                }
+            }
             Ok(out)
         })
     }

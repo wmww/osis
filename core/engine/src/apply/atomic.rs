@@ -141,7 +141,7 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
             let mine = delta.copy_index();
             delta.remove_dots(&|d| un.bad(d) && !mine.holds(d));
         } else {
-            delta.remove_dots(&|d| un.bad(d));
+            un.strip(&mut delta);
         }
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
@@ -451,6 +451,15 @@ impl Unmerge {
     pub(crate) fn unvouched(&self, d: &osis_crdt::Dot) -> bool {
         self.bad(d) && !self.vouched.contains(d)
     }
+    /// Removes from a delta body, the state or a residue what un-merging removes (spec/crdt.md
+    /// §4.6): the invalid deltas' writes, the records they created and others' writes nested in
+    /// them, except in a record a held valid snapshot's copy keeps (`vouched`): the record
+    /// stays in the state, so others' valid writes in it stay too.
+    pub(crate) fn strip(&self, f: &mut Fragment) {
+        if !self.is_empty() {
+            f.remove_dots_keeping(&|d| self.bad(d), &|d| self.vouched.contains(d));
+        }
+    }
     /// Whether removing in place from the state can give the join (spec/crdt.md §4.6): no held
     /// valid snapshot vouches for a write of an invalid delta.
     pub(crate) fn in_place(&self) -> bool {
@@ -708,7 +717,6 @@ fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak
         crate::retention::note_deaths(tx, tid, ak, deaths)?;
         if *snap {
             crate::retention::note_copies(tx, id, tid, ak)?;
-            crate::retention::suspect::settled_by(tx, id, tid, ak)?;
         }
     }
     Ok(())
@@ -1299,7 +1307,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
     let mut st = Fragment::default();
     let mut ch = Changes::new();
     for mut b in kept {
-        b.remove_dots(&|d| un.bad(d));
+        un.strip(&mut b);
         st.join_into(b, None, &mut ch);
     }
     // the bodies a piece at a time
@@ -1309,7 +1317,11 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
             if let Some(dots) = own {
                 f.strip_forged(&|d| dots.contains(d));
             }
-            f.remove_dots(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
+            if snap {
+                f.remove_dots(&|d| un.unvouched(d));
+            } else {
+                un.strip(&mut f);
+            }
             st.join_into(f, None, &mut ch);
             Ok(())
         })?;

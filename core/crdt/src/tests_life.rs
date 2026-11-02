@@ -832,3 +832,30 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
     assert!(f.present());
     assert_eq!(f.read(), Some(Value::List(Vec::new())));
 }
+
+/// §5.6 (the records of one dot are one entry for superseding), §4.8: a key-erased record's
+/// value-less write (a snapshot's copy of an expiring put) is beaten by a later write at its
+/// position in the keyed record (a put into the entry by a node holding the entry live): the
+/// join reports the death, though each record keeps its write.
+#[test]
+fn death_across_key_erased_record_spec_5_6() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    use std::collections::BTreeMap;
+    let x = Source::node(Tid::from_bytes([1; 15]));
+    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
+    let later = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &AnyView, &map("b")).unwrap().unwrap();
+    let mut erased = put.clone();
+    erased.strip(&|d| d.ctr < 7);
+    let old = Stamp::new(ts(5), x.clone(), 1);
+    assert!(erased.holds_stamp(&old), "the value-less write stays, key-erased");
+    for (a, b) in [(erased.clone(), later.clone()), (later, erased)] {
+        let mut st = a;
+        let ch = st.join(b);
+        let dead: Vec<_> = ch.deaths().iter().filter(|d| d.stamp == old).collect();
+        assert_eq!(dead.len(), 1, "{:?}", ch.deaths());
+        assert_eq!(dead[0].at, ts(8));
+        assert!(st.holds_stamp(&old), "each record keeps its write");
+    }
+}

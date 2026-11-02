@@ -221,14 +221,14 @@ impl Fragment {
     /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
     /// snapshot body or a snapshot turned invalid gave (spec/permissions.md §5.2).
     pub fn strip_copies(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, true);
+        self.remove_dots_in(pred, &|_| true);
         self.drop_creations(pred, false);
     }
 
     /// `strip_copies`, the keys of the entries `pred` accepts included: writes under dots a
     /// snapshot misstates (`misstated`), whose key may be forged too.
     pub fn strip_forged(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, true);
+        self.remove_dots_in(pred, &|_| true);
         self.drop_creations(pred, true);
     }
 
