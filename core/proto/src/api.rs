@@ -16,11 +16,10 @@ pub use crate::serving::REPLY_BUDGET;
 /// bound.
 pub const MAX_SUBS: usize = 4096;
 
-/// A Reply's outcome: `[0, seq, value] | [1, code, detail*]`.
+/// A Reply's outcome: `[0, value] | [1, code, detail*]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// `seq`: the node's change sequence when the call ran (a client settles up to it).
-    Ok { seq: u64, value: Value },
+    Ok { value: Value },
     /// An API error (`code` from `ApiCode`) with its details.
     Err { code: u64, detail: Vec<Value> },
 }
@@ -28,7 +27,7 @@ pub enum Outcome {
 impl Outcome {
     pub fn to_value(&self) -> Value {
         match self {
-            Outcome::Ok { seq, value } => Value::List(vec![Value::uint(0), Value::uint(*seq), value.clone()]),
+            Outcome::Ok { value } => Value::List(vec![Value::uint(0), value.clone()]),
             Outcome::Err { code, detail } => {
                 let mut v = vec![Value::uint(1), Value::uint(*code)];
                 v.extend(detail.iter().cloned());
@@ -41,10 +40,9 @@ impl Outcome {
         let mut f = Fields::range(v, 2, usize::MAX, "reply outcome")?;
         Ok(match f.uint()? {
             0 => {
-                let seq = f.uint()?;
                 let value = f.next()?;
                 f.end()?;
-                Outcome::Ok { seq, value }
+                Outcome::Ok { value }
             }
             1 => {
                 let code = f.uint()?;
@@ -64,33 +62,32 @@ impl Outcome {
     }
 }
 
-/// A Notify payload: `[0, seq, delivery] | [1] | [2, seq, source]`.
+/// A Notify payload: `[0, delivery] | [1] | [2, source]`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload {
-    /// A delivery after the node's change `seq`.
-    Delivery { seq: u64, value: Value },
+    Delivery { value: Value },
     /// The subscription ended at the node (its id is free again); subscribe again.
     Lapsed,
     /// A delivery above the subscription's `max_reply`: what changed, to be read by path or
     /// `stream_read`.
-    TooLarge { seq: u64, source: Value },
+    TooLarge { source: Value },
 }
 
 impl Payload {
     pub fn to_value(&self) -> Value {
         Value::List(match self {
-            Payload::Delivery { seq, value } => vec![Value::uint(0), Value::uint(*seq), value.clone()],
+            Payload::Delivery { value } => vec![Value::uint(0), value.clone()],
             Payload::Lapsed => vec![Value::uint(1)],
-            Payload::TooLarge { seq, source } => vec![Value::uint(2), Value::uint(*seq), source.clone()],
+            Payload::TooLarge { source } => vec![Value::uint(2), source.clone()],
         })
     }
 
     pub(crate) fn from_value(v: Value) -> Result<Payload, Error> {
-        let mut f = Fields::range(v, 1, 3, "notify payload")?;
+        let mut f = Fields::range(v, 1, 2, "notify payload")?;
         let p = match (f.uint()?, f.remaining()) {
-            (0, 2) => Payload::Delivery { seq: f.uint()?, value: f.next()? },
+            (0, 1) => Payload::Delivery { value: f.next()? },
             (1, 0) => Payload::Lapsed,
-            (2, 2) => Payload::TooLarge { seq: f.uint()?, source: f.next()? },
+            (2, 1) => Payload::TooLarge { source: f.next()? },
             _ => return Err(Error::Malformed("notify payload")),
         };
         f.end()?;

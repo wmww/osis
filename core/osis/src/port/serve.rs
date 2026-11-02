@@ -318,8 +318,7 @@ impl Worker {
                 if self.session(db, conn).is_none() {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
                 }
-                let seq = db.locked(|l| l.seq);
-                self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::List(vec![]) }));
+                self.reply(db, conn, id, Ok(Outcome::Ok { value: Value::List(vec![]) }));
             }
             Message::Call { id, method, args, .. } => {
                 let Some(h) = self.session(db, conn) else { return self.reply(db, conn, id, Err(Code::REFUSED)) };
@@ -336,23 +335,13 @@ impl Worker {
                 }
                 let r = self.call(db, conn, method, args);
                 assert!(!db.inner.port.panic_after_call.swap(false, Ordering::AcqRel), "port worker: test panic");
-                let seq = db.locked(|l| l.seq);
-                let out = match r {
-                    Ok(value) => Outcome::Ok { seq, value },
-                    Err(e) => outcome_err(&e),
-                };
-                self.reply(db, conn, id, Ok(out));
+                self.reply(db, conn, id, Ok(c::outcome(r)));
             }
             Message::Sub { id, max_reply, filter } => {
                 let Some(h) = self.session(db, conn) else { return self.reply(db, conn, id, Err(Code::REFUSED)) };
                 let db = &h;
                 let max = usize::try_from(max_reply).unwrap_or(usize::MAX);
-                let r = self.sub(db, conn, id, max, filter);
-                let seq = db.locked(|l| l.seq);
-                let mut out = match r {
-                    Ok(value) => Outcome::Ok { seq, value },
-                    Err(e) => outcome_err(&e),
-                };
+                let mut out = c::outcome(self.sub(db, conn, id, max, filter));
                 // an initial value above max_reply ends the subscription here as in proto, which
                 // answers it TooLarge and frees the id (`MAX_SUBS` counts live ones only)
                 if (Message::Reply { id, outcome: out.clone() }).encode().len() > max {
@@ -415,10 +404,7 @@ impl Worker {
         }
         n.lost = false;
         let r = run();
-        let o = match &r {
-            Ok(v) => Outcome::Ok { seq: 0, value: v.clone() },
-            Err(e) => outcome_err(e),
-        };
+        let o = c::outcome(r.clone());
         let n = self.nonces.entry(key).or_default();
         n.done.insert(nonce, o);
         while n.done.len() > WRITE_NONCES {
@@ -690,7 +676,6 @@ impl Worker {
     /// while something is left; answers waiting `settle` calls once nothing is.
     fn flush(&mut self, db: &Osis, conn: ConnId, budget: usize) {
         let Some(cn) = self.conns.get_mut(&conn) else { return };
-        let seq = db.locked(|l| l.seq);
         let mut notes: Vec<(Id, Payload)> = Vec::new();
         let mut used = 0usize;
         let mut left = false;
@@ -750,12 +735,12 @@ impl Worker {
             }
             let mut sent = 0;
             for (v, _, src) in &out {
-                let mut p = Payload::Delivery { seq, value: v.clone() };
+                let mut p = Payload::Delivery { value: v.clone() };
                 let size_of = |p: &Payload| Message::Notify { sub: *id, payload: p.clone() }.encode().len();
                 let mut size = size_of(&p);
                 if size > s.max_reply {
                     // above the subscription's bound: what changed, read by path or stream
-                    p = Payload::TooLarge { seq, source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
+                    p = Payload::TooLarge { source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
                     size = size_of(&p);
                 }
                 if size > s.max_reply {
@@ -812,8 +797,7 @@ impl Worker {
             self.want_room(db, conn);
         }
         for id in settles {
-            let seq = db.locked(|l| l.seq);
-            self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::List(vec![]) }));
+            self.reply(db, conn, id, Ok(Outcome::Ok { value: Value::List(vec![]) }));
         }
     }
 }

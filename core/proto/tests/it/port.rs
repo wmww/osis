@@ -32,8 +32,8 @@ fn serving(port: bool) -> (ServingSession, MemoryLabelStore) {
     (s, store)
 }
 
-fn ok(seq: u64, v: Value) -> Outcome {
-    Outcome::Ok { seq, value: v }
+fn ok(v: Value) -> Outcome {
+    Outcome::Ok { value: v }
 }
 
 // spec/wire.md §11.2: each client-port kind round-trips; Notify carries id 0, every request a nonzero id; max_reply within SMALL_REPLY..=REPLY_BUDGET
@@ -43,13 +43,13 @@ fn kinds_round_trip_and_id_rules() {
     let msgs = [
         Message::Auth { id: 1, secret: None, session: [9; 16] },
         Message::Call { id: 2, max_reply: small, method: 3, args: vec![Value::Str("x".into()), Value::List(vec![])] },
-        Message::Reply { id: 2, outcome: ok(7, Value::Int(5)) },
+        Message::Reply { id: 2, outcome: ok(Value::Int(5)) },
         Message::Reply { id: 2, outcome: Outcome::Err { code: 1, detail: vec![Value::Bytes(vec![0; 15])] } },
         Message::Sub { id: 4, max_reply: REPLY_BUDGET as u64, filter: Value::List(vec![Value::uint(0)]) },
         Message::Unsub { id: 5, sub: 4 },
-        Message::Notify { sub: 4, payload: Payload::Delivery { seq: 8, value: Value::Bool(true) } },
+        Message::Notify { sub: 4, payload: Payload::Delivery { value: Value::Bool(true) } },
         Message::Notify { sub: 4, payload: Payload::Lapsed },
-        Message::Notify { sub: 4, payload: Payload::TooLarge { seq: 9, source: Value::Int(1) } },
+        Message::Notify { sub: 4, payload: Payload::TooLarge { source: Value::Int(1) } },
     ];
     for m in msgs {
         assert_eq!(Message::decode(&m.encode()).unwrap(), m);
@@ -85,17 +85,17 @@ fn serving_auth_call_and_reply_bound() {
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&auth)));
     assert_eq!(requests(&out), vec![auth]);
     assert!(s.none_opened());
-    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
+    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     assert_eq!(sent(&out).len(), 1);
     assert!(s.authed() && !s.none_opened());
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call)));
     assert_eq!(requests(&out), vec![call]);
     // a reply above max_reply goes as TooLarge with the bound
     let big = Value::Bytes(vec![0; SMALL_REPLY]);
-    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 2, reply: Ok(ok(1, big)) });
+    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 2, reply: Ok(ok(big)) });
     assert_eq!(sent(&out), vec![Message::Reply { id: 2, outcome: Outcome::too_large(SMALL_REPLY) }]);
     // an answer to nothing asked is dropped
-    assert!(s.handle(T0, &mut st, ServingInput::Reply { id: 2, reply: Ok(ok(1, Value::Int(0))) }).is_empty());
+    assert!(s.handle(T0, &mut st, ServingInput::Reply { id: 2, reply: Ok(ok(Value::Int(0))) }).is_empty());
 }
 
 // spec/wire.md §11.1: a Sub's id stays reserved while live (a Sub reusing it is Error 2); Unsub is answered Ok and later Notifies for it are dropped; a lapsed Notify frees the id; at most MAX_SUBS live (code 4)
@@ -103,27 +103,27 @@ fn serving_auth_call_and_reply_bound() {
 fn serving_sub_ids_and_caps() {
     let (mut s, mut st) = serving(true);
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
-    s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
+    s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     let sub = |id| Message::Sub { id, max_reply: SMALL_REPLY as u64, filter: Value::Int(0) };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(5))));
     assert_eq!(requests(&out).len(), 1);
-    s.handle(T0, &mut st, ServingInput::Reply { id: 5, reply: Ok(ok(0, Value::Int(1))) });
+    s.handle(T0, &mut st, ServingInput::Reply { id: 5, reply: Ok(ok(Value::Int(1))) });
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(5))));
     assert_eq!(sent(&out), vec![Message::Error { id: 5, code: Code::MALFORMED }]);
-    let d = |seq| Payload::Delivery { seq, value: Value::Int(2) };
-    let out = s.handle(T0, &mut st, ServingInput::Notify(vec![(5, d(1)), (6, d(1))]));
-    assert_eq!(sent(&out), vec![Message::Notify { sub: 5, payload: d(1) }]);
+    let d = || Payload::Delivery { value: Value::Int(2) };
+    let out = s.handle(T0, &mut st, ServingInput::Notify(vec![(5, d()), (6, d())]));
+    assert_eq!(sent(&out), vec![Message::Notify { sub: 5, payload: d() }]);
     // a Notify above the subscription's max_reply ends it
-    let out = s.handle(T0, &mut st, ServingInput::Notify(vec![(5, Payload::Delivery { seq: 2, value: Value::Bytes(vec![0; SMALL_REPLY]) })]));
+    let out = s.handle(T0, &mut st, ServingInput::Notify(vec![(5, Payload::Delivery { value: Value::Bytes(vec![0; SMALL_REPLY]) })]));
     assert_eq!(sent(&out), vec![Message::Notify { sub: 5, payload: Payload::Lapsed }]);
     assert_eq!(s.subs(), 0);
     // the id is free again; Unsub answers Ok and drops what follows
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(5))));
-    s.handle(T0, &mut st, ServingInput::Reply { id: 5, reply: Ok(ok(0, Value::Int(1))) });
+    s.handle(T0, &mut st, ServingInput::Reply { id: 5, reply: Ok(ok(Value::Int(1))) });
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Unsub { id: 7, sub: 5 })));
     assert_eq!(sent(&out), vec![Message::Ok { id: 7 }]);
     assert_eq!(requests(&out).len(), 1);
-    assert!(s.handle(T0, &mut st, ServingInput::Notify(vec![(5, d(3))])).is_empty());
+    assert!(s.handle(T0, &mut st, ServingInput::Notify(vec![(5, d())])).is_empty());
     // a refused Sub frees its id
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(8))));
     s.handle(T0, &mut st, ServingInput::Reply { id: 8, reply: Ok(Outcome::Err { code: 1, detail: vec![] }) });
@@ -132,7 +132,7 @@ fn serving_sub_ids_and_caps() {
     for id in 0..MAX_SUBS as u32 {
         let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(100 + id))));
         assert_eq!(requests(&out).len(), 1);
-        s.handle(T0, &mut st, ServingInput::Reply { id: 100 + id, reply: Ok(ok(0, Value::Int(1))) });
+        s.handle(T0, &mut st, ServingInput::Reply { id: 100 + id, reply: Ok(ok(Value::Int(1))) });
     }
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(9))));
     assert_eq!(sent(&out), vec![Message::Error { id: 9, code: Code::RATE_LIMITED }]);
@@ -148,7 +148,7 @@ fn serving_room_follows_the_push_rule() {
     assert!(out.contains(&ServingOutput::Room { budget: REPLY_BUDGET }));
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     // a reply of nearly REPLY_BUDGET unwritten: no room until taken
-    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; SMALL_REPLY - 64]))) });
+    let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; SMALL_REPLY - 64]))) });
     assert_eq!(sent(&out).len(), 1);
     let out = s.handle(T0, &mut st, ServingInput::WantRoom);
     let room = out.iter().find_map(|o| if let ServingOutput::Room { budget } = o { Some(*budget) } else { None }).unwrap();
@@ -223,13 +223,13 @@ fn client_role_over_loopback() {
     let (_, reqs) = pump(&mut c, &mut s, &mut st, b);
     let [Message::Auth { id, session, secret: None }] = reqs[..] else { panic!("{reqs:?}") };
     assert_eq!(session, [7; 16]);
-    let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(0, Value::Bytes(vec![1; 16]))) }));
+    let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(Value::Bytes(vec![1; 16]))) }));
     let evs: Vec<ClientOutput> = c.handle(T0, ClientInput::Bytes(f));
-    assert!(evs.contains(&ClientOutput::Event(ClientEvent::Reply { token: 10, reply: Ok(ok(0, Value::Bytes(vec![1; 16]))) })));
+    assert!(evs.contains(&ClientOutput::Event(ClientEvent::Reply { token: 10, reply: Ok(ok(Value::Bytes(vec![1; 16]))) })));
     let b = client_sends(&mut c, Command::Sub { token: 11, max_reply: SMALL_REPLY as u64, filter: Value::Int(3) });
     let (_, reqs) = pump(&mut c, &mut s, &mut st, b);
     let [Message::Sub { id: sub, .. }] = reqs[..] else { panic!() };
-    let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id: sub, reply: Ok(ok(1, Value::Int(0))) }));
+    let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id: sub, reply: Ok(ok(Value::Int(0))) }));
     c.handle(T0, ClientInput::Bytes(f));
     // many calls: none takes the live Sub's id
     for t in 0..300u64 {
@@ -237,11 +237,11 @@ fn client_role_over_loopback() {
         let (_, reqs) = pump(&mut c, &mut s, &mut st, b);
         let [Message::Call { id, .. }] = reqs[..] else { panic!() };
         assert_ne!(id, sub);
-        let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(2, Value::Int(t as i64))) }));
+        let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(Value::Int(t as i64))) }));
         let out = c.handle(T0, ClientInput::Bytes(f));
-        assert!(out.contains(&ClientOutput::Event(ClientEvent::Reply { token: 1000 + t, reply: Ok(ok(2, Value::Int(t as i64))) })));
+        assert!(out.contains(&ClientOutput::Event(ClientEvent::Reply { token: 1000 + t, reply: Ok(ok(Value::Int(t as i64))) })));
     }
-    let d = Payload::Delivery { seq: 3, value: Value::Int(9) };
+    let d = Payload::Delivery { value: Value::Int(9) };
     let f = serving_sends(s.handle(T0, &mut st, ServingInput::Notify(vec![(sub, d.clone())])));
     let out = c.handle(T0, ClientInput::Bytes(f));
     assert!(out.contains(&ClientOutput::Event(ClientEvent::Notify { token: 11, payload: d.clone() })));
@@ -279,7 +279,7 @@ fn unanswered_auths_close_the_session() {
 fn unanswered_calls_past_the_window_close() {
     let (mut s, mut st) = serving(true);
     s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
-    s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
+    s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(Value::Bytes(vec![0; 16]))) });
     let call = |id| Message::Call { id, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
     let per = frame(&call(1_000_000)).len() + SMALL_REPLY;
     let within = osis_proto::client::WINDOW / per;
@@ -292,7 +292,7 @@ fn unanswered_calls_past_the_window_close() {
             assert_eq!(requests(&out).len(), 1, "within the window");
         }
         for id in base..base + within as u32 {
-            s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(0, Value::Int(0))) });
+            s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(Value::Int(0))) });
         }
     }
     let mut closed = false;

@@ -116,7 +116,7 @@ fn client_pool_idle_and_end() {
     let got = auth(&mut net, a, c3, &mut cs3);
     let Some(Action::Request { msg, .. }) = got.into_iter().find(|x| matches!(x, Action::Request { .. })) else { panic!() };
     let Message::Auth { id, .. } = *msg else { panic!() };
-    let acts = net.sync(a).handle(Event::Reply { conn: c3, id, reply: Ok(Outcome::Ok { seq: 0, value: Value::Bytes(vec![0; 16]) }) });
+    let acts = net.sync(a).handle(Event::Reply { conn: c3, id, reply: Ok(Outcome::Ok { value: Value::Bytes(vec![0; 16]) }) });
     feed(&mut net, a, c3, &mut cs3, Vec::new(), acts);
     let (c4, acts) = net.sync(a).accept_peer(LOCAL, Peer::Unix { uid });
     assert!(acts.contains(&Action::Close { conn: c4 }) && !acts.contains(&Action::Close { conn: c3 }), "{acts:?}");
