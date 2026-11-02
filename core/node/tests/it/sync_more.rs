@@ -164,9 +164,10 @@ fn reconciliation_fallback_spec_sync_6() {
 
 /// Reader B holds v0 of a keep-at-most-1-h aspect; offline, A replaces it 5 times and the host
 /// deletes the replaced bodies and trims its log (`log_keep` 16) past B's cursor; `wipe`: the
-/// host then loses everything (a new log ID) and A registers and uploads again. B back online:
-/// whether it still knows v0's entry, and whether its entries are the host's.
-fn stale_entry_after_fallback(wipe: bool) -> (bool, bool) {
+/// host then loses everything (a new log ID) and A registers and uploads again; `restart`: B
+/// restarts before coming back (its first sync there reconciles before using the cursor). B
+/// back online: whether it still knows v0's entry, and whether its entries are the host's.
+fn stale_entry_after_fallback(wipe: bool, restart: bool) -> (bool, bool) {
     let mut net = Net::new();
     let host = net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
     let a = net.node(1, &[host]);
@@ -199,6 +200,9 @@ fn stale_entry_after_fallback(wipe: bool) -> (bool, bool) {
         net.advance(120_000);
         net.run();
     }
+    if restart {
+        net.restart(b, 23);
+    }
     net.set_online(b, true);
     net.run();
     net.advance(2 * 3_600_000);
@@ -215,14 +219,21 @@ fn stale_entry_after_fallback(wipe: bool) -> (bool, bool) {
 // the reader's sync state as a Deleted record would take it.
 #[test]
 fn trimmed_log_reconcile_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(false), (false, true));
+    assert_eq!(stale_entry_after_fallback(false, false), (false, true));
+}
+
+// spec/sync.md §6: as above for a restarted reader: the reconciliation its first sync after
+// the start runs keeps durable presence, so the code 15 from its kept cursor still finds v0.
+#[test]
+fn trimmed_log_after_restart_deletes_absent_entries_spec_sync_6() {
+    assert_eq!(stale_entry_after_fallback(false, true), (false, true));
 }
 
 // spec/sync.md §6, spec/wire.md §11.2 (code 10): a cursor of another log (a wiped host)
 // reconciles presence only: what the reader knew stays known, nothing taken as deleted.
 #[test]
 fn other_log_reconcile_keeps_entries_spec_sync_6() {
-    assert!(stale_entry_after_fallback(true).0);
+    assert!(stale_entry_after_fallback(true, false).0);
 }
 
 // spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it
