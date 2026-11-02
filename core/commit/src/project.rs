@@ -90,8 +90,9 @@ pub(crate) fn check_fits(c: &CommitBlob, max: usize) -> Result<(), Error> {
 
 /// Projects a commit into blobs: one per distinct (readable subset, retention class) of its
 /// deltas, the class being retention, expiry and delete key set; a class above `MAX_BLOB` splits
-/// greedily in aspect-list order. `readers(ai)` is the reader-set key of aspect `ai`'s thing.
-/// Ordered by class key, then split order.
+/// greedily in part order, measuring the whole blob (spec/sync.md §3, Projection).
+/// `readers(ai)` is the reader-set key of aspect `ai`'s thing. Ordered by class key, then split
+/// order.
 pub fn project<K: Ord + Clone>(c: &CommitBlob, readers: impl Fn(usize) -> K) -> Result<Vec<Projection<K>>, Error> {
     project_resolved(c, &c.header, readers)
 }
@@ -113,6 +114,8 @@ pub fn project_resolved<K: Ord + Clone>(c: &CommitBlob, resolved: &Header, reade
         let ai = parts.first().map_or(0, |p| p.ai);
         let retention = resolved.aspects.get(ai).map(|a| a.retention).unwrap_or_default();
         let (_, keys) = prefix_inputs(resolved, &[(ai, 0)])?;
+        // spec/sync.md §3 (Projection): parts in stored `(ai, di)` order, each blob taking the
+        // next while the padded, framed blob with its commitments stays within `MAX_BLOB`
         let fits = |n: usize, body: usize| blob_len(fixed.saturating_add(head_len(n as u64)).saturating_add(body), keys.len()) <= MAX_BLOB;
         let mut groups: Vec<Vec<&Part>> = Vec::new();
         let mut cur: Vec<&Part> = Vec::new();

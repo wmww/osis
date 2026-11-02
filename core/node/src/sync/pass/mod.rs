@@ -785,7 +785,7 @@ impl SyncEngine {
             }
             // a right holder deleted it here: its keep bounds, dated by its own deaths, passed
             // there (spec/commits.md §5); not placed again while its live writes are carried
-            if !here && self.state.deleted.contains_key(&(l, b.commit)) && self.live_carried(b, &needed, snaps, &mut note)? {
+            if !here && self.state.deleted.contains_key(&(l, b.commit, b.parts.clone())) && self.live_carried(b, &needed, snaps, &mut note)? {
                 continue;
             }
             // another node's commit not at this host: its author (or a co-writer) first
@@ -932,7 +932,7 @@ impl SyncEngine {
         for b in &bodies {
             if let Some(needed) = self.must_hold(b, &snaps, &snapping, &mut note)? {
                 // not placed again (`body_sends`)
-                if self.state.deleted.contains_key(&(*l, b.commit)) && self.live_carried(b, &needed, &snaps, &mut note)? {
+                if self.state.deleted.contains_key(&(*l, b.commit, b.parts.clone())) && self.live_carried(b, &needed, &snaps, &mut note)? {
                     continue;
                 }
                 v.must_hold.push((b.commit, needed));

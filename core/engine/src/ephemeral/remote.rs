@@ -505,9 +505,8 @@ impl Engine {
         let mut by = BTreeSet::new();
         for p in parts {
             let a = h.aspects.get(p.ai)?;
-            if a.expires.is_none() || osis_schema::core_types::is_core_key(a.ak.as_str()) {
-                return None;
-            }
+            // a part without expiry is never superseded; core keys (`placed.0~`) as any
+            a.expires?;
             let ea = self.eph.aspects.get(&a.tid).and_then(|m| m.get(&a.ak))?;
             let (c, _) = ea.parts.iter().find(|(c, ai)| {
                 c != id

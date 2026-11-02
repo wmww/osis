@@ -3133,6 +3133,48 @@ fn superseding_needs_later_stamps_and_no_reset_spec_sync_9() {
     assert_eq!((net.eph_read(a, w, CURSOR), net.eph_read(b, w, CURSOR)), (want.clone(), want));
 }
 
+// spec/sync.md §9 (superseded expiring writes, core keys alike): a placement (`placed.0~`) made
+// again after an expiring unplace supersedes the first placement at every node. Once the unplace
+// expired and the second placement is undone, the item is unplaced at the author and the holder
+// alike (a node keeping the first placement read it placed again until that one expired)
+#[test]
+fn placement_superseded_like_any_write_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    let write = |net: &mut Net, op: Op, ms: u64| {
+        let mut m = Mutation::new();
+        m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op }).unwrap();
+        m.expires(g, &ct::GROUP, osis_base::WallMs(net.now() + ms)).unwrap();
+        let id = net.engine(a).write(m).unwrap().unwrap().id;
+        local(net, a);
+        net.run();
+        net.advance(33);
+        id
+    };
+    // the window's own placement (no expiry) goes first: unplaced, then placed expiring
+    write(&mut net, Op::Remove(Value::Tid(w)), 60_000);
+    write(&mut net, Op::Add(Value::Tid(w)), 60_000);
+    write(&mut net, Op::Remove(Value::Tid(w)), 5_000);
+    let again = write(&mut net, Op::Add(Value::Tid(w)), 60_000);
+    let placed = |net: &mut Net, n: usize| net.engine(n).groups_of(&w).contains(&g);
+    assert!(placed(&mut net, a) && placed(&mut net, b));
+    let me = net.tid(a);
+    net.engine(a).revert_change(again, me).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(10_000);
+    net.run();
+    for n in [a, b] {
+        assert!(!placed(&mut net, n), "node {n}: the first expiring placement went with the second");
+    }
+}
+
 // spec/sync.md §9 (a superseding part expires): a plain move after an expiring one supersedes
 // nothing. Else: b drops the expiring move for the plain one, a's cover absorbs the plain one,
 // and c, offline meanwhile, gets only the cover beside the move it held; b's removal of the key
