@@ -1,6 +1,6 @@
 # Learning a thing is synced after another's parts applied: two exceptions
-> Summary: What a node syncs is now a function of held data and what it was asked to sync, and a thing's parts wait alike synced or not. Two shapes stay: a commit across things, and a role-class snapshot, held in part when a thing enters the sync set after parts applied. Both differ only while a part stays away; a hostile author or host can make that forever. An exception to requirements' Deterministic line: owner to accept the wording.
-> Tags: spec, engine, sync, owner
+> Summary: Owner accepted the commit-across-things exception (spec/requirements.md); the role-class snapshot shape is still to be looked at. What a node syncs is now a function of held data and what it was asked to sync, and a thing's parts wait alike synced or not. Two shapes stay: a commit across things, and a role-class snapshot, held in part when a thing enters the sync set after parts applied. Both differ only while a part stays away; a hostile author or host can make that forever. Open: does the snapshot shape affect who appears to hold a role, and can it be closed.
+> Tags: spec, engine, sync
 
 What remains (spec/commits.md §4 Exceptions): the same bodies, the same final sync set; the node that had the thing in its set first holds the commit whole, the one that applied first shows the parts on the other things (or the snapshot's part), its late part joining on arrival.
 
