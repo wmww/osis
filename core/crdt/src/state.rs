@@ -258,6 +258,22 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
     recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some());
 }
 
+/// The deaths the records of one dot imply across each other (§5.6 Live: a keyed record reads
+/// joined with the dot's key-erased record, §4.8): a write in either beaten at its position by a
+/// write in the other is dead, though each record keeps its own. Reported only; the records do
+/// not change, so a death is reported again by every join touching the dot (dating takes the
+/// first).
+fn cross_deaths(recs: &[(Eid, Entry)], e: Option<&Stamp>, ch: &mut Changes) {
+    let Some(erased) = recs.iter().find(|(id, _)| id.key.is_none()).and_then(|(_, en)| en.frag.as_deref()) else { return };
+    for (_, en) in recs.iter().filter(|(id, _)| id.key.is_some()) {
+        let Some(f) = en.frag.as_deref() else { continue };
+        let mut tmp = Changes::new();
+        let mut j = f.clone();
+        j.join_into(erased.clone(), e, &mut tmp);
+        ch.report(tmp.into_deaths());
+    }
+}
+
 /// Prunes every record of a map under `e` (§4.2, §5.6).
 fn prune_entries(m: &mut Map, e: Option<&Stamp>, ch: &mut Changes) {
     let mut out = BTreeMap::new();
@@ -312,6 +328,7 @@ fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mu
         }
         recs.sort_by(|a, b| a.0.cmp(&b.0));
         prune_dot(&mut recs, e, ch);
+        cross_deaths(&recs, e, ch);
         if recs.iter().any(|(x, _)| new.contains(x)) {
             ch.touch();
         }

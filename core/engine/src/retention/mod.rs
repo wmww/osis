@@ -543,6 +543,9 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
     if residue.is_none() {
         tx.strip_bodies(&a.tid, &a.ak, &[], &o)?;
     }
+    // stripping an entry's key merges its records (spec/crdt.md §4.7): what one superseded in
+    // the other is dated from the bodies (spec/commits.md §5)
+    mark_if_bounded(tx, &a.tid, &a.ak)?;
     if let Some(residue) = residue {
         let memory = tx.txn.is_memory_aspect(&a.tid, &a.ak);
         let (key, enc) = (records::residue_key(&a.tid, &a.ak, c, ai), crate::engine::state::encode(&residue)?);

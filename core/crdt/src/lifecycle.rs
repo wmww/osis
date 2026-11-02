@@ -57,21 +57,29 @@ impl Fragment {
     }
 
     /// Removes every write whose owner dot (`Derived` dots: the underlying dot) matches `pred`,
-    /// in place: un-merge of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6). The
-    /// result is for a join or a `prune`, which give it canonical form (it may keep a map entry
-    /// holding only its creation, and a `Slots` position without its register's embedding).
+    /// with the records such dots created and others' writes nested in them, in place: un-merge
+    /// of single deltas (spec/permissions.md §5.2, spec/crdt.md §4.6). The result is for a join
+    /// or a `prune`, which give it canonical form (it may keep a map entry holding only its
+    /// creation, and a `Slots` position without its register's embedding).
     pub fn remove_dots(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, false);
+        self.remove_dots_in(pred, &|_| false);
+    }
+
+    /// `remove_dots`, except that a record created by a matching dot `keep` accepts keeps
+    /// others' writes nested in it (a map entry's or list element's content): the record stays
+    /// in the state, a valid snapshot's copy keeping it (§4.6).
+    pub fn remove_dots_keeping(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+        self.remove_dots_in(pred, keep);
     }
 
     /// Removes exactly the writes whose owner dot matches `pred`, keeping others' writes nested
-    /// in a record a matching dot created (a map entry's or list element's content): a
-    /// snapshot's copies of writes played elsewhere, the others still superseding there.
+    /// in a record a matching dot created: a snapshot's copies of writes played elsewhere, the
+    /// others still superseding there.
     pub fn remove_writes(&mut self, pred: &dyn Fn(&Dot) -> bool) {
-        self.remove_dots_in(pred, true);
+        self.remove_dots_in(pred, &|_| true);
     }
 
-    pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, nested: bool) {
+    pub(crate) fn remove_dots_in(&mut self, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
         let bad = |s: &Option<Stamp>| s.as_ref().is_some_and(|s| pred(s.dot.owner()));
         match self {
             Fragment::Slots(_) => {
@@ -89,7 +97,7 @@ impl Fragment {
                     r
                 });
                 let slots = slots.into_iter().map(|(k, mut f)| {
-                    f.remove_dots_in(pred, nested);
+                    f.remove_dots_in(pred, keep);
                     (k, f)
                 });
                 *self = crate::state::assemble(reg, slots.collect());
@@ -114,9 +122,9 @@ impl Fragment {
             }
         }
         match self {
-            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_dots_elems(elems, pred, nested),
+            Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => remove_dots_elems(elems, pred, keep),
             Fragment::Struct(s) => s.fields.retain(|_, f| {
-                f.remove_dots_in(pred, nested);
+                f.remove_dots_in(pred, keep);
                 !f.is_empty()
             }),
             Fragment::Enum(e) => {
@@ -124,7 +132,7 @@ impl Fragment {
                     e.case = None;
                 }
                 e.payloads.retain(|_, f| {
-                    f.remove_dots_in(pred, nested);
+                    f.remove_dots_in(pred, keep);
                     !f.is_empty()
                 });
             }
@@ -135,12 +143,12 @@ impl Fragment {
                 }
                 if pred(d.owner()) {
                     en.created = None;
-                    if !nested {
+                    if !keep(d.owner()) {
                         en.frag = None;
                     }
                 }
                 if let Some(f) = &mut en.frag {
-                    f.remove_dots_in(pred, nested);
+                    f.remove_dots_in(pred, keep);
                     if f.is_empty() {
                         en.frag = None;
                     }
@@ -150,7 +158,7 @@ impl Fragment {
                 // prunes it otherwise (§5.6); so the result is joined or pruned before use
                 en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
-            Fragment::Seq(s) => seq::remove_dots(s, pred, nested),
+            Fragment::Seq(s) => seq::remove_dots(s, pred, keep),
             Fragment::Register(_) | Fragment::Slots(_) => {}
         }
     }
@@ -353,15 +361,15 @@ impl Visit for DotsIn<'_> {
     }
 }
 
-fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, nested: bool) {
+fn remove_dots_elems(elems: &mut BTreeMap<Dot, Elem>, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
     elems.retain(|d, el| {
         if el.reset.as_ref().is_some_and(|r| pred(r.dot.owner())) {
             el.reset = None;
         }
-        if pred(d.owner()) && !nested {
+        if pred(d.owner()) && !keep(d.owner()) {
             el.frag = None;
         } else if let Some(f) = &mut el.frag {
-            f.remove_dots_in(pred, nested);
+            f.remove_dots_in(pred, keep);
             if f.is_empty() {
                 el.frag = None;
             }

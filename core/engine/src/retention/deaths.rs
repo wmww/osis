@@ -364,11 +364,13 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
 }
 
 /// Each write dies at the first superseding write among the held bodies joined in `(ts, ID)`
-/// order (valid writes only; a snapshot's or import's copies of writes whose own commit is held,
-/// and a snapshot's of a held import's writes, removed, so they play at their own commit), then the state (live writes of dropped bodies);
-/// every held body with a relative bound gets the first and last of its writes' deaths. A
-/// superseder whose body was dropped dates nothing unless its write is live: a write it
-/// superseded dies at a later one here. Cost: the aspect's held bodies and whole state.
+/// order (valid writes only; a snapshot's or import's copies of writes whose own commit is held
+/// valid, and a snapshot's of a held valid import's writes, removed, so they play at their own
+/// commit), a body dropped value-less (expired, purged) as its residue, then the state (live
+/// writes of bodies dropped otherwise); every held body with a relative bound gets the first and
+/// last of its writes' deaths. A superseder whose body was dropped for its keep bounds dates
+/// nothing unless its write is live: a write it superseded dies at a later one here. Cost: the
+/// aspect's held bodies, residues and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
@@ -376,7 +378,15 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
     for c in &held {
-        let Some(ai) = held_part(tx.core, c, tid, ak) else { continue };
+        let Some(ai) = held_part(tx.core, c, tid, ak) else {
+            // a body dropped value-less (expired, purged) plays as its residue: its writes
+            // supersede like any held (spec/crdt.md §4.7)
+            if let Some(mut f) = residue_of(tx, c, tid, ak)? {
+                un.strip(&mut f);
+                join(&mut st, f, false, &mut deaths, &mut dead);
+            }
+            continue;
+        };
         if crate::apply::validity::invalid_snapshot(tx.core, c, tid, ak) {
             continue;
         }
@@ -389,9 +399,16 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         crate::apply::each_held_piece(tx, c, ai, &mut |tx, mut f| {
             let core = &*tx.core;
             // a valid snapshot's copies all play (spec/permissions.md §5.2)
-            f.remove_dots(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
+            if snap {
+                f.remove_dots(&|d| un.unvouched(d));
+            } else {
+                un.strip(&mut f);
+            }
+            // (a valid snapshot's copy of an invalid delta's write plays at the snapshot: the
+            // delta's own writes are un-merged, the copy is what the state holds)
             if cp {
-                f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, _)| x != c) } else { core.commit_of(tid, ak, d).is_some_and(|x| x != *c && held_part(core, &x, tid, ak).is_some()) });
+                let plays_own = |x: &CommitId, ai: usize| x != c && core.ix.commits.get(x).is_some_and(|m| m.valid_at(ai));
+                f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, ai)| plays_own(x, *ai)) } else { core.commit_of(tid, ak, d).is_some_and(|x| held_part(core, &x, tid, ak).is_some_and(|ai| plays_own(&x, ai))) });
             }
             join(&mut st, f, cp, &mut deaths, &mut dead);
             Ok(())
@@ -416,6 +433,13 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         set_deaths(tx, tid, ak, c, ai, got.get(&(*c, ai)).copied())?;
     }
     Ok(())
+}
+
+/// The value-less residue of `c`'s part on `(tid, ak)` (`retention::make_valueless`), if any.
+fn residue_of(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
+    let Some(v) = tx.txn.get_local(&records::residue_key(tid, ak, c, ai))? else { return Ok(None) };
+    Ok(Some(crate::engine::state::decode(&v)?))
 }
 
 fn set_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, d: Option<(Ts, Ts)>) -> Result<()> {

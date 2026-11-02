@@ -984,7 +984,7 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
 
 /// Removes every write whose dot's author matches (un-merge, §4.6); records stay as anchors.
 /// With `nested`, an element a matching dot created keeps others' writes in its list content.
-pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool) {
+pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
     let bad = |st: &Stamp| pred(st.dot.owner());
     let elems = s.elems_mut();
     for (d, el) in elems.iter_mut() {
@@ -994,11 +994,11 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
             el.deleted = None;
             el.undel = None;
         }
-        if pred(d.owner()) && !(nested && matches!(el.content, SeqContent::Frag(_))) {
+        if pred(d.owner()) && !(keep(d.owner()) && matches!(el.content, SeqContent::Frag(_))) {
             el.content = SeqContent::None;
             el.undel = None;
         } else if let SeqContent::Frag(f) = &mut el.content {
-            f.remove_dots_in(pred, nested);
+            f.remove_dots_in(pred, keep);
             if f.is_empty() {
                 el.content = SeqContent::None;
             }

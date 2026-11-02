@@ -666,7 +666,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     }
                     if compact {
                         lp.peers[other].clock.advance(1);
-                        let _ = lp.peers[other].engine.snapshot(&th(t), &a);
+                                let _ = lp.peers[other].engine.snapshot(&th(t), &a);
                     }
                 }
                 collect(&mut lp, by, &mut seen, &mut packs, &mut authors, &mut own);
@@ -1053,13 +1053,11 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
             let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
             let what = format!("{id:?} ({:?}) {:?} {}: here {x:?}, earliest superseders {y:?}", h.kind, a.tid, a.ak.as_str());
             if e.body_not_dropped(&id, &a.tid, &a.ak) {
-                // issues/map-snapshot-death-missing.md (known, open): no date on a map snapshot
-                let skip_map_snapshot_death_missing = copies && a.ak.as_str() == "t:map.0" && x.is_none() && y.is_some();
                 // issues/seq-redelete-death-order.md (known, open): a text creation deleted,
                 // undeleted and deleted again, or carried by a snapshot, gets a last death earlier
                 // than the oracle's, or none on a snapshot; a first death is still checked
                 let skip_seq_redelete_death_order = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0") && y.is_some_and(|y| if copies { true } else { x.is_some_and(|x| x.0 >= y.0) });
-                let ok = skip_seq_redelete_death_order || skip_map_snapshot_death_missing || match (x, y, copies) {
+                let ok = skip_seq_redelete_death_order || match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
                     (Some(x), Some(y), true) => x.1 >= y.1,
@@ -2086,12 +2084,14 @@ fn seq_death_delete_first_spec_crdt_4_8() {
     assert_eq!(death((0..b).chain([b + 1, b]).collect()), after, "the delete held first dates it alike");
 }
 
-// issues/map-snapshot-death-missing.md: a snapshot of a kept map and a later put of a key it holds:
-// the node dates the snapshot no death, a recompute at the put. Order seed 338806. Reads the deaths
-// itself: `dating` skips this.
+// spec/crdt.md §5.6 (the records of one dot are one entry for superseding), spec/commits.md §5:
+// order seed 338806. An expiring put of k0, a kept write of k1, a snapshot (k0's records
+// key-erased, value-less), then a put into k0's entry (nested writes, keyed). A node holding the
+// snapshot and the later put, not the expiring put, dates the snapshot's body at the later put: its
+// value-less copies in the key-erased record are beaten by the keyed record's writes (was: no
+// death, the records never met in the state; `dating` skipped `t:map.0` snapshots).
 #[test]
-#[ignore]
-fn repro_map_snapshot_death_missing_spec_commits_5() {
+fn map_death_across_key_erased_record_spec_crdt_5_6() {
     use Step::*;
     let h = vec![Write { by: 0, t: 0, op: 28, k: 0, v: 3 }, Typed { by: 0, t: 0, op: 22, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 28 }, Nested { by: 0, other: 2, t: 0, k: 0, text: false, compact: false, also: false }];
     let played = play(338806, &h);
@@ -2100,23 +2100,10 @@ fn repro_map_snapshot_death_missing_spec_commits_5() {
     let o = oracle(&played, &held);
     let mut p = deliver(&played, &held);
     let (id, t, a) = (played.packs[snap].id, played.things[0], ak("t:map.0"));
-    assert_eq!(p.engine.deaths(&id, &t, &a).unwrap().is_some(), o.deaths[&(id, t, a)].is_some());
-}
-
-// issues/expired-residue-order.md: order seed 626233's generated history (shrinking keeps 32 steps;
-// a change to `random_step` moves these indexes), five commits of it held: 0's expiring write on H,
-// 2's snapshot of it, role commits on G. As made H's register holds the value-less write, reversed
-// the aspect has no state.
-#[test]
-#[ignore]
-fn repro_expired_residue_order_spec_crdt_4_7() {
-    let seed = 626233;
-    let played = with_syncs(play(seed, &history(seed, 60, LARGE)), seed);
-    let rest = [11, 22, 27, 31, 33];
-    let h = played.packs[27].id;
-    let t = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>()).engine.header(&h).unwrap().aspects[0].tid;
-    let state = |rest: Vec<usize>| format!("{:?}", deliver(&played, &(0..played.base).chain(rest).collect::<Vec<_>>()).engine.state(&t, &ak("t:reg.0")).unwrap());
-    assert_eq!(state(rest.to_vec()), state(rest.iter().rev().copied().collect()));
+    let want = o.deaths[&(id, t, a.clone())];
+    assert!(want.is_some(), "the oracle dates it");
+    assert_eq!(p.engine.deaths(&id, &t, &a).unwrap(), want);
+    check(338806, &h, LARGE).unwrap();
 }
 
 // spec/commits.md §4: not only hostile, not only chains: one commit on G and H, at a node lacking
@@ -2642,6 +2629,30 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // and one held after both had its killer gone from the state (a recompute from the bodies)
     let h = vec![Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 6 }, Undo { by: 1, back: 0 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 0 }, Undo { by: 1, back: 1 }];
     cases.push((8026, h.into_iter().map(|s| Aim(Box::new(s))).collect(), Cfg { sync: true, ..LARGE }));
+    // seed 64303 (spec/crdt.md §5.6, spec/commits.md §5): an expiring put of k0 expired, a kept
+    // write into k0 and a later one, a snapshot: the kept write's death was lost where the
+    // expiry merged the entry's records after the snapshot's key-erased copy had joined (was
+    // issues/map-death-missing-partial-held.md)
+    let h = vec![Write { by: 2, t: 7, op: 19, k: 1, v: 6 }, Demote { by: 0, t: 4, holder: 2, at: 5, to_read: false }, Edge { by: 2, t: 5, holder: 2, role: None }, Typed { by: 0, t: 0, op: 1, k: 1, v: 1 }, Edge { by: 2, t: 3, holder: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 28, k: 0, v: 4 }, Demote { by: 0, t: 2, holder: 1, at: 3, to_read: false }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }];
+    let mut h: Vec<Step> = h.into_iter().map(|s| Aim(Box::new(s))).collect();
+    h.push(Forged { by: 0, a: 0, b: 6, how: 3, op: 6, k: 1, v: 2 });
+    h.extend([Write { by: 2, t: 4, op: 22, k: 0, v: 0 }, Typed { by: 1, t: 6, op: 15, k: 0, v: 7 }].map(|s| Aim(Box::new(s))));
+    h.push(Advance { who: None, ms: 6569444 });
+    h.extend([Nested { by: 1, other: 0, t: 3, k: 0, text: false, compact: true, also: true }, Undo { by: 1, back: 0 }, Typed { by: 0, t: 1, op: 9, k: 0, v: 4 }, Typed { by: 2, t: 1, op: 8, k: 1, v: 6 }].map(|s| Aim(Box::new(s))));
+    h.push(Sync { from: 0, to: 2 });
+    cases.push((64303, h, Cfg { sync: true, ..LARGE }));
+    // seed 7714 (spec/commits.md §5, spec/permissions.md §5.2): a kept write invalid here whose
+    // entry a valid snapshot vouches for, the entry removed later: the live join dated the body
+    // at the removal (the copy it is live by died), the recompute never (it left the copy out
+    // as "held elsewhere" though its own delta is un-merged); and a superseder expired since
+    // dated nothing in the recompute (its residue did not play)
+    let h = vec![Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: true, also: true }, Typed { by: 2, t: 7, op: 22, k: 1, v: 7 }, Write { by: 2, t: 2, op: 1, k: 2, v: 8 }, Nested { by: 2, other: 0, t: 3, k: 2, text: false, compact: true, also: true }];
+    let mut h: Vec<Step> = h.into_iter().map(|s| Aim(Box::new(s))).collect();
+    h.push(Send { from: 2, to: 0, back: 2 });
+    h.extend([Typed { by: 2, t: 5, op: 28, k: 1, v: 2 }, Nested { by: 0, other: 1, t: 4, k: 2, text: true, compact: false, also: false }, Typed { by: 2, t: 4, op: 11, k: 1, v: 9 }, NestedItem { by: 2, other: 0, t: 1, k: 0, compact: true, also: true }].map(|s| Aim(Box::new(s))));
+    h.extend([NewTop { by: 0 }, Send { from: 0, to: 2, back: 0 }]);
+    h.extend([Nested { by: 2, other: 0, t: 5, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 4, k: 2, text: true, compact: true, also: true }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, NestedItem { by: 0, other: 2, t: 4, k: 2, compact: true, also: true }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, New { by: 0, parent: 0, write: true }, Demote { by: 0, t: 6, holder: 2, at: 5, to_read: false }, New { by: 0, parent: 7, write: false }, Typed { by: 2, t: 4, op: 25, k: 1, v: 4 }].map(|s| Aim(Box::new(s))));
+    cases.push((7714, h, Cfg { sync: true, ..LARGE }));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
@@ -3229,29 +3240,37 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
 
 
 
-// issues/snapshot-copy-of-expiring-write.md (order seed 4136, shrunk): node 0's compaction
-// snapshot of `t:map.0`, stamped after its own live expiring `Set` at k0, carries k0's older
-// field write instead of the expiring write value-less. Reversed, the expiring part arrives
-// before the base and goes at T (counts as never received, flagged); the snapshot lists it
-// (frontier reach) and so clears the flag, but gives k0 the old content back: k0 reads at one
-// node and not the other. On main the pending copy kept the part past T and the two orders
-// agreed, so the snapshot's content was never compared.
+// spec/crdt.md §4.6 (a record a valid snapshot's copy keeps keeps the valid writes nested in
+// it), spec/crdt.md §8: order seed 4136, shrunk. The writer's expiring `Set` at k0 writes into an
+// entry whose creation it judges invalid but its own earlier snapshot vouches for; un-merge used
+// to drop the nested write at the writer, so its later snapshot, which lists the delta, carried
+// k0's older content instead of the write value-less. A node that never applied the delta (the
+// part went at T while pending) then read k0 where one that applied it read none.
 #[test]
-#[ignore]
-fn repro_snapshot_omits_expiring_write_seed_4136() {
+fn snapshot_carries_write_nested_in_vouched_entry_seed_4136() {
     use Step::*;
     let h = vec![Aim(Box::new(Nested { by: 2, other: 0, t: 7, k: 0, text: false, compact: true, also: false })), Aim(Box::new(Typed { by: 1, t: 0, op: 19, k: 1, v: 3 })), Aim(Box::new(Typed { by: 1, t: 5, op: 10, k: 1, v: 7 })), Aim(Box::new(Edge { by: 2, t: 7, holder: 1, role: Some(Role::Write) })), Aim(Box::new(Write { by: 1, t: 6, op: 1, k: 1, v: 5 })), Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Typed { by: 0, t: 7, op: 28, k: 0, v: 8 })), Advance { who: Some(2), ms: 1447 }, Aim(Box::new(Nested { by: 1, other: 0, t: 6, k: 1, text: false, compact: true, also: false }))];
     check(4136, &h, LARGE).unwrap();
 }
 
-// issues/snapshot-copy-of-expiring-write.md (order seed 4208, shrunk): the register form. Node 0's
-// expiring `Set` of `t:reg.0` reaches node 2, whose snapshot lists it; a node given the snapshot
-// and the write's part only after T (the part goes while pending) reads the old value, one that
-// applied the part before T reads none.
+// spec/permissions.md §4 (a suspect flag is dormant while a held valid snapshot lists its delta;
+// judged when read): order seed 4208, shrunk. An expiring register write goes at T while pending at
+// a node; node 2's snapshot lists it and settled the flag, then node 2's demotion turned the
+// snapshot invalid and took its value-less copy with it: the node reads the older value where one
+// that applied the write reads none, and must say so (the flag shows again).
 #[test]
-#[ignore]
-fn repro_snapshot_copy_of_expiring_register_seed_4208() {
+fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     use Step::*;
     let h = vec![Aim(Box::new(Typed { by: 0, t: 3, op: 27, k: 0, v: 8 })), Sync { from: 0, to: 2 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 5, to_read: false })), Forged { by: 1, a: 5, b: 7, how: 4, op: 26, k: 1, v: 9 }, Forged { by: 0, a: 4, b: 3, how: 1, op: 15, k: 0, v: 3 }, Aim(Box::new(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: false })), Aim(Box::new(Compact { by: 2, t: 3, op: 0 })), Aim(Box::new(Nested { by: 2, other: 0, t: 1, k: 1, text: false, compact: true, also: true })), Forged { by: 2, a: 0, b: 1, how: 1, op: 0, k: 0, v: 2 }, Aim(Box::new(Typed { by: 1, t: 1, op: 17, k: 2, v: 5 })), Forged { by: 1, a: 1, b: 7, how: 0, op: 10, k: 1, v: 9 }, Aim(Box::new(Compact { by: 0, t: 1, op: 28 })), Aim(Box::new(Typed { by: 0, t: 5, op: 4, k: 2, v: 4 })), Aim(Box::new(Write { by: 2, t: 5, op: 6, k: 1, v: 0 })), NewTop { by: 2 }, Advance { who: None, ms: 5744313 }, Aim(Box::new(Leave { by: 1, t: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 7, k: 2, text: true, compact: true, also: true }))];
     check(4208, &h, LARGE).unwrap();
+    // the expiring part first (pending, gone at T), then the rest as made: the snapshot that
+    // lists it, then the demotion that voids the snapshot
+    let played = play(4208, &h);
+    let g = played.things[0];
+    let expiring = (0..played.packs.len()).find(|&i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.tid == g && a.ak == ak("t:reg.0") && a.expires.is_some())).unwrap();
+    let order: Vec<usize> = std::iter::once(expiring).chain((0..played.packs.len()).filter(|&i| i != expiring)).collect();
+    let mut p = deliver(&played, &order);
+    assert_eq!(p.engine.get(&g, &ak("t:reg.0")).unwrap(), Some(s("g")), "the older value shows: nothing valid carries the expired write");
+    let flagged = p.engine.suspects().unwrap();
+    assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
 }

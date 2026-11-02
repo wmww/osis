@@ -113,7 +113,7 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, sna
             let mine = delta.copy_index();
             delta.remove_dots(&|d| un.bad(d) && !mine.holds(d));
         } else {
-            delta.remove_dots(&|d| un.bad(d));
+            un.strip(&mut delta);
         }
     }
     strip_valueless(tx.core, tid, ak, &mut delta);
