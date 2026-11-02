@@ -1,0 +1,7 @@
+# Option: grant a role without earlier history
+> Summary: Every grant carries the history box, which opens every earlier epoch, so a new holder reads all retained content. Owner wants adding members without revealing history as a core option, not a chain of chats (notes/chat-designs/e.md Adding without history). Also useful for documents and folders, which cannot be segmented.
+> Tags: spec, permissions, keys, crypto, engine
+
+Sketch from the chat design (unbuilt, traced by reading only): a read rotation at the add whose earlier secrets are sealed per prior holder instead of a shared history box; a new holder's node tolerates entries it cannot open (a link-key bearer already does); every author's chain certificates re-placed under the new epoch (about 11.5 KB per member). Touches history boxes, re-seals, claims, established epochs (spec/crypto.md §4). Check: must-hold and atomic apply at a holder that cannot open old entries, a prior holder's new device, a holder removed and re-added, concurrent adds.
+
+This is not forward secrecy against a stolen device: that needs erasable per-device keys (notes/chat-designs/d.md).
