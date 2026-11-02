@@ -10,6 +10,7 @@ pub mod link;
 pub mod mem;
 pub mod quic;
 pub mod sched;
+pub mod unix;
 mod util;
 pub mod manage;
 pub mod multi;
@@ -21,6 +22,7 @@ pub use manage::{close_gracefully, connect, Backoff};
 pub use multi::{Multi, MultiConn, MultiListener, MultiRecv, MultiSend};
 pub use link::{Link, LinkRx, LinkTx};
 pub use quic::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
+pub use unix::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 // codec always; the socket with feature `lan`
 pub mod lan;
 #[cfg(feature = "iroh")]
@@ -69,6 +71,15 @@ pub fn evict_for<K: Ord + Copy>(held: &std::collections::BTreeMap<K, usize>, new
     let (top, n) = held.iter().max_by_key(|(k, n)| (**n, **k))?;
     let mine = held.get(new).copied().unwrap_or(0);
     (*n >= mine.saturating_add(2)).then_some(*top)
+}
+
+/// Who the peer of a connection is, as the transport type tells (notes/client-port.md §5): a
+/// key it authenticated, or (a unix socket) the kernel's word for the peer's uid. Only `Unix`
+/// reports `Unix`; no key value ever stands for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Peer {
+    Key(PublicKey),
+    Unix { uid: u32 },
 }
 
 /// Where to dial: a transport URL and the key the peer must authenticate with (spec/sync.md §10).
@@ -179,6 +190,10 @@ pub trait Connection: Clone + Send + Sync + 'static {
     /// The key the transport authenticated for the peer: a host's address key, a client's
     /// per-connection ephemeral key, a peer's dialable key (spec/wire.md §11.1).
     fn peer_key(&self) -> PublicKey;
+    /// The peer as the transport type tells it: `Peer::Key(peer_key)` unless overridden.
+    fn peer(&self) -> Peer {
+        Peer::Key(self.peer_key())
+    }
     /// Where the connection comes from, when the transport can tell (`Source`).
     fn source(&self) -> Option<Source>;
     /// A new stream. The peer's `accept_stream` sees it once data (or finish) is sent on it.

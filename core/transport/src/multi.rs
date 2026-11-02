@@ -1,12 +1,13 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `Iroh` (feature `iroh`), else to
-//! `InProcess` (which finds a `peer://` listener by key). A scheme without its transport is
+//! `InProcess` (which finds a `peer://` listener by key), `unix://` to `Unix`. A scheme without its transport is
 //! `UnknownScheme`. Lets one driver reach hosts and peers.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
 #[cfg(feature = "iroh")]
 use crate::{Iroh, IrohConn, IrohListener, IrohRecv, IrohSend};
 use crate::{Quic, QuicConn, QuicListener, QuicRecv, QuicSend};
+use crate::{Unix, UnixConn, UnixListener, UnixRecv, UnixSend};
 
 /// The transports a `Multi` dispatches to; `None`: that scheme is unknown.
 #[derive(Clone, Default)]
@@ -15,6 +16,7 @@ pub struct Multi {
     pub quic: Option<Quic>,
     #[cfg(feature = "iroh")]
     pub iroh: Option<Iroh>,
+    pub unix: Option<Unix>,
 }
 
 enum Pick<'a> {
@@ -22,6 +24,7 @@ enum Pick<'a> {
     Quic(&'a Quic),
     #[cfg(feature = "iroh")]
     Iroh(&'a Iroh),
+    Unix(&'a Unix),
 }
 
 impl Multi {
@@ -30,6 +33,7 @@ impl Multi {
         let unknown = || Error::UnknownScheme(scheme.to_owned());
         match scheme {
             "quic" => self.quic.as_ref().map(Pick::Quic).ok_or_else(unknown),
+            crate::unix::SCHEME => self.unix.as_ref().map(Pick::Unix).ok_or_else(unknown),
             #[cfg(feature = "iroh")]
             crate::PEER_SCHEME if self.iroh.is_some() => self.iroh.as_ref().map(Pick::Iroh).ok_or_else(unknown),
             "mem" | crate::PEER_SCHEME => self.mem.as_ref().map(Pick::Mem).ok_or_else(unknown),
@@ -40,12 +44,18 @@ impl Multi {
 
 /// Defines an enum over the per-transport types, with `From` each of them.
 macro_rules! either {
-    ($name:ident, $mem:ty, $quic:ty, $iroh:ty) => {
+    ($name:ident, $mem:ty, $quic:ty, $iroh:ty, $unix:ty) => {
         pub enum $name {
             Mem($mem),
             Quic($quic),
             #[cfg(feature = "iroh")]
             Iroh($iroh),
+            Unix($unix),
+        }
+        impl From<$unix> for $name {
+            fn from(x: $unix) -> Self {
+                Self::Unix(x)
+            }
         }
         impl From<$mem> for $name {
             fn from(x: $mem) -> Self {
@@ -77,14 +87,15 @@ macro_rules! each {
             $e::Quic($x) => $body,
             #[cfg(feature = "iroh")]
             $e::Iroh($x) => $body,
+            $e::Unix($x) => $body,
         }
     };
 }
 
-either!(MultiConn, MemConn, QuicConn, IrohConn);
-either!(MultiListener, MemListener, QuicListener, IrohListener);
-either!(MultiSend, MemSend, QuicSend, IrohSend);
-either!(MultiRecv, MemRecv, QuicRecv, IrohRecv);
+either!(MultiConn, MemConn, QuicConn, IrohConn, UnixConn);
+either!(MultiListener, MemListener, QuicListener, IrohListener, UnixListener);
+either!(MultiSend, MemSend, QuicSend, IrohSend, UnixSend);
+either!(MultiRecv, MemRecv, QuicRecv, IrohRecv, UnixRecv);
 
 impl Clone for MultiConn {
     fn clone(&self) -> Self {
@@ -134,6 +145,10 @@ impl Connection for MultiConn {
 
     fn peer_key(&self) -> PublicKey {
         each!(self, c => c.peer_key())
+    }
+
+    fn peer(&self) -> crate::Peer {
+        each!(self, c => c.peer())
     }
 
     fn source(&self) -> Option<crate::Source> {
