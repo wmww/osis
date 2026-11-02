@@ -181,6 +181,8 @@ Item 193 code: deleted in step 2, except `Form::Node`/`Source::Node` arms (step 
 
 **Steps 2 and 5 build together** (coordinator, after the session-2 worker stopped before coding). Session form alone makes every snapshot frontier carry one entry per session that ever wrote the aspect: frontier-only sources, which the owner rules out ("nothing grows permanently by number of app launches/sessions"). Pruning needs step 5's no-trace escapes, and step 5 alone breaks item 193's restore gate, which step 2 deletes. So both go in one branch, an exception to one-intricate-change-per-area. Also in step 2: the tie source gains a `Session` variant, and node form is refused, so every `Form::Node` test commit and the commit vector subjects change.
 
+**When session-25 rebases:** fold in issues/listed-by-anyone.md (devbox): `receipt::listed` counts a snapshot of any validity by anyone. Narrow it to snapshots by `Held::ever_admins`/writers (sync-oddities, monotone, so order independent). That also narrows the rule-5 amendment's honest-race widening. Devbox's keep-after-removal added an edge `keep` field (schema, perm), so expect regenerated vectors.
+
 ## Owner decisions (round 13)
 - Rule 7 in place of the earlier candidate for decision (a): accepted ("seems fine"), with its 32 B per uncompacted commit and the double-removal residual.
 - Step 3 (compact before an explicit demotion): left to the coordinator, who chose **no** for now: nothing blinks out, and frontiers stay bounded by compaction cadence. Revisit if demotion frontiers measure large.
