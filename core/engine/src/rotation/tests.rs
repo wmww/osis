@@ -2764,6 +2764,62 @@ fn grant_projection_names_unheld_spec_crypto_4() {
     assert!(got.read.reading_secret(&x_e).is_none(), "D opens X's epoch: X boxed N at D's keyset");
 }
 
+// spec/crypto.md §4, spec/permissions.md §6 (a grant's keyset binding under a roster snapshot):
+// as `grant_projection_names_unheld_spec_crypto_4`, but G writes a roster snapshot of A after the
+// grant. At X the snapshot is A's epoch start, so the grant's edge write is ignored, nothing binds
+// X to the keyset it names, and X boxes N at D's forged keyset.
+#[test]
+#[ignore = "repro: issues/grant-keyset-snapshot-start.md"]
+fn repro_grant_keyset_snapshot_start_spec_crypto_4() {
+    let read = BTreeSet::from([Role::Read]);
+    let mut lp = LocalPeer::new(4, 4_137, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let n = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&n, &tids[2], &edge(Role::Admin)).unwrap();
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.demote(&n, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+    let c_n: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    let f = lp.peers[1].engine.epochs(&n).unwrap().read.newest_held().unwrap().0;
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    rotate_leaving_out(&mut lp, 0, a, &read, &[]);
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &n, &edge(Role::Read)).unwrap();
+    let grant: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    lp.peers[0].clock.advance(1_000);
+    lp.peers[0].engine.roster_snapshot(&a, None).unwrap();
+    let s_d = osis_crypto::Secret32::from_bytes([80; 32]);
+    let x_d = osis_crypto::Epoch::derive(&n, Role::Read, f.n() + 1, &s_d).unwrap();
+    let forged = osis_keys::keyset(&x_d, &s_d, &BTreeSet::from([f]));
+    let mut mu = Mutation::new();
+    mu.op(n, &ct::KEYS, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Field(0)], op: osis_crdt::Op::Replace(osis_schema::Codec::to_value(&Some(forged))) }).unwrap();
+    mu.unchecked();
+    lp.peers[2].engine.core.skip_writer_rules = true;
+    lp.peers[2].commit(mu).unwrap().unwrap();
+    let skip: BTreeSet<_> = c_n.union(&grant).copied().collect();
+    for i in [0, 1, 2] {
+        send_skipping(&mut lp, i, 3, &skip);
+    }
+    for pk in lp.packages(0).unwrap().iter().filter(|p| grant.contains(&p.id)) {
+        let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let cut = osis_commit::rewrite(&b, |ai, _| b.header.aspects.get(ai).is_some_and(|x| x.tid == a && x.ak.as_str() == "secrets.0"));
+        let _ = lp.peers[3].engine.ingest(&cut.encode(), pk.blobs.clone());
+    }
+    assert!(lp.peers[3].engine.core.ix.keyset_epochs.get(&n).is_some_and(|s| s.contains(&(Role::Read, x_d))), "D's keyset valid at X");
+    assert!(lp.peers[3].engine.core.current_holders(&a).iter().any(|h| h.0 == n), "X holds the grant's edge");
+    assert!(lp.peers[3].engine.core.timelines.get(&a).is_some_and(|tl| tl.epoch_start(&a).is_some()), "the snapshot is A's start at X");
+    rotate_leaving_out(&mut lp, 3, a, &read, &[]);
+    let x_e = newest_read(&lp, 3, a).unwrap();
+    let mut d_n = osis_keys::ActorEpochs::default();
+    d_n.read.set_secret(x_d, s_d);
+    d_n.read.set_established(x_d, osis_keys::Provenance::Derived);
+    let got = opens_through(&mut lp, 3, a, n, &d_n);
+    assert!(got.read.reading_secret(&x_e).is_none(), "D opens X's epoch: X boxed N at D's keyset");
+}
+
 /// Delivers peer `from`'s packages of `ids` to peer `to` without their parts on `(tid, ak)`.
 fn send_cut(lp: &mut LocalPeer, from: usize, to: usize, ids: &BTreeSet<osis_base::CommitId>, tid: Tid, ak: &str) {
     for pk in lp.packages(from).unwrap().iter().filter(|p| ids.contains(&p.id)) {
