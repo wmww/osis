@@ -722,9 +722,30 @@ fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &
     if !names {
         return false;
     }
+    holds_right(core, p, pc, a, ch)
+}
+
+/// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
+/// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §8): its author
+/// does, and the actor it acts for. A function of the role timeline and the headers alone, so any
+/// node holding them judges alike, in any arrival order.
+fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &osis_commit::AspectEntry, ch: &Header) -> bool {
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
     let (by, actor, at) = (a.retention.by, ch.purge_actor(), At::before(point));
     core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, by, &actor, at) && (p.actor == p.author || tl.may_purge(&p.actor, &a.tid, by, &actor, at)))
+}
+
+/// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its actor holds the right over it
+/// (`holds_right`; spec/commits.md §5). Without it the snapshot still carries the body's live
+/// writes and leaves it may-hold, but no node drops it for this snapshot. Memory class: no
+/// retention to judge.
+pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+    let (Some(sm), Some(m)) = (core.ix.commits.get(s), core.ix.commits.get(c)) else { return false };
+    if m.view.memory {
+        return true;
+    }
+    let Some(a) = m.aspect(tid, ak).and_then(|ai| m.header.aspects.get(ai)) else { return false };
+    holds_right(core, &sm.header, s, a, &m.header)
 }
 
 fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
@@ -1050,6 +1071,11 @@ impl Engine {
         self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| drop_from(tx, &c, &tid, &ak))
+    }
+
+    /// `snapshot_right`: may snapshot `s` drop body `(tid, ak)` of `c` when it covers it?
+    pub fn snapshot_right(&self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        snapshot_right(&self.core, s, c, tid, ak)
     }
 
     /// Whether snapshot `s` is a carrier only on `(tid, ak)` (`osis_commit::retention::carrier_only`

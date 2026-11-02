@@ -1294,7 +1294,9 @@ impl SyncEngine {
         let mut before = false;
         if let Some((t, a)) = aspects.first() {
             let at_least = self.engine.body_keep(&b.commit, t, a)?.at_least;
-            before = at_least > now;
+            // no right holder will ever drop a `nobody` body: must-hold while kept, covered or not
+            let nobody = b.parts.first().and_then(|(ai, _)| h.aspects.get(*ai)).is_some_and(|x| x.retention.by == osis_base::PurgeBy::Nobody);
+            before = nobody || at_least > now;
             if before {
                 note.at(at_least);
             }

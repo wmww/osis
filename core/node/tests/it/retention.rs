@@ -196,6 +196,54 @@ fn purge_rights_any_arrival_order_spec_perm_8() {
     }
 }
 
+// spec/commits.md §5: whether a snapshot may drop a covered body is judged from held data: in every
+// arrival order of the body, the snapshot and a demotion of the snapshot's author (admin to
+// write before it), every node ends with the same verdict, and the demoted admin no longer has it.
+#[test]
+fn snapshot_right_any_arrival_order_spec_commits_5() {
+    use osis_schema::{PurgeBy, Retention};
+    for (by, demoted, want) in [(PurgeBy::AuthorOrAdmin, false, true), (PurgeBy::AuthorOrAdmin, true, false), (PurgeBy::Admin, true, false), (PurgeBy::Writer, true, true), (PurgeBy::Author, false, false), (PurgeBy::Nobody, false, false)] {
+        const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+        let mut lp = net(3 + ORDERS.len(), 0x71 + by as u64);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let base: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+        let mut m = Mutation::new();
+        m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+        m.set(t, &REG, &s("w's")).unwrap();
+        let c = lp.peers[2].commit(m).unwrap().unwrap();
+        sync(&mut lp, 2, 1);
+        lp.advance(5);
+        let mut late = vec![lp.peers[2].engine.package(&c).unwrap().unwrap()];
+        if demoted {
+            let d = set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
+            late.push(lp.peers[0].engine.package(&d).unwrap().unwrap());
+            lp.advance(5);
+        }
+        let snap = lp.peers[1].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+        late.push(lp.peers[1].engine.package(&snap).unwrap().unwrap());
+        let pks = lp.packages(0).unwrap();
+        for (k, order) in ORDERS.iter().enumerate() {
+            let r = 3 + k;
+            for p in pks.iter().filter(|p| base.contains(&p.id)) {
+                let _ = lp.deliver(r, p);
+            }
+            for i in order.iter().filter(|i| **i < late.len()) {
+                let _ = lp.deliver(r, &late[*i]);
+            }
+            let e = &mut lp.peers[r].engine;
+            assert_eq!(e.snapshot_right(&snap, &c, &t, &ak("t:reg.0")), want, "{by:?} demoted {demoted}, order {order:?}");
+            assert_eq!(e.covered(&snap, &c, &t, &ak("t:reg.0")).unwrap(), Some(true), "{by:?} demoted {demoted}, order {order:?}");
+            assert!(e.body_not_dropped(&c, &t, &ak("t:reg.0")));
+        }
+    }
+}
+
 // spec/permissions.md §8: a purge acting for an actor drops only what that actor holds the right
 // to, also a delta its node holds later: of an `author` delta of node 1, node 0 (which has write on
 // node 1) acting for client C, an admin, drops nothing; acting for itself it drops it.
