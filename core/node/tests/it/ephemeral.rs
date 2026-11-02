@@ -5266,7 +5266,7 @@ fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
 fn memory_snapshot_turned_valid_covers_spec_sync_9() {
     let (mut lp, d) = memory_trio(67);
     let n1 = lp.peers[1].engine.tid();
-    let mut edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
+    let edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
         lp.advance(10);
         let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, e, None);
         lp.peers[0].engine.package(&id).unwrap().unwrap()
