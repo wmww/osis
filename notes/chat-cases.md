@@ -214,35 +214,45 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Can a chat have forward secrecy at all? | yes | core m | core m | core m | no! core m | core m |
 | Kick or lost device in a 1000-member group under 10 MB upload with forward secrecy? | yes | – | – | – | – | – |
 
-## Spaces (Discord- or Slack-style, over E chats)
+## Factions (servers, teams, channels and roles are all factions; a channel is a child faction)
 
 | case | want | A | B | C | D | E |
 |---|---|---|---|---|---|---|
-| Does removing a member from the space remove them from every channel at once? | yes | – | – | – | – | yes |
-| Is that removal one commit, with no half-done state if the kicker stops? | yes | – | – | – | – | yes⁴¹ |
-| Removal under 10 MB upload at 1000 members and 100 channels? | yes | – | – | – | – | yes⁴¹ |
+| Does removing a member from the top faction remove them from every channel at once? | yes | – | – | – | – | yes |
+| Does one commit protect all new content from the removed member (channels re-key on the next sync)? | yes | – | – | – | – | yes⁴¹ |
+| Does cutting the removed member's upload and sync keys need an admin step per channel per host? | no | – | – | – | – | yes⁴¹! |
+| Can the removed member keep uploading junk to a channel until an admin steps it there? | no | – | – | – | – | yes! |
+| Removal under 10 MB upload at 1000 members and 100 channels? | yes | – | – | – | – | yes⁴² |
 | Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | – | – | – | – | yes⁴² |
-| Does each member's device download every other member's device card? | no | – | – | – | – | yes⁴³! core r |
+| Does a member's lost device or leave cost the next poster the top faction's whole rotation? | no | – | – | – | – | yes! |
+| Is demoting a mod as cheap as a kick? | yes | – | – | – | – | no!⁴³ |
+| Does each member's device download every other member's chains, cards and heartbeats under the top faction's label? | no | – | – | – | – | yes⁴⁴! core r |
 | Kick pre-sync across 100 channels under a minute? | yes | – | – | – | – | ? |
-| Can a mod mute or ban one member in one channel while they hold "everyone"? | yes | – | – | – | – | opt*⁴⁴ |
+| Can a mod mute one member in one channel while they hold the top faction? | yes | – | – | – | – | opt*⁴⁵ |
+| Can a mod ban one member from one channel while they hold the top faction? | yes | – | – | – | – | no! |
+| Can a mod time out a member for an hour? | yes | – | – | – | – | opt*⁴⁵ |
 | Can a mod delete messages in some channels and not others? | yes | – | – | – | – | yes |
-| Can a mod delete messages without also being able to lock the channel or change its roster? | yes | – | – | – | – | no! |
-| Can role holders add and remove others of their role? | opt | – | – | – | – | yes⁴⁵ |
-| Read-only announcement channel where members can react? | yes | – | – | – | – | opt⁴⁶ |
-| Can any member create a channel that appears in the space? | opt | – | – | – | – | opt⁴⁷ |
-| Can non-members see that a private channel exists? | no | – | – | – | – | opt⁴⁸ |
-| Can a member post as the "everyone" role? | no | – | – | – | – | opt³⁹ |
-| Must a member sync every channel? | no | – | – | – | – | no |
-| Unread counts for channels not synced? | yes | – | – | – | – | core o |
+| Can a mod delete messages without also being able to lock the channel or change its roster? | yes | – | – | – | – | opt⁴⁶ |
+| Can role holders add and remove others of their role? | opt | – | – | – | – | yes⁴⁷ |
+| Read-only announcement channel where members can react? | yes | – | – | – | – | opt⁴⁸ |
+| Does a read-only channel with 20 or more reader devices fill its deposit budget until a mod syncs? | no | – | – | – | – | yes! |
+| Can any member create a channel that appears in the directory? | opt | – | – | – | – | opt⁴⁹ |
+| Does the sidebar show channel names without reading each channel? | yes | – | – | – | – | yes⁵⁰ |
+| Can non-members see that a private channel exists? | no | – | – | – | – | opt⁵¹ |
+| Can a member post as a faction (the role actor)? | no | – | – | – | – | opt³⁹ |
+| Can a member choose which channels to sync, with none by default? | yes | – | – | – | – | core s |
+| Unread counts for channels not synced? | yes | – | – | – | – | opt⁵² |
 | Mentions in channels not synced? | yes | – | – | – | – | core h |
-| Threads without a new actor per thread? | yes | – | – | – | – | yes⁴⁹ |
-| The same chat in two spaces? | yes | – | – | – | – | yes |
-| Move a chat between spaces without copying it? | yes | – | – | – | – | yes |
-| A space inside a space, members inherited? | yes | – | – | – | – | yes |
-| Is the kick and role history an audit log members can read? | yes | – | – | – | – | yes⁵⁰ |
-| Space-wide read-only mode in one step? | yes | – | – | – | – | opt*⁵¹ |
+| Threads without a new faction per thread? | yes | – | – | – | – | yes⁵³ |
+| A document anyone in the faction can edit, synced to every member? | yes | – | – | – | – | yes⁵⁴ |
+| Can a member remove another member's document from the faction's auto-synced content? | no | – | – | – | – | yes! core f |
+| The same chat in two factions? | yes | – | – | – | – | yes |
+| Move a chat between factions without copying it? | yes | – | – | – | – | yes |
+| A faction inside a faction, members inherited? | yes | – | – | – | – | yes |
+| Is the kick and role history an audit log members can read? | yes | – | – | – | – | yes⁵⁵ |
+| Faction-wide read-only mode in one step? | yes | – | – | – | – | opt*⁵⁶ |
 | Per-member rate limits? | yes | – | – | – | – | no! |
-| A space with no admin left: posting still works? | yes | – | – | – | – | yes |
+| A faction with no admin left: posting still works? | yes | – | – | – | – | yes |
 
 ## Core changes
 
@@ -260,7 +270,8 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
 - **o** Partial and newest-first fetch of a label (issues/partial-history-fetch.md).
 - **p** Verified actor: a commit is invalid unless its author could write as its `actor` (issues/header-actor-unverified.md); until then E uses the display rule of footnote 39.
-- **r** Node-card opt-out per label for huge rosters: a reader's node card and chain under a label only where its roster is small or on request (spaces at 100,000 members).
+- **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (factions past a few thousand members).
+- **s** Default-off sync: a device holding a faction's secret does not sync its children's labels until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
 - **q** Purge modes not nested: author-only (admins cannot purge) becomes a setting beside `admin` and `nobody` (issues/purge-rights-not-nested.md).
 
 ## Footnotes
@@ -305,14 +316,19 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 38. E: default yes; author-only purge (admins cannot delete) is a chat setting once purge modes are unnested (core q, unbuilt).
 39. E: the header's actor is unverified today; the app shows a sender only if its signing device could write as that actor and the actor could write on the chat just before the commit (from held chain certificates); core p removes the rule.
 40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 2.5x10^5 messages.
-41. The removal and the members actor's rotation are one commit (2.7 KB per member); each channel is re-keyed lazily by its next poster, about 7 KB each, so 100 channels cost about 0.7 MB spread over posters.
-42. Tier of 1000 rotated (2.7 MB), then the members actor (100 boxes), then channels lazily; estimated.
-43. Every tracking device places its card (about 1.5 KB) under the members actor's label, which every member reads: about 200 MB per device at 100,000 members, estimated.
-44. By rights no: a role is the maximum over paths. Mods write a muted set; honest clients hide and mods purge; a modified client still posts.
-45. Admin on a role actor is the only way to convey admin through it, and admins manage the actor's roster; direct per-channel grants avoid it at one grant per channel.
-46. A sister chat granting "everyone" write carries the reactions; the app shows them under the announcement.
-47. Default: only mods write the space's list; a member creates a chat and asks a mod to list it.
-48. Private channels go in a sub-list whose own label only the private role reads.
-49. Threads and forum posts are reply chains inside the channel, grouped by the app.
-50. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
-51. Rights: demote "everyone" on each channel, one commit per channel; one step only as a client-honored space flag.
+41. The removal and the top faction's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each host; until then the removed member reads ciphertext and can upload.
+42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top faction (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md fixed.
+43. All three roles rotate on every faction the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
+44. Every syncing device places its chain (11.5 KB per person), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-factions-review.md §3).
+45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
+46. Messages on a thing owned by the chat with an admin edge for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
+47. Admin passes only through admin, and admins of a faction manage its roster; direct per-channel admin grants avoid it at one grant per channel.
+48. A sibling faction the members write carries the reactions; the app shows them under the announcement.
+49. Default: the directory is an admin-only aspect on the parent; a member creates a chat and asks an admin to list it.
+50. The directory aspect holds tid, name and category; children are not in the parent's group, so nothing of theirs is under the parent's label.
+51. Grant the private child only to a role faction and list it in that faction's directory. Left: its hosts see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
+52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
+53. Threads and forum posts are reply chains inside the channel, grouped by the app.
+54. A thing owned by the faction (or granted it write), added to the faction's group, syncs under its label to every member; in the directory with its own label it syncs on demand.
+55. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
+56. Rights: demote the top faction on each child, one commit per child; one step only as a client-honored flag.

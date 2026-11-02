@@ -1,6 +1,8 @@
 # Chat design E: the chat's history is the chat
 > Summary: A chat C is one ownerless thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author` with keep at least forever (a permanent delta); the sender is the header's actor checked by a display rule until core verifies it, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, lasting tombstones and cheap kicks fall out of existing rules once the frontier study lands; new: a history read API, partial fetch, a history-less grant. Citations: `e-evidence.md`; corrections from `e-review.md` applied.
 
+**A chat is a faction** (notes/chat-designs/e-factions.md): an actor with members and a message aspect; servers, teams, channels and roles are the same thing, nested by grants. Nothing below changes for a plain chat.
+
 **[unbuilt]** marks a claim resting on core work not yet built: ownerless things, the frontier study (notes/frontier-study.md), the history read API, partial fetch, the history-less grant, purge modes, keep-after-removal, the verified actor.
 
 **Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds at honest nodes: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it (e-review §1).
@@ -52,7 +54,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
+Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md). Needed only for large factions, target 10,000 members (owner; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
 
 ## Accepted by the owner
 
