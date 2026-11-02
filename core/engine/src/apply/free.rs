@@ -61,6 +61,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
         let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
         if !b.header.aspects.is_empty() && b.header.aspects.iter().all(|a| freed.contains(&a.tid)) {
             tx.txn.remove_pending(&c, Shred::No)?;
+            super::clear_copies(tx, &c)?;
             tx.core.ix.pending.remove(&c);
             tx.core.waits.unpended(&c);
         }

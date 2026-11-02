@@ -552,7 +552,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts.whole);
-        validity::add_role_commit(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &parts.whole))?;
+        let mut all = parts.whole.clone();
+        all.extend(away_of(tx, &h, &id, &parts));
+        validity::add_role_commit(tx, &view, Some(&h), &id, &validity::EdgeParts::of(&h, &all))?;
         held_changed = true;
     }
     if held_changed {
@@ -780,6 +782,11 @@ fn rejudged(tx: &mut Tx<'_>, held_changed: bool) -> Result<Vec<(Tid, Ak)>> {
     Ok(flipped)
 }
 
+/// The parts of `parts.waiting` that keep snapshot `id` out of the walk (`validity::away_parts`).
+fn away_of(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Vec<(usize, usize, osis_commit::Decoded)> {
+    parts.waiting.as_ref().map(|w| validity::away_parts(tx, h, id, &w.parts)).unwrap_or_default()
+}
+
 /// Joins deltas of an applied commit that arrived later (spec/commits.md §4). Late creation
 /// records and edge writes reach perm as on apply (a certificate copy may bring a commit's
 /// `roles.0` delta after its `created.0` one), and held deltas are re-judged.
@@ -794,7 +801,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     wake_listed(tx.core, &h, &late);
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
     validity::note_imports(tx.core, id, &h);
-    let edges = h.kind.is_role() && late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str())));
+    let away = away_of(tx, &h, id, &parts);
+    let edges = h.kind.is_role() && (!away.is_empty() || late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()))));
     if h.kind.is_role() {
         held_changed |= judge_late(tx, &h, id, &parts, &mut meta)?;
     }
@@ -810,7 +818,9 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);
-        validity::add_role_commit(tx, &meta.view, Some(&h), id, all)?;
+        let mut walked = all.clone();
+        walked.0.extend(validity::EdgeParts::of(&h, &away).0);
+        validity::add_role_commit(tx, &meta.view, Some(&h), id, &walked)?;
         held_changed = true;
     }
     if held_changed {

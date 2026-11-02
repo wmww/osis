@@ -486,9 +486,9 @@ indexes! {
     pub departures: JMap<Tid, (Vec<osis_keys::Departure>, Option<WallMs>)>,
     /// Hints of opened inbox payloads whose commit has not applied yet (not persisted).
     pub hint_candidates: JMap<CommitId, Vec<(Tid, osis_base::Value)>>,
-    /// Things a roster snapshot of which was kept out of perm for a linked frontier not held
-    /// here (`validity::add_role_commit`): no roster snapshot of them is written.
-    pub frontier_unknown: JSet<Tid>,
+    /// Things and their roster snapshots kept out of perm for a linked frontier not held here
+    /// (`validity::add_role_commit`): no roster snapshot of those things is written.
+    pub frontier_unknown: JSetMap<Tid, CommitId>,
     /// Memory things freed while a memory commit on them also touches a thing still held: their
     /// records and data stay until every thing of those commits is freed (`apply::free`).
     pub freeing: JSet<Tid>,
@@ -543,6 +543,10 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Aspects whose deltas `Engine::commit_forged` replaces by bytes that do not decode.
+    pub(crate) forge_bad: BTreeSet<(Tid, Ak)>,
+    /// The blob `Engine::commit_forged` built (its own node drops the bad part).
+    pub(crate) forged: Option<Vec<u8>>,
     /// Tests: `Engine::freeze_pending`.
     pub frozen_pending: bool,
     /// Labeled groups whose labels have not passed completely since the sync layer started
@@ -856,6 +860,8 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            forge_bad: BTreeSet::new(),
+            forged: None,
             frozen_pending: false,
             counters_unsure: None,
             header_fault: Arc::default(),

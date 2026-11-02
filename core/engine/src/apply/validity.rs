@@ -220,27 +220,23 @@ fn tenures_of(s: &[Value]) -> Vec<ct::Tenure> {
 /// A roster snapshot's parts on one thing: roster, ledger, `roles.0` dots.
 type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>);
 
-/// A roster snapshot naming one holder in two `roles.0` deltas of a thing is bad input
-/// (spec/permissions.md §6): which one counts would depend on the deltas a node holds.
-pub(crate) fn check_roster_parts(h: &Header, parts: &[(usize, usize, Decoded)]) -> Result<()> {
-    if h.kind != Kind::RosterSnapshot {
-        return Ok(());
-    }
+/// The things on which a roster snapshot's held `roles.0` deltas name one holder twice
+/// (spec/permissions.md §6): which one counts would depend on the deltas a node holds. Deltas are
+/// fine alone, so this is judged over those held, and an earlier one may have applied: the snapshot
+/// stays out of the walk on those things (`add_role_commit`).
+pub(crate) fn names_twice(v: &View, parts: &EdgeParts) -> BTreeSet<Tid> {
     let mut seen: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-    for (ai, _, d) in parts {
-        let Some(a) = h.aspects.get(*ai) else { continue };
-        if a.ak.as_str() != "roles.0" {
-            continue;
-        }
-        for m in named_holders("roles.0", d.fragment()) {
+    let mut out = BTreeSet::new();
+    for (ai, es) in parts.holders() {
+        let Some(a) = v.aspects.get(ai) else { continue };
+        for m in es.iter().filter_map(|e| e.1) {
             if !seen.insert((a.tid, m)) {
-                return Err(Error::BadInput("a roster snapshot names a holder twice"));
+                out.insert(a.tid);
             }
         }
     }
-    Ok(())
+    out
 }
-
 
 /// A `roles.0` delta writing inside an entry it did not create is bad input: an edge change is
 /// remove + put (spec/permissions.md §2), judged from the delta and its header alone.
@@ -368,10 +364,18 @@ pub(crate) fn linked_frontiers_capped(tx: &mut Tx<'_>, h: &Header, parts: &EdgeP
     Ok(out)
 }
 
-/// Adds a role commit's edge writes (or a roster snapshot) to perm's held set. A roster
-/// snapshot's thing whose linked frontier is not held here (an applied commit whose tree went:
-/// store loss, a partial import) is kept out of perm, never audited by an empty frontier, and
-/// `roster_snapshot` refuses it (`Indexes::frontier_unknown`).
+/// Adds a role commit's edge writes (or a roster snapshot) to perm's held set. `parts`: its applied
+/// edge parts and any `tenures.0` part waiting for a linked frontier (`validity::away_parts`).
+///
+/// Invariant (spec/permissions.md §6, spec/commits.md §4): whether a snapshot of a thing takes part in
+/// the walk is a function of its parts held and the blobs held, read here each time, never of their
+/// order. It stays out while a held `tenures.0` part on the thing links a frontier not held (waiting,
+/// or an applied commit whose tree went: store loss, a partial import: never audited by an empty
+/// frontier, and `roster_snapshot` refuses it, `Indexes::frontier_unknown`), while its linked frontiers
+/// are over the bound, or while its deltas name a holder twice. Its applied parts stay in state and
+/// its holders named, so what applies never reads this. Authority so does not depend on which part
+/// came first: one with the frontier away and one with both parts reads the same roster as one
+/// that holds neither.
 ///
 /// Reads the commit's `View` (`v`); its header (`h`, else decoded from `Core::commits`) only
 /// for a roster snapshot whose tenures link their frontiers (the chunk list), so an open adapts
@@ -384,18 +388,53 @@ pub(crate) fn add_role_commit(tx: &mut Tx<'_>, v: &View, h: Option<&Header>, id:
         Some(h) if links => linked_frontiers(tx, h, parts),
         _ => Ok(Linked::default()),
     };
-    let linked = match linked {
+    let things: BTreeSet<Tid> = if v.kind == Kind::RosterSnapshot { parts.0.iter().filter_map(|(ai, _)| v.aspects.get(*ai)).map(|a| a.tid).collect() } else { BTreeSet::new() };
+    let mut linked = match linked {
         Ok(l) => l,
         Err(_) if tx.core.skip_writer_rules && v.author == tx.core.id.tid() => Linked::default(),
+        // over the bound together, each part fine alone (`judge_part`)
+        Err(e) if osis_base::Classified::class(&e) == osis_base::ErrorClass::BadInput => Linked { frontiers: BTreeMap::new(), waiting: things.clone() },
         Err(e) => return Err(e),
     };
     if !linked.waiting.is_empty() {
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::BadInput, tids: linked.waiting.iter().copied().collect(), commit: Some(*id), peer: None, detail: "a roster snapshot's linked frontier is not held: kept out of the timeline".into() }, now);
-        tx.core.ix.frontier_unknown.extend(linked.waiting.iter().copied());
+    }
+    for t in &things {
+        if linked.waiting.contains(t) {
+            tx.core.ix.frontier_unknown.insert(*t, *id);
+        } else {
+            tx.core.ix.frontier_unknown.remove(t, id);
+        }
+    }
+    if v.kind == Kind::RosterSnapshot && !(tx.core.skip_writer_rules && v.author == tx.core.id.tid()) {
+        linked.waiting.extend(names_twice(v, parts));
     }
     add_role_commit_in(tx.core, v, id, parts, &linked);
     Ok(())
+}
+
+/// The `tenures.0` parts among `parts` of roster snapshot `id` (waiting alone: checked or not, their
+/// hash holds or they are junk that `examine` drops) that link a frontier not held: what keeps the
+/// snapshot out of the walk beside its applied parts.
+pub(crate) fn away_parts(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &[osis_commit::Part]) -> Vec<(usize, usize, Decoded)> {
+    let mut out = Vec::new();
+    if h.kind != Kind::RosterSnapshot {
+        return out;
+    }
+    let mut interner = osis_crdt::Interner::new();
+    for p in parts {
+        let Some(a) = h.aspects.get(p.ai).filter(|a| a.ak.as_str() == "tenures.0") else { continue };
+        let Some(dedup) = tx.core.dedup(&a.tid) else { continue };
+        let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
+        let mut reader = osis_label::BlobReader::new(&dedup, &mut blobs);
+        let Ok(d) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(&mut reader)) else { continue };
+        let part = (p.ai, p.di, d);
+        if linked_frontiers(tx, h, &EdgeParts::of(h, std::slice::from_ref(&part))).is_ok_and(|l| !l.waiting.is_empty()) {
+            out.push(part);
+        }
+    }
+    out
 }
 
 fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgeParts, linked: &Linked) {
@@ -463,10 +502,15 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
                 }
             }
             for (thing, (roster, ledger)) in by_thing {
-                if linked.waiting.contains(&thing) || too_deep(core, &thing) {
+                if too_deep(core, &thing) {
                     continue;
                 }
-                core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, roster, ledger });
+                let s = RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, roster, ledger };
+                if linked.waiting.contains(&thing) {
+                    core.ix.held.add_withheld(s);
+                } else {
+                    core.ix.held.add_snapshot(s);
+                }
             }
         }
         _ => {}

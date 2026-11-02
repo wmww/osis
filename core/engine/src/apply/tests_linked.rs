@@ -102,7 +102,7 @@ fn load_with_missing_frontier_blob_spec_perm_6() {
         Ok(())
     }).unwrap();
     lp.peers[0].restart(942).unwrap();
-    assert!(lp.peers[0].engine.core.ix.frontier_unknown.contains(&t));
+    assert!(lp.peers[0].engine.core.ix.frontier_unknown.contains_key(&t));
     assert!(lp.peers[0].engine.roster_snapshot(&t, None).is_err(), "no snapshot from an unknown ledger");
     assert_eq!(tags(&mut lp, 0, t), Some(Value::Set([Value::Str("by x".into())].into())), "the full history still judges it");
 }
@@ -138,8 +138,9 @@ fn deliver_all(lp: &mut LocalPeer, last: &CommitId) -> crate::Result<Ingested> {
     lp.deliver(1, &pk)
 }
 
-// spec/permissions.md §5, §6, spec/commits.md §4: a snapshot whose linked frontier's blobs are
-// not held waits for them, also when a later epoch start of its thing is applied, so the held
+// spec/permissions.md §5, §6, spec/commits.md §4: on a thing the node does not sync, a `tenures.0`
+// part whose linked frontier's blobs are not held waits for them alone, also when a later epoch
+// start of its thing is applied, and its snapshot stays out of the walk meanwhile, so the walked
 // snapshots do not depend on arrival order (issues/roster-superseded-order.md).
 #[test]
 fn linked_frontier_wait_order_independent_spec_perm_6() {
@@ -159,22 +160,53 @@ fn linked_frontier_wait_order_independent_spec_perm_6() {
         }
     }
     // peer 1: S2 first, then S1 without its frontier's blobs
+    let held = |lp: &LocalPeer, i: usize| -> BTreeSet<CommitId> { lp.peers[i].engine.core.ix.held.roster_snapshots(&t).iter().map(|s| s.id).collect() };
+    let waits = |lp: &LocalPeer, i: usize| lp.peers[i].engine.pending() == vec![(s1, crate::Reason::WaitBlobs)];
     assert!(matches!(lp.deliver(1, &pk2).unwrap(), Ingested::Applied(_)));
-    assert!(matches!(lp.deliver(1, &bare).unwrap(), Ingested::Pending(..)), "waits despite the later start");
+    let _ = lp.deliver(1, &bare).unwrap();
+    assert!(waits(&lp, 1), "waits despite the later start");
+    assert_eq!(held(&lp, 1), BTreeSet::from([s2]), "out of the walk");
     // peer 2: S1 without blobs, then S2
-    assert!(matches!(lp.deliver(2, &bare).unwrap(), Ingested::Pending(..)));
+    let _ = lp.deliver(2, &bare).unwrap();
+    assert!(waits(&lp, 2));
+    assert!(held(&lp, 2).is_empty(), "out of the walk");
     assert!(matches!(lp.deliver(2, &pk2).unwrap(), Ingested::Applied(_)));
+    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[2].engine.roster(&t), "the frontier away");
     for i in [1, 2] {
         assert!(matches!(lp.deliver(i, &pk1).unwrap(), Ingested::Applied(_)));
+        assert!(lp.peers[i].engine.pending().is_empty());
     }
-    let held = |lp: &LocalPeer, i: usize| -> BTreeSet<CommitId> { lp.peers[i].engine.core.ix.held.roster_snapshots(&t).iter().map(|s| s.id).collect() };
     assert_eq!(held(&lp, 1), BTreeSet::from([s1, s2]));
     assert_eq!(held(&lp, 1), held(&lp, 2));
     assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[2].engine.roster(&t));
 }
 
-// spec/permissions.md §6 (linked frontier bounds): a linked frontier whose value is not a frontier
-// is bad input.
+/// `c`'s `tenures.0` part is dropped alone, in one blob or split, the rest of the snapshot held.
+fn bad_ledger_dropped_alone(lp: &mut LocalPeer, t: Tid, c: &CommitId) {
+    let tenures = osis_base::Ak::new("tenures.0").unwrap();
+    let pk = lp.peers[0].engine.package(c).unwrap().unwrap();
+    for p in lp.packages(0).unwrap() {
+        if p.id != *c {
+            lp.deliver(1, &p).unwrap();
+        }
+    }
+    let rx = lp.peers[1].engine.subscribe();
+    let whole = lp.deliver(1, &pk);
+    assert!(matches!(whole, Ok(Ingested::Applied(_))), "{whole:?}");
+    assert_eq!(lp.peers[1].engine.get(&t, &tenures).unwrap(), None, "the ledger part dropped");
+    let mut diag = false;
+    while let Ok(ev) = rx.try_recv() {
+        diag |= matches!(ev, crate::Event::Diagnostic(_));
+    }
+    assert!(diag, "a diagnostic says why");
+    let again = lp.deliver(1, &pk);
+    assert!(matches!(again, Err(crate::Error::BadInput(_))), "again, nothing of it new: {again:?}");
+    assert_eq!(lp.peers[1].engine.get(&t, &tenures).unwrap(), None);
+    assert!(lp.peers[1].engine.pending().is_empty());
+}
+
+// spec/permissions.md §6 (linked frontier bounds), spec/commits.md §4: a linked frontier whose value
+// is not a frontier is bad input: that part is dropped alone.
 #[test]
 fn malformed_linked_frontier_spec_perm_6() {
     let mut lp = LocalPeer::new(2, 943, T0).unwrap();
@@ -185,11 +217,11 @@ fn malformed_linked_frontier_spec_perm_6() {
     lp.peers[0].commit(m).unwrap();
     let junk = Value::Bytes(vec![9; osis_base::format::CHUNK_THRESHOLD + 10]);
     let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(junk))]);
-    assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
+    bad_ledger_dropped_alone(&mut lp, t, &c);
 }
 
 // spec/permissions.md §6, spec/commits.md §4: a link outside the commit's chunk list is bad
-// input, never waited for.
+// input, never waited for: that part is dropped alone.
 #[test]
 fn unresolvable_linked_frontier_spec_perm_6() {
     let mut lp = LocalPeer::new(2, 944, T0).unwrap();
@@ -200,7 +232,7 @@ fn unresolvable_linked_frontier_spec_perm_6() {
     lp.peers[0].commit(m).unwrap();
     let fake = osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] };
     let c = raw_snapshot(&mut lp, t, vec![tenure(me, Some(Value::Link(fake)))]);
-    assert!(matches!(deliver_all(&mut lp, &c), Err(crate::Error::BadInput(_))));
+    bad_ledger_dropped_alone(&mut lp, t, &c);
 }
 
 // spec/permissions.md §6 (linked frontier bounds): many tenures linking one frontier read it
@@ -232,7 +264,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
 }
 
 // spec/permissions.md §6: a roster snapshot naming one holder in two `roles.0` deltas is bad
-// input (which one counts would depend on the deltas a node holds).
+// input (which one counts would depend on the deltas a node holds): out of the walk on that thing.
 #[test]
 fn holder_named_twice_spec_perm_6() {
     let mut lp = LocalPeer::new(2, 946, T0).unwrap();
@@ -244,15 +276,18 @@ fn holder_named_twice_spec_perm_6() {
     lp.peers[0].commit(m).unwrap();
     edge(&mut lp, t, x, Some(Role::Read), None);
     let c = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
-    let r = lp.peers[0].engine.run(|tx| {
-        let h = (*tx.core.ix.commits.get(&c).unwrap().header).clone();
+    let t2 = lp.peers[0].engine.run(|tx| {
+        let (h, v) = {
+            let m = tx.core.ix.commits.get(&c).unwrap();
+            ((*m.header).clone(), m.view.clone())
+        };
         let mut parts = super::held_parts_at(tx, &c, &|_| true)?;
-        super::validity::check_roster_parts(&h, &parts)?;
+        assert!(super::validity::names_twice(&v, &super::validity::EdgeParts::of(&h, &parts)).is_empty());
         let named = parts.iter().find(|(ai, _, d)| h.aspects[*ai].ak.as_str() == "roles.0" && matches!(d, osis_commit::Decoded::Delta(d) if super::validity::named_holders("roles.0", &d.fragment) == vec![x])).cloned().unwrap();
         parts.push(named);
-        super::validity::check_roster_parts(&h, &parts)
+        Ok(super::validity::names_twice(&v, &super::validity::EdgeParts::of(&h, &parts)))
     });
-    assert!(matches!(r, Err(crate::Error::BadInput(_))));
+    assert_eq!(t2.unwrap(), BTreeSet::from([t]));
 }
 
 // spec/permissions.md §4, §6: a roster snapshot certificate that cannot be read here is not
@@ -347,35 +382,139 @@ fn redemption_on_two_targets_refused_spec_commits_2() {
     assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
 }
 
-// issues/roster-part-link-order.md: a roster snapshot's two parts on a thing not synced, the
-// `tenures.0` part's linked frontier away. Roles first applies the snapshot; tenures first holds it.
+/// A snapshot's part on `ak`, or every part with an empty `ak`.
+fn part_of(pk: &crate::local_peer::Package, ak: &str) -> Vec<u8> {
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let h = b.header.clone();
+    if !ak.is_empty() {
+        b.parts.retain(|p| h.aspects[p.ai].ak.as_str() == ak);
+        assert!(!b.parts.is_empty());
+    }
+    b.encode()
+}
+
+// spec/commits.md §4, spec/permissions.md §6: a roster snapshot's parts on a thing not synced, the
+// `tenures.0` part's linked frontier away. In every order, through a restart too, one state and one
+// roster: the snapshot out of the walk, as at a node syncing the thing where it waits whole. When
+// the blobs come it is in the walk in each, and a snapshot may be written again.
 #[test]
-#[ignore]
-fn repro_linked_frontier_part_order_spec_commits_4() {
-    let (mut lp, t, _, s) = demoted_writer_of(3);
+fn linked_frontier_part_order_spec_commits_4() {
+    use osis_perm::HeldSet;
+    let (mut lp, t, _, s) = demoted_writer_of(6);
     let missing = chunk_blobs(&mut lp, &s);
     assert!(!missing.is_empty());
     let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
     let blobs: Vec<_> = pk.blobs.iter().filter(|(b, _)| !missing.contains(b)).cloned().collect();
-    let part = |ak: &str| {
-        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        let h = b.header.clone();
-        b.parts.retain(|p| h.aspects[p.ai].ak.as_str() == ak);
-        assert!(!b.parts.is_empty());
-        b.encode()
-    };
-    for p in lp.packages(0).unwrap() {
+    let all = lp.packages(0).unwrap();
+    for p in &all {
         if p.id != s {
-            lp.deliver(1, &p).unwrap();
-            lp.deliver(2, &p).unwrap();
+            for i in 1..6 {
+                lp.deliver(i, p).unwrap();
+            }
         }
     }
-    for (i, order) in [(1, ["roles.0", "tenures.0"]), (2, ["tenures.0", "roles.0"])] {
-        for ak in order {
-            let _ = lp.peers[i].engine.ingest(&part(ak), blobs.clone());
+    let before = lp.peers[1].engine.roster(&t);
+    let final_roster = lp.peers[0].engine.roster(&t);
+    let (roles, tenures, whole) = (part_of(&pk, "roles.0"), part_of(&pk, "tenures.0"), pk.bytes.clone());
+    // a node syncing the thing: whole, whichever part first
+    lp.peers[4].engine.set_syncing(t, true).unwrap();
+    lp.peers[5].engine.set_syncing(t, true).unwrap();
+    let orders: [(usize, Vec<&Vec<u8>>); 5] = [(1, vec![&roles, &tenures]), (2, vec![&tenures, &roles]), (3, vec![&whole]), (4, vec![&roles, &tenures]), (5, vec![&tenures, &roles])];
+    for (i, order) in &orders {
+        for b in order {
+            let _ = lp.peers[*i].engine.ingest(b, blobs.clone());
         }
+        lp.peers[*i].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[*i].engine.roster(&t), before, "{i}: out of the walk");
+        assert!(lp.peers[*i].engine.core.ix.held.roster_snapshots(&t).is_empty(), "{i}");
+        assert_eq!(lp.peers[*i].engine.pending().len(), 1, "{i}");
+    }
+    let read = |lp: &mut LocalPeer, i: usize| (lp.peers[i].engine.commit_ids().contains(&s), lp.peers[i].engine.get(&t, &osis_base::Ak::new("roles.0").unwrap()).unwrap(), lp.peers[i].engine.get(&t, &osis_base::Ak::new("tenures.0").unwrap()).unwrap());
+    let unsynced = read(&mut lp, 1);
+    assert!(unsynced.0, "the rest of it applies");
+    for i in [2, 3] {
+        assert_eq!(read(&mut lp, i), unsynced, "{i}");
+    }
+    for i in [4, 5] {
+        assert!(!read(&mut lp, i).0, "{i}: waits whole");
+    }
+    assert!(lp.peers[1].engine.roster_snapshot(&t, None).is_err(), "no snapshot from an unknown ledger");
+    // through a restart it stays out
+    lp.peers[1].restart(960).unwrap();
+    assert!(lp.peers[1].engine.core.ix.held.roster_snapshots(&t).is_empty(), "out of the walk after a restart");
+    assert_eq!(lp.peers[1].engine.roster(&t), before);
+    // the blobs come
+    for i in 1..6 {
+        lp.peers[i].engine.put_blobs(pk.blobs.clone()).unwrap();
         lp.peers[i].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[i].engine.roster(&t), final_roster, "{i}");
+        assert!(lp.peers[i].engine.pending().is_empty(), "{i}");
+        assert_eq!(lp.peers[i].engine.core.ix.held.roster_snapshots(&t).len(), 1, "{i}");
+        assert!(!lp.peers[i].engine.core.ix.frontier_unknown.contains_key(&t), "{i}");
     }
-    assert_eq!(lp.peers[1].engine.core.ix.commits.contains_key(&s), lp.peers[2].engine.core.ix.commits.contains_key(&s));
-    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[2].engine.roster(&t));
+    let done = read(&mut lp, 1);
+    for i in 2..6 {
+        assert_eq!(read(&mut lp, i), done, "{i}");
+    }
+    assert!(lp.peers[1].engine.core.ix.held.roster_snapshots(&t).iter().any(|x| x.id == s));
+}
+
+// spec/commits.md §4: a holder named by an applied part leads to the author's chain whether the walk
+// applies it or not: a commit by a holder known only from a roster snapshot out of the walk applies
+// the same whichever of the snapshot's parts came first and however it came.
+#[test]
+fn withheld_snapshot_names_its_holders_spec_commits_4() {
+    let (mut lp, t, _, first) = demoted_writer_of(5);
+    lp.advance(10);
+    let y = lp.peers[3].engine.tid();
+    edge(&mut lp, t, y, Some(Role::Write), None);
+    let packs = lp.packages(0).unwrap();
+    let before: BTreeSet<CommitId> = packs.iter().map(|p| p.id).collect();
+    let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
+    let missing = chunk_blobs(&mut lp, &s);
+    assert!(!missing.is_empty());
+    let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+    let blobs: Vec<_> = pk.blobs.iter().filter(|(b, _)| !missing.contains(b)).cloned().collect();
+    // Y's write, from Y's node
+    for p in &packs {
+        let _ = lp.deliver(3, p);
+    }
+    let mut m = Mutation::new();
+    m.op(t, &osis_base::Ak::new("t:tags.0").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by y".into())) }).unwrap();
+    let w = lp.peers[3].commit(m).unwrap().unwrap();
+    let write = lp.peers[3].engine.package(&w).unwrap().unwrap();
+    // the others hold everything but the edge write naming Y, so only the snapshot names it, and
+    // the earlier snapshot with the frontier's blobs
+    let mut grant_of_y = None;
+    for p in packs.iter().filter(|p| p.id != first) {
+        if lp.peers[0].engine.header(&p.id).is_some_and(|h| h.kind == osis_commit::Kind::Role) && part_names(p, y) {
+            grant_of_y = Some(p.id);
+            continue;
+        }
+        for i in [1, 2, 4] {
+            let _ = lp.deliver(i, p);
+        }
+    }
+    assert!(grant_of_y.is_some() && before.contains(&grant_of_y.unwrap()));
+    let (roles, tenures) = (part_of(&pk, "roles.0"), part_of(&pk, "tenures.0"));
+    let orders: [(usize, Vec<&Vec<u8>>); 3] = [(1, vec![&roles, &tenures, &write.bytes]), (2, vec![&tenures, &roles, &write.bytes]), (4, vec![&write.bytes, &pk.bytes])];
+    for (i, order) in &orders {
+        for b in order {
+            let _ = lp.peers[*i].engine.ingest(b, blobs.clone());
+        }
+        lp.peers[*i].engine.reexamine().unwrap();
+        assert_eq!(lp.peers[*i].engine.pending(), vec![(s, crate::Reason::WaitBlobs)], "{i}: only the ledger part waits");
+        assert!(lp.peers[*i].engine.commit_ids().contains(&w), "{i}: the holder's commit applied");
+    }
+}
+
+/// Whether package `p` writes `y`'s edge.
+fn part_names(p: &crate::local_peer::Package, y: Tid) -> bool {
+    let Ok(b) = osis_commit::CommitBlob::decode(&p.bytes) else { return false };
+    let mut interner = osis_crdt::Interner::new();
+    b.parts.iter().any(|x| {
+        let Some(_) = b.header.aspects.get(x.ai).filter(|a| a.ak.as_str() == "roles.0") else { return false };
+        let Ok(cx) = osis_commit::delta_ctx(&b.header, &b.id(), x.ai, &mut interner) else { return false };
+        osis_crdt::decode_delta(&x.delta, &cx, &mut interner, None).is_ok_and(|d| super::validity::named_holders("roles.0", &d.fragment).contains(&y))
+    })
 }

@@ -2171,9 +2171,12 @@ fn linked_tenure_frontier_spec_perm_6() {
     }
     let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
     assert!(!pk.blobs.is_empty());
-    let r = lp.peers[2].engine.ingest(&pk.bytes, Vec::new()).unwrap();
-    assert_eq!(r, osis_node::Ingested::Pending(s, osis_node::Reason::WaitBlobs));
+    let before = lp.peers[2].engine.roster(&t);
+    lp.peers[2].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+    assert_eq!(lp.peers[2].engine.pending(), vec![(s, osis_node::Reason::WaitBlobs)]);
+    assert_eq!(lp.peers[2].engine.roster(&t), before, "out of the walk while its frontier is away");
     lp.deliver(2, &pk).unwrap();
+    assert!(lp.peers[2].engine.pending().is_empty());
     assert_eq!(lp.peers[2].engine.roster(&t), lp.peers[0].engine.roster(&t));
     assert_eq!(tags(&mut lp, 2, t), BTreeSet::from(["by x".to_string()]), "x's covered write stands");
 }
