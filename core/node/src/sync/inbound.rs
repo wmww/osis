@@ -1047,16 +1047,24 @@ impl SyncEngine {
 
     /// Whether commit blob `b` (`r`) holds a delta that went from the node (spec/commits.md §5): one
     /// the engine dropped of an applied commit, or for a commit held pending one past its expiry or
-    /// purged, the blob holding nothing a redelivery may need (`Engine::spent_copy`).
+    /// purged, the blob holding nothing a redelivery may need (`Engine::spent_copy`: judged only
+    /// where parts of the commit wait or it is named for redelivery).
     fn dropped(&mut self, b: &BlobId, r: &BlobRec) -> Result<bool> {
+        let pending = self.engine.core.ix.pending.contains_key(&r.commit);
         if let Some(m) = self.engine.core.ix.commits.get(&r.commit) {
-            return Ok(r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));
-        }
-        if !self.engine.core.ix.pending.contains_key(&r.commit) {
+            if !r.parts.iter().any(|p| m.dropped.contains_key(&p.0)) {
+                return Ok(false);
+            }
+            if !pending && !self.engine.redeliver_named(&r.commit) {
+                return Ok(true);
+            }
+        } else if !pending {
             return Ok(false);
         }
-        let Some(bytes) = self.engine.blob(b)? else { return Ok(false) };
-        let Ok((_, copy)) = open_commit(&bytes, &r.key) else { return Ok(false) };
+        // a copy not held here holds nothing a redelivery could read
+        let applied = self.engine.core.ix.commits.contains_key(&r.commit);
+        let Some(bytes) = self.engine.blob(b)? else { return Ok(applied) };
+        let Ok((_, copy)) = open_commit(&bytes, &r.key) else { return Ok(applied) };
         self.engine.spent_copy(&r.commit, &copy)
     }
 

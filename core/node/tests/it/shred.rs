@@ -514,3 +514,53 @@ fn suspect_flag_outlives_a_snapshot_listing_nothing_of_it_spec_permissions_4() {
 }
 
 
+
+// spec/commits.md §5, spec/permissions.md §4: a commit, its thing's record and a purge request naming a
+// part of it (resetting nothing), in every order: the node reads as its author (the part value-less), or,
+// where the part waited when the request came (it counts as never received), flags the aspect suspect.
+#[test]
+fn purge_of_a_waiting_part_reads_alike_or_flags_spec_commits_5() {
+    let mut outs = Vec::new();
+    for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
+        let mut lp = net2(131);
+        let t = new_thing(&mut lp, 0);
+        set(&mut lp, 0, t, &REG, "old");
+        let t3 = new_thing(&mut lp, 0);
+        lp.sync(0, 1).unwrap();
+        lp.peers[1].engine.set_syncing(t3, true).unwrap();
+        lp.peers[1].engine.set_syncing(t, true).unwrap();
+        let had: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+        let t2 = new_thing(&mut lp, 0);
+        lp.peers[1].engine.set_syncing(t2, true).unwrap();
+        let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("secret")).unwrap();
+        m.set(t2, &REG, &s("other")).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.set(t3, &REG, &s("other3")).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        let p = lp.peers[0].commit(m).unwrap().unwrap();
+        let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+        let groups = [rec, vec![whole], vec![request]];
+        for g in order {
+            for pk in &groups[g] {
+                lp.deliver(1, pk).unwrap();
+            }
+            lp.peers[1].engine.reexamine().unwrap();
+        }
+        let want = lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+        let e = &mut lp.peers[1].engine;
+        assert!(e.pending().is_empty(), "order {order:?}");
+        assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
+        let flagged = e.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == ak("t:reg.0"));
+        let read = e.get(&t, &ak("t:reg.0")).unwrap();
+        assert!(read == want || flagged, "order {order:?}: {read:?}, author {want:?}");
+        outs.push(flagged);
+    }
+    // the request before the commit applies drops its part: both outcomes occur
+    assert!(outs.contains(&true) && outs.contains(&false), "{outs:?}");
+}
