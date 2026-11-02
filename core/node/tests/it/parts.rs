@@ -2004,14 +2004,16 @@ fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
         Reader,
         OwnerReader,
         SelfGranted,
+        Puppet,
+        Stranger,
         ExAdmin,
         ByGroup,
         OnOwner,
     }
     let empty = || Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value());
-    for who in [Who::Writer, Who::Reader, Who::OwnerReader, Who::SelfGranted, Who::ExAdmin, Who::ByGroup, Who::OnOwner] {
+    for who in [Who::Writer, Who::Reader, Who::OwnerReader, Who::SelfGranted, Who::Puppet, Who::Stranger, Who::ExAdmin, Who::ByGroup, Who::OnOwner] {
         for before in [true, false] {
-            let mut lp = net(4, 77);
+            let mut lp = net(5, 77);
             let (x, o) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
             let y = {
                 let p = lp.peer(0).unwrap();
@@ -2028,7 +2030,8 @@ fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
             let e = &mut lp.peers[0].engine;
             match who {
                 Who::Writer | Who::SelfGranted => drop(set_edge(e, y, att, Some(edge(Role::Write)), None)),
-                Who::Reader => drop(set_edge(e, y, att, Some(edge(Role::Read)), None)),
+                Who::Reader | Who::Puppet => drop(set_edge(e, y, att, Some(edge(Role::Read)), None)),
+                Who::Stranger => {}
                 Who::OwnerReader => drop(set_edge(e, o, att, Some(edge(Role::Read)), None)),
                 Who::ExAdmin => {
                     set_edge(e, y, att, Some(edge(Role::Admin)), None);
@@ -2045,7 +2048,7 @@ fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
                 }
             }
             lp.sync_all().unwrap();
-            let base: Vec<_> = (0..4).flat_map(|i| packages(&mut lp, i)).collect();
+            let base: Vec<_> = (0..5).flat_map(|i| packages(&mut lp, i)).collect();
             lp.advance(1_000);
             let mut extra = Vec::new();
             if who == Who::SelfGranted {
@@ -2053,7 +2056,16 @@ fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
                 extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
                 lp.advance(1_000);
             }
-            let forged = forge_lowering(&mut lp, 2, if who == Who::OnOwner { o } else { y }, bob);
+            // a reader names a sockpuppet admin, the sockpuppet does the lowering
+            let by = if who == Who::Puppet {
+                let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(lp.peers[4].engine.tid()), edge(Role::Admin).to_value())]));
+                extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
+                lp.advance(1_000);
+                4
+            } else {
+                2
+            };
+            let forged = forge_lowering(&mut lp, by, if who == Who::OnOwner { o } else { y }, bob);
             lp.advance(1_000);
             let mut m = Mutation::new();
             m.set(x, &REG, &s("by bob")).unwrap();
@@ -2122,5 +2134,42 @@ fn lowering_by_one_whose_grant_fell_alike_in_every_order_spec_commits_4() {
             p.engine.reexamine().unwrap();
         }
         assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s("by bob")), "{order:?}");
+    }
+}
+
+// spec/commits.md §4: a ledger entry that lowers its holder only as far as the role the delta needs lowers nothing here, as with the role commit; one below it does.
+#[test]
+fn ledger_entry_counts_only_below_the_role_needed_spec_commits_4() {
+    use crate::common::*;
+    use osis_schema::Codec as _;
+    for (to, want) in [(Role::Write, "new"), (Role::Read, "by bob")] {
+        let mut lp = net(2, 79);
+        let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+        let bob = lp.peers[1].engine.tid();
+        set_edge(&mut lp.peers[0].engine, x, bob, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, y, bob, Some(edge(Role::Admin)), None);
+        lp.sync_all().unwrap();
+        let base: Vec<_> = (0..2).flat_map(|i| packages(&mut lp, i)).collect();
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(x, &REG, &s("by bob")).unwrap();
+        m.set(y, &REG, &s("by bob")).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
+        lp.advance(1_000);
+        set_edge(&mut lp.peers[0].engine, y, bob, Some(edge(to)), Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value()));
+        lp.advance(1_000);
+        let snap = *lp.peers[0].engine.roster_snapshot(&y, None).unwrap().commits.last().unwrap();
+        let sp = packages(&mut lp, 0).into_iter().find(|p| p.id == snap).unwrap();
+        let mut p = Peer::new(7000, lp.peers[0].engine.now()).unwrap();
+        p.engine.set_syncing(x, true).unwrap();
+        p.engine.set_syncing(y, true).unwrap();
+        for pk in &base {
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        let _ = p.engine.ingest(&sp.bytes, sp.blobs.clone());
+        let _ = p.engine.ingest(&on(&cp, x), Vec::new());
+        p.engine.reexamine().unwrap();
+        assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s(want)), "to {to:?}");
     }
 }

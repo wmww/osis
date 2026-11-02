@@ -117,47 +117,38 @@ impl Held {
         out
     }
 
-    /// `t`'s possible admins (spec/commits.md §4): `t`, its owner's or first admin's possible admins,
-    /// and those of a holder named with admin on `t` by an edge write, roster or ledger entry that
-    /// one of them signed; of any validity and whatever followed. The least such set: a forger is in
-    /// it only if a possible admin named it. Held inputs only grow, so this set does.
+    /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
+    /// owner or first admin and any holder named with admin on it by an edge write, roster or ledger
+    /// entry a member signed; of any validity and whatever followed. So a forger is in it only if a
+    /// member named it, and held inputs only grow, so it does, whatever the order: use it where
+    /// "could this signer ever have been admin" must not depend on arrival (a timeline read does).
+    /// A member need not hold admin on the thing it signs for: it could as well have named the holder
+    /// on `t`. Linear in the role writes on its members.
     pub fn ever_admins(&self, t: &Tid) -> BTreeSet<Tid> {
-        let grants = |c: &Tid| -> Vec<(Tid, Tid)> {
-            let edges = self.commits_on(c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| (r.author, o.holder)));
-            let snaps = self.snapshots_of(c).iter().flat_map(|s| {
+        let mut set = BTreeSet::from([*t]);
+        let mut todo = vec![*t];
+        // holders named by a signer not (yet) in the set
+        let mut waiting: BTreeMap<Tid, Vec<Tid>> = BTreeMap::new();
+        while let Some(c) = todo.pop() {
+            let mut named = waiting.remove(&c).unwrap_or_default();
+            if let Some(Owner::Actor(x) | Owner::Ownerless(x)) = self.created(&c).map(CreationRecord::owner_link) {
+                named.push(x);
+            }
+            let edges = self.commits_on(&c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| (r.author, o.holder)));
+            let snaps = self.snapshots_of(&c).iter().flat_map(|s| {
                 let roster = s.roster.iter().filter(|(_, e)| e.role >= Role::Admin).map(|(h, _)| *h);
                 roster.chain(s.ledger.iter().filter(|l| l.role >= Role::Admin).map(|l| l.holder)).map(|h| (s.author, h))
             });
-            edges.chain(snaps).collect()
-        };
-        let above = |c: &Tid| match self.created(c).map(CreationRecord::owner_link) {
-            Some(Owner::Actor(x) | Owner::Ownerless(x)) => Some(x),
-            _ => None,
-        };
-        let mut sets: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-        let mut todo = vec![*t];
-        while let Some(c) = todo.pop() {
-            if sets.insert(c, BTreeSet::from([c])).is_none() {
-                todo.extend(above(&c));
-                todo.extend(grants(&c).into_iter().map(|g| g.1));
+            for (by, h) in edges.chain(snaps) {
+                if set.contains(&by) { named.push(h) } else { waiting.entry(by).or_default().push(h) }
+            }
+            for h in named {
+                if set.insert(h) {
+                    todo.push(h);
+                }
             }
         }
-        let things: Vec<Tid> = sets.keys().copied().collect();
-        loop {
-            let mut grown = false;
-            for c in &things {
-                let mine = sets.get(c).cloned().unwrap_or_default();
-                let from = above(c).into_iter().chain(grants(c).into_iter().filter(|g| mine.contains(&g.0)).map(|g| g.1));
-                let gain: Vec<Tid> = from.flat_map(|x| sets.get(&x).into_iter().flatten().copied()).collect();
-                let set = sets.entry(*c).or_default();
-                let before = set.len();
-                set.extend(gain);
-                grown |= set.len() > before;
-            }
-            if !grown {
-                return sets.remove(t).unwrap_or_default();
-            }
-        }
+        set
     }
 
     fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
@@ -438,5 +429,98 @@ impl HeldSet for Held {
     }
     fn created(&self, thing: &Tid) -> Option<CreationRecord> {
         self.created.get(thing).map(|r| r.record.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use osis_base::Ts;
+    use osis_perm::{Edge, EdgeOp};
+
+    fn thing(owner: Tid, n: u8) -> CreationRecord {
+        CreationRecord::Thing { owner, nonce: [n; 32], creator: None }
+    }
+    fn actor(n: u8) -> CreationRecord {
+        CreationRecord::KeyActor { alg: 1, public_key: vec![n; 32], nonce: [n; 32] }
+    }
+    fn grant(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RoleCommit {
+        let mut c = [0; 32];
+        c[..8].copy_from_slice(&id.to_be_bytes());
+        RoleCommit { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, frontier: None, ops: vec![EdgeOp { target: on, holder: to, edge: Some(Edge::new(role)) }] }
+    }
+    fn roster(id: u64, by: Tid, on: Tid, to: Tid, role: Role) -> RosterSnapshot {
+        let mut c = [1; 32];
+        c[..8].copy_from_slice(&id.to_be_bytes());
+        RosterSnapshot { id: CommitId(c), ts: Ts::make(osis_base::WallMs(1), 0).unwrap(), author: by, actor: by, thing: on, roster: BTreeMap::from([(to, Edge::new(role))]), ledger: Vec::new() }
+    }
+
+    #[derive(Clone)]
+    enum In {
+        G(RoleCommit),
+        S(RosterSnapshot),
+    }
+    fn add(h: &mut Held, i: &In) {
+        match i {
+            In::G(c) => h.add_commit(c.clone()),
+            In::S(s) => h.add_snapshot(s.clone()),
+        }
+    }
+
+    // spec/commits.md §4: a thing's possible admins are a function of what is held, in any order; more held only adds; what a signer outside them writes adds nothing, a chain of forgeries included.
+    #[test]
+    fn possible_admins_least_and_order_free_spec_commits_4() {
+        let mut r = 0x9E37_79B9_7F4A_7C15u64;
+        let mut rng = move |n: u64| {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r % n
+        };
+        for _ in 0..300 {
+            let actors: Vec<CreationRecord> = (0..5).map(actor).collect();
+            let a: Vec<Tid> = actors.iter().map(|x| x.tid()).collect();
+            let g = thing(a[0], 10);
+            let t = thing(g.tid(), 11);
+            let ids = [t.tid(), g.tid(), a[0], a[1], a[2], a[3], a[4]];
+            let mut inputs: Vec<In> = (0..rng(14)).map(|i| {
+                let (by, on, to) = (a[rng(5) as usize], ids[rng(4) as usize], ids[rng(7) as usize]);
+                let role = if rng(4) == 0 { Role::Write } else { Role::Admin };
+                if rng(4) == 0 { In::S(roster(i, by, on, to, role)) } else { In::G(grant(i, by, on, to, role)) }
+            }).collect();
+            let base = |h: &mut Held| {
+                for x in actors.iter().chain([&g, &t]) {
+                    h.create(x.clone());
+                }
+            };
+            let mut one = Held::default();
+            base(&mut one);
+            inputs.iter().for_each(|i| add(&mut one, i));
+            let want = one.ever_admins(&t.tid());
+            // a shuffled order: every prefix a subset, the end alike
+            for k in (1..inputs.len()).rev() {
+                inputs.swap(k, rng(k as u64 + 1) as usize);
+            }
+            let mut h = Held::default();
+            base(&mut h);
+            let mut last = h.ever_admins(&t.tid());
+            for i in &inputs {
+                add(&mut h, i);
+                let now = h.ever_admins(&t.tid());
+                assert!(last.is_subset(&now));
+                last = now;
+            }
+            assert_eq!(last, want);
+            // forgeries by an outsider and by whom it names: nothing moves
+            if let Some(out) = a.iter().copied().find(|x| !want.contains(x)) {
+                let puppet = Tid::of_record(&actor(99));
+                h.add_commit(grant(1000, out, t.tid(), out, Role::Admin));
+                h.add_commit(grant(1001, out, t.tid(), puppet, Role::Admin));
+                h.add_commit(grant(1002, puppet, t.tid(), a[0], Role::Admin));
+                h.add_snapshot(roster(1003, puppet, t.tid(), out, Role::Admin));
+                assert_eq!(h.ever_admins(&t.tid()), want);
+            }
+            assert!(want.contains(&a[0]), "the owner's owner");
+        }
     }
 }
