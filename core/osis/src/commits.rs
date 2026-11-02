@@ -468,9 +468,12 @@ impl Osis {
                 {
                     return Err(blocked(DropReason::Compacted));
                 }
-                e.check_revert_as(&a, target)?;
             }
-            match e.revert_change(target, me)? {
+            let r = match self.acting {
+                Some(a) => e.revert_as(target, a)?,
+                None => e.revert_change(target, me)?,
+            };
+            match r {
                 Reverted::Written(w) => Ok(Committed { id: w.id, ts: w.ts }),
                 Reverted::Superseded => Err(blocked(DropReason::Superseded)),
                 Reverted::Compacted => Err(blocked(DropReason::Compacted)),

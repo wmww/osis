@@ -4,7 +4,7 @@
 //! it is durable. A failed transaction undoes its changes to the in-memory indexes (`journal`)
 //! and evicts the states it wrote.
 
-mod acting;
+pub(crate) mod acting;
 pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod groups;

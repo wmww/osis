@@ -8,3 +8,4 @@
 - One hang of `secret_hash_and_rotation` seen once, in a run with `client_of`'s hash compare disabled, not reproduced (ptrace is blocked here, so no stack): notes in the report.
 - Review: `Reader`'s checks read as complete, but `groups.0` and `Scope::Group` went round them, and `check_confined` missed what `undo::unmake_ops` and `place_plan` write on top of the mutation it saw. A writer through several layers needs the check at the last one, or a list of what each adds.
 - `localhost::` CLI tier-2 tests are in no per-branch list and two fail on main (issues/cli-localhost-tier2-fail.md): took a main build to tell they were not this branch.
+- Second review: the first pass called a hidden placement the worst bug (its data under the group's labels); spec/sync.md §3 entitlement already keeps the data out. A two-device probe took minutes and settled the severity: run one before ranking.
