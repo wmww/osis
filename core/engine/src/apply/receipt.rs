@@ -102,10 +102,20 @@ fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs
 /// `Absorbed` names the commit (atomic apply: the missing delta counts as dropped,
 /// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
 pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
+    listed_where(core, h, id, ai, |_| true)
+}
+
+/// `listed` by held snapshot `s` alone.
+pub(crate) fn listed_by(core: &crate::engine::Core, s: &CommitId, h: &Header, id: &CommitId, ai: usize) -> bool {
+    listed_where(core, h, id, ai, |x| x == *s)
+}
+
+fn listed_where(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize, by: impl Fn(CommitId) -> bool) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let counted = (h.form.counted() && h.kind.has_own_writes()).then(|| h.form.own_source(h.author, *id));
-    held_snapshots(core, &a.tid, &a.ak).any(|(_, ts, fr, abs)| {
-        ts > h.ts
+    held_snapshots(core, &a.tid, &a.ak).any(|(s, ts, fr, abs)| {
+        by(s)
+            && ts > h.ts
             && match &counted {
                 Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),
                 None => abs.iter().any(|x| x.0 == *id),
