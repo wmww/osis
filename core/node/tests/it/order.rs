@@ -1576,6 +1576,56 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
     p
 }
 
+/// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
+/// each order's reads as they change after every ingest, and both nodes' judged parts.
+fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want: &Judged, got: &Judged) {
+    if std::env::var("OSIS_ORDER_DUMP").is_err() {
+        return;
+    }
+    let mut out = String::new();
+    let p = deliver(played, want_order);
+    for (i, pk) in played.packs.iter().enumerate() {
+        let who = played.authors.get(i).map_or("?".into(), |a| a.to_string());
+        match p.engine.header(&pk.id) {
+            Some(h) => {
+                let aspects: Vec<String> = h.aspects.iter().map(|a| format!("{:?} {}", a.tid, a.ak.as_str())).collect();
+                let _ = writeln!(out, "#{i} {:?} peer {who} {:?} {:?} {:?}: {}", pk.id, h.kind, h.form, h.ts, aspects.join(", "));
+            }
+            None => {
+                let _ = writeln!(out, "#{i} {:?} peer {who}: no header", pk.id);
+            }
+        }
+    }
+    for (name, order) in [("want", want_order), ("got", got_order)] {
+        let _ = writeln!(out, "--- {name} order {order:?}: reads as they change");
+        let mut last: BTreeMap<String, String> = BTreeMap::new();
+        let mut n = 0;
+        deliver_with(played, order, None, &mut |p| {
+            let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
+            n += 1;
+            for (t, a) in p.engine.all_aspects().unwrap() {
+                let k = format!("{t:?} {}", a.as_str());
+                let v = format!("{:?}", p.engine.get(&t, &a).unwrap());
+                if last.get(&k) != Some(&v) {
+                    let _ = writeln!(out, "  after {step}: {k} = {v}");
+                    last.insert(k, v);
+                }
+            }
+            let pending = p.engine.pending().len();
+            if pending > 0 {
+                let _ = writeln!(out, "  after {step}: {pending} pending");
+            }
+        });
+    }
+    for (name, j) in [("want", want), ("got", got)] {
+        let _ = writeln!(out, "--- {name} expired_pending {:?} expired_dormant {:?}", j.expired_pending, j.expired_dormant);
+        for (part, text) in &j.parts {
+            let _ = writeln!(out, "--- {name} {part}\n{text}");
+        }
+    }
+    eprintln!("{out}");
+}
+
 /// Whether delivering `order` (split as `deliver_split` with `rng`) judged a body of `(tid, ak)`
 /// (as `facts_text` prints them) both valid and invalid on the way: a validity flip in that
 /// order. A delivery with facts at every step: asked only about a difference found.
@@ -1888,7 +1938,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             }
             got.index = Some(index_later(&mut p, played));
             match alike_exchanged(played, &want, &orders[0], &got, order, None, &|t, a| flipped(played, &orders[0], None, t, a) || flipped(played, order, None, t, a)) {
-                Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
+                Some(d) => {
+                    dump_orders(played, &orders[0], order, &want, &got);
+                    Err(format!("{vs} (got) {order:?}: {d}"))
+                }
                 None => Ok(()),
             }
         };
@@ -2701,6 +2754,14 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // held gives; it leaves such aspects undated now
     let h = vec![New { by: 0, parent: 0, write: true }, Edge { by: 2, t: 7, holder: 2, role: Some(Role::Write) }, NestedItem { by: 2, other: 1, t: 6, k: 2, compact: true, also: false }, Nested { by: 2, other: 0, t: 4, k: 0, text: false, compact: true, also: true }, Roster { by: 2, t: 6 }, NewTop { by: 0 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Sync { from: 0, to: 2 }, Demote { by: 0, t: 7, holder: 1, at: 3, to_read: false }, New { by: 0, parent: 3, write: false }, Forged { by: 0, a: 0, b: 0, how: 1, op: 16, k: 0, v: 5 }, Undo { by: 0, back: 0 }, Compact { by: 0, t: 4, op: 8 }, Leave { by: 1, t: 1 }, Typed { by: 1, t: 5, op: 14, k: 0, v: 9 }, Nested { by: 0, other: 1, t: 0, k: 2, text: true, compact: true, also: true }, NewTop { by: 0 }, Typed { by: 1, t: 2, op: 22, k: 2, v: 7 }, Demote { by: 0, t: 3, holder: 2, at: 0, to_read: true }, Typed { by: 0, t: 0, op: 25, k: 0, v: 8 }, Nested { by: 2, other: 1, t: 1, k: 0, text: true, compact: true, also: true }, Write { by: 0, t: 3, op: 15, k: 2, v: 4 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Nested { by: 2, other: 1, t: 1, k: 0, text: true, compact: true, also: true }, Nested { by: 0, other: 1, t: 2, k: 0, text: false, compact: true, also: false }, Roster { by: 0, t: 2 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: false, also: true }, Write { by: 1, t: 5, op: 16, k: 0, v: 1 }, Write { by: 0, t: 4, op: 28, k: 1, v: 8 }, Compact { by: 0, t: 1, op: 4 }, Demote { by: 0, t: 2, holder: 2, at: 4, to_read: false }, Typed { by: 1, t: 3, op: 23, k: 0, v: 7 }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
     cases.push((98057, h.into_iter().map(|s| if matches!(s, Forged { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
+    // seed 5288 (spec/permissions.md §4, spec/commits.md §5): A's expiring put into B's entry
+    // (its creation invalid after B's removal, kept by C's valid snapshot's copy) arrives past T;
+    // applied at once in one order, dropped as never received where it waited. A's snapshot
+    // after T lists it but carries nothing of it (A lacks C's snapshot, so its un-merge took the
+    // entry whole), so the flag went dormant though the reads differed (k1 absent vs its old
+    // fields): a listing snapshot settles a pending-expiry flag only if it carries a write of it
+    let h = vec![Nested { by: 1, other: 2, t: 1, k: 1, text: false, compact: true, also: true }, NewTop { by: 1 }, Typed { by: 2, t: 3, op: 8, k: 2, v: 4 }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: true, also: false }, Roster { by: 0, t: 3 }, Demote { by: 2, t: 4, holder: 2, at: 4, to_read: false }, Typed { by: 2, t: 4, op: 28, k: 1, v: 9 }, Edge { by: 2, t: 1, holder: 1, role: None }, Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: true, also: true }, Sync { from: 1, to: 0 }, Advance { who: None, ms: 6831206 }, Compact { by: 1, t: 4, op: 4 }, Compact { by: 0, t: 7, op: 4 }];
+    cases.push((5288, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
@@ -3379,4 +3440,5 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     let flagged = p.engine.suspects().unwrap();
     assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
 }
+
 

@@ -117,26 +117,29 @@ fn part_missing(core: &crate::engine::Core, c: &CommitId) -> bool {
 /// `Absorbed` names the commit (atomic apply: the missing delta counts as dropped,
 /// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
 pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
-    listed_where(core, h, id, ai, |_| true)
+    listing(core, h, id, ai).next().is_some()
 }
 
-/// `listed` by a held snapshot valid here: it gave the delta's writes (spec/permissions.md
-/// §5.2; a suspect flag's body, `retention::suspect`).
-pub(crate) fn listed_by_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
-    let Some(a) = h.aspects.get(ai) else { return false };
-    listed_where(core, h, id, ai, |s| crate::apply::validity::snapshot_valid(core, &s, &a.tid, &a.ak))
+/// The snapshots `listed` counts that are valid here: each gave the delta's writes it carried
+/// (spec/permissions.md §5.2; a suspect flag's body, `retention::suspect`).
+pub(crate) fn listing_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> Vec<CommitId> {
+    let Some(a) = h.aspects.get(ai) else { return Vec::new() };
+    listing(core, h, id, ai).filter(|s| crate::apply::validity::snapshot_valid(core, s, &a.tid, &a.ak)).collect()
 }
 
-fn listed_where(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize, by: impl Fn(CommitId) -> bool) -> bool {
-    let Some(a) = h.aspects.get(ai) else { return false };
+fn listing<'a>(core: &'a crate::engine::Core, h: &'a Header, id: &'a CommitId, ai: usize) -> impl Iterator<Item = CommitId> + 'a {
+    let a = h.aspects.get(ai);
     let counted = (h.form.counted() && h.kind.has_own_writes()).then(|| h.form.own_source(h.author, *id));
-    held_snapshots(core, &a.tid, &a.ak).any(|(s, ts, fr, abs)| {
-        by(s)
-            && ts > h.ts
-            && match &counted {
-                Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),
-                None => abs.iter().any(|x| x.0 == *id),
-            }
+    a.into_iter().flat_map(move |a| {
+        let counted = counted.clone();
+        held_snapshots(core, &a.tid, &a.ak).filter_map(move |(s, ts, fr, abs)| {
+            let lists = ts > h.ts
+                && match &counted {
+                    Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),
+                    None => abs.iter().any(|x| x.0 == *id),
+                };
+            lists.then_some(s)
+        })
     })
 }
 

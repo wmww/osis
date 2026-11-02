@@ -6,9 +6,11 @@
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in), and is dormant
-//! while a held snapshot valid here lists its delta as included (`receipt::listed_by_valid`: it
-//! carried that delta's writes, value-less copies of an expired one). Dormancy is judged when
-//! the flags are read, from what is held then: a snapshot that turns invalid gives nothing
+//! while a held snapshot valid here lists its delta as included (`receipt::listing_valid`) and,
+//! for a part that went pending at its expiry, carries a write of it: such a part's writes join
+//! only through snapshots (spec/commits.md §5), so a listing snapshot carrying none (its writer
+//! un-merged them, or they died there) repaired nothing here. Dormancy is judged when the flags
+//! are read, from what is held then: a snapshot that turns invalid gives nothing
 //! (spec/permissions.md §5.2), so the flag it had settled shows again. A snapshot that lists
 //! none of them (any writer's compaction, stamped whenever) settles nothing: it repaired
 //! nothing.
@@ -103,14 +105,33 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
 }
 
 /// Whether flag entry `e` is dormant: a held snapshot valid here lists its delta as included
-/// (spec/commits.md §4).
+/// (spec/commits.md §4) and, for a part that went pending at its expiry, carries a write of it
+/// (`Fragment::holds_dots` over the snapshot's body: a value-less copy counts).
 fn dormant(tx: &mut Tx<'_>, e: &Entry) -> Result<bool> {
     let h = match tx.core.ix.commits.get(&e.0) {
         Some(m) => Some(osis_commit::Header::clone(&m.header)),
         // a part dropped while pending: its header is in the stored copy
         None => tx.txn.get_pending(&e.0)?.and_then(|(_, b)| osis_commit::CommitBlob::decode(&b).ok()).map(|b| b.header),
     };
-    Ok(h.is_some_and(|h| crate::apply::receipt::listed_by_valid(tx.core, &h, &e.0, usize::from(e.1))))
+    let Some(h) = h else { return Ok(false) };
+    let ai = usize::from(e.1);
+    let snaps = crate::apply::receipt::listing_valid(tx.core, &h, &e.0, ai);
+    if e.2 & Why::PendingExpiry as u8 == 0 {
+        return Ok(!snaps.is_empty());
+    }
+    let (Some(a), Some(o)) = (h.aspects.get(ai), crate::engine::Owned::of(&h, &e.0, ai)) else { return Ok(false) };
+    for s in snaps {
+        let Some(sai) = tx.core.ix.commits.get(&s).and_then(|m| m.aspect(&a.tid, &a.ak)) else { continue };
+        let mut carries = false;
+        crate::apply::each_held_piece(tx, &s, sai, &mut |_, f| {
+            carries |= f.holds_dots(&|d| o.owns(d));
+            Ok(())
+        })?;
+        if carries {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// The parts of `(tid, ak)` dropped other than as covered, at expiry or by a purge: their
