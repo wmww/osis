@@ -4,3 +4,4 @@
 - Grepping `core/node/src/sync/*.rs` misses `sync/pass/`; I nearly deleted the `first` field as dead. Use `-r`.
 - (review) `wt claim` run twice in one shell line: the second call printed nothing usable and `cd $(...)` landed in `.worktrees/`. Claim once, then cd to the printed path.
 - (review) Races between a pass's upload and download hide in the net harness (upload usually wins); a host policy refusing uploads (`cap_entries: 0` via `restart_host_with`) forces the other order.
+- (review) Coordinator asked to rebase while my gate was building; stopping it mid-build left `undefined hidden symbol` link errors (osis-crdt, osis-label) on the next gate: the known fix (delete their `target/debug/incremental/` dirs) cost a second gate run. Also local `main` lagged `origin/main`: rebase onto `origin/main` after `git fetch` when told main moved.
