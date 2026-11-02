@@ -139,10 +139,11 @@ pub struct AspectEntry {
 }
 
 impl AspectEntry {
-    /// A permanent delta (spec/commits.md §5): keep at least forever, no keep at most, no expiry.
-    /// It leaves only by purge request, and leaves its header behind for good.
+    /// A permanent delta (spec/commits.md §5): keep at least forever, no keep at most, no expiry, on
+    /// an aspect with no fixed retention. It leaves by purge request, and leaves its header behind
+    /// for good.
     pub fn permanent(&self) -> bool {
-        self.retention.at_least.abs == Some(FOREVER) && self.retention.at_most == osis_schema::Bound::default() && self.expires.is_none() && self.ak.as_str() != crate::retention::CREATED
+        self.retention.at_least.abs == Some(FOREVER) && self.retention.at_most == osis_schema::Bound::default() && self.expires.is_none() && crate::retention::fixed_retention(self.ak.as_str()).is_none()
     }
 }
 

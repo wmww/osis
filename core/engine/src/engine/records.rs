@@ -29,6 +29,9 @@ pub const RESIDUE: &[u8] = b"w/";
 pub const STRIPPED: &[u8] = b"j/";
 /// Purge items waiting for the deltas they name: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
+/// A purge request that dropped a permanent delta on a thing (`retention::lasting`): `z/` + commit
+/// ID + tid, empty.
+pub const NAMED_PERMANENT: &[u8] = b"z/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
 pub const TIMER: &[u8] = b"x/";
 /// Things this node syncs: `s/` + tid.
@@ -93,6 +96,10 @@ pub fn residue_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
 
 pub fn stripped_key(id: &CommitId, ai: usize, di: usize) -> Vec<u8> {
     [STRIPPED, &id.0[..], &(ai as u32).to_be_bytes(), &(di as u32).to_be_bytes()].concat()
+}
+
+pub fn named_permanent_key(id: &CommitId, tid: &Tid) -> Vec<u8> {
+    [NAMED_PERMANENT, &id.0[..], tid.as_bytes()].concat()
 }
 
 pub fn own_keys_key(tid: &Tid, id: &CommitId) -> Vec<u8> {

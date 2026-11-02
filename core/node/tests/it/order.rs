@@ -78,6 +78,11 @@ pub(crate) enum Step {
     Nested { by: usize, other: usize, t: usize, k: u8, text: bool, compact: bool, also: bool },
     /// `by` undoes one of its last commits.
     Undo { by: usize, back: u8 },
+    /// A permanent delta (spec/commits.md §5) of `by` on `t`'s register.
+    Message { by: usize, t: usize, v: u8 },
+    /// `by` purges `t`'s register, with a write there: one of `of`'s last commits by name, or (no
+    /// such commit) the whole aspect.
+    Purge { by: usize, t: usize, of: usize, back: u8, v: u8 },
     /// Every commit `from` holds to `to`.
     Sync { from: usize, to: usize },
     /// One of `from`'s last commits to `to`.
@@ -348,6 +353,8 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         New { by, parent, write: w } => pick(lp, by, parent, &write).map(|(by, parent)| New { by, parent, write: w }),
         Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact, also }),
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
+        Message { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Message { by, t, v }),
+        Purge { by, t, of, back, v } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
         Undo { by, back } => {
             // one of the author's last content commits
             let content: Vec<usize> = own[by].iter().enumerate().filter(|(_, id)| lp.peers[by].engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content)).map(|(i, _)| i).collect();
@@ -689,6 +696,26 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 if let Some(id) = n.checked_sub(1 + back as usize).and_then(|i| own[by].get(i)).copied() {
                     no = why(&lp.peers[by].engine.revert(&id));
                 }
+                Some(by)
+            }
+            Step::Message { by, t, v } => {
+                let mut m = Mutation::new();
+                m.retention(th(t), &REG, Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() }).unwrap();
+                m.set(th(t), &REG, &s(&format!("m{v}"))).unwrap();
+                no = why(&lp.peers[by].commit(m));
+                Some(by)
+            }
+            Step::Purge { by, t, of, back, v } => {
+                let t = th(t);
+                let k = ak("t:reg.0");
+                let named = own[of].len().checked_sub(1 + back as usize).and_then(|i| own[of].get(i)).copied();
+                let mut m = Mutation::new();
+                m.purge(match named {
+                    Some(commit) => osis_commit::PurgeItem::Commit { commit, tid: t, ak: k },
+                    None => osis_commit::PurgeItem::Aspect { tid: t, ak: k },
+                });
+                m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
+                no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
             Step::Sync { from, to } => {
@@ -1817,6 +1844,8 @@ struct Seen {
     /// fallen invalid, over the held sets.
     broken: u64,
     fallen: u64,
+    /// Permanent deltas the reference node shows purged, over the held sets.
+    tombstones: u64,
 }
 
 impl Seen {
@@ -1827,6 +1856,7 @@ impl Seen {
         self.late_waits += o.late_waits;
         self.broken += o.broken;
         self.fallen += o.fallen;
+        self.tombstones += o.tombstones;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -1850,6 +1880,7 @@ impl Seen {
             return;
         }
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
+        assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
         // a history setting required retentions reaches a delta breaking one
@@ -1931,6 +1962,11 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             return Err(format!("{of}, as made: {d}"));
         }
         let now = judged_now(&mut p, &played.things);
+        for t in &played.things {
+            for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
+                seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && a.permanent())));
+            }
+        }
         for l in now.part("pending").lines() {
             let why = l.split(' ').nth(1).unwrap_or(l).split('(').next().unwrap_or("");
             *seen.pending.entry(why.to_string()).or_default() += 1;
@@ -2472,6 +2508,37 @@ fn required_drops_read_alike_large_spec_perm_8() {
 #[ignore = "tier 2"]
 fn arrival_order_alike_large_spec_permissions_5_2() {
     run("arrival_order_alike_large_spec_permissions_5_2", 1000..1060, 60, LARGE, history);
+}
+
+/// `history` with permanent messages and purges by the owner mixed in, on their own draws (`history`'s
+/// seeds replay as they were). Only the owner purges: its right cannot fall, and a purge whose right
+/// falls after it applied still depends on arrival order (issues/purge-before-demotion.md).
+fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
+    let mut out = Vec::new();
+    for st in history(seed, len, cfg) {
+        out.push(st);
+        let (by, t, v) = (rng.below(3) as usize, rng.below(8) as usize, rng.below(10) as u8);
+        match rng.below(8) {
+            0 | 1 => out.push(Step::Aim(Box::new(Step::Message { by, t, v }))),
+            2 => out.push(Step::Aim(Box::new(Step::Purge { by: 0, t, of: by, back: rng.below(4) as u8, v }))),
+            _ => {}
+        }
+    }
+    out
+}
+
+// spec/commits.md §5 (purge, lasting headers), spec/permissions.md §8: arrival order decides nothing
+// with purges in the history either.
+#[test]
+fn arrival_order_purge_small_spec_commits_5() {
+    run("arrival_order_purge_small_spec_commits_5", 0..4, 8, SMALL, purge_history);
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_purge_large_spec_commits_5() {
+    run("arrival_order_purge_large_spec_commits_5", 3000..3060, 60, LARGE, purge_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §4.8: short histories mixing bounded

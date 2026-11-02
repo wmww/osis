@@ -353,6 +353,12 @@ fn tombstone_liar() {
     ok("tombstone_liar", 1);
 }
 
+// spec/commits.md §5, spec/sync.md §6: lasting tombstones through a lost host and a device down.
+#[test]
+fn purge_tombstones() {
+    ok("purge_tombstones", 1);
+}
+
 // spec/versioning.md §1, §2: a newer format version is parked, relayed, never destroyed.
 #[test]
 #[ignore = "tier 2"]

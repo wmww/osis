@@ -275,11 +275,14 @@ fn never_whole(core: &crate::engine::Core, h: &Header, id: &CommitId, blob: &Com
 }
 
 /// Whether a commit with no part held waits for every thing and delta of it, synced or not, so that
-/// whether it is recorded applied does not read what the node syncs when it comes. A permanent delta
-/// on a thing the node syncs stands for a held part: it leaves only by purge, so the blob is a lasting
-/// header and the commit waits as if that part were here (spec/commits.md §4).
+/// whether it is recorded applied does not read what the node syncs when it comes. A lasting header
+/// may be all that ever comes under the label (spec/commits.md §5), so a permanent delta or a purge
+/// item on a thing the node syncs stands for a held part: the commit waits as if that part were
+/// here, for what is on its synced things, and no more than a held part's commit does. The delta
+/// itself still gates until a held request counts it as held.
 fn waits_whole(core: &crate::engine::Core, h: &Header, blob: &CommitBlob, never: bool) -> bool {
-    blob.parts.is_empty() && !never && !h.aspects.iter().any(|a| h.ephemeral.is_none() && a.permanent() && core.syncs(&a.tid))
+    let stands = h.ephemeral.is_none() && (h.aspects.iter().any(|a| a.permanent() && core.syncs(&a.tid)) || h.purge.iter().any(|i| core.syncs(i.tid())));
+    blob.parts.is_empty() && !never && !stands
 }
 
 /// A missing delta and whether it holds the whole commit (`gating`).

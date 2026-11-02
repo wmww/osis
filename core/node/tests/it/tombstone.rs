@@ -416,3 +416,256 @@ fn header_only_prefix_is_checked_spec_sync_1() {
     let bad = seal_body(&body(Some(FOREVER)), &mut rng).unwrap();
     assert!(open_commit(&bad.blob, &bad.key).is_err());
 }
+
+fn pending(net: &mut Net, n: usize) -> usize {
+    net.engine(n).pending().len()
+}
+
+fn bare_header(net: &mut Net, from: usize, c: &CommitId) -> Vec<u8> {
+    let pk = net.engine(from).package(c).unwrap().unwrap();
+    osis_commit::rewrite(&osis_commit::CommitBlob::decode(&pk.bytes).unwrap(), |_, _| true).encode()
+}
+
+// spec/commits.md §4, §5: a writer forging a header-only blob of another's message, alone or with a
+// request it has no right to make, hides nothing: the delta is missing and not counted as held, no
+// purge shows, and the body applies once it comes.
+#[test]
+fn a_forged_header_only_blob_is_no_tombstone_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
+    let g = net.group(a, &[(b, Role::Write), (n, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    net.set_online(n, false);
+    let c = msg(&mut net, a, t, "SECRET", permanent());
+    net.run();
+    let bare = bare_header(&mut net, b, &c);
+    net.engine(n).ingest(&bare, Vec::new()).unwrap();
+    assert!(!net.engine(n).commit_ids().contains(&c));
+    let p = purge(&mut net, b, t, c, Retention::default());
+    let pp = net.engine(b).package(&p).unwrap().unwrap();
+    net.engine(n).ingest(&pp.bytes, pp.blobs.clone()).unwrap();
+    assert!(!net.engine(n).commit_ids().contains(&c), "held by a request without the right");
+    assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
+    net.set_online(n, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    assert!(net.engine(n).body_not_dropped(&c, &t, &k()));
+    assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
+}
+
+// spec/permissions.md §8, spec/commits.md §5: an admin's purge falls when its demotion stamped earlier
+// arrives. Nodes that had dropped the body keep it dropped (issues/purge-before-demotion.md), but
+// nobody shows a purge any more and a new device reads the message from the holder that kept it.
+#[test]
+fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, c2, n) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
+    let g = net.group(a, &[(b, Role::Write), (c2, Role::Admin), (n, Role::Read)], &[host]);
+    net.set_online(n, false);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let m = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    net.set_online(a, false);
+    let d = osis_node::flows::Demotion { holder: net.tid(c2), new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(a).demote(&g, &d).unwrap();
+    net.advance(5_000);
+    purge(&mut net, c2, t, m, Retention::default());
+    net.run();
+    assert!(net.engine(b).purged_on(&t, &k()).unwrap().contains_key(&m), "its right holds as far as b knows");
+    net.set_online(a, true);
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    for x in [a, b, c2] {
+        assert!(net.engine(x).purged_on(&t, &k()).unwrap().is_empty(), "at {x}");
+    }
+    assert!(net.engine(a).body_not_dropped(&m, &t, &k()));
+    net.set_online(n, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    assert!(net.engine(n).body_not_dropped(&m, &t, &k()));
+    assert!(net.engine(n).purged_on(&t, &k()).unwrap().is_empty());
+}
+
+/// Admin `a`, writer `b`, reader `n` offline, and thing `u` of a second group: its label and hosts
+/// are `a`'s and `b`'s, and `n` when `n_too`.
+fn second_label(c: &mut Chat, n_too: bool) -> Tid {
+    let addrs = vec![c.net.hosts[c.host].address.clone()];
+    let holders: Vec<(usize, Role)> = if n_too { vec![(c.b, Role::Write), (c.n, Role::Read)] } else { vec![(c.b, Role::Write)] };
+    let g2 = c.net.group_seeded(c.a, &holders, addrs, 2);
+    let u = c.net.item(c.a, g2, g2, "y");
+    c.net.run();
+    u
+}
+
+// spec/commits.md §4, §5: a purge commit with a write on another label's thing too, its body under
+// the purged message's label gone: a device on that label alone applies its header, or it would
+// never count the message's delta as purged.
+#[test]
+fn a_purge_commit_does_not_wait_for_another_label_spec_commits_4() {
+    let mut chat = chat();
+    let u = second_label(&mut chat, false);
+    let Chat { mut net, host, a, b, n, t, l } = chat;
+    let c = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k() });
+    m.set(t, &REG, &s("after")).unwrap();
+    m.set(u, &LIST, &osis_base::Value::List(vec![s("elsewhere")])).unwrap();
+    let p = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(ROLE_KEEP_MS + 3_600_000);
+    net.run();
+    net.write(a, t, "later");
+    net.run();
+    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(3_600_000);
+    net.run();
+    assert_eq!(at_host(&mut net, a, host, &l, p), vec![Vec::new()]);
+    net.set_online(n, true);
+    net.run();
+    assert_eq!(pending(&mut net, n), 0);
+    let author = net.tid(b);
+    sees_tombstone(&mut net, n, t, c, p, author);
+}
+
+// spec/commits.md §4: atomic apply holds across a lasting header: a message beside a part on a second
+// thing the device syncs too, the message purged and the other part withheld, waits for that part.
+#[test]
+fn a_lasting_header_does_not_tear_a_commit_spec_commits_4() {
+    let mut chat = chat();
+    let u = second_label(&mut chat, true);
+    let Chat { mut net, a, b, n, t, .. } = chat;
+    net.set_online(n, true);
+    net.run();
+    net.set_online(n, false);
+    let mut m = Mutation::new();
+    m.retention(t, &REG, permanent()).unwrap();
+    m.set(t, &REG, &s("SECRET")).unwrap();
+    m.set(u, &LIST, &osis_base::Value::List(vec![s("card")])).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let p = purge(&mut net, a, t, c, Retention::default());
+    net.run();
+    let bare = bare_header(&mut net, a, &c);
+    let pp = net.engine(a).package(&p).unwrap().unwrap();
+    assert!(net.engine(n).core.syncs(&t) && net.engine(n).core.syncs(&u));
+    net.engine(n).ingest(&pp.bytes, pp.blobs.clone()).unwrap();
+    net.engine(n).ingest(&bare, Vec::new()).unwrap();
+    assert!(net.engine(n).commit_ids().contains(&p));
+    assert!(!net.engine(n).commit_ids().contains(&c), "applied without its part on a synced thing");
+    net.set_online(n, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    assert!(net.engine(n).commit_ids().contains(&c));
+    assert_eq!(net.engine(n).get(&u, &Ak::new(LIST.ak()).unwrap()).unwrap(), Some(osis_base::Value::List(vec![s("card")])));
+}
+
+// spec/commits.md §5: a purge commit's own delta purged in turn. Covered by a snapshot, the snapshot
+// lists it, so the tombstone shows at a new device; gone by a keep at most with no snapshot, the
+// message waits there for good: no tombstone and nothing shown wrongly (notes/sync.md).
+#[test]
+fn a_purge_purged_in_turn_spec_commits_5() {
+    for snap in [true, false] {
+        let Chat { mut net, host, a, b, n, t, l } = chat();
+        let c = msg(&mut net, b, t, "SECRET", permanent());
+        net.run();
+        let p1 = purge(&mut net, a, t, c, Retention::default());
+        net.run();
+        let r2 = if snap { Retention::default() } else { Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(0) } } };
+        let p2 = purge(&mut net, a, t, p1, r2);
+        net.run();
+        net.advance(ROLE_KEEP_MS + 3_600_000);
+        net.run();
+        msg(&mut net, a, t, "later", Retention::default());
+        net.run();
+        if snap {
+            let acts = net.sync(a).compact(&t, &k()).unwrap();
+            net.actions(a, acts);
+            net.run();
+        }
+        net.advance(3_600_000);
+        net.run();
+        assert_eq!(at_host(&mut net, a, host, &l, p1), vec![Vec::new()]);
+        assert!(at_host(&mut net, a, host, &l, p2).is_empty());
+        net.set_online(n, true);
+        net.run();
+        assert_eq!(net.engine(n).commit_ids().contains(&c), snap);
+        assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), snap.then_some(&p1));
+        assert_ne!(net.engine(n).get(&t, &k()).unwrap(), Some(s("SECRET")));
+    }
+}
+
+// spec/commits.md §5: a permanent message a snapshot carries, then purged: the snapshot goes with it
+// and a new device sees the tombstone, nothing pending.
+#[test]
+fn a_purge_of_a_snapshotted_message_spec_commits_5() {
+    let Chat { mut net, a, b, n, t, .. } = chat();
+    let c = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let p = purge(&mut net, a, t, c, Retention::default());
+    net.run();
+    net.advance(3_600_000);
+    net.run();
+    net.set_online(n, true);
+    net.run();
+    assert_eq!(pending(&mut net, n), 0);
+    let author = net.tid(b);
+    sees_tombstone(&mut net, n, t, c, p, author);
+}
+
+/// Past its floor and covered by a snapshot: `p`'s own delta is gone.
+fn cover(net: &mut Net, a: usize, t: Tid) {
+    net.advance(ROLE_KEEP_MS + 3_600_000);
+    net.run();
+    net.write(a, t, "later");
+    net.run();
+    let acts = net.sync(a).compact(&t, &k()).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(3_600_000);
+    net.run();
+}
+
+// spec/commits.md §5: an aspect-wide request is lasting only if it dropped a permanent delta: one by an
+// admin stays as its header, one by a writer with no right over what the aspect holds goes.
+#[test]
+fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
+    for admin in [true, false] {
+        let Chat { mut net, host, a, b, n, t, l } = chat();
+        let c = msg(&mut net, a, t, "SECRET", Retention { by: PurgeBy::Admin, ..permanent() });
+        net.run();
+        net.advance(1_000);
+        let by = if admin { a } else { b };
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Aspect { tid: t, ak: k() });
+        m.set(t, &REG, &s("after")).unwrap();
+        let p = net.engine(by).commit(m).unwrap().unwrap();
+        net.run();
+        cover(&mut net, a, t);
+        assert!(!net.engine(a).body_not_dropped(&p, &t, &k()));
+        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::new()] } else { Vec::new() });
+        net.set_online(n, true);
+        net.run();
+        // after a restart too: what it dropped is noted, not walked
+        net.restart(a, 77);
+        net.run();
+        net.advance(3_600_000);
+        net.run();
+        assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::new()] } else { Vec::new() });
+        assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), admin.then_some(&p));
+        assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k()), !admin);
+    }
+}

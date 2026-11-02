@@ -2746,3 +2746,31 @@ fn ownerless_chat_spec_perm_1() {
     }
     assert_eq!(lp.peers[3].engine.role_on(&t), Some(Role::Write));
 }
+
+// spec/commits.md §5: a request names earlier deltas: one stamped before the named commit, as a
+// removed admin's backdated request would be, drops nothing and shows no purge.
+#[test]
+fn a_purge_stamped_before_the_named_commit_names_nothing_spec_commits_5() {
+    let (mut lp, ps) = people(3, 777);
+    let (pa, px, pw) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&t, &pw, &edge_of(Role::Write)).unwrap();
+    spread(&mut lp);
+    let k = osis_base::Ak::new("t:reg.0").unwrap();
+    lp.peers[2].clock.advance(10_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("kept")).unwrap();
+    let c = lp.peers[2].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &REG, &s("forged")).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    assert!(lp.peers[1].engine.header(&p).unwrap().ts < lp.peers[2].engine.header(&c).unwrap().ts);
+    spread(&mut lp);
+    for i in 0..3 {
+        let e = &mut lp.peers[i].engine;
+        assert!(e.body_not_dropped(&c, &t, &k), "peer {i}");
+        assert!(e.purged_on(&t, &k).unwrap().is_empty(), "peer {i}");
+    }
+}
