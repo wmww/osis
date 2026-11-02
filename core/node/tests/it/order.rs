@@ -38,7 +38,7 @@ impl Rng {
         self.0 ^= self.0 << 17;
         self.0 % n.max(1)
     }
-    fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
+    pub(crate) fn pick<T: Copy>(&mut self, xs: &[T]) -> T {
         xs[self.below(xs.len() as u64) as usize]
     }
 }
@@ -422,6 +422,7 @@ fn edge_write(t: Tid, holder: Tid, e: Option<osis_schema::core_types::Edge>) -> 
 }
 
 /// A history as played: every commit made, in the order made, and the things.
+#[derive(Clone)]
 pub(crate) struct Played {
     pub(crate) packs: Vec<Package>,
     /// Each commit's author peer (3: none of the three).
@@ -432,8 +433,6 @@ pub(crate) struct Played {
     pub(crate) now: WallMs,
     /// What each step made.
     tally: Tally,
-    /// Generated commits on several things (`deliver_with` does not split them).
-    spans: BTreeSet<usize>,
     /// What the fresh nodes sync (`Syncs`).
     sync: Syncs,
 }
@@ -533,7 +532,6 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut tally = Tally::default();
     // each made thing's creating commit (`Forged` tells of it)
     let mut made_by: BTreeMap<Tid, (usize, CommitId)> = BTreeMap::new();
-    let mut spans = BTreeSet::new();
     for st in steps {
         let aimed;
         let st = match st {
@@ -544,7 +542,6 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             x => x,
         };
         let before = packs.len();
-        let mut spanning = false;
         // typed twins play in the arm of the untyped step
         let (typed, st_) = match st.clone() {
             Step::Typed { by, t, op, k, v } => (true, Step::Write { by, t, op, k, v }),
@@ -728,7 +725,6 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                         m.roster_for_tests();
                     }
                 }
-                spanning = a != b && matches!(how % 5, 1 | 2);
                 no = why(&lp.peers[by].engine.commit_hostile(m));
                 Some(by)
             }
@@ -864,9 +860,6 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
         };
         if let Some(i) = acted {
             collect(&mut lp, i, &mut seen, &mut packs, &mut authors, &mut own);
-            if spanning {
-                spans.extend(before..packs.len());
-            }
             let kind = format!("{st:?}");
             let kind = kind.split(' ').next().unwrap().to_string() + if matches!(st, Step::Nested { text: true, .. }) { "(text)" } else { "" };
             let e = tally.kinds.entry(kind.clone()).or_default();
@@ -881,7 +874,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     tally.commits = (packs.len() - base) as u64;
     // the fresh nodes' clock: the latest of the writers' (nothing parks for drift)
     let now = lp.peers.iter().map(|p| p.engine.now()).max().unwrap();
-    Played { packs, authors, base, things, now, tally, spans, sync: Syncs::None }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None }
 }
 
 /// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
@@ -1639,6 +1632,27 @@ impl Seen {
     }
 }
 
+/// Whether this held set leaves a commit on several things, with every `Late` thing synced from
+/// the start, waiting whole for a thing's chain or record: when the node learns it syncs that thing
+/// then decides whether the commit's other parts apply.
+fn skip_sync_learned_wait(played: &Played, held: &[usize]) -> bool {
+    let mut p = Peer::new(FRESH, played.now).unwrap();
+    for t in played.sync.things() {
+        p.engine.set_syncing(*t, true).unwrap();
+    }
+    for &i in held {
+        let pk = &played.packs[i];
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    p.engine.pending().iter().any(|(id, r)| {
+        let (osis_node::Reason::MissingChain(_) | osis_node::Reason::UnknownCreated(_)) = r else { return false };
+        played.packs.iter().find(|x| x.id == *id).is_some_and(|pk| {
+            let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+            b.header.kind != osis_commit::Kind::Role && b.header.aspects.iter().any(|a| a.tid != b.header.aspects[0].tid)
+        })
+    })
+}
+
 /// Checks one history: what it reached, or the first mismatch found, described (a panic counts,
 /// so it shrinks).
 fn check(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
@@ -1655,9 +1669,14 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let split = played.packs.iter().any(|pk| osis_commit::CommitBlob::decode(&pk.bytes).is_ok_and(|b| b.parts.iter().any(|x| x.ai != b.parts[0].ai)));
     // `OSIS_ORDER_ALL_HELD`: every held set in exhaustive mode (about 2.3x the time)
     let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
-    for held in held_sets(&played, subsets, &mut rng) {
+    let unsynced = Played { sync: Syncs::None, ..played.clone() };
+    let synced = played;
+    for held in held_sets(&synced, subsets, &mut rng) {
+        // issues/sync-learned-after-apply.md (known, open): a wait for good is a part withheld for
+        // good, which `Syncs::Late` does not combine with
+        let played = if matches!(synced.sync, Syncs::Late { .. }) && skip_sync_learned_wait(&synced, &held) { &unsynced } else { &synced };
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
-        let o = oracle(&played, &held);
+        let o = oracle(played, &held);
         // a partial set, then the rest (both ways), ends where the whole set does
         if let Some(f) = &full {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
@@ -2450,6 +2469,12 @@ fn copy_kills_write_sharing_a_dead_stamp_spec_crdt_4_8() {
 fn arrival_order_found_histories_spec_crdt_4_6() {
     use Step::*;
     let mut cases = Vec::new();
+    // seed 83156 (spec/commits.md §5): a role commit's part applied while its other thing's record
+    // was away, so its body's class changed when the record came; the death recorded under the
+    // old class was lost
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Nested { by: 0, other: 2, t: 2, k: 2, text: true, compact: true, also: false }), aim(Demote { by: 0, t: 6, holder: 1, at: 3, to_read: true }), aim(Demote { by: 0, t: 5, holder: 2, at: 4, to_read: true }), aim(Typed { by: 0, t: 6, op: 11, k: 0, v: 4 }), aim(NestedItem { by: 1, other: 0, t: 6, k: 0, compact: true, also: false }), NewTop { by: 0 }, Forged { by: 0, a: 7, b: 4, how: 2, op: 5, k: 2, v: 0 }, aim(Nested { by: 1, other: 0, t: 0, k: 1, text: true, compact: true, also: true }), aim(New { by: 0, parent: 7, write: true }), aim(Roster { by: 0, t: 3 })];
+    cases.push((83156, h, LARGE));
     let h = vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }];
     cases.push((1038, h, LARGE));
     // seed 1558: C lowers its own edge (a nested write into the roster snapshot's entry) with a

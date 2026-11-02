@@ -124,6 +124,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `retention::deaths_never_early_random_large` | osis-node | `OSIS_STRAYS_*` (0..200) | 16 seeds 0.4 s at load 40 |
 | `retention::undo_never_outlives_expiry_random_large` | osis-node | `OSIS_UNDOEXP_*` (0..200) | 16 seeds 0.7 s at load 40 |
 | `ephemeral::random_window_{converges,inflight,one_capped_host}_large`, `random_churn_converges_large` | osis-node | `OSIS_EPH_*` (0..200) | see Tiers |
+| `parts::parts_differential_large_spec_commits_4` | osis-node `it` | `OSIS_PARTS_START`, `OSIS_PARTS_SEEDS` (1..151) | Every part split by aspect in random orders, fixed sync and hidden sets; rosters under a sync set changing during delivery. 60 seeds 44 s |
 | `rotation::tests::forked_reseals_settle_large` | osis-engine lib | `OSIS_FORKS_*` (0..100) | 100 seeds 58 s at load 34; 1000 seeds 453 s at load 18-37 (was 2431 s one at a time) |
 | `rotation::tests::forks_with_departures_settle_large` | osis-engine lib | `OSIS_DEPART_*` (0..100) | 100 seeds 122 s at load 36 |
 | `rotation::tests::withheld_departures_leak_nothing_large` | osis-engine lib | `OSIS_WITHHELD_*` (0..100; each seed twice, with and without grants and `until`s) | 300 seeds 154 s at load 16 (one variant) |

@@ -636,3 +636,43 @@ fn expired_entry_key_alike_repro_spec_crdt_4_7() {
     }
     assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
 }
+
+// spec/commits.md §4: a commit's parts on two things, both records away: kept (a first sync of
+// such commits costs no examination per applied commit), and either record's arrival wakes it.
+#[test]
+fn parts_waiting_on_two_records_are_kept_spec_commits_4() {
+    for first in [0, 1] {
+        let mut lp = net(2, 28);
+        let k = new_thing(&mut lp, 0);
+        sync(&mut lp, 0, 1);
+        let known: std::collections::BTreeSet<_> = packages(&mut lp, 0).iter().map(|p| p.id).collect();
+        let things = [new_thing(&mut lp, 0), new_thing(&mut lp, 0)];
+        let records: Vec<Vec<_>> = {
+            let made: Vec<_> = packages(&mut lp, 0).into_iter().filter(|p| !known.contains(&p.id)).collect();
+            things.iter().map(|t| made.iter().filter(|p| lp.peers[0].engine.header(&p.id).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t))).cloned().collect()).collect()
+        };
+        let mut m = Mutation::new();
+        m.set(things[0], &REG, &s("a")).unwrap();
+        m.set(things[1], &REG, &s("b")).unwrap();
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap();
+        let e = &mut lp.peers[1].engine;
+        let before = e.waits_bytes();
+        assert!(matches!(e.ingest(&pk.bytes, pk.blobs.clone()).unwrap(), Ingested::Pending(..)));
+        assert!(e.waits_bytes() > before, "kept");
+        for r in &records[first] {
+            e.ingest(&r.bytes, r.blobs.clone()).unwrap();
+        }
+        // the debug check examines what is left out, and the arrived record's part applies
+        e.tick().unwrap();
+        assert_eq!(e.get(&things[first], &ak("t:reg.0")).unwrap(), Some(s(["a", "b"][first])));
+        assert_eq!(e.get(&things[1 - first], &ak("t:reg.0")).unwrap(), None);
+        assert!(e.pending().iter().any(|x| x.0 == id));
+        for r in &records[1 - first] {
+            e.ingest(&r.bytes, r.blobs.clone()).unwrap();
+        }
+        e.tick().unwrap();
+        assert_eq!(e.get(&things[1 - first], &ak("t:reg.0")).unwrap(), Some(s(["a", "b"][1 - first])));
+        assert!(e.pending().is_empty(), "{:?} {k:?}", e.pending());
+    }
+}

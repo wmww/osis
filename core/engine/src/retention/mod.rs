@@ -6,8 +6,9 @@
 //! test. node-sync judges what to delete at hosts and what to re-snapshot from the commit
 //! index (dropped parts, `covered`), so no queue is kept here.
 //!
-//! A body here is one projection class of a commit (`body_class`): its deaths are kept under
-//! the class's ID, and a part drops with the rest of its class.
+//! A body here is one projection class of a commit (`body_class`): its deaths are kept per part,
+//! read over the class, and a part drops with the rest of its class. The class depends on what is
+//! held (`reader`), so nothing kept may be keyed by it.
 
 use crate::engine::records::{self, Rd, Wr};
 use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
@@ -148,16 +149,16 @@ fn reader(core: &Core, tid: &Tid) -> Tid {
 }
 
 /// The body holding aspect `ai` of a commit (spec/commits.md §5: one projection class, readable
-/// subset and retention class) and the aspects it holds. Its ID keys the death records.
+/// subset and retention class) and the aspects it holds. The ID (of the commit, not the class) keys
+/// a part's death record with its aspect: a class moves as records and keys arrive (`reader`), a
+/// death record must not.
 pub(crate) fn body_class(core: &Core, h: &Header, c: &CommitId, ai: usize) -> (BlobId, Vec<usize>) {
     let key = |a: &osis_commit::AspectEntry| (reader(core, &a.tid), a.retention, a.expires, a.keys.clone());
     let Some(me) = h.aspects.get(ai) else { return (BlobId(c.0), vec![ai]) };
     let k = key(me);
     let holders: Vec<usize> = h.aspects.iter().enumerate().filter(|(_, a)| key(a) == k).map(|(i, _)| i).collect();
-    let first = holders.first().copied().unwrap_or(ai) as u32;
     let mut hs = osis_base::hash::Hasher::new();
     hs.update(&c.0);
-    hs.update(&first.to_be_bytes());
     (BlobId(hs.finalize()), holders)
 }
 
