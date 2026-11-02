@@ -25,6 +25,9 @@ pub(crate) const LOST_DUE: &[u8] = b"l/";
 /// values that decided it out of the walk.
 const KEPT_COPY: &[u8] = b"K/";
 
+/// The link keys this node keeps reading as (`Engine::keep_bearer`): `B/` + tid, no value.
+const BEARERS: &[u8] = b"B/";
+
 /// Adds `tids` to the work list, due now.
 pub(crate) fn mark_lost_due(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) -> Result<()> {
     for t in tids {
@@ -57,6 +60,12 @@ pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
         Ok(())
     })?;
     tx.core.ix.lost_due.extend(v);
+    let mut b = Vec::new();
+    tx.scan(BEARERS, |k, _| {
+        b.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("bearer record"))?));
+        Ok(())
+    })?;
+    tx.core.ix.bearers.extend(b);
     Ok(())
 }
 
@@ -84,10 +93,11 @@ fn take_due(tx: &mut Tx<'_>, all: bool) -> Result<BTreeSet<Tid>> {
     Ok(due)
 }
 
-/// Whether the node or a held key actor has a role on `a` now (any path, `until` honoured).
+/// Whether the node, a held key actor or a link key it keeps reading as has a role on `a` now
+/// (any path, `until` honoured).
 fn readable(core: &Core, a: &Tid) -> bool {
     let node = core.id.tid();
-    core.role_now(&node, a).is_some() || core.key_actors.keys().any(|k| core.role_now(k, a).is_some())
+    core.role_now(&node, a).is_some() || core.key_actors.keys().chain(core.ix.bearers.iter()).any(|k| core.role_now(k, a).is_some())
 }
 
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
@@ -484,6 +494,17 @@ impl Engine {
                 }
             }
             Ok(out)
+        })
+    }
+
+    /// Keeps reading as link key `l`, whose seed this node forgets (spec/permissions.md §9, Bearer
+    /// use: a contact card): what `l` reads stays held and followed for as long as `l` holds its
+    /// role, and goes with it (`l`'s edge removed: the link ended).
+    pub fn keep_bearer(&mut self, l: &Tid) -> Result<()> {
+        self.run(|tx| {
+            tx.txn.put_local(&[BEARERS, l.as_bytes()].concat(), &[], osis_store::Shred::No)?;
+            tx.core.ix.bearers.insert(*l);
+            Ok(())
         })
     }
 

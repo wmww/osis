@@ -64,6 +64,50 @@ fn refused_inbox_deposit_retried_spec_sync_3() {
     assert_eq!((e.perm_digest(false), held(e.index_digest()), e.edges_rows().unwrap()), (perm, index, rows), "rebuilt");
 }
 
+// spec/sync.md §3: an invite naming a label its sender is registering at a connected host waits for that registration, so the invitee never finds the host without it (a new chat's first invite): at every round the blob at the inbox's host implies the label there
+#[test]
+fn invite_goes_after_the_labels_registration_spec_sync_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.address(host);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.pair(b, a);
+    net.run();
+    let inbox = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
+    let held = net.host_ids(host, &inbox);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice.person);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    let (l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let mut acts = net.sync(a).carry_out(done).unwrap();
+    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    acts.extend(net.sync(a).carry_out(done).unwrap());
+    net.actions(a, acts);
+    let mut came = false;
+    for _ in 0..1000 {
+        net.round();
+        came = net.host_ids(host, &inbox).iter().any(|b| !held.contains(b));
+        assert!(!came || net.labels_at(host).contains(&l), "the invite is at the host before the label it names");
+        if came {
+            break;
+        }
+    }
+    assert!(came);
+    net.run();
+    assert!(net.engine(b).role_on(&g).is_some() || net.sync(b).invite_requests().unwrap().len() == 1);
+}
+
 /// Nodes a (Alice's device) and b (Bob's), persons on one host, Bob's device cut from it
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
 /// an item in it. Returns (net, a, b, bob's person, g, the item).

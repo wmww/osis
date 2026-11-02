@@ -444,6 +444,9 @@ indexes! {
     pub pending: JMap<CommitId, Reason>,
     /// What the node was asked to sync (`Core::syncs` adds what these groups hold).
     pub syncing: JSet<Tid>,
+    /// Link keys this node keeps reading as, their seed forgotten (`Engine::keep_bearer`,
+    /// spec/permissions.md §9, Bearer use).
+    pub bearers: JSet<Tid>,
     pub void: JSet<CommitId>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
     pub valueless: JMap<(Tid, Ak), Vec<Owned>>,

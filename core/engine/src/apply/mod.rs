@@ -250,8 +250,9 @@ pub(super) fn still_gated(tx: &mut Tx<'_>, h: &Header, id: &CommitId, gates: &[G
     Ok(!counted)
 }
 
-/// Whether a missing delta of aspect `ai` counts as held: expired, past keep at most, purged or
-/// listed by a held snapshot of any validity (spec/commits.md §4).
+/// Whether a missing delta of aspect `ai` counts as held: expired, past keep at most, purged,
+/// listed by a held snapshot of any validity, or its author's removal leaves it invalid
+/// (spec/commits.md §4).
 fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<bool> {
     let now = tx.now().0;
     let Some(a) = h.aspects.get(ai) else { return Ok(true) };
@@ -259,7 +260,7 @@ fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<
     if a.ak.lifetime() != class_of(h) {
         return Ok(true);
     }
-    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::known_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai))
+    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::known_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai) || validity::removed_author(tx.core, h, id, a))
 }
 
 /// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be

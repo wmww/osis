@@ -80,12 +80,15 @@ pub struct Write<'d> {
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
+    /// `Osis::share_into`: an edge follows, or the caller asked to place without one; no report
+    /// that holders may not read what this places.
+    pub(crate) sharing: bool,
 }
 
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None, sharing: false }
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
@@ -238,7 +241,9 @@ impl<'d> Write<'d> {
     /// reaches no synced group while `g`'s own aspects sync (`g` is an item of a synced group,
     /// not a subgroup of one), the commit fails `Invalid` before anything applies: add `g` as a
     /// subgroup too. A placement only in groups that do not sync at all (device-local data) is
-    /// allowed and reported by a `NotSynced` diagnostic.
+    /// allowed and reported by a `NotSynced` diagnostic, as is a placement in a synced group
+    /// whose holders may not read `tid` (owned by someone else, with no edge: it does not reach
+    /// them; own it by the group, or `Osis::share_into`).
     pub fn place(&mut self, tid: Tid, g: Tid) -> Result<()> {
         self.place_expiring(tid, g, None)
     }
@@ -329,6 +334,7 @@ impl<'d> Write<'d> {
                 return Err(Error::UnknownThing { tid: t });
             }
             let actor = db.acting;
+            let sharing = self.sharing;
             let Built { mut m, placed, unplaced } = self.build(&mut Reader { e, limit, actor })?;
             // whatever actor the batch names, an acting handle's write is that actor's alone
             if let Some(a) = actor {
@@ -337,7 +343,7 @@ impl<'d> Write<'d> {
             let r = match e.write(m)? {
                 Some(w) => {
                     if w.id.commit().is_some() {
-                        not_synced(e, &placed);
+                        not_synced(e, &placed, sharing);
                     }
                     Some(Committed { id: w.id, ts: w.ts })
                 }
@@ -548,8 +554,8 @@ fn op_links(p: &PathOp) -> bool {
 /// A batch's engine mutation and the placements its commit acts on.
 struct Built {
     m: Mutation,
-    /// Things placed into groups (the `NotSynced` check).
-    placed: Vec<Tid>,
+    /// Things placed into groups and the group (the `NotSynced` check).
+    placed: Vec<(Tid, Tid)>,
     /// (thing, group) placements and subgroup edges removed: their tied edges go after the
     /// commit where that is a self-removal (`Osis::untie_now`).
     unplaced: Vec<(Tid, Tid)>,
@@ -560,7 +566,7 @@ impl Built {
         self.m.op(g, gk, group_op(items, member, add))?;
         if items && add {
             self.m.require_synced(member, g);
-            self.placed.push(member);
+            self.placed.push((member, g));
         }
         if !add {
             self.unplaced.push((member, g));
@@ -571,16 +577,24 @@ impl Built {
 
 /// Reports things placed only where no synced group holds them (spec/requirements.md, Offline
 /// and network): durable closures only, what sync carries.
-fn not_synced(e: &mut osis_node::Engine, placed: &[Tid]) {
+fn not_synced(e: &mut osis_node::Engine, placed: &[(Tid, Tid)], sharing: bool) {
     if placed.is_empty() {
         return;
     }
     let labeled = e.labeled_groups();
-    for t in placed {
-        if e.ephemeral_thing(t).is_some() || labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g)) {
+    for (t, g) in placed {
+        if e.ephemeral_thing(t).is_some() {
             continue;
         }
-        e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
+        // entitlement (spec/sync.md §3): the group's holders read what it owns or was given
+        if labeled.contains(g) && !e.may_read(&e.group_actor(g), t) {
+            if sharing {
+                continue;
+            }
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t, *g], commit: None, peer: None, detail: "placed in a group whose holders may not read it: it does not reach them (own it by the group, or share_into)".into() });
+        } else if !(labeled.contains(t) || e.durable_groups_of(t).iter().any(|g| labeled.contains(g))) {
+            e.report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::NotSynced, tids: vec![*t], commit: None, peer: None, detail: "placed only in groups no synced group holds: it stays on this device".into() });
+        }
     }
 }
 
