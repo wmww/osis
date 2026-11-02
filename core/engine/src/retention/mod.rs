@@ -570,7 +570,9 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid,
 /// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
 /// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
 /// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`expire`). A header whose aspects are not resolved yet is timed once they are.
+/// same at T (`expire`). A header whose aspects are not resolved yet is timed once they are. The
+/// commit's other parts apply when they would have with the part held: a commit left with no
+/// part waits for its things like one with a held part (`apply::examine`).
 pub(crate) fn pending_expiry(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header) -> Result<()> {
     let now = tx.now().0;
     let ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
@@ -580,20 +582,10 @@ pub(crate) fn pending_expiry(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_com
         if t <= now {
             blob.parts.retain(|p| p.ai != ai);
             strip_pending(tx, id, ai)?;
-            flag_expired(tx, h)?;
+            suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
         } else {
             tx.put_timer(t, id, ai, T_EXPIRY)?;
         }
-    }
-    Ok(())
-}
-
-/// Flags every aspect of a commit a part of which went at its expiry while pending: that part's
-/// non-value writes never join here, and its other parts may apply at another time than at a
-/// node that applied the commit before T.
-fn flag_expired(tx: &mut Tx<'_>, h: &Header) -> Result<()> {
-    for a in &h.aspects {
-        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
     }
     Ok(())
 }
@@ -615,9 +607,8 @@ fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
     tx.txn.put_pending(c, osis_store::PendingKind::Pending, &blob.encode())?;
     // examined again: what it waits for may have changed
     tx.core.waits.pended(c);
-    match tx.core.ix.commits.get(c).map(|m| m.header.clone()) {
-        Some(h) => flag_expired(tx, &h)?,
-        None => flag_expired(tx, &blob.header)?,
+    if let Some(a) = blob.header.aspects.get(ai) {
+        suspect::raise(tx, &a.tid, &a.ak, suspect::Why::PendingExpiry)?;
     }
     Ok(())
 }

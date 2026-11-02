@@ -486,7 +486,7 @@ fn rules() -> Vec<Scenario> {
         Scenario {
             name: "keep-at-most finality",
             spec: "spec/commits.md §5",
-            source: "hand-picked: keep at most 0; W1 by 1, W2 by 2 kills it, 2 is removed (W2 invalid); as made W1 drops at W2 and stays dropped, reversed W1 stays",
+            source: "hand-picked: keep at most 0; W1 by 1, W2 by 2 kills it, 2 is removed (W2 invalid); as made W1 drops at W2 (it joins again when a copy comes), reversed W1 stays",
             steps: vec![Write { by: 1, t: 0, op: 18, k: 0, v: 1 }, tick.clone(), Write { by: 2, t: 0, op: 18, k: 0, v: 2 }, tick.clone(), Edge { by: 0, t: 0, holder: 2, role: None }],
             orders: None,
         },

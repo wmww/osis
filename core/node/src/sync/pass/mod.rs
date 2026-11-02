@@ -1743,7 +1743,8 @@ impl SyncEngine {
     }
 
     /// A `seen.0` commit on this node reporting `suspect` (spec/permissions.md §4): reused
-    /// within the interval while it reports the same.
+    /// within the interval, whatever it reports (at most one heartbeat per interval; a flag
+    /// raised since waits for the next).
     pub(crate) fn heartbeat_commit(&mut self, stranded: bool, suspect: BTreeSet<ct::Suspect>) -> Result<Option<CommitId>> {
         let me = self.engine.tid();
         let now = self.now();
@@ -1751,7 +1752,7 @@ impl SyncEngine {
             && let Some(c) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
             && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
-            && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded && s.suspect == suspect)
+            && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
         {
             return Ok(Some(c));
         }

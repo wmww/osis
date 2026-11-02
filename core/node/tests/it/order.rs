@@ -20,7 +20,7 @@ use osis_base::testenv::{caught, par_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
-use osis_node::engine::IndexDigest;
+use osis_node::engine::{IndexDigest, IndexField};
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
 use osis_schema::{Bound, Codec, PurgeBy, Retention};
@@ -1217,8 +1217,11 @@ fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
 /// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
 fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     // a part held pending at its expiry counts as never received at that node (spec/commits.md
-    // §5): what such an aspect reads, its bodies and its commits' index lines, may differ
-    // (repaired by a writer's snapshot, spec/sync.md §7)
+    // §5; owner: nodes may read differently when a part expired before a node could apply it):
+    // what such an aspect reads, its bodies, and the index lines of its commits (that part is
+    // dropped at a node that applied it, missing at one that did not) may differ, repaired by a
+    // writer's snapshot (spec/sync.md §7). Nothing else: whether a commit is applied or pending,
+    // and every other aspect and commit, must agree.
     let expired: BTreeSet<(String, String)> = want.expired_pending.union(&got.expired_pending).cloned().collect();
     let ((mut wf, _), (mut gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
     let all: BTreeSet<BodyKey> = wf.keys().chain(gf.keys()).cloned().collect();
@@ -1228,19 +1231,24 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
         let k = wf.keys().find(|k| !gf.contains_key(*k)).or_else(|| gf.keys().find(|k| !wf.contains_key(*k)));
         return Some(format!("body {k:?} known at one node only"));
     }
-    let on_expired = |id: &str| all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())));
     if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx) {
         return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
     }
-    // a commit with a part dropped at its expiry while pending may apply at another time at
-    // each node, so the index is compared only where no part was (`expired` empty)
+    let on_expired = |c: &CommitId| {
+        let id = format!("{c:?}");
+        all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())))
+    };
     match (&want.index, &got.index) {
-        (Some(w), Some(g)) if expired.is_empty() => {
-            if let Some(f) = w.diff(g).into_iter().next() {
+        (Some(w), Some(g)) => {
+            let exempt = |f: &IndexField| match f {
+                IndexField::Commit(c) | IndexField::Snapshots(c) | IndexField::DroppedSnapshots(c) | IndexField::Carried(c) => on_expired(c),
+                IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
+            };
+            if let Some(f) = w.diff(g).into_iter().find(|f| !exempt(f)) {
                 return Some(format!("index {f:?}:\n  want {}\n  got  {}", w.show(&f).unwrap_or("<none>".into()), g.show(&f).unwrap_or("<none>".into())));
             }
         }
-        (Some(_), Some(_)) | (None, None) => {}
+        (None, None) => {}
         _ => return Some("index judged at one node only".into()),
     }
     for ((name, x), (_, y)) in want.parts.iter().zip(&got.parts) {
@@ -1248,13 +1256,6 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
             continue;
         }
         let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
-        if *name == "pending" {
-            let rest = |ls: &[&str]| -> Vec<String> { ls.iter().filter(|l| !on_expired(l.split(' ').next().unwrap_or(""))).map(|l| l.to_string()).collect() };
-            if rest(&xl) != rest(&yl) {
-                return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
-            }
-            continue;
-        }
         if *name == "reads" || *name == "states" {
             // keyed by thing and aspect: one may lack an aspect the other shows
             let keyed = |ls: &[&str]| -> BTreeMap<(String, String), String> {
@@ -3127,4 +3128,41 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
     let (made, rev) = (map(&held), map(&reversed));
     assert!(format!("{made:?}").contains("k1"), "the nested writes' own delta keeps them keyed");
     assert_eq!(made, rev);
+}
+
+
+// spec/commits.md §4 (a commit no part of which is held waits whole for its things, synced or
+// not), §5 (a part pending at its expiry counts as never received): order seeds 1046 and 1007
+// (shrunk), with the node syncing things from a point of each delivery. The expiring part arrives
+// before its thing's creation record (never held) and past T, so it goes; the commit left with no
+// part pends on the record in every order, instead of applying header-only where the node did
+// not sync the thing when it came and pending where it did (seed 1007: its other part arrives
+// late and waits with it).
+#[test]
+fn partless_commit_pends_on_its_things_alike_spec_commits_4() {
+    use Step::*;
+    let h = vec![Aim(Box::new(New { by: 0, parent: 6, write: true })), Aim(Box::new(Edge { by: 2, t: 4, holder: 2, role: Some(Role::Write) })), Aim(Box::new(New { by: 2, parent: 1, write: false })), Aim(Box::new(Typed { by: 0, t: 0, op: 22, k: 2, v: 3 })), Aim(Box::new(Nested { by: 1, other: 2, t: 1, k: 2, text: true, compact: true, also: true })), Send { from: 2, to: 1, back: 1 }, Aim(Box::new(NestedItem { by: 0, other: 1, t: 0, k: 0, compact: true, also: false })), Aim(Box::new(Roster { by: 0, t: 4 })), Aim(Box::new(Nested { by: 2, other: 0, t: 5, k: 2, text: true, compact: true, also: false })), Aim(Box::new(Typed { by: 2, t: 4, op: 22, k: 1, v: 6 })), Aim(Box::new(Typed { by: 2, t: 2, op: 0, k: 0, v: 0 })), Aim(Box::new(Typed { by: 1, t: 7, op: 12, k: 1, v: 4 })), Aim(Box::new(Compact { by: 2, t: 2, op: 11 })), Aim(Box::new(Undo { by: 1, back: 2 })), Aim(Box::new(Typed { by: 1, t: 5, op: 21, k: 2, v: 4 })), Aim(Box::new(Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) })), Aim(Box::new(Typed { by: 1, t: 3, op: 9, k: 1, v: 0 })), Aim(Box::new(NestedItem { by: 1, other: 2, t: 1, k: 1, compact: true, also: true })), Sync { from: 1, to: 2 }, Advance { who: None, ms: 4863304 }, Aim(Box::new(Demote { by: 0, t: 6, holder: 2, at: 3, to_read: true })), Aim(Box::new(New { by: 0, parent: 0, write: false })), Aim(Box::new(Leave { by: 1, t: 7 })), Aim(Box::new(Typed { by: 1, t: 4, op: 5, k: 0, v: 1 })), Aim(Box::new(Typed { by: 1, t: 5, op: 13, k: 1, v: 8 })), Forged { by: 1, a: 3, b: 6, how: 3, op: 20, k: 0, v: 5 }, Aim(Box::new(Typed { by: 0, t: 5, op: 18, k: 1, v: 9 })), Aim(Box::new(Typed { by: 1, t: 1, op: 26, k: 0, v: 0 }))];
+    let played = with_syncs(play(1046, &h), 1046);
+    assert!(matches!(played.sync, Syncs::Late { .. }), "{:?}", played.sync);
+    let held: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 15, 16, 17, 18, 20, 23, 25, 26, 27, 28, 29, 32, 33, 34, 37, 38];
+    let rev: Vec<usize> = held.iter().rev().copied().collect();
+    let brief = (0..played.packs.len()).find(|&i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.ak.as_str() == "t:brief.0" && a.expires.is_some())).unwrap();
+    let c = played.packs[brief].id;
+    let (mut w, mut g) = (deliver(&played, &held), deliver(&played, &rev));
+    for p in [&mut w, &mut g] {
+        assert!(matches!(p.engine.pending().iter().find(|x| x.0 == c), Some((_, osis_node::Reason::UnknownCreated(_)))), "pending on its thing's record");
+        assert!(!p.engine.commit_ids().contains(&c), "not applied header-only");
+    }
+    let flips = |_: &str, _: &str| false;
+    assert_eq!(alike_exchanged(&played, &judged(&mut w, &played), &held, &judged(&mut g, &played), &rev, None, &flips), None);
+
+    let h = vec![Aim(Box::new(Compact { by: 0, t: 6, op: 11 })), Aim(Box::new(Typed { by: 1, t: 4, op: 24, k: 2, v: 2 })), Forged { by: 0, a: 3, b: 6, how: 4, op: 19, k: 2, v: 8 }, Aim(Box::new(Roster { by: 0, t: 5 })), Aim(Box::new(Nested { by: 1, other: 2, t: 5, k: 0, text: true, compact: true, also: true })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 2, to_read: false })), Aim(Box::new(Typed { by: 1, t: 6, op: 15, k: 1, v: 2 })), Aim(Box::new(Compact { by: 0, t: 0, op: 8 })), NewTop { by: 0 }, Aim(Box::new(Typed { by: 2, t: 6, op: 10, k: 1, v: 2 })), Forged { by: 2, a: 0, b: 3, how: 0, op: 14, k: 0, v: 8 }, Aim(Box::new(Roster { by: 0, t: 1 })), NewTop { by: 2 }, Aim(Box::new(Write { by: 1, t: 6, op: 28, k: 1, v: 0 })), Aim(Box::new(Typed { by: 2, t: 0, op: 27, k: 2, v: 1 })), Advance { who: None, ms: 3833836 }, Aim(Box::new(Nested { by: 0, other: 2, t: 1, k: 2, text: true, compact: false, also: false })), Aim(Box::new(Compact { by: 0, t: 1, op: 24 })), Aim(Box::new(Write { by: 2, t: 3, op: 28, k: 2, v: 6 })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 1, text: false, compact: false, also: false })), Aim(Box::new(Typed { by: 0, t: 3, op: 22, k: 2, v: 2 }))];
+    let played = with_syncs(play(1007, &h), 1007);
+    let held: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 20, 21, 23, 24, 27, 28, 29, 30];
+    let rev: Vec<usize> = held.iter().rev().copied().collect();
+    let want = judged(&mut deliver(&played, &held), &played);
+    // the reversed order with its parts split (the expiring part first, alone)
+    let rng = Rng(1007);
+    let mut g = deliver_split(&played, &rev, &mut rng.clone());
+    assert_eq!(alike_exchanged(&played, &want, &held, &judged(&mut g, &played), &rev, Some(rng), &flips), None);
 }
