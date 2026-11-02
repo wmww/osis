@@ -25,6 +25,7 @@ mod metadata;
 mod negative;
 mod order;
 mod parts;
+mod parts_relay;
 mod pass_marks;
 mod peers;
 mod peers_review;

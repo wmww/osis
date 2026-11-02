@@ -32,18 +32,6 @@ impl Engine {
         Ok(r?.zip(forged))
     }
 
-    /// The bytes of the unsettled copies kept for pending commit `id` (`apply::copies`).
-    #[doc(hidden)]
-    pub fn unsettled_copies_bytes(&mut self, id: &CommitId) -> Result<usize> {
-        let id = *id;
-        self.run(|tx| Ok(tx.txn.get_local(&[super::records::COPIES, &id.0[..]].concat())?.map_or(0, |b| b.len())))
-    }
-
-    #[doc(hidden)]
-    pub fn has_unsettled_copies(&mut self, id: &CommitId) -> Result<bool> {
-        Ok(self.unsettled_copies_bytes(id)? > 0)
-    }
-
     /// Stops `reexamine` here, so what pends stays pending whatever else happens. For what a
     /// pending commit does to the rest of the node: the only wait a role commit's one part has
     /// once its author and thing are known is the clock's (spec/commits.md §4).
