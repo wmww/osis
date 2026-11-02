@@ -1566,8 +1566,8 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         feed(&mut lp, i, seq);
         assert_eq!(look(&mut lp, i), want, "order {k}");
     }
-    // the map and text parts never come: alike either way too, the commit waiting for them on its
-    // thing, so read as by a node without it
+    // the map and text parts never come: alike either way too: the removal leaves them invalid, so
+    // nothing waits for them (spec/commits.md §4) and Carol's map write goes with the commit
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &partial], [&partial, &nk.bytes]].iter().enumerate() {
         let i = lp.peers.len();
@@ -1577,7 +1577,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         seen.push(look(&mut lp, i));
     }
     assert_eq!(seen[0], seen[1], "partial");
-    assert!(seen[0][0].contains("late"), "partial: {}", seen[0][0]);
+    assert!(!seen[0][0].contains("late"), "partial: {}", seen[0][0]);
     // none of its parts on the thing comes, the one on another thing does: the commit is applied
     // from its header's word on the thing, alike either way, Carol's map write going with it
     let mut seen = Vec::new();

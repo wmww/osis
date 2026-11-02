@@ -247,8 +247,8 @@ pub(crate) enum Phase {
     Open,
     /// No key opens it here.
     Failed,
-    /// The host refused registering it for now (not admitted, full, the rate): opened again
-    /// from scratch at `retry_at` (raw ms).
+    /// The host refused registering it for now (not admitted, full, the rate) or does not hold it
+    /// and this node cannot register it: opened again from scratch at `retry_at` (raw ms).
     Refused { retry_at: u64 },
 }
 
@@ -1549,7 +1549,7 @@ impl SyncEngine {
             for (g, l, hosts) in &labels {
                 // failed under another thing (a hint's sender named this label under it): no Open
                 // is in flight, so it starts again under the thing that wants it now
-                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || x.phase != Phase::Failed);
+                let known = self.conns.get(&conn).and_then(|c| c.labels.get(l)).is_some_and(|x| x.group == *g || !matches!(x.phase, Phase::Failed | Phase::Refused { .. }));
                 if !known && hosts.contains(&host) {
                     self.start_label(conn, *g, *l, out)?;
                 }
@@ -1638,9 +1638,7 @@ impl SyncEngine {
                 }
                 continue;
             }
-            // a label not reconciled since a cap refusal made room (`eph_forget`) syncs again
-            let unreconciled = self.conns.get(&conn).is_some_and(|c| !self.eph.reconciled.contains(&(c.host, label)) && self.state.cursors.contains_key(&(c.host, label)));
-            if !self.cfg.subscribe || unreconciled || self.lc(conn, &label).is_some_and(|l| !l.synced) {
+            if self.needs_sync(conn, &label) {
                 self.sync_label(conn, label, out)?;
                 self.eph_retry_deletes(conn, label, out)?;
             } else if let Some(l) = self.lc_mut(conn, &label) {
@@ -1742,7 +1740,38 @@ impl SyncEngine {
         out
     }
 
-    /// Asks every connection to sync every open label now.
+    /// Whether open label `label` on `conn` needs a Sync to catch up: without a subscription, not
+    /// synced since it opened, or not reconciled since a cap refusal made room (`eph_forget`).
+    /// Otherwise pushes bring what the host gets.
+    fn needs_sync(&self, conn: ConnId, label: &LabelId) -> bool {
+        let Some(c) = self.conns.get(&conn) else { return false };
+        let Some(l) = c.labels.get(label) else { return false };
+        let unreconciled = !self.eph.reconciled.contains(&(c.host, *label)) && self.state.cursors.contains_key(&(c.host, *label));
+        !self.cfg.subscribe || unreconciled || !l.synced
+    }
+
+    /// Catches up at the caller's word (an app's refresh, at any rate): a label that needs it syncs,
+    /// a live one only judges again. A Sync of every label costs a round trip per two (each may
+    /// answer `MAX_MESSAGE`, `osis_proto::client::WINDOW`) and shows `Syncing`, so a caller polling
+    /// faster than that kept a node `Syncing` for good and every `wait_synced` waiting.
+    pub fn refresh(&mut self) -> Vec<Action> {
+        let mut out = Vec::new();
+        let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && !l.receipts).map(move |(lid, _)| (*id, *lid))).collect();
+        for (conn, label) in open {
+            if self.needs_sync(conn, &label) {
+                if let Err(e) = self.sync_label(conn, label, &mut out) {
+                    self.diag(format!("sync: {e}"));
+                }
+            } else if let Some(l) = self.lc_mut(conn, &label) {
+                l.dirty = true;
+            }
+        }
+        out.extend(self.handle(Event::Local));
+        out
+    }
+
+    /// Syncs every open label at every connection now, live or not: when this returns' replies are
+    /// in, this node has heard all the hosts had (`wait_synced`, a demotion's pre-sync).
     pub fn sync_now(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
         let todo: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing).map(move |(lid, _)| (*id, *lid))).collect();

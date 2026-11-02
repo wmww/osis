@@ -804,6 +804,18 @@ impl<'a> Judge<'a> {
     }
 }
 
+/// Whether an explicit demotion leaves `a`, a delta of commit `id` not held here, invalid: judged
+/// from the header alone, it would join as nothing, and its author, cut from the label, may never
+/// place it, so a commit must not wait for it (spec/commits.md §4). A re-grant makes it valid
+/// again: it joins late if it comes. A delta invalid for want of any demotion is no such case: its
+/// edge may be on its way.
+pub(crate) fn removed_author(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
+    let Some(tl) = core.timelines.get(&a.tid) else { return false };
+    let required = if h.kind.is_compaction() { crate::engine::write::snapshot_role(a.ak.as_str()) } else { required_role(a.ak.as_str()) };
+    let point = Point { ts: h.ts, node: h.author, commit: *id };
+    matches!(tl.delta_valid(point, &a.tid, required), Validity::Invalid { by: Some(_) })
+}
+
 /// `part_valid` of a content part on its thing's timeline `tl`.
 fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai: usize, a: &osis_commit::AspectEntry) -> bool {
     let ak = a.ak.as_str();

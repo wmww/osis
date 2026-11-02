@@ -92,7 +92,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears |
 | `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and placement (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
-| registration refused for now: back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | re-registers every tick / a label the host admits later never syncs on that connection |
+| registration refused for now, or a label unknown at a host with nothing to register (an invitee ahead of the label): back-off `retry_ms` doubling per refusal in a row on a connection (an open resets it), at most `resync_ms` (`open.rs` `refused_for_now`) | M (existing knobs) | opens every tick / a label the host admits or gets later never syncs on that connection |
 | `MAX_ROUNDS` 16 | M (the rest opens at the next pass: `refetch`) | |
 | `SyncEngine::redeliver` visits per commit per round, 1 + its entries | R (past it the name waits for the next step; 0 would look at nothing, infinity spins should a name's invariant fail) | one look per copy |
 | `MAX_NOTIFY` 8 | M (the rest goes at the next `handle`) | |

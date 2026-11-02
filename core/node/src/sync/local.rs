@@ -427,6 +427,18 @@ impl SyncEngine {
         }
     }
 
+    /// Whether inbox delivery `d` names a label this node is still opening (so maybe registering)
+    /// at a connected host: its recipient would look for the label before it is there, and try
+    /// again only after a back-off (a new chat's first invite). Ends with the reply on a live
+    /// connection, and no connection holds nothing back: spec/sync.md §3.
+    fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
+        let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
+        let labels = self.labels();
+        labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
+            self.conns.values().filter(|c| c.session.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).any(|c| c.labels.get(&l.id).is_none_or(|x| matches!(x.phase, Phase::Opening | Phase::Registering)))
+        })
+    }
+
     /// Sends queued deposits on connections to their hosts (no open needed), and logs those
     /// for labels synced with nobody here.
     pub(crate) fn send_outbox(&mut self, out: &mut Vec<Action>) -> Result<()> {
@@ -443,6 +455,10 @@ impl SyncEngine {
             .filter_map(|(k, _)| ready.iter().find(|(_, s)| *s == k.0).map(|(c, _)| (*k, *c)))
             .collect();
         for (k, conn) in due {
+            let Some(o) = self.state.outbox.get(&k) else { continue };
+            if o.delivery.is_some_and(|d| self.names_label_opening(&d)) {
+                continue;
+            }
             let Some(o) = self.state.outbox.get(&k) else { continue };
             let cmd = Command::Deposit { label: o.label, blob: o.blob.clone(), wrap: o.wrap, sig: o.sig };
             if let Some(m) = self.outbox.get_mut(&k) {

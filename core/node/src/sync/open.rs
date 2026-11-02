@@ -537,8 +537,9 @@ impl SyncEngine {
         }
     }
 
-    /// The host refused registering `l` for now: opened again after a back-off, `retry_ms`
-    /// doubling per refusal in a row on this connection (an open resets it) up to `resync_ms`.
+    /// The host refused registering `l` for now, or does not hold it and this node has nothing to
+    /// register: opened again after a back-off, `retry_ms` doubling per refusal in a row on this
+    /// connection (an open resets it) up to `resync_ms`.
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
         let now = self.raw_now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
@@ -551,7 +552,7 @@ impl SyncEngine {
         if let Some(lc) = c.labels.get_mut(&l) {
             lc.phase = Phase::Refused { retry_at: now.saturating_add(wait) };
         }
-        self.diag(format!("label {l:?}: registration refused for now (code {}), again in {} s", code.0, wait / 1000));
+        self.diag(format!("label {l:?}: not opened for now (code {}), again in {} s", code.0, wait / 1000));
     }
 
     /// Starts opening `l` on `conn` again from scratch.
@@ -579,9 +580,12 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(g) = self.lc(conn, &l).map(|x| x.group) else { return Ok(()) };
-        let Some(gl) = self.group_label(&g, &l) else { return self.drop_try(conn, l, out) };
-        let Some(path) = deepest_path(&gl.steps) else { return self.drop_try(conn, l, out) };
-        let path: Vec<(Step, Option<ClaimSet>)> = path.into_iter().cloned().collect();
+        // nothing to register with: it is not at this host yet (an inbox blob's sender still
+        // registering it, a card whose owner has not), so no other key would open it either
+        let Some(path) = self.group_label(&g, &l).and_then(|gl| deepest_path(&gl.steps).map(|p| p.into_iter().cloned().collect::<Vec<_>>())) else {
+            self.refused_for_now(conn, l, Code::UNKNOWN_LABEL);
+            return Ok(());
+        };
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.phase = Phase::Registering;
             lc.path = path.iter().map(|(s, _)| s.clone()).collect();

@@ -523,7 +523,10 @@ impl Osis {
             self.persist(&[t])?;
         }
         if !placed {
-            self.write_with(|w| if opts.subgroup { w.add_subgroup(g, t) } else { w.place(t, g) })?;
+            self.write_with(|w| {
+                w.sharing = true;
+                if opts.subgroup { w.add_subgroup(g, t) } else { w.place(t, g) }
+            })?;
         }
         if !grant {
             return Ok(existing.map_or(Share::Excluded, share_of));
@@ -629,7 +632,7 @@ impl Osis {
             return Ok(PreSync::Synced);
         }
         self.act(|l| l.sync.read_receipts(&reads));
-        self.sync_now()?;
+        self.sync_labels();
         let wait = match d.sync {
             WaitForSync::Try(t) => t,
             _ => PRESYNC_WAIT,
@@ -1102,9 +1105,10 @@ impl Osis {
             )
             .await;
         let mut key = key;
-        // read: the follow stays (bearer use)
+        // read: the follow stays (bearer use), as long as the link's key holds its role
         if r.is_ok() {
             key.link = None;
+            self.engine(|e| e.keep_bearer(&key.l))?;
         }
         drop(key);
         r?;
@@ -1421,19 +1425,24 @@ impl Osis {
                 (Some(groups), about)
             }
         };
-        if let Err(e) = self.sync_now() {
-            return Pending::ready(Err(e));
-        }
+        self.sync_labels();
         self.groups_synced(groups, Vec::new(), timeout, Some(about))
     }
 
-    /// Asks every host to sync every open label now.
+    /// Catches up now and waits for nothing: labels not live at a host sync, live ones (their host
+    /// pushes what it gets) judge again what is left to send. Cheap at any rate, so an app may
+    /// poll it. To wait until this node's writes are at a host: `wait_synced`.
     pub fn sync_now(&self) -> Result<()> {
         if self.is_attached() {
             return self.rcall(crate::port::method::SYNC_NOW, vec![]).map(drop);
         }
-        self.act(|x| x.sync.sync_now());
+        self.act(|x| x.sync.refresh());
         Ok(())
+    }
+
+    /// Every open label syncs at every connection, live or not (a wait's start).
+    fn sync_labels(&self) {
+        self.act(|x| x.sync.sync_now());
     }
 
     /// Writes a bundle of `groups`' labels (spec/sync.md §11) to `out`.
