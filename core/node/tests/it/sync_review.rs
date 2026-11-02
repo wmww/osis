@@ -605,3 +605,43 @@ fn self_removal_shared_subgroup_spec_permissions_3() {
     assert_eq!((net.read(b, t2), net.read(b, t3)), (None, None), "both placed: all dropped");
     assert!(net.sync(b).leaving().next().is_none());
 }
+
+// spec/sync.md §7 (two blobs of one commit with the same delta set: the higher blob ID goes):
+// writers a and b both hold commit c while away, and each places its own encryption of its body
+// when back, so the host holds two; the admin deletes the higher one.
+#[test]
+fn duplicate_encryptions_higher_goes_spec_sync_7() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    // neither hears from the host meanwhile
+    net.held_to.extend([a, b]);
+    let c = net.write(a, t, "y");
+    let pk = net.engine(a).package(&c).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    net.feed(a, Event::Local);
+    net.feed(b, Event::Local);
+    // past b's relay wait for another's commit
+    net.advance(60_000);
+    net.settle(200_000);
+    let l = net.label(a);
+    let mut both: Vec<_> = blobs_of(&mut net, a, &l, &c);
+    both.extend(blobs_of(&mut net, b, &l, &c));
+    both.sort();
+    both.dedup();
+    assert!(both.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    assert_eq!(both.len(), 2, "each placed its own encryption");
+    net.release();
+    net.run();
+    net.advance(60_000);
+    net.run();
+    net.trace(&[a, b]);
+    let ids = net.host_ids(host, &l);
+    assert!(ids.contains(&both[0]), "the lower kept");
+    assert!(!ids.contains(&both[1]), "the higher deleted");
+    assert_eq!(net.read(b, t), Some(s("y")));
+}

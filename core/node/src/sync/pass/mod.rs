@@ -1725,10 +1725,15 @@ impl SyncEngine {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l) else { return Ok(false) };
-        let (g, keys, head) = (lc.group, lc.keys.clone(), lc.head.clone());
+        let (g, keys, head, retry) = (lc.group, lc.keys.clone(), lc.head.clone(), lc.step_retry);
         // a replaced label is never stepped again (spec/sync.md §2: its replacement carries on)
         if !self.step_due(&g, &l, &keys) {
             return Ok(false);
+        }
+        // a step refused for now: nothing else goes before it lands, and it goes again only
+        // after its back-off (spec/sync.md §5)
+        if retry > self.raw_now() {
+            return Ok(true);
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);

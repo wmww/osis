@@ -180,9 +180,10 @@ impl SyncEngine {
         let mut f = Facts { required: false, closure: true, covered: None, ..Facts::default() };
         if desired.contains(&parts) {
             f.required = true;
-            // the duplicate with the higher blob ID goes (spec/sync.md §7)
-            // (only a genuine one: a forged duplicate must not get the real entry deleted)
-            let lower: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| b < id && !o.cert && o.kind == e.kind && host.is_none_or(|s| self.state.is_present(s, l, b))).map(|(b, _)| b).collect();
+            // the duplicate with the higher blob ID goes (spec/sync.md §7): the same delta set
+            // (each encryption has its own salt), only a genuine one (a forged duplicate must not
+            // get the real entry deleted)
+            let lower: Vec<BlobId> = self.state.entries_of(l, commit).filter(|(b, o)| b < id && !o.cert && matches!(&o.kind, Kind::Commit { parts: p2, .. } if p2 == parts) && host.is_none_or(|s| self.state.is_present(s, l, b))).map(|(b, _)| b).collect();
             f.duplicate_higher = lower.into_iter().any(|b| self.genuine(&b));
         } else if desired.iter().any(|d| d.iter().all(|p| parts.contains(p))) {
             // a superset projection: every delta in it must be one the label's actor may read
@@ -196,9 +197,10 @@ impl SyncEngine {
             let sups: Vec<Vec<(usize, usize)>> = self
                 .state
                 .entries_of(l, commit)
-                .filter(|(b, _)| b != id && (host.is_none() || self.state.present_anywhere(l, b)))
+                .filter(|(b, _)| b != id && host.is_none_or(|s| self.state.is_present(s, l, b)))
                 .filter_map(|(b, o)| match &o.kind {
-                    // a must-not-hold superset counts for nothing
+                    // a must-not-hold superset counts for nothing, nor one at another host (the
+                    // label there lacks the writes this one carries: the superset goes up first)
                     Kind::Commit { parts: p2, .. } if p2.len() > parts.len() && parts.iter().all(|p| p2.contains(p)) && !self.holds_nothing(g, commit, p2) => Some((b, p2.clone())),
                     _ => None,
                 })

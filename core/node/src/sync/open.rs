@@ -183,6 +183,7 @@ impl SyncEngine {
             synced: false,
             dirty: false,
             registering: None,
+            step_retry: 0,
             budget: None,
             last_sync: 0,
             path: Vec::new(),
@@ -485,12 +486,15 @@ impl SyncEngine {
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
             (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
-            // a pass's step refused for now (a full host, the rate): the open stays and a later
-            // pass registers again
+            // a pass's step refused for now (a full host, the rate, not admitted): the open stays and a later
+            // pass registers again after a back-off (else every pass sent it again at once)
             (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
+                let at = self.raw_now().saturating_add(self.refusal_wait(conn, l, code));
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
+                    lc.step_retry = at;
                 }
+                self.settle_by(at);
                 self.diag(format!("label {l:?}: step refused for now (code {})", code.0));
                 Ok(())
             }
@@ -531,17 +535,26 @@ impl SyncEngine {
     /// doubling per refusal in a row on this connection (an open resets it) up to `resync_ms`.
     fn refused_for_now(&mut self, conn: ConnId, l: LabelId, code: Code) {
         let now = self.raw_now();
-        let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
+        let wait = self.refusal_wait(conn, l, code);
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        let (n, last) = c.req.refusals.entry(l).or_insert((0, code));
-        let wait = first.saturating_mul(1u64 << (*n).min(63)).min(cap);
-        *n = n.saturating_add(1);
-        *last = code;
         c.req.reopens.remove(&l);
         if let Some(lc) = c.labels.get_mut(&l) {
             lc.phase = Phase::Refused { retry_at: now.saturating_add(wait) };
         }
         self.diag(format!("label {l:?}: registration refused for now (code {}), again in {} s", code.0, wait / 1000));
+    }
+
+    /// The back-off after a registration of `l` refused for now on `conn`: `retry_ms` doubling
+    /// per refusal in a row (an open or a registered step resets it) up to `resync_ms`; `code`
+    /// recorded as the last refusal.
+    fn refusal_wait(&mut self, conn: ConnId, l: LabelId, code: Code) -> u64 {
+        let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
+        let Some(c) = self.conns.get_mut(&conn) else { return cap };
+        let (n, last) = c.req.refusals.entry(l).or_insert((0, code));
+        let wait = first.saturating_mul(1u64 << (*n).min(63)).min(cap);
+        *n = n.saturating_add(1);
+        *last = code;
+        wait
     }
 
     /// Starts opening `l` on `conn` again from scratch.
@@ -603,8 +616,12 @@ impl SyncEngine {
             return Ok(());
         }
         let Some((step, set)) = lc.registering.take() else { return Ok(()) };
+        lc.step_retry = 0;
         let g = lc.group;
         let parent = lc.head.clone();
+        if let Some(c) = self.conns.get_mut(&conn) {
+            c.req.refusals.remove(&l);
+        }
         // a new sync key ended this connection's open too (spec/sync.md §5): opened again under
         // it, the first try (one round trip, the cursor kept)
         let ended = parent.as_ref().is_some_and(|p| p.keys.sync != step.keys.sync);

@@ -123,6 +123,47 @@ fn rotation_at_full_host_waits_spec_sync_5() {
     assert_eq!(net.host_path(host, &l).len(), 3, "it lands after over_cap_step_ms");
 }
 
+// spec/sync.md §5 Register (a registrar keeps its open on a step refused for now and registers it
+// again after a back-off, never at once): while the host refuses a child step for its cap, the
+// admin's own writes (each a pass) do not send it again each time.
+#[test]
+fn refused_step_backs_off_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let d = net.node(4, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read), (d, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    net.restart_host_with(host, osis_host::HostPolicy { max_bytes: 1, ..osis_host::HostPolicy::default() });
+    net.run();
+    let (at, bt, ct_, dt) = (net.tid(a), net.tid(b), net.tid(c), net.tid(d));
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write), (dt, Role::Read)]);
+    remove_holder(e, g, ct_, &rs, 41);
+    net.run();
+    net.advance(60_000);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (bt, Role::Write)]);
+    remove_holder(e, g, dt, &rs, 42);
+    net.run();
+    net.advance(60_000);
+    assert_eq!(net.host_path(host, &l).len(), 2, "the second waits");
+    let before = net.sent_kinds.get(&7).copied().unwrap_or(0);
+    for i in 0..20 {
+        net.write(a, t, &format!("v{i}"));
+        net.run();
+        net.advance(100);
+    }
+    let sent = net.sent_kinds.get(&7).copied().unwrap_or(0) - before;
+    assert!(sent <= 2, "{sent} registrations sent in 2 s");
+    // nothing else goes before the step (issues/refused-step-blocks-pass.md)
+    assert_ne!(net.read(b, t), Some(s("v19")));
+}
+
 // spec/sync.md §5 (re-registration, upload order), spec/permissions.md §3-§4 (stranded
 // heartbeat): an admin rotating out a holder issues a child step at the host after uploading
 // the rotation commit; the remaining writer follows; the removed holder's open walks to the new

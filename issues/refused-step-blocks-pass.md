@@ -1,0 +1,7 @@
+# A refused child step stops the admin's whole pass at that host
+> Summary: while a host refuses an admin's child step for now (code 4, or code 12 past the byte caps, where a step is taken once per `over_cap_step_ms`, 1 h by default), `reregister` returns early, so that admin's passes there upload and delete nothing: its new writes and the deletions that would free room wait the whole time.
+> Tags: node-sync
+
+`pass/mod.rs` `pass`: `if self.reregister(..)? { return Ok(()) }`. Since sync-audit the step goes again only after a back-off (`LConn::step_retry`, `retry_ms` doubling to `resync_ms`), but the pass stays blocked until it lands. Test `deletion::refused_step_backs_off_spec_sync_5` sets the stage (a full host, a second removal within `over_cap_step_ms`): b reads none of a's 20 writes until the step lands.
+
+spec/sync.md §5 Re-registration orders role commits, then the step, then "anything else", so no content goes up under the old head (a removed holder could still open it). Deletions carry no such risk, and at a full host they are what frees room. Options: run the deletion step (and timed deletes) while the step waits; or accept, since other writers of the label (not admins with a newer epoch) keep uploading. Needs a call on whether content may go up under the old head while the step is refused (it is encrypted under the newest epoch either way; the head only gates who downloads).
