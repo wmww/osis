@@ -103,7 +103,8 @@ pub const WRITE_NONCES: usize = 64;
 /// Resource bound: 0 drops every signal under backpressure, infinity lets a slow client hold
 /// unbounded memory.
 pub const SIGNAL_BYTES: usize = 1 << 20;
-/// Schema source bytes a connection may register. Resource bound: 0 forbids typed sets through
+/// Distinct schema source bytes the node's Owners may register through the port (per node:
+/// registrations are process-wide and kept). Resource bound: 0 forbids typed sets through
 /// the port, infinity lets one client fill memory.
 pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
 /// `wait_synced` subscriptions per connection still waiting (each is a waiter the node checks

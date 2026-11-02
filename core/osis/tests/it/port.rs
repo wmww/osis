@@ -556,3 +556,24 @@ fn threads_writing_on_one_handle() {
     drop(c);
     n.close().unwrap();
 }
+
+// notes/client-port.md §2 (MAX_SCHEMA_BYTES): schema sources registered through the port count per node, not per connection (registrations are process-wide and kept); the same source again costs nothing
+#[test]
+fn schema_bytes_per_node() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let src = |name: &str| format!("version 1;\naspect test:{name}.0: string;\n//{}\n", "x".repeat(osis::MAX_SCHEMA_BYTES * 3 / 5));
+    let reg = |r: &mut Raw, tok, name: &str| r.call(tok, 17, vec![Value::Str("t.osis".into()), Value::Str(src(name))]);
+    let mut a = Raw::unix(&sock);
+    a.auth([1; 16]).unwrap();
+    assert!(matches!(reg(&mut a, 1, "a"), Outcome::Ok { .. }));
+    drop(a);
+    let mut b = Raw::unix(&sock);
+    b.auth([2; 16]).unwrap();
+    assert!(matches!(reg(&mut b, 1, "a"), Outcome::Ok { .. }), "the same source again");
+    assert!(matches!(reg(&mut b, 2, "b"), Outcome::Err { code: 5, .. }), "past the node's bound");
+    drop(b);
+    n.close().unwrap();
+}

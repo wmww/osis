@@ -85,7 +85,7 @@ impl Port {
             let weak = WeakOsis(Arc::downgrade(inner));
             let mine = t.clone();
             let spawned = std::thread::Builder::new().name("osis-port".into()).spawn(move || {
-                let mut w = Worker { db: weak, tx: mine, conns: BTreeMap::new(), nonces: BTreeMap::new(), tick: 0 };
+                let mut w = Worker { db: weak, tx: mine, conns: BTreeMap::new(), nonces: BTreeMap::new(), schemas: BTreeMap::new(), tick: 0 };
                 while let Ok(j) = rx.recv() {
                     if !w.job(j) {
                         return;
@@ -146,7 +146,6 @@ struct Conn {
     asked: bool,
     /// `settle` calls answered once nothing is left to send.
     settles: Vec<Id>,
-    schema_bytes: usize,
 }
 
 /// Write outcomes of one session: by nonce (at most `WRITE_NONCES`), the highest seen, and
@@ -164,6 +163,9 @@ struct Worker {
     conns: BTreeMap<ConnId, Conn>,
     /// Per (identity, session): the Owner's uid is the only identity in (b), so by session.
     nonces: BTreeMap<[u8; 16], Nonces>,
+    /// Schema sources registered through the port (by hash of file and source): their bytes,
+    /// at most `MAX_SCHEMA_BYTES` in all.
+    schemas: BTreeMap<[u8; 32], usize>,
     tick: u64,
 }
 
@@ -229,7 +231,7 @@ impl Worker {
                 if tier != Tier::Owner || client_pk.is_some() {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
                 }
-                let c = self.conns.entry(conn).or_insert_with(|| Conn { tier, session: None, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new(), schema_bytes: 0 });
+                let c = self.conns.entry(conn).or_insert_with(|| Conn { tier, session: None, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new() });
                 c.session = Some(session);
                 let seq = db.locked(|l| l.seq);
                 self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::bytes(&db.inner.port.epoch) }));
@@ -358,12 +360,17 @@ impl Worker {
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
                 let (file, src) = (a.text()?, a.text()?);
-                let c = self.conns.get_mut(&conn).ok_or(Error::Closed)?;
-                if c.schema_bytes.saturating_add(src.len()) > MAX_SCHEMA_BYTES {
-                    return Err(Error::TooLarge { limit: MAX_SCHEMA_BYTES });
+                // registrations are process-wide and kept: counted per node, by distinct source
+                // (a client registering its schemas again on each connection costs nothing)
+                let h = osis_base::hash::hash(&osis_base::cbor::encode(&Value::List(vec![Value::Str(file.clone()), Value::Str(src.clone())])));
+                if !self.schemas.contains_key(&h) {
+                    let total: usize = self.schemas.values().sum();
+                    if total.saturating_add(src.len()) > MAX_SCHEMA_BYTES {
+                        return Err(Error::TooLarge { limit: MAX_SCHEMA_BYTES });
+                    }
                 }
-                c.schema_bytes += src.len();
                 db.register_schema_source(&file, &src)?;
+                self.schemas.insert(h, src.len());
                 Value::List(vec![])
             }
             method::LEN | method::STREAM_READ => {
