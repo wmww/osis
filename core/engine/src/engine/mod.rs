@@ -110,6 +110,9 @@ pub struct Dropped {
     /// Dropped for breaking the thing's required retention (`retention::drop_broken`): it comes
     /// back as missing when it turns valid.
     pub broke: bool,
+    /// Dropped for a purge request (`retention::rejudge_purges`): it comes back as missing when
+    /// no held request drops it any more. A delta with own writes is also in the value-less list.
+    pub purged: bool,
     /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
     /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
     /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in

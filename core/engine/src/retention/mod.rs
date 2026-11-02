@@ -132,7 +132,7 @@ fn drop_carrying(tx: &mut Tx<'_>, s: &CommitId, sai: usize, owned: &[Owned]) -> 
         Ok(())
     })?;
     if carries {
-        return drop_part(tx, s, sai);
+        return drop_part_for(tx, s, sai, DropFor::Purge);
     }
     Ok(())
 }
@@ -243,16 +243,24 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
 /// rewritten shredded with its undo buffer cleared (node-sync deletes it at hosts, judged
 /// from the dropped parts).
 pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
-    drop_part_as(tx, c, ai, false)
+    drop_part_for(tx, c, ai, DropFor::Other)
 }
 
-/// `drop_part`; `cover`: dropped as covered (compaction, `Dropped::as_cover`).
-fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result<()> {
-    drop_part_how(tx, c, ai, cover, false)
+/// Why a part drops, where that decides whether it can come back.
+#[derive(Clone, Copy, PartialEq)]
+enum DropFor {
+    Other,
+    /// As covered (compaction, `Dropped::as_cover`).
+    Cover,
+    /// For breaking the thing's required retention (`Dropped::broke`).
+    Broke,
+    /// For a purge request (`Dropped::purged`).
+    Purge,
 }
 
-/// `drop_part_as`; `broke`: for breaking the thing's required retention (`Dropped::broke`).
-fn drop_part_how(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool, broke: bool) -> Result<()> {
+/// `drop_part`, saying why.
+fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Result<()> {
+    let (cover, broke, purged) = (why == DropFor::Cover, why == DropFor::Broke, why == DropFor::Purge);
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
@@ -297,7 +305,7 @@ fn drop_part_how(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool, broke: b
     if held.is_empty() {
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, broke, keysets, names });
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, broke, purged, keysets, names });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
         let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
@@ -421,23 +429,28 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
     if any && ak.as_str() == "keys.0" {
         crate::apply::keys::rebuild_keysets(tx, &BTreeSet::from([*tid]))?;
     }
-    // held snapshots' copies of the writes of deltas now never received are carried writes
     if !owned.is_empty() {
-        for s in snapshots_of(tx.core, tid, ak) {
-            let Some(sai) = aspect_index(tx.core, &s, tid, ak) else { continue };
-            let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
-            let held = crate::apply::each_held_piece(tx, &s, sai, &mut |tx, f| {
-                for (src, ctrs) in crate::apply::validity::carried_of(tx.core, tid, ak, &f) {
-                    carried.entry(src).or_default().extend(ctrs);
-                }
-                Ok(())
-            })?;
-            if !held.is_empty() {
-                crate::apply::validity::note_carried_of(tx.core, tid, ak, &s, carried);
-            }
-        }
+        note_carried_again(tx, tid, ak)?;
     }
     Ok(owned)
+}
+
+/// Held snapshots' copies of the writes of deltas now never received are carried writes.
+fn note_carried_again(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    for s in snapshots_of(tx.core, tid, ak) {
+        let Some(sai) = aspect_index(tx.core, &s, tid, ak) else { continue };
+        let mut carried: BTreeMap<osis_crdt::Source, BTreeSet<u64>> = BTreeMap::new();
+        let held = crate::apply::each_held_piece(tx, &s, sai, &mut |tx, f| {
+            for (src, ctrs) in crate::apply::validity::carried_of(tx.core, tid, ak, &f) {
+                carried.entry(src).or_default().extend(ctrs);
+            }
+            Ok(())
+        })?;
+        if !held.is_empty() {
+            crate::apply::validity::note_carried_of(tx.core, tid, ak, &s, carried);
+        }
+    }
+    Ok(())
 }
 
 /// The parts of `(tid, ak)` dropped for breaking the required retention that are valid now are
@@ -633,7 +646,7 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &mut 
     if let Some(k) = make_valueless(tx, c, ai, &[])? {
         changed.insert(k);
     }
-    drop_part(tx, c, ai)
+    drop_part_for(tx, c, ai, if purged { DropFor::Purge } else { DropFor::Other })
 }
 
 /// Whether part `ai` of a commit (header `h`), held while it waits, is past its expiry: it goes
@@ -776,7 +789,8 @@ pub(crate) fn forget_stripped(tx: &mut Tx<'_>, id: &CommitId, ai: Option<usize>)
 
 /// The parts of commit `id` just joined from stripped deltas (`strip_purged`: aspect, fragment):
 /// held value-less and dropped, as a purge leaves an applied part, the stripped deltas their
-/// residue (even if the purge is no longer judged allowed, as in `on_late`); their kept records go.
+/// residue; their kept records go. A purge that fell while they waited is judged again next
+/// (`rejudge_purges`).
 pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, Fragment)], changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let ais: BTreeSet<usize> = joined.iter().map(|x| x.0).collect();
     for ai in ais {
@@ -784,8 +798,14 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
         if let Some(k) = make_valueless(tx, id, ai, &kept)? {
             changed.insert(k);
         }
-        drop_part(tx, id, ai)?;
+        drop_part_for(tx, id, ai, DropFor::Purge)?;
         forget_stripped(tx, id, Some(ai))?;
+        if let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone())
+            && let Some(a) = h.aspects.get(ai)
+            && !known_purged(tx, &h, id, ai)?
+        {
+            tx.core.stale_things.insert(a.tid);
+        }
     }
     Ok(())
 }
@@ -910,25 +930,41 @@ fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &
     if is_role_class(a.ak.as_str()) || a.tid != *item.tid() || a.ak != *item.ak() {
         return false;
     }
-    let names = match item {
-        PurgeItem::Commit { commit, .. } => commit == c && ch.ts < p.ts,
-        PurgeItem::Aspect { .. } => ch.ts < p.ts,
-        PurgeItem::Author { actor, .. } => ch.ts < p.ts && ch.purge_actor() == *actor,
-    };
-    if !names {
-        return false;
-    }
-    holds_right(core, p, pc, a, ch)
+    names(p, item, ch, c) && holds_right(core, p, pc, a, ch)
+}
+
+/// Whether purge item `item` of a commit with header `p` reaches commit `c` (header `ch`): named, on the whole aspect or
+/// on its actor's deltas, and stamped before the request (spec/commits.md §5).
+fn names(p: &Header, item: &PurgeItem, ch: &Header, c: &CommitId) -> bool {
+    ch.ts < p.ts
+        && match item {
+            PurgeItem::Commit { commit, .. } => commit == c,
+            PurgeItem::Aspect { .. } => true,
+            PurgeItem::Author { actor, .. } => ch.purge_actor() == *actor,
+        }
 }
 
 /// Whether commit `pc` (header `p`: a purge request or a compaction snapshot) holds the right over
 /// delta `a` of a commit with header `ch`, at its own key (spec/permissions.md §8): its author
-/// does, and the actor it acts for. A function of the role timeline and the headers alone, so any
-/// node holding them judges alike, in any arrival order.
+/// does, and the actor it acts for, neither by a role a demotion's frontier took from this commit.
+/// A function of the role timeline, the void set and the headers, so any node holding them judges
+/// alike, in any arrival order; `rejudge_purges` follows it when those change.
 fn holds_right(core: &Core, p: &Header, pc: &CommitId, a: &osis_commit::AspectEntry, ch: &Header) -> bool {
+    if core.ix.void.contains(pc) {
+        return false;
+    }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
-    let (by, actor, at) = (a.retention.by, ch.purge_actor(), At::before(point));
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, by, &actor, at) && (p.actor == p.author || tl.may_purge(&p.actor, &a.tid, by, &actor, at)))
+    let (by, actor) = (a.retention.by, ch.purge_actor());
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.purge_stands(&p.author, &a.tid, by, &actor, point) && (p.actor == p.author || tl.purge_stands(&p.actor, &a.tid, by, &actor, point)))
+}
+
+/// Whether a signer of a commit could ever hold the right of class `by` over a delta on `tid` of
+/// actor `actor`: `holds_right` with roles of any validity at any time, so held inputs only widen
+/// it. For what must not turn on arrival (`counts_as_purged`).
+fn could_hold_right(core: &Core, who: &Tid, tid: &Tid, by: osis_base::PurgeBy, actor: &Tid) -> bool {
+    (by.admin() && core.ix.held.ever_admins(tid).contains(who))
+        || (by.writer() && core.ix.held.ever_writers(tid).contains(who))
+        || (by.author() && (who == actor || core.ix.held.ever_writers(actor).contains(who)) && core.ix.held.ever_writers(tid).contains(actor))
 }
 
 /// Whether snapshot `s` may stand for body `(tid, ak)` of `c`: its actor holds the right over it
@@ -1036,6 +1072,186 @@ pub(crate) fn known_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize
         }
     }
     Ok(false)
+}
+
+/// Whether missing delta `ai` of `c` counts as held for a held purge request naming it, signed by
+/// one that could ever hold the right (spec/commits.md §4). Unlike `known_purged` it reads no
+/// validity, so a demotion arriving later changes nothing here: what this let apply it goes on
+/// letting apply, and the delta joins when it comes. Possible holders only grow.
+pub(crate) fn counts_as_purged(tx: &mut Tx<'_>, ch: &Header, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(a) = ch.aspects.get(ai) else { return Ok(false) };
+    if is_role_class(a.ak.as_str()) {
+        return Ok(false);
+    }
+    let (by, actor) = (a.retention.by, ch.purge_actor());
+    for pc in purge_requests(tx, &a.tid, &a.ak)? {
+        let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
+        let core = &*tx.core;
+        if p.purge.iter().any(|i| i.tid() == &a.tid && i.ak() == &a.ak && names(&p, i, ch, c)) && could_hold_right(core, &p.author, &a.tid, by, &actor) && (p.actor == p.author || could_hold_right(core, &p.actor, &a.tid, by, &actor)) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// The aspects a timeline change on `things` or a change to commits `whole` may change purges of:
+/// those with a held request (`purge_requests`), each once.
+pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BTreeSet<CommitId>) -> Result<BTreeSet<(Tid, Ak)>> {
+    let mut out = BTreeSet::new();
+    for t in things {
+        tx.scan(&[records::PURGES, t.as_bytes()].concat(), |k, _| {
+            let ak = k.get(2..).and_then(|b| std::str::from_utf8(b).ok()).and_then(|a| Ak::new(a).ok()).ok_or(Error::Corrupt("purge key"))?;
+            out.insert((*t, ak));
+            Ok(())
+        })?;
+    }
+    for c in whole {
+        let Some(h) = tx.core.ix.commits.get(c).filter(|m| m.view.purges).map(|m| m.header.clone()) else { continue };
+        out.extend(h.purge.iter().map(|i| (*i.tid(), i.ak().clone())));
+    }
+    Ok(out)
+}
+
+/// Judges the held purge requests on `(tid, ak)` again (spec/permissions.md §8): a part one now
+/// drops is purged as on arrival, and a part dropped for a purge that none drops any more counts
+/// as never received from here on: out of the value-less list, its residue and writes gone until a
+/// copy comes (node-sync fetches it, `Changed::undropped`; a holder uploads it). A snapshot dropped
+/// for carrying purged values does not say whose: every such one comes back with a fall, and goes
+/// again on arrival if it carries another's. Cost: a walk of the aspect's parts, as
+/// `validity::rejudge_once` walks them; a request is read per part it names. A memory delta purged
+/// has vanished whole and stays gone.
+pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    let reqs = purge_requests(tx, tid, ak)?;
+    if reqs.is_empty() || is_role_class(ak.as_str()) || tx.txn.is_memory_aspect(tid, ak) {
+        return Ok(());
+    }
+    // the items on the aspect: by name, per named commit; aspect-wide ones ask of every part
+    let mut named: BTreeMap<CommitId, Vec<(CommitId, PurgeItem)>> = BTreeMap::new();
+    let mut wide: Vec<(CommitId, PurgeItem)> = Vec::new();
+    let mut heads = BTreeMap::new();
+    for pc in &reqs {
+        let Some(p) = tx.core.ix.commits.get(pc).map(|m| m.header.clone()) else { continue };
+        for item in p.purge.iter().filter(|i| i.tid() == tid && i.ak() == ak) {
+            match item {
+                PurgeItem::Commit { commit, .. } => named.entry(*commit).or_default().push((*pc, item.clone())),
+                PurgeItem::Aspect { .. } => wide.push((*pc, item.clone())),
+            }
+        }
+        heads.insert(*pc, p);
+    }
+    let now = tx.now().0;
+    let parts: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let (mut rise, mut fall, mut bare) = (Vec::new(), Vec::new(), Vec::new());
+    let mut fell = false;
+    // a request's right is the same for every delta of one class and actor
+    let mut rights: BTreeMap<(CommitId, u64, Tid), bool> = BTreeMap::new();
+    for c in parts {
+        let core = &*tx.core;
+        let Some(m) = core.ix.commits.get(&c) else { continue };
+        let Some(ai) = m.aspect(tid, ak) else { continue };
+        let Some(a) = m.header.aspects.get(ai) else { continue };
+        // past its expiry it goes whatever the requests say
+        if a.expires.is_some_and(|t| t <= now) {
+            continue;
+        }
+        let asked: Vec<&(CommitId, PurgeItem)> = named.get(&c).into_iter().flatten().chain(&wide).filter(|x| heads.get(&x.0).is_some_and(|p| names(p, &x.1, &m.header, &c))).collect();
+        let by = asked.iter().find(|x| {
+            let key = (x.0, a.retention.by as u64, m.header.purge_actor());
+            heads.get(&x.0).is_some_and(|p| *rights.entry(key).or_insert_with(|| holds_right(core, p, &x.0, a, &m.header)))
+        });
+        let dropped = m.dropped.get(&ai);
+        match (by, m.header.kind.has_own_writes()) {
+            (Some(x), true) if !valueless(core, &c, ai) => rise.push((x.0, x.1.clone(), c, ai)),
+            (None, true) if valueless(core, &c, ai) => fall.push((c, ai)),
+            (Some(x), false) if dropped.is_none() => rise.push((x.0, x.1.clone(), c, ai)),
+            (None, false) if dropped.is_some_and(|d| d.purged) => {
+                fell |= !asked.is_empty();
+                bare.push((c, ai));
+            }
+            _ => {}
+        }
+    }
+    let mut purged = BTreeSet::new();
+    for (pc, item, c, ai) in rise {
+        purge_one(tx, &pc, &item, &c, ai, &mut purged)?;
+    }
+    purged_changed(tx, purged, changed);
+    if fall.is_empty() && !fell {
+        return Ok(());
+    }
+    let mut gone = Vec::new();
+    let mut back = bare;
+    for (c, ai) in fall {
+        let Some(o) = out_of_valueless(tx, &c, ai)? else { continue };
+        // dropped as covered: its cover's copies are its writes while one carries it (`uncover`)
+        if tx.core.ix.commits.get(&c).and_then(|m| m.dropped.get(&ai)).is_some_and(|d| !d.as_cover) {
+            gone.push(o);
+            back.push((c, ai));
+        }
+    }
+    tx.core.forget_live(tid, ak);
+    // until each comes back, this node may read less than one that kept it
+    suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
+    for (c, ai) in back {
+        reopen(tx, &c, ai)?;
+        tx.core.mark_changed(c);
+        if let Some(ch) = &mut tx.core.changed {
+            ch.undropped.insert(c);
+        }
+    }
+    gone.extend(uncover(tx, tid, ak)?);
+    if !gone.is_empty() {
+        note_carried_again(tx, tid, ak)?;
+    }
+    crate::apply::rebuild_without(tx, tid, ak, &gone)?;
+    mark_deaths_due(tx, tid, ak)?;
+    tx.core.mark_aspect_changed(tid, ak);
+    changed.insert((*tid, ak.clone()));
+    forget_fallen_notes(tx, &reqs, tid)
+}
+
+/// Takes delta `ai` of `c` out of the value-less list, with its residue. Its own writes.
+fn out_of_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<Owned>> {
+    tx.core.touch();
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let (Some(a), Some(o)) = (m.header.aspects.get(ai), Owned::of(&m.header, c, ai)) else { return Ok(None) };
+    let k = (a.tid, a.ak.clone());
+    let list = tx.core.ix.valueless.entry_or_default(k.clone());
+    list.retain(|x| *x != o);
+    if list.is_empty() {
+        tx.core.ix.valueless.remove(&k);
+        tx.txn.remove_local(&records::aspect_key(records::VALUELESS, &a.tid, &a.ak), Shred::No)?;
+    } else {
+        let enc = encode_owned(list);
+        tx.put_aspect_local(records::VALUELESS, &a.tid, &a.ak, &enc)?;
+    }
+    tx.txn.remove_local(&records::residue_key(&a.tid, &a.ak, c, ai), Shred::Yes)?;
+    Ok(Some(o))
+}
+
+/// Requests `reqs` on thing `tid` that no longer drop a permanent delta there lose their lasting
+/// note (`lasting`); one that drops one again gets it back (`purge_one`).
+fn forget_fallen_notes(tx: &mut Tx<'_>, reqs: &[CommitId], tid: &Tid) -> Result<()> {
+    for pc in reqs {
+        let key = records::named_permanent_key(pc, tid);
+        if tx.txn.get_local(&key)?.is_none() {
+            continue;
+        }
+        let Some(p) = tx.core.ix.commits.get(pc).map(|m| m.header.clone()) else { continue };
+        let core = &*tx.core;
+        let stands = p.purge.iter().filter(|i| i.tid() == tid).any(|item| {
+            core.ix.by_aspect.get(&(*tid, item.ak().clone())).into_iter().flatten().any(|x| {
+                let Some(m) = core.ix.commits.get(&x.1) else { return false };
+                let Some(ai) = m.aspect(tid, item.ak()) else { return false };
+                m.view.aspects.get(ai).is_some_and(|v| v.permanent) && purge_allowed(core, &p, pc, item, &m.header, &x.1, ai)
+            })
+        });
+        if !stands {
+            tx.txn.remove_local(&key, Shred::No)?;
+            tx.core.mark_changed(*pc);
+        }
+    }
+    Ok(())
 }
 
 /// Applies purge item `item` of commit `pc` to held delta `(c, ai)` if it may: its values go
@@ -1148,7 +1364,8 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
 
 /// After late parts `ais` of applied commit `id` joined: `on_apply` for them. One held
 /// value-less (reopened by `takes_late`, or missing again after `uncover`) drops again, now
-/// keeping its residue, even if the purge that made it so is no longer judged allowed.
+/// keeping its residue: the list holds only what is past its expiry or a standing purge drops
+/// (`rejudge_purges` takes the rest out).
 pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
@@ -1361,7 +1578,7 @@ impl Engine {
         let (c, tid, ak) = (*c, *tid, ak.clone());
         self.run(|tx| {
             let ai = aspect_index(tx.core, &c, &tid, &ak).ok_or(Error::UnknownCommit(c))?;
-            drop_part_as(tx, &c, ai, true)
+            drop_part_for(tx, &c, ai, DropFor::Cover)
         })
     }
 
@@ -1394,12 +1611,32 @@ impl Engine {
         if !due.is_empty() {
             self.run(|tx| {
                 for (c, ai) in &due {
-                    drop_part_how(tx, c, *ai, false, true)?;
+                    drop_part_for(tx, c, *ai, DropFor::Broke)?;
                 }
                 Ok(())
             })?;
         }
         Ok(out)
+    }
+
+    /// Whether a held request names a delta of `parts` of `c` and does not drop it: a delete that
+    /// took the body at a host may be that request's, not its keep bounds' (spec/sync.md §6).
+    pub fn named_by_a_fallen_purge(&mut self, c: &CommitId, parts: &[(usize, usize)]) -> Result<bool> {
+        let (c, ais): (CommitId, BTreeSet<usize>) = (*c, parts.iter().map(|p| p.0).collect());
+        self.run(|tx| {
+            let Some(h) = tx.core.ix.commits.get(&c).map(|m| m.header.clone()) else { return Ok(false) };
+            for ai in ais {
+                let Some(a) = h.aspects.get(ai) else { continue };
+                for pc in purge_requests(tx, &a.tid, &a.ak)? {
+                    let Some(p) = tx.core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
+                    let items = || p.purge.iter().filter(|i| i.tid() == &a.tid && i.ak() == &a.ak);
+                    if items().any(|i| names(&p, i, &h, &c)) && !items().any(|i| purge_allowed(tx.core, &p, &pc, i, &h, &c, ai)) {
+                        return Ok(true);
+                    }
+                }
+            }
+            Ok(false)
+        })
     }
 
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).

@@ -964,6 +964,77 @@ pub fn purge_tombstones(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
+/// A purge that falls through a host (spec/permissions.md §8): admin `a` is cut off holding a
+/// permanent message and removes admin `x`; `x`, not knowing, purges it (the seed: stamped before or
+/// after the removal); the others drop the body and it goes from the host. `a` comes back: every
+/// node left takes the body again and shows no purge, and nobody deletes it again (`sim.finish`
+/// fails on a loop).
+pub fn purge_falls(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x7c);
+    let mut sim = sim("purge_falls", seed, NetWeights { crash: 0, restart: 0, partition: 0, heal: 0, ..NetWeights::default() });
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let x = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, px, pb] = persons(&mut sim, [a, x, b], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(px, Role::Admin), (pb, Role::Write)])?;
+    let t = sim.item(a, g)?;
+    sim.quiet(40)?;
+    let k = super::scenarios::ak(&sim, &workload::NOTE)?;
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() };
+    let mut m = Mutation::new();
+    m.retention(t, &workload::NOTE, forever).map_err(|e| sim.fail(e.to_string()))?;
+    m.set(t, &workload::NOTE, &Value::Str("kept".into())).map_err(|e| sim.fail(e.to_string()))?;
+    let c = sim.commit(b, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
+    sim.quiet(40)?;
+    use super::Party::{N, S};
+    let cut = [(N(a), S(s)), (N(a), N(b)), (N(a), N(x))];
+    for (p, q) in cut {
+        sim.partition(p, q);
+    }
+    let purge = |sim: &mut NetSim| -> Res<()> {
+        let mut m = Mutation::new();
+        m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.set(t, &workload::NOTE, &Value::Str("purged".into())).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(x, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
+        Ok(())
+    };
+    let backdated = d.pct(50);
+    if backdated {
+        purge(&mut sim)?;
+    }
+    sim.remove(a, g, px)?;
+    if !backdated {
+        sim.run(5)?;
+        purge(&mut sim)?;
+    }
+    for _ in 0..20 {
+        sim.run(30)?;
+        if !sim.engine(b)?.body_not_dropped(&c, &t, &k) {
+            break;
+        }
+    }
+    if sim.engine(b)?.body_not_dropped(&c, &t, &k) {
+        return Err(sim.fail("the purge never reached the writer"));
+    }
+    sim.excused.insert(x);
+    for (p, q) in cut {
+        sim.heal(p, q);
+    }
+    sim.reconnect_all();
+    sim.run(40)?;
+    sim.run_until_quiescent(40)?;
+    for n in [a, b] {
+        let en = sim.engine(n)?;
+        let back = en.core.ix.commits.get(&c).is_some_and(|m| m.missing.is_empty() && m.dropped.is_empty());
+        let shown = en.purged_on(&t, &k).map_err(|e| sim.fail(e.to_string()))?;
+        if !back || !shown.is_empty() {
+            return Err(sim.fail(format!("node {n}: the body back {back}, purges shown {shown:?}")));
+        }
+    }
+    sim.finish()
+}
+
 /// Writers online together (spec/sync.md §5, §6): an admin and three writers of one group, all
 /// online, while two readers are granted at once and the admin writes items; time moves a
 /// second at a time (continuous enough for the relay wait). Expected: each content body the

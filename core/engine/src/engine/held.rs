@@ -151,6 +151,37 @@ impl Held {
         set
     }
 
+    /// `t`'s possible writers: the least set holding the possible admins of `t` and of each member,
+    /// and any holder named with write or above on `t` or a member by one of that thing's possible
+    /// admins, of any validity (a member's writers reach `t` through it). Monotone as `ever_admins`
+    /// is, so a forger is in it only if a possible admin named it.
+    pub fn ever_writers(&self, t: &Tid) -> BTreeSet<Tid> {
+        let (mut set, mut todo, mut seen) = (BTreeSet::new(), vec![*t], BTreeSet::from([*t]));
+        while let Some(c) = todo.pop() {
+            let admins = self.ever_admins(&c);
+            let edges = self.commits_on(&c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Write)).map(|o| (r.author, o.holder)));
+            let snaps = self.snapshots_of(&c).iter().flat_map(|s| {
+                let roster = s.roster.iter().filter(|(_, e)| e.role >= Role::Write).map(|(h, _)| *h);
+                roster.chain(s.ledger.iter().filter(|l| l.role >= Role::Write).map(|l| l.holder)).map(|h| (s.author, h))
+            });
+            for (by, h) in edges.chain(snaps) {
+                if admins.contains(&by) {
+                    set.insert(h);
+                    if seen.insert(h) {
+                        todo.push(h);
+                    }
+                }
+            }
+            for a in admins {
+                set.insert(a);
+                if seen.insert(a) {
+                    todo.push(a);
+                }
+            }
+        }
+        set
+    }
+
     fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {
         let old = match r {
             Some(r) => {
@@ -533,6 +564,8 @@ mod tests {
             inputs.iter().for_each(|i| add(&mut one, i));
             let want = one.ever_admins(&t.tid());
             assert_eq!(want, least(&one, t.tid()));
+            let writers = one.ever_writers(&t.tid());
+            assert!(want.is_subset(&writers));
             // a shuffled order: every prefix a subset, the end alike
             for k in (1..inputs.len()).rev() {
                 inputs.swap(k, rng(k as u64 + 1) as usize);
@@ -547,6 +580,7 @@ mod tests {
                 last = now;
             }
             assert_eq!(last, want);
+            assert_eq!(h.ever_writers(&t.tid()), writers);
             // forgeries by an outsider and by whom it names: nothing moves
             if let Some(out) = a.iter().copied().find(|x| !want.contains(x)) {
                 let puppet = Tid::of_record(&actor(99));
@@ -555,6 +589,9 @@ mod tests {
                 h.add_commit(grant(1002, puppet, t.tid(), a[0], Role::Admin));
                 h.add_snapshot(roster(1003, puppet, t.tid(), out, Role::Admin));
                 assert_eq!(h.ever_admins(&t.tid()), want);
+                if !writers.contains(&out) {
+                    assert_eq!(h.ever_writers(&t.tid()), writers);
+                }
             }
             assert!(want.contains(&a[0]), "the owner's owner");
         }
