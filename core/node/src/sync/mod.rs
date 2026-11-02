@@ -1343,6 +1343,8 @@ impl SyncEngine {
             self.receipts_refused(conn, l, fetch);
         }
         match e {
+            // the node's own dials send no client-port requests
+            E::Reply { .. } | E::Notify { .. } => {}
             // Hellos done: every label this host holds starts opening
             E::Ready { .. } => self.add_new_labels(out)?,
             E::ClockOffset { offset_ms, .. } => {

@@ -98,7 +98,7 @@ impl Run {
                 ServingOutput::Send(b) => self.down.push(b, "host"),
                 ServingOutput::Close => panic!("host closed"),
                 ServingOutput::StoreError(e) => panic!("{e}"),
-                ServingOutput::Changed(_) | ServingOutput::Relay(_) | ServingOutput::PeerError(_) => {}
+                ServingOutput::Changed(_) | ServingOutput::Relay(_) | ServingOutput::PeerError(_) | ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
             }
         }
     }

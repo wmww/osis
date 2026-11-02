@@ -665,6 +665,7 @@ impl SyncEngine {
                 ServingOutput::Relay(r) => relays.push(r),
                 ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
                 ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
+                ServingOutput::Request(_) | ServingOutput::Room { .. } => {}
             }
         }
         // a relay-only entry: delivered here and passed on (the other served sessions, the

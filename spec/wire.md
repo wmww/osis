@@ -152,7 +152,7 @@ Card := [1, seed, person, home_label, [address+]]
 ### 11.1 Framing and handshake
 - Each direction of the stream (spec/sync.md §10) is a sequence of frames: a 4-byte big-endian length `len`, `1 <= len <= MAX_MESSAGE` (9 MiB, 9 437 184 bytes), then one canonical CBOR item of `len` bytes. A frame breaking a rule of this section is answered by Error 2 and may end the connection.
 - Each side sends `Hello := ["osis", [version+], wall_ms, challenge]` as its first frame, without waiting for the other's: supported protocol versions strictly ascending (at most 16; the Hello frame at most 256 bytes), its corrected wall clock, 32 random bytes. The session uses the greatest version both list; with none in common, both close. This section defines version 1.
-- Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it. `id` is 0 in a Push and nonzero in every request and reply, except an Error answering a frame whose id cannot be read, which carries 0; any other id 0 (or a Push with another id) is malformed. Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
+- Every later frame is a message `[kind, id, ...]`. `id < 2^32` is chosen by the requesting side and not reused while its request is outstanding; replies carry it. `id` is 0 in a Push and a Notify and nonzero in every request and reply, except an Error answering a frame whose id cannot be read, which carries 0; any other id 0 (or a Push or Notify with another id) is malformed. A Sub's id names its subscription and is not reused (by any request) until its Unsub is answered, a Notify `[1]` for it arrived, or its Sub was answered otherwise than by Reply `[0, ..]`; a Sub reusing a live subscription's id is answered Error 2. Either side may send requests. A request of unknown kind gets Error 11. Replies may arrive in any order.
 - **Static key** of a side: the 32-byte key the transport authenticated for it (the key of the address dialed or listened on: a host's address key; a peer's dialable key, or the LAN transport key it announced). An open signature binds the opened side's static key and Hello challenge.
 - Clock offset (spec/sync.md §6) is estimated from Ping/Pong round trips and Hello.
 
@@ -177,12 +177,20 @@ Fetch     [19, id, label_id, [blob_id+]]       -> FetchReply [20, id, [[blob_id,
 Subscribe [21, id, [label_id+]]                -> Status
 Unsubscribe [22, id, [label_id+]]              -> Ok
 Push      [23, 0, label_id, [event+], cursor]
+Auth      [24, id, Opt(client_pk), session_id, Opt(sig)] -> Reply [0, seq, node_epoch] | Error
+Call      [25, id, max_reply, method, [arg*]]  -> Reply | Error
+Reply     [26, id, outcome]
+Sub       [27, id, max_reply, filter]          -> Reply | Error
+Unsub     [28, id, sub_id]                     -> Ok
+Notify    [29, 0, sub_id, payload]
 
 proof  := [0, sync_pk, sig] | [1, step_id, claim_pk, sig] | [2, signing_pk, sig] | [3, dialable_pk, sig]
 entry  := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]
 replace := [blob_id, sig] | [blob_id, level, dsig, sig]
 item   := [blob_id, Opt(at), Opt([level, dsig]), sig]
 cursor := [log_id, seq]
+outcome := [0, seq, value] | [1, code, detail*]
+payload := [0, seq, value] | [1] | [2, seq, value]
 event  := [0, blob_id, Opt(blob), wrap, Opt(stamp)] | [1, blob_id] | [2, blob_id, at] | [3, step]
 range  := [lower, upper, mode]
 mode   := [0, fingerprint] | [1, [blob_id*]] | [2, [blob_id*], [blob_id*]]
@@ -200,6 +208,7 @@ Steps and claim sets (§8) and `entry_box` (a `box` value, §7) are their canoni
 - **Events**: 0 an entry added or its wrap and stamp replaced (no stamp: deposited), 1 deleted, 2 a timed deletion pending at `at`, 3 a new head (without claim set). Expiry produces no event.
 - **Fetch** (spec/sync.md §5): items in request order, possibly a prefix of the request when the reply would exceed `MAX_MESSAGE`.
 - **Subscribe** (opened labels): the peer then sends Push with each new run of log events after the cursor of the label's last Sync on this connection that returned `more` false (else after the log head at Subscribe), with blobs as in Sync under the connection's last `inline_limit` for that label, and the relay-only entries other connections upload.
+- **Client port** (kinds 24-29): served only on a node's own listeners; any other side answers them Error 11. `session_id` and `node_epoch` are 16 bytes; an Owner session (the unix transport, spec/sync.md §10) sends Auth with neither `client_pk` nor `sig`; a keyed Auth is answered Error 1 (no credentials yet). Auth is answered Reply `[0, seq, node_epoch]` (`node_epoch` 16 random bytes per node process start). A Call or Sub before an Auth answered by Reply is answered Error 1. `max_reply` is in `SMALL_REPLY..=REPLY_BUDGET` (`SMALL_REPLY` = `MAX_MESSAGE` − `REPLY_BUDGET`, `REPLY_BUDGET` = `MAX_MESSAGE` − 64 KiB): a Reply whose message exceeds it is replaced by `[1, 5, max_reply]`; a Notify that would exceed its Sub's `max_reply` is sent as `[1]`. `method`, `arg`, `filter`, `value` and `detail` are defined by the method table (notes/client-port.md until stable); `seq` is the node's change sequence when the call ran or the delivery was made. Error codes of an outcome: 1 unknown thing `[tid]`, 2 unknown actor `[tid]`, 3 permission `[tid, role]`, 4 type `[path, text]`, 5 too large `[limit]`, 6 not undoable `[change, reason]`, 7 unsynced `[[tid*]]`, 8 invalid, 9 storage, 10 network, 11 unsupported (`[text]` each); an unknown method is `[1, 11, text]`. Payload `[0, ..]` is a delivery, `[1]` the subscription lapsed (its id is free), `[2, seq, source]` a delivery above `max_reply`. Flow control (spec/sync.md §6): a Call or Sub's reply allowance is its `max_reply`, Auth's and Unsub's `SMALL_REPLY`; Notifies follow the push rule. At most `MAX_SUBS` (4096) live subscriptions per connection, counted apart from open labels (Error 4 past it).
 - Once one signature of a message verifies under no key the host tries (code 1), it MAY check the message's later signatures against the head's keys only (code 1 where 9 would be due).
 - Code 9 refuses a signature under an earlier key of the label's role (a host answers it for some recent earlier keys, 1 past them) and carries nothing more, never the head: the signer learns the head where it opened the label (a push or Sync event, spec/sync.md §5) and signs again once it holds a newer key.
 - Status codes: 0 ok, 1 refused, 2 malformed, 3 too large (a relay-only blob above `MAX_RELAY_BLOB`; a host answers an oversized message as malformed, 2), 4 rate limited, 5 deposit budget full, 6 tombstoned, 7 expired, 8 label not opened, 9 key not of the head, 10 cursor invalid, 11 unsupported, 12 storage cap reached, 13 unknown label, 14 not admitted, 15 log trimmed.

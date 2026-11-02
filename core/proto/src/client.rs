@@ -41,14 +41,15 @@ pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
 pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 
 /// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
-/// Path, Sync, Reconcile and Fetch, `SMALL_REPLY` for every other request, 0 for a message that is
-/// no request.
+/// Path, Sync, Reconcile and Fetch, its `max_reply` for a Call or Sub, `SMALL_REPLY` for every
+/// other request, 0 for a message that is no request.
 pub fn allowance(msg: &Message) -> usize {
     use Message as M;
     match msg {
         M::Path { .. } | M::Sync { .. } | M::Reconcile { .. } | M::Fetch { .. } => MAX_MESSAGE,
-        M::Ping { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } => SMALL_REPLY,
-        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } => 0,
+        M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
+        M::Ping { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } => SMALL_REPLY,
+        M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } => 0,
     }
 }
 /// Clock samples kept.
@@ -106,6 +107,13 @@ pub enum Command {
     Unsubscribe { labels: Vec<LabelId> },
     /// Stop following a label's Path pages (the node no longer wants them).
     StopPath { label: LabelId },
+    /// Client port (notes/client-port.md §2): `token` is the caller's, echoed in the events.
+    /// Auth of an Owner session (no key) with the client's session id.
+    Auth { token: u64, session: [u8; 16] },
+    Call { token: u64, max_reply: u64, method: u64, args: Vec<osis_base::Value> },
+    /// A subscription named by `token` until `Unsub` or a `Lapsed` Notify.
+    Sub { token: u64, max_reply: u64, filter: osis_base::Value },
+    Unsub { token: u64 },
     Close,
 }
 
@@ -161,6 +169,10 @@ pub enum ClientEvent {
     Refused { label: Option<LabelId>, kind: Request, code: Code, fetch: Vec<BlobId> },
     /// The peer broke a protocol rule (diagnostic); a paged exchange it broke is abandoned.
     PeerError(Error),
+    /// The answer to an Auth, Call or Sub: a Reply, or the code of the Error answering it.
+    Reply { token: u64, reply: Result<crate::api::Outcome, Code> },
+    /// A Notify of a live subscription (after `Lapsed` the token is free).
+    Notify { token: u64, payload: crate::api::Payload },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -195,6 +207,8 @@ pub enum Request {
     Fetch,
     Subscribe,
     Unsubscribe,
+    /// A client-port request.
+    Api,
 }
 
 #[derive(Clone, Debug)]
@@ -215,6 +229,10 @@ enum Pending {
     Fetch(LabelId, Vec<BlobId>),
     Subscribe(Vec<LabelId>),
     Unsubscribe,
+    /// An Auth, Call or Sub with its token.
+    Api(u64),
+    /// An Unsub of subscription id.
+    ApiUnsub(Id),
 }
 
 impl Pending {
@@ -222,7 +240,7 @@ impl Pending {
         match self {
             Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, _) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
-            Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe => None,
+            Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
     }
 
@@ -239,7 +257,8 @@ impl Pending {
             Pending::Reconcile(..) => Request::Reconcile,
             Pending::Fetch(..) => Request::Fetch,
             Pending::Subscribe(_) => Request::Subscribe,
-            Pending::Unsubscribe => Request::Unsubscribe,
+            Pending::Unsubscribe | Pending::ApiUnsub(_) => Request::Unsubscribe,
+            Pending::Api(_) => Request::Api,
         }
     }
 }
@@ -293,6 +312,9 @@ pub struct ClientSession {
     samples: VecDeque<OffsetSample>,
     pongs: usize,
     recs: BTreeMap<LabelId, Rec>,
+    /// Subscription ids reserved (spec/wire.md §11.1): from their Sub until the Unsub is
+    /// answered or a Notify `Lapsed`; the token while delivered (none once unsubscribing).
+    api_subs: BTreeMap<Id, Option<u64>>,
 }
 
 impl ClientSession {
@@ -318,6 +340,7 @@ impl ClientSession {
             samples: VecDeque::new(),
             pongs: 0,
             recs: BTreeMap::new(),
+            api_subs: BTreeMap::new(),
         }
     }
 
@@ -457,9 +480,14 @@ impl ClientSession {
 
     /// Queues a request; `flush` sends it when the window has room.
     fn request(&mut self, msg: impl FnOnce(Id) -> Message, pending: Pending) {
+        self.request_id(msg, pending);
+    }
+
+    /// `request`, returning the id it took.
+    fn request_id(&mut self, msg: impl FnOnce(Id) -> Message, pending: Pending) -> Id {
         loop {
             self.next_id = self.next_id.wrapping_add(1);
-            if self.next_id != 0 && !self.pending.contains_key(&self.next_id) {
+            if self.next_id != 0 && !self.pending.contains_key(&self.next_id) && !self.api_subs.contains_key(&self.next_id) {
                 break;
             }
         }
@@ -467,6 +495,7 @@ impl ClientSession {
         self.pending.insert(id, Req { cost: None, cmd: self.tag, p: pending });
         *self.open.entry(self.tag).or_insert(0) += 1;
         self.waiting.push_back((id, msg(id)));
+        id
     }
 
     fn command(&mut self, c: Command, out: &mut Vec<ClientOutput>) {
@@ -551,6 +580,22 @@ impl ClientSession {
                         r.p = Pending::PathStopped(label);
                     }
                 }
+            }
+            Command::Auth { token, session } => {
+                self.request(|id| Message::Auth { id, client_pk: None, session, sig: None }, Pending::Api(token));
+            }
+            Command::Call { token, max_reply, method, args } => {
+                self.request(|id| Message::Call { id, max_reply, method, args }, Pending::Api(token));
+            }
+            Command::Sub { token, max_reply, filter } => {
+                let id = self.request_id(|id| Message::Sub { id, max_reply, filter }, Pending::Api(token));
+                self.api_subs.insert(id, Some(token));
+            }
+            Command::Unsub { token } => {
+                let Some(sub) = self.api_subs.iter().find(|(_, t)| **t == Some(token)).map(|(i, _)| *i) else { return };
+                self.api_subs.insert(sub, None);
+                // a Sub still unanswered: its reply frees the id (the Unsub is sent after it)
+                self.request(|id| Message::Unsub { id, sub }, Pending::ApiUnsub(sub));
             }
             Command::Close => self.close(out),
         }
@@ -658,6 +703,15 @@ impl ClientSession {
                 let syncing = self.pending.values().any(|r| matches!(r.p, Pending::Sync { label: l, .. } | Pending::Reconcile(l, _) if l == label));
                 event(out, ClientEvent::Events { label, events, cursor: (!syncing).then_some(cursor) })
             }
+            Message::Notify { sub, payload } => {
+                let lapsed = payload == crate::api::Payload::Lapsed;
+                if let Some(Some(token)) = self.api_subs.get(&sub).copied() {
+                    event(out, ClientEvent::Notify { token, payload });
+                }
+                if lapsed {
+                    self.api_subs.remove(&sub);
+                }
+            }
             m if m.is_request() => send(out, Message::Error { id: m.id(), code: Code::UNSUPPORTED }),
             m => self.reply(now, m, out),
         }
@@ -702,6 +756,27 @@ impl ClientSession {
                 }
             }
             (Pending::Fetch(label, ids), M::Error { code, .. }) => event(out, E::Refused { label: Some(label), kind: Request::Fetch, code, fetch: ids }),
+            (Pending::Api(token), M::Error { id, code }) => {
+                // a refused Sub's id is free; one unsubscribed meanwhile has nobody waiting
+                if self.api_subs.remove(&id) != Some(None) {
+                    event(out, E::Reply { token, reply: Err(code) });
+                }
+            }
+            (Pending::Api(token), M::Reply { id, outcome }) => {
+                let live = self.api_subs.get(&id).copied();
+                if !matches!(outcome, crate::api::Outcome::Ok { .. }) {
+                    self.api_subs.remove(&id);
+                }
+                // a Sub unsubscribed before its reply: nobody waits for it any more
+                if live != Some(None) {
+                    event(out, E::Reply { token, reply: Ok(outcome) });
+                }
+            }
+            (Pending::ApiUnsub(sub), M::Ok { .. } | M::Error { .. }) => {
+                if self.api_subs.get(&sub) == Some(&None) {
+                    self.api_subs.remove(&sub);
+                }
+            }
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
