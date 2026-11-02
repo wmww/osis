@@ -46,7 +46,8 @@ impl Osis {
     }
 
     /// Starts, changes or (none) stops hosting: writes this node's `host.0^`. Stopping
-    /// shreds the host secret; a later start has a new host address. Fails `Invalid` on an
+    /// shreds the host secret and erases the host store; a later start has a new host address
+    /// and an empty store. Fails `Invalid` on an
     /// unknown policy knob.
     pub fn set_hosting(&self, h: Option<Hosting>) -> Result<()> {
         let node = self.node();

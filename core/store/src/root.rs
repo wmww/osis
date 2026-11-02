@@ -35,6 +35,8 @@ pub trait RootStorage: Send {
     fn repair(&mut self) -> Result<(), BackendError> {
         Ok(())
     }
+    /// Destroys the record durably (crypto-shredding the store it keys) and whatever holds it.
+    fn erase(&mut self) -> Result<(), BackendError>;
 }
 
 /// In-memory root. Clones share the slot (a test reopens the store over it); obeys the device's
@@ -70,6 +72,11 @@ impl RootStorage for MemoryRoot {
     }
     fn tier(&self) -> RootTier {
         RootTier::Memory
+    }
+    fn erase(&mut self) -> Result<(), BackendError> {
+        self.faults.check()?;
+        *self.slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+        Ok(())
     }
 }
 
@@ -196,6 +203,19 @@ mod file {
             self.write_slot(&mut f, 0, &bytes)?;
             self.write_slot(&mut f, 1, &bytes)
         }
+
+        /// Overwrites both slots in place, then removes the file.
+        fn erase(&mut self) -> Result<(), BackendError> {
+            let mut f = match OpenOptions::new().write(true).open(&self.path) {
+                Ok(f) => f,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(e) => return Err(io(e)),
+            };
+            self.write_slot(&mut f, 0, &[0; SLOT])?;
+            self.write_slot(&mut f, 1, &[0; SLOT])?;
+            drop(f);
+            std::fs::remove_file(&self.path).map_err(io)
+        }
     }
 }
 
@@ -241,6 +261,11 @@ mod tests {
         r.repair().unwrap();
         assert!(!std::fs::read(&path).unwrap().windows(32).any(|w| w == [0xc3; 32]), "old key left after repair");
         assert_eq!(r.load().unwrap(), Some(rec(4, 0xd4)));
+        // Erase: no record, no file; a second erase finds nothing.
+        r.erase().unwrap();
+        assert!(!path.exists());
+        assert_eq!(r.load().unwrap(), None);
+        r.erase().unwrap();
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
