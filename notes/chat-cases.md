@@ -214,6 +214,36 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Can a chat have forward secrecy at all? | yes | core m | core m | core m | no! core m | core m |
 | Kick or lost device in a 1000-member group under 10 MB upload with forward secrecy? | yes | – | – | – | – | – |
 
+## Spaces (Discord- or Slack-style, over E chats)
+
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Does removing a member from the space remove them from every channel at once? | yes | – | – | – | – | yes |
+| Is that removal one commit, with no half-done state if the kicker stops? | yes | – | – | – | – | yes⁴¹ |
+| Removal under 10 MB upload at 1000 members and 100 channels? | yes | – | – | – | – | yes⁴¹ |
+| Removal under 10 MB upload at 100,000 members (nested rosters) and 100 channels? | yes | – | – | – | – | yes⁴² |
+| Does each member's device download every other member's device card? | no | – | – | – | – | yes⁴³! core r |
+| Kick pre-sync across 100 channels under a minute? | yes | – | – | – | – | ? |
+| Can a mod mute or ban one member in one channel while they hold "everyone"? | yes | – | – | – | – | opt*⁴⁴ |
+| Can a mod delete messages in some channels and not others? | yes | – | – | – | – | yes |
+| Can a mod delete messages without also being able to lock the channel or change its roster? | yes | – | – | – | – | no! |
+| Can role holders add and remove others of their role? | opt | – | – | – | – | yes⁴⁵ |
+| Read-only announcement channel where members can react? | yes | – | – | – | – | opt⁴⁶ |
+| Can any member create a channel that appears in the space? | opt | – | – | – | – | opt⁴⁷ |
+| Can non-members see that a private channel exists? | no | – | – | – | – | opt⁴⁸ |
+| Can a member post as the "everyone" role? | no | – | – | – | – | opt³⁹ |
+| Must a member sync every channel? | no | – | – | – | – | no |
+| Unread counts for channels not synced? | yes | – | – | – | – | core o |
+| Mentions in channels not synced? | yes | – | – | – | – | core h |
+| Threads without a new actor per thread? | yes | – | – | – | – | yes⁴⁹ |
+| The same chat in two spaces? | yes | – | – | – | – | yes |
+| Move a chat between spaces without copying it? | yes | – | – | – | – | yes |
+| A space inside a space, members inherited? | yes | – | – | – | – | yes |
+| Is the kick and role history an audit log members can read? | yes | – | – | – | – | yes⁵⁰ |
+| Space-wide read-only mode in one step? | yes | – | – | – | – | opt*⁵¹ |
+| Per-member rate limits? | yes | – | – | – | – | no! |
+| A space with no admin left: posting still works? | yes | – | – | – | – | yes |
+
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
@@ -230,6 +260,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
 - **o** Partial and newest-first fetch of a label (issues/partial-history-fetch.md).
 - **p** Verified actor: a commit is invalid unless its author could write as its `actor` (issues/header-actor-unverified.md); until then E uses the display rule of footnote 39.
+- **r** Node-card opt-out per label for huge rosters: a reader's node card and chain under a label only where its roster is small or on request (spaces at 100,000 members).
 - **q** Purge modes not nested: author-only (admins cannot purge) becomes a setting beside `admin` and `nobody` (issues/purge-rights-not-nested.md).
 
 ## Footnotes
@@ -274,3 +305,14 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 38. E: default yes; author-only purge (admins cannot delete) is a chat setting once purge modes are unnested (core q, unbuilt).
 39. E: the header's actor is unverified today; the app shows a sender only if its signing device could write as that actor and the actor could write on the chat just before the commit (from held chain certificates); core p removes the rule.
 40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 2.5x10^5 messages.
+41. The removal and the members actor's rotation are one commit (2.7 KB per member); each channel is re-keyed lazily by its next poster, about 7 KB each, so 100 channels cost about 0.7 MB spread over posters.
+42. Tier of 1000 rotated (2.7 MB), then the members actor (100 boxes), then channels lazily; estimated.
+43. Every tracking device places its card (about 1.5 KB) under the members actor's label, which every member reads: about 200 MB per device at 100,000 members, estimated.
+44. By rights no: a role is the maximum over paths. Mods write a muted set; honest clients hide and mods purge; a modified client still posts.
+45. Admin on a role actor is the only way to convey admin through it, and admins manage the actor's roster; direct per-channel grants avoid it at one grant per channel.
+46. A sister chat granting "everyone" write carries the reactions; the app shows them under the announcement.
+47. Default: only mods write the space's list; a member creates a chat and asks a mod to list it.
+48. Private channels go in a sub-list whose own label only the private role reads.
+49. Threads and forum posts are reply chains inside the channel, grouped by the app.
+50. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
+51. Rights: demote "everyone" on each channel, one commit per channel; one step only as a client-honored space flag.
