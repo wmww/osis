@@ -662,16 +662,15 @@ fn open_equals_rebuild_after_a_crash() {
     assert!(crashed_any);
 }
 
-/// A frontier covering `x`'s writes on `t`'s tags up to `n`, padded past `CHUNK_THRESHOLD` when
-/// `big` (it then goes by link).
-fn tags_frontier(t: Tid, x: Tid, n: u64, big: bool) -> ct::Frontier {
-    let tags = |n: u64| std::collections::BTreeMap::from([("t:tags.0".to_string(), std::collections::BTreeMap::from([(x, n)]))]);
-    let mut writes = std::collections::BTreeMap::from([(t, tags(n))]);
+/// A frontier listing `commits`, padded past `CHUNK_THRESHOLD` when `big` (it then goes by
+/// link).
+fn listing(commits: &[osis_base::CommitId], big: bool) -> ct::Frontier {
+    let mut f = ct::Frontier { commits: commits.iter().copied().collect() };
     for i in 0..if big { 4000u32 } else { 0 } {
         let b = i.to_be_bytes();
-        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags(5));
+        f.commits.insert(osis_base::CommitId([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
     }
-    ct::Frontier { writes, commits: Default::default() }
+    f
 }
 
 // spec/requirements.md, Decentralization; spec/permissions.md §5.1 (a demotion's frontier keeps
@@ -694,15 +693,17 @@ fn open_equals_rebuild_after_demotions_and_a_roster_snapshot() {
         m.frontier(f.to_value());
         lp.peers[0].commit(m).unwrap().unwrap()
     };
+    let mut received = Vec::new();
     for (n, big) in [(1, false), (2, true)] {
         set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Write)), None);
         lp.sync_all().unwrap();
         let got = add_tag(&mut lp, 1, t, &format!("x{n}"));
+        received.push(got);
         // a write the demoter has not received: dropped by the frontier
         add_tag(&mut lp, 1, t, &format!("late{n}"));
         let pk = lp.packages(1).unwrap();
         lp.deliver(0, pk.iter().find(|p| p.id == got).unwrap()).unwrap();
-        demote(&mut lp, tags_frontier(t, x, n * 2 - 1, big));
+        demote(&mut lp, listing(&received, big));
         open_equals_rebuild(&mut lp.peers[0].engine, &[t], &format!("demotion {n}"));
         lp.sync_all().unwrap();
         let Some(Value::Set(tags)) = lp.peers[0].engine.get(&t, &ak("t:tags.0")).unwrap() else { panic!("demotion {n}: no tags") };

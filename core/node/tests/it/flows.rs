@@ -2133,7 +2133,6 @@ fn roster_snapshot_certificate_projected_spec_perm_6() {
 // covered writes by it (valid, not dropped as by an empty frontier).
 #[test]
 fn linked_tenure_frontier_spec_perm_6() {
-    use std::collections::BTreeMap;
     let mut lp = net(3, 532);
     let t = new_thing(&mut lp, 0);
     let x = lp.peers[1].engine.tid();
@@ -2141,14 +2140,14 @@ fn linked_tenure_frontier_spec_perm_6() {
     sync(&mut lp, 0, 1);
     add_tag(&mut lp, 1, t, "by x");
     sync(&mut lp, 1, 0);
-    // the frontier covers x's write, padded past the threshold
-    let tags_of = |n: u64| BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(x, n)]))]);
-    let mut writes = BTreeMap::from([(t, tags_of(1))]);
+    let by_x = lp.peers[0].engine.commit_ids().into_iter().find(|c| lp.peers[0].engine.header(c).is_some_and(|h| h.author == x && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).unwrap();
+    // the frontier lists x's write, padded past the threshold
+    let mut commits = BTreeSet::from([by_x]);
     for i in 0..4000u32 {
         let b = i.to_be_bytes();
-        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags_of(5));
+        commits.insert(osis_base::CommitId([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
     }
-    let frontier = osis_schema::Codec::to_value(&ct::Frontier { writes, commits: BTreeSet::new() });
+    let frontier = osis_schema::Codec::to_value(&ct::Frontier { commits });
     assert!(osis_base::encode(&frontier).len() > osis_base::format::CHUNK_THRESHOLD);
     let demotion = set_edge(&mut lp.peers[0].engine, t, x, None, Some(frontier));
     assert!(lp.peers[0].engine.header(&demotion).unwrap().links.frontier.is_some(), "the header frontier goes by link");
@@ -2248,13 +2247,10 @@ fn planted_epoch_blocks_no_removal_spec_crypto_4() {
     assert!(after.read.epochs().all(|(e, _)| e.n() <= n0 + 1 || *e == top));
 }
 
-// spec/permissions.md §5.1 Frontier (a received commit not stored is listed by ID), notes/sync.md
-// Receipts-only reads: a node keeps what it applied of a group it holds for receipts only but
-// never uploads it again, so its frontier lists C's edit there by commit ID, never by C's
-// counters (C could delete the edit at the host and sign another on the same counters, which
-// no holder of the first would void).
+// spec/permissions.md §5.1 Frontier (commit IDs only, never counters): a demoter lists C's held
+// edit by its commit ID, whatever group it is under.
 #[test]
-fn receipts_only_frontier_by_id_spec_perm_5_1() {
+fn frontier_lists_commit_ids_spec_perm_5_1() {
     let (mut lp, ps) = people(3, 511);
     let (pa, pc) = (ps[0], ps[2]);
     let t = thing_of(&mut lp, 0, pa);
@@ -2267,12 +2263,8 @@ fn receipts_only_frontier_by_id_spec_perm_5_1() {
     let nc = lp.peers[2].engine.tid();
     let scope = osis_perm::DemotionScope { roles: [(nc, [t].into())].into(), content: [(nc, [t].into())].into() };
     let now = lp.peers[0].engine.now();
-    let held = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    let counted = |f: &ct::Frontier| f.writes.get(&t).is_some_and(|m| m.values().any(|n| n.contains_key(&nc)));
-    assert!(counted(&held) && !e.iter().any(|c| held.commits.contains(c)), "held and synced: by counters {held:?}");
-    lp.peers[0].engine.core.receipts_only.insert(t);
     let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
-    assert!(!counted(&f) && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
+    assert!(!e.is_empty() && e.iter().all(|c| f.commits.contains(c)), "by ID: {f:?}");
 }
 
 // spec/permissions.md §5.1 (frontier: chain certificates as of T): the demoter's own grant by

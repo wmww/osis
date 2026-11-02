@@ -155,9 +155,9 @@ codec_struct! {
     pub struct HistoryKey { 0 role: Role, 1 epoch: Epoch }
 }
 codec_struct! {
-    /// Revoke frontier: tid -> AK -> author node -> counter; commit IDs of commit-form writes.
+    /// Revoke frontier: the commit IDs the demoter received (spec/permissions.md §5.1).
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
-    pub struct Frontier { 0 writes: BTreeMap<Tid, BTreeMap<String, BTreeMap<Tid, u64>>>, 1 commits: BTreeSet<CommitId> }
+    pub struct Frontier { 0 commits: BTreeSet<CommitId> }
 }
 codec_struct! {
     /// A tenure ledger entry; a large frontier is a link.

@@ -16,16 +16,15 @@ fn tags(lp: &mut LocalPeer, i: usize, t: Tid) -> Option<Value> {
     lp.peers[i].engine.get(&t, &osis_base::Ak::new("t:tags.0").unwrap()).unwrap()
 }
 
-/// A frontier covering `x`'s first write on `t`'s `t:tags.0`, padded past `CHUNK_THRESHOLD`
-/// with `pad` (distinct pads give distinct frontiers).
-fn big_frontier(t: Tid, x: Tid, pad: u8) -> ct::Frontier {
-    let tags = |n: u64| BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(x, n)]))]);
-    let mut writes = BTreeMap::from([(t, tags(1))]);
+/// A frontier listing commit `c`, padded past `CHUNK_THRESHOLD` with `pad` (distinct pads give
+/// distinct frontiers).
+fn big_frontier(c: CommitId, pad: u8) -> ct::Frontier {
+    let mut commits = BTreeSet::from([c]);
     for i in 0..4000u32 {
         let b = i.to_be_bytes();
-        writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], pad, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tags(5));
+        commits.insert(CommitId([b[0], b[1], b[2], b[3], pad, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
     }
-    ct::Frontier { writes, commits: BTreeSet::new() }
+    ct::Frontier { commits }
 }
 
 /// Peer 0 owns `t`; peer 1's node wrote a tag as a writer and was demoted with a linked
@@ -47,9 +46,9 @@ fn demoted_writer_of(n: usize) -> (LocalPeer, Tid, Tid, CommitId) {
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
     m.op(t, &osis_base::Ak::new("t:tags.0").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
-    lp.peers[1].commit(m).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync(1, 0).unwrap();
-    edge(&mut lp, t, x, None, Some(big_frontier(t, x, 1).to_value()));
+    edge(&mut lp, t, x, None, Some(big_frontier(c, 1).to_value()));
     let s = *lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits.last().unwrap();
     (lp, t, x, s)
 }
@@ -212,8 +211,8 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
     let me = lp.peers[0].engine.tid();
     let mut m = Mutation::new();
     let t = lp.peers[0].engine.new_thing(&mut m, me);
-    lp.peers[0].commit(m).unwrap();
-    let f1 = big_frontier(t, me, 1).to_value();
+    let made = lp.peers[0].commit(m).unwrap().unwrap();
+    let f1 = big_frontier(made, 1).to_value();
     let size = osis_base::encode(&f1).len();
     let same: Vec<Value> = (0..40u8).map(|i| tenure(Tid::from_bytes([i; 15]), Some(f1.clone()))).collect();
     let c = raw_snapshot(&mut lp, t, same);
@@ -226,7 +225,7 @@ fn linked_frontier_amplification_bound_spec_perm_6() {
         })
     };
     assert_eq!(check(&mut lp, c, size + 64).unwrap(), 1, "forty tenures, one frontier read");
-    let two = vec![tenure(Tid::from_bytes([1; 15]), Some(f1)), tenure(Tid::from_bytes([2; 15]), Some(big_frontier(t, me, 2).to_value()))];
+    let two = vec![tenure(Tid::from_bytes([1; 15]), Some(f1)), tenure(Tid::from_bytes([2; 15]), Some(big_frontier(made, 2).to_value()))];
     let c2 = raw_snapshot(&mut lp, t, two);
     assert!(matches!(check(&mut lp, c2, size + 64), Err(crate::Error::BadInput(_))));
     assert_eq!(check(&mut lp, c2, 3 * size).unwrap(), 2);
@@ -291,15 +290,14 @@ fn tenure_with_frontier_under_threshold_spec_perm_6() {
     lp.sync(0, 1).unwrap();
     let mut m = Mutation::new();
     m.op(t, &osis_base::Ak::new("t:tags.0").unwrap(), PathOp { path: Vec::new(), op: Op::Add(Value::Str("by x".into())) }).unwrap();
-    lp.peers[1].commit(m).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
     lp.sync(1, 0).unwrap();
     // the largest frontier of this shape at or under the threshold
-    let tw = |n: u64| BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(x, n)]))]);
     let frontier = |n: u32| {
-        let mut f = ct::Frontier { writes: BTreeMap::from([(t, tw(1))]), commits: BTreeSet::new() };
+        let mut f = ct::Frontier { commits: BTreeSet::from([c]) };
         for i in 0..n {
             let b = i.to_be_bytes();
-            f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), tw(5));
+            f.commits.insert(CommitId([b[0], b[1], b[2], b[3], 9, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]));
         }
         f
     };

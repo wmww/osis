@@ -47,7 +47,7 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                 // layer 2 there (re-grant's first tenure is carried over `extend`)
                 let p = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..a.point };
                 for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
-                    if part.delta_valid(p, &t, "x.0", osis_perm::Dots::Commit, r) != full.delta_valid(p, &t, "x.0", osis_perm::Dots::Commit, r) {
+                    if part.delta_valid(p, &t, r) != full.delta_valid(p, &t, r) {
                         return Some(format!("validity of {n:?}'s {r:?} delta on {t:?} at {p:?}"));
                     }
                 }
@@ -375,7 +375,7 @@ fn late_write_mid_history_keeps_states_exact() {
     for x in &n {
         for a in tl.applied().values() {
             for r in [Read, Write, Admin] {
-                let _ = tl.delta_valid(osis_perm::Point { node: *x, ..a.point }, &g, "x.0", osis_perm::Dots::Commit, r);
+                let _ = tl.delta_valid(osis_perm::Point { node: *x, ..a.point }, &g, r);
             }
         }
     }

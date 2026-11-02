@@ -1156,12 +1156,12 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
 
 // spec/commits.md §5 (a snapshot dropped at its bound keeps its frontiers), spec/permissions.md
 // §5.1, notes/testing.md budgets: B (1) gets the owner's writes only through K snapshots of one
-// map key, each received a bucket apart and dropped at its keep-at-most bound once the next
-// replaces it; then B's receipt (a delta wait's read) and its demotion frontier for the owner.
+// map key, each received apart and dropped at its keep-at-most bound once the next replaces it;
+// then B's demotion frontier for the owner (it lists the snapshots, received, none covered).
 // `OSIS_SCALE_N` sets K (default 1000; 5 commits per snapshot).
 #[test]
 #[ignore = "tier 2"]
-fn dropped_snapshot_receipts_cost_spec_commits_5() {
+fn dropped_snapshot_frontier_cost_spec_commits_5() {
     let k: usize = size("OSIS_SCALE_N", 1000, 1000);
     let mut lp = osis_node::local_peer::LocalPeer::new(2, 47, WallMs(1_700_000_000_000)).unwrap();
     let me = lp.peers[0].engine.tid();
@@ -1188,17 +1188,13 @@ fn dropped_snapshot_receipts_cost_spec_commits_5() {
     let fill = t0.elapsed();
     let e = &mut lp.peers[1].engine;
     let kept = e.drop_counts()[2];
-    let t1 = Instant::now();
-    let r = e.receipt(&t, &key).unwrap();
-    let receipt = t1.elapsed();
     let scope = osis_perm::DemotionScope { roles: BTreeMap::new(), content: BTreeMap::from([(me, BTreeSet::from([t]))]) };
     let now = e.now();
     let t2 = Instant::now();
     let f = e.frontier(&scope, now).unwrap();
     let frontier = t2.elapsed();
-    assert!(r.contiguous(&osis_crdt::Source::node(me), u64::MAX) >= (5 * k) as u64);
-    assert!(!f.writes.is_empty());
-    println!("k={k} ({kept} kept): fill {fill:?}; receipt {receipt:?}; demotion frontier {frontier:?}");
+    assert!(f.commits.len() >= k);
+    println!("k={k} ({kept} kept): fill {fill:?}; demotion frontier {frontier:?} ({} commits)", f.commits.len());
 }
 
 /// Resident set size of this process (KiB; Linux).

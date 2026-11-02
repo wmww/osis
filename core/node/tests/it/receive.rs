@@ -72,7 +72,10 @@ fn pending_until_created_spec_commits_4() {
     // the last commit first: its author's created.0 is unknown
     let r = lp.deliver(1, pks.last().unwrap()).unwrap();
     assert!(matches!(r, Ingested::Pending(_, Reason::MissingChain(_))), "{r:?}");
-    assert!(lp.peers[1].engine.receipt(&t, &ak("t:reg.0")).unwrap().sources.is_empty());
+    let me = lp.peers[0].engine.tid();
+    let scope = osis_perm::DemotionScope { roles: Default::default(), content: [(me, [t].into())].into() };
+    let now = lp.peers[1].engine.now();
+    assert!(!lp.peers[1].engine.frontier(&scope, now).unwrap().commits.contains(&pks.last().unwrap().id), "pending: not received");
     // node commits, then the thing's creation
     for p in &pks[..2] {
         lp.deliver(1, p).unwrap();

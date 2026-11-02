@@ -183,6 +183,132 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
+/// Bob's key signs a node-form commit on `d`'s `ak` with counters from `lo` (any he used
+/// before included), setting the register to `v` at `ts`.
+fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    let b = lp.peers[1].engine.tid();
+    let mut w = Writer::new(ts, Source::node(b), lo);
+    let f = create(&mut w, &AnyView, &s(v)).unwrap();
+    let hi = lo + 1;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Content, ts, b, lo, hi), None).unwrap();
+    let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
+    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, Form::Node);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+/// Bob's demotion scope on `d`.
+fn of(b: Tid, d: Tid) -> DemotionScope {
+    DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) }
+}
+
+// spec/permissions.md §5.1 (a frontier lists commit IDs, never counters), §5.2, owner decision
+// (a): Bob writes, Alice overwrites it, compacts (Bob's write is dead, so the snapshot carries
+// nothing of his) and removes him, her frontier listing nothing (the snapshot covers his commit).
+// Bob then signs a newer commit on the counters his first one used. A fresh node holding the
+// removal and the snapshot but not the first commit judges the forgery invalid (with counter
+// frontiers it counted, and nothing it held carried that dot); Alice, holding both, voids both
+// (one dot, one write).
+// spec/permissions.md §5.2 (dot reuse)
+#[test]
+fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7101);
+    let reg = ak("t:reg.0");
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("bob")).unwrap();
+    let first = lp.peers[1].commit(m).unwrap().unwrap();
+    let lo = lp.peers[1].engine.header(&first).unwrap().aspects.iter().find(|a| a.ak == reg).unwrap().lo;
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("alice")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let snap = lp.peers[0].engine.snapshot(&d, &reg).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.covered(&snap, &first, &d, &reg).unwrap(), Some(true));
+    lp.advance(DAY);
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(!f.commits.contains(&first), "covered: not listed");
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+    lp.advance(1_000);
+    let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
+    let mut fresh = net(1, 0x7102);
+    fresh.advance(3 * DAY);
+    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != first) {
+        fresh.deliver(0, &p).unwrap();
+    }
+    fresh.peers[0].engine.reexamine().unwrap();
+    fresh.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    assert_eq!(fresh.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "a fresh node");
+    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "Alice");
+}
+
+// spec/permissions.md §5.1, §5.2: Alice removes Bob holding his compacted tag and his
+// uncompacted register write: her frontier lists the register write only; both stay, at Alice
+// and at a fresh node that never gets the compacted commit (the snapshot vouches for it).
+#[test]
+fn frontier_lists_uncovered_snapshot_vouches_covered_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7103);
+    let tags_ak = ak("t:tags.0");
+    let mut m = Mutation::new();
+    m.op(d, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("mon")) }).unwrap();
+    let tag = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    lp.peers[0].engine.snapshot(&d, &tags_ak).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("b")).unwrap();
+    let reg = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(DAY);
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(f.commits.contains(&reg) && !f.commits.contains(&tag), "{f:?}");
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+    let mut fresh = net(1, 0x7104);
+    fresh.advance(3 * DAY);
+    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != tag) {
+        fresh.deliver(0, &p).unwrap();
+    }
+    fresh.peers[0].engine.reexamine().unwrap();
+    for (i, l) in [(0, &mut lp), (0, &mut fresh)] {
+        assert_eq!(tags(l, i, d), BTreeSet::from(["mon".to_string()]));
+        assert_eq!(l.peers[i].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("b")));
+    }
+}
+
+// spec/permissions.md §5.1 (what A had received as of T): a backdated frontier lists Bob's
+// commits Alice received by its cutoff, not those received after.
+// spec/permissions.md §5.1 (frontier received)
+#[test]
+fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7105);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("1")).unwrap();
+    let one = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    let cut = lp.peers[0].engine.now();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("2")).unwrap();
+    let two = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    let f = lp.peers[0].engine.frontier(&of(b, d), cut).unwrap();
+    assert!(f.commits.contains(&one) && !f.commits.contains(&two), "{f:?}");
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
+}
+
 // spec/commits.md §3, §4 (counter reuse): role commits use commit form and a node-form one
 // is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
 // node-form ranges void both commits): Bob keeps the edge Alice gave him.
@@ -511,14 +637,13 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
         add_tag(&mut lp, 1, d, "mon");
         sync(&mut lp, 1, 0);
         let mon = lp.peers[1].engine.commit_ids().into_iter().filter(|c| lp.peers[1].engine.header(c).is_some_and(|h| h.author == b && h.aspects.iter().any(|a| a.ak.as_str() == "t:tags.0"))).max_by_key(|c| lp.peers[1].engine.header(c).unwrap().ts).unwrap();
-        let mon_hi = lp.peers[1].engine.header(&mon).unwrap().aspects.iter().find(|a| a.ak.as_str() == "t:tags.0").unwrap().hi;
         lp.advance(DAY);
         add_tag(&mut lp, 1, d, "x");
         sync(&mut lp, 1, 0);
         let snap = lp.peers[0].engine.snapshot(&d, &ak("t:tags.0")).unwrap().unwrap();
         lp.advance(DAY);
         // a frontier holding "mon" only
-        let f = osis_schema::core_types::Frontier { writes: BTreeMap::from([(d, BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(b, mon_hi - 1)]))]))]), commits: BTreeSet::new() };
+        let f = osis_schema::core_types::Frontier { commits: BTreeSet::from([mon]) };
         let rv = set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
         let both = BTreeSet::from(["mon".to_string(), "x".to_string()]);
         assert_eq!(tags(&mut lp, 0, d), both, "Alice: the snapshot vouches for x");
@@ -2538,13 +2663,13 @@ fn missing_snapshot_not_covered_by_older_spec_perm_5_2() {
     assert!(tags(&mut lp, i, d).contains("bob"), "S1 back");
 }
 
-// spec/permissions.md §5.2 (an invalid snapshot's frontiers count as not received), §5.1
-// (frontier): Bob's tag reaches a fresh node only through Carol's snapshot S; Alice removes
-// Carol with a frontier not listing S; the fresh node holds Bob's headers without his parts.
-// Whether S came first (valid, then invalid) or after the removal, the fresh node's frontier for
-// Bob covers none of his writes, also after a restart.
+// spec/permissions.md §5.1 (frontier: received headers, never a snapshot's claims), §5.2: Bob's
+// tag reaches a fresh node only through Carol's snapshot S; Alice removes Carol with a frontier
+// not listing S; the fresh node holds Bob's headers without his parts. Whether S came first
+// (valid, then invalid) or after the removal, the fresh node's frontier for Bob lists exactly
+// his received commits, also after a restart.
 #[test]
-fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
+fn flipped_snapshot_leaves_frontier_alike_spec_perm_5_2() {
     let (mut lp, d, b, c) = setup(0x5fc0);
     add_tag(&mut lp, 1, d, "bob");
     sync(&mut lp, 1, 2);
@@ -2586,7 +2711,8 @@ fn flipped_snapshot_frontiers_not_received_alike_spec_perm_5_2() {
         assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), f, "order {order:?}, restarted");
         got.push(f);
     }
-    assert_eq!(got[1], osis_schema::core_types::Frontier::default(), "removal first");
+    let on_d: BTreeSet<_> = bob.iter().copied().filter(|x| lp.peers[1].engine.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == d))).collect();
+    assert_eq!(got[1].commits, on_d, "removal first");
     assert_eq!(got[0], got[1], "snapshot first, then the removal");
 }
 
@@ -2720,10 +2846,11 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     assert_ne!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "now");
 }
 
-// spec/crdt.md §8 (a snapshot's claims count only as far as held headers justify them),
-// spec/permissions.md §5.1, §5.2, spec/commits.md §4: Bob's own snapshot S claims `Frontiers
-// {Bob: 2^40}` and `Absorbed` of a commit nobody holds. Alice, holding S and Bob's one tag (S
-// before or after it), removes Bob: her frontier is his one tag. Bob's later tag, at a counter S
+// spec/crdt.md §8 (frontiers and `Absorbed` are no receipts), spec/permissions.md §5.1, §5.2,
+// spec/commits.md §4: Bob's own snapshot S claims `Frontiers {Bob: 2^40}` and `Absorbed` of a
+// commit nobody holds. Alice, holding S and Bob's one tag (S before or after it), removes Bob:
+// her frontier lists S (it covers the tag, so the tag is left out), never the ghost. Bob's later
+// tag, at a counter S
 // claims, is invalid at Alice and at fresh nodes getting it before or after the removal, and S
 // does not let it apply without its part.
 #[test]
@@ -2748,7 +2875,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
         let now = lp.peers[0].engine.now();
         let f = lp.peers[0].engine.frontier(&of_bob, now).unwrap();
-        assert_eq!(f.writes.get(&d).and_then(|w| w.get("t:tags.0")).and_then(|w| w.get(&b)), Some(&1), "snap first {snap_first}: {f:?}");
+        let sid = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+        assert_eq!(f.commits, BTreeSet::from([sid]), "snap first {snap_first}");
         assert!(!f.commits.contains(&ghost), "snap first {snap_first}");
         revoke(&mut lp, 0, d, b);
         let rv = latest_of(&mut lp, 0);
@@ -2780,14 +2908,14 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     }
 }
 
-// spec/commits.md §5 (a dropped snapshot keeps its frontiers and `Absorbed`), spec/crdt.md §8,
-// spec/permissions.md §5.1, §5.2: Bob's map entries reach a fresh node only through Carol's
-// snapshot S (it holds his header, not his part); Alice's overwrite of one entry kills it in S, which drops at its keep-at-most
-// bound with the other entry still live. The node's frontier for Bob is the same before and
-// after the drop (also restarted and rebuilt), and at a node getting S past its bound, and
-// empty once S turns invalid.
+// spec/commits.md §5 (a dropped snapshot keeps its frontiers and `Absorbed`), spec/crdt.md §8
+// (they are no receipts), spec/permissions.md §5.1, §5.2: Bob's map entries reach a fresh node
+// only through Carol's snapshot S (it holds his header, not his part); Alice's overwrite of one
+// entry kills it in S, which drops at its keep-at-most bound with the other entry still live.
+// The node's frontier for Bob lists his received commit, the same before and after the drop
+// (also restarted and rebuilt), at a node getting S past its bound, and once S turns invalid.
 #[test]
-fn dropped_snapshot_frontiers_count_spec_commits_5() {
+fn dropped_snapshot_leaves_frontier_spec_commits_5() {
     use osis_crdt::{Op, PathOp, PathSeg};
     let (mut lp, d, b, c) = setup(0x5fe0);
     let sm = ak("t:shortmap.0");
@@ -2821,7 +2949,8 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     let of_bob = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = e.now();
     let held = e.frontier(&of_bob, now).unwrap();
-    assert_ne!(held, osis_schema::core_types::Frontier::default(), "S counts while held");
+    let on_d: BTreeSet<_> = bob.iter().copied().filter(|x| e.header(x).is_some_and(|h| h.aspects.iter().any(|a| a.tid == d))).collect();
+    assert!(!on_d.is_empty() && held.commits == on_d, "Bob's header received");
     lp.advance(DAY);
     let e = &mut lp.peers[i].engine;
     e.tick().unwrap();
@@ -2855,9 +2984,9 @@ fn dropped_snapshot_frontiers_count_spec_commits_5() {
     lp.deliver(i, &rvp).unwrap();
     lp.peers[i].engine.reexamine().unwrap();
     let now = lp.peers[i].engine.now();
-    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid");
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), held, "S invalid");
     lp.peers[i].restart(0x5fe3).unwrap();
-    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), osis_schema::core_types::Frontier::default(), "S invalid, restarted");
+    assert_eq!(lp.peers[i].engine.frontier(&of_bob, now).unwrap(), held, "S invalid, restarted");
 }
 
 // spec/commits.md §5, spec/permissions.md §5.2 (a part dropped as covered is missing again only
@@ -2968,7 +3097,7 @@ fn padded_durable_created_refused_spec_commits_2() {
     assert!(matches!(lp.peers[0].engine.snapshot(&x, &ak("created.0")), Err(osis_node::Error::Misuse(_))));
 }
 
-// spec/crdt.md §8 (a snapshot's frontier counts only on held headers), spec/permissions.md §5.2
+// spec/crdt.md §8 (a snapshot's frontier is no receipt), spec/permissions.md §5.2
 // (a valid snapshot vouches for what it carries): Bob's tags are compacted into Carol's snapshot S
 // and their blobs gone, so late admin Dan holds only S and his removal of Bob does not cover
 // them; Alice and Carol, still holding Bob's commits, judge them invalid, but S keeps the tags at
@@ -3003,7 +3132,7 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     lp.advance(DAY);
     let scope = DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
     let now = lp.peers[3].engine.now();
-    assert_eq!(lp.peers[3].engine.frontier(&scope, now).unwrap().writes.get(&d).and_then(|w| w.get("t:tags.0")).and_then(|w| w.get(&b)), None, "no held header of Bob's");
+    assert!(lp.peers[3].engine.frontier(&scope, now).unwrap().commits.is_disjoint(&bob), "no held header of Bob's");
     revoke(&mut lp, 3, d, b);
     lp.advance(1000);
     sync(&mut lp, 3, 0);
@@ -3054,3 +3183,4 @@ fn lying_frontier_leaves_writes_spec_crdt_2_1() {
     assert_eq!(lp.peers[0].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
     assert_eq!(lp.peers[0].engine.get_typed(&t, &REG).unwrap(), Some(s("after")));
 }
+

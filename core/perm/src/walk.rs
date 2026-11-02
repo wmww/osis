@@ -1788,7 +1788,7 @@ impl<'a> Pass<'a> {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.frontier.as_ref().is_some_and(|f| f.commits.contains(&id.commit()));
+                || aud.frontier.as_ref().is_some_and(|f| f.covers(&id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);

@@ -192,13 +192,10 @@ impl W {
             self.edge(e);
         }
     }
-    /// A frontier as the tag covers it: its sizes (`Frontier::shape`; hashing its content
-    /// would cost O(frontier) per save and restore).
+    /// A frontier as the tag covers it: its size (hashing its content would cost O(frontier)
+    /// per save and restore).
     fn frontier_shape(&mut self, f: &Frontier) {
-        let (a, b, c) = f.shape();
-        self.len(a);
-        self.len(b);
-        self.len(c);
+        self.len(f.commits.len());
     }
 }
 

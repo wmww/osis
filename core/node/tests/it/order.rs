@@ -834,13 +834,14 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 let scope = DemotionScope { roles: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[holder], BTreeSet::from([t]))]) };
                 let as_of = lp.peers[by].engine.now();
                 let mut f = lp.peers[by].engine.frontier(&scope, as_of).unwrap();
-                let pad = BTreeMap::from([("t:tags.0".to_string(), BTreeMap::from([(ids[holder], 5)]))]);
-                // just past the threshold: these go in the vectors
+                // padded with IDs no commit has, just past the threshold: these go in the vectors
                 let mut i = 0u32;
                 while osis_base::encode(&f.to_value()).len() <= osis_base::format::CHUNK_THRESHOLD {
                     for _ in 0..50 {
                         let b = i.to_be_bytes();
-                        f.writes.insert(Tid::from_bytes([b[0], b[1], b[2], b[3], 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]), pad.clone());
+                        let mut id = [7; 32];
+                        id[..4].copy_from_slice(&b);
+                        f.commits.insert(CommitId(id));
                         i += 1;
                     }
                 }
@@ -2244,6 +2245,135 @@ fn carrierless_part_alike_small_spec_commits_4() {
 #[ignore = "tier 2"]
 fn carrierless_part_alike_large_spec_commits_4() {
     carrierless_run("carrierless_part_alike_large_spec_commits_4", 1000..1200, 30);
+
+/// A history for `new_device_alike`: a random one with, in its middle, writer 1's commits
+/// synced to the owner and compacted there, and at its end the owner's demotion of writer 1
+/// (its frontier as of a random point among 1's writes).
+fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
+    let mut steps = history(seed, len, cfg);
+    let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
+    let at = steps.len() / 2;
+    let op = rng.below(OPS as u64) as u8;
+    steps.splice(at..at, [Step::Write { by: 1, t: 0, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }, Step::Sync { from: 1, to: 0 }, Step::Advance { who: None, ms: 1_000 }, Step::Compact { by: 0, t: 0, op }]);
+    steps.push(Step::Advance { who: None, ms: 1_000 });
+    steps.push(Step::Demote { by: 0, t: 0, holder: 1, at: rng.below(6) as u8, to_read: false });
+    steps
+}
+
+/// Checks owner decision (a)'s new-device equivalence (spec/permissions.md §5.1: a frontier lists
+/// commit IDs, leaving out commits covered at the demoter; §5.2: a valid snapshot vouches for
+/// what it carries): a node holding every body and a fresh node holding only what hosts keep
+/// once covered bodies go (every role commit and snapshot whole; each other commit without its
+/// parts the first node finds covered by a held snapshot, or not at all when none is left) read
+/// every aspect and roster alike. Both keep every body past its keep-at-most bound, so only
+/// coverage tells them apart.
+fn check_new_device(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
+    let played = play(seed, steps);
+    let ingest = |p: &mut Peer, bytes: &[u8], pk: &Package| {
+        let _ = p.engine.ingest(bytes, pk.blobs.clone());
+    };
+    let mut full = Peer::new(FRESH, played.now).unwrap();
+    full.engine.keep_bodies(true);
+    for pk in &played.packs {
+        ingest(&mut full, &pk.bytes, pk);
+    }
+    full.engine.reexamine().unwrap();
+    let ids = full.engine.commit_ids();
+    let snaps: Vec<(CommitId, Tid, Ak)> = ids.iter().filter_map(|c| full.engine.header(c).filter(|h| h.kind.is_compaction()).map(|h| h.aspects.iter().map(|a| (*c, a.tid, a.ak.clone())).collect::<Vec<_>>())).flatten().collect();
+    let mut fresh = Peer::new(FRESH, played.now).unwrap();
+    fresh.engine.keep_bodies(true);
+    let mut left_out = (0, 0);
+    for pk in &played.packs {
+        let Some(h) = full.engine.header(&pk.id) else {
+            ingest(&mut fresh, &pk.bytes, pk);
+            continue;
+        };
+        if h.kind.is_role() || h.kind.is_compaction() {
+            ingest(&mut fresh, &pk.bytes, pk);
+            continue;
+        }
+        let covered: BTreeSet<usize> = (0..h.aspects.len())
+            .filter(|ai| {
+                let a = &h.aspects[*ai];
+                snaps.iter().any(|(s, t, k)| *t == a.tid && *k == a.ak && full.engine.covered(s, &pk.id, t, k).unwrap() == Some(true))
+            })
+            .collect();
+        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let had = !b.parts.is_empty();
+        b.parts.retain(|p| !covered.contains(&p.ai));
+        // the parts left out, and those of them invalid here (their writes only vouched for)
+        left_out.0 += covered.len();
+        left_out.1 += covered.iter().filter(|ai| full.engine.body_valid(&pk.id, &h.aspects[**ai].tid, &h.aspects[**ai].ak) == Some(false)).count();
+        if had && b.parts.is_empty() {
+            continue;
+        }
+        ingest(&mut fresh, &b.encode(), pk);
+    }
+    fresh.engine.reexamine().unwrap();
+    for (t, a) in full.engine.all_aspects().unwrap() {
+        let (want, got) = (full.engine.get(&t, &a).unwrap(), fresh.engine.get(&t, &a).unwrap());
+        if want != got {
+            return Err(format!("{t:?} {}: every body {want:?}, after covered drops {got:?}", a.as_str()));
+        }
+    }
+    for t in &played.things {
+        if full.engine.roster(t) != fresh.engine.roster(t) {
+            return Err(format!("roster of {t:?}: {:?} vs {:?}", full.engine.roster(t), fresh.engine.roster(t)));
+        }
+    }
+    Ok(left_out)
+}
+
+/// Runs `check_new_device` over `seeds` (`OSIS_ORDER_START`, `OSIS_ORDER_SEEDS`, `OSIS_ORDER_SEED`
+/// and `OSIS_ORDER_LEN` as for `run`), shrinking each failing history.
+fn run_new_device(name: &str, seeds: std::ops::Range<u64>, len: usize) {
+    use osis_base::testenv::{Seeds, u64_var};
+    let range = Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
+    let seeds: Vec<u64> = match u64_var("OSIS_ORDER_SEED") {
+        Some(o) => vec![o],
+        None => range.range.clone().collect(),
+    };
+    let len = u64_var("OSIS_ORDER_LEN").map_or(len, |n| n as usize);
+    let check = |seed: u64, steps: &[Step]| caught(|| check_new_device(seed, steps));
+    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS"), |seed| {
+        let mut steps = device_history(seed, len, SMALL);
+        match check(seed, &steps) {
+            Ok(n) => (n, None),
+            Err(mut err) => {
+                let mut i = 0;
+                while i < steps.len() {
+                    let mut fewer = steps.clone();
+                    fewer.remove(i);
+                    match check(seed, &fewer) {
+                        Err(e) => (steps, err) = (fewer, e),
+                        Ok(_) => i += 1,
+                    }
+                }
+                ((0, 0), Some(format!("seed {seed}: h = vec!{steps:?}\n{err}")))
+            }
+        }
+    });
+    let left_out: usize = results.iter().map(|x| x.0.0).sum();
+    let invalid: usize = results.iter().map(|x| x.0.1).sum();
+    let fails: Vec<String> = results.into_iter().filter_map(|x| x.1).collect();
+    let summary = format!("order::{name}: {} seeds from {}, {len} steps, {left_out} covered parts left out ({invalid} invalid), {} failing", seeds.len(), seeds.first().copied().unwrap_or(0), fails.len());
+    osis_base::testenv::visible(true, &summary);
+    assert!(fails.is_empty(), "{summary}\n{}", fails.join("\n\n"));
+}
+
+// spec/permissions.md §5.1 (frontier by commit ID), §5.2 (snapshots vouch), owner decision (a)
+// (issues/session-sources.md rule 7): a fresh node holding the demotion, the snapshots and the
+// uncovered bodies reads as a node holding every body.
+#[test]
+fn new_device_alike_spec_permissions_5_1() {
+    run_new_device("new_device_alike_spec_permissions_5_1", 0..16, 20);
+}
+
+// The same at size.
+#[test]
+#[ignore = "tier 2"]
+fn new_device_alike_large_spec_permissions_5_1() {
+    run_new_device("new_device_alike_large_spec_permissions_5_1", 0..256, 40);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with

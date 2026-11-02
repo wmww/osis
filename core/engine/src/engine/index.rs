@@ -544,7 +544,7 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     match &v.frontier {
         None => w = w.u8(0),
         Some(f) => {
-            let f = osis_schema::core_types::Frontier { writes: f.writes.clone(), commits: f.commits.clone() };
+            let f = osis_schema::core_types::Frontier { commits: f.commits.clone() };
             w = w.u8(1).bytes(&osis_base::encode(&f.to_value()));
         }
     }
@@ -591,7 +591,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
             let lim = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: b.len() };
             let v = osis_base::decode(b, &lim).map_err(|_| Error::Corrupt("meta row frontier"))?;
             let f = osis_schema::core_types::Frontier::from_value(&v).map_err(|_| Error::Corrupt("meta row frontier"))?;
-            Some(Arc::new(osis_perm::Frontier { writes: f.writes, commits: f.commits }))
+            Some(Arc::new(osis_perm::Frontier { commits: f.commits }))
         }
         _ => return Err(Error::Corrupt("meta row frontier")),
     };

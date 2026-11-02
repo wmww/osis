@@ -11,7 +11,7 @@ use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
-use osis_perm::{At, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
+use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
 use osis_schema::{Codec, Type, typed_read};
 use std::collections::{BTreeMap, BTreeSet};
@@ -32,7 +32,7 @@ fn point_of(k: ct::EdgeKey) -> Point {
 }
 
 fn frontier_of(f: ct::Frontier) -> Frontier {
-    Frontier { writes: f.writes, commits: f.commits }
+    Frontier { commits: f.commits }
 }
 
 /// The header's frontier (inline, or resolved from its link).
@@ -50,14 +50,6 @@ pub(crate) fn edge_ak(ak: &str) -> bool {
 /// Whether `ak`'s writes reach perm instead of a state: edge writes and creation records.
 pub(crate) fn perm_ak(ak: &str) -> bool {
     edge_ak(ak) || ak == "created.0"
-}
-
-/// The dots perm reads a part's writes under: its node-form counters `lo..hi`, else by commit.
-fn dots_of(form: Form, range: Option<(u64, u64)>) -> Dots {
-    match (form, range) {
-        (Form::Node, Some((lo, hi))) if lo < hi => Dots::Node { lo, hi },
-        _ => Dots::Commit,
-    }
 }
 
 /// Entries of a `roles.0` (map) fragment: (dot, key, fragment).
@@ -722,7 +714,7 @@ impl<'a> Judge<'a> {
         if h.kind.is_compaction() {
             let required = crate::engine::write::snapshot_role(ak);
             let point = Point { ts: h.ts, node: h.author, commit: *id };
-            return tl.delta_valid(point, &a.tid, ak, Dots::Commit, required) == Validity::Valid;
+            return tl.delta_valid(point, &a.tid, required) == Validity::Valid;
         }
         // the author's deltas from its standing tenure on are valid, found once per author
         if !core.ix.rotation_role.contains_key(&(*id, ai)) && ak != "secrets.0" {
@@ -755,9 +747,8 @@ fn valid_on(core: &Core, tl: &osis_perm::Timeline, h: &Header, id: &CommitId, ai
             return true;
         }
     }
-    let dots = if h.kind == Kind::Import { Dots::Commit } else { dots_of(h.form, h.aspects.get(ai).map(|a| (a.lo, a.hi))) };
     let required = core.ix.rotation_role.get(&(*id, ai)).copied().unwrap_or_else(|| required_role(ak));
-    tl.delta_valid(point, &a.tid, ak, dots, required) == Validity::Valid
+    tl.delta_valid(point, &a.tid, required) == Validity::Valid
 }
 
 /// Writes a held compaction snapshot holds under dots whose owning delta was never received here
@@ -1202,10 +1193,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 }
                 if x.ak.as_str() == "keys.0" {
                     keyset_flips.insert(x.tid);
-                }
-                // a snapshot's frontiers count as received while it is valid (`receipt::received`)
-                if h.kind.is_compaction() {
-                    tx.core.waits.wake(&x.tid, &x.ak);
                 }
             }
         }

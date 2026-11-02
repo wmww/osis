@@ -3,7 +3,7 @@
 
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
-use crate::types::{earliest, Dots, Edge, Point};
+use crate::types::{earliest, Edge, Point};
 use osis_base::{Role, Tid, Ts, WallMs};
 use std::collections::BTreeMap;
 
@@ -26,19 +26,19 @@ pub enum Validity {
 }
 
 impl Timeline {
-    /// §5.2: is the delta of the commit at `at` (its author node, `ts` and commit ID) on
-    /// `(thing, ak)` with `dots` valid? `required` is the role its aspect needs: write for
-    /// content, the aspect's role for `secrets.0`, `keys.0`, `label.0`, `moved.0`, `was.0`.
-    /// A re-grant (the author holds `required` at the end of the timeline) validates every
-    /// write; otherwise a write made while holding the role stands unless a valid explicit
-    /// demotion below it (a ledger tenure with a frontier included) follows, and else only if
-    /// the newest such demotion's frontier covers its dots.
-    pub fn delta_valid(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
-        let key = (at, *thing, ak.to_string(), dots, required);
+    /// §5.2: is a delta on `thing` of the commit at `at` (its author node, `ts` and commit ID)
+    /// valid? `required` is the role its aspect needs: write for content, the aspect's role for
+    /// `secrets.0`, `keys.0`, `label.0`, `moved.0`, `was.0`. A re-grant (the author holds
+    /// `required` at the end of the timeline) validates every write; otherwise a write made
+    /// while holding the role stands unless a valid explicit demotion below it (a ledger tenure
+    /// with a frontier included) follows, and else only if the newest such demotion's frontier
+    /// lists its commit.
+    pub fn delta_valid(&self, at: Point, thing: &Tid, required: Role) -> Validity {
+        let key = (at, *thing, required);
         if let Some(v) = self.memo.valid.lock().ok().and_then(|m| m.get(&key).copied()) {
             return v;
         }
-        let v = self.delta_valid_uncached(at, thing, ak, dots, required);
+        let v = self.delta_valid_uncached(at, thing, required);
         if let Ok(mut m) = self.memo.valid.lock() {
             m.insert(key, v);
         }
@@ -46,14 +46,14 @@ impl Timeline {
     }
 
     /// Where `node`'s deltas on `thing` needing `required` start being valid whatever their
-    /// `ak` and dots (`delta_valid`'s re-grant case): `Some(None)` every one, `Some(Some(p))`
+    /// commit (`delta_valid`'s re-grant case): `Some(None)` every one, `Some(Some(p))`
     /// those at or after `p`, `None` no such bound (judge each with `delta_valid`). For judging
     /// many deltas of one author at once.
     pub fn valid_from(&self, node: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         if self.role(node, thing, At::END) >= Some(required) { self.first_held(node, thing, required) } else { None }
     }
 
-    fn delta_valid_uncached(&self, at: Point, thing: &Tid, ak: &str, dots: Dots, required: Role) -> Validity {
+    fn delta_valid_uncached(&self, at: Point, thing: &Tid, required: Role) -> Validity {
         let x = at.node;
         // A re-grant makes valid *again*: only writes from the start of X's first tenure of
         // `required` on the thing.
@@ -66,7 +66,7 @@ impl Timeline {
             Some(d) if held && d.point < at => Validity::Valid,
             None if held => Validity::Valid,
             Some(d) => {
-                if d.frontier.as_ref().is_some_and(|f| f.covers(thing, ak, &x, dots, &at.commit)) {
+                if d.frontier.as_ref().is_some_and(|f| f.covers(&at.commit)) {
                     Validity::Valid
                 } else {
                     Validity::Invalid { by: Some(d.point) }

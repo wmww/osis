@@ -98,8 +98,9 @@ pub struct Dropped {
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
     /// A compaction snapshot dropped other than as covered (never with `as_cover`: a covered
-    /// one's coverers reach them): the frontiers and `Absorbed` its body had (counters and IDs, no content), which count as received while the part is
-    /// valid (`receipt::received`; indexed by `ix.dropped_snapshots`).
+    /// one's coverers reach them): the frontiers and `Absorbed` its body had (counters and IDs,
+    /// no content), which still stand in for the deltas they list in atomic apply
+    /// (`receipt::listed`; indexed by `ix.dropped_snapshots`).
     pub gives: Option<Gives>,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
     /// kept so re-judging the part (and a rebuild) needs no body.
@@ -409,8 +410,8 @@ indexes! {
     /// origin's writes there (spec/permissions.md §7).
     pub imports: JSetMap<(Tid, CommitId), CommitId>,
     /// Compaction snapshots held per aspect, with their frontiers and `Absorbed`: the bodies
-    /// carrying a write besides its own (deaths, spec/commits.md §5); what valid ones count as
-    /// received (`receipt::received`).
+    /// carrying a write besides its own (deaths, spec/commits.md §5); what stands in for missing
+    /// deltas in atomic apply (`receipt::listed`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
     /// Snapshots per aspect whose dropped part kept its frontiers (`Dropped::gives`; derived at
     /// open, not persisted).
@@ -608,10 +609,6 @@ pub struct Core {
     /// Aspects whose receipts came from headers alone in this run (`Engine::record_header`, a
     /// receipts-only read): a demotion's frontier reads them besides its scope's held aspects.
     pub header_receipts: BTreeSet<(Tid, Ak)>,
-    /// Groups this node holds for receipts only (set by node sync,
-    /// `SyncEngine::set_receipts_only`): what it applied of them it never uploads again, so a
-    /// demotion's frontier lists its commits there by ID (`Engine::frontier`).
-    pub receipts_only: BTreeSet<Tid>,
 }
 
 /// `Core::published`: the counts it was taken at, the published things per actor.
@@ -859,7 +856,6 @@ impl Core {
             published: None,
             links: None,
             header_receipts: BTreeSet::new(),
-            receipts_only: BTreeSet::new(),
         }
     }
 
