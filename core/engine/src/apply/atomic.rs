@@ -1079,7 +1079,12 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
         },
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
-        "group.0" => tx.core.ix.groups.set(*tid, group_def(v)),
+        // (what a thing's groups are decides what the node syncs: its waits are examined again)
+        "group.0" => {
+            for t in tx.core.ix.groups.set(*tid, group_def(v)) {
+                tx.core.waits.wake_thing(&t);
+            }
+        }
         _ => {}
     }
     Ok(())

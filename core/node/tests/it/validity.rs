@@ -1461,6 +1461,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let (mut lp, d, b, _) = setup(91);
     lp.peers.push(osis_node::local_peer::Peer::new(9100, T0).unwrap());
     lp.peers.push(osis_node::local_peer::Peer::new(9101, T0).unwrap());
+    let u = new_thing(&mut lp, 1);
     lp.sync_all().unwrap();
     let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
     put_at(&mut lp, 1, d, &["k"], one("a", "1"));
@@ -1472,6 +1473,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     m.op(d, &ak("x:m.0"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("late"))], op: osis_crdt::Op::Set(one("a", "1")) }).unwrap();
     m.op(d, &TEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("B"), s("B")] } }).unwrap();
     m.set(d, &REG, &s("bob")).unwrap();
+    m.set(u, &REG, &s("bob")).unwrap();
     let c = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 2);
     let mut m = Mutation::new();
@@ -1484,8 +1486,10 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
     let nk = lp.peers[2].engine.package(&n).unwrap().unwrap();
     let h = lp.peers[1].engine.header(&c).unwrap();
     let mut partial = osis_commit::CommitBlob::decode(&ck.bytes).unwrap();
-    partial.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "t:reg.0");
-    let partial = partial.encode();
+    let mut elsewhere = partial.clone();
+    partial.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "t:reg.0" && h.aspects[p.ai].tid == d);
+    elsewhere.parts.retain(|p| h.aspects[p.ai].tid == u);
+    let (partial, elsewhere) = (partial.encode(), elsewhere.encode());
     let feed = |lp: &mut LocalPeer, i: usize, seq: &[&[u8]]| {
         for p in &base {
             lp.deliver(i, p).unwrap();
@@ -1517,7 +1521,8 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         feed(&mut lp, i, seq);
         assert_eq!(look(&mut lp, i), want, "order {k}");
     }
-    // the map and text parts never come: alike either way too
+    // the map and text parts never come: alike either way too, the commit waiting for them on its
+    // thing, so read as by a node without it
     let mut seen = Vec::new();
     for (k, seq) in [[&nk.bytes, &partial], [&partial, &nk.bytes]].iter().enumerate() {
         let i = lp.peers.len();
@@ -1527,7 +1532,19 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
         seen.push(look(&mut lp, i));
     }
     assert_eq!(seen[0], seen[1], "partial");
-    assert!(!seen[0][0].contains("late"), "partial: {}", seen[0][0]);
+    assert!(seen[0][0].contains("late"), "partial: {}", seen[0][0]);
+    // none of its parts on the thing comes, the one on another thing does: the commit is applied
+    // from its header's word on the thing, alike either way, Carol's map write going with it
+    let mut seen = Vec::new();
+    for (k, seq) in [[&nk.bytes, &elsewhere], [&elsewhere, &nk.bytes]].iter().enumerate() {
+        let i = lp.peers.len();
+        let now = lp.peers[0].engine.now();
+        lp.peers.push(osis_node::local_peer::Peer::new(9400 + k as u64, now).unwrap());
+        feed(&mut lp, i, &seq.map(|x| x.as_slice()));
+        seen.push(look(&mut lp, i));
+    }
+    assert_eq!(seen[0], seen[1], "elsewhere");
+    assert!(!seen[0][0].contains("late"), "elsewhere: {}", seen[0][0]);
 }
 
 // spec/permissions.md §5.2 (a snapshot is trusted for what the content is now, never for who
@@ -2933,7 +2950,14 @@ fn late_snapshot_part_received_when_it_came_spec_perm_5_1() {
     let h = lp.peers[i].engine.header(&snap).or_else(|| lp.peers[0].engine.header(&snap)).unwrap();
     let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() != "t:tags.0");
-    assert!(matches!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(matches!(lp.peers[i].engine.ingest(&blob.encode(), Vec::new()).unwrap(), Ingested::Pending(_, osis_node::Reason::WaitDeltas)));
+    // its part counted as held (a later snapshot lists it), the commit applies without it
+    lp.advance(1_000);
+    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
+    let lister = forge_snapshot_absorbing(&mut lp, 0, d, &ak("t:tags.0"), ts, osis_crdt::Fragment::default(), osis_crdt::Frontiers::default(), BTreeMap::from([(snap, h.author)]));
+    assert!(matches!(lp.peers[i].engine.ingest(&lister, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(lp.peers[i].engine.commit_ids().contains(&snap));
+    assert!(!tags(&mut lp, i, d).contains("bob"));
     lp.advance(DAY);
     let before = lp.peers[i].engine.now();
     lp.advance(DAY);

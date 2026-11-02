@@ -451,6 +451,9 @@ fn restart_with_a_hole_in_an_aspect_spec_commits_4() {
     x.give(junk.encode(), c, 100);
     x.give(good, c, 101);
     let pk = x.net.engine(a).package(&r).unwrap().unwrap();
+    // `r` puts `h` in the group: for `h` to stay unsynced, the group is not asked for until the restart
+    let g = x.g;
+    x.net.engine(b).set_syncing(g, false).unwrap();
     x.net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
     x.net.engine(b).reexamine().unwrap();
     assert!(!x.net.engine(b).take_redeliver().is_empty(), "named");

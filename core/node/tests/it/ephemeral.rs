@@ -5292,3 +5292,20 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
         assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("X")].into())), "{i}");
     }
 }
+
+// spec/sync.md §4: a window placed in a group that a labeled group lists as an item is in a labeled
+// closure: what the node syncs reads that group's `group.0`, and the window's placement.
+#[test]
+fn window_in_an_item_group_is_synced_spec_sync_4() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let me = net.tid(a);
+    let u = net.item(a, g, me, "u");
+    net.run();
+    let w = window(&mut net, a, u, "hello");
+    net.run();
+    assert!(net.engine(a).core.syncs(&u));
+    assert!(net.engine(a).ephemeral_synced(&w));
+}

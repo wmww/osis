@@ -186,7 +186,7 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     let g = net.group(a, &[(b, Role::Read)], &[host]);
     let t = net.item(a, g, g, "x");
     net.run();
-    assert!(net.engine(b).core.ix.syncing.contains(&t), "a commit waits only where its thing is synced");
+    assert!(net.engine(b).core.syncs(&t), "a commit waits only where its thing is synced");
     // back only after the delete, so it never sees the body
     net.set_online(b, false);
     let l = net.label(a);
@@ -338,4 +338,43 @@ fn absolute_bound_passing_offline_reaches_reader_spec_commits_5() {
     net.set_online(a, true);
     net.run();
     reader_got_v1(&mut net, a, b, t);
+}
+
+// spec/commits.md §4: a reader's first sync, a host hiding one of a commit's two bodies: the other
+// waits, as at a reader already syncing the thing. The thing's record is all it shows.
+#[test]
+fn first_sync_waits_for_hidden_body_spec_commits_4() {
+    use osis_base::Role;
+    let (gone, reg) = (osis_base::Ak::new("t:gone.0").unwrap(), osis_base::Ak::new("t:reg.0").unwrap());
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(70, &[host]);
+    let b = net.node(71, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    net.set_online(b, false);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(t, &REG, &s("k")).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 2, "two bodies: two retention classes");
+    let h = net.engine(a).header(&c1).unwrap();
+    let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
+    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c1 && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    assert_eq!(hide.len(), 1);
+    net.hide_blobs.insert(b, hide);
+    net.set_online(b, true);
+    net.run();
+    assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("x")), "c1's REG part waits");
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None);
+    assert_eq!(net.engine(b).pending(), vec![(c1, osis_node::Reason::WaitDeltas)]);
+    // the body comes (the host's cursor has passed it: by another way)
+    let pk = net.engine(a).package(&c1).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("k")));
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")));
 }
