@@ -719,6 +719,9 @@ impl ServingSession {
         }
         let (log_id, head_seq) = store.log_head(&label)?;
         let invalid = Message::Error { id, code: Code::CURSOR_INVALID };
+        // a position of this log it no longer reaches: trimmed (the requester takes what it knew
+        // present and is not here as deleted); one past the head is not this log's
+        let trimmed = Message::Error { id, code: Code::LOG_TRIMMED };
         // Log mode from a sequence number, or a replay (in blob ID order) after a position.
         enum From {
             Log(u64),
@@ -727,8 +730,11 @@ impl ServingSession {
         let from = match cursor {
             None => From::Replay { start: head_seq, after: None },
             Some(c) if c.log_id == log_id => {
-                if store.log_after(&label, c.seq, 0)?.is_none() {
+                if c.seq > head_seq {
                     return Ok(invalid);
+                }
+                if store.log_after(&label, c.seq, 0)?.is_none() {
+                    return Ok(trimmed);
                 }
                 From::Log(c.seq)
             }
@@ -758,7 +764,7 @@ impl ServingSession {
             From::Log(seq) => {
                 let mut pos = seq;
                 'log: loop {
-                    let Some(recs) = store.log_after(&label, pos, LOG_BATCH)? else { return Ok(invalid) };
+                    let Some(recs) = store.log_after(&label, pos, LOG_BATCH)? else { return Ok(trimmed) };
                     if recs.is_empty() {
                         break;
                     }

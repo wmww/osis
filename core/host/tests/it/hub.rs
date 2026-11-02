@@ -161,7 +161,7 @@ fn timed_deletes_and_expiry() {
     assert_eq!(statuses(&w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(expiring)] })), vec![Code::EXPIRED]);
 }
 
-// spec/sync.md §6, spec/wire.md §11.2: a cursor below the log horizon gets Error 10; range reconciliation finds both differences
+// spec/sync.md §6, spec/wire.md §11.2: a cursor below the log horizon gets Error 15 (one of a wiped host's log, 10); range reconciliation finds both differences
 #[test]
 fn horizon_falls_back_to_reconciliation() {
     let mut w = World::new();
@@ -174,8 +174,10 @@ fn horizon_falls_back_to_reconciliation() {
     w.run(a, Command::Upload { label: l.id, entries: (0..100).map(|n| l.entry(blob(n))).collect() });
     let (_, cursor) = events_of(&w.run(b, sync(l.id, None, vec![], vec![])));
     w.run(a, Command::Upload { label: l.id, entries: (100..200).map(|n| l.entry(blob(n))).collect() });
+    let wiped = Cursor { log_id: [9; 16], ..cursor.unwrap() };
+    assert_eq!(w.run(b, sync(l.id, Some(wiped), vec![], vec![])), vec![ClientEvent::NeedReconcile { label: l.id, trimmed: false }]);
     let ev = w.run(b, sync(l.id, cursor, vec![l.entry(blob(900))], vec![]));
-    assert!(ev.contains(&ClientEvent::NeedReconcile { label: l.id }), "{ev:?}");
+    assert!(ev.contains(&ClientEvent::NeedReconcile { label: l.id, trimmed: true }), "{ev:?}");
     assert_eq!(statuses(&ev), vec![Code::OK]);
     let ids: Vec<BlobId> = (0..100).chain(500..505).chain([900]).map(bid).collect();
     let ev = w.run(b, Command::Reconcile { label: l.id, ids });

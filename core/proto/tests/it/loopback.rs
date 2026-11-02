@@ -239,7 +239,7 @@ fn replay_on_a_truncated_log_ends_with_a_cursor() {
     assert_eq!(added(&events_of(&ev).0), vec![bid(9)]);
 }
 
-// spec/sync.md §6, spec/wire.md §11.2: a cursor the log no longer reaches gets Error 10; the Sync's entries still go up; reconciliation finds both differences
+// spec/sync.md §6, spec/wire.md §11.2: a cursor the log was trimmed past gets Error 15 (one of another log or past the head, 10); the Sync's entries still go up; reconciliation finds both differences
 #[test]
 fn lost_cursor_falls_back_to_reconciliation() {
     let mut net = Net::new(2, 0);
@@ -251,9 +251,14 @@ fn lost_cursor_falls_back_to_reconciliation() {
     let ev = net.run(1, sync(l.id, None, vec![], vec![]));
     let (_, cursor) = events_of(&ev);
     net.run(0, Command::Upload { label: l.id, entries: (300..340).map(|n| l.entry(blob(n))).collect() });
-    net.store.truncate_log(&l.id, cursor.unwrap().seq + 1);
+    let c = cursor.unwrap();
+    for other in [Cursor { log_id: [9; 16], ..c }, Cursor { seq: c.seq + 1000, ..c }] {
+        let ev = net.run(1, sync(l.id, Some(other), vec![], vec![]));
+        assert_eq!(ev, vec![ClientEvent::NeedReconcile { label: l.id, trimmed: false }]);
+    }
+    net.store.truncate_log(&l.id, c.seq + 1);
     let ev = net.run(1, sync(l.id, cursor, vec![l.entry(blob(2000))], vec![]));
-    assert!(ev.contains(&ClientEvent::NeedReconcile { label: l.id }), "{ev:?}");
+    assert!(ev.contains(&ClientEvent::NeedReconcile { label: l.id, trimmed: true }), "{ev:?}");
     assert_eq!(statuses(&ev), vec![Code::OK]);
     // B holds 0..300, 2000 and 1000..1010 of its own
     let ids: Vec<BlobId> = (0..300).chain(1000..1010).chain([2000]).map(bid).collect();
@@ -274,7 +279,7 @@ fn oversized_gained_list_reconciles() {
     net.open(0, &l);
     let gained: Vec<BlobId> = (0..4097u64).map(|n| BlobId(hash(&n.to_le_bytes()))).collect();
     let ev = net.run(0, sync(l.id, Some(Cursor { log_id: [0; 16], seq: 0 }), vec![], gained));
-    assert_eq!(ev, vec![ClientEvent::NeedReconcile { label: l.id }]);
+    assert_eq!(ev, vec![ClientEvent::NeedReconcile { label: l.id, trimmed: false }]);
     assert_eq!(net.clients[0].outstanding(), 0);
 }
 

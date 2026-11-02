@@ -489,6 +489,11 @@ proptest! {
                 }
                 prop_assert_eq!(e.store.budget(&l).unwrap(), r.budget(&l).unwrap());
                 prop_assert_eq!(e.store.log_head(&l).unwrap().1, r.log_head(&l).unwrap().1);
+                // serving tells a trimmed log (code 15) from a position past the head (10) by these
+                let head = r.log_head(&l).unwrap().1;
+                for at in [head, head + 1] {
+                    prop_assert_eq!(e.store.log_after(&l, at, 1).unwrap().is_some(), r.log_after(&l, at, 1).unwrap().is_some());
+                }
                 // the same records; a sweep executes due deletes by time, the reference by ID
                 let recs = |v: Vec<(u64, LogRecord)>| { let mut v: Vec<String> = v.into_iter().map(|r| format!("{:?}", r.1)).collect(); v.sort(); v };
                 prop_assert_eq!(recs(e.store.log_after(&l, 0, 1000).unwrap().unwrap()), recs(r.log_after(&l, 0, 1000).unwrap().unwrap()));

@@ -149,8 +149,9 @@ pub enum ClientEvent {
     /// A Sync ran through its last page.
     Synced { label: LabelId },
     /// Cursor sync cannot proceed (cursor invalid, or too many gained IDs): reconcile. Entries the
-    /// Sync carried have been sent as an Upload.
-    NeedReconcile { label: LabelId },
+    /// Sync carried have been sent as an Upload. `trimmed`: the cursor's log was trimmed past it
+    /// (code 15), so what was present there and is not any more was deleted.
+    NeedReconcile { label: LabelId, trimmed: bool },
     /// Range reconciliation done: IDs the peer holds that we lack, and the reverse.
     Reconciled { label: LabelId, need: Vec<BlobId>, have: Vec<BlobId> },
     Fetched { label: LabelId, items: Vec<Fetched> },
@@ -486,7 +487,7 @@ impl ClientSession {
             Command::Sync { label, cursor, inline_limit, entries, gained } => {
                 if gained.len() > MAX_GAINED {
                     self.upload(label, entries);
-                    event(out, ClientEvent::NeedReconcile { label });
+                    event(out, ClientEvent::NeedReconcile { label, trimmed: false });
                     return;
                 }
                 let mut budget = REPLY_BUDGET.saturating_sub(40 * gained.len());
@@ -690,10 +691,10 @@ impl ClientSession {
                     event(out, E::ClockOffset { offset_ms, diagnostic: offset_ms.unsigned_abs() > OFFSET_DIAGNOSTIC_MS });
                 }
             }
-            (Pending::Sync { label, entries, .. }, M::Error { code: Code::CURSOR_INVALID, .. }) => {
+            (Pending::Sync { label, entries, .. }, M::Error { code: code @ (Code::CURSOR_INVALID | Code::LOG_TRIMMED), .. }) => {
                 // The entries were not taken: send them on their own.
                 self.upload(label, entries);
-                event(out, E::NeedReconcile { label });
+                event(out, E::NeedReconcile { label, trimmed: code == Code::LOG_TRIMMED });
             }
             (Pending::Reconcile(label, _), M::Error { code, .. }) => {
                 if self.recs.remove(&label).is_some() {

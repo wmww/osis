@@ -40,7 +40,7 @@ struct AtHost {
 fn data_label(e: &ClientEvent) -> Option<LabelId> {
     use ClientEvent as E;
     match e {
-        E::Events { label, .. } | E::Fetched { label, .. } | E::Synced { label } | E::Want { label, .. } | E::NeedReconcile { label } | E::Reconciled { label, .. } | E::EntryStatus { label, .. } | E::DeleteStatus { label, .. } | E::Budget { label, .. } => Some(*label),
+        E::Events { label, .. } | E::Fetched { label, .. } | E::Synced { label } | E::Want { label, .. } | E::NeedReconcile { label, .. } | E::Reconciled { label, .. } | E::EntryStatus { label, .. } | E::DeleteStatus { label, .. } | E::Budget { label, .. } => Some(*label),
         _ => None,
     }
 }

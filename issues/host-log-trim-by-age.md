@@ -1,0 +1,7 @@
+# Host log trim by age
+> Summary: Trim each label's host log up to removals older than `TOMBSTONE_LIFETIME` instead of only at `log_keep` records (notes/growth.md row 2). Unblocked: a cursor below the trimmed horizon gets code 15 and the node's reconciliation then deletes what the host lacks (spec/sync.md §6), so trimming loses nothing a log reader would have learned.
+> Tags: host, growth
+
+Design: `HostStore::remove` puts a `Y` row for every durable removal (deletion with its tombstone, expiry without), its value the log position the entry went at (the Deleted record's sequence number, or `next_seq` at an expiry), due `tombstone_ms` later; the sweep drops each label's `G` rows up to the highest due position and raises its horizon there (each record once over the log's life). Serving needs nothing more: `log_after` returning `None` below the horizon already answers 15. `MemoryLabelStore` mirrors it (a trim list per label, ephemeral removals excluded) so `agrees_with_reference_and_replays` still compares `log_after` (as an `Option`, at 0 and mid-log; the replay check skips a trimmed log). Spec: sync.md §4 log sentence.
+
+Tests: overwrite churn plus an expiring entry, swept past the lifetime, leaves only the records after the last removal; the node-level `sync_more::trimmed_log_reconcile_deletes_absent_entries_spec_sync_6` scenario (`stale_entry_after_fallback`) with the age trim in place of `log_keep`.
