@@ -29,12 +29,12 @@ osis-label.workspace = true
 osis-store.workspace = true
 osis-crypto.workspace = true
 osis-transport.workspace = true
+osis-proto.workspace = true
 tokio.workspace = true
 
 [build-dependencies]
 osis-schema.workspace = true
 
 [dev-dependencies]
-osis-proto.workspace = true
 osis-sim.workspace = true
 osis-host.workspace = true

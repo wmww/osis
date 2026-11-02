@@ -264,6 +264,9 @@ mod commits;
 mod watch;
 mod write;
 
+mod port;
+pub use port::{MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, socket_path};
+pub use port::client::SOCK_FILE;
 pub use error::{Error, Result};
 pub use hosting::{Admit, HostCaps, Hosting, LabelId};
 pub use handle::{Config, DEFAULT_IDLE_COMMIT, DEFAULT_WAIT, DEFAULT_LIMIT, MemStore, Osis, StoreAt, WeakOsis};

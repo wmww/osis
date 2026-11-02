@@ -226,7 +226,7 @@ fn op(ctx: &mut Ctx<'_>, w: &mut osis::Write<'_>, a: &OpArgs) -> anyhow::Result<
             };
             pw.splice(range(&args[0])?, &s)?
         }
-        "undelete" => return Err(Error::Unsupported("undelete (issues/api-deferred.md)").into()),
+        "undelete" => return Err(Error::Unsupported("undelete (issues/api-deferred.md)".into()).into()),
         "add" => {
             n(1)?;
             pw.add(&ctx.value(&args[0], ety)?)?

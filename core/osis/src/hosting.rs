@@ -34,6 +34,9 @@ pub struct Hosting {
 impl Osis {
     /// What this node hosts (none: it does not).
     pub fn hosting(&self) -> Option<Hosting> {
+        if self.attached() {
+            return None;
+        }
         let h = self.get(self.node(), ct::HOST).ok().flatten()?;
         Some(Hosting {
             listen: h.listen,
@@ -50,6 +53,7 @@ impl Osis {
     /// and an empty store. Fails `Invalid` on an
     /// unknown policy knob.
     pub fn set_hosting(&self, h: Option<Hosting>) -> Result<()> {
+        self.local_only("set_hosting")?;
         let node = self.node();
         let mut w = self.write();
         match h {
@@ -75,6 +79,7 @@ impl Osis {
     /// listens; `None` while it does not host or has not started. Fails `Network` when it could
     /// not listen.
     pub fn host_address(&self) -> Result<Option<HostAddr>> {
+        self.local_only("host_address")?;
         let st = self.locked(|l| l.sync.host_status().clone());
         match st {
             HostStatus::Off => Ok(None),
@@ -87,6 +92,9 @@ impl Osis {
     /// without listening: made when `host.0^` is first set, kept until hosting stops. With a
     /// fixed listen URL, `HostAddr::new(url, key)` is the address `host_address` will report.
     pub fn host_key(&self) -> Option<[u8; 32]> {
+        if self.attached() {
+            return None;
+        }
         self.locked(|l| l.sync.host_key())
     }
 }

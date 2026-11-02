@@ -219,6 +219,7 @@ impl Osis {
     /// the offer can make their device a full admin device of this person until it is used or
     /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
+        self.local_only("pair_offer")?;
         let (me, node) = (self.me(), self.node());
         let hosts: Vec<Value> = self.hosts().iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
@@ -236,6 +237,7 @@ impl Osis {
     /// person (or re-seals a device already one, notes/sync.md Limits) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
+        self.local_only("pair_accept")?;
         let items = unpack(&req.0, REQUEST)?;
         let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
         let now = self.inner.clock.now_wall_ms().0;
@@ -256,7 +258,7 @@ impl Osis {
             let done = x.engine().pair(&me, &node)?;
             let grant = *done.commits.last().ok_or(Error::Invalid("pairing made no commit".into()))?;
             let acts = x.sync.carry_out(done)?;
-            self.inner.net.apply(acts);
+            self.inner.apply(acts);
             let mine = x.sync.take_direct_for(&node);
             Ok((grant, mine))
         })?;

@@ -218,7 +218,8 @@ impl Net {
         let shared = OsisShared(db, cfg.store.clone());
         let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.clone());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
-        let mut multi = osis_transport::Multi::default();
+        // the client port's unix socket (`Osis::listen_unix`)
+        let mut multi = osis_transport::Multi { unix: Some(osis_transport::Unix), ..Default::default() };
         // where the dialable-key listener goes, and whether the LAN loop runs
         let (reach, lan): (Option<String>, bool) = match transport {
             Some(Transport::InProcess(t)) => {
@@ -256,6 +257,19 @@ impl Net {
             Some(_) => {}
         }
         Ok(())
+    }
+
+    /// Serves the client port on a listener at `url` (`unix://PATH`; notes/client-port.md §5):
+    /// its sessions are clients of this node. `Network` without a runtime.
+    pub fn listen(&self, url: String) -> Result<()> {
+        let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client port needs one (Config.runtime)".into())) };
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        ctl.send(Control::Listen { url, reply: Some(tx) }).map_err(|_| Error::Network("sync stopped".into()))?;
+        match blocking(|| rx.blocking_recv()) {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => Err(Error::Network(e)),
+            Err(_) => Err(Error::Network("sync stopped".into())),
+        }
     }
 
     /// Runs `f` on the runtime after `d`; `false` (and `f` dropped) without one.
@@ -440,7 +454,9 @@ pub struct GroupPolicy {
 impl crate::Osis {
     /// `group`'s sync policy as set (`sync_policy`; the default when never set).
     pub fn group_policy(&self, group: osis_base::Tid) -> GroupPolicy {
-        let crate::handle::Source::Local = self.route(group);
+        if let crate::handle::Source::Remote = self.route_any() {
+            return GroupPolicy::default();
+        }
         self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) })
     }
 
@@ -449,7 +465,9 @@ impl crate::Osis {
     /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
-        let crate::handle::Source::Local = self.route(group);
+        if let crate::handle::Source::Remote = self.route_any() {
+            return;
+        }
         self.act(|l| {
             let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
             if l.sync.receipts_only().contains(&group) != policy.receipts_only {
@@ -457,6 +475,24 @@ impl crate::Osis {
             }
             acts
         });
+    }
+
+    /// Serves the client port at the unix socket `path` (notes/client-port.md §5): processes of
+    /// this uid that connect there are Owner clients (`Osis::attach`); others are refused by the
+    /// kernel's word for their uid. A path sockets only; a stale socket file is replaced, one in
+    /// use is `Network`. Needs a runtime.
+    pub fn listen_unix(&self, path: &std::path::Path) -> crate::Result<()> {
+        self.local_only("listen_unix")?;
+        let url = osis_transport::unix::url_of(path);
+        osis_transport::unix::url_path(&url).map_err(|e| crate::Error::Invalid(e.to_string()))?;
+        self.inner.net.listen(url)
+    }
+
+    /// The node epoch of the attached node (`None`: not attached): 16 random bytes per node
+    /// process start (notes/client-port.md §2 Writes).
+    #[doc(hidden)]
+    pub fn node_epoch(&self) -> Option<[u8; 16]> {
+        self.remote().map(|r| r.epoch)
     }
 
     /// Gives this device a new dialable key and LAN secret (spec/sync.md §10): it listens with

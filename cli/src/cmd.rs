@@ -184,7 +184,7 @@ fn truncate(s: String, width: usize) -> String {
 }
 
 fn not_supported(what: &'static str) -> anyhow::Error {
-    Error::Unsupported(what).into()
+    Error::Unsupported(what.into()).into()
 }
 
 /// Commands that wait for or talk to other nodes: the store opens with sync running. Others stay

@@ -154,13 +154,16 @@ impl<'d> Write<'d> {
         self
     }
 
+    /// `t` after moves; recorded as given when the batch goes to a remote node, which
+    /// resolves it as it replays the batch (`Osis::replay`).
     fn resolve(&self, t: Tid) -> Tid {
-        if self.created.contains(&t) { t } else { self.db.read(|r| r.resolve(t)) }
+        if self.created.contains(&t) || self.db.attached() { t } else { self.db.read(|r| r.resolve(t)) }
     }
 
+    /// `t` resolved, failing `UnknownThing` when it is not held; a remote node checks at replay.
     fn known(&self, t: Tid) -> Result<Tid> {
         let t = self.resolve(t);
-        if self.created.contains(&t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+        if self.created.contains(&t) || self.db.attached() || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
@@ -296,7 +299,13 @@ impl<'d> Write<'d> {
     /// `None` when nothing changes. Fails before anything applies with `Permission`,
     /// `UnknownThing` or `Invalid`.
     pub fn commit(self) -> Result<Option<Committed>> {
-        let Source::Local = self.source();
+        if let Source::Remote = self.source() {
+            let db = self.db;
+            if self.alive.is_some() {
+                return Err(Error::Unsupported("text sessions through a remote node".into()));
+            }
+            return db.remote_write(self.wire()?);
+        }
         let db = self.db;
         let limit = db.inner.limit;
         let (r, unplaced) = db.engine(|e| {
@@ -319,6 +328,32 @@ impl<'d> Write<'d> {
         })?;
         db.untie_now(&unplaced);
         Ok(r)
+    }
+
+    /// The batch in its wire form (notes/client-port.md §2): `[actor, [ak*], [op*]]`.
+    fn wire(&self) -> Result<Vec<Value>> {
+        use crate::port::codec::{op_v, retention_v, u};
+        if self.ops.len() > crate::port::MAX_BATCH_OPS {
+            return Err(Error::Invalid(format!("a batch to a remote node holds at most {} ops", crate::port::MAX_BATCH_OPS)));
+        }
+        let t = Value::Tid;
+        let ops = self
+            .ops
+            .iter()
+            .map(|o| {
+                Ok(Value::List(match o {
+                    WriteOp::Create(rec) => vec![u(0), rec.to_value()],
+                    WriteOp::MakeGroup(g) => vec![u(1), t(*g)],
+                    WriteOp::Group { g, member, items, add } => vec![u(2), t(*g), t(*member), Value::Bool(*items), Value::Bool(*add)],
+                    WriteOp::Path { tid, key, op } => vec![u(3), t(*tid), u(u64::from(*key)), op_v(op)?],
+                    WriteOp::Expires { tid, key, at } => vec![u(4), t(*tid), u(u64::from(*key)), u(at.0)],
+                    WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), retention_v(r)],
+                    WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
+                    WriteOp::Delete(x) => vec![u(7), t(*x)],
+                }))
+            })
+            .collect::<Result<Vec<Value>>>()?;
+        Ok(vec![t(self.actor), Value::List(self.keys.iter().map(|k| crate::port::codec::ak_v(&k.ak)).collect()), Value::List(ops)])
     }
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
@@ -373,6 +408,79 @@ impl<'d> Write<'d> {
         }
         b.m.act_as(actor);
         Ok(b)
+    }
+}
+
+impl Osis {
+    /// Commits a batch received in wire form (`Write::wire`) as this node's own: tids resolved
+    /// and checked as the recorder checks them locally, keys typed by this node's schemas, a
+    /// `make_group` of what already is a group dropped.
+    pub(crate) fn replay(&self, args: Vec<Value>) -> Result<Option<Committed>> {
+        use crate::port::codec::{Args, bad, op, retention};
+        let mut a = Args::of(args);
+        let actor = a.tid()?;
+        let keys: Vec<Key> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.key(ak.as_str()))).collect::<Result<_>>()?;
+        if let Some(k) = keys.iter().find(|k| read_only(k.ak.as_str()) || is_role_class(k.ak.as_str())) {
+            return Err(Error::Invalid(format!("{} is written only by the engine or the sharing calls", k.ak)));
+        }
+        let raw = a.list()?;
+        a.end()?;
+        if raw.len() > crate::port::MAX_BATCH_OPS {
+            return Err(bad("batch (too many ops)"));
+        }
+        let mut w = self.write();
+        w.act_as(actor);
+        w.keys = keys;
+        let nkeys = w.keys.len();
+        let key = |k: u64| u32::try_from(k).ok().filter(|k| (*k as usize) < nkeys).ok_or_else(|| bad("key index"));
+        let mut expiring = Vec::new();
+        for o in raw {
+            let mut o = Args::new(o)?;
+            let op = match o.uint()? {
+                0 => {
+                    let rec = CreationRecord::from_value(&o.next()?).ok_or_else(|| bad("creation record"))?;
+                    if !matches!(rec, CreationRecord::Thing { creator: None, .. }) {
+                        return Err(bad("creation record"));
+                    }
+                    w.created.push(rec.tid());
+                    WriteOp::Create(rec)
+                }
+                1 => {
+                    let g = w.known(o.tid()?)?;
+                    if !w.created.contains(&g) && (self.get(g, GROUP)?.is_some() || self.get(g, PLACED)?.is_some()) {
+                        continue;
+                    }
+                    WriteOp::MakeGroup(g)
+                }
+                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.resolve(o.tid()?), items: o.bool()?, add: o.bool()? },
+                3 => WriteOp::Path { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, op: op(o.next()?)? },
+                4 => {
+                    let (tid, k, at) = (w.resolve(o.tid()?), key(o.uint()?)?, WallMs(o.uint()?));
+                    expiring.push(tid);
+                    WriteOp::Expires { tid, key: k, at }
+                }
+                5 => WriteOp::Retention { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, r: retention(o.next()?)? },
+                6 => WriteOp::Purge { tid: w.resolve(o.tid()?), key: key(o.uint()?)? },
+                7 => WriteOp::Delete(w.known(o.tid()?)?),
+                _ => return Err(bad("op kind")),
+            };
+            o.end()?;
+            // a group written with an expiry: a `delete` of the batch removing a placement there
+            // fails as it would locally (`note_expiry`)
+            if let WriteOp::Group { g, .. } | WriteOp::MakeGroup(g) = &op {
+                w.group_exp.entry(*g).or_insert(None);
+            }
+            w.ops.push(op);
+        }
+        for g in expiring {
+            if let Some(e) = w.group_exp.get_mut(&g) {
+                *e = Some(Duration::MAX);
+            }
+        }
+        for t in w.ops.iter().filter_map(WriteOp::tid).collect::<Vec<_>>() {
+            w.known(t)?;
+        }
+        w.commit()
     }
 }
 

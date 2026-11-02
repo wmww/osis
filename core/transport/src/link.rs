@@ -102,7 +102,7 @@ impl Drop for Live {
 
 /// Spawns the pumps of one stream. `closer`: the connection to close once our side is finished
 /// (the dialer's role). `wait` bounds the finish.
-fn session<C: Connection>(peer: Peer, peer_key: PublicKey, source: Option<Source>, mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
+fn session<C: Connection>((peer, peer_key, source): (Peer, PublicKey, Option<Source>), mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
@@ -150,7 +150,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
         None => t.dial(addr).await?,
     };
     let (send, recv) = c.open_stream().await?;
-    Ok(session(c.peer(), c.peer_key(), c.source(), send, recv, Some(c), None, wait))
+    Ok(session((c.peer(), c.peer_key(), c.source()), send, recv, Some(c), None, wait))
 }
 
 /// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
@@ -225,7 +225,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                 match timeout(idle, c.accept_stream()).await {
                     Ok(Ok((send, recv))) => {
                         live.fetch_add(1, Ordering::AcqRel);
-                        let link = session::<L::Conn>(c.peer(), c.peer_key(), c.source(), send, recv, None, Some(Live(live.clone())), wait);
+                        let link = session::<L::Conn>((c.peer(), c.peer_key(), c.source()), send, recv, None, Some(Live(live.clone())), wait);
                         if out.send(link).await.is_err() {
                             break;
                         }

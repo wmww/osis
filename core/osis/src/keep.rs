@@ -89,7 +89,9 @@ impl Osis {
     /// `Config::transport`) for the timer. Nothing outlives the process: after a restart the app
     /// calls this again.
     pub fn keep_alive<K: AspectKey, U: Codec>(&self, tid: Tid, key: K, path: Path, value: &U) -> Result<KeepAlive> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route_any() {
+            return Err(Error::Unsupported("keep_alive through the attached node".into()));
+        }
         let d = key.defaults();
         let Some(exp) = d.expires.filter(|_| key.lifetime() == osis_schema::Lifetime::Ephemeral) else {
             return Err(Error::Invalid(format!("{} is not an ephemeral key with a default expiry", key.ak())));
