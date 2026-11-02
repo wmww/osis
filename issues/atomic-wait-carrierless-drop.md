@@ -19,3 +19,6 @@ Engine-level test: ingest only c1's `k` projection plus c2 at a node syncing t, 
 3. Writers split such commits by retention class. That loses the atomicity the app asked for, so it is no better than 1.
 
 Recommend 1. It needs an owner call because it is an "Atomic" compromise.
+
+## Owner decision (round 13)
+Accepted: a part dropped at hosts with no carrier because it held no live write counts as held for atomic apply (loosens "Atomic" only for parts with nothing live). Build it.
