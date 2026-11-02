@@ -386,6 +386,7 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             SeqContent::Frag(x) => x.join_into(*f, ee.as_ref(), ch),
             _ => {
                 f.prune(ee.as_ref(), ch);
+                report_deleted(&f, ch);
                 ch.touch();
                 se.content = SeqContent::Frag(f);
             }
@@ -622,16 +623,45 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     } else {
         let mut de = de;
         if prune_elem(&dot, &mut de, text, e, ch) {
-            // a creation arriving deleted, as into a bare record (`merge_elem`)
-            if text
-                && !dot.src.is_derived()
-                && let (Some((c, _)), Some((f, true))) = (&de.created, &de.deleted)
-            {
-                ch.deleted(c, f);
+            if text {
+                deleted_creation(&dot, &de, ch);
+            } else if let SeqContent::Frag(x) = &de.content {
+                report_deleted(x, ch);
             }
             ch.touch();
             s.elems.insert(dot, de);
         }
+    }
+}
+
+/// Reports the death of every text element creation `f` holds already deleted, at any depth
+/// (§4.8): content a join adds where the state held no record of it arrives with its creation
+/// superseded, as into a bare record (`merge_elem`). Run on new content after pruning.
+pub(crate) fn report_deleted(f: &Fragment, ch: &mut Changes) {
+    match f {
+        Fragment::Seq(s) => {
+            for (d, e) in s.elems() {
+                match &e.content {
+                    SeqContent::Frag(x) => report_deleted(x, ch),
+                    _ if s.text => deleted_creation(d, e, ch),
+                    _ => {}
+                }
+            }
+        }
+        Fragment::Struct(crate::fragment::Struct { fields: m, .. }) | Fragment::Enum(crate::fragment::Enum { payloads: m, .. }) => m.values().for_each(|x| report_deleted(x, ch)),
+        Fragment::Map(m) => m.entries.values().filter_map(|e| e.frag.as_deref()).for_each(|x| report_deleted(x, ch)),
+        Fragment::Slots(s) => s.slots.values().for_each(|x| report_deleted(x, ch)),
+        Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
+    }
+}
+
+/// A new text record's creation, deleted: dead at the flag (an embedded char, §7, dies with its
+/// register's write).
+fn deleted_creation(d: &Dot, e: &SeqElem, ch: &mut Changes) {
+    if !d.src.is_derived()
+        && let (Some((c, _)), Some((f, true))) = (&e.created, &e.deleted)
+    {
+        ch.deleted(c, f);
     }
 }
 

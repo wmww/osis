@@ -2713,6 +2713,16 @@ fn text_creation_arriving_deleted_dies_seed_5016_spec_crdt_4_8() {
     check(5016, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
 
+// spec/crdt.md §4.8: exhaustive order seed 9605, shrunk. A commit inserts a char and deletes it;
+// arriving first, into an empty state, the join took it whole and reported no death, which a
+// join into a held text and the replay did.
+#[test]
+fn text_creation_deleted_into_empty_state_dies_seed_9605_spec_crdt_4_8() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Typed { by: 2, t: 1, op: 23, k: 1, v: 3 })), Forged { by: 2, a: 1, b: 1, how: 1, op: 23, k: 0, v: 7 }];
+    check(9605, &h, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
 // spec/commits.md §5 (dropping a body destroys every local index entry derived from it),
 // spec/requirements.md Decentralization (a rebuild judges alike): seed 1291, a keep-at-most-0
 // write, its compaction snapshot, the write undone: both bodies drop dead, and the snapshot's

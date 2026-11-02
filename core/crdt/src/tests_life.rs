@@ -127,6 +127,40 @@ pub(crate) fn holds_stamp_check(seed: u64, ty: &Ty) {
     }
 }
 
+/// §4.8: a text element's creation that ends deleted is reported dead whatever reaches the
+/// state first: bodies and joins of them (as snapshots) in random order, each joined as new
+/// content (an empty state, a new entry or field) or into held records. A join the state cannot
+/// date (`Changes::undated`) is dated from the bodies instead, so it is left out.
+pub(crate) fn deleted_creation_dies_check(seed: u64, ty: &Ty) {
+    let mut r = crate::testutil::rng(seed | 1);
+    let commits = history(&mut r, std::slice::from_ref(ty), 3, 4);
+    let bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+    for _ in 0..8 {
+        let mut parts: Vec<Fragment> = Vec::new();
+        for b in &bodies {
+            match parts.last_mut() {
+                Some(p) if r.chance(1, 2) => _ = p.join(b.clone()),
+                _ => parts.push(b.clone()),
+            }
+        }
+        for i in (1..parts.len()).rev() {
+            parts.swap(i, r.below(i + 1));
+        }
+        let (mut st, mut ch) = (Fragment::default(), crate::changes::Changes::new());
+        for p in parts {
+            st.join_into(p, None, &mut ch);
+        }
+        if ch.undated() {
+            continue;
+        }
+        let mut want = crate::changes::Changes::new();
+        crate::seq::report_deleted(&st, &mut want);
+        for w in want.deaths() {
+            assert!(ch.deaths().iter().any(|d| d.element && d.stamp == w.stamp), "deleted creation never reported dead: {w:?}");
+        }
+    }
+}
+
 /// §4.7 laws of `strip` over random states of type `ty`.
 pub(crate) fn expiry_laws(seed: u64, ty: &Ty) {
     let (s, m, ranges, mranges) = three(seed, ty);

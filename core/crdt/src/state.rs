@@ -153,6 +153,7 @@ fn join_children(s: &mut BTreeMap<u64, Fragment>, d: BTreeMap<u64, Fragment>, e:
             }
             None => {
                 df.prune(e, ch);
+                seq::report_deleted(&df, ch);
                 if !df.is_empty() {
                     ch.touch();
                     s.insert(k, df);
@@ -183,6 +184,7 @@ fn join_opt(s: &mut Option<Box<Fragment>>, d: Option<Box<Fragment>>, e: Option<&
         }
         (None, Some(mut y)) => {
             y.prune(e, ch);
+            seq::report_deleted(&y, ch);
             if !y.is_empty() {
                 ch.touch();
                 *s = Some(y);
@@ -329,8 +331,11 @@ fn join_entries(m: &mut Map, d: BTreeMap<Eid, Entry>, e: Option<&Stamp>, ch: &mu
         recs.sort_by(|a, b| a.0.cmp(&b.0));
         prune_dot(&mut recs, e, ch);
         cross_deaths(&recs, e, ch);
-        if recs.iter().any(|(x, _)| new.contains(x)) {
+        for (_, en) in recs.iter().filter(|(x, _)| new.contains(x)) {
             ch.touch();
+            if let Some(f) = en.frag.as_deref() {
+                seq::report_deleted(f, ch);
+            }
         }
         for (id, en) in recs {
             m.index_id(&id);
@@ -412,6 +417,7 @@ impl Fragment {
             // nothing to join with: the other side, pruned (no empty register slot appears)
             *self = other;
             self.prune(e_parent, ch);
+            seq::report_deleted(self, ch);
             if !self.is_empty() {
                 ch.touch();
             }
@@ -904,6 +910,7 @@ fn join_slots_kept(mut sa: Slots, b: Fragment, e: Option<&Stamp>, ch: &mut Chang
             None => {
                 let mut f = fb;
                 f.prune(e, ch);
+                seq::report_deleted(&f, ch);
                 if let Some(x) = sa.reg.as_ref().and_then(|r| embed(r, k)) {
                     f.join_into(x, e, ch);
                 }
@@ -932,16 +939,26 @@ fn join_slots_whole(a: Fragment, b: Fragment, e_parent: Option<&Stamp>, ch: &mut
         (None, x) | (x, None) => x,
         (Some(x), Some(y)) => Some(join_regs(x, y, ch)),
     };
+    let mut new = Vec::new();
     for (k, fb) in mb {
         match ma.get_mut(&k) {
             Some(fa) => fa.join_into(fb, None, ch),
             None => {
                 ch.touch();
+                new.push(k);
                 ma.insert(k, fb);
             }
         }
     }
-    prune_slots(reg, ma, e_parent, ch)
+    let f = prune_slots(reg, ma, e_parent, ch);
+    for k in new {
+        match &f {
+            Fragment::Slots(s) => s.slots.get(&k).into_iter().for_each(|x| seq::report_deleted(x, ch)),
+            x if x.encoding() == k => seq::report_deleted(x, ch),
+            _ => {}
+        }
+    }
+    f
 }
 
 /// Prunes a position's slots under its one effective reset (an own reset below it goes,
