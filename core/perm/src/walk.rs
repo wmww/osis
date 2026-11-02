@@ -1272,7 +1272,7 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
 }
 
 /// Componentwise maximum of two edge values, alive: what a holder held across them.
-pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
+fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
         None => Edge { until: None, since: None, ..b },
         Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, since: None, tied: b.tied },
@@ -1281,7 +1281,7 @@ pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
 
 /// What an explicit write on an edge restores before the per-node standings (§5.1 step 4):
 /// its value before the write (`old`, unless written expired) joined with `prior`.
-pub(crate) fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
+fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
     match (prior, old) {
         (Some(a), Some(o)) => Some(join(Some(a), o)),
         (a, o) => a.or(o),
