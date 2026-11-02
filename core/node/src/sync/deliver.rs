@@ -7,10 +7,28 @@
 use super::{Action, HostKey, SyncEngine};
 use crate::error::Result;
 use crate::flows::{Delivery, Done, SyncState};
+use crate::rotation::{Dropped, Leaving, LostScope};
 use crate::local_peer::Package;
 use osis_base::{CommitId, LabelId, Tid};
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
+
+/// What `drop_left` last found, and when.
+#[derive(Default)]
+pub(crate) struct LeftCheck {
+    /// Engine generation `leaving` was computed at.
+    generation: Option<u64>,
+    /// Sync state version placement was last checked at.
+    version: Option<u64>,
+    leaving: Leaving,
+}
+
+impl LeftCheck {
+    /// When a pending grant keeping a leaver's actor ages out.
+    pub(crate) fn recheck_at(&self) -> Option<u64> {
+        self.leaving.recheck_at
+    }
+}
 
 impl SyncEngine {
     /// Carries out a flow's result (call it with every `Done` a flow returns).
@@ -23,7 +41,7 @@ impl SyncEngine {
     /// dropped once it is placed (`drop_left`).
     fn take_done_lost(&mut self, done: Done) -> Result<()> {
         if done.drop_lost {
-            self.left_check = Some((u64::MAX, u64::MAX));
+            self.left = Some(LeftCheck::default());
         }
         self.take_done(done)?;
         // placements wait for a pass
@@ -31,32 +49,55 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Drops what this node lost read access to once its own self-removals behind those losses
-    /// are placed (spec/permissions.md §3: the removal goes up before the leaver forgets the
-    /// labels it would go under). Run while `left_check` is set, again only after the sync
-    /// state or the engine changed. Both inputs are derived from stored state: a crash between
-    /// a self-removal and its drop leaves nothing behind (`left_check` is set at start).
+    /// Drops what this node lost read access to through its own self-removals, each lost actor
+    /// once the self-removals behind it are placed (spec/permissions.md §3: the removal goes up
+    /// before the leaver forgets the labels it would go under); the trigger leaves those
+    /// (`LostScope::Due`). Run while `left` is set: what was lost is recomputed after the engine
+    /// changed (or a pending grant keeping a leaver's actor ages out), placement rechecked after
+    /// the sync state changed. Both derive from stored state: a crash between a self-removal and
+    /// its drop leaves nothing behind (`left` is set at start).
     pub(crate) fn drop_left(&mut self) -> Result<()> {
-        let key = (self.state.version, self.engine.core.generation);
-        if self.left_check.is_none_or(|k| k == key) {
+        let (generation, now, version) = (self.engine.core.generation, self.now(), self.state.version);
+        let Some(l) = self.left.as_mut() else { return Ok(()) };
+        if l.generation != Some(generation) || l.leaving.recheck_at.is_some_and(|t| now >= t) {
+            l.leaving = self.engine.lost_leaving()?;
+            l.generation = Some(generation);
+            l.version = None;
+        }
+        if l.leaving.actors.is_empty() {
+            if l.leaving.recheck_at.is_none() {
+                self.left = None;
+            }
             return Ok(());
         }
-        self.left_check = Some(key);
-        // a loss with no self-removal of this node behind it is the trigger's (`drop_lost_due`)
-        let own = self.engine.lost_leaving()?;
-        if own.is_empty() {
-            self.left_check = None;
+        if l.version == Some(version) {
             return Ok(());
         }
-        for c in &own {
-            if !self.placed(c)? {
-                return Ok(());
+        l.version = Some(version);
+        let waiting = l.leaving.actors.clone();
+        let mut ready = Vec::new();
+        for (a, own) in &waiting {
+            let mut placed = true;
+            for c in own {
+                placed &= self.placed(c)?;
+            }
+            if placed {
+                ready.push(*a);
             }
         }
-        // kept set on failure: the next change retries
-        self.drop_lost()?;
-        self.left_check = None;
-        Ok(())
+        if ready.is_empty() {
+            return Ok(());
+        }
+        // a failure retries on the next change; success changes the engine, so what is left
+        // is recomputed
+        self.forget_lost(LostScope::Only(&ready)).map(|_| ())
+    }
+
+    /// Lost actors waiting for this node's own self-removals to be placed (`drop_left`), as last
+    /// computed: a host that never takes the removal keeps them for good (shown in
+    /// `LabelStatus::leaving`).
+    pub fn leaving(&self) -> impl Iterator<Item = &Tid> {
+        self.left.iter().flat_map(|l| l.leaving.actors.keys())
     }
 
     /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
@@ -64,7 +105,7 @@ impl SyncEngine {
     /// reloads them and drops the sessions and in-memory marks of the forgotten labels. Flows'
     /// `drop_left` calls it once a self-removal is placed; an app calls it when told it was removed.
     pub fn drop_lost(&mut self) -> Result<()> {
-        self.forget_lost(false)
+        self.forget_lost(LostScope::All).map(|_| ())
     }
 
     /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received
@@ -75,16 +116,19 @@ impl SyncEngine {
             if !self.engine.lost_due() {
                 break;
             }
-            self.forget_lost(true)?;
+            if self.forget_lost(LostScope::Due)? {
+                self.left = Some(LeftCheck::default());
+            }
         }
         Ok(())
     }
 
-    fn forget_lost(&mut self, due: bool) -> Result<()> {
+    /// `Engine::forget_lost`, and the sync state about what it forgot. Returns `Dropped::leaving`.
+    fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<bool> {
         self.state.flush(&mut self.engine)?;
-        let (_, f) = self.engine.forget_lost(due)?;
+        let Dropped { forgotten: f, leaving, .. } = self.engine.forget_lost(scope)?;
         if f.things.is_empty() {
-            return Ok(());
+            return Ok(leaving);
         }
         let feed = std::mem::take(&mut self.state.feed);
         let now = self.state.now;
@@ -113,7 +157,8 @@ impl SyncEngine {
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));
         self.served_cache = None;
-        self.forget_inbox()
+        self.forget_inbox()?;
+        Ok(leaving)
     }
 
     /// Stops the pushes of forgotten labels' sessions (spec/sync.md §8) still connected and not

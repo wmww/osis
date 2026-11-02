@@ -431,7 +431,7 @@ fn open_equals_rebuild_after_a_forget() {
     open_equals_rebuild(&mut lp.peers[1].engine, &[d], "holder");
     lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: pb, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
     lp.sync_all().unwrap();
-    let (_, gone) = lp.peers[1].engine.forget_lost(true).unwrap();
+    let gone = lp.peers[1].engine.forget_lost(osis_node::rotation::LostScope::Due).unwrap().forgotten;
     assert!(gone.things.contains(&d), "B forgets the thing");
     open_equals_rebuild(&mut lp.peers[1].engine, &[d], "forget");
     open_equals_rebuild(&mut lp.peers[0].engine, &[d], "owner");

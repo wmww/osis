@@ -88,6 +88,8 @@ struct PendingGrant {
     /// is within `PENDING_GRANT_WAIT_MS` before now (and not past `MAX_DRIFT` ahead), checked by
     /// its signature (`authentic`).
     plausible: bool,
+    /// When `plausible` ends by age (`ts` + `PENDING_GRANT_WAIT_MS`).
+    until: u64,
 }
 
 /// Actors a held, not applied role commit (pending, parked readable, or late parts)
@@ -104,11 +106,12 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
             after = Some(id);
             let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
             let (author, ts) = (blob.header.author, blob.header.ts.wall_ms().0);
-            let recent = ts.saturating_add(PENDING_GRANT_WAIT_MS) > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
+            let until = ts.saturating_add(PENDING_GRANT_WAIT_MS);
+            let recent = until > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
             for (x, w) in crate::apply::keys::pending_secrets_writes(&blob, &id) {
                 let core = &*tx.core;
                 if w.boxes.keys().any(|k| ours(core, &k.holder)) {
-                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x) });
+                    out.push(PendingGrant { x, plausible: recent && may_grant(core, &author, &x) && authentic(core, &blob, &id, &x), until });
                 }
             }
         }
@@ -186,16 +189,29 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 /// until it applies, so any other would keep a node that lost access holding it for good;
 /// reading-only candidates go with the commit that gave them.
 fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
+    Ok(judge(tx, cands)?.0)
+}
+
+/// `lost_among`, and for the unread actors a plausible pending grant keeps, the earliest time
+/// one of those grants stops counting by age (they may be lost from then on).
+fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<(Vec<Tid>, BTreeMap<Tid, u64>)> {
     let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) && !readable(tx.core, a)).collect();
     if unread.is_empty() {
-        return Ok(unread);
+        return Ok((unread, BTreeMap::new()));
     }
     let pend = pending_grants(tx)?;
     let core = &*tx.core;
     let checked = |a: &Tid| core.ix.secrets.get(a).is_some_and(|e| ROLES.iter().any(|r| e.role(*r).held().next().is_some()));
     let held: Vec<Tid> = unread.iter().filter(|k| contested(core, k)).copied().collect();
     let kept = |a: &Tid| pend.iter().any(|g| (g.plausible || !checked(a)) && reaches(core, &g.x, a)) || held.iter().any(|x| reaches(core, x, a));
-    Ok(unread.into_iter().filter(|a| !kept(a)).collect())
+    let ages = |a: &Tid| pend.iter().filter(|g| g.plausible && reaches(core, &g.x, a)).map(|g| g.until).min();
+    let (kept, lost): (Vec<Tid>, Vec<Tid>) = unread.into_iter().partition(kept);
+    Ok((lost, kept.iter().filter_map(|a| Some((*a, ages(a)?))).collect()))
+}
+
+/// This node's own self-removals (`departures_placing`) behind a departure from `a`.
+fn own_leaving(tx: &mut Tx<'_>, a: &Tid) -> Result<BTreeSet<osis_base::CommitId>> {
+    Ok(super::departures_placing(tx, a)?.into_iter().filter_map(|(_, c)| c).collect())
 }
 
 /// Whether `k` is a thing where a held single-use redemption granting one of ours stands void
@@ -239,22 +255,63 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
     Ok((lost, f))
 }
 
-/// Drops every held actor this node lost read access to (the work list is done with it).
-pub(crate) fn drop_lost(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
-    take_due(tx)?;
-    let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-    let lost = lost_among(tx, all)?;
-    drop_actors(tx, lost)
+/// Which lost actors `Engine::forget_lost` drops.
+#[derive(Clone, Copy, Debug)]
+pub enum LostScope<'a> {
+    /// Every held actor this node lost read access to (the work list is done with it).
+    All,
+    /// The trigger: takes the work list and drops the held actors a role on one of its things
+    /// reaches that this node lost read access to (idempotent: the list goes in the same
+    /// transaction), except those lost through its own self-removal (`Engine::lost_leaving`).
+    Due,
+    /// Those of these actors this node lost read access to.
+    Only(&'a [Tid]),
 }
 
-/// The trigger: takes the work list and drops the held actors a role on one of its things
-/// reaches that this node lost read access to (idempotent: the list goes in the same
-/// transaction).
-pub(crate) fn drop_lost_due(tx: &mut Tx<'_>) -> Result<(Vec<Tid>, Forgotten)> {
-    let due = take_due(tx)?;
-    let cands: Vec<Tid> = tx.core.ix.secrets.keys().filter(|a| due.iter().any(|t| reaches(tx.core, t, a))).copied().collect();
-    let lost = lost_among(tx, cands)?;
-    drop_actors(tx, lost)
+/// What `Engine::forget_lost` dropped.
+#[derive(Default)]
+pub struct Dropped {
+    pub actors: Vec<Tid>,
+    pub forgotten: Forgotten,
+    /// `LostScope::Due` left a lost actor to its own self-removal's placement.
+    pub leaving: bool,
+}
+
+fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
+    let (lost, leaving) = match scope {
+        LostScope::All => {
+            take_due(tx)?;
+            let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
+            (lost_among(tx, all)?, false)
+        }
+        LostScope::Only(xs) => (lost_among(tx, xs.to_vec())?, false),
+        LostScope::Due => {
+            let due = take_due(tx)?;
+            let cands: Vec<Tid> = tx.core.ix.secrets.keys().filter(|a| due.iter().any(|t| reaches(tx.core, t, a))).copied().collect();
+            let (mut lost, mut leaving) = (Vec::new(), false);
+            for a in lost_among(tx, cands)? {
+                // its removal goes up first (spec/permissions.md §3): node-sync's `drop_left`
+                if own_leaving(tx, &a)?.is_empty() {
+                    lost.push(a);
+                } else {
+                    leaving = true;
+                }
+            }
+            (lost, leaving)
+        }
+    };
+    let (actors, forgotten) = drop_actors(tx, lost)?;
+    Ok(Dropped { actors, forgotten, leaving })
+}
+
+/// What this node lost read access to through its own self-removals (`Engine::lost_leaving`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Leaving {
+    /// Each such lost actor and the self-removals behind it.
+    pub actors: BTreeMap<Tid, BTreeSet<osis_base::CommitId>>,
+    /// When an actor with a self-removal behind it, kept now by a pending grant, may become
+    /// lost as that grant ages out (engine ms).
+    pub recheck_at: Option<u64>,
 }
 
 impl Engine {
@@ -262,21 +319,30 @@ impl Engine {
     /// through them, and forgets every thing it no longer reads by another path
     /// (spec/permissions.md §3), with a diagnostic per actor. Returns them.
     pub fn drop_lost_secrets(&mut self) -> Result<Vec<Tid>> {
-        Ok(self.forget_lost(false)?.0)
+        Ok(self.forget_lost(LostScope::All)?.actors)
     }
 
-    /// This node's own self-removals (`departures_placing`) behind a departure from an actor it
-    /// lost read access to and still holds secrets of. node-sync drops the lost
-    /// (`drop_lost_secrets`) once these are placed. From stored state only, so a restart between
-    /// the self-removal and the drop finds them.
-    pub fn lost_leaving(&mut self) -> Result<BTreeSet<osis_base::CommitId>> {
+    /// The held actors this node lost read access to with its own self-removals
+    /// (`departures_placing`) behind a departure from them. The trigger leaves them; node-sync
+    /// drops each (`LostScope::Only`) once its self-removals are placed. From stored state only,
+    /// so a restart between a self-removal and its drop finds them.
+    pub fn lost_leaving(&mut self) -> Result<Leaving> {
         self.run(|tx| {
             let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-            let mut own = BTreeSet::new();
-            for a in lost_among(tx, all)? {
-                own.extend(super::departures_placing(tx, &a)?.into_iter().filter_map(|(_, c)| c));
+            let (lost, kept) = judge(tx, all)?;
+            let mut out = Leaving::default();
+            for a in lost {
+                let own = own_leaving(tx, &a)?;
+                if !own.is_empty() {
+                    out.actors.insert(a, own);
+                }
             }
-            Ok(own)
+            for (a, t) in kept {
+                if !own_leaving(tx, &a)?.is_empty() {
+                    out.recheck_at = Some(out.recheck_at.map_or(t, |x| x.min(t)));
+                }
+            }
+            Ok(out)
         })
     }
 
@@ -287,18 +353,19 @@ impl Engine {
 
     /// The lost-access trigger (spec/permissions.md §3): after received role commits
     /// applied, drops the secrets of the actors they touched that this node lost read access to
-    /// by every path, unless a held pending grant reaches them, and forgets what only those
-    /// read. node-sync runs it every step; an app driving the engine alone calls it after
-    /// ingesting. Returns the actors dropped.
+    /// by every path, unless a held pending grant reaches them or its own self-removal is
+    /// behind the loss (`lost_leaving`), and forgets what only those read. node-sync runs it
+    /// every step; an app driving the engine alone calls it after ingesting. Returns the actors
+    /// dropped.
     pub fn drop_lost_due(&mut self) -> Result<Vec<Tid>> {
-        Ok(self.forget_lost(true)?.0)
+        Ok(self.forget_lost(LostScope::Due)?.actors)
     }
 
-    /// `drop_lost_secrets` (or, `due`, `drop_lost_due`), with what was forgotten (node-sync
-    /// drops its label sessions).
-    pub fn forget_lost(&mut self, due: bool) -> Result<(Vec<Tid>, Forgotten)> {
-        let r = self.run(|tx| if due { drop_lost_due(tx) } else { drop_lost(tx) })?;
-        if !r.1.things.is_empty() {
+    /// Drops lost actors (`scope`), with what was forgotten (node-sync drops its label
+    /// sessions).
+    pub fn forget_lost(&mut self, scope: LostScope<'_>) -> Result<Dropped> {
+        let r = self.run(|tx| drop_scope(tx, scope))?;
+        if !r.forgotten.things.is_empty() {
             self.reload()?;
             self.reexamine()?;
         }
