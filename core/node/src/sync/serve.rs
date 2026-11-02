@@ -626,7 +626,24 @@ impl SyncEngine {
                 eph: &self.eph,
                 relays: &mut self.relay_gate,
             };
-            let o = s.conn.handle(now, &mut store, input);
+            let mut o = s.conn.handle(now, &mut store, input);
+            if s.tier == super::Tier::Keyed {
+                // a keyed session never reaches the port worker unauthenticated, and none can
+                // authenticate before credentials (notes/client-port.md §8 (c1), which checks a
+                // keyed Auth here): its Auth is refused at once (Error 1), so nothing stays
+                // asked; proto refuses its Call, Sub and Unsub before an answered Auth
+                let mut refused = Vec::new();
+                o.retain(|x| match x {
+                    ServingOutput::Request(m) => {
+                        refused.push(m.id());
+                        false
+                    }
+                    _ => true,
+                });
+                for id in refused {
+                    o.extend(s.conn.handle(now, &mut store, ServingInput::Reply { id, reply: Err(osis_proto::Code::REFUSED) }));
+                }
+            }
             (o, store.acc)
         };
         let peer = s.conn.co_reader().unwrap_or(s.peer);

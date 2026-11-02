@@ -195,9 +195,11 @@ pub struct ServingSession {
     /// Subscribed labels whose pushes wait for room in the send queue (from their position in
     /// `subs`), in the order they were held: resumed in turn, so a busy label starves no other.
     owed: VecDeque<LabelId>,
-    /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub)
-    /// and reply bound.
-    asked: BTreeMap<Id, (u64, usize)>,
+    /// Client-port requests handed out and not answered: their kind (24 Auth, 25 Call, 27 Sub),
+    /// reply bound and charge (frame bytes plus reply allowance).
+    asked: BTreeMap<Id, (u64, usize, usize)>,
+    /// The charges in `asked`: counted against `MAX_UNANSWERED` by every input until answered.
+    asked_bytes: usize,
     /// Live subscriptions by id (reserved from their Sub until Unsub or a lapse) with their
     /// `max_reply`.
     api_subs: BTreeMap<Id, usize>,
@@ -271,6 +273,7 @@ impl ServingSession {
             taken: None,
             owed: VecDeque::new(),
             asked: BTreeMap::new(),
+            asked_bytes: 0,
             api_subs: BTreeMap::new(),
             authed: false,
             room_wanted: false,
@@ -420,8 +423,9 @@ impl ServingSession {
             ServingInput::Bytes(b) => {
                 self.decoder.push(&b);
                 // frame bytes plus reply allowances of this input's requests, all unanswered
-                // when the last was sent (`MAX_UNANSWERED`)
-                let mut charged = 0usize;
+                // when the last was sent, and of client-port requests handed out earlier and
+                // still unanswered (`MAX_UNANSWERED`)
+                let mut charged = self.asked_bytes;
                 while !self.closed {
                     // before the peer's Hello only a Hello-sized frame is taken (spec/wire.md §11.1)
                     self.decoder.set_max(if self.version.is_some() { osis_base::format::MAX_MESSAGE } else { crate::frame::MAX_HELLO_BYTES });
@@ -519,7 +523,8 @@ impl ServingSession {
     /// Answers a client-port request: the reply bounded by its `max_reply`; a refused or failed
     /// Sub frees its id; a Reply to Auth authenticates the session.
     fn api_reply(&mut self, id: Id, reply: Result<crate::api::Outcome, Code>, out: &mut Vec<ServingOutput>) {
-        let Some((kind, max)) = self.asked.remove(&id) else { return };
+        let Some((kind, max, charge)) = self.asked.remove(&id) else { return };
+        self.asked_bytes = self.asked_bytes.saturating_sub(charge);
         let ok = matches!(reply, Ok(crate::api::Outcome::Ok { .. }));
         if kind == 27 && !ok {
             self.api_subs.remove(&id);
@@ -558,7 +563,8 @@ impl ServingSession {
             }
             return;
         }
-        *charged = charged.saturating_add(body.len().saturating_add(4));
+        let frame_bytes = body.len().saturating_add(4);
+        *charged = charged.saturating_add(frame_bytes);
         let msg = match Message::decode(body) {
             Ok(m) => m,
             Err(r) => {
@@ -572,13 +578,20 @@ impl ServingSession {
         // a peer within its window (spec/sync.md §6) never sends more before any is answered:
         // one that does is closed before the request runs, so one input costs at most a few
         // requests' reads (a Reconcile reads its ranges' live IDs: up to the whole label)
-        *charged = charged.saturating_add(crate::client::allowance(&msg));
+        let allowance = crate::client::allowance(&msg);
+        *charged = charged.saturating_add(allowance);
         if *charged > crate::client::MAX_UNANSWERED {
             out.push(ServingOutput::PeerError(Error::Cap("requests past the request window")));
             self.close(out);
             return;
         }
         let id = msg.id();
+        if matches!(msg, Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
+            if let Some(reply) = self.api_request(msg, frame_bytes.saturating_add(allowance), out) {
+                send(out, reply);
+            }
+            return;
+        }
         self.struck = false;
         match self.dispatch(now, store, msg, out) {
             Ok(Some(reply)) => send(out, reply),
@@ -600,9 +613,6 @@ impl ServingSession {
 
     fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
         use Message as M;
-        if matches!(msg, M::Auth { .. } | M::Call { .. } | M::Sub { .. } | M::Unsub { .. }) {
-            return Ok(self.api_request(msg, out));
-        }
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },
             M::Open { id, label, proof } => self.open(store, id, label, proof)?,
@@ -686,9 +696,10 @@ impl ServingSession {
     }
 
     /// A client-port request (spec/wire.md §11.2): handed out for the upper layer to answer,
-    /// except what the protocol answers itself: a Call or Sub before Auth (Error 1), a Sub
-    /// reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok).
-    fn api_request(&mut self, msg: Message, out: &mut Vec<ServingOutput>) -> Option<Message> {
+    /// except what the protocol answers itself: a Call, Sub or Unsub before Auth (Error 1), a
+    /// Sub reusing a live subscription's id (2) or past `MAX_SUBS` (4), an Unsub (Ok). One handed
+    /// out keeps its `charge` against `MAX_UNANSWERED` until answered.
+    fn api_request(&mut self, msg: Message, charge: usize, out: &mut Vec<ServingOutput>) -> Option<Message> {
         use Message as M;
         let id = msg.id();
         if !self.port {
@@ -699,7 +710,7 @@ impl ServingSession {
         }
         match &msg {
             M::Auth { .. } => {
-                self.asked.insert(id, (24, crate::client::SMALL_REPLY));
+                self.asked.insert(id, (24, crate::client::SMALL_REPLY, charge));
             }
             M::Call { max_reply, .. } | M::Sub { max_reply, .. } => {
                 let sub = matches!(msg, M::Sub { .. });
@@ -716,8 +727,9 @@ impl ServingSession {
                 if sub {
                     self.api_subs.insert(id, max);
                 }
-                self.asked.insert(id, (msg.kind(), max));
+                self.asked.insert(id, (msg.kind(), max, charge));
             }
+            M::Unsub { .. } if !self.authed => return Some(M::Error { id, code: Code::REFUSED }),
             M::Unsub { sub, .. } => {
                 self.api_subs.remove(sub);
                 out.push(ServingOutput::Request(Box::new(msg)));
@@ -725,6 +737,7 @@ impl ServingSession {
             }
             _ => return None,
         }
+        self.asked_bytes = self.asked_bytes.saturating_add(charge);
         out.push(ServingOutput::Request(Box::new(msg)));
         None
     }

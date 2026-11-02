@@ -55,7 +55,7 @@ fn auth(net: &mut Net, n: usize, conn: ConnId, cs: &mut ClientSession) -> Vec<Ac
     feed(net, n, conn, cs, outs, Vec::new())
 }
 
-// spec/sync.md §10 (client port), notes/client-port.md §0, §5: Owner only from Peer::Unix; a keyed peer's Auth goes up as Keyed whatever its key
+// spec/sync.md §10 (client port), notes/client-port.md §0, §5: Owner only from Peer::Unix; a keyed peer's Auth is refused by the sync engine (Error 1) whatever its key, never handed up
 #[test]
 fn tier_is_the_transport_types() {
     let mut net = Net::new();
@@ -67,7 +67,27 @@ fn tier_is_the_transport_types() {
     // a keyed peer presenting the very key a unix peer stands for is still keyed
     let (k, mut ks, _) = client(&mut net, a, Peer::Key(osis_transport::unix::uid_key(uid)));
     let got = auth(&mut net, a, k, &mut ks);
-    assert!(got.iter().any(|x| matches!(x, Action::Request { conn, tier: Tier::Keyed, .. } if *conn == k)), "{got:?}");
+    assert!(!got.iter().any(|x| matches!(x, Action::Request { .. })), "{got:?}");
+}
+
+// spec/wire.md §11.2, notes/client-port.md §8 (b): Auths pipelined by a keyed peer, one per input, are each refused (Error 1) by the sync engine; none reaches the port worker
+#[test]
+fn keyed_auth_flood_never_goes_up() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let (k, _, _) = client(&mut net, a, Peer::Key([9; 32]));
+    let mut refused = 0;
+    for id in 1..=20_000u32 {
+        let bytes = osis_proto::encode_frame(&Message::Auth { id, client_pk: None, session: [0; 16], sig: None }.encode());
+        for x in net.sync(a).handle(Event::Bytes { conn: k, bytes }) {
+            match x {
+                Action::Request { .. } | Action::Close { .. } => panic!("{x:?}"),
+                Action::Send { bytes, .. } if Message::decode(&bytes[4..]).is_ok_and(|m| m == Message::Error { id, code: osis_proto::Code::REFUSED }) => refused += 1,
+                _ => {}
+            }
+        }
+    }
+    assert_eq!(refused, 20_000);
 }
 
 // spec/sync.md §10 (client port), notes/client-port.md §8 (b): clients have their own pool (max_clients): a newcomer evicts the oldest unauthenticated client, never a keyed session; with every client authenticated the newcomer is refused; an authenticated client outlives serve_idle_ms; its end is reported
