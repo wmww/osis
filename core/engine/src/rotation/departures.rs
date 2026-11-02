@@ -269,8 +269,10 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
         let x = left.entry(m).or_insert((from, upto, None));
         x.0 = x.0.min(from);
         x.1 = x.1.max(upto);
-        // the newest event by key (spec/permissions.md §6), whatever thing names it
-        if at.map(|n| n.key) > x.2.map(|n| n.key) {
+        // the newest event by key (spec/permissions.md §6), whatever thing names it; one commit
+        // named on two things (a lowering on `a` that is also a demotion's audit drop) by the
+        // greater thing, so the choice never depends on the order events are noted
+        if at.map(|n| (n.key, n.thing)) > x.2.map(|n| (n.key, n.thing)) {
             x.2 = at;
         }
     };
