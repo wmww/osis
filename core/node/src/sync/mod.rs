@@ -104,6 +104,10 @@ pub struct SyncConfig {
     pub peer_total_bytes: u64,
     /// Peer sessions served at once (more are closed at once).
     pub max_served: usize,
+    /// Client sessions (the unix socket) served at once, apart from `max_served`: past it the
+    /// oldest one that has not authenticated is closed, else the newcomer. Resource bound: 0
+    /// serves no client, infinity lets local dials exhaust memory.
+    pub max_clients: usize,
     /// A served session without bytes this long is closed.
     pub serve_idle_ms: u64,
     /// A served session that opened no label this long after it started is closed.
@@ -138,6 +142,7 @@ impl Default for SyncConfig {
             peer_bytes: 64 << 20,
             peer_total_bytes: 1 << 30,
             max_served: 64,
+            max_clients: 64,
             serve_idle_ms: 120_000,
             serve_open_ms: 30_000,
             peer_pass_wait_ms: 300_000,
@@ -166,6 +171,23 @@ pub enum Event {
     Sent { conns: Vec<(ConnId, u64)> },
     /// A connection is gone, or its dial failed.
     Down { conn: ConnId },
+    /// The answer to an `Action::Request` (Auth, Call, Sub; notes/client-port.md §2).
+    Reply { conn: ConnId, id: osis_proto::msg::Id, reply: std::result::Result<osis_proto::Outcome, osis_proto::Code> },
+    /// Notifies for a served session's subscriptions, after an `Action::Room` (batched per
+    /// engine change).
+    Notify { conn: ConnId, notes: Vec<(osis_proto::msg::Id, osis_proto::Payload)> },
+    /// Notifies wait for a served session: `Action::Room` when the push rule allows.
+    WantRoom { conn: ConnId },
+}
+
+/// The tier of a served session (notes/client-port.md §0), decided at accept by the transport
+/// type, never by a key value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tier {
+    /// A unix-socket peer of this process's uid: the same person at the keyboard.
+    Owner,
+    /// A keyed transport: no credential tier yet, so its Auth is refused.
+    Keyed,
 }
 
 /// Outputs for the driver.
@@ -186,6 +208,13 @@ pub enum Action {
     /// Run the host with this config (`host.0^`; listening with `host_secret_for`, reporting with
     /// `set_host_status`), or stop it (none). Dials of its address reach it in-process.
     Host(Option<Box<osis_host::HostConfig>>),
+    /// A client-port request on a served session (Auth, Call, Sub: answer by `Event::Reply`;
+    /// Unsub: already answered). Not for the driver: the holder of the engine runs it.
+    Request { conn: ConnId, tier: Tier, msg: osis_proto::Message },
+    /// Notifies of up to `budget` bytes may go to `conn` now (`Event::Notify`).
+    Room { conn: ConnId, budget: usize },
+    /// A served session that made client-port requests ended: drop its subscriptions.
+    Ended { conn: ConnId },
 }
 
 /// Open state of a label on a connection.
@@ -804,9 +833,10 @@ impl SyncEngine {
                 }
             }
             Event::Bytes { conn, bytes } if self.served.contains_key(&conn) => self.serve(conn, osis_proto::ServingInput::Bytes(bytes), out)?,
-            Event::Down { conn } if self.served.contains_key(&conn) => {
-                self.served.remove(&conn);
-            }
+            Event::Down { conn } if self.served.contains_key(&conn) => self.end_served(conn, out),
+            Event::Reply { conn, id, reply } => self.serve(conn, osis_proto::ServingInput::Reply { id, reply }, out)?,
+            Event::Notify { conn, notes } => self.serve(conn, osis_proto::ServingInput::Notify(notes), out)?,
+            Event::WantRoom { conn } => self.serve(conn, osis_proto::ServingInput::WantRoom, out)?,
             Event::Bytes { conn, bytes } => {
                 let now = self.raw_now();
                 if let Some(c) = self.conns.get_mut(&conn) {
