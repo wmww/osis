@@ -4,3 +4,5 @@
 - A background run piped through `cut`/`grep`/`head` shows nothing until it ends, and a `timeout` killing it loses the buffered lines: log to a file.
 - `wt` worktree `target/` got a new release test binary mid-run; copying it to the scratch dir first let builds go on during hour-long runs.
 - Mutation checks by `git checkout <file>` after an edit also drop uncommitted work in that file: commit first (lost and redid an edit here).
+- `perf record` is refused here (`perf_event_paranoid` 4); phase spans (`osis_node::costs`) are what is left.
+- A foreground `claudewait` loop gets moved to the background after 180 s by the harness: one `claudewait` per call only.
