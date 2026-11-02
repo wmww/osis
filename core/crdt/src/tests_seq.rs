@@ -189,7 +189,7 @@ fn cycle_breaking_is_linear_spec_6_2() {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, c);
-        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, span: 1 });
+        elems.insert(Dot::new(a.clone(), c), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('x'), pos: vec![(s, prev.clone(), None)], deleted: None, undel: None, span: 1 });
         prev = Anchor::Dot(Dot::new(a.clone(), c));
     }
     let tail = prev;
@@ -199,8 +199,8 @@ fn cycle_breaking_is_linear_spec_6_2() {
         let (cx, cy, mx, my) = (st(2, c), st(2, c + 1), st(3, m), st(3, m + 1));
         c += 2;
         m += 2;
-        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, span: 1 });
-        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, span: 1 });
+        elems.insert(x.clone(), SeqElem { created: Some((cx.clone(), tail.clone())), content: SeqContent::Char('a'), pos: vec![(mx, Anchor::Dot(y.clone()), None), (cx, tail.clone(), None)], deleted: None, undel: None, span: 1 });
+        elems.insert(y.clone(), SeqElem { created: Some((cy.clone(), tail.clone())), content: SeqContent::Char('b'), pos: vec![(my, Anchor::Dot(x.clone()), None), (cy, tail.clone(), None)], deleted: None, undel: None, span: 1 });
     }
     let t = std::time::Instant::now();
     let p = crate::linearize::place_idx(&elems);
@@ -929,7 +929,7 @@ fn long_text(len: u64) -> Fragment {
     let mut prev = Anchor::Head;
     for c in 1..=len {
         let s = st(1, 1, c);
-        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, span: 1 });
+        elems.insert(s.dot.clone(), SeqElem { created: Some((s.clone(), prev.clone())), content: SeqContent::Char('a'), pos: vec![(s.clone(), prev, None)], deleted: None, undel: None, span: 1 });
         prev = Anchor::Dot(s.dot);
     }
     seq_of(elems, None)
@@ -994,7 +994,7 @@ fn ranges_split_where_writes_land_spec_6() {
     let flat = expanded(&ranged);
     let x = st(3, 3, 1);
     let at = Anchor::Dot(Dot::new(n(1), 1000));
-    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, span: 1 });
+    let insert = one(x.dot.clone(), SeqElem { created: Some((x.clone(), at.clone())), content: SeqContent::Char('x'), pos: vec![(x.clone(), at, None)], deleted: None, undel: None, span: 1 });
     let mv = one(Dot::new(n(1), 500), SeqElem { pos: vec![(st(4, 3, 2), Anchor::Head, None)], ..SeqElem::bare() });
     let undelete = one(Dot::new(n(1), 2000), SeqElem { deleted: Some((st(5, 3, 3), false)), content: SeqContent::Char('u'), ..SeqElem::bare() });
     // creations of t = 1 below (1, node 1, 3000) go: a reset inside the chain
@@ -1046,7 +1046,7 @@ proptest! {
 /// A created char `c` of `dot` at `t`, anchored at `at`.
 fn char_at(dot: Dot, t: u64, at: Anchor, c: char) -> SeqElem {
     let s = Stamp { ts: ts(t << 16), dot };
-    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, span: 1 }
+    SeqElem { created: Some((s.clone(), at.clone())), content: SeqContent::Char(c), pos: vec![(s, at, None)], deleted: None, undel: None, span: 1 }
 }
 /// Through a snapshot: uniform stretches become range records.
 pub(crate) fn via_snapshot(f: &Fragment) -> Fragment {
@@ -1237,7 +1237,7 @@ fn empty_placement_held_in_part_follows_spec_6() {
 fn moved_row_keeps_key(base_x: Vec<(Stamp, Anchor, Option<Stamp>)>, delta_x: Vec<(Stamp, Anchor, Option<Stamp>)>, x_created: Stamp) {
     let (p, x, y) = (Dot::new(n(1), 1), x_created.dot.clone(), Dot::new(n(1), 4));
     let pa = Anchor::Dot(p.clone());
-    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, span: 1 };
+    let mk = |s: Stamp, a: Anchor| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char('c'), pos: vec![(s, a, None)], deleted: None, undel: None, span: 1 };
     let mut elems = BTreeMap::new();
     elems.insert(p.clone(), mk(st(1, 1, 1), Anchor::Head));
     let mut xe = mk(x_created.clone(), base_x[0].1.clone());
@@ -1290,11 +1290,9 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
         if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
     }
     let content = |r: &mut crdt_model::r#gen::Rng, s: &MStamp| Content::Frag(Box::new(MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Int(r.below(3) as i64)))) }));
-    // one char per dot, so undeletes repeat it (a forged undelete's char: issues/forged-creation-copies.md)
-    let fixed = |d: &MDot| match &d.source {
-        MSrc::Derived(u) => Content::Char(char::from(b'a' + ((u.ctr + d.ctr) % 4) as u8)),
-        _ => Content::Char(char::from(b'a' + (d.ctr % 4) as u8)),
-    };
+    // chars at random: creation copies of one dot and undeletes may carry other chars (forged
+    // copies, §4.1 copy order, §5.7)
+    let any_char = |r: &mut crdt_model::r#gen::Rng| char::from(b'a' + r.below(4) as u8);
     let seq = |elems: BTreeMap<MDot, MElem>, reset: Option<MStamp>| MFrag::Seq { text: !list, c: Composite { reset, w: None }, elems };
     // stamps: ts in a small range so writes interleave; position write counters apart from dots
     let mut pos_ctr = 100u64;
@@ -1309,13 +1307,14 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
             let d = MDot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 };
             let len = 1 + r.below(4) as u64;
             let mut a = anchor(r, &srcs, &regs);
+            // mostly one creation `ts` per dot (so copies of one stamp meet, differing in char
+            // or anchor), sometimes another (a forged copy under another `ts`, §5.7 Join)
+            let forged = r.chance(1, 4);
             for i in 0..len {
                 let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
-                // one creation `ts` per dot: creations of one dot under other `ts` are forged
-                // copies (issues/forged-creation-copies.md); copies of one stamp may differ
-                let ct = (1 + (srcs.iter().position(|x| *x == e.source).unwrap() as u64 * 7 + e.ctr * 3) % 30) << 16;
+                let ct = if forged { t } else { (1 + (srcs.iter().position(|x| *x == e.source).unwrap() as u64 * 7 + e.ctr * 3) % 30) << 16 };
                 let s = MStamp { ts: ct, dot: e.clone() };
-                let c = if list { content(r, &s) } else { fixed(&e) };
+                let c = if list { content(r, &s) } else { Content::Char(any_char(r)) };
                 elems.insert(e.clone(), MElem::new(s, a.clone(), c));
                 a = MAnchor::Dot(e);
             }
@@ -1339,8 +1338,9 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
             let undel = !list && r.chance(1, 3);
             for i in 0..len {
                 let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
-                let c = if undel { fixed(&e) } else { Content::None };
-                elems.insert(e, MElem::write(c, vec![], Some((s.clone(), !undel))));
+                // an undelete's chars: some elements' missing (the undo buffer lacked them)
+                let c = if undel && !r.chance(1, 5) { Some(any_char(r)) } else { None };
+                elems.insert(e, MElem::flag(s.clone(), !undel, c));
             }
         } else if slots && r.chance(1, 2) {
             // an old app's save: a register write of a string (a reset of everything older)
@@ -1515,4 +1515,12 @@ fn long_runs_match_model_spec_3_3() {
         assert_eq!(back.fragment, as_carried(&ours));
         assert_eq!(back.fragment.read(), ours.read());
     }
+}
+
+/// §4.6, §4.7: an undelete's char on an element whose creation is gone is still the creator's
+/// content, so `holds_dots` sees it and the in-place un-merge drops it (seed from
+/// `hostile_text_slots_match_model_spec_7` at 4000 cases).
+#[test]
+fn unmerge_sees_undelete_char_of_bare_record_spec_4_7() {
+    hostile_lockstep(12048209148398675115, false, true);
 }

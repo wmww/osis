@@ -743,15 +743,22 @@ fn enc_runs(text: bool, elems: &BTreeMap<Dot, SeqElem>, cx: &Ctx) -> Item {
                 }
             }
         }
+        // maximal ranges of one flag write, both carrying an undelete's char or neither (§3.3 rule 2); the
+        // chars, one per element, go with the range (§3.2 FlagW)
         let mut flagw = Vec::new();
         let mut k = 0;
         while k < run.len() {
             if let Some((s, b)) = &run[k].1.deleted {
+                let carried = run[k].1.undel.is_some();
                 let mut j = k;
-                while j + 1 < run.len() && run[j + 1].1.deleted.as_ref() == Some(&(s.clone(), *b)) {
+                while j + 1 < run.len() && run[j + 1].1.deleted.as_ref() == Some(&(s.clone(), *b)) && run[j + 1].1.undel.is_some() == carried {
                     j += 1;
                 }
-                flagw.push(Item::Array(vec![u(k as u64), u(j as u64), enc_stamp(s, cx), Item::Bool(*b)]));
+                let mut w = vec![u(k as u64), u(j as u64), enc_stamp(s, cx), Item::Bool(*b)];
+                if carried {
+                    w.push(Item::Text(run[k..=j].iter().filter_map(|(_, e)| e.undel).collect()));
+                }
+                flagw.push(Item::Array(w));
                 k = j + 1;
             } else {
                 k += 1;
@@ -1101,10 +1108,10 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             }
             elems[i].pos.push((s, dec_anchor(&p[2], cx)?, key));
         }
-        let mut last_flag: Option<(usize, Stamp, bool)> = None;
+        let mut last_flag: Option<(usize, Stamp, bool, bool)> = None;
         for fl in a[5].array()? {
             let x = fl.array()?;
-            if x.len() != 4 {
+            if x.len() != 4 && x.len() != 5 {
                 return Err(Error::Bad("flagw"));
             }
             let (i, j) = (x[0].uint()? as usize, x[1].uint()? as usize);
@@ -1119,20 +1126,33 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
             if !text && !b {
                 return Err(Error::Bad("undelete of a list element"));
             }
+            // an undelete's chars, one per element of the range (§3.2 FlagW)
+            let undel: Option<Vec<char>> = match x.get(4) {
+                None => None,
+                Some(Item::Text(u)) if !b => {
+                    let cs: Vec<char> = u.chars().collect();
+                    if cs.len() != j - i + 1 {
+                        return Err(Error::Bad("undelete chars differ from the range"));
+                    }
+                    Some(cs)
+                }
+                Some(_) => return Err(Error::Bad("chars on a delete")),
+            };
             // sorted by `i_from` (ranges never overlap), and maximal: an adjacent range of the same write
-            // continues the previous one (§3.3 rule 2)
-            if let Some((to, ls, lb)) = &last_flag {
-                if i <= *to || (i == *to + 1 && *ls == s && *lb == b) {
+            // carrying chars alike continues the previous one (§3.3 rule 2)
+            if let Some((to, ls, lb, lu)) = &last_flag {
+                if i <= *to || (i == *to + 1 && *ls == s && *lb == b && *lu == undel.is_some()) {
                     return Err(Error::Bad("flagw order"));
                 }
             }
-            last_flag = Some((j, s.clone(), b));
-            for e in &mut elems[i..=j] {
+            last_flag = Some((j, s.clone(), b, undel.is_some()));
+            for (k, e) in elems[i..=j].iter_mut().enumerate() {
                 // one surviving flag write per element: canonical ranges never overlap
                 if e.deleted.is_some() {
                     return Err(Error::Bad("overlapping flag writes"));
                 }
                 e.deleted = Some((s.clone(), b));
+                e.undel = undel.as_ref().map(|u| u[k]);
             }
         }
         match &a[3] {

@@ -464,7 +464,7 @@ pub(crate) fn edit<V: View>(w: &mut Writer, s: &dyn SeqRead, view: &V, base: &Va
     if s.text() {
         let (b, n) = (chars(base)?, chars(new)?);
         let (steps, mid) = mid_script(&b, &n, |x, y| x == y, false);
-        let rb = match settle(window(s, &vis, &b, &mid, |c, e| matches!(e.content, SeqContent::Char(x) if x == *c))) {
+        let rb = match settle(window(s, &vis, &b, &mid, |c, e| e.char() == Some(*c))) {
             Ok(Some(r)) => r,
             Ok(None) => return Ok(None),
             Err(_) => {

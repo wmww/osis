@@ -30,10 +30,7 @@ pub fn diff(w: &mut Writer, st: Option<&Frag>, ty: &Ty, v: &Value) -> Option<Fra
         (Ty::Max | Ty::Min | Ty::Counter, _, v) => replace(w, ty, v),
         (Ty::Text, Frag::Seq { elems, .. }, Value::Str(s)) => {
             let vis = visible(true, elems);
-            let old: Vec<char> = vis.iter().map(|d| match &elems[d].content {
-                Content::Char(c) => *c,
-                _ => unreachable!(),
-            }).collect();
+            let old: Vec<char> = vis.iter().map(|d| elems[d].char().expect("visible text has a char")).collect();
             let new: Vec<char> = s.chars().collect();
             let script = lcs_script(&old, &new, |a, b| a == b);
             let mut f = Frag::Seq { text: true, c: comp(), elems: BTreeMap::new() };

@@ -12,9 +12,8 @@ use crate::fragment::{Encoding, Fragment, Meta, Register};
 use crate::seq_lin::{Lin, Partial, Plan};
 use crate::seq_span::{Elems, Recs, chain_cut, coalesce_in, cut_chains, elems_eq, last_of, nth, piece, split_at};
 use crate::stamp::{Dot, Source, SourceKind, Stamp, max_opt};
-use crate::state::{join_write, prune_write};
+use crate::state::prune_write;
 use osis_base::Value;
-use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::{Arc, OnceLock};
 
@@ -50,7 +49,11 @@ pub(crate) fn is_creation(p: &PosW, c: &(Stamp, Anchor)) -> bool {
     p.2.is_none() && p.0 == c.0 && p.1 == c.1
 }
 
-/// One element record (§5.7 State), identified by its creation dot.
+/// One element record (§5.7 State), identified by its creation dot. Invariant behind convergence
+/// on forged copies: every char held is the payload of a stamped write (the creation's in
+/// `content`, an undelete's in `undel` with `deleted`), never re-attributed at join, and one
+/// creation write exists per dot (copies under other stamps are copies of it), so the record is
+/// a product of LWW registers and top-2 sets whatever the arrival order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeqElem {
     /// The creation write `(stamp, anchor)`; text content lives and dies with it.
@@ -60,6 +63,9 @@ pub struct SeqElem {
     pub(crate) pos: Vec<PosW>,
     /// Text: the deleted flag (LWW bool). List: the element reset, always `true`.
     pub(crate) deleted: Option<(Stamp, bool)>,
+    /// Text: the char the surviving `deleted` write carries (an undelete's copy of the content,
+    /// §5.7), read where the creation's is not held; never with a `true` flag.
+    pub(crate) undel: Option<char>,
     /// Elements this record stands for (a range record above 1, `seq_span`); the fields are
     /// the first element's.
     pub(crate) span: u64,
@@ -186,17 +192,22 @@ impl Seq {
 // ---- state hooks (§4, §5.7)
 
 impl SeqElem {
-    /// A text element's char, if it holds one.
+    /// A text element's char as it reads (§5.7): the creation's, else the undelete's; none
+    /// without a creation (content lives and dies with it).
     pub(crate) fn char(&self) -> Option<char> {
-        if let SeqContent::Char(c) = self.content { Some(c) } else { None }
+        match self.content {
+            SeqContent::Char(c) => Some(c),
+            SeqContent::None if self.created.is_some() => self.undel,
+            _ => None,
+        }
     }
     /// An empty record (a delta's element edit or flag write fills it).
     pub(crate) fn bare() -> SeqElem {
-        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, span: 1 }
+        SeqElem { created: None, content: SeqContent::None, pos: Vec::new(), deleted: None, undel: None, span: 1 }
     }
     /// Whether the creation counts toward presence: value-less creations do not (§4.3).
     fn creation_counts(&self) -> bool {
-        !matches!(self.content, SeqContent::None) || self.flag()
+        matches!(self.content, SeqContent::Frag(_)) || self.char().is_some() || self.flag()
     }
     /// The deleted flag (text) or element reset (list) is set.
     pub(crate) fn flag(&self) -> bool {
@@ -245,6 +256,9 @@ fn prune_fields(d: &Dot, el: &mut SeqElem, e: Option<&Stamp>, ch: &mut Changes) 
         });
     }
     prune_write(&mut el.deleted, e, ch);
+    if el.deleted.is_none() {
+        el.undel = None;
+    }
 }
 
 /// Text content lives and dies with the creation write (§5.7).
@@ -290,26 +304,36 @@ pub(crate) fn top2(s: &mut Vec<PosW>) {
 
 /// Joins record `de` into existing record `se` under `e` (§5.7 Join).
 fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Stamp>, ch: &mut Changes) {
-    // the creation with the greater stamp, its char with it; of two copies of one creation the
-    // greater anchor and the greater char (§4.1 copy order, §5.7)
     let mut de = de;
-    // (a record without a creation, an undelete repeating the char, joins its char as a copy)
-    let by = match (&de.created, &se.created) {
-        (Some(a), Some(b)) => a.0.cmp(&b.0),
-        _ => Ordering::Equal,
-    };
-    if text && by != Ordering::Equal {
-        let c = std::mem::replace(&mut de.content, SeqContent::None);
-        if by == Ordering::Greater && se.content != c {
-            se.content = c;
+    // one creation per dot: copies under other stamps are one write, the greater stamp wins
+    // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
+    // copies of one stamp the greater anchor and the greater char (§4.1 copy order)
+    match (&de.created, &se.created) {
+        (Some(a), Some(b)) if a.0 > b.0 => {
+            let old = b.clone();
+            se.pos.retain(|p| !is_creation(p, &old));
+            se.created = de.created.take();
+            if text {
+                se.content = std::mem::replace(&mut de.content, SeqContent::None);
+            }
             ch.touch();
         }
+        (Some(a), Some(b)) if a.0 < b.0 => {
+            let lost = a.clone();
+            de.pos.retain(|p| !is_creation(p, &lost));
+            de.created = None;
+            if text {
+                de.content = SeqContent::None;
+            }
+        }
+        _ => {
+            if de.created > se.created {
+                se.created = de.created.take();
+                ch.touch();
+            }
+        }
     }
-    if de.created > se.created {
-        se.created = de.created.take();
-        ch.touch();
-    }
-    let raised = join_write(&mut se.deleted, de.deleted, ch);
+    let raised = join_flag(se, de.deleted, de.undel, ch);
     if text
         && raised
         && se.flag()
@@ -353,6 +377,36 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
         se.content = SeqContent::None;
     }
     content_rule(se, text);
+}
+
+/// Joins flag write `d` (with an undelete's char `u`) into `se`'s: later wins; of copies of one
+/// write `true` over `false`, then a char over none, then the greater char (§4.1 copy order).
+/// Whether `d` took the place.
+fn join_flag(se: &mut SeqElem, d: Option<(Stamp, bool)>, u: Option<char>, ch: &mut Changes) -> bool {
+    let Some(d) = d else { return false };
+    match &se.deleted {
+        Some(x) if x.0 == d.0 => {
+            if (x.1, se.undel) < (d.1, u) {
+                se.deleted = Some(d);
+                se.undel = u;
+                ch.touch();
+            }
+            false
+        }
+        Some(x) if x.0 > d.0 => {
+            ch.died(&d.0, &x.0);
+            false
+        }
+        _ => {
+            if let Some(x) = &se.deleted {
+                ch.died(&x.0, &d.0);
+            }
+            se.deleted = Some(d);
+            se.undel = u;
+            ch.touch();
+            true
+        }
+    }
 }
 
 /// The records of a sequence whose placement is held in part: a lookup outside the pages
@@ -856,11 +910,10 @@ impl Vis {
 }
 
 pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
-    match &e.content {
-        SeqContent::Char(_) => text && !e.flag(),
-        SeqContent::Frag(f) => !text && f.read().is_some(),
-        SeqContent::None => false,
+    if text {
+        return e.char().is_some() && !e.flag();
     }
+    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some())
 }
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
@@ -899,8 +952,10 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
             SeqContent::Frag(f) => f.strip_values(expired),
+            // a text element's char, the undelete's copy included (§4.7)
             _ if expired(d.owner()) => {
                 el.content = SeqContent::None;
+                el.undel = None;
                 if d.src.is_derived() {
                     // an embedded character's creation is known only from the value (§7)
                     el.created = None;
@@ -922,9 +977,11 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
         el.pos.retain(|p| !bad(&p.0) || p.0.dot == *d);
         if el.deleted.as_ref().is_some_and(|x| bad(&x.0)) {
             el.deleted = None;
+            el.undel = None;
         }
         if pred(d.owner()) && !(nested && matches!(el.content, SeqContent::Frag(_))) {
             el.content = SeqContent::None;
+            el.undel = None;
         } else if let SeqContent::Frag(f) = &mut el.content {
             f.remove_dots_in(pred, nested);
             if f.is_empty() {
@@ -945,6 +1002,7 @@ pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: boo
             if matches!(el.content, SeqContent::Char(_)) {
                 el.content = SeqContent::None;
             }
+            el.undel = None;
         }
         if let SeqContent::Frag(f) = &mut el.content {
             f.drop_creations(pred, keys);
@@ -963,7 +1021,7 @@ pub(crate) fn embed_text(r: &Register) -> BTreeMap<Dot, SeqElem> {
     for (i, c) in text.chars().enumerate() {
         let d = Dot::new(src.clone(), i as u64 + 1);
         let st = Stamp { ts: w.stamp.ts, dot: d.clone() };
-        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, span: 1 });
+        out.insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: SeqContent::Char(c), pos: vec![(st, prev, None)], deleted: None, undel: None, span: 1 });
         prev = Anchor::Dot(d);
     }
     out

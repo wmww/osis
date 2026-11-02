@@ -199,9 +199,8 @@ impl Fragment {
                 return None;
             }
             match &e.content {
-                crate::seq::SeqContent::Char(c) => chars.push(*c),
                 crate::seq::SeqContent::Frag(f) => vals.push(f.read()?),
-                crate::seq::SeqContent::None => return None,
+                _ => chars.push(e.char()?),
             }
         }
         Some(if text { Value::Str(chars) } else { Value::List(vals) })

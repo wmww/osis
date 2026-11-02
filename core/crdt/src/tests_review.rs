@@ -314,54 +314,62 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     }
 }
 
-// issues/forged-creation-copies.md: copies of one text creation with other `ts` (a forged copy)
-// and an undelete repeating another char: the char goes with the greater creation, so a repeated
-// char folded in before the greater creation arrives is lost on one path and kept on the other.
+/// §5.7 Join, §4.1: copies of one text creation under other `ts` (a forged copy) beside an
+/// undelete carrying another char. The undelete's char rides its flag write, the creation's goes
+/// with the greater creation, so every order reads alike: the creation's char 'w'; a reset that
+/// prunes the lesser creation first changes nothing; and the undelete's char fills in where no
+/// creation char is held (a snapshot-bootstrapped node).
 #[test]
-#[ignore = "issues/forged-creation-copies.md"]
-fn repro_forged_creation_ts_undelete_char() {
+fn forged_creation_ts_undelete_char_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
     let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
     let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
     let s2 = Stamp { ts: ts(2 << 16), dot: d.clone() };
     let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
-    let made = |s: &Stamp, c: char| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: SeqContent::Char(c), pos: vec![(s.clone(), Anchor::Head, None)], ..SeqElem::bare() });
-    let (a, c) = (made(&s1, 'x'), made(&s2, 'w'));
-    let b = mk(SeqElem { content: SeqContent::Char('y'), deleted: Some((st(3, 9, 1), false)), ..SeqElem::bare() });
-    let mut x = a.clone();
-    x.join(b.clone());
-    x.join(c.clone());
-    let mut y = c;
-    y.join(b);
-    y.join(a);
-    assert_eq!(x.read(), y.read());
+    let made = |s: &Stamp, c: Option<char>| mk(SeqElem { created: Some((s.clone(), Anchor::Head)), content: c.map_or(SeqContent::None, SeqContent::Char), pos: vec![(s.clone(), Anchor::Head, None)], ..SeqElem::bare() });
+    let (a, c) = (made(&s1, Some('x')), made(&s2, Some('w')));
+    let b = mk(SeqElem { undel: Some('y'), deleted: Some((st(3, 9, 1), false)), ..SeqElem::bare() });
+    all_orders(&[a.clone(), b.clone(), c.clone()], Some(Value::Str("w".into())));
+    // a reset between the two creations prunes the lesser one and nothing else
+    let mut reset = Fragment::Seq(Seq::empty(true));
+    if let Fragment::Seq(s) = &mut reset {
+        s.meta.reset = Some(Stamp { ts: ts(1 << 16 | 1), dot: Dot::new(Source::node(Tid::from_bytes([7; 15])), 1) });
+    }
+    all_orders(&[a.clone(), b.clone(), c.clone(), reset], Some(Value::Str("w".into())));
+    // no creation char held: the undelete's char reads
+    all_orders(&[made(&s2, None), b.clone()], Some(Value::Str("y".into())));
+    // the undelete's char alone is nothing (text content lives and dies with the creation)
+    all_orders(&[b], Some(Value::Str("".into())));
 }
 
-// issues/forged-creation-copies.md: the lesser of two creations of one dot under other `ts` (a
-// forged copy) stays a position write (`prev`, §5.7 Join) but a snapshot cannot carry it (a
-// `PosW` stamped with the element's own dot is read as its creation, §3.3 rule 5), so a node
-// bootstrapped from the snapshot breaks a cycle through the element differently (§6.2).
+/// §5.7 Join, §3.3 rule 5: of two creations of one dot under other `ts` (a forged copy) the
+/// greater wins whole and the lesser is no position write, so a cycle through the element breaks
+/// alike at a node holding both and at one bootstrapped from a snapshot (which carries one).
 #[test]
-#[ignore = "issues/forged-creation-copies.md"]
-fn repro_forged_creation_ts_snapshot_drops_prev() {
+fn forged_creation_ts_snapshot_round_trip_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
     let n = |c: u64| Dot::new(Source::node(Tid::from_bytes([5; 15])), c);
     let (x, y, z) = (n(1), n(2), n(3));
     let mk = |s: &Stamp, a: Anchor, c: char| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char(c), pos: vec![(s.clone(), a, None)], ..SeqElem::bare() };
     let at = |t: u64, d: &Dot| Stamp { ts: ts(t << 16), dot: d.clone() };
-    // x created at HEAD (t5) and, forged, after y (t7); y created at HEAD (t3), moved after x
-    // (t9): the cycle x -> y -> x demotes x (t7 < t9) to its `prev`, HEAD; z at HEAD (t4)
-    let mut xe = mk(&at(7, &x), Anchor::Dot(y.clone()), 'x');
-    xe.pos.push((at(5, &x), Anchor::Head, None));
+    // x created after y (t7) and, a forged copy, at HEAD (t5); y created at HEAD (t3), moved
+    // after x (t9); z at HEAD (t4)
+    let xe = mk(&at(7, &x), Anchor::Dot(y.clone()), 'x');
     let mut ye = mk(&at(3, &y), Anchor::Head, 'y');
     ye.pos.insert(0, (st(9, 6, 1), Anchor::Dot(x.clone()), None));
-    let f = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(x, xe), (y, ye), (z.clone(), mk(&at(4, &z), Anchor::Head, 'z'))])));
-    assert_eq!(f.read(), Some(Value::Str("xyz".into())));
+    let lesser = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(x.clone(), mk(&at(5, &x), Anchor::Head, 'x'))])));
+    let mut f = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(x, xe), (y, ye), (z.clone(), mk(&at(4, &z), Anchor::Head, 'z'))])));
+    f.join(lesser.clone());
+    // the cycle x -> y -> x demotes x (t7 < t9) to END, not to the dropped lesser creation's HEAD
+    assert_eq!(f.read(), Some(Value::Str("zxy".into())));
     let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &cx, None).unwrap();
     let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
-    assert_eq!(back.read(), f.read());
+    assert_eq!(back, f, "the snapshot carries the state");
+    let mut again = back;
+    again.join(lesser);
+    assert_eq!(again, f, "the lesser creation arriving again changes nothing");
 }
 
 /// A map entry record: its creation stamp (the dot), key, reset and value.
@@ -470,12 +478,11 @@ fn map_key_erased_record_spec_5_6() {
     all_orders(&[valued, erm], Some(Value::Map(Default::default())));
 }
 
-/// issues/forged-creation-copies.md (map residue): a dot under two keys (a forged copy), one
-/// removed. A node past the creation's `T` folds both into the key-erased record, whose reset
+/// issues/forged-key-erased-reset.md: a dot under two keys (a forged copy), one removed. A node past the creation's `T` folds both into the key-erased record, whose reset
 /// then prunes the other key's record too; a node before `T` holding that snapshot beside the
 /// valued records reads the other key gone, one without it reads it live, until it passes `T`.
 #[test]
-#[ignore = "issues/forged-creation-copies.md"]
+#[ignore = "issues/forged-key-erased-reset.md"]
 fn repro_forged_key_hidden_by_erased_reset() {
     let (a, b) = (Value::Str("a".into()), Value::Str("b".into()));
     let c = st(1, 1, 1);

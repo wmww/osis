@@ -323,10 +323,11 @@ fn seq(cx: &mut Cx, w: &mut Writer, ty: &Ty, text: bool, elems: &BTreeMap<Dot, S
                 let was = be.map_or(false, |be| be.is_deleted(true));
                 if *flag != was {
                     cx.stats.flag += 1;
-                    let content = if *flag { be.map_or(Content::None, |be| be.content.clone()) } else { Content::None };
+                    // an undelete carries the char from the undo buffer (§5.7)
+                    let undel = if *flag { be.and_then(SeqElem::char) } else { None };
                     let r = out.entry(dot.clone()).or_insert_with(|| SeqElem::write(Content::None, vec![], None));
                     r.deleted = Some((u.clone(), was));
-                    r.content = content;
+                    r.undel = undel;
                 }
             } else if let Some(Content::Frag(f)) = be.map(|be| &be.content) {
                 if let Some(v) = f.read() {
