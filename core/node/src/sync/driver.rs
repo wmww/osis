@@ -142,8 +142,10 @@ pub trait Shared: Send + Sync + 'static {
 /// The local record of the host store naming the host key it belongs to.
 const HOST_KEY_RECORD: &[u8] = b"host key";
 
-/// Opens the host store for host key `key`: one kept for another key (hosting stopped and
-/// started again while no driver ran, or before it carried out the stop) is erased first.
+/// Opens the host store for host key `key`. One not recording `key` (kept for another key:
+/// hosting stopped and started again while no driver ran, or before it carried out the stop;
+/// recording none: new, or half erased by a crash) is erased first, then records `key` before
+/// any entry goes in.
 fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::Store, String> {
     let e = |e: osis_store::Error| e.to_string();
     let mut s = shared.host_store()?;
@@ -152,11 +154,9 @@ fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::St
     if kept.as_deref() == Some(key.as_slice()) {
         return Ok(s);
     }
-    if kept.is_some() {
-        drop(s);
-        shared.erase_host_store()?;
-        s = shared.host_store()?;
-    }
+    drop(s);
+    shared.erase_host_store()?;
+    let mut s = shared.host_store()?;
     let mut t = s.transaction(&mut rng).map_err(e)?;
     t.put_local(HOST_KEY_RECORD, key, osis_store::Shred::No).map_err(e)?;
     t.commit().map_err(e)?;
