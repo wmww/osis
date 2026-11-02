@@ -583,6 +583,12 @@ impl Engine {
                 Err(e @ Error::Store(_)) => return Err(e),
                 Err(_) => continue,
             };
+            // the thing's required retention governs the rewrite, not the old delta's
+            let mut e = e;
+            if crate::apply::validity::required_now(&self.core, &tid, &ak, me, self.core.hlc.peek()).is_some() {
+                e.retention = None;
+                e.expires = None;
+            }
             if allow(&tid, &ak) {
                 m.aspects.insert((tid, ak), e);
             }

@@ -35,6 +35,22 @@ osis_schema::ids! {
 }
 osis_schema::named_type!(Admit, "admit", SCHEMA);
 
+osis_schema::codec_struct! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Bound {
+        0 abs: Option<i64>,
+        1 rel: Option<i64>,
+    }
+}
+osis_schema::ids! {
+    /// Field IDs of `Bound`.
+    pub mod bound: FieldId {
+        ABS = 0,
+        REL = 1,
+    }
+}
+osis_schema::named_type!(Bound, "bound", SCHEMA);
+
 osis_schema::codec_enum! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub enum Box {
@@ -286,6 +302,26 @@ osis_schema::ids! {
     }
 }
 osis_schema::named_type!(Label, "label", SCHEMA);
+
+osis_schema::codec_struct! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub struct Required {
+        0 by: RequiredBy,
+        1 at_least: Bound,
+        2 at_most: Bound,
+        3 expires: Option<i64>,
+    }
+}
+osis_schema::ids! {
+    /// Field IDs of `Required`.
+    pub mod required: FieldId {
+        BY = 0,
+        AT_LEAST = 1,
+        AT_MOST = 2,
+        EXPIRES = 3,
+    }
+}
+osis_schema::named_type!(Required, "required", SCHEMA);
 
 osis_schema::codec_enum! {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -613,6 +649,27 @@ osis_schema::ids! {
     }
 }
 
+osis_schema::codec_enum! {
+    #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum RequiredBy {
+        0 Nobody,
+        1 Admin,
+        2 AuthorOrAdmin,
+        3 Writer,
+        4 Author,
+    }
+}
+osis_schema::ids! {
+    /// Case IDs of `RequiredBy`.
+    pub mod required_by: CaseId {
+        NOBODY = 0,
+        ADMIN = 1,
+        AUTHOR_OR_ADMIN = 2,
+        WRITER = 3,
+        AUTHOR = 4,
+    }
+}
+
 /// AKs present on the thing.
 pub const ASPECTS: osis_schema::Aspect<std::collections::BTreeSet<String>> = osis_schema::Aspect::new("aspects.0", &SCHEMA);
 /// Freeform markdown: a note's content, notes on an event or a contact.
@@ -635,6 +692,8 @@ pub const NODE: osis_schema::Aspect<Node> = osis_schema::Aspect::new("node.0", &
 pub const PLACED: osis_schema::Aspect<Placed> = osis_schema::Aspect::new("placed.0~", &SCHEMA);
 /// 32-byte P2P key, relay URLs, 32-byte LAN secret.
 pub const REACH: osis_schema::Aspect<Reach> = osis_schema::Aspect::new("reach.0", &SCHEMA);
+/// The retention this thing requires, by AK prefix (spec/commits.md §5).
+pub const REQUIRED: osis_schema::Aspect<std::collections::BTreeMap<String, Required>> = osis_schema::Aspect::new("required.0^", &SCHEMA);
 pub const ROLES: osis_schema::Aspect<std::collections::BTreeMap<osis_schema::osis_base::Tid, Edge>> = osis_schema::Aspect::new("roles.0", &SCHEMA);
 pub const SECRETS: osis_schema::Aspect<Secrets> = osis_schema::Aspect::new("secrets.0", &SCHEMA);
 /// ts: wall ms of the commit's ts.

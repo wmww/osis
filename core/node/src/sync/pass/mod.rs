@@ -723,7 +723,12 @@ impl SyncEngine {
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
     pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        let mut dropped = BTreeSet::new();
+        // deltas that broke their thing's required retention go without a right (spec/permissions.md §8)
+        let only = match &*scope {
+            Scope::All => None,
+            Scope::Some { commits, .. } => Some(commits),
+        };
+        let mut dropped: BTreeSet<CommitId> = self.engine.drop_broken(only)?.into_iter().collect();
         for ((t, a), ss) in &snaps {
             for s in ss {
                 if !self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {

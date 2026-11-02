@@ -19,9 +19,12 @@ pub const CREATED_RETENTION: Retention =
 /// The AK of the creation record.
 pub const CREATED: &str = "created.0";
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`).
+/// The AK of a thing's required retention.
+pub const REQUIRED: &str = "required.0^";
+
+/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`, `required.0^`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
-    if ak == CREATED {
+    if ak == CREATED || ak == REQUIRED {
         Some(CREATED_RETENTION)
     } else if is_role_class(ak) {
         Some(ROLE_RETENTION)

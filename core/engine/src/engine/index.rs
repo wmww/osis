@@ -38,6 +38,7 @@ const BOXES_TO: &[u8] = b"node/boxes to";
 const EPOCH_INTRO: &[u8] = b"node/epoch intro";
 const KEYSET_EPOCHS: &[u8] = b"node/keyset epochs";
 const DELETE_HINTS: &[u8] = b"node/delete hints";
+const REQUIRED: &[u8] = b"node/required";
 const SNAPSHOTS: &[u8] = b"node/snapshots";
 pub(super) const CARRIED: &[u8] = b"node/carried";
 const IMPORTS: &[u8] = b"node/imports";
@@ -210,6 +211,14 @@ impl Rec for crate::apply::validity::Carried {
         let Value::List(x) = v else { return None };
         let [snap, src, ctrs] = x.as_slice() else { return None };
         Some(crate::apply::validity::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, ctrs: uints_of(ctrs)? })
+    }
+}
+impl Rec for std::sync::Arc<osis_schema::core_types::RequiredRules> {
+    fn to(&self) -> Value {
+        self.to_value()
+    }
+    fn from(v: &Value) -> Option<Self> {
+        Codec::from_value(v).ok().map(std::sync::Arc::new)
     }
 }
 impl Rec for () {
@@ -476,7 +485,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
             Some(Role::Write) => 2,
             Some(Role::Admin) => 3,
         };
-        w = w.u32(*a as u32).u8(u8::from(d.as_cover) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4).u32(d.covered_by.len() as u32);
+        w = w.u32(*a as u32).u8(u8::from(d.as_cover) | u8::from(d.live) << 1 | role << 2 | u8::from(d.overreach) << 4 | u8::from(d.broke) << 5).u32(d.covered_by.len() as u32);
         for s in &d.covered_by {
             w = w.raw(&s.0);
         }
@@ -656,7 +665,7 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             }
         };
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, keysets, names });
+        dropped.insert(a, super::Dropped { covered_by, as_cover: flags & 1 != 0, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, broke: flags & 32 != 0, keysets, names });
     }
     Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
@@ -695,6 +704,7 @@ fn write(tx: &mut Tx<'_>, all: bool) -> Result<()> {
     put_map(txn, EPOCH_INTRO, &c.ix.epoch_intro, all)?;
     put_setmap(txn, KEYSET_EPOCHS, &c.ix.keyset_epochs, all)?;
     put_map(txn, DELETE_HINTS, &c.ix.delete_hints, all)?;
+    put_map(txn, REQUIRED, &c.ix.required, all)?;
     put_aspect_map(txn, SNAPSHOTS, &c.ix.snapshots, all)?;
     put_aspect_map(txn, CARRIED, &c.ix.carried, all)?;
     put_setmap(txn, IMPORTS, &c.ix.imports, all)?;
@@ -869,6 +879,9 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
     }
     for (k, v) in scan::<Tid>(tx, DELETE_HINTS)? {
         tx.core.ix.delete_hints.insert(k, dec(&v)?);
+    }
+    for (k, v) in scan::<Tid>(tx, REQUIRED)? {
+        tx.core.ix.required.insert(k, dec(&v)?);
     }
     for (k, v) in scan::<(Tid, osis_base::Ak)>(tx, SNAPSHOTS)? {
         tx.core.ix.snapshots.insert(k, dec(&v)?);

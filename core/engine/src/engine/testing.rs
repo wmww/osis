@@ -254,6 +254,16 @@ impl Engine {
     /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
     /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
     #[doc(hidden)]
+    /// How many held commits' parts break their thing's required retention.
+    pub fn broken_parts(&self) -> usize {
+        self.core.ix.commits.iter().map(|(id, m)| (0..m.header.aspects.len()).filter(|ai| crate::apply::validity::broken_by(&self.core, &m.header, id, *ai).is_some()).count()).sum()
+    }
+
+    /// How many held `required.0^` parts are invalid.
+    pub fn fallen_required(&self) -> usize {
+        self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::REQUIRED && !m.valid_at(*ai)).count()).sum()
+    }
+
     pub fn index_digest(&self) -> IndexDigest {
         let ix = &self.core.ix;
         let commits = ix.commits.iter().map(|(id, m)| {
@@ -296,6 +306,7 @@ impl Engine {
             ("ranges", format!("{:?}", *ix.ranges)),
             ("rotation_role", format!("{:?}", *ix.rotation_role)),
             ("grant_overreach", format!("{:?}", *ix.grant_overreach)),
+            ("required", format!("{:?}", *ix.required)),
             ("boxes_to", format!("{:?}", *ix.boxes_to)),
             ("epoch_intro", format!("{:?}", *ix.epoch_intro)),
             ("keyset_epochs", format!("{:?}", *ix.keyset_epochs)),

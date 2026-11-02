@@ -3,6 +3,7 @@
 
 mod common;
 mod net;
+mod required;
 mod cert_judge;
 mod corrupt;
 mod crash;

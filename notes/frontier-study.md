@@ -55,7 +55,7 @@ Companion edits: §3 names the lockout recovery (remove or demote the rotator wi
 - Loss of writes the revoker never received (pre-sync, hole 19): unchanged.
 - Lockout recovery (F5, built) leaves out only rotations by a node the demotion audits; a vandal keeping write another way (e.g. through its own actor holding write) is refused until that path is removed first. A rotation of a thing outside the demotion's scope needs that thing's own removal. The vandal's old-epoch box removals un-merge with its delta, so the epoch before it keeps boxes the recovery did not remove (superseded, harmless).
 - The equivocation-after-snapshot un-merge bug (fixed by seq-order): untouched by any frontier rule.
-- Mixed aspects (some writes permanent, some not, per-write override): fall back to IDs; a schema may want to forbid the mix.
+- Mixed aspects (some writes permanent, some not, per-write override): fall back to IDs. `required.0^` (spec/commits.md §5) forbids the mix after its key, but a head still needs every delta to be permanent, earlier writes and keys before the setting included, so F4 must still check.
 
 ## 8. Build steps
 Prerequisite: session-sources step 2 (session form for durable content), since links are per session. Independent of steps 4, 5, 6; step 6 gains the "never forget a permanent delta's header" clause.

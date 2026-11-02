@@ -2,7 +2,7 @@
 
 use crate::cbor::strictly_ascending;
 use crate::header::{FOREVER, Header, Kind, aspect_key, key_value, purge_value};
-use crate::retention::{CREATED, check_retention, delete_levels, fixed_retention};
+use crate::retention::{CREATED, REQUIRED, check_retention, delete_levels, fixed_retention};
 use crate::Error;
 use osis_base::format::{DELETE_AUTHOR, FORMAT_VERSION};
 use osis_schema::PurgeBy;
@@ -75,6 +75,11 @@ impl Header {
             // deltas instead (spec/commits.md §2)
             if ak == CREATED && (!kind.has_own_writes() || self.ephemeral.is_some()) {
                 return Err(Error::Invalid("created.0 in a commit without own writes or an ephemeral one"));
+            }
+            // kept forever and judged by its own deltas (spec/commits.md §5): never snapshotted
+            // or imported
+            if ak == REQUIRED && !kind.has_own_writes() {
+                return Err(Error::Invalid("required.0^ in a commit without own writes"));
             }
             match kind {
                 Kind::RosterSnapshot if !ROSTER_AKS.contains(&ak) => return Err(Error::Invalid("roster snapshot of a non-roster aspect")),

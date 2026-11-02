@@ -693,6 +693,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         let _s = crate::costs::span("apply: put_commit");
         tx.put_commit(&id, blob, &meta, Shred::No, None)?;
     }
+    note_held_rules(tx, &h, &id, &parts)?;
     after_store(tx, &h, &id, &uncarried, &voided, &mut j)?;
     {
         let _s = crate::costs::span("apply: retention");
@@ -729,6 +730,17 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // a memory commit expired or superseded on arrival is not kept
     crate::retention::memory::forget_if_spent(tx, &id)
+}
+
+/// Notes the `required.0^` deltas among `parts`, once stored (`validity::note_required_rules`).
+fn note_held_rules(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts) -> Result<()> {
+    for ai in parts.ais() {
+        if h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {
+            let held: Vec<(usize, usize, osis_commit::Decoded)> = super::held_parts(tx, id, ai)?.into_iter().map(|d| (ai, 0, d)).collect();
+            validity::note_required_rules(tx.core, h, id, &held);
+        }
+    }
+    Ok(())
 }
 
 /// A delta invalid on arrival whose part is not held (it may never come, or come late), on
@@ -884,6 +896,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     // the record's `node/edges` row, read once: it is also the commit's edge writes again
     let all = if h.kind.is_role() { Some(super::edge_parts_of(tx, id, &h, merged.clone())?) } else { None };
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
+    note_held_rules(tx, &h, id, &parts)?;
     after_store(tx, &h, id, &uncarried, &BTreeSet::new(), &mut j)?;
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
     crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;

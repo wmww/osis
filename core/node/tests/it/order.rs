@@ -122,6 +122,12 @@ pub(crate) enum Step {
     HostileRoster { by: usize, t: usize, keep: Vec<(usize, Role)> },
     /// A register write on `t`, unchecked.
     HostileWrite { by: usize, t: usize, v: u8 },
+    /// An admin's `required.0^` on `t` (spec/commits.md §5): by `rule`, nothing, `op`'s aspect
+    /// as `keep_of(op)`, every `t:` aspect as the default, or every aspect as `keep_of(op)`.
+    Require { by: usize, t: usize, op: u8, rule: u8 },
+    /// `op`'s write with `nobody` retention (or the default, `fits`) past the writer's check: it
+    /// breaks most rules `Require` sets.
+    Breaking { by: usize, t: usize, op: u8, v: u8, fits: bool },
     /// One content commit of a register write on each of things `a` and `b`, unchecked.
     Two { by: usize, a: usize, b: usize, v: u8 },
     /// `Two` on three things.
@@ -331,6 +337,8 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         }
         Leave { by, t } => pick(lp, by, t, &|lp, b, x| lp.peers[b].engine.roster(x).contains_key(&ids[b])).map(|(by, t)| Leave { by, t }),
         Roster { by, t } => pick(lp, by, t, &admin).map(|(by, t)| Roster { by, t }),
+        Require { by, t, op, rule } => pick(lp, by, t, &admin).map(|(by, t)| Require { by, t, op, rule }),
+        Breaking { by, t, op, v, fits } => pick(lp, by, t, &write).map(|(by, t)| Breaking { by, t, op, v, fits }),
         Compact { by, t, op } => {
             // an op of an aspect the author holds
             let holds = |lp: &LocalPeer, b: usize, x: &Tid| write(lp, b, x) && holding[b].contains(&(*x, aspect_of(op)));
@@ -851,6 +859,33 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 m.replace(th(t), &osis_schema::core_types::TENURES, &osis_schema::core_types::Tenures(Vec::new())).unwrap();
                 m.roster_for_tests();
                 lp.peers[by].engine.commit_hostile(m).unwrap().expect("a snapshot writes");
+                Some(by)
+            }
+            Step::Require { by, t, op, rule } => {
+                let keep = keep_of(op).unwrap_or_default();
+                let one = |p: &str, r: Retention| std::collections::BTreeMap::from([(p.to_string(), osis_schema::core_types::Required::new(r, None))]);
+                let rules = match rule % 4 {
+                    0 => std::collections::BTreeMap::new(),
+                    1 => one(aspect_of(op).as_str(), keep),
+                    2 => one("t:", Retention::default()),
+                    // no keep at most on every aspect: issues/at-most-map-snapshot-drop.md
+                    _ => one("", if keep.at_most.is_none() { keep } else { Retention::default() }),
+                };
+                let mut m = Mutation::new();
+                m.set(th(t), &osis_schema::core_types::REQUIRED, &rules).unwrap();
+                // a second part in another body class, so the setting may arrive late
+                if rule % 2 == 1 {
+                    m.set(th(t), &REG, &s("beside")).unwrap();
+                }
+                no = why(&lp.peers[by].commit(m));
+                Some(by)
+            }
+            Step::Breaking { by, t, op, v, fits } => {
+                let a = aspect_of(op);
+                let mut m = Mutation::new();
+                write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
+                m.retention(th(t), &a, if fits { Retention::default() } else { Retention { by: PurgeBy::Nobody, ..Retention::default() } }).unwrap();
+                no = why(&lp.peers[by].engine.commit_hostile(m));
                 Some(by)
             }
             Step::HostileWrite { by, t, v } => {
@@ -1764,6 +1799,10 @@ struct Seen {
     aspects: BTreeMap<String, u64>,
     /// Commits the reference node held for missing deltas while it learned its syncs late.
     late_waits: u64,
+    /// The reference node's parts breaking a required retention, and its `required.0^` parts
+    /// fallen invalid, over the held sets.
+    broken: u64,
+    fallen: u64,
 }
 
 impl Seen {
@@ -1772,6 +1811,8 @@ impl Seen {
         self.tally.add(&o.tally);
         self.invalid += o.invalid;
         self.late_waits += o.late_waits;
+        self.broken += o.broken;
+        self.fallen += o.fallen;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -1789,12 +1830,16 @@ impl Seen {
     fn floors(&self, name: &str, seeds: usize, broad: bool) {
         let (n, m) = self.tally.totals();
         assert!(n < 20 || m * 2 >= n, "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
+        // what the required retention harness is for
+        assert!(!name.contains("required") || (self.broken > 0 && self.fallen > 0), "order::{name}: no delta broke a required retention, or none of them fell: {self:?}");
         if seeds < 20 {
             return;
         }
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
+        // a history setting required retentions reaches a delta breaking one
+        assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
         if broad {
             assert!(self.pending.contains_key("WaitDeltas"), "order::{name}: nothing waited for deltas: {self:?}");
             assert!(self.late_waits > 0, "order::{name}: nothing waited for deltas with syncs learned late: {self:?}");
@@ -1899,6 +1944,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let idx = index_later(&mut p, played);
         let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
         seen.invalid += invalid as u64;
+        seen.broken += p.engine.broken_parts() as u64;
+        seen.fallen += p.engine.fallen_required() as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
             let carried: usize = idx.carried.values().map(Vec::len).sum();
             eprintln!("seed {seed}: {} of {} commits held ({} base), {} with an invalid part, {} carried groups, {} pending, {} things", held.len(), n, played.base, invalid, carried, want.part("pending").lines().count(), played.things.len());
@@ -1986,7 +2033,16 @@ fn shrink(seed: u64, mut steps: Vec<Step>, cfg: Cfg) -> (Vec<Step>, String) {
 
 fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
-    (0..len).map(|_| random_step(&mut rng)).collect()
+    let mut steps: Vec<Step> = (0..len).map(|_| random_step(&mut rng)).collect();
+    // every other history also sets required retentions and breaks them (the stream above
+    // unchanged, so a pinned odd seed replays)
+    if seed.is_multiple_of(2) {
+        let mut r = Rng(seed.wrapping_mul(0xd6e8_feb8_6659_fd93) | 1);
+        for _ in 0..len / 6 {
+            steps.insert(r.below(steps.len() as u64 + 1) as usize, required_step(&mut r));
+        }
+    }
+    steps
 }
 
 /// A short history aimed at deaths and validity together: writes of two bounded aspects
@@ -1994,6 +2050,56 @@ fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 /// and grants, nested writes under others' entries, one clock pulled ahead (a write made later
 /// by a peer behind sorts earlier), sends and syncs. Cut to the longest prefix making at most
 /// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
+/// A step of a thing's required retention: an admin's change or a write that may break it.
+fn required_step(r: &mut Rng) -> Step {
+    let (by, t, op) = (r.below(3) as usize, r.below(3) as usize, r.below(OPS as u64) as u8);
+    Step::Aim(Box::new(if r.below(3) == 0 {
+        Step::Require { by: r.pick(&[0, 0, 2]), t, op, rule: r.below(4) as u8 }
+    } else {
+        Step::Breaking { by, t, op, v: r.below(10) as u8, fits: r.below(4) == 0 }
+    }))
+}
+
+/// Short histories around required retention: changes, breaking and fitting writes, demotions of
+/// the admin who made a change, compactions, all on one thing, so every order meets them.
+fn required_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0xa24b_aed4_963e_e407) | 1);
+    let op = rng.below(OPS as u64) as u8;
+    // Carol's rule, a write breaking it, and Alice demoting her with or without having received
+    // the rule, so it may fall
+    let mut steps = vec![
+        Step::Require { by: 2, t: 0, op, rule: 2 + rng.below(2) as u8 },
+        Step::Breaking { by: 1, t: 0, op, v: 1, fits: false },
+    ];
+    if rng.below(2) == 0 {
+        steps.push(Step::Sync { from: 2, to: 0 });
+    }
+    steps.push(Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(2) as u8, to_read: false })));
+    while steps.len() < len {
+        let by = rng.below(3) as usize;
+        steps.push(match rng.below(10) {
+            0..=3 => Step::Aim(Box::new(Step::Breaking { by, t: 0, op, v: rng.below(10) as u8, fits: rng.below(3) == 0 })),
+            4 | 5 => Step::Aim(Box::new(Step::Require { by: rng.pick(&[0, 2]), t: 0, op, rule: rng.below(4) as u8 })),
+            6 => Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(4) as u8, to_read: false })),
+            7 => Step::Aim(Box::new(Step::Compact { by: rng.pick(&[0, by]), t: 0, op })),
+            8 => Step::Advance { who: Some(by), ms: 1 + rng.below(2_000) },
+            _ => Step::Sync { from: by, to: (by + 1 + rng.below(2) as usize) % 3 },
+        });
+    }
+    // the bound on commits an exhaustive run takes
+    let mut k = steps.len();
+    while k > 0 && !caught(|| {
+        let p = play(seed, &steps[..k]);
+        Ok::<_, String>(p.packs.len() - p.base <= cfg.all_up_to)
+    })
+    .unwrap_or(true)
+    {
+        k -= 1;
+    }
+    steps.truncate(k);
+    steps
+}
+
 fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0xa076_1d64_78bd_642f) | 1);
     // two bounded aspects per history, so writes, compactions and undos meet
@@ -2236,6 +2342,13 @@ fn sync_learned_after_part_reads_alike_spec_commits_4() {
 #[test]
 fn arrival_order_alike_small_spec_permissions_5_2() {
     run("arrival_order_alike_small_spec_permissions_5_2", 0..4, 8, SMALL, history);
+}
+
+// spec/commits.md §5, spec/permissions.md §5.2: required retention judged by the setting in force
+// at the delta's key, every arrival order and held subset alike.
+#[test]
+fn arrival_order_required_spec_commits_5() {
+    run("arrival_order_required_spec_commits_5", 0..4, 12, EXHAUST_SMALL, required_history);
 }
 
 // The same at size: long histories, random orders.

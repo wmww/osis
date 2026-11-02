@@ -667,6 +667,34 @@ fn grantee_boxes_only(actor: &Tid, f: &Fragment, granted: &BTreeMap<(Tid, Tid), 
     true
 }
 
+/// Notes what the held `required.0^` deltas among `parts` say (spec/commits.md §5), each judged
+/// from the delta alone: what it reads, as those rules; a value that is not rules requires
+/// nothing. Every delta on the thing is judged again.
+pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, parts: &[(usize, usize, Decoded)]) {
+    for (ai, _, d) in parts {
+        let Some(a) = h.aspects.get(*ai).filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) else { continue };
+        let rules = d.fragment().read().and_then(|v| osis_schema::AspectKey::decode(&ct::REQUIRED, &v).ok()).unwrap_or_default();
+        let p = Point { ts: h.ts, node: h.author, commit: *id };
+        let put = |l: &mut Vec<(Point, Arc<ct::RequiredRules>)>| {
+            if let Err(i) = l.binary_search_by(|x| x.0.cmp(&p)) {
+                l.insert(i, (p, Arc::new(rules.clone())));
+            }
+        };
+        core.ix.required.upsert(a.tid, || {
+            let mut l = Vec::new();
+            put(&mut l);
+            l
+        }, put);
+        core.stale_things.insert(a.tid);
+    }
+}
+
+/// Whether a delta of this kind and AK answers to its thing's required retention: not a
+/// compaction snapshot's, an aspect of fixed retention, or a non-durable one, which carries none.
+fn under_required(h: &Header, ak: &Ak) -> bool {
+    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && ak.lifetime() == osis_schema::Lifetime::Durable
+}
+
 /// Re-derives the edge writes of commits whose removed keys were unknown.
 pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     let ids: Vec<CommitId> = tx.core.ix.unresolved.iter().copied().collect();
@@ -710,6 +738,40 @@ fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool 
     let Some(tl) = tl else { return false };
     let point = Point { ts: h.ts, node: h.author, commit: *id };
     tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
+}
+
+/// The newest `required.0^` delta on `tid` valid and ordered before `at`: (its key, the entry
+/// governing `ak`) (spec/commits.md §5). A function of the held deltas and the timeline.
+fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &str, at: &Point) -> Option<(Point, Option<ct::Required>)> {
+    let core = judge.core;
+    for (p, rules) in core.ix.required.get(tid)?.iter().rev().filter(|x| x.0 < *at) {
+        let Some(m) = core.ix.commits.get(&p.commit) else { continue };
+        let Some(ai) = m.aspect(tid, &Ak::new(osis_commit::retention::REQUIRED).ok()?) else { continue };
+        if judge.part(&m.header, &p.commit, ai) {
+            return Some((*p, ct::required_for(rules, ak).copied()));
+        }
+    }
+    None
+}
+
+/// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
+pub(crate) fn required_now(core: &Core, tid: &Tid, ak: &Ak, node: Tid, ts: osis_base::Ts) -> Option<ct::Required> {
+    in_force(&mut Judge::new(core), tid, ak.as_str(), &Point { ts, node, commit: CommitId([0; 32]) })?.1
+}
+
+/// The key of the `required.0^` delta that aspect `ai` of held commit `id` breaks, if any.
+pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Option<Point> {
+    let a = h.aspects.get(ai)?;
+    if !under_required(h, &a.ak) || !core.ix.required.contains_key(&a.tid) {
+        return None;
+    }
+    let (p, q) = in_force(&mut Judge::new(core), &a.tid, a.ak.as_str(), &Point { ts: h.ts, node: h.author, commit: *id })?;
+    q.filter(|q| !meets(q, h, a)).map(|_| p)
+}
+
+/// Whether a delta carries exactly the retention and expiry `q` requires.
+fn meets(q: &ct::Required, h: &Header, a: &osis_commit::AspectEntry) -> bool {
+    a.retention == q.retention() && q.expires_at(h.ts.wall_ms().0) == Some(a.expires)
 }
 
 /// `part_valid` over many parts: what is per thing (owner depth, timeline) looked up once per
@@ -782,6 +844,15 @@ impl<'a> Judge<'a> {
             return true;
         }
         let Some(tl) = tl else { return false };
+        // a delta other than its thing's required retention at its key (spec/commits.md §5); a
+        // `required.0^` delta itself has none, so this ends
+        if core.ix.required.contains_key(&a.tid)
+            && under_required(h, &a.ak)
+            && let Some((_, Some(q))) = in_force(self, &a.tid, ak, &Point { ts: h.ts, node: h.author, commit: *id })
+            && !meets(&q, h, a)
+        {
+            return false;
+        }
         // a compaction snapshot: valid iff its author could write the aspect at the snapshot,
         // judged by commit ID (a demotion's frontier lists it), needing the strictest role a
         // write it carries could need (`snapshot_role`: admin for `keys.0` and `secrets.0`)
@@ -1271,9 +1342,18 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut fell: BTreeMap<(Tid, Ak), Vec<(CommitId, usize)>> = BTreeMap::new();
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut keyset_flips: BTreeSet<Tid> = BTreeSet::new();
-    let things = std::mem::take(&mut tx.core.stale_things);
+    let mut things = std::mem::take(&mut tx.core.stale_things);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
+    // re-judged whole: those named, and those acting for a thing whose timeline changed
+    // (`acts_for`); deltas on a thing answer to its `required.0^` deltas (`in_force`), so where
+    // one of those is judged again they are too
+    let mut whole = explicit;
+    whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));
+    for id in &whole {
+        let Some(m) = tx.core.ix.commits.get(id) else { continue };
+        things.extend(m.view.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED).map(|a| a.tid));
+    }
     let judge = crate::costs::span("rejudge: judge");
     // verdicts first (the core read only), each held commit once: by thing, a commit under the
     // first re-judged thing among its aspects; then the commits re-judged whole
@@ -1307,10 +1387,6 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 one(id, m, true);
             }
         } else {
-            // re-judged whole: those named, and those acting for a thing whose timeline changed
-            // (`acts_for`)
-            let mut whole = explicit.clone();
-            whole.extend(things.iter().flat_map(|t| core.acting_for(t)));
             // things in order: a commit is met first under the first re-judged thing it writes
             let mut met: BTreeSet<CommitId> = BTreeSet::new();
             for t in &things {
@@ -1354,6 +1430,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.mark_changed(id);
     }
     drop(judge);
+    // a body dropped for breaking the rule that no longer does: never received from here on
+    for (tid, ak) in &rose {
+        crate::retention::unbreak(tx, tid, ak)?;
+    }
     // what was not re-judged has not changed (debug builds: decodes every header)
     #[cfg(debug_assertions)]
     for (id, m) in tx.core.ix.commits.iter() {
