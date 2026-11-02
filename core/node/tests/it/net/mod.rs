@@ -251,10 +251,32 @@ impl Net {
     }
 
     pub fn add_node(&mut self, seed: u64, cfg: SyncConfig) -> usize {
+        self.add_node_on(seed, cfg, MemoryBackend::new(), MemoryRoot::new(), Config::default())
+    }
+
+    /// A node for forensic checks: every row and blob it writes recorded, a small key tree and
+    /// pages (a shred elsewhere does not incidentally rotate a leaked copy away); `faults` on
+    /// its device.
+    pub fn forensic_node(&mut self, seed: u64, hosts: &[usize], faults: &osis_store::Faults) -> usize {
+        let backend = MemoryBackend::with_faults(faults.clone());
+        backend.record_history();
+        let cfg = SyncConfig { hosts: hosts.iter().map(|s| self.address(*s)).collect(), ..SyncConfig::default() };
+        let store = StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() };
+        self.add_node_on(seed, cfg, backend, MemoryRoot::with_faults(faults.clone()), Config { store, ..Config::default() })
+    }
+
+    /// Where an attacker holding node `n`'s device recovers `marker` (`Engine::forensic`; the
+    /// node must record, `forensic_node`).
+    pub fn forensic(&mut self, n: usize, marker: &[u8]) -> Vec<osis_store::Source> {
+        let backend = self.nodes[n].backend.clone();
+        let found = self.engine(n).forensic(&backend).unwrap();
+        found.into_iter().filter(|r| r.plain.windows(marker.len()).any(|w| w == marker)).map(|r| r.from).collect()
+    }
+
+    fn add_node_on(&mut self, seed: u64, cfg: SyncConfig, backend: MemoryBackend, root: MemoryRoot, engine_cfg: Config) -> usize {
         let cfg = SyncConfig { full_passes: cfg.full_passes || self.full_passes, ..cfg };
-        let (backend, root) = (MemoryBackend::new(), MemoryRoot::new());
         let c: Arc<dyn Clock> = self.clock.clone();
-        let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
+        let engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), engine_cfg, c.clone(), Box::new(SeededRng::from_u64(seed))).unwrap();
         let mut sync = SyncEngine::new(engine, c, Box::new(SeededRng::from_u64(seed + 7)), cfg).unwrap();
         let events = sync.engine_mut().subscribe_durable();
         self.nodes.push(Node { sync: Some(sync), backend, root, online: true, wake: None, life: 0, accepts: true, events });

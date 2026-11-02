@@ -94,6 +94,8 @@ struct Data {
     blobs: HashMap<BlobId, Vec<u8>>,
     /// Every value ever written, if recording: what a forensic look at freed pages could find.
     history: Option<Vec<KeyValue>>,
+    /// Every blob put (`Some`) and free (`None`), if recording.
+    blob_history: Vec<(BlobId, Option<Vec<u8>>)>,
     /// Commits so far (what a file backend fsyncs).
     syncs: u64,
 }
@@ -113,7 +115,8 @@ impl MemoryBackend {
     pub fn with_faults(faults: Faults) -> MemoryBackend {
         MemoryBackend { data: Arc::default(), faults }
     }
-    /// Records every value written from now on (`history`), for shredding tests.
+    /// Records every value and blob written from now on (`history`, `blob_history`), for
+    /// shredding tests.
     pub fn record_history(&self) {
         let mut d = self.lock();
         if d.history.is_none() {
@@ -124,11 +127,22 @@ impl MemoryBackend {
     pub fn history(&self) -> Vec<KeyValue> {
         self.lock().history.clone().unwrap_or_default()
     }
+    /// Every blob put (`Some(bytes)`) and freed (`None`) while recording, in order.
+    pub fn blob_history(&self) -> Vec<(BlobId, Option<Vec<u8>>)> {
+        self.lock().blob_history.clone()
+    }
     /// An independent copy of the durable state, as a backup takes it (sharing the faults, no
     /// history).
     pub fn copy(&self) -> MemoryBackend {
         let d = self.lock();
-        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, syncs: 0 };
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), syncs: 0 };
+        MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
+    }
+    /// An independent copy of the durable state and of what was recorded (sharing the faults):
+    /// one device set up once, then run down several paths.
+    pub fn fork(&self) -> MemoryBackend {
+        let d = self.lock();
+        let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: d.history.clone(), blob_history: d.blob_history.clone(), syncs: d.syncs };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
     /// Drops every value and blob (a removed database file).
@@ -190,9 +204,15 @@ impl Backend for MemoryBackend {
                     d.kv.remove(&k);
                 }
                 Op::PutBlob(id, b) => {
+                    if d.history.is_some() {
+                        d.blob_history.push((id, Some(b.clone())));
+                    }
                     d.blobs.insert(id, b);
                 }
                 Op::DeleteBlob(id) => {
+                    if d.history.is_some() {
+                        d.blob_history.push((id, None));
+                    }
                     d.blobs.remove(&id);
                 }
             }

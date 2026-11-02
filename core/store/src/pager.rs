@@ -806,36 +806,21 @@ impl Pager {
     }
 }
 
-/// Every row of `history` an attacker holding the device opens: starting from `keys` (what the
-/// current tree yields, `Store::forensic_keys`), every row tried with every key, keys harvested
-/// from opened tree nodes, to a fixpoint. Shredding tests only.
-pub fn forensic_plaintexts(mut keys: Vec<[u8; 32]>, history: &[crate::KeyValue]) -> Vec<Vec<u8>> {
-    let mut known: std::collections::HashSet<[u8; 32]> = keys.iter().copied().collect();
-    let mut opened = vec![None; history.len()];
-    let mut tried = 0;
-    while tried < keys.len() {
-        let batch = keys.get(tried..).unwrap_or_default().to_vec();
-        tried = keys.len();
-        for ((row, value), slot) in history.iter().zip(opened.iter_mut()) {
-            if slot.is_some() {
-                continue;
-            }
-            if let Some(plain) = batch.iter().find_map(|k| forensic_open(row, value, k)) {
-                for nk in forensic_node_keys(row, &plain) {
-                    if known.insert(nk) {
-                        keys.push(nk);
-                    }
-                }
-                *slot = Some(plain);
-            }
-        }
-    }
-    opened.into_iter().flatten().collect()
-}
-
 /// Opens a stored row with a candidate key: the plaintext, or `None`. Shredding tests only.
 pub fn forensic_open(row: &[u8], value: &[u8], key: &[u8; 32]) -> Option<Vec<u8>> {
     open(&Secret32::from_bytes(*key), row, value).ok()
+}
+
+/// The slot of a unit row (`u slot ver`). Shredding tests only.
+pub(crate) fn forensic_unit_slot(row: &[u8]) -> Option<u64> {
+    let mut r = R::new(row);
+    (r.u8().ok()? == b'u').then(|| r.u64().ok()).flatten()
+}
+
+/// Whether a row is stored in the clear: the pointers `r`, `p` and journals `j`. Shredding
+/// tests only.
+pub(crate) fn forensic_clear_row(row: &[u8]) -> bool {
+    row == ROW_R || row == ROW_P || row.first() == Some(&JOURNAL)
 }
 
 /// The keys a decrypted tree-node row lists (top node: after the meta). Shredding tests only.

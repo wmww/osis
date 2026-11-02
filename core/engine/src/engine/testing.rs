@@ -16,6 +16,24 @@ impl Engine {
         Ok(self.store.forensic_keys()?)
     }
 
+    /// What an attacker holding this node's device recovers from everything `backend` recorded
+    /// (`osis_store::attack`): the current tree's keys, the label read secrets this node's code
+    /// computes now, blobs and wraps opened as osis-label does. Shredding tests.
+    #[doc(hidden)]
+    pub fn forensic(&mut self, backend: &osis_store::MemoryBackend) -> Result<Vec<osis_store::Recovered>> {
+        let mut ev = osis_store::Evidence::of(self.store.forensic_keys()?, backend);
+        let tids: std::collections::BTreeSet<Tid> = self.all_aspects()?.into_iter().map(|(t, _)| t).collect();
+        for t in tids {
+            ev.secrets.extend(self.read_secrets(&t).iter().map(|s| *s.expose()));
+        }
+        let ciphers = osis_store::Ciphers {
+            open: |blob, key| osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p),
+            unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
+            wrap_len: osis_crypto::WRAP_LEN,
+        };
+        Ok(osis_store::attack(&ev, Some(&ciphers)))
+    }
+
     /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
     #[doc(hidden)]
     pub fn waits_bytes(&self) -> usize {

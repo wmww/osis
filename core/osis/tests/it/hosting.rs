@@ -99,7 +99,7 @@ fn hosting_own_then_open_spec_sync_5() {
     let mut history = w.hosts[s].backend.history();
     assert!(!history.is_empty());
     let keys = w.hosts[s].hub.store_mut().store_mut().unwrap().forensic_keys().unwrap();
-    let plain = osis_store::forensic_plaintexts(keys, &history);
+    let plain = osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: history.clone(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>();
     history.extend(plain.into_iter().map(|p| (Vec::new(), p)));
     for needle in [ta.as_bytes().as_slice(), tb.as_bytes(), alice.me().as_bytes(), bob.me().as_bytes(), alice.node().as_bytes(), bob.node().as_bytes(), b"t:x.0"] {
         for (k, v) in &history {

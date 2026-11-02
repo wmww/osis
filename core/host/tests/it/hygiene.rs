@@ -51,7 +51,7 @@ fn stored_bytes_hold_no_plaintext_identifiers() {
     let mut history = w.backends[h].history();
     assert!(!history.is_empty());
     let keys = w.hubs[h].store_mut().store_mut().unwrap().forensic_keys().unwrap();
-    let plain = osis_store::forensic_plaintexts(keys, &history);
+    let plain = osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: history.clone(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>();
     // control: what the host may know (the label ID) is found by the same search
     assert!(plain.iter().any(|p| contains(p, &l.id.0)));
     history.extend(plain.into_iter().map(|p| (Vec::new(), p)));
@@ -108,7 +108,7 @@ fn deleted_wraps_unrecoverable() {
     let (dead, live) = ([wrap(103), wrap(250), wrap(105), wrap(107)], wrap(120));
     let found = |s: &mut osis_host::HostStore, w: &[u8]| {
         let keys = s.store_mut().unwrap().forensic_keys().unwrap();
-        osis_store::forensic_plaintexts(keys, &backend.history()).iter().any(|p| contains(p, w))
+        osis_store::attack(&osis_store::Evidence { store_keys: keys, rows: backend.history(), ..Default::default() }, None).into_iter().map(|r| r.plain).collect::<Vec<_>>().iter().any(|p| contains(p, w))
     };
     assert!(dead.iter().all(|w| found(&mut s, w)), "the attack finds live wraps");
     s.delete(&l, &osis_label::blob_id(&blobs[3]), T0).unwrap();

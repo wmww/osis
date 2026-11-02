@@ -146,15 +146,20 @@ pub fn contains(hay: &[u8], needle: &[u8]) -> bool {
     hay.windows(needle.len()).any(|w| w == needle)
 }
 
-/// Whether an attacker decrypts `marker` from the rows ever written, starting from the keys the
-/// current tree yields and harvesting keys from opened tree nodes.
+/// Whether an attacker holding the device recovers `marker` (`Engine::forensic`: rows, blobs,
+/// wraps, every row and blob ever written).
 pub fn recoverable(p: &mut osis_node::local_peer::Peer, marker: &[u8]) -> bool {
     plaintexts(p).iter().any(|x| contains(x, marker))
 }
 
-/// Every row plaintext an attacker recovers.
+/// Every plaintext an attacker recovers.
 pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
-    osis_store::forensic_plaintexts(p.engine.forensic_keys().unwrap(), &p.backend.history())
+    p.engine.forensic(&p.backend).unwrap().into_iter().map(|r| r.plain).collect()
+}
+
+/// Where the attack on `engine` over `backend` recovers `marker` (empty: nowhere).
+pub fn found_in(engine: &mut osis_node::Engine, backend: &osis_store::MemoryBackend, marker: &[u8]) -> Vec<osis_store::Source> {
+    engine.forensic(backend).unwrap().into_iter().filter(|r| contains(&r.plain, marker)).map(|r| r.from).collect()
 }
 
 /// A content snapshot of `(t, a)` by peer `by` at `ts` carrying `f` (hand-built, unchecked).
