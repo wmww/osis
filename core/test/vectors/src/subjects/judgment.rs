@@ -1,12 +1,14 @@
 //! `judgment/` (spec/permissions.md §5-§6, spec/commits.md §5): generated and replayed by
 //! osis-node (`tests/it/judgment.rs`, through the engine); here only the shape is checked: every
-//! case has its inputs, its bundle imports (paths and stamps verify) and its order names entries.
+//! case has its inputs, its bundle (the header's `setup`, then its own frames) imports (paths and
+//! stamps verify) and its order names entries.
 
 use crate::file::VecFile;
 use crate::unhex;
 use osis_label::{BundleReader, Importer, Record};
 
 pub fn check(f: &VecFile) -> Result<(), String> {
+    let setup = unhex(f.header.req("setup")?)?;
     let mut entries: Vec<(String, usize)> = Vec::new();
     for c in f.live() {
         let name = c.req("case")?;
@@ -17,7 +19,7 @@ pub fn check(f: &VecFile) -> Result<(), String> {
         let n = match b.strip_prefix("as in ") {
             Some(other) => entries.iter().find(|(x, _)| x == other).map(|x| x.1).ok_or_else(|| format!("{name}: no earlier case {other}"))?,
             None => {
-                let bytes = unhex(b)?;
+                let bytes = [setup.clone(), unhex(b)?].concat();
                 let mut rd = BundleReader::new(&bytes[..]).map_err(|e| format!("{name}: {e:?}"))?;
                 let mut imp = Importer::new();
                 let mut n = 0;
