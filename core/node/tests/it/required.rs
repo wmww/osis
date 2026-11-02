@@ -970,3 +970,131 @@ fn unmeetable_entry_refused_spec_commits_5() {
     m.set(d, &ak("t:x.0"), &s("x")).unwrap();
     assert!(lp.peers[0].commit(m).unwrap().is_some());
 }
+
+// spec/commits.md §4: a setting by one not a possible admin leaves as if never seen: every order of
+// the other inputs, a pass after each, reads as a node that never saw it and runs no pass, until a
+// pass took the signer's setting before its late grant; then that node waits for the hidden part
+// and reads alike once the rest arrives
+#[test]
+fn dropped_setting_reads_as_never_seen_spec_commits_4() {
+    let mut lp = net(4, 441);
+    let ids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let mut m = Mutation::new();
+    let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    m.set(d, &REG, &s("d")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, d, ids[3], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let base = base_of(&mut lp);
+    let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+    let plain = rules(&[("t:bad", permanent())]);
+    let g = set_edge(&mut lp.peers[2].engine, d, ids[1], Some(edge(Role::Admin)), None);
+    lp.advance(1_000);
+    lp.sync_all().unwrap();
+    let s1 = require(&mut lp, 1, d, &plain);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &plain).unwrap();
+    let junk_setting = lp.peers[3].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &bad, &s("bad")).unwrap();
+    m.retention(d, &bad, junk()).unwrap();
+    m.set(d, &good, &s("good")).unwrap();
+    let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let dem = demote_to_write(&mut lp, d, ids[2], &[]);
+    let (grant, setting, writers, whole, demotion) = (pack(&mut lp.peers[2], &g), pack(&mut lp.peers[1], &s1), pack(&mut lp.peers[3], &junk_setting), pack(&mut lp.peers[0], &c), pack(&mut lp.peers[0], &dem));
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak == bad).unwrap();
+    part.parts.retain(|x| x.ai != ai);
+    let part = part.encode();
+    let (gr, st, wr, pa) = (0, 1, 2, 3);
+    let items = [(grant.bytes.clone(), grant.blobs.clone()), (setting.bytes.clone(), setting.blobs.clone()), (writers.bytes.clone(), writers.blobs.clone()), (part, whole.blobs.clone()), (demotion.bytes.clone(), demotion.blobs.clone())];
+    let mut orders = vec![Vec::new()];
+    for _ in 0..items.len() {
+        orders = orders.iter().flat_map(|o: &Vec<usize>| (0..items.len()).filter(|i| !o.contains(i)).map(|i| [o.clone(), vec![i]].concat()).collect::<Vec<_>>()).collect();
+    }
+    assert_eq!(orders.len(), 120);
+    for order in &orders {
+        let (mut x, mut y) = (fresh(&mut lp, &base, &[]), fresh(&mut lp, &base, &[]));
+        x.engine.set_syncing(d, true).unwrap();
+        y.engine.set_syncing(d, true).unwrap();
+        let mut took = false;
+        for (n, i) in order.iter().enumerate() {
+            let (bytes, blobs) = &items[*i];
+            x.engine.ingest(bytes, blobs.clone()).unwrap();
+            if *i != wr {
+                y.engine.ingest(bytes, blobs.clone()).unwrap();
+            }
+            let dropped = x.engine.drop_broken(None).unwrap();
+            assert!(!dropped.contains(&s1) || !order[..=n].contains(&gr), "{order:?} after {n}: a possible admin's setting never goes");
+            took |= dropped.contains(&s1);
+            let (gx, gy) = (read(&mut x, d, "t:good.0"), read(&mut y, d, "t:good.0"));
+            if took {
+                assert_eq!(gx, None, "{order:?} after {n}: waits for the hidden part");
+            } else {
+                assert_eq!(gx, gy, "{order:?} after {n}");
+            }
+            assert_eq!(read(&mut x, d, "t:bad.0"), read(&mut y, d, "t:bad.0"), "{order:?} after {n}");
+            let done = &order[..=n];
+            assert_eq!(gy, [gr, st, pa].iter().all(|i| done.contains(i)).then(|| s("good")), "{order:?} after {n}, the node that saw no drop");
+        }
+        for (bytes, blobs) in [(&whole.bytes, &whole.blobs), (&setting.bytes, &setting.blobs)] {
+            x.engine.ingest(bytes, blobs.clone()).unwrap();
+            y.engine.ingest(bytes, blobs.clone()).unwrap();
+            x.engine.drop_broken(None).unwrap();
+            assert_eq!(read(&mut x, d, "t:good.0"), Some(s("good")), "{order:?}");
+            assert_eq!(read(&mut y, d, "t:good.0"), Some(s("good")), "{order:?}");
+        }
+        assert_eq!(read(&mut x, d, "t:bad.0"), read(&mut y, d, "t:bad.0"), "{order:?}");
+        assert_eq!(read(&mut y, d, "t:bad.0"), Some(s("bad")), "the setting fell, {order:?}");
+    }
+}
+
+// spec/permissions.md §8: an honest late grant. Bob, granted by Carol at one host, sets at both; an
+// admin on the other host sees the setting first, drops it and deletes it there; the grant comes,
+// the setting is back at the host and the node, and stands everywhere
+#[test]
+fn setting_before_its_grant_comes_back_spec_perm_8() {
+    let mut net = Net::new();
+    let (h1, h2) = (net.add_host(), net.add_host());
+    let a = net.node(1, &[h1, h2]);
+    let b = net.node(2, &[h1, h2]);
+    let c = net.node(3, &[h1, h2]);
+    let d = net.node(4, &[h1, h2]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (d, Role::Admin)], &[h1, h2]);
+    let t = net.item(a, g, g, "v1");
+    settle(&mut net);
+    let (l, bob, ra) = (net.label(b), net.tid(b), ak("required.0^"));
+    net.set_online(a, false);
+    net.drop_link(c, h2);
+    net.drop_link(d, h1);
+    let grant = set_edge(net.engine(c), t, bob, Some(edge(Role::Admin)), None);
+    net.run();
+    assert!(net.engine(b).core.ix.commits.get(&grant).is_some());
+    let at_host = net.host_ids(h2, &l).len();
+    let mut m = Mutation::new();
+    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    let st = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert!(net.engine(d).core.ix.commits.get(&grant).is_none());
+    assert!(net.engine(d).core.ix.commits.get(&st).is_some());
+    assert!(!net.engine(d).body_not_dropped(&st, &t, &ra), "not a possible admin here: goes");
+    assert_eq!(net.host_ids(h2, &l).len(), at_host, "and from the host");
+    net.set_online(a, true);
+    for _ in 0..10 {
+        net.advance(1_000);
+    }
+    for n in [a, b, c, d] {
+        assert_eq!(net.engine(n).body_valid(&st, &t, &ra), Some(true), "{n}");
+        assert!(net.engine(n).body_not_dropped(&st, &t, &ra), "{n}");
+    }
+    let (x, y): (BTreeSet<_>, BTreeSet<_>) = (net.host_ids(h1, &l).into_iter().collect(), net.host_ids(h2, &l).into_iter().collect());
+    assert!(net.engine(d).core.ix.required.get(&t).is_some_and(|v| v.iter().any(|x| x.0.commit == st)), "binding there again");
+    // each its own placement of the commit, with its own salt
+    let ours: Vec<_> = net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, osis_node::sync::EntryKind::Commit { commit, .. } if *commit == st)).map(|e| e.0).collect();
+    assert!(ours.iter().any(|b| x.contains(b)) && ours.iter().any(|b| y.contains(b)), "both hosts have it");
+}

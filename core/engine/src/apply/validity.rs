@@ -779,10 +779,17 @@ pub(crate) fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &
         return false;
     }
     let at = Point { ts: h.ts, node: h.author, commit: *id };
-    let mut broken = core.ix.required.get(&a.tid).into_iter().flatten().take_while(|x| x.0 < at).filter(|(_, rules)| ct::required_for(rules, a.ak.as_str()).is_some_and(|q| !meets(q, h, a))).peekable();
-    broken.peek().is_some() && {
-        let admins = core.ix.held.ever_admins(&a.tid);
-        broken.any(|(p, _)| admins.contains(&p.node))
+    let broken = core.ix.required.get(&a.tid).into_iter().flatten().take_while(|x| x.0 < at).filter(|(_, rules)| ct::required_for(rules, a.ak.as_str()).is_some_and(|q| !meets(q, h, a)));
+    signed_by_possible_admin(core, &a.tid, broken.map(|(p, _)| p.node))
+}
+
+/// Whether one of `signers` is a possible admin of `t` (`Held::ever_admins`), the set walked only if
+/// there is one: what lets a missing delta count as held on a signer's word must not be anyone's.
+fn signed_by_possible_admin(core: &Core, t: &Tid, signers: impl Iterator<Item = Tid>) -> bool {
+    let mut signers = signers.peekable();
+    signers.peek().is_some() && {
+        let admins = core.ix.held.ever_admins(t);
+        signers.any(|by| admins.contains(&by))
     }
 }
 
@@ -956,11 +963,8 @@ pub(crate) fn removed_author(core: &Core, h: &Header, id: &CommitId, a: &osis_co
         // an entry ends a tenure; a tenure or roster edge of `required` or above starting at its end means no lowering
         let stays = |s: &RosterSnapshot, l: &osis_perm::Tenure| s.roster.get(&l.holder).is_some_and(|e| e.role >= required && e.since == Some(l.until)) || s.ledger.iter().any(|n| n.holder == l.holder && n.role >= required && n.since == Some(l.until) && n.until > l.until);
         let in_ledger = |s: &&Arc<RosterSnapshot>| s.ledger.iter().any(|l| is_author(&l.holder) && l.role >= required && unlisted(&l.frontier) && !stays(s, l));
-        let mut signers = core.ix.held.commits_on(&t).iter().filter(lowered).map(|r| r.author).chain(core.ix.held.snapshots_of(&t).iter().filter(in_ledger).map(|s| s.author)).peekable();
-        signers.peek().is_some() && {
-            let admins = core.ix.held.ever_admins(&t);
-            signers.any(|by| admins.contains(&by))
-        }
+        let signers = core.ix.held.commits_on(&t).iter().filter(lowered).map(|r| r.author).chain(core.ix.held.snapshots_of(&t).iter().filter(in_ledger).map(|s| s.author));
+        signed_by_possible_admin(core, &t, signers)
     })
 }
 
