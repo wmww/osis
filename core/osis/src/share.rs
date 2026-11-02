@@ -308,14 +308,17 @@ fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>
 }
 
 /// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
-/// (all their labels) or `None` (every label with hosts), then the pending deliveries about
+/// (all their labels but a replaced hostless one beside another) or `None` (every label with hosts), then the pending deliveries about
 /// `deliveries` (every one when `groups` is `None`).
 fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
     let skip = sync.receipts_only().clone();
-    let labels: Vec<(Tid, SyncState)> = sync
-        .label_status()
+    let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
+    // a replaced hostless label beside another of its group takes nothing (it retires after
+    // ROLE_KEEP): left out, else `Group(t)` failed until then
+    let gone = |s: &osis_node::sync::LabelStatus| s.hosts == 0 && s.replaced;
+    let labels: Vec<(Tid, SyncState)> = all
         .iter()
-        .filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group)))
+        .filter(|s| !gone(s) || !all.iter().any(|x| x.group == s.group && !gone(x)))
         .map(|s| (s.group, label_state(s)))
         .filter(|(_, st)| groups.is_some() || *st != SyncState::NoHosts)
         .collect();
@@ -1091,7 +1094,7 @@ impl Osis {
     /// taken (a grant to a recipient whose inbox host refuses it for now keeps it waiting);
     /// fails `Unsynced` for a stranded label in scope, `Network` after `timeout` or without a
     /// runtime. `Group(t)`: the labels of the groups holding `t` (a hostless one fails
-    /// `Unsynced`) and the deliveries about `t`, a thing it holds or one of those groups (a
+    /// `Unsynced`, unless replaced beside another) and the deliveries about `t`, a thing it holds or one of those groups (a
     /// grant on one, a non-writer's write under its label). `All`: every label with hosts
     /// (`status` shows the `NoHosts` ones) and every delivery.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
