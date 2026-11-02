@@ -18,7 +18,7 @@ use crate::events::{Cause, Event};
 use osis_commit::{Decoded, Form, Header, Kind, PurgeItem};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts};
 use osis_crdt::{Fragment, Frontiers};
-use osis_perm::{At, Point, PurgeBy};
+use osis_perm::{At, Point};
 use osis_schema::core_types::is_role_class;
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
@@ -706,10 +706,6 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
     Ok(out)
 }
 
-fn purge_by(p: osis_schema::PurgeBy) -> PurgeBy {
-    PurgeBy::from_code(p as u64).unwrap_or(PurgeBy::Nobody)
-}
-
 /// Does purge item `item` of commit `pc` (header `p`) name aspect `ai` of commit `c` (header
 /// `ch`), with its author holding the right at the request's time (spec/permissions.md §8)?
 fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &Header, c: &CommitId, ai: usize) -> bool {
@@ -725,11 +721,7 @@ fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &
         return false;
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
-    let actor = match ch.kind {
-        Kind::Import => ch.origins.first().map_or(ch.actor, |o| o.actor),
-        _ => ch.actor,
-    };
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, purge_by(a.retention.by), &actor, At::before(point)))
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, a.retention.by, &ch.purge_actor(), At::before(point)))
 }
 
 fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
@@ -1313,10 +1305,10 @@ pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Re
 /// two never disagree.
 pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<u64>> {
     let (ai, h) = known_part(tx.core, c, tid, ak)?;
-    let by = h.aspects.get(ai).map_or(PurgeBy::Nobody, |a| PurgeBy::from_code(a.retention.by as u64).unwrap_or(PurgeBy::Nobody));
+    let by = h.aspects.get(ai).map_or(osis_base::PurgeBy::Nobody, |a| a.retention.by);
     let me = tx.core.id.tid();
     let at = At::now(Ts::make(tx.now(), 0).unwrap_or_default());
-    if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.actor, at)) {
+    if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.purge_actor(), at)) {
         return Ok(None);
     }
     Ok(Some(body_keep(tx, c, tid, ak)?.at_least.saturating_add(osis_base::format::MAX_DRIFT_MS)))

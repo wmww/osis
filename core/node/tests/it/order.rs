@@ -179,10 +179,13 @@ fn aspect_of(op: u8) -> Ak {
 /// min or 0.
 fn keep_of(op: u8) -> Option<Retention> {
     let d = Some(HOUR / 2);
-    let at_least = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
+    let at_least = Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
+    // an author-only class among them: an admin's compaction drops none of another's bodies
+    let author = Some(Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: d }, at_most: Bound::default() });
     let at_most = |rel| Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(rel) } });
     match op % OPS {
-        16 | 21..=26 => at_least,
+        16 | 21..=23 => at_least,
+        24..=26 => author,
         17 => at_most(HOUR / 2),
         18..=20 => at_most(0),
         _ => None,

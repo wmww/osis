@@ -13,7 +13,7 @@ fn bound() -> impl Strategy<Value = Bound> {
 }
 
 fn retention() -> impl Strategy<Value = Retention> {
-    (0u64..4, bound(), bound()).prop_map(|(b, at_least, at_most)| Retention { by: PurgeBy::from_id(b).unwrap(), at_least, at_most })
+    (0u64..5, bound(), bound()).prop_map(|(b, at_least, at_most)| Retention { by: PurgeBy::from_id(b).unwrap(), at_least, at_most })
 }
 
 fn tid() -> impl Strategy<Value = Tid> {

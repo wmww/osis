@@ -1,6 +1,8 @@
 # Evidence for design E
 > Summary: Rule citations and traces for chat design E.
 
+Written before purge classes became sets: `author` here is today's `author_or_admin`.
+
 "Traced" = read in spec, notes or code. "Estimated" = arithmetic from cited sizes. "Not closed" = inferred, not verified.
 
 ## E1 versus E2

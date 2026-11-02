@@ -1,6 +1,8 @@
 # Review of chat design E
 > Summary: Independent review: at honest nodes no non-admin can destroy another's message, and the topology holds, but the sender is unverified without a display rule, kicks and device removals cost one commit ID per surviving message, any snapshot then hides a kicked member's past, and new devices get no tombstones.
 
+Written before purge classes became sets: `author` here is today's `author_or_admin`.
+
 
 Read only, nothing run. Numbers marked "extrapolated" scale measured figures linearly.
 

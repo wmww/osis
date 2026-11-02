@@ -92,6 +92,48 @@ fn expiry_spec_commits_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), None);
 }
 
+// spec/commits.md §5, spec/permissions.md §8: rights are judged per delta in any arrival order:
+// a request by the admin arriving before an `author` delta leaves it whole, the author's arriving
+// before it drops it on arrival; `nobody` keeps it from both.
+#[test]
+fn purge_sets_any_order_spec_perm_8() {
+    use osis_schema::{PurgeBy, Retention};
+    for (by, by_admin, by_author) in [(PurgeBy::Author, false, true), (PurgeBy::Admin, true, false), (PurgeBy::AuthorOrAdmin, true, true), (PurgeBy::Nobody, false, false), (PurgeBy::Writer, true, true)] {
+        for (who, dropped) in [(0, by_admin), (1, by_author)] {
+            let mut lp = net(3, 55);
+            lp.sync_all().unwrap();
+            let t = new_thing(&mut lp, 0);
+            let b = lp.peers[1].engine.tid();
+            set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+            sync(&mut lp, 0, 1);
+            lp.advance(5);
+            let mut m = Mutation::new();
+            m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+            m.set(t, &REG, &s("v")).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            let full = lp.peers[1].engine.package(&c).unwrap().unwrap();
+            sync(&mut lp, 1, 0);
+            lp.advance(5);
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s("later")).unwrap();
+            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+            let pc = lp.peers[who].commit(m).unwrap().unwrap();
+            sync(&mut lp, who, 1 - who);
+            let holds = |lp: &mut osis_node::local_peer::LocalPeer, n: usize| lp.peers[n].engine.body_not_dropped(&c, &t, &ak("t:reg.0"));
+            assert_eq!((holds(&mut lp, 0), holds(&mut lp, 1)), (!dropped, !dropped), "{by:?} by peer {who}");
+            // node 2: the request first, the delta last
+            let pks = lp.packages(1).unwrap();
+            let pp = pks.iter().find(|p| p.id == pc).unwrap().clone();
+            for p in pks.iter().filter(|p| p.id != c && p.id != pc) {
+                let _ = lp.deliver(2, p);
+            }
+            let _ = lp.deliver(2, &pp);
+            let _ = lp.deliver(2, &full);
+            assert_eq!(holds(&mut lp, 2), !dropped, "{by:?} by peer {who}, request first");
+        }
+    }
+}
+
 // spec/commits.md §5, spec/permissions.md §8: a purge request drops the named deltas its author
 // may purge, everywhere it applies, and later copies arrive value-less; a writer without the
 // right purges nothing.
@@ -1156,7 +1198,7 @@ fn undo_expiry_history(seed: u64) {
 #[test]
 fn older_duplicate_text_delete_dates_in_place_spec_commits_5() {
     use osis_schema::{Bound, PurgeBy, Retention};
-    let r = Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
+    let r = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: Some(1_800_000) }, at_most: Bound::default() };
     let mut lp = net(2, 0x5e9);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);

@@ -842,3 +842,136 @@ fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
     }
     assert_eq!(at_host_count(&mut net, yz), 0, "yz deleted, carried");
 }
+
+fn with_retention(net: &mut Net, n: usize, t: osis_base::Tid, v: &str, r: osis_schema::Retention) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.retention(t, &REG, r).unwrap();
+    m.set(t, &REG, &s(v)).unwrap();
+    net.engine(n).commit(m).unwrap().unwrap()
+}
+
+fn purge_commit(net: &mut Net, n: usize, t: osis_base::Tid, c: osis_base::CommitId) {
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: Ak::new(REG.ak()).unwrap() });
+    m.set(t, &REG, &s(&format!("after {n} {c:?}"))).unwrap();
+    net.engine(n).commit(m).unwrap();
+    net.run();
+}
+
+fn blobs_of(net: &mut Net, n: usize, l: &osis_base::LabelId, c: osis_base::CommitId) -> Vec<osis_base::BlobId> {
+    net.sync(n).entries(l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect()
+}
+
+// spec/commits.md §5, spec/permissions.md §8, spec/crypto.md §7: an `author` delta lists level 2
+// alone; an admin's compaction and purge request drop none of it, at the admin or anywhere, and
+// its author's purge request drops it and deletes it at the host by the level-2 key, with no
+// admin online. The admin's own `admin` delta is the mirror: its author, a writer, cannot.
+#[test]
+fn author_only_not_the_admins_spec_perm_8() {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let k = Ak::new(REG.ak()).unwrap();
+    let kept = Bound { abs: Some(osis_commit::FOREVER), rel: None };
+    let c = with_retention(&mut net, b, t, "b's", Retention { by: PurgeBy::Author, at_least: kept, at_most: Bound::default() });
+    let h = net.engine(b).header(&c).unwrap();
+    let levels: Vec<u8> = h.aspects.iter().find(|x| x.ak == k).unwrap().keys.iter().map(|i| h.keys[*i].level).collect();
+    assert_eq!(levels, vec![2]);
+    net.run();
+    let blobs = blobs_of(&mut net, b, &l, c);
+    assert!(!blobs.is_empty() && blobs.iter().all(|id| net.host_ids(host, &l).contains(id)));
+
+    // the admin's purge request names it: nothing goes anywhere
+    purge_commit(&mut net, a, t, c);
+    net.run();
+    assert!(net.engine(a).body_not_dropped(&c, &t, &k), "admin's purge dropped it at the admin");
+    assert!(net.engine(b).body_not_dropped(&c, &t, &k), "admin's purge dropped it at the author");
+    assert!(blobs.iter().all(|id| net.host_ids(host, &l).contains(id)), "admin's purge deleted it at the host");
+
+    // the mirror: `admin` by the admin, a writer's purge request drops nothing
+    let d = with_retention(&mut net, a, t, "a's", Retention { by: PurgeBy::Admin, at_least: kept, at_most: Bound::default() });
+    net.run();
+    purge_commit(&mut net, b, t, d);
+    assert!(net.engine(b).body_not_dropped(&d, &t, &k) && net.engine(a).body_not_dropped(&d, &t, &k));
+
+    // its author, the admin away
+    net.set_online(a, false);
+    assert!(net.engine(b).delete_secrets_of(&c, &[(h.aspects.iter().position(|x| x.ak == k).unwrap(), 0)]).iter().any(|(l, _)| *l == 2));
+    purge_commit(&mut net, b, t, c);
+    net.run();
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "the author's purge drops it");
+    let left = net.host_ids(host, &l);
+    assert!(blobs.iter().all(|id| !left.contains(id)), "the author's level-2 key deletes it at the host");
+}
+
+// spec/sync.md §7, spec/commits.md §5: of an `author` delta with no keep bound an admin's
+// compaction drops nothing at the admin; the author, a right holder holding the snapshot, drops
+// it and deletes it at the host.
+#[test]
+fn author_only_compaction_spec_sync_7() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let l = net.label(a);
+    let k = Ak::new(REG.ak()).unwrap();
+    let c = with_retention(&mut net, b, t, "old", Retention { by: PurgeBy::Author, ..Default::default() });
+    net.run();
+    let blobs = blobs_of(&mut net, b, &l, c);
+    net.write(a, t, "new");
+    net.run();
+    let acts = net.sync(a).compact(&t, &k).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.run();
+    assert!(net.engine(a).body_not_dropped(&c, &t, &k), "the admin holds no right to drop it");
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "its author drops it as covered");
+    let left = net.host_ids(host, &l);
+    assert!(blobs.iter().all(|id| !left.contains(id)), "and deletes it at the host");
+}
+
+// spec/permissions.md §7, §8, spec/crypto.md §7: an imported `author` delta lists no level; its
+// importer, whose own actor the header names, holds no right to it: its compaction keeps the
+// body and its purge request names nothing. The origin author's, once granted on the copy, drops it.
+#[test]
+fn imported_author_only_spec_perm_7() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let k = Ak::new(REG.ak()).unwrap();
+    let c = with_retention(&mut net, b, t, "b's", Retention { by: PurgeBy::Author, ..Default::default() });
+    net.run();
+    let (ta, tb) = (net.tid(a), net.tid(b));
+    let (copy, imports) = net.engine(a).move_thing(&t, ta).unwrap();
+    let e = net.engine(a);
+    let imp = *imports.iter().find(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == c))).unwrap();
+    let h = e.header(&imp).unwrap();
+    assert_eq!(h.purge_actor(), tb);
+    assert!(h.aspects.iter().find(|x| x.ak == k).unwrap().keys.is_empty());
+    net.write(a, copy, "new");
+    let acts = net.sync(a).compact(&copy, &k).unwrap();
+    net.actions(a, acts);
+    assert!(net.engine(a).body_not_dropped(&imp, &copy, &k), "the importer compacted the origin author's body away");
+    purge_commit(&mut net, a, copy, imp);
+    assert!(net.engine(a).body_not_dropped(&imp, &copy, &k), "the importer purged it");
+    set_edge(net.engine(a), copy, tb, Role::Write);
+    net.pair(a, b);
+    purge_commit(&mut net, b, copy, imp);
+    net.pair(b, a);
+    assert!(!net.engine(a).body_not_dropped(&imp, &copy, &k), "the origin author's purge holds");
+}

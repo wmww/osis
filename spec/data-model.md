@@ -166,7 +166,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas
@@ -190,7 +190,7 @@ type type_expr = enum {
 type field_def = struct { 0 name: string, 1 type: type_expr, 2 default: option<any>, 3 succeeds: set<int>, 4 doc: option<string> };
 type case_def = struct { 0 name: string, 1 payload: option<type_expr>, 2 succeeds: set<int>, 3 doc: option<string> };
 type bound = struct { 0 abs: option<timestamp>, 1 rel: option<duration> };
-type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author, 3 writer }, 1 at_least: bound, 2 at_most: bound };
+type retention = struct { 0 by: enum { 0 nobody, 1 admin, 2 author_or_admin, 3 writer, 4 author }, 1 at_least: bound, 2 at_most: bound };
 type flag = enum { 0 ro, 1 synthetic, 2 guaranteed, 3 indexed };
 type aspect_def = struct { 0 type: type_expr, 1 retention: retention, 2 expires: option<duration>, 3 flags: set<flag>, 4 succeeds: set<string>, 5 doc: option<string> };
 ```

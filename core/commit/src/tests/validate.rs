@@ -176,10 +176,10 @@ fn retention_rules() {
     assert_eq!(fixed_retention("created.0").unwrap().by, PurgeBy::Nobody);
     assert_eq!(fixed_retention("app:x.0"), None);
     assert_eq!(write_retention("app:x.0", None, None).unwrap(), Retention::default());
-    assert_eq!(Retention::default().by, PurgeBy::Author);
+    assert_eq!(Retention::default().by, PurgeBy::AuthorOrAdmin);
     assert_eq!(write_expires("app:x.0", ts(10), None, None).unwrap(), None);
     let d = AspectDefaults {
-        retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: Some(7), rel: None }, at_most: Bound::default() },
+        retention: Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(7), rel: None }, at_most: Bound::default() },
         expires: Some(100),
     };
     assert_eq!(write_retention("app:x.0", Some(&d), None).unwrap(), d.retention);
@@ -187,11 +187,11 @@ fn retention_rules() {
     assert_eq!(write_expires("app:x.0", ts(10), Some(&d), Some(50)).unwrap(), Some(50));
     assert_eq!(write_expires("roles.0", ts(10), Some(&d), Some(50)).unwrap(), None);
     assert!(write_retention("roles.0", None, Some(Retention::default())).is_err());
-    let bad = Retention { by: PurgeBy::Author, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
+    let bad = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound::default(), at_most: Bound { abs: None, rel: Some(1) } };
     assert!(write_retention("app:x.0", None, Some(bad)).is_err());
     // the own deltas' longest relative keep at least (no absolute one) and strictest keep at
     // most (a passed absolute bound counts as 0 after replaced)
-    let own = |least: Bound, abs: Option<u64>, rel: Option<u64>| Retention { by: PurgeBy::Author, at_least: least, at_most: Bound { abs, rel } };
+    let own = |least: Bound, abs: Option<u64>, rel: Option<u64>| Retention { by: PurgeBy::AuthorOrAdmin, at_least: least, at_most: Bound { abs, rel } };
     let none = Bound::default();
     let s = snapshot_retention("app:x.0", [own(Bound { abs: Some(900), rel: Some(5) }, Some(500), Some(30)), own(none, Some(300), None), own(Bound { abs: None, rel: Some(7) }, None, Some(10))], 100);
     assert_eq!(s, Retention { by: PurgeBy::Writer, at_least: Bound { abs: None, rel: Some(7) }, at_most: Bound { abs: Some(300), rel: Some(10) } });

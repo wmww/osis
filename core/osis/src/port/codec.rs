@@ -590,13 +590,7 @@ pub(crate) fn retention_v(r: &Retention) -> Value {
 
 pub(crate) fn retention(v: Value) -> Result<Retention> {
     let mut a = Args::new(v)?;
-    let by = match a.uint()? {
-        0 => PurgeBy::Nobody,
-        1 => PurgeBy::Admin,
-        2 => PurgeBy::Author,
-        3 => PurgeBy::Writer,
-        _ => return Err(bad("purge class")),
-    };
+    let by = PurgeBy::from_id(a.uint()?).ok_or_else(|| bad("purge class"))?;
     let r = Retention { by, at_least: bound(a.next()?)?, at_most: bound(a.next()?)? };
     a.end()?;
     Ok(r)
