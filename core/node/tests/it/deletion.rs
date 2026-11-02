@@ -910,34 +910,100 @@ fn author_only_not_the_admins_spec_perm_8() {
     assert!(blobs.iter().all(|id| !left.contains(id)), "the author's level-2 key deletes it at the host");
 }
 
-// spec/sync.md §7, spec/commits.md §5: of an `author` delta with no keep bound an admin's
-// compaction drops nothing at the admin; the author, a right holder holding the snapshot, drops
-// it and deletes it at the host.
+// spec/commits.md §5, spec/sync.md §7: a snapshot drops a covered body only if its actor holds the
+// right over it. Of b's delta, admin a compacting: gone everywhere under `author_or_admin`, kept
+// everywhere under `author` and `nobody`. Writer w compacting: only `writer` goes; b's own snapshot
+// drops its own under every set holding the author.
 #[test]
-fn author_only_compaction_spec_sync_7() {
+fn snapshot_needs_the_right_spec_sync_7() {
     use osis_schema::{PurgeBy, Retention};
-    let mut net = Net::new();
-    let host = net.add_host();
-    let a = net.node(1, &[host]);
-    let b = net.node(2, &[host]);
-    let g = net.group(a, &[(b, Role::Write)], &[host]);
-    let t = net.item(a, g, g, "x");
-    net.run();
-    let l = net.label(a);
-    let k = Ak::new(REG.ak()).unwrap();
-    let c = with_retention(&mut net, b, t, "old", Retention { by: PurgeBy::Author, ..Default::default() });
-    net.run();
-    let blobs = blobs_of(&mut net, b, &l, c);
-    net.write(a, t, "new");
-    net.run();
-    let acts = net.sync(a).compact(&t, &k).unwrap();
-    net.actions(a, acts);
-    net.run();
-    net.run();
-    assert!(net.engine(a).body_not_dropped(&c, &t, &k), "the admin holds no right to drop it");
-    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "its author drops it as covered");
-    let left = net.host_ids(host, &l);
-    assert!(blobs.iter().all(|id| !left.contains(id)), "and deletes it at the host");
+    let (a, b, w) = (0, 1, 2);
+    for (by, by_a, by_b, by_w) in [(PurgeBy::Nobody, false, false, false), (PurgeBy::Admin, true, false, false), (PurgeBy::Author, false, true, false), (PurgeBy::AuthorOrAdmin, true, true, false), (PurgeBy::Writer, true, true, true)] {
+        for (who, dropped) in [(a, by_a), (b, by_b), (w, by_w)] {
+            let mut net = Net::new();
+            let host = net.add_host();
+            let ns = [net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host])];
+            let g = net.group(ns[a], &[(ns[b], Role::Write), (ns[w], Role::Write)], &[host]);
+            let t = net.item(ns[a], g, g, "x");
+            net.run();
+            let l = net.label(ns[a]);
+            let k = Ak::new(REG.ak()).unwrap();
+            let c = with_retention(&mut net, ns[b], t, "old", Retention { by, ..Default::default() });
+            net.run();
+            let blobs = blobs_of(&mut net, ns[b], &l, c);
+            net.write(ns[who], t, "new");
+            net.run();
+            let acts = net.sync(ns[who]).compact(&t, &k).unwrap();
+            net.actions(ns[who], acts);
+            net.run();
+            net.advance(2 * 3_600_000);
+            net.run();
+            // right holders drop, no others ever do
+            let holder = |n: usize| match n {
+                0 => by.admin(),
+                1 => by.author(),
+                _ => by.writer(),
+            };
+            for n in [a, b, w] {
+                assert_eq!(net.engine(ns[n]).body_not_dropped(&c, &t, &k), !(dropped && holder(n)), "{by:?} compacted by {who}, at {n}");
+            }
+            let left = net.host_ids(host, &l);
+            assert_eq!(blobs.iter().all(|id| !left.contains(id)), dropped, "{by:?} compacted by {who}, at the host");
+        }
+    }
+}
+
+// spec/commits.md §5, spec/sync.md §6: `nobody` bodies are must-hold while kept, covered or not, so
+// a label a thing joins gets them; a covered body of another set is may-hold and stays with its
+// holders. Taking the thing off the first label deletes there; holders keep their copies.
+#[test]
+fn second_label_gets_kept_bodies_spec_sync_6() {
+    use osis_schema::{PurgeBy, Retention};
+    for (by, carried) in [(PurgeBy::Nobody, true), (PurgeBy::Author, false)] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let b = net.node(2, &[host]);
+        let g = net.group(a, &[(b, Role::Write)], &[host]);
+        let t = net.item(a, g, g, "x");
+        net.run();
+        let k = Ak::new(REG.ak()).unwrap();
+        let c = with_retention(&mut net, b, t, "old", Retention { by, ..Default::default() });
+        net.run();
+        net.write(a, t, "new");
+        net.run();
+        let acts = net.sync(a).compact(&t, &k).unwrap();
+        net.actions(a, acts);
+        net.run();
+        let l = net.label(a);
+        let addrs = vec![net.hosts[host].address.clone()];
+        let g2 = net.group_seeded(a, &[(b, Role::Write)], addrs, 2);
+        let l2 = net.sync(a).labels().into_iter().find(|x| x.0 == g2).unwrap().1.id;
+        // the new group's actor reads the thing
+        set_edge(net.engine(a), g, g2, Role::Read);
+        net.run();
+        let e = net.engine(a);
+        let mut grp = e.get_typed(&g2, &ct::GROUP).unwrap().unwrap();
+        grp.items.insert(t);
+        let mut m = Mutation::new();
+        m.set(g2, &ct::GROUP, &grp).unwrap();
+        e.commit(m).unwrap();
+        net.run();
+        net.advance(1_000);
+        net.run();
+        let there = blobs_of(&mut net, a, &l2, c).into_iter().filter(|id| net.host_ids(host, &l2).contains(id)).count();
+        assert_eq!(there > 0, carried, "{by:?} under the label it joined");
+        let e = net.engine(a);
+        let mut grp = e.get_typed(&g, &ct::GROUP).unwrap().unwrap();
+        grp.items.remove(&t);
+        let mut m = Mutation::new();
+        m.set(g, &ct::GROUP, &grp).unwrap();
+        e.commit(m).unwrap();
+        net.run();
+        let left = net.host_ids(host, &l);
+        assert!(blobs_of(&mut net, b, &l, c).iter().all(|id| !left.contains(id)), "{by:?} off the first label");
+        assert!(net.engine(a).body_not_dropped(&c, &t, &k) && net.engine(b).body_not_dropped(&c, &t, &k), "{by:?}: holders keep it");
+    }
 }
 
 // spec/permissions.md §7, §8, spec/crypto.md §7: an imported `author` delta lists no level; its

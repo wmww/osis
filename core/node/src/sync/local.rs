@@ -106,7 +106,11 @@ impl SyncEngine {
                 continue;
             }
             let Some(h) = self.engine.header(&c) else { continue };
-            // this node's right and keep-at-least bound, as a demotion's frontier judges them
+            // the snapshot's right, this node's and the keep-at-least bound, as a demotion's
+            // frontier judges them
+            if !self.engine.snapshot_right(&s, &c, t, ak) {
+                continue;
+            }
             let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
             if due > now.0 {
                 left.at(due, c);
