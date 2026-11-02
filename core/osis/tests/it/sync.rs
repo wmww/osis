@@ -789,6 +789,87 @@ fn wait_synced_all_skips_hostless_groups() {
     assert!(matches!(w.until(carol.wait_synced(SyncScope::Group(carol.home()), Duration::from_secs(10)), 1000, 10), Err(osis::Error::Unsynced { .. })));
 }
 
+// notes/api.md Sync status (`wait_synced` scopes the deliveries): Bob's inbox is on a host
+// Alice cannot reach, so her grant to him stays queued; `Group(other)` resolves meanwhile,
+// `Group(g)` and `All` wait for it until the host is back.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn wait_synced_scopes_deliveries() {
+    let mut w = World::new();
+    let (h1, h2) = (w.add_host(), w.add_host());
+    let (alice, _) = w.person(1, &[h1]);
+    let (bob, _) = w.person(2, &[h2]);
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let (g, other) = (group(&alice), group(&alice));
+    w.run();
+    w.set_reachable(&alice, h2, false);
+    alice.grant(g, b, Role::Read, Default::default()).unwrap();
+    item(&alice, other, other, "unrelated");
+    let short = Duration::from_secs(5);
+    w.until(alice.wait_synced(SyncScope::Group(other), short), 1000, 10).unwrap();
+    assert!(matches!(w.until(alice.wait_synced(SyncScope::Group(g), short), 1000, 10), Err(osis::Error::Network(_))));
+    assert!(matches!(w.until(alice.wait_synced(SyncScope::All, short), 1000, 10), Err(osis::Error::Network(_))));
+    w.set_reachable(&alice, h2, true);
+    w.until(alice.wait_synced(SyncScope::All, Duration::from_secs(120)), 1000, 130).unwrap();
+}
+
+// notes/api.md Sync status (`wait_synced(All)` waits on every label with hosts): Carol's group
+// has a hostless label and, after `unsync` and `sync` with a host, a hosted one; the group
+// shows `NoHosts`, yet `All` waits for her write under the hosted label.
+// spec: none (API surface, notes/api.md)
+#[test]
+fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let carol = Osis::create(w.cfg(9, &[])).unwrap().0;
+    w.run();
+    let g = group(&carol);
+    carol.unsync(g).unwrap();
+    carol.sync(g, &[w.addr(h).unwrap()]).unwrap();
+    w.run();
+    let st = carol.status().unwrap().groups[&g].clone();
+    assert_eq!((st.state, st.labels.len()), (SyncState::NoHosts, 2), "a hostless and a hosted label");
+    w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    w.set_reachable(&carol, h, false);
+    item(&carol, g, g, "while cut off");
+    assert!(matches!(w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(5)), 1000, 10), Err(osis::Error::Network(_))));
+    w.set_reachable(&carol, h, true);
+    w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(120)), 1000, 130).unwrap();
+}
+
+// notes/api.md Sync status (`All` waits for every delivery): Carol syncs no label with hosts;
+// her grant on her hostless group to Bob is queued for his inbox host, which she cannot
+// reach: `All` does not resolve before it lands, `Group(g)` fails `Unsynced` (Bob can never
+// fetch `g`).
+// spec: none (API surface, notes/api.md)
+#[test]
+fn wait_synced_all_waits_for_deliveries_without_hosted_groups() {
+    let mut w = World::new();
+    let h = w.add_host();
+    let (bob, _) = w.person(2, &[h]);
+    let carol = Osis::create(w.cfg(9, &[])).unwrap().0;
+    w.run();
+    let card = bob.contact_card().unwrap();
+    w.run();
+    let b = w.until(carol.import_contact(&card), 1000, 10).unwrap();
+    let g = group(&carol);
+    w.run();
+    w.set_reachable(&carol, h, false);
+    // the groups learned from Bob's card held for receipts only: no label of hers with hosts
+    // is synced
+    for (h, _) in carol.status().unwrap().groups.into_iter().filter(|(_, s)| s.state != SyncState::NoHosts) {
+        carol.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    }
+    carol.grant(g, b, Role::Read, Default::default()).unwrap();
+    assert!(matches!(w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(5)), 1000, 10), Err(osis::Error::Network(_))));
+    assert!(matches!(w.until(carol.wait_synced(SyncScope::Group(g), Duration::from_secs(5)), 1000, 10), Err(osis::Error::Unsynced { .. })));
+    w.set_reachable(&carol, h, true);
+    w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(120)), 1000, 130).unwrap();
+}
+
 // notes/api.md Sync configuration (`add_host` scope), spec/sync.md §2: Alice's host changes
 // move her home label and her own shared group, not a group Bob owns that she co-administers,
 // not her link's actor (the link text names its hosts); her shared group keeps its last
