@@ -13,7 +13,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Every node that can read data verifies identity and authorization itself from what travels with the data. Nothing trusts a host's word.
 - No unit that must be synced whole. Groupings overlap, nest, may be cyclic and change over time. Syncing one row or one column of a table must each be efficient without duplicating the table at rest or in transfer.
 - Convergence under any delivery order, duplicates and partial receipt. No ordered delivery.
-- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives.
+- Deterministic: a node's state and its judgment of every write are functions of the data it holds, never of arrival order. Nodes holding the same bodies read alike; a node missing a body reads as if it never had it until it arrives. Exception: while a part stays away, parts of a commit across things that applied before one of those things entered what the node syncs stay applied.
 - A change may touch any number of things, of any owners and reader sets, with no size limit. A node applies all the parts it may read and syncs at once, or none of them.
 - Each part of a change is authorized on its own thing. Revoking the author on one thing removes only that part.
 
