@@ -688,6 +688,8 @@ pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, pa
         if core.ix.commits.get(id).is_none_or(|m| m.valid_at(*ai)) {
             core.stale_things.insert(a.tid);
         }
+        // a pending commit's missing delta may count as held now (`breaks_a_held_setting`)
+        core.waits.wake_thing(&a.tid);
     }
 }
 
@@ -756,11 +758,27 @@ pub(crate) fn required_now(core: &Core, tid: &Tid, ak: &Ak, node: Tid, ts: osis_
     in_force(&mut Judge::new(core), tid, ak.as_str(), &Point { ts, node, commit: CommitId([0; 32]) })?.1
 }
 
-/// The key of the `required.0^` delta that aspect `ai` of held commit `id` falls to, if any
+/// The key of the `required.0^` delta that aspect `ai` of held commit `id` breaks, if any
 /// (`Judge::broken`).
 pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Option<Point> {
-    h.aspects.get(ai).filter(|a| under_required(h, &a.ak))?;
-    Judge::new(core).broken(h, id)
+    Judge::new(core).broken(h, id, h.aspects.get(ai)?)
+}
+
+/// Whether a missing delta counts as held for breaking its thing's required retention
+/// (spec/commits.md §4): it breaks a held `required.0^` delta ordered before its key, whatever
+/// that delta's validity. The broken delta may be gone without a right, so its commit's other
+/// deltas must not wait for it.
+///
+/// Invariant (arrival-order independence): this reads no validity, so a setting falling or rising
+/// changes nothing here, and held settings only grow but for one that goes without a right, whose
+/// author never held admin: a commit it let apply stays applied, and only its other parts came
+/// sooner. An applied commit's missing delta joins on arrival as if it had come with the rest.
+pub(crate) fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
+    if !under_required(h, &a.ak) {
+        return false;
+    }
+    let at = Point { ts: h.ts, node: h.author, commit: *id };
+    core.ix.required.get(&a.tid).into_iter().flatten().take_while(|x| x.0 < at).any(|(_, rules)| ct::required_for(rules, a.ak.as_str()).is_some_and(|q| !meets(q, h, a)))
 }
 
 /// Whether `required.0^` part `a` of a commit with header `h` is by a node that never held admin
@@ -788,8 +806,6 @@ pub(crate) struct Judge<'a> {
     acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
     /// On the last thing: its valid `required.0^` deltas, in key order, found once.
     settings: Option<Arc<Settings>>,
-    /// The last commit's `broken`.
-    broke: Option<(CommitId, Option<Point>)>,
 }
 
 /// A thing's `required.0^` deltas: each one's key and what it says.
@@ -797,7 +813,7 @@ type Settings = Vec<(Point, Arc<ct::RequiredRules>)>;
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None, broke: None }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new(), settings: None }
     }
 
     /// (too deep, timeline) of `t`.
@@ -814,29 +830,15 @@ impl<'a> Judge<'a> {
         }
     }
 
-    /// The key of a `required.0^` delta one of commit `id`'s deltas breaks (spec/commits.md §5). All
-    /// of its deltas that answer to a required retention fall with it, on every thing: a node
-    /// may never get the broken one (it goes without a right, spec/permissions.md §8), and
-    /// atomic apply would hold the others for it for good.
-    fn broken(&mut self, h: &Header, id: &CommitId) -> Option<Point> {
-        if let Some((c, v)) = self.broke
-            && c == *id
-        {
-            return v;
+    /// The key of the `required.0^` delta in force that delta `a` of commit `id` breaks
+    /// (spec/commits.md §5). Its commit's other deltas stand, its own thing's and others': a member
+    /// of another thing alone never holds this setting and must read as the rest do.
+    fn broken(&mut self, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<Point> {
+        if !under_required(h, &a.ak) || !self.core.ix.required.contains_key(&a.tid) {
+            return None;
         }
-        let core = self.core;
-        let at = Point { ts: h.ts, node: h.author, commit: *id };
-        let mut v = None;
-        for a in h.aspects.iter().filter(|a| under_required(h, &a.ak) && core.ix.required.contains_key(&a.tid)) {
-            if let Some((p, Some(q))) = in_force(self, &a.tid, a.ak.as_str(), &at)
-                && !meets(&q, h, a)
-            {
-                v = Some(p);
-                break;
-            }
-        }
-        self.broke = Some((*id, v));
-        v
+        let (p, q) = in_force(self, &a.tid, a.ak.as_str(), &Point { ts: h.ts, node: h.author, commit: *id })?;
+        q.filter(|q| !meets(q, h, a)).map(|_| p)
     }
 
     /// The valid `required.0^` deltas on `t` (`Settings`), each judged once per thing.
@@ -889,9 +891,9 @@ impl<'a> Judge<'a> {
         if !self.acts(h, id) {
             return false;
         }
-        // a commit breaking a required retention at its key (spec/commits.md §5); a `required.0^`
+        // a delta breaking a required retention at its key (spec/commits.md §5); a `required.0^`
         // delta answers to none, so this ends
-        if under_required(h, &a.ak) && self.broken(h, id).is_some() {
+        if self.broken(h, id, a).is_some() {
             return false;
         }
         // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
@@ -1415,9 +1417,8 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let mut one = |id: &CommitId, m: &Meta, whole: bool| {
             let mut now: Option<Vec<bool>> = None;
             for (ai, a) in m.header.aspects.iter().enumerate() {
-                // parts on things not re-judged keep their flag, but for a commit a setting of a
-                // re-judged thing may take whole (`Judge::broken`)
-                if !(whole || things.contains(&a.tid) || m.view.aspects.iter().any(|x| things.contains(&x.tid) && core.ix.required.contains_key(&x.tid))) {
+                // parts on things not re-judged keep their flag
+                if !(whole || things.contains(&a.tid)) {
                     continue;
                 }
                 let v = judge.part(&m.header, id, ai);
@@ -1456,9 +1457,14 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             }
         }
     }
+    let me = tx.core.id.tid();
+    let mut own_fell: Vec<(CommitId, Vec<Tid>)> = Vec::new();
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
+        if h.author == me && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
+            own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
+        }
         for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
             if a != b
                 && let Some(x) = h.aspects.get(ai)
@@ -1482,6 +1488,10 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.mark_changed(id);
     }
     drop(judge);
+    let at = tx.now();
+    for (id, tids) in own_fell {
+        tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, at);
+    }
     // a body dropped for breaking the rule that no longer does: never received from here on
     for (tid, ak) in &rose {
         crate::retention::unbreak(tx, tid, ak)?;
