@@ -260,7 +260,7 @@ impl HeldActors for MemoryHeldActors {
 /// rest of the departure out, and so on down the chain (a loop: chains have no depth bound).
 /// Missing knowledge of a chain actor counts as not. It only chooses the key a box is sealed to;
 /// whether an epoch may be encrypted under is `covers` (by names).
-pub fn boxes_cover(secrets: &Secrets, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
+pub fn keeps_out(secrets: &Secrets, r: Role, e: &Epoch, d: &Departure, held: &dyn HeldActors) -> bool {
     if !d.concerns(r) {
         return true;
     }

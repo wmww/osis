@@ -8,7 +8,7 @@ use common::*;
 use osis_base::{Role, Tid};
 use osis_crypto::Secret32;
 use osis_keys::{
-    ActorEpochs, AllHeld, Departure, HolderKeys, Key, MemoryGraph, MemoryHeldActors, Name, Names, Opener, Recipient, boxes_cover, ingest, may_encrypt_under, plan_departure,
+    ActorEpochs, AllHeld, Departure, HolderKeys, Key, MemoryGraph, MemoryHeldActors, Name, Names, Opener, Recipient, ingest, keeps_out, may_encrypt_under, plan_departure,
     roles_up_to, rotate,
 };
 use osis_schema::core_types::Secrets;
@@ -91,7 +91,7 @@ fn two_hop_departure() {
     let p2 = rotated_naming(&p, &[owner(), dev(d2t, &d2seed)], 4, &names);
     let boxes_ok = |a: &Actor, h: &MemoryHeldActors, deps: &[Departure]| {
         let (e, _) = a.view.read.newest_held().unwrap();
-        deps.iter().all(|d| boxes_cover(&a.s, Role::Read, &e, d, h))
+        deps.iter().all(|d| keeps_out(&a.s, Role::Read, &e, d, h))
     };
     let read_ok = |a: &Actor, deps: &[Departure]| {
         let (e, _) = a.view.read.newest_held().unwrap();

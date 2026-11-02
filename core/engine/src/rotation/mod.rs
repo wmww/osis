@@ -27,7 +27,7 @@ pub(crate) use lost::authentic;
 /// The roles of `a` that `may` (the roles the rotator may rotate) holds and a rotation of `a` is
 /// worth now (spec/permissions.md §3): their newest held epoch does not cover a known departure
 /// (by names), and none of those lies inside a current holder M whose fresh box would not keep
-/// the rest out (`fresh_box_covers`) and that `a` is not below (no role cycle through both).
+/// the rest out (`fresh_box_keeps_out`) and that `a` is not below (no role cycle through both).
 /// Such an M heals by its own rotation: the node waits for it, so that `a`'s rotation then
 /// reaches M's holders in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving
 /// M out (`rotation_into`). So no actor waits on itself through others.
@@ -46,7 +46,7 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
             if let Some((m, inner)) = inside_first(&d)
                 && current.contains(&m)
                 && !*on_cycle.entry(m).or_insert_with(|| below_of(tx.core, &m).0.contains(a))
-                && !fresh_box_covers(tx, &held, &m, r, &inner)?
+                && !fresh_box_keeps_out(tx, &held, &m, r, &inner)?
             {
                 continue 'roles;
             }
@@ -59,16 +59,16 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
 /// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3, Left
 /// out; spec/crypto.md §4): this node holds what every grant of `m` on `a` knew of it
 /// (`grant_names_held`), and a fresh box would name `m`'s newest epoch of `r`
-/// (`fresh_box_covers`) whose boxes keep out every departure of `deps` (those of `a`) inside
+/// (`fresh_box_keeps_out`) whose boxes keep out every departure of `deps` (those of `a`) inside
 /// `m`. Boxing to an epoch is encrypting under it: a rotation leaves such a holder out and the
 /// re-seal trigger skips it until `m` rotates (or this node holds the grants' names).
-fn holder_covers(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
+fn holder_keeps_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
     if !tx.core.is_key_actor(m) && !departures::grant_names_held(tx, a, m)? {
         return Ok(false);
     }
     for d in deps.iter().filter(|d| d.via.first() == Some(m) && d.concerns(r)) {
         if let Some((_, inner)) = inside_first(d)
-            && !fresh_box_covers(tx, held, m, r, &inner)?
+            && !fresh_box_keeps_out(tx, held, m, r, &inner)?
         {
             return Ok(false);
         }
@@ -82,7 +82,7 @@ fn inside_first(d: &Departure) -> Option<(Tid, Departure)> {
     Some((*m, Departure { via: rest.clone(), ..d.clone() }))
 }
 
-/// `rc` with its role cut at the first `holder_covers` refuses (given `deps` of actor `a` boxing
+/// `rc` with its role cut at the first `holder_keeps_out` refuses (given `deps` of actor `a` boxing
 /// it); `None` when that leaves no role. Key actors are kept whole.
 pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
     if !matches!(rc.keys, osis_keys::HolderKeys::Actor { .. }) {
@@ -90,7 +90,7 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: 
     }
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
-        if !holder_covers(tx, a, held, deps, &rc.holder, r)? {
+        if !holder_keeps_out(tx, a, held, deps, &rc.holder, r)? {
             break;
         }
         top = Some(r);
@@ -108,7 +108,7 @@ pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Resu
 
 /// Whether a fresh box of role `r` to holder actor `m` would name `m`'s newest epoch (its
 /// newest held secret, else its keyset in `keys.0`) and that epoch's boxes keep `inner` out.
-fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
+fn fresh_box_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
     let (Some(me), Some(ms)) = (osis_keys::HeldActors::epochs(held, m), osis_keys::HeldActors::secrets(held, m)) else { return Ok(false) };
     let keys = Core::keys_in(tx, m)?;
     let ks = keys.as_ref().and_then(|k| osis_keys::aspects::keyset_of(k, r)).and_then(|ks| osis_keys::aspects::from_schema(&ks.epoch).ok());
@@ -116,7 +116,7 @@ fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, 
         Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
         _ => ks,
     };
-    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::boxes_cover(ms, r, &k, inner, held)))
+    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::keeps_out(ms, r, &k, inner, held)))
 }
 
 /// Current holders of `a` as box recipients; each of `skip` gets its new role or is left out
@@ -165,7 +165,7 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 /// switch to secrets of its own). `pending`: departures from `a` the same commit makes (a
 /// removal's: the names' departs flag).
 /// A holder actor is boxed only the roles up to the first its newest epoch does not cover
-/// (`holder_covers`): left out, it is re-sealed once it rotates (spec/permissions.md §3).
+/// (`holder_keeps_out`): left out, it is re-sealed once it rotates (spec/permissions.md §3).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, &mut None, pending)?.into_iter().collect() };
@@ -433,7 +433,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
             let re = epochs.role(r);
             let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
-            if may.contains(&r) && holds && holder_covers(tx, a, &held, &deps, &m, r)? {
+            if may.contains(&r) && holds && holder_keeps_out(tx, a, &held, &deps, &m, r)? {
                 keep.insert(r);
             }
         }
@@ -556,7 +556,7 @@ impl Engine {
             let deps = departures(tx, &a)?;
             let held = held_actors(tx)?;
             for &r in &roles {
-                if !holder_covers(tx, &a, &held, &deps, &m, r)? {
+                if !holder_keeps_out(tx, &a, &held, &deps, &m, r)? {
                     return Err(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"));
                 }
             }

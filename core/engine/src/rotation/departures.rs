@@ -332,11 +332,11 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
 type Class = (Option<Tid>, Tid, Tid, Role, Role, [bool; 3]);
 
 /// Whether `v`'s newest epoch of each role keeps `d` out by its boxes (seen from `v`,
-/// `osis_keys::boxes_cover`); unheld counts as not. The box judgement of a holder actor's keyset
+/// `osis_keys::keeps_out`); unheld counts as not. The box judgement of a holder actor's keyset
 /// reaches below `v` only through these verdicts.
 pub(super) fn verdicts(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> [bool; 3] {
     let (Some(s), Some(e)) = (osis_keys::HeldActors::secrets(held, v), osis_keys::HeldActors::epochs(held, v)) else { return [false; 3] };
-    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::boxes_cover(s, r, &k, d, held)))
+    ROLES.map(|r| e.role(r).newest().is_some_and(|k| osis_keys::keeps_out(s, r, &k, d, held)))
 }
 
 pub(super) fn class_of(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure) -> Class {
@@ -431,7 +431,7 @@ pub(super) fn walk(parents: &Parents, direct: Vec<(Tid, BTreeSet<Departure>)>, c
     found
 }
 
-/// What the box judgement of a holder actor's keyset (`osis_keys::boxes_cover`) needs of every
+/// What the box judgement of a holder actor's keyset (`osis_keys::keeps_out`) needs of every
 /// actor this node holds secrets of; an actor with secrets of its own whose secrets it does not
 /// hold is judged by its newest `keys.0` keysets (spec/permissions.md §3, Left out): those
 /// epochs, established in this view only, with the `secrets.0` boxes held of it, and a holder
