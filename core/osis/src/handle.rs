@@ -207,10 +207,8 @@ pub struct Osis {
     user: bool,
 }
 
-/// Where an API call on a thing or group goes (notes/client-port.md §1): today always this
-/// process's engine. Every call addressed by a tid or group matches on it (`let
-/// Source::Local = ..` while it has one variant), so adding a source makes each site a compile
-/// error until it is handled.
+/// Where an API call on a thing or group goes (notes/client-port.md §1): this process's engine,
+/// or the node it is attached to. Every call addressed by a tid or group checks it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Source {
     /// This process's engine.

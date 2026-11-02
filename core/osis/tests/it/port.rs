@@ -127,6 +127,10 @@ fn attached_handle_works_at_the_node() {
     // process-wide calls the port does not carry fail Unsupported, never act on the stand-in
     assert!(matches!(c.devices(), Err(osis::Error::Unsupported(_))));
     assert!(matches!(c.add_host(&osis::HostAddr::new("quic://x:1", [1; 32])), Err(osis::Error::Unsupported(_))));
+    // the stand-in database is never read: a read transaction and Internals fail
+    assert!(matches!(c.read(|r| r.knows(t)), Err(osis::Error::Unsupported(_))));
+    let c2 = c.clone();
+    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| c2.engine(|_| ()))).is_err(), "Internals on an attached handle");
     drop(c);
     n.close().unwrap();
 }

@@ -314,7 +314,7 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 Filter::Aspect(t, _) | Filter::Thing(t) => *t,
                 _ => continue,
             };
-            let rt = *resolved.entry(ft).or_insert_with(|| db.read(|r| r.resolve(ft)));
+            let rt = *resolved.entry(ft).or_insert_with(|| db.read_local(|r| r.resolve(ft)));
             for (t, ak) in changed {
                 let hit = (ft == *t || rt == *t)
                     && match &s.filter {

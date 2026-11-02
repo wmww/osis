@@ -8,7 +8,8 @@ use osis_node::Engine;
 pub use crate::net::ManualNet;
 pub use osis_node as node;
 
-/// The hooks on `Osis` (`use osis::internals::Internals;`).
+/// The hooks on `Osis` (`use osis::internals::Internals;`). Each panics on a handle attached to a
+/// node (`Osis::attach`): its engine is a stand-in, never the node's.
 pub trait Internals {
     /// Runs `f` on the engine under the database lock, then queues its events for the
     /// dispatcher.
@@ -25,18 +26,28 @@ pub trait Internals {
 
 impl Internals for Osis {
     fn engine<R>(&self, f: impl FnOnce(&mut Engine) -> R) -> R {
+        here(self);
         Osis::engine(self, f)
     }
     fn sync_engine<R>(&self, f: impl FnOnce(&mut SyncEngine) -> R) -> R {
+        here(self);
         self.locked(|l| f(&mut l.sync))
     }
     fn waiting(&self) -> usize {
+        here(self);
         self.locked(|l| l.waiters.len())
     }
     fn take_actions(&self) -> Vec<Action> {
+        here(self);
         self.inner.net.take()
     }
     fn feed(&self, ev: Event) {
+        here(self);
         self.handled(|l| l.sync.handle(ev));
     }
+}
+
+/// Panics on an attached handle (`Internals` reads this process's engine).
+fn here(db: &Osis) {
+    assert!(!db.is_attached(), "Internals on a handle attached to a node: Unsupported (its engine is a stand-in)");
 }

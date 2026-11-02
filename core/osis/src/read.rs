@@ -251,8 +251,15 @@ impl Reader<'_> {
 }
 
 impl Osis {
-    /// Runs `f` with a consistent view across several reads.
-    pub fn read<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
+    /// Runs `f` with a consistent view across several reads. `Unsupported` on a handle attached
+    /// to a node (`Osis::attach`): the port carries no read transaction.
+    pub fn read<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> Result<R> {
+        self.local_only("read")?;
+        Ok(self.read_local(f))
+    }
+
+    /// `read` on this process's engine (callers route first).
+    pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
         let limit = self.inner.limit;
         self.engine(|e| f(&mut Reader { e, limit }))
     }
@@ -262,7 +269,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.at(tid, key).get();
         }
-        self.read(|r| r.get(tid, &key))
+        self.read_local(|r| r.get(tid, &key))
     }
 
     /// An aspect, for reads at paths, watches and callbacks.
@@ -275,7 +282,7 @@ impl Osis {
             let v = self.rcall(m::ASPECTS, vec![Value::Tid(tid)])?;
             return crate::port::codec::Args::of(vec![v]).list()?.iter().map(crate::port::codec::ak).collect();
         }
-        self.read(|r| r.aspects(tid))
+        self.read_local(|r| r.aspects(tid))
     }
 
     /// `Reader::groups_of`. Attached to a node that cannot be reached: empty (a diagnostic).
@@ -283,21 +290,21 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.infallible(self.rcall(m::GROUPS_OF, vec![Value::Tid(tid)]).and_then(crate::port::codec::groups));
         }
-        self.read(|r| r.groups_of(tid))
+        self.read_local(|r| r.groups_of(tid))
     }
 
     pub fn roster(&self, thing: Tid) -> Roster {
         if let crate::handle::Source::Remote = self.route(thing) {
             return self.infallible(self.rcall(m::ROSTER, vec![Value::Tid(thing)]).and_then(crate::port::codec::roster));
         }
-        self.read(|r| r.roster(thing))
+        self.read_local(|r| r.roster(thing))
     }
 
     pub fn role_on(&self, tid: Tid) -> Option<Role> {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.infallible(self.rcall(m::ROLE_ON, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose()));
         }
-        self.read(|r| r.role_on(tid))
+        self.read_local(|r| r.role_on(tid))
     }
 
     /// `Reader::knows`: the thing is here, not unknown or deleted.
@@ -305,7 +312,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.infallible(self.rcall(m::KNOWS, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
         }
-        self.read(|r| r.knows(tid))
+        self.read_local(|r| r.knows(tid))
     }
 
     /// A remote result of a call whose signature cannot fail: the default when the node could
@@ -318,7 +325,7 @@ impl Osis {
     }
 
     pub(crate) fn holds(&self, tid: Tid) -> bool {
-        self.read(|r| r.holds(tid))
+        self.read_local(|r| r.holds(tid))
     }
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
@@ -326,7 +333,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.infallible(self.rcall(m::OWNER_OF, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose()));
         }
-        self.read(|r| r.owner_of(tid))
+        self.read_local(|r| r.owner_of(tid))
     }
 
     fn remote_stamp(&self, m: u64, tid: Tid) -> Option<Stamp> {
@@ -338,7 +345,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.remote_stamp(m::CREATED, tid);
         }
-        self.read(|r| r.created(tid))
+        self.read_local(|r| r.created(tid))
     }
 
     /// When the thing's content last changed (`Reader::changed`).
@@ -346,7 +353,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.remote_stamp(m::CHANGED, tid);
         }
-        self.read(|r| r.changed(tid))
+        self.read_local(|r| r.changed(tid))
     }
 
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
@@ -366,7 +373,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(a) {
             return self.infallible(self.rcall(m::SAME_THING, vec![Value::Tid(a), Value::Tid(b)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
         }
-        self.read(|r| r.resolve(a) == r.resolve(b))
+        self.read_local(|r| r.resolve(a) == r.resolve(b))
     }
 
     /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
@@ -405,7 +412,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(tid) {
             return self.remote_watch_thing(tid, Box::new(f));
         }
-        let tid = self.read(|r| r.resolve(tid));
+        let tid = self.read_local(|r| r.resolve(tid));
         self.subscribe(Filter::Thing(tid), true, move |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
             for ak in r.aspects(tid).unwrap_or_default() {
@@ -434,7 +441,7 @@ impl Osis {
         if let crate::handle::Source::Remote = self.route(actor) {
             return self.remote_watch_roster(actor, Box::new(f));
         }
-        let actor = self.read(|r| r.resolve(actor));
+        let actor = self.read_local(|r| r.resolve(actor));
         self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
             Box::new(move |db, d| match d {
@@ -481,7 +488,7 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
             let db = self.db;
             return Ok(lenient(self.tid, &ak, self.key.decode(&v), |d| db.engine(|e| e.report(d))));
         }
-        self.db.read(|r| r.get(self.tid, &self.key))
+        self.db.read_local(|r| r.get(self.tid, &self.key))
     }
 
     /// The whole value, untyped.
@@ -490,7 +497,7 @@ impl<'d, K: AspectKey> AspectRef<'d, K> {
         if let crate::handle::Source::Remote = self.db.route(self.tid) {
             return self.db.remote_get(self.tid, &ak, &Path::root());
         }
-        self.db.read(|r| r.value(self.tid, &ak))
+        self.db.read_local(|r| r.value(self.tid, &ak))
     }
 
     /// A position inside the value.
@@ -513,7 +520,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             let key = self.key.clone();
             return Ok(Watch::new(st, Arc::new(move |v: &Value| key.decode(v).ok()), sub));
         }
-        let tid = self.db.read(|r| r.resolve(self.tid));
+        let tid = self.db.read_local(|r| r.resolve(self.tid));
         let mut state = None;
         let key = self.key.clone();
         let sub = self.db.subscribe(Filter::Aspect(tid, ak.clone()), false, |r| {
@@ -523,7 +530,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             let key = key.clone();
             Box::new(move |db, d| {
                 if let Delivery::Aspect { value, .. } = d {
-                    st.update(db.read(|r| r.checked(tid, &ak, &key, value)));
+                    st.update(db.read_local(|r| r.checked(tid, &ak, &key, value)));
                 }
             })
         });
@@ -545,7 +552,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
             let decode = move |db: &Osis, v: Result<Option<Value>>| -> Result<Option<K::T>> { Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d))))) };
             return self.db.remote_on_change(self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), source: ch.source })));
         }
-        let tid = self.db.read(|r| r.resolve(self.tid));
+        let tid = self.db.read_local(|r| r.resolve(self.tid));
         let key = self.key.clone();
         let ak2 = ak.clone();
         let decode = move |db: &Osis, v: Result<Option<Value>>| Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d)))));
@@ -580,7 +587,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
         if let crate::handle::Source::Remote = self.a.db.route(self.a.tid) {
             return self.a.db.remote_get(self.a.tid, &ak_of(&self.a.key)?, &self.path);
         }
-        self.a.db.read(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
+        self.a.db.read_local(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
     }
 
     /// The value at the path as `U`; one bad element of a large collection reads as absent
@@ -588,7 +595,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
         let Some(v) = self.get_value()? else { return Ok(None) };
         let db = self.a.db;
-        let tid = if db.attached() { self.a.tid } else { db.read(|r| r.resolve(self.a.tid)) };
+        let tid = if db.attached() { self.a.tid } else { db.read_local(|r| r.resolve(self.a.tid)) };
         let ak = ak_of(&self.a.key)?;
         Ok(lenient(tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
     }

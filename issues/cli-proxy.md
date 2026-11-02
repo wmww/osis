@@ -18,5 +18,6 @@ Review gates (second review, items by its numbering; all settled in the note, th
 - [ ] **(g) `client-cache`**: cached values only for live-subscribed aspects, invalidated when the subscription lapses, never offline, no write-through; bounded by `materialize_limit`.
 
 ## Follows from it
+- **One port worker per database** (first follow-up of (b)): every connection's requests run on one thread, so a slow call stalls every client; measured worst row `write` of 1024 sets about 1.8 s. Per-connection workers (bounded by `max_clients`) would not shorten that stall: the write's commit holds `eng` throughout (one engine transaction, notes/client-port.md Port stall bounds), which every other call, local or remote, and the sync driver also wait on. They would only overlap off-lock work (reply and Notify encoding, `settle` waiting on the node's dispatcher, which a slow app callback in the node process prolongs). Revisit with (c1)/(d), when several remote clients share a node; the CLI daemon case has one client at a time.
 - issues/cli-own-admission.md's last point (`hosting set` while serving) stays open: hosting calls are not port rows in (b) (`hosting set` through a daemon is Unsupported); it closes when they are.
 - notes/arbitrary-values-table.md rows for the numbers listed in notes/client-port.md Picked numbers, with the branch that adds each.

@@ -402,11 +402,11 @@ impl Worker {
         let mut initial = Value::List(vec![]);
         let (filter, tid) = match &kind {
             Kind::Aspect(t, ak) => {
-                let t = db.read(|r| r.resolve(*t));
+                let t = db.read_local(|r| r.resolve(*t));
                 (Filter::Aspect(t, ak.clone()), Some(t))
             }
             Kind::Thing(t) | Kind::Roster(t) => {
-                let t = db.read(|r| r.resolve(*t));
+                let t = db.read_local(|r| r.resolve(*t));
                 (if matches!(kind, Kind::Thing(_)) { Filter::Thing(t) } else { Filter::Roster(t) }, Some(t))
             }
             Kind::Status => (Filter::Status, None),
@@ -468,13 +468,13 @@ impl Worker {
                 Kind::Aspect(t, ak) => {
                     // the callback marks by aspect (as for a thing subscription)
                     if let Some(src) = g.aks.get(ak).copied().or(g.dirty) {
-                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read(|r| r.value(*t, ak))), c::source_v(&src)]);
+                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(&src)]);
                         out.push((v, 0, Some(src)));
                     }
                 }
                 Kind::Thing(t) => {
                     for (ak, src) in &g.aks {
-                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read(|r| r.value(*t, ak))), c::source_v(src)]);
+                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(src)]);
                         out.push((v, 0, Some(*src)));
                     }
                 }

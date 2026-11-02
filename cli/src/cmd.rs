@@ -1070,7 +1070,7 @@ fn inspect(ctx: &mut Ctx<'_>, i: InspectCmd) -> anyhow::Result<()> {
     match i {
         InspectCmd::Thing { t } => {
             let t = ctx.tid(&t)?;
-            let t = db.read(|r| r.resolve(t));
+            let t = db.read(|r| r.resolve(t))?;
             lines.push(format!("tid {} known={} role={}", t.to_uri(), db.knows(t), db.role_on(t).map_or("none", role_text)));
             let aks = db.aspects(t)?;
             for ak in aks {
