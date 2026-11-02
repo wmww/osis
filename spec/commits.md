@@ -4,7 +4,7 @@
 ## 1. Header
 Encoding: spec/wire.md §4. Fields:
 - Format version (spec/versioning.md §1).
-- Author node tid and the actor tid it acts for.
+- Author node tid and the actor tid it acts for (checked: spec/permissions.md §5.2).
 - Kind: content or role (§2); compaction-snapshot marker; import marker (content only, with the origins table, spec/permissions.md §7); roster-snapshot marker (role only).
 - `ts` (spec/crdt.md §2.2) and the dot form, node, commit or session (§3).
 - Aspect list: per touched `(tid, ak)`: counter range `[lo, hi)`, retention (§5), optional `expires` (§6) and the delta hashes of its deltas. A content commit has one delta per aspect; a role commit may have several (§2), all sharing the aspect's range.

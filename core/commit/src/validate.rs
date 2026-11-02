@@ -34,6 +34,11 @@ impl Header {
         if matches!(kind, Kind::Role | Kind::RosterSnapshot) && self.form == crate::header::Form::Node {
             return Err(Error::Invalid("node-form role commit"));
         }
+        // edge writes are judged by the timeline, which never asks whom the author acts for
+        // (spec/permissions.md §5.2)
+        if matches!(kind, Kind::Role | Kind::RosterSnapshot) && self.actor != self.author {
+            return Err(Error::Invalid("role commit acting for another actor"));
+        }
         let wall = self.ts.wall_ms().0;
         let mut used = vec![false; self.keys.len()];
         for a in &self.aspects {

@@ -152,42 +152,52 @@ impl Engine {
             let certs = tl.certificates(&me, g);
             self.cert_parts(&certs, &mut out);
         }
+        // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
+        // `g` already, the node reaching `g` through it
+        let actors: Vec<Tid> = self.core.acting().collect();
+        for a in actors {
+            let certs = self.chain_to(&me, &a);
+            self.cert_parts(&certs, &mut out);
+        }
         out
     }
 
+    /// `node`'s chain certificates for `t` with the owner chains of both up to their key
+    /// actors, timeline or not.
+    fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
+        let mut cs = match self.core.timelines.get(t) {
+            Some(tl) => tl.certificates(node, t),
+            None => osis_perm::Certificates::default(),
+        };
+        for x in [t, node] {
+            let mut cur = Some(*x);
+            for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
+                let Some(y) = cur else { break };
+                cs.created.insert(y);
+                cur = match self.core.created(&y) {
+                    Some(CreationRecord::Thing { owner, .. }) => {
+                        cs.keys.insert(y);
+                        Some(*owner)
+                    }
+                    _ => None,
+                };
+            }
+        }
+        cs
+    }
+
     /// What a verifier needs beside `parts` of commit `c` to judge them (spec/permissions.md
-    /// §4): its author's chain certificates to each thing the parts touch, minus `parts`
-    /// themselves. `None` when `c` is not applied here: a node that cannot
-    /// verify it cannot tell.
+    /// §4): its author's chain certificates to each thing the parts touch and to its actor
+    /// (`validity::acts_for`), minus `parts` themselves. `None` when `c` is not applied here: a
+    /// node that cannot verify it cannot tell.
     pub fn author_chain(&mut self, c: &CommitId, parts: &Parts) -> Option<BTreeMap<CommitId, Parts>> {
         if self.core.ix.pending.contains_key(c) {
             return None;
         }
         let h = self.core.ix.commits.get(c)?.header.clone();
-        let things: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
-        let mut found = Vec::new();
-        for t in things.iter().chain([&h.author]) {
-            let mut cs = match self.core.timelines.get(t) {
-                Some(tl) => tl.certificates(&h.author, t),
-                None => osis_perm::Certificates::default(),
-            };
-            // the owner chains up to their key actors, timeline or not
-            for x in [t, &h.author] {
-                let mut cur = Some(*x);
-                for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-                    let Some(y) = cur else { break };
-                    cs.created.insert(y);
-                    cur = match self.core.created(&y) {
-                        Some(CreationRecord::Thing { owner, .. }) => {
-                            cs.keys.insert(y);
-                            Some(*owner)
-                        }
-                        _ => None,
-                    };
-                }
-            }
-            found.push(cs);
-        }
+        let mut things: BTreeSet<Tid> = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| a.tid).collect();
+        things.insert(h.actor);
+        let found: Vec<osis_perm::Certificates> = things.iter().chain([&h.author]).map(|t| self.chain_to(&h.author, t)).collect();
         let mut out = BTreeMap::new();
         for cs in &found {
             self.cert_parts(cs, &mut out);

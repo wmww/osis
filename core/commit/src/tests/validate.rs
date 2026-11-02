@@ -74,6 +74,7 @@ pub(crate) fn role_header(ak: &str) -> Header {
     let mut h = sample_header();
     h.kind = Kind::Role;
     h.form = crate::header::Form::Commit;
+    h.actor = h.author;
     let a = &mut h.aspects[0];
     a.ak = Ak::new(ak).unwrap();
     a.retention = retention::ROLE_RETENTION;
@@ -98,6 +99,11 @@ fn validate_role_commit() {
         x.kind = k;
         x.form = crate::header::Form::Node;
         assert!(invalid(&x).to_string().contains("node-form role commit"));
+        // spec/wire.md §4: a role commit's or roster snapshot's actor is its author
+        let mut x = h.clone();
+        x.kind = k;
+        x.actor = t(9);
+        assert!(invalid(&x).to_string().contains("acting for another actor"));
     }
     let mut x = h.clone();
     x.aspects[0].expires = Some(9_999_999_999);

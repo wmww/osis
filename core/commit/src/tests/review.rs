@@ -103,7 +103,7 @@ fn delete_levels_strict() {
     m.keys.clear();
     m.aspects[0].keys.clear();
     assert!(m.validate().unwrap_err().to_string().contains("delete levels"), "role commit: level 1");
-    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(1), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), ts(1_000_000), 1, "a"));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
@@ -119,7 +119,7 @@ fn zero_deltas_refused() {
     let mut h = role_header("roles.0");
     h.aspects[0].hashes.clear();
     assert!(matches!(h.validate(), Err(Error::Malformed(_))));
-    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(2), Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, ts(1_000_000), t(1), t(1), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, vec![]);
     a.deltas.clear();
     a.retention = retention::ROLE_RETENTION;

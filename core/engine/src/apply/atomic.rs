@@ -89,6 +89,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), a.lo, (a.hi, *id));
         }
     }
+    if h.actor != h.author {
+        core.ix.by_actor.insert((h.actor, h.author), *id);
+    }
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
     }
