@@ -1,5 +1,5 @@
 # Chat design D: C plus forward secrecy
-> Summary: Design C with a per-chat content key chain: content blobs are wrapped under an hourly hash-chain key that holders erase after two hours, never kept in history boxes and re-seeded on every membership change; role commits, certificates and creation records stay under the ordinary read secret. A recording of the hosts plus a stolen device then reveals only what the device still shows and what was deleted in the last two hours. New members get no history; new devices get it by a direct transfer from an old device. Citations: `d-evidence.md`.
+> Summary: Parked: owner thinks member forward secrecy is probably undesirable; review4 refuted its claim (the seed box opens under keys the device keeps); a real fix needs erasable per-device keys, MLS-sized. What survives: a newcomer boxed the current chain state cannot read older content. The text below is the design as proposed, kept for the record.
 
 ## What is different
 

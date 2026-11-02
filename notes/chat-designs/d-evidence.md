@@ -1,5 +1,7 @@
 # Evidence for design D (forward secrecy)
-> Summary: Rule citations and traces for chat design D (forward secrecy).
+> Summary: Rule citations and traces for chat design D.
+
+**Refuted by review4:** the seed box in `secrets.0` is in the recording and is sealed to the holder's KEM key, `kdf("kem", role secret)` (spec/crypto.md §3), which the device keeps with every older read secret through history boxes; so the thief opens the box and derives every hour key. The "offline device" and "what is protected" items below are wrong for the same reason.
 
 "Traced" = read in spec, notes or code. "Estimated" = arithmetic from cited sizes. "Not closed" = inferred, not verified.
 

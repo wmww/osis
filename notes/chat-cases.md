@@ -1,213 +1,218 @@
 # Chat test cases by architecture
-> Summary: Informal chat behavior cases, each answered per proposed architecture (A, B, C, D): forced yes or no, app's choice, or needs a core change. Add a column per new topology; a good one has many `opt` and no `!`. Answers come from reading spec and code, nothing was run; `want` values are guesses for the owner to correct.
+> Summary: Informal chat behavior cases, each answered per proposed architecture (A, B, C, D, E): forced yes or no, app's choice, or needs a core change. Add a column per new topology; a good one has many `opt` and no `!`. Answers come from reading spec and code, nothing was run; `want` values are guesses for the owner to correct.
 
-Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change.
+Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** (parked; review4 refuted its protection claim) is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change. **E** messages are writes on an aspect of the chat itself, kept as history (retention `author`, keep at least forever), no member actor and no member list; E1 (a register of message-thing tids) is noted only where it differs.
 Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `–` not applicable; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not.
 Assumed fixed (issues/): deposits of closure content, writer rotating to itself, header forgetting, rotation-name growth, the query API.
 
 ## Identity and authorship
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Can a member edit another member's message? | no | no | no | no | no |
-| Can a chat admin edit another member's message? | no | no | no | no | no |
-| Can a chat admin hide a message from honest clients? | yes | opt | opt | opt | opt |
-| Can a chat admin erase one message from hosts and honest devices? | yes | no! core b | no! core b | no! core b | no! core b |
-| Can an admin of a member's account (their other device) edit that member's messages? | yes | yes | yes | yes | yes |
-| Can an admin of a team that is a member edit a team member's messages? | no | no | no | no | no |
-| Can a member make a message appear as written by Bob? | no | no | opt¹ | no | no |
-| Can a member make messages appear from a fake account that was never a member? | no | opt² | opt² | opt² | opt² |
-| Does such a fake account's content cost every member storage until an admin removes it? | no | yes! | yes! | yes! | yes! |
-| Does every reader see the verified sender of each message? | yes | yes | yes | yes | yes |
-| Can a member prove to outsiders that you wrote a message? | accepted | yes | yes | yes | yes |
-| Can a member purge another member's message? | no | no | no | no | no |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Can a member edit another member's message? | no | no | no | no | no | no |
+| Can a chat admin edit another member's message? | no | no | no | no | no | no |
+| Can a chat admin hide a message from honest clients? | yes | opt | opt | opt | opt | opt |
+| Can a chat admin erase one message from hosts and honest devices? | yes | no! core b | no! core b | no! core b | no! core b | yes²⁶ |
+| Can an admin of a member's account (their other device) edit that member's messages? | yes | yes | yes | yes | yes | yes |
+| Can an admin of a team that is a member edit a team member's messages? | no | no | no | no | no | no |
+| Can a member make a message appear as written by Bob? | no | no | opt¹ | no | no | no |
+| Can a member make messages appear from a fake account that was never a member? | no | opt² | opt² | opt² | opt² | no |
+| Does such a fake account's content cost every member storage until an admin removes it? | no | yes! | yes! | yes! | yes! | no |
+| Does every reader see the verified sender of each message? | yes | yes | yes | yes | yes | yes |
+| Can a member prove to outsiders that you wrote a message? | accepted | yes | yes | yes | yes | yes |
+| Can a member purge another member's message? | no | no | no | no | no | no |
 
 ## A kicked member (honest client unless stated)
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Can they still read their own old messages? | yes | yes | yes | yes | yes |
-| Can they still read others' old messages? | opt | core c | core c | core c | core c |
-| Can they read new messages? | no | no | no | no | no |
-| Can they post? | no | no | no | no | no |
-| Modified client: can a post reach others through a host the kicker has not updated yet? | no | yes³! | no | yes³! | yes³! |
-| Modified client: can a current member relay their post so it shows as theirs? | no | yes! | yes! | yes! | yes! |
-| Modified client: can they edit or delete old messages so others see it? | no | yes³! | yes³! | yes³! | yes³! |
-| Do others still see their old messages by default? | yes | opt | opt | opt | opt |
-| Can the kicker wipe their whole history from hosts and honest devices? | yes | yes | yes | yes | yes |
-| Does their modified client keep what it downloaded? | accepted | yes | yes | yes | yes |
-| A message they sent before the kick that the kicker had not received: does it stay for others? | yes | yes | no! | yes | yes |
-| Kick without pre-sync: can the member's whole history drop from the list for everyone? | no | opt⁴ | opt⁴ | opt⁴ | opt⁴ |
-| Re-added later: do posts their modified client made while kicked appear? | no | yes! | yes! | yes! | yes! |
-| Re-added later: can they read what was sent while they were out? | opt | opt* | opt* | opt* | opt²¹ |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Can they still read their own old messages? | yes | yes | yes | yes | yes | no! core c |
+| Can they still read others' old messages? | opt | core c | core c | core c | core c | core c |
+| Can they read new messages? | no | no | no | no | no | no |
+| Can they post? | no | no | no | no | no | no |
+| Modified client: can a post reach others through a host the kicker has not updated yet? | no | yes³! | no | yes³! | yes³! | no |
+| Modified client: can a current member relay their post so it shows as theirs? | no | yes! | yes! | yes! | yes! | no |
+| Modified client: can they edit or delete old messages so others see it? | no | yes³! | yes³! | yes³! | yes³! | no |
+| Do others still see their old messages by default? | yes | opt | opt | opt | opt | opt |
+| Can the kicker wipe their whole history from hosts and honest devices? | yes | yes | yes | yes | yes | yes²⁶ |
+| Does their modified client keep what it downloaded? | accepted | yes | yes | yes | yes | yes |
+| A message they sent before the kick that the kicker had not received: does it stay for others? | yes | yes | no! | yes | yes | no! |
+| Kick without pre-sync: can the member's whole history drop from the list for everyone? | no | opt⁴ | opt⁴ | opt⁴ | opt⁴ | – |
+| Re-added later: do posts their modified client made while kicked appear? | no | yes! | yes! | yes! | yes! | yes! |
+| Re-added later: can they read what was sent while they were out? | opt | opt* | opt* | opt* | opt* | opt* |
 
 ## Leaving
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| After leaving, can you read your own old messages? | yes | yes | yes | yes | yes |
-| After leaving, can you read others' old messages? | opt | core c | core c | core c | core c |
-| Do others still see your messages after you leave? | yes | opt | opt | opt | opt |
-| Can you delete your messages for everyone before leaving? | yes | yes | yes | yes | yes |
-| Can you delete your messages for everyone after leaving? | no | no | no | no | no |
-| Modified client: can a leaver backdate a post before its leave so it stays? | no | yes³! | opt⁵ | yes³! | yes³! |
-| Does leaving wipe the chat from your device? | opt | core c | core c | core c | core c |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| After leaving, can you read your own old messages? | yes | yes | yes | yes | yes | no! core c |
+| After leaving, can you read others' old messages? | opt | core c | core c | core c | core c | core c |
+| Do others still see your messages after you leave? | yes | opt | opt | opt | opt | opt |
+| Can you delete your messages for everyone before leaving? | yes | yes | yes | yes | yes | yes |
+| Can you delete your messages for everyone after leaving? | no | no | no | no | no | no |
+| Modified client: can a leaver backdate a post before its leave so it stays? | no | yes³! | opt⁵ | yes³! | yes³! | opt⁵ |
+| Does leaving wipe the chat from your device? | opt | core c | core c | core c | core c | core c |
 
 ## The member list
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Can a non-admin add a member? | opt | opt⁶ | opt⁶ | opt⁶ | opt⁶ |
-| Can a non-admin remove a member? | no | no | no | no | no |
-| Can a non-admin remove another member's M, deleting their history at hosts? | no | yes! | yes! | no | no |
-| Can a non-admin reset the whole list in one write? | no | yes! | yes! | no | no |
-| Can a non-admin remove a single message from the list? | no | no | yes! | – | – |
-| Does kicking the vandal undo their list changes? | yes | no! | no! | – | – |
-| Can members see the member list? | yes | yes | yes | yes | yes |
-| Can members see each other's device lists? | accepted | yes | yes | yes | yes |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Can a non-admin add a member? | opt | opt⁶ | opt⁶ | opt⁶ | opt⁶ | opt⁶ |
+| Can a non-admin remove a member? | no | no | no | no | no | no |
+| Can a non-admin remove another member's M, deleting their history at hosts? | no | yes! | yes! | no | no | – |
+| Can a non-admin reset the whole list in one write? | no | yes! | yes! | no | no | – |
+| Can a non-admin remove a single message from the list? | no | no | yes! | – | – | – |
+| Does kicking the vandal undo their list changes? | yes | no! | no! | – | – | – |
+| Can members see the member list? | yes | yes | yes | yes | yes | yes |
+| Can members see each other's device lists? | accepted | yes | yes | yes | yes | yes |
 
 ## Adding
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Does a new member see the history? | opt | opt* | opt* | opt* | opt²¹ |
-| Can strangers join by link with no admin online? | yes | yes | yes | yes | yes |
-| Does a link joiner keep access when the sharer is kicked? | yes | opt⁷ | opt⁷ | opt⁷ | opt⁷ |
-| Can an admin kick one link joiner without killing the link? | yes | opt⁷ | opt⁷ | opt⁷ | opt⁷ |
-| Does a stranger's invite show a verified sender before accepting? | yes | core e | core e | core e | core e |
-| Does a stranger's invite fetch anything before you accept? | no | no | no | no | no |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Does a new member see the history? | opt | opt³³ | opt³³ | opt³³ | opt²¹ | opt³³ |
+| Segments: can the new member's modified client learn anything about the earlier chat? | no | no³⁴ | no³⁴ | no³⁴ | no³⁴ | no³⁴ |
+| Segments: two admins add different people at once; is the outcome deterministic with nothing lost for old members? | yes | yes³⁵ | yes³⁵ | yes³⁵ | yes³⁵ | yes³⁵ |
+| Adding one member without history to a 1000-member group under 20 MB? | yes | yes³⁶ | yes³⁶ | yes³⁶ | yes³⁶ | yes³⁶ |
+| Can strangers join by link with no admin online? | yes | yes | yes | yes | yes | yes |
+| Does a link joiner keep access when the sharer is kicked? | yes | opt⁷ | opt⁷ | opt⁷ | opt⁷ | opt⁷ |
+| Can an admin kick one link joiner without killing the link? | yes | opt⁷ | opt⁷ | opt⁷ | opt⁷ | opt⁷ |
+| Does a stranger's invite show a verified sender before accepting? | yes | core e | core e | core e | core e | core e |
+| Does a stranger's invite fetch anything before you accept? | no | no | no | no | no | no |
 
 ## Devices
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Does a new device get the full history? | yes | yes | yes | yes | opt²² |
-| Does a kicked member's new device get that member's own messages? | yes | opt⁸ | opt⁸ | opt⁸ | opt⁸ |
-| Can a removed (lost) device read new messages? | no | no | no | no | no |
-| Does removing a device wipe the chat from it (honest device)? | yes | yes | yes | yes | yes |
-| Two devices of one member post offline at once: do both messages appear? | yes | yes | yes | yes⁹ | yes⁹ |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Does a new device get the full history? | yes | yes | yes | yes | yes³⁷ | yes |
+| Does a kicked member's new device get that member's own messages? | yes | opt⁸ | opt⁸ | opt⁸ | opt⁸ | no! |
+| Can a removed (lost) device read new messages? | no | no | no | no | no | no |
+| Does removing a device wipe the chat from it (honest device)? | yes | yes | yes | yes | yes | yes |
+| Two devices of one member post offline at once: do both messages appear? | yes | yes | yes | yes⁹ | yes⁹ | yes |
 
 ## Delete and disappear
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Delete for everyone: erased on honest online devices? | yes | yes | yes | yes | yes |
-| Erased on offline devices when they return? | yes | yes | yes | yes | yes |
-| Erased at hosts? | yes | yes | yes | yes | yes |
-| Attachments erased too? | yes | yes | yes | yes | yes |
-| Edit: does the old text leave hosts promptly? | yes | yes | yes | yes¹⁰ | yes¹⁰ |
-| Disappearing message gone everywhere at its time, hosts unattended? | yes | yes | yes | yes | yes |
-| Offline device past the time: gone when it wakes? | yes | yes | yes | yes | yes |
-| Does a hostile device keep a deleted message? | accepted | yes | yes | yes | yes |
-| Can the app make messages undeletable (permanent chat)? | opt | opt* | opt* | opt* | opt* |
-| Timer changed mid-chat: do old messages keep their old timer? | yes | yes | yes | yes | yes |
-| Does a disappeared message leave a trace on each device? | no | yes! | yes! | yes¹¹ | yes¹¹ |
-| Does a deleted message leave the fact and time visible to members? | accepted | yes | yes | yes | yes |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Delete for everyone: erased on honest online devices? | yes | yes | yes | yes | yes | yes |
+| Erased on offline devices when they return? | yes | yes | yes | yes | yes | yes |
+| Erased at hosts? | yes | yes | yes | yes | yes | yes |
+| Attachments erased too? | yes | yes | yes | yes | yes | yes |
+| Edit: does the old text leave hosts promptly? | yes | yes | yes | yes¹⁰ | yes¹⁰ | yes²⁷ |
+| Disappearing message gone everywhere at its time, hosts unattended? | yes | yes | yes | yes | yes | yes |
+| Offline device past the time: gone when it wakes? | yes | yes | yes | yes | yes | yes |
+| Does a hostile device keep a deleted message? | accepted | yes | yes | yes | yes | yes |
+| Can the app make messages undeletable (permanent chat)? | opt | opt* | opt* | opt* | opt* | opt* |
+| Timer changed mid-chat: do old messages keep their old timer? | yes | yes | yes | yes | yes | yes |
+| Does a disappeared message leave a trace on each device? | no | yes! | yes! | yes¹¹ | yes¹¹ | yes¹¹ |
+| Does a deleted message leave the fact and time visible to members? | accepted | yes | yes | yes | yes | yes |
 
 ## Deletion traces (after a permanent delete)
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Does the app show a "message deleted" tombstone by default? | opt | opt | opt | opt | opt |
-| Can the app be set to show no trace at all? | opt | opt | opt | opt | opt |
-| Modified client: can it tell a message existed, who sent it and when, from what osis keeps? | accepted | yes | yes | yes¹⁸ | yes¹⁸ |
-| Can a member forge a "Bob deleted a message" tombstone for a message Bob never sent? | no | no | yes¹⁹! | no | no |
-| Can members tell an expired message from a purged one? | opt | opt²⁰ | opt²⁰ | opt²⁰ | opt²⁰ |
-| Can a host tell that a message was deleted? | accepted | yes | yes | yes | yes |
-| Can a host tell who sent the deleted message, or what it said? | no | no | no | no | no |
-| Can a host tell an expired entry from a purged one? | accepted | yes | yes | yes | yes |
-| Can a host forge a deletion that members show as a tombstone? | no | no | no | no | no |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Does the app show a "message deleted" tombstone by default? | opt | opt | opt | opt | opt | opt |
+| Can the app be set to show no trace at all? | opt | opt | opt | opt | opt | opt |
+| Modified client: can it tell a message existed, who sent it and when, from what osis keeps? | accepted | yes | yes | yes¹⁸ | yes¹⁸ | yes²⁸ |
+| Can a member forge a "Bob deleted a message" tombstone for a message Bob never sent? | no | no | yes¹⁹! | no | no | no |
+| Can members tell an expired message from a purged one? | opt | opt²⁰ | opt²⁰ | opt²⁰ | opt²⁰ | opt²⁰ |
+| Can a host tell that a message was deleted? | accepted | yes | yes | yes | yes | yes |
+| Can a host tell who sent the deleted message, or what it said? | no | no | no | no | no | no |
+| Can a host tell an expired entry from a purged one? | accepted | yes | yes | yes | yes | yes |
+| Can a host forge a deletion that members show as a tombstone? | no | no | no | no | no | no |
 
 ## Moderation and abuse
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Can admins wipe a member's whole history from hosts and devices? | yes | yes | yes | yes | yes |
-| Can admins get one illegal message off hosts without wiping the member? | yes | no! core b | no! core b | no! core b | no! core b |
-| Can you block someone without deleting anything on either side? | yes | opt | opt | opt | opt |
-| Is your evidence kept after blocking? | yes | opt | opt | opt | opt |
-| Can a blocked contact you share a group with add you to a chat? | no | opt¹² | opt¹² | opt¹² | opt¹² |
-| Can a stranger holding your contact card fill your invite inbox? | no | yes¹³! | yes¹³! | yes¹³! | yes¹³! |
-| Do message requests show a verified sender? | yes | core e | core e | core e | core e |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Modified member: can it write junk nobody can ever erase from hosts and honest devices? | no | no | no | no | no | yes³¹! core k |
+| Can admins wipe a member's whole history from hosts and devices? | yes | yes | yes | yes | yes | yes²⁶ |
+| Can admins get one illegal message off hosts without wiping the member? | yes | no! core b | no! core b | no! core b | no! core b | yes²⁶ |
+| Can you block someone without deleting anything on either side? | yes | opt | opt | opt | opt | opt |
+| Is your evidence kept after blocking? | yes | opt | opt | opt | opt | opt |
+| Can a blocked contact you share a group with add you to a chat? | no | opt¹² | opt¹² | opt¹² | opt¹² | opt¹² |
+| Can a stranger holding your contact card fill your invite inbox? | no | yes¹³! | yes¹³! | yes¹³! | yes¹³! | yes¹³! |
+| Do message requests show a verified sender? | yes | core e | core e | core e | core e | core e |
 
 ## Admins
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| No admin left: can members still post and leave? | yes | yes | yes | yes | yes |
-| No admin left: can anyone add or kick? | no | no | no | no | no |
-| Last admin leaves: is someone promoted? | yes | opt | opt | opt | opt |
-| Two admins remove each other at once: one deterministic outcome? | yes | yes | yes | yes | yes |
-| Can a hostile sole admin wipe the chat for everyone? | accepted | yes | yes | yes | yes |
-| Can a writer lock everyone out by rotating keys to itself? | no | no | no | no | no |
-| Can the creator leave or be demoted? | yes | yes | yes | yes | yes |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| No admin left: can members still post and leave? | yes | yes | yes | yes | yes | yes |
+| No admin left: can anyone add or kick? | no | no | no | no | no | no |
+| Last admin leaves: is someone promoted? | yes | opt | opt | opt | opt | opt |
+| Two admins remove each other at once: one deterministic outcome? | yes | yes | yes | yes | yes | yes |
+| Can a hostile sole admin wipe the chat for everyone? | accepted | yes | yes | yes | yes | yes |
+| Can a writer lock everyone out by rotating keys to itself? | no | no | no | no | no | no |
+| Can the creator leave or be demoted? | yes | yes | yes | yes | yes | yes |
 
 ## Hosts
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Does a host learn who is in the chat or what is said? | no | no | no | no | no |
-| Does a host learn message sizes, times and expiries? | accepted | yes | yes | yes | yes |
-| Only host lost: can members move to a new one? | yes | opt¹⁴ | opt¹⁴ | opt¹⁴ | opt¹⁴ |
-| Members on different hosts of the chat: do they converge? | yes | yes | yes | yes | yes |
-| Can a host colluding with a kicked member read new messages? | no | no | no | no | no |
-| Can a colluding host deliver a kicked member's post? | no | yes! | no | yes! | yes! |
-| Can a member's own node host the chat? | yes | opt | opt | opt | opt |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Does a host learn who is in the chat or what is said? | no | no | no | no | no | no |
+| Does a host learn message sizes, times and expiries? | accepted | yes | yes | yes | yes | yes |
+| Only host lost: can members move to a new one? | yes | opt¹⁴ | opt¹⁴ | opt¹⁴ | opt¹⁴ | opt¹⁴ |
+| Members on different hosts of the chat: do they converge? | yes | yes | yes | yes | yes | yes |
+| Can a host colluding with a kicked member read new messages? | no | no | no | no | no | no |
+| Can a colluding host deliver a kicked member's post? | no | yes! | no | yes! | yes! | no |
+| Can a member's own node host the chat? | yes | opt | opt | opt | opt | opt |
 
 ## Order and display
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Modified client: can a sender backdate a message into history? | no | yes! | yes! | yes! | yes! |
-| Honest sender with a wrong clock: shown at a sane position? | yes | yes | yes | yes¹⁵ | yes¹⁵ |
-| Reply to a deleted message: shown as a placeholder? | yes | opt | opt | opt | opt |
-| Can a new device page recent history without downloading all of it? | yes | no! | opt¹⁶ | opt¹⁶ | opt¹⁶ |
-| Can the app show the latest 50 messages with the osis API alone? | yes | yes | yes | core g | core g |
-| Read receipts: can a member keep their read position private? | yes | opt | opt | opt | opt |
-| Typing: reaches connected devices only, stored nowhere? | yes | yes | yes | yes | yes |
-| Is a sender woken by its own post? | no | no | no | no | no |
-| Notifications while the app is closed? | yes | core h | core h | core h | core h |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Modified client: can a sender backdate a message into history? | no | yes! | yes! | yes! | yes! | yes! |
+| Honest sender with a wrong clock: shown at a sane position? | yes | yes | yes | yes¹⁵ | yes¹⁵ | yes |
+| Reply to a deleted message: shown as a placeholder? | yes | opt | opt | opt | opt | opt |
+| Can a new device page recent history without downloading all of it? | yes | no! | opt¹⁶ | opt¹⁶ | opt¹⁶ | opt²⁹ |
+| Can the app show the latest 50 messages with the osis API alone? | yes | yes | yes | core g | core g | core l |
+| Read receipts: can a member keep their read position private? | yes | opt | opt | opt | opt | opt |
+| Typing: reaches connected devices only, stored nowhere? | yes | yes | yes | yes | yes | yes |
+| Is a sender woken by its own post? | no | no | no | no | no | no |
+| Notifications while the app is closed? | yes | core h | core h | core h | core h | core h |
 
 ## Costs
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Kick or lost device in a 1000-member group under 10 MB upload? | yes | yes | yes | yes | yes |
-| Fresh device of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | no! | no! | yes | yes |
-| Long-lived device of a permanent chat holds every message body? | yes | yes | yes | yes | yes |
-| Join under 100 KB? | yes | yes | yes | yes | yes |
-| A message under 3 KB on the wire? | yes | yes | yes | yes | yes |
-| New device of a 1000-member group under 100 MB before any message? | yes | yes | yes | yes | yes |
-| One edit after compaction under 1 MB of upload? | yes | yes | yes | yes¹⁷ | yes¹⁷ |
-| Compacting a member's history under 100 MB of memory on a phone? | yes | yes | yes | yes¹⁷ | yes¹⁷ |
-| Is a send one commit? | yes | yes | yes | yes | yes |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Kick in a chat with a million messages under a minute of work on a phone? | yes | ? | ? | ? | ? | ?³² |
+| Kick or lost device in a 1000-member group under 10 MB upload? | yes | yes | yes | yes | yes | yes |
+| Fresh device of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | no! | no! | yes | yes | yes |
+| Long-lived device of a permanent chat holds every message body? | yes | yes | yes | yes | yes | yes |
+| Join under 100 KB? | yes | yes | yes | yes | yes | yes |
+| A message under 3 KB on the wire? | yes | yes | yes | yes | yes | yes |
+| New device of a 1000-member group under 100 MB before any message? | yes | yes | yes | yes | yes | yes |
+| One edit after compaction under 1 MB of upload? | yes | yes | yes | yes¹⁷ | yes¹⁷ | yes |
+| Compacting a member's history under 100 MB of memory on a phone? | yes | yes | yes | yes¹⁷ | yes¹⁷ | yes³⁰ |
+| Is a send one commit? | yes | yes | yes | yes | yes | yes |
 
 ## Channels and 1:1
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Channel: only admins post, members read? | yes | yes | yes | yes | yes |
-| Channel: can read-only members react? | opt | no! | no! | no! | no! |
-| 1:1: the other side kicks you; do you keep their messages (honest client)? | yes | core c | core c | core c | core c |
-| 1:1: can either side kick the other? | no | opt* | opt* | opt* | opt* |
-| Two 1:1 chats with one person created at once: shown as one? | yes | opt | opt | opt | opt |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Channel: only admins post, members read? | yes | yes | yes | yes | yes | yes |
+| Channel: can read-only members react? | opt | no! | no! | no! | no! | no! |
+| 1:1: the other side kicks you; do you keep their messages (honest client)? | yes | core c | core c | core c | core c | core c |
+| 1:1: can either side kick the other? | no | opt* | opt* | opt* | opt* | opt* |
+| Two 1:1 chats with one person created at once: shown as one? | yes | opt | opt | opt | opt | opt |
 
 ## Forward secrecy (a recording of the hosts plus one device stolen today)
 
-| case | want | A | B | C | D |
-|---|---|---|---|---|---|
-| Can messages deleted or expired more than two hours ago be read? | no | yes! | yes! | yes! | no |
-| Can messages deleted in the last two hours be read? | no | yes! | yes! | yes! | yes²³! |
-| Can old messages the device no longer shows be read? | no | yes! | yes! | yes! | no |
-| Stolen keys only: can messages sent after the theft be read? | no | yes! | yes! | yes! | opt²⁴ |
-| Can a removed member read what it already copied? | accepted | yes | yes | yes | yes |
-| Does anyone gain deniability? | accepted | no | no | no | no |
-| A device offline for a year: can it read everything still at the hosts on return? | yes | yes | yes | yes | yes |
-| Can a new member read history without an existing member re-publishing it? | opt | yes | yes | yes | no²¹ |
-| Do hosts end up storing content nobody can read? | no | no | no | no | opt²⁵ |
-| Is protection per message, at once, rather than after a window? | yes | no! core j | no! core j | no! core j | no! core j |
-| Can a chat have forward secrecy at all? | yes | core i | core i | core i | yes |
-| Kick or lost device in a 1000-member group under 10 MB upload with forward secrecy? | yes | – | – | – | yes |
+| case | want | A | B | C | D | E |
+|---|---|---|---|---|---|---|
+| Can messages deleted or expired more than two hours ago be read? | no | yes! | yes! | yes! | yes³⁷! | yes! |
+| Can messages deleted in the last two hours be read? | no | yes! | yes! | yes! | yes²³! | yes! |
+| Can old messages the device no longer shows be read? | no | yes! | yes! | yes! | yes³⁷! | yes! |
+| Stolen keys only: can messages sent after the theft be read? | no | yes! | yes! | yes! | yes³⁷! | yes! |
+| Can a removed member read what it already copied? | accepted | yes | yes | yes | yes | yes |
+| Does anyone gain deniability? | accepted | no | no | no | no | no |
+| A device offline for a year: can it read everything still at the hosts on return? | yes | yes | yes | yes | yes | yes |
+| Can a new member read history without an existing member re-publishing it? | opt | yes | yes | yes | no²¹ | yes |
+| Do hosts end up storing content nobody can read? | no | no | no | no | opt²⁵ | no |
+| Is protection per message, at once, rather than after a window? | yes | no! core j | no! core j | no! core j | no! core j | no! core j |
+| Can a chat have forward secrecy at all? | yes | core m | core m | core m | no! core m | core m |
+| Kick or lost device in a 1000-member group under 10 MB upload with forward secrecy? | yes | – | – | – | – | – |
 
 ## Core changes
 
@@ -217,8 +222,11 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.
 - **h** Wake relay for background notifications (owner: does not block).
-- **i** Content key chain (D only): a boxed seed with no history box, re-seeded in every read rotation; an hourly hash-chain key in the clear prefix; content blobs wrapped under it; devices erase hour keys after two hours and keep blob keys of retained bodies; content older than the window is may-hold; a re-wrapped transfer bundle for new devices. Assumed in every D cell.
+- **i** Content key chain (D only): a boxed seed with no history box, re-seeded in every read rotation; an hourly hash-chain key in the clear prefix; content blobs wrapped under it; devices erase hour keys after two hours and keep blob keys of retained bodies; content older than the window is may-hold; a re-wrapped transfer bundle for new devices. Assumed in every D cell. Refuted by review4: the seed's box is in the recording and opens under keys the device keeps, so a thief rebuilds every hour key; only "newcomers cannot read older content" survives.
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker hosts can link or trial decryption.
+- **k** Admins may purge the body of an invalid delta whatever its retention (E).
+- **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
+- **l** History read API (E): the held bodies of an aspect with author, time, received time and validity, paged by time, and a change event per commit.
 
 ## Footnotes
 
@@ -247,3 +255,15 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 23. D: the window is the current and previous hour (`MAX_DRIFT`); below it in-flight uploads become unreadable.
 24. D: a forward hash chain; cut off at the next membership change, or by an optional periodic re-seed (1.2 KB per member each).
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
+26. E: for messages written with the requested retention (`author`); a modified sender's `nobody` message is hidden but stored (core k).
+27. E: an edit is a new message plus a purge of the old one.
+28. E: the header-only blob until headers are forgotten, then the value-less stamp; E1 keeps the tid and time forever by design.
+29. E: per-year things owned by the chat, each synced under its own label.
+30. E: nothing is compacted; messages keep at least forever.
+31. E: `nobody` retention plus keep at least forever is must-hold for good and nobody holds a purge right; in A-D an admin removes the member's M instead.
+32. E: a kick un-merges the member's deltas by re-reading the aspect's history (issues/node-core-gaps.md), bounded by one aspect name per year; not measured in any design.
+33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change.
+34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and hosts live under its own label.
+35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
+36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
+37. D as written: the chain seed's box is in the recording, sealed to a key the device keeps, so a thief rebuilds every hour key (review4).
