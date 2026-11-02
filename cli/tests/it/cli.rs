@@ -1,4 +1,4 @@
-//! The `osis` binary run in-process (notes/cli.md Tests, tier 1): commands over memory and
+//! The `osis` binary run in-process (notes/cli.md Tests, tier 1; one test spawns `serve`): commands over memory and
 //! temp-dir stores, exit codes per error category, `--json`, `write` scripts, named
 //! keys with a schema, the command table's coverage of the API. No network, no sleeps.
 //! spec: none (client surface: notes/cli.md).
@@ -563,4 +563,57 @@ fn verbose_prints_diagnostics_plan_cli_4() {
     assert_eq!(o.err, "", "a local command");
     let o = s.ok(&["-v", "--json", "share-into", &t, &g5, "read"]);
     assert!(o.err.contains("\"kind\":\"NotSynced\""), "{}", o.err);
+}
+
+// notes/cli.md Design (daemon), notes/client-port.md §5: a locked store's `<store>/sock` naming another socket than the store's own (`socket_path`) is not followed: another store's daemon never answers for this one
+#[test]
+fn sock_pointer_must_be_the_stores() {
+    let d = tmp("sockptr");
+    let ds = d.to_str().unwrap();
+    let call = |args: &[&str]| {
+        let (mut o, mut e) = (Vec::new(), Vec::new());
+        let code = osis_cli::main_with(["osis", "-s", ds].iter().chain(args).copied(), &mut &b""[..], &mut o, &mut e);
+        (code, String::from_utf8(e).unwrap())
+    };
+    assert_eq!(call(&["init"]).0, 0);
+    let held = osis::Osis::open(osis::Config::dir(&d)).unwrap();
+    // another node of this uid serving a socket of its own
+    // (a short path: `sun_path`)
+    let other = std::env::temp_dir().join(format!("osis-cli-sockptr-{}", std::process::id()));
+    std::fs::create_dir_all(&other).unwrap();
+    let mut c = osis::Config::memory();
+    c.runtime = osis::Runtime::Own;
+    let (n, _) = osis::Osis::create(c).unwrap();
+    let sock = other.join("n.sock");
+    n.listen_unix(&sock).unwrap();
+    std::fs::write(d.join(osis::SOCK_FILE), format!("{}\n", sock.display())).unwrap();
+    let (code, err) = call(&["whoami"]);
+    assert_eq!(code, 8, "{err}");
+    assert!(err.contains("store in use"), "{err}");
+    drop((held, n));
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&other);
+}
+
+// notes/cli.md Design (daemon), notes/client-port.md §5: a socket directory another user made first (here: one of the wrong mode) does not stop `serve`: it warns and serves without the client socket (the one test here that runs the binary)
+#[test]
+fn serve_survives_a_bad_socket_dir() {
+    use std::io::BufRead;
+    use std::os::unix::fs::PermissionsExt;
+    let d = tmp("badsockdir");
+    let ds = d.to_str().unwrap();
+    assert_eq!(osis_cli::main_with(["osis", "-s", ds, "init"], &mut &b""[..], &mut Vec::new(), &mut Vec::new()), 0);
+    let xdg = d.with_extension("xdg");
+    std::fs::create_dir_all(xdg.join("osis")).unwrap();
+    std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    let err = std::io::BufReader::new(c.stderr.take().unwrap());
+    let warned = err.lines().map_while(Result::ok).any(|l| l.contains("serving without a client socket"));
+    let running = c.try_wait().unwrap().is_none();
+    let _ = c.kill();
+    let _ = c.wait();
+    assert!(warned && running);
+    assert!(!d.join(osis::SOCK_FILE).exists());
+    let _ = std::fs::remove_dir_all(&d);
+    let _ = std::fs::remove_dir_all(&xdg);
 }
