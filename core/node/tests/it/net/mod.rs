@@ -111,6 +111,9 @@ pub struct Net {
     /// Host messages announcing or carrying one of these blobs are held back until `release`
     /// (a slow fetch of one entry).
     pub hold_blobs: BTreeSet<osis_base::BlobId>,
+    /// Per node, blobs whose announcements and fetch replies hosts never deliver to it (the
+    /// rest of each message is): a node that never hears of one entry.
+    pub hide_blobs: BTreeMap<usize, BTreeSet<osis_base::BlobId>>,
 }
 
 /// Whether whole frames `b` hold an Opened reply.
@@ -141,6 +144,29 @@ fn told_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     v
 }
 
+/// Whole frames `b` from a host with every announcement and fetch reply item of a blob in
+/// `hide` left out.
+fn without_blobs(b: &[u8], hide: &BTreeSet<osis_base::BlobId>) -> Vec<u8> {
+    use osis_proto::{Event as E, Message as M};
+    let mut d = osis_proto::FrameDecoder::new();
+    d.push(b);
+    let mut out = Vec::new();
+    while let Ok(Some(body)) = d.next_frame() {
+        match osis_proto::Message::decode(&body) {
+            Ok(mut m) => {
+                match &mut m {
+                    M::Push { events, .. } | M::SyncReply { events, .. } => events.retain(|e| !matches!(e, E::Added { blob_id, .. } if hide.contains(blob_id))),
+                    M::FetchReply { items, .. } => items.retain(|i| !hide.contains(&i.blob_id)),
+                    _ => {}
+                }
+                out.extend(osis_proto::encode_frame(&m.encode()));
+            }
+            Err(_) => out.extend(osis_proto::encode_frame(&body)),
+        }
+    }
+    out
+}
+
 /// Blob IDs whole frames `b` from a host carry in fetch replies.
 fn fetched_ids(b: &[u8]) -> Vec<osis_base::BlobId> {
     let mut d = osis_proto::FrameDecoder::new();
@@ -160,7 +186,7 @@ pub fn host_key(i: usize) -> [u8; 32] {
 
 impl Net {
     pub fn new() -> Net {
-        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new() }
+        Net { clock: Arc::new(ManualClock::new(WallMs(T0))), nodes: vec![], hosts: vec![], links: BTreeMap::new(), queue: VecDeque::new(), next_hub_conn: 1, steps: 0, blocked: BTreeSet::new(), plinks: BTreeMap::new(), blocked_peers: BTreeSet::new(), lan_keys: BTreeMap::new(), held: BTreeSet::new(), held_msgs: Vec::new(), sent_kinds: BTreeMap::new(), sent_bytes: 0, dialed: Vec::new(), full_passes: false, lose_uploads: BTreeSet::new(), lose_deposits: BTreeSet::new(), held_hosts: BTreeSet::new(), busy: BTreeMap::new(), hub_busy: std::time::Duration::ZERO, told: BTreeMap::new(), fetched: BTreeMap::new(), deaf: BTreeSet::new(), hold_opened: BTreeSet::new(), held_to: BTreeSet::new(), gained: BTreeMap::new(), hold_blobs: BTreeSet::new(), hide_blobs: BTreeMap::new() }
     }
 
     pub fn now(&self) -> u64 {
@@ -486,6 +512,10 @@ impl Net {
             match o {
                 HubOutput::Send(hc, bytes) => {
                     if let Some(((n, c), _)) = self.links.iter().find(|(_, (x, h))| *x == s && *h == hc) {
+                        let bytes = match self.hide_blobs.get(n) {
+                            Some(hide) => without_blobs(&bytes, hide),
+                            None => bytes,
+                        };
                         let held = self.held_to.contains(n) || self.hold_opened.contains(n) && (has_opened(&bytes) || self.held_msgs.iter().any(|m| matches!(m, Msg::ToNode(x, ..) if x == n))) || (!self.hold_blobs.is_empty() && told_ids(&bytes).iter().any(|b| self.hold_blobs.contains(b)));
                         let m = Msg::ToNode(*n, self.nodes[*n].life, *c, bytes);
                         if self.held_hosts.contains(&s) || held {

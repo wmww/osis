@@ -644,4 +644,73 @@ fn duplicate_encryptions_higher_goes_spec_sync_7() {
     assert!(ids.contains(&both[0]), "the lower kept");
     assert!(!ids.contains(&both[1]), "the higher deleted");
     assert_eq!(net.read(b, t), Some(s("y")));
+    // and neither places it again
+    for _ in 0..3 {
+        net.advance(60_000);
+        net.run();
+    }
+    let ids = net.host_ids(host, &l);
+    let mut now: Vec<_> = blobs_of(&mut net, a, &l, &c);
+    now.extend(blobs_of(&mut net, b, &l, &c));
+    now.retain(|id| ids.contains(id));
+    now.sort();
+    now.dedup();
+    assert_eq!(now, vec![both[0]], "one encryption stays");
+}
+
+// spec/sync.md §6 (a strict subset is must-not-hold beside a superset under the label, judged
+// per host): writer a purges one delta of commit c, so h1 holds its rewrite q and no longer p;
+// b, back without hearing of the purge commit, still sees p at h2. At h1, q is no strict subset
+// for b (p is not there), so b keeps it, its own uploads (p again) failing meanwhile.
+#[test]
+fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
+    let mut net = Net::new();
+    let h1 = net.add_host();
+    let h2 = net.add_host();
+    let a = net.node(1, &[h1, h2]);
+    let b = net.node(2, &[h1, h2]);
+    let g = net.group(a, &[(b, Role::Write)], &[h1, h2]);
+    let t = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    let gone = Ak::new(GONE.ak()).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let l = net.label(a);
+    let p = blobs_of(&mut net, a, &l, &c);
+    assert_eq!(p.len(), 1);
+    assert!(net.host_ids(h1, &l).contains(&p[0]) && net.host_ids(h2, &l).contains(&p[0]));
+    // a reaches h1 only, b is away
+    net.drop_link(a, h2);
+    net.blocked.insert((a, h2));
+    net.set_online(b, false);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &GONE).unwrap();
+    let pc = net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, Event::Local);
+    // b never hears of the purge commit
+    let hide = blobs_of(&mut net, a, &l, &pc);
+    assert!(!hide.is_empty());
+    net.hide_blobs.insert(b, hide.into_iter().collect());
+    net.settle(200_000);
+    let q: Vec<_> = blobs_of(&mut net, a, &l, &c).into_iter().filter(|id| !p.contains(id)).collect();
+    assert_eq!(q.len(), 1, "a's rewrite placed");
+    let ids = net.host_ids(h1, &l);
+    assert!(ids.contains(&q[0]) && !ids.contains(&p[0]), "h1 holds q, not p");
+    // b back, its uploads failing
+    net.lose_uploads.insert(b);
+    net.set_online(b, true);
+    // past the redial pause
+    net.advance(6_000);
+    net.run();
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("secret")), "b has not applied the purge");
+    for _ in 0..3 {
+        net.advance(60_000);
+        net.run();
+    }
+    net.trace(&[a, b]);
+    assert!(net.host_ids(h1, &l).contains(&q[0]), "q kept at h1: p is at h2 only");
 }
