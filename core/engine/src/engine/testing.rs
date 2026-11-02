@@ -105,6 +105,19 @@ impl Engine {
         self.run(|tx| Ok(crate::retention::stripped_of(tx, &id)?.len()))
     }
 
+    /// How many purge requests' dropped-a-permanent-delta notes are kept (`retention::lasting`).
+    #[doc(hidden)]
+    pub fn named_permanent_count(&mut self) -> Result<usize> {
+        self.run(|tx| {
+            let mut n = 0;
+            tx.scan(crate::engine::records::NAMED_PERMANENT, |_, _| {
+                n += 1;
+                Ok(())
+            })?;
+            Ok(n)
+        })
+    }
+
     /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
     #[doc(hidden)]
     pub fn waits_bytes(&self) -> usize {

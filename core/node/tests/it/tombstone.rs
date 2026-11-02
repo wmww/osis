@@ -386,6 +386,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     net.run();
     let p = purge(&mut net, a, t, c, permanent());
     net.run();
+    assert_eq!(net.engine(b).named_permanent_count().unwrap(), 1);
     let g = net.sync(a).labels().into_iter().find(|x| x.1.id == l).unwrap().0;
     let holder = net.tid(b);
     let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced };
@@ -394,6 +395,9 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     net.actions(a, acts);
     net.run();
     assert_eq!(at_host(&mut net, a, host, &l, c), vec![Vec::new()]);
+    // what `b` forgets, the note of what the purge dropped goes with
+    net.engine(b).drop_lost_due().unwrap();
+    assert_eq!(net.engine(b).named_permanent_count().unwrap(), 0);
     net.set_online(n, true);
     net.run();
     sees_tombstone(&mut net, n, t, c, p, holder);
@@ -667,5 +671,67 @@ fn an_aspect_wide_request_lasts_by_what_it_dropped_spec_commits_5() {
         assert_eq!(at_host(&mut net, a, host, &l, p), if admin { vec![Vec::new()] } else { Vec::new() });
         assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().get(&c), admin.then_some(&p));
         assert_eq!(net.engine(n).body_not_dropped(&c, &t, &k()), !admin);
+    }
+}
+
+/// All entries `n` knows under any label at `host`.
+fn known_entries(net: &mut Net, n: usize, host: usize) -> usize {
+    net.labels_at(host).into_iter().map(|l| net.sync(n).entries(&l).len()).sum()
+}
+
+// spec/sync.md §6: a purge that fell after every holder applied it. The holders go on judging its
+// header and the message's lasting (issues/purge-before-demotion.md), a node that had the demotion
+// first does not: it leaves them there, no upload and delete for good.
+#[test]
+fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, x, d2) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(5, &[host]));
+    let g = net.group(a, &[(b, Role::Write), (x, Role::Admin), (d2, Role::Admin)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    net.set_online(d2, false);
+    let m = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(d2).demote(&g, &d).unwrap();
+    net.advance(5_000);
+    let p = purge(&mut net, x, t, m, Retention::default());
+    net.run();
+    cover(&mut net, a, t);
+    net.set_online(d2, true);
+    let acts = net.sync(d2).carry_out(done).unwrap();
+    net.actions(d2, acts);
+    net.run();
+    assert!(net.engine(a).purged_on(&t, &k()).unwrap().is_empty());
+    assert!(net.engine(d2).commit_ids().contains(&m) && !net.engine(a).body_not_dropped(&m, &t, &k()));
+    net.advance(120_000);
+    let before = known_entries(&mut net, a, host);
+    for _ in 0..6 {
+        net.advance(120_000);
+    }
+    assert_eq!(known_entries(&mut net, a, host), before, "an upload and delete loop");
+    let l = net.labels_at(host).into_iter().find(|l| !at_host(&mut net, a, host, l, p).is_empty()).expect("the holders' copy stays");
+    assert_eq!(at_host(&mut net, a, host, &l, m), vec![Vec::new()]);
+}
+
+// spec/commits.md §5: a device with a slow clock purges a message a fast device stamped ahead of
+// it, after a restart too: applying it moved the clock past it (spec/crdt.md §2.2).
+#[test]
+fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
+    let Chat { mut net, a, b, t, .. } = chat();
+    net.engine(b).set_clock_offset(20 * 60_000);
+    net.engine(a).set_clock_offset(-20 * 60_000);
+    let m = msg(&mut net, b, t, "SECRET", permanent());
+    net.run();
+    assert!(net.engine(a).commit_ids().contains(&m));
+    net.restart(a, 55);
+    net.run();
+    net.engine(a).set_clock_offset(-20 * 60_000);
+    let p = purge(&mut net, a, t, m, Retention::default());
+    assert!(net.engine(b).header(&m).unwrap().ts < net.engine(a).header(&p).unwrap().ts);
+    net.run();
+    for x in [a, b] {
+        assert!(!net.engine(x).body_not_dropped(&m, &t, &k()), "at {x}");
     }
 }

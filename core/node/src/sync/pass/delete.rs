@@ -239,6 +239,12 @@ impl SyncEngine {
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }
+                // a lasting header this node does not judge lasting: nodes may differ for good over a
+                // purge that fell after one applied it (issues/purge-before-demotion.md). Deleting
+                // what the other must hold would never end: it stays (spec/sync.md §6)
+                if parts.is_empty() && (!h.purge.is_empty() || (h.ephemeral.is_none() && h.aspects.iter().any(|a| a.permanent()))) {
+                    return Ok(None);
+                }
                 // only deltas this node holds can be judged outside the label
                 let c = *commit;
                 let held: Vec<(usize, usize)> = self.engine.run(|tx| Ok(tx.get_commit(&c)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default()))?;
