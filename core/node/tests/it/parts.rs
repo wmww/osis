@@ -826,11 +826,9 @@ fn parts_seed(seed: u64) -> PartsSeed {
             let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
             // first and last deaths may date later by order (spec/commits.md §5)
             let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
-            // a part pending at its expiry counts as never received: its aspect, flagged (also
-            // once a held snapshot settled the flag: its copies may sit otherwise), may differ
-            // from one that applied it before T (spec/commits.md §5), and so may its commits'
-            // bodies (the commit applied there, pending whole here)
-            let expired: Vec<String> = p.engine.suspects_dormant().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| format!("aspect {t} {}", a.as_str())).collect();
+            // a part pending at its expiry counts as never received: its aspect, flagged, may differ
+            // from one that applied it before T (spec/commits.md §5)
+            let expired: Vec<String> = p.engine.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| format!("aspect {t} {}", a.as_str())).collect();
             (seen, roster, expired)
         };
         // the state read with the blobs away, and read once they came
@@ -881,10 +879,7 @@ fn parts_seed(seed: u64) -> PartsSeed {
             let (is, bs): (Vec<usize>, Vec<Vec<u8>>) = toks.into_iter().unzip();
             let (got, got_after) = read(&bs, &is, None);
             for (name, (g, ge), (w, we)) in [("as delivered", (&got.0, &got.2), (&want.0, &want.2)), ("blobs come", (&got_after.0, &got_after.2), (&want_after.0, &want_after.2))] {
-                let expired = |k: &str| ge.contains(&k.to_string()) || we.contains(&k.to_string());
-                // `body <commit> <tid> <ak>`: the commits with a body on an expired aspect
-                let ids: std::collections::BTreeSet<&str> = g.iter().chain(w).filter_map(|x| x.0.strip_prefix("body ")).filter_map(|r| r.split_once(' ')).filter(|(_, rest)| expired(&format!("aspect {rest}"))).map(|(c, _)| c).collect();
-                let stands = |x: &&(String, String)| !expired(&x.0) && !x.0.strip_prefix("body ").and_then(|r| r.split_once(' ')).is_some_and(|(c, _)| ids.contains(c));
+                let stands = |x: &&(String, String)| !ge.contains(&x.0) && !we.contains(&x.0);
                 let (g, w): (Vec<_>, Vec<_>) = (g.iter().filter(stands).collect(), w.iter().filter(stands).collect());
                 if g != w {
                     let first = g.iter().filter(|x| !w.contains(x)).map(|x| format!("got {x:?}")).chain(w.iter().filter(|x| !g.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");
