@@ -55,7 +55,7 @@ fn auth(net: &mut Net, n: usize, conn: ConnId, cs: &mut ClientSession) -> Vec<Ac
     feed(net, n, conn, cs, outs, Vec::new())
 }
 
-// notes/client-port.md §0, §5: Owner only from Peer::Unix; a keyed peer's Auth goes up as Keyed whatever its key
+// spec/sync.md §10 (client port), notes/client-port.md §0, §5: Owner only from Peer::Unix; a keyed peer's Auth goes up as Keyed whatever its key
 #[test]
 fn tier_is_the_transport_types() {
     let mut net = Net::new();
@@ -70,7 +70,7 @@ fn tier_is_the_transport_types() {
     assert!(got.iter().any(|x| matches!(x, Action::Request { conn, tier: Tier::Keyed, .. } if *conn == k)), "{got:?}");
 }
 
-// notes/client-port.md §8 (b): clients have their own pool (max_clients): a newcomer evicts the oldest unauthenticated client, never a keyed session; with every client authenticated the newcomer is refused; an authenticated client outlives serve_idle_ms; its end is reported
+// spec/sync.md §10 (client port), notes/client-port.md §8 (b): clients have their own pool (max_clients): a newcomer evicts the oldest unauthenticated client, never a keyed session; with every client authenticated the newcomer is refused; an authenticated client outlives serve_idle_ms; its end is reported
 #[test]
 fn client_pool_idle_and_end() {
     let mut net = Net::new();

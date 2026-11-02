@@ -100,6 +100,15 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_QUEUED` 64 MiB (at least `SEND_QUEUE`, asserted) | R (a peer that does not read) | sessions keeping the window closed / unbounded buffer |
 | link `WRITE_CHUNK` 16 KiB | M (grain of send progress for the stall timeout) | no progress shown / a link under a chunk per stall timeout counts as stalled |
 | `SERVE_IDLE` / `serve_idle_ms` 120 s, `serve_open_ms` 30 s, `max_served` 64 | R | |
+| `max_clients` 64 (osis-node `SyncConfig`, client port (b)) | R (past it the oldest unauthenticated client session is closed, else the newcomer; also the nonce sessions kept for the Owner) | no client served / local dials exhaust memory |
+| `MAX_SUBS` 4096 per connection (osis-proto `api`, spec/wire.md §11.2) | R (code 4; counted apart from open labels) | no remote watching / one connection grows the dirty-flag table and per-change filter walk without bound |
+| `SMALL_REPLY` 64 KiB (`MAX_MESSAGE` − `REPLY_BUDGET`; the smallest `max_reply`, Auth's and Unsub's allowance) | R (a larger reply is `TooLarge`; the client asks again under a larger `max_reply`) | every reply `TooLarge` / one reply per window |
+| `WRITE_NONCES` 64 per session (osis `port`) | R (an older nonce is "outcome unknown") | every retry an unknown outcome / unbounded per session |
+| `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
+| `MAX_SCHEMA_BYTES` 1 MiB per connection (osis `port`) | R (`TooLarge`) | no typed set through the port / one client fills memory |
+| `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
+| `MAX_BATCH_OPS` 1024 per `write` (osis `port`, spec/wire.md §13) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |
+| unix `MAX_PATH` 107 bytes (osis-transport `unix`) | O (`sun_path`, the OS's) | |
 | `MAX_IDLE` 60 s, `MIN_WAKE_MS` 1 s, `FINISH_WAIT` 10 s, `RELISTEN_RETRY` 5 s | M | |
 | `RESEND_MS` 30 s | M (retry pacing after an answer that did not settle the entry; never while its request is unanswered, `ClientSession::answered`) | retry every pass / no retry on this connection |
 | `LAN_CHECK` 5 s, `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | |

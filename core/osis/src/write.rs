@@ -290,9 +290,10 @@ impl<'d> Write<'d> {
         AspectWrite { w: self, tid, key, ix }
     }
 
-    /// The batch's source: that of the first thing it names.
+    /// The batch's source: that of the first thing it names (creates only: where calls on no
+    /// thing go).
     fn source(&self) -> Source {
-        self.ops.iter().find_map(WriteOp::tid).map_or(Source::Local, |t| self.db.route(t))
+        self.ops.iter().find_map(WriteOp::tid).map_or(self.db.route_any(), |t| self.db.route(t))
     }
 
     /// Writes every op: the durable ones as one atomic commit, the ephemeral ones in memory;
