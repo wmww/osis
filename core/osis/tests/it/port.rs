@@ -518,7 +518,7 @@ fn too_large_sub_is_not_kept() {
     n.close().unwrap();
 }
 
-// notes/client-port.md §8 (b): an attached handle's calls with no row fail Unsupported rather than answer as if done: sync_policy, group_policy, rotate_reach
+// spec: none (API surface); notes/client-port.md §8 (b): an attached handle's calls with no row fail Unsupported rather than answer as if done: sync_policy, group_policy, rotate_reach
 #[test]
 fn attached_policy_calls_are_unsupported() {
     let d = Dir::new();
@@ -535,7 +535,7 @@ fn attached_policy_calls_are_unsupported() {
     n.close().unwrap();
 }
 
-// notes/client-port.md §2 Writes: writes from several threads of one attached handle all apply: nonces leave the client in the order they were taken (on its I/O thread), so none reaches the node below a later one and reads "outcome unknown" without having run
+// spec/wire.md §11.2 (client port), notes/client-port.md §2 Writes: writes from several threads of one attached handle all apply: nonces leave the client in the order they were taken (on its I/O thread), so none reaches the node below a later one and reads "outcome unknown" without having run
 #[test]
 fn threads_writing_on_one_handle() {
     let d = Dir::new();
@@ -557,7 +557,7 @@ fn threads_writing_on_one_handle() {
     n.close().unwrap();
 }
 
-// notes/client-port.md §2 (MAX_SCHEMA_BYTES): schema sources registered through the port count per node, not per connection (registrations are process-wide and kept); the same source again costs nothing
+// spec/wire.md §11.2 (client port), notes/client-port.md §2 (MAX_SCHEMA_BYTES): schema sources registered through the port count per node, not per connection (registrations are process-wide and kept); the same source again costs nothing
 #[test]
 fn schema_bytes_per_node() {
     let d = Dir::new();
