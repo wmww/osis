@@ -205,7 +205,7 @@ impl Osis {
         let key = crate::share::KeyGuard { db: db.downgrade(), l: r, link: None };
         db.act(|x| x.sync.follow(r, c.person, c.home_label, c.hosts.clone()));
         let p = c.person;
-        db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
+        db.wait_until(Some(db.inner.wait_timeout), Box::new(move |s, st, _| (s.engine().knows(&p) && st.groups.get(&p).is_some_and(|g| g.state == SyncState::Synced)).then_some(Ok(())))).await?;
         let done = db.engine(|e| e.recover(&c, &[], PreSync::Synced))?;
         drop(key);
         db.carry(done)?;

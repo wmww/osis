@@ -33,7 +33,7 @@ use crate::labeling::{GroupLabel, HeadKeys};
 use osis_base::{Clock, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
-use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Command};
+use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command};
 use state::{HostKey, State};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -301,8 +301,9 @@ pub(crate) struct Requests {
     pub missing: BTreeSet<osis_base::BlobId>,
     /// Reopens in a row per label.
     pub reopens: BTreeMap<LabelId, u32>,
-    /// Registrations refused for now in a row per label (the back-off doubles per refusal).
-    pub refusals: BTreeMap<LabelId, u32>,
+    /// Registrations refused for now in a row per label (the back-off doubles per refusal),
+    /// with the last refusal's code (status shows a label not admitted, code 14).
+    pub refusals: BTreeMap<LabelId, (u32, Code)>,
 }
 
 impl Requests {
@@ -332,6 +333,8 @@ pub struct LabelStatus {
     pub stranded: bool,
     /// Some host refused registering it for now (tried again after a back-off).
     pub refused: bool,
+    /// Hosts whose last refusal in a row was "not admitted" (code 14), until it opens there.
+    pub not_admitted: Vec<Address>,
     pub last_sync: Option<u64>,
     /// Replaced (an admin syncs it until it retires, `retire_replaced`).
     pub replaced: bool,
@@ -1071,10 +1074,15 @@ impl SyncEngine {
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         for (g, l) in self.labels() {
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, last_sync: None, replaced: l.replaced };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
+                }
+                if c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)
+                    && let Some(a) = l.hosts.iter().find(|a| a.key == c.host)
+                {
+                    st.not_admitted.push(a.clone());
                 }
                 let Some(x) = c.labels.get(&l.id) else { continue };
                 match x.phase {

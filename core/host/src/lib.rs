@@ -25,7 +25,7 @@ pub use replicate::Replicator;
 pub use store::{HostStore, DEPOSIT_ENTRY_BYTES, HostPolicy, Swept, Totals};
 
 /// Which labels a host takes new registrations of (spec/sync.md §5: an unadmitted genesis
-/// step gets code 12). Labels it already holds stay served either way.
+/// step gets code 14). Labels it already holds stay served either way.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Admission {
     /// Any label, within the caps.

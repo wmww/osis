@@ -487,7 +487,7 @@ impl SyncEngine {
             (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
             // a pass's step refused for now (a full host, the rate): the open stays and a later
             // pass registers again
-            (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) => {
+            (Request::Register, Some(Phase::Open)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 if let Some(lc) = self.lc_mut(conn, &l) {
                     lc.registering = None;
                 }
@@ -496,7 +496,7 @@ impl SyncEngine {
             }
             // registering a path refused for now (not admitted: a host learns what it admits by
             // syncing, spec/data-model.md §9): reopening at once would meet the same answer
-            (Request::Register, Some(Phase::Registering)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED) => {
+            (Request::Register, Some(Phase::Registering)) if matches!(code, Code::STORAGE_CAP | Code::RATE_LIMITED | Code::NOT_ADMITTED) => {
                 self.refused_for_now(conn, l, code);
                 Ok(())
             }
@@ -533,9 +533,10 @@ impl SyncEngine {
         let now = self.raw_now();
         let (first, cap) = (self.cfg.retry_ms, self.cfg.resync_ms);
         let Some(c) = self.conns.get_mut(&conn) else { return };
-        let n = c.req.refusals.entry(l).or_insert(0);
+        let (n, last) = c.req.refusals.entry(l).or_insert((0, code));
         let wait = first.saturating_mul(1u64 << (*n).min(63)).min(cap);
         *n = n.saturating_add(1);
+        *last = code;
         c.req.reopens.remove(&l);
         if let Some(lc) = c.labels.get_mut(&l) {
             lc.phase = Phase::Refused { retry_at: now.saturating_add(wait) };

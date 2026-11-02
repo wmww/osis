@@ -815,7 +815,7 @@ fn repeated_claims_count_once() {
     assert_eq!(e.store.totals().unwrap().bytes, g + steps);
 }
 
-// spec/sync.md §5 (an unadmitted genesis step gets code 12; caps per label): `Only` takes no
+// spec/wire.md §11.2 Register (an unadmitted genesis step gets code 14, a full host 12; caps per label): `Only` takes no
 // new label outside its set, keeps serving those it holds; a label's own caps replace the
 // policy's for it alone
 #[test]
@@ -823,12 +823,16 @@ fn admission_and_label_caps() {
     let mut e = env(HostPolicy::default());
     let (l, g) = (e.f.label, Fixture::new(0x20));
     e.store.set_admission(Admission::Only([l].into()), [(l, LabelCaps { entries: 1, bytes: u64::MAX })].into());
-    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::STORAGE_CAP);
+    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::NOT_ADMITTED);
     assert_eq!(e.store.admit_label(&l).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(1), true, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(2), true, None)).unwrap(), Code::STORAGE_CAP, "its own cap");
     e.store.set_admission(Admission::Open, BTreeMap::new());
     assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::OK);
+    e.store.policy.max_labels = 1;
+    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::STORAGE_CAP, "a full host");
+    e.store.set_admission(Admission::Only([l].into()), BTreeMap::new());
+    assert_eq!(e.store.admit_label(&g.label).unwrap(), Code::NOT_ADMITTED, "not admitted before full");
     assert_eq!(e.store.put(&l, put(&blob(2), true, None)).unwrap(), Code::OK);
 }
 

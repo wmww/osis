@@ -199,7 +199,7 @@ pub trait LabelStore {
         Ok(HeadKeys::of_path(&self.path(label)?))
     }
     /// Whether a new label may be registered here (a verified genesis step): `Code::OK`, or a
-    /// refusal such as code 12 at a node-wide storage cap (spec/wire.md §11.2 Register).
+    /// refusal: code 14 outside the admission, 12 at a storage cap (spec/wire.md §11.2 Register).
     fn admit_label(&self, _label: &LabelId) -> Result<Code, StoreError> {
         Ok(Code::OK)
     }

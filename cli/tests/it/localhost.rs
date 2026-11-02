@@ -147,7 +147,8 @@ fn serve(store: &Path, args: &[&str]) -> (Host, String) {
 // spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
 // Alice's, paired and then hosting under `own` (its address from `hosting show`, before it
 // serves, so one port picked up front), the only host she has: her home, a group made afterwards and a
-// link to it reach it; Bob, on that host only, redeems the link (his own home it refuses).
+// link to it reach it; Bob, on that host only, redeems the link (his own home it refuses:
+// his `sync` exits 6 naming the host that does not admit it).
 #[test]
 #[ignore]
 fn own_host_device_localhost() {
@@ -173,4 +174,9 @@ fn own_host_device_localhost() {
     osis(&b, &["init", "--host", &addr]);
     assert_eq!(osis(&b, &["link", "redeem", &link]), g);
     assert_eq!(osis(&b, &["get", &t, "t:x.0"]), "\"hello\"");
+    let home = osis(&b, &["whoami", "--json"]);
+    let o = Command::new(OSIS).arg("-s").arg(&b).args(["--timeout", "5s", "sync"]).output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(6), "{err}");
+    assert!(err.contains(&format!("host {addr} does not admit group {} (yet)", field(&home, "home"))), "{err}");
 }

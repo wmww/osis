@@ -9,7 +9,7 @@ use crate::{Ctx, StoreSel, exit, key_ty, open, opt_ts, parse_ak, ty_in, usage};
 use anyhow::{Context as _, anyhow};
 use osis::internals::Internals as _;
 use osis::{
-    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, Tid, Ts,
+    AspectKey, Change, CommitId, CommitKind, CommitQuery, Demotion, EdgeOpts, Error, Key, LinkOpts, Lower, Osis, Role, Schema, Source, SyncScope, SyncState, Tid, Ts,
     Value, WaitForSync,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -119,6 +119,28 @@ fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::R
     }
 }
 
+/// `wait_synced` on its own deadline `t` (a label a host does not admit fails it `Unsynced`
+/// then, saying which host).
+fn wait_sync(ctx: &Ctx<'_>, s: SyncScope, t: Duration) -> anyhow::Result<()> {
+    let db = ctx.db.clone();
+    match block_on(db.wait_synced(s, t), None) {
+        Some(Ok(())) => Ok(()),
+        Some(Err(e)) => Err(not_admitted(&db, e)),
+        None => Err(exit(6, "timed out")),
+    }
+}
+
+/// `e` with the hosts that do not admit the groups it names (state `Refused`), if any.
+fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
+    let (Error::Unsynced { groups }, Ok(st)) = (&e, db.status()) else { return e.into() };
+    let hint: Vec<String> = groups
+        .iter()
+        .filter_map(|g| st.groups.get(g).filter(|x| x.state == SyncState::Refused).map(|x| (g, x)))
+        .flat_map(|(g, x)| x.not_admitted.iter().map(move |h| format!("host {h} does not admit group {} (yet)", g.to_uri())))
+        .collect();
+    if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
+}
+
 fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
     let sync = match d.sync.as_deref() {
         None | Some("required") => WaitForSync::Required,
@@ -213,7 +235,7 @@ fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     }
     for s in scopes {
         let left = end.saturating_duration_since(std::time::Instant::now());
-        wait(ctx, db.wait_synced(s, left)).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e}")))?;
+        wait_sync(ctx, s, left).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e:#}")))?;
     }
     Ok(())
 }
@@ -546,7 +568,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
                 None => SyncScope::All,
             };
             let t = ctx.timeout()?.unwrap_or(FOREVER);
-            wait(ctx, db.wait_synced(s, t))
+            wait_sync(ctx, s, t)
         }
         Cmd::Group(GroupCmd::Sync { g, host }) => {
             let g = ctx.tid(&g)?;

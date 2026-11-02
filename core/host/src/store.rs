@@ -1513,7 +1513,7 @@ impl LabelStore for HostStore {
 
     fn admit_label(&self, label: &LabelId) -> Result<Code, StoreError> {
         if !self.admission.admits(label) {
-            return Ok(Code::STORAGE_CAP);
+            return Ok(Code::NOT_ADMITTED);
         }
         let t = self.totals()?;
         let p = &self.policy;
