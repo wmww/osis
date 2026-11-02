@@ -147,7 +147,7 @@ impl Engine {
         self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
-    /// The held bodies of `(tid, ak)`, oldest first (tests: nothing was dropped).
+    /// How many bodies of `(tid, ak)` are held.
     #[doc(hidden)]
     pub fn held_bodies(&self, tid: &Tid, ak: &Ak) -> usize {
         self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter(|(_, c)| crate::retention::held_part(&self.core, c, tid, ak).is_some()).count()
