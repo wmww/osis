@@ -474,6 +474,51 @@ fn writer_refuses_out_of_profile_values_spec_3_3() {
     assert!(apply(vec![], Op::Set(Value::Enum(i64::MAX as u64, None))).is_none());
 }
 
+/// spec/data-model.md §5, §3.3 rule 7: writer and reader draw the depth line at the same
+/// place: under `n` struct levels each op shape is written iff its read value nests at most 64
+/// deep, and what it writes decodes (a text's chars read at the text's depth, a list's items one
+/// below).
+#[test]
+fn writer_and_reader_depth_agree_spec_3_3() {
+    use crate::batch::Batch;
+    use crate::ops::{Op, PathOp, PathSeg, Writer};
+    use crate::testutil::TyView;
+    let s = |x: &str| Value::Str(x.into());
+    let reg = || Box::new(Ty::Register);
+    // (leaf type, path below it, op, the value the leaf then reads as)
+    let shapes: Vec<(Ty, Vec<PathSeg>, Op, Value)> = vec![
+        (Ty::Register, vec![], Op::Set(l(vec![i(1)])), l(vec![i(1)])),
+        (Ty::Text, vec![], Op::Insert { at: 0, items: vec![s("ab")] }, s("ab")),
+        (Ty::List(reg()), vec![], Op::Insert { at: 0, items: vec![s("ab")] }, l(vec![s("ab")])),
+        (Ty::List(Box::new(Ty::Text)), vec![], Op::Insert { at: 0, items: vec![s("ab")] }, l(vec![s("ab")])),
+        (Ty::Set(reg()), vec![], Op::Add(i(1)), Value::Set([i(1)].into_iter().collect())),
+        (Ty::Map(reg(), reg()), vec![PathSeg::Key(s("k"))], Op::Set(i(1)), Value::Map([(s("k"), i(1))].into_iter().collect())),
+        (Ty::Enum([(2, Some(Ty::Register))].into_iter().collect()), vec![], Op::Set(Value::Enum(2, Some(Box::new(i(1))))), Value::Enum(2, Some(Box::new(i(1))))),
+    ];
+    for (leaf, below, op, read) in shapes {
+        for n in 58..=66usize {
+            let ty = (0..n).fold(leaf.clone(), |t, _| Ty::Struct([(1, t)].into_iter().collect()));
+            let want = (0..n).fold(read.clone(), |v, _| Value::Map([(i(1), v)].into_iter().collect())).depth() <= 64;
+            let path: Vec<PathSeg> = std::iter::repeat_n(PathSeg::Field(1), n).chain(below.iter().cloned()).collect();
+            let state = crate::Fragment::default();
+            let mut b = Batch::new(&state, Writer::new(ts(5 << 16), Source::node(tid(1)), 3));
+            let r = b.apply(&PathOp { path, op: op.clone() }, &TyView(ty));
+            let wrote = match r {
+                Ok(()) => true,
+                Err(e) if e.to_string().contains("MAX_VALUE_DEPTH") => false,
+                Err(e) => panic!("{leaf:?} under {n}: {e}"),
+            };
+            assert_eq!(wrote, want, "{leaf:?} under {n}: writer");
+            if let Some((f, range)) = b.finish() {
+                let cx = DeltaCtx { range, ..wcx() };
+                let bytes = encode_delta(&Delta { nonce: [0; 16], fragment: f }, &cx, None).unwrap();
+                let read = decode_delta(&bytes, &cx, &mut Interner::new(), None);
+                assert!(read.is_ok(), "{leaf:?} under {n}: reader {read:?}");
+            }
+        }
+    }
+}
+
 /// §3.3 rule 2, §4.1 copy order: values holding links compare by canonical bytes, not by
 /// `Value` order (links by content hash): of two copies of one write the bytewise greater wins,
 /// and two map keys of one dot differing only in link bytes are two records in byte order.
