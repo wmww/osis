@@ -1320,22 +1320,17 @@ fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
 fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     // a part held pending at its expiry counts as never received at that node (spec/commits.md
     // §5; owner: nodes may read differently when a part expired before a node could apply it):
-    // what such an aspect reads and its states, the bodies, pending lines and index entries of
-    // its commits (one applied the commit with the part, dropped at T, its other parts waiting
-    // aside; the other holds it pending whole, the part gone) may differ, repaired by a writer's
-    // snapshot (spec/sync.md §7). Once a held valid snapshot repaired it (`expired_dormant`) the
-    // reads must agree. Every other aspect and commit must agree.
+    // what such an aspect reads, its states, its bodies and the index lines of its commits (that
+    // part is dropped at a node that applied it, missing at one that did not) may differ,
+    // repaired by a writer's snapshot (spec/sync.md §7). Once a held valid snapshot repaired it
+    // (`expired_dormant`) the reads must agree. Nothing else: whether a commit is applied or
+    // pending, and every other aspect and commit, must agree.
     let reads_apart: BTreeSet<(String, String)> = want.expired_pending.union(&got.expired_pending).cloned().collect();
     let expired: BTreeSet<(String, String)> = want.expired_dormant.union(&got.expired_dormant).cloned().collect();
     let ((mut wf, _), (mut gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
     let all: BTreeSet<BodyKey> = wf.keys().chain(gf.keys()).cloned().collect();
-    // the commits with a part on such an aspect (as `facts_text` prints their IDs): whether the
-    // node applied the commit (the part held before T, its other parts waiting aside) or holds
-    // it pending whole (the part gone at T) follows from that part, so its other bodies are
-    // known at one node only until the commit applies at both
-    let expired_ids: BTreeSet<String> = all.iter().filter(|k| expired.contains(&(k.1.clone(), k.2.clone()))).map(|k| k.0.clone()).collect();
-    wf.retain(|k, _| !expired_ids.contains(&k.0));
-    gf.retain(|k, _| !expired_ids.contains(&k.0));
+    wf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
+    gf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     if wf.keys().ne(gf.keys()) {
         let k = wf.keys().find(|k| !gf.contains_key(*k)).or_else(|| gf.keys().find(|k| !wf.contains_key(*k)));
         return Some(format!("body {k:?} known at one node only"));
@@ -1343,17 +1338,17 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
     if let Some(k) = wf.keys().find(|k| wf[*k].held != gf[*k].held && !wf[*k].approx) {
         return Some(format!("body {k:?} held {} vs {}", wf[k].held, gf[k].held));
     }
-    let on_expired = |c: &CommitId| expired_ids.contains(&format!("{c:?}"));
+    let on_expired = |c: &CommitId| {
+        let id = format!("{c:?}");
+        all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())))
+    };
     match (&want.index, &got.index) {
         (Some(w), Some(g)) => {
             let exempt = |f: &IndexField| match f {
                 IndexField::Commit(c) | IndexField::Snapshots(c) | IndexField::DroppedSnapshots(c) | IndexField::Carried(c) => on_expired(c),
                 IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
             };
-            // a table differing only in entries of those commits or aspects (`scrub`)
-            let mentions: Vec<String> = expired_ids.iter().cloned().chain(expired.iter().map(|(t, a)| format!("{t}, Ak({a:?})"))).collect();
-            let table_alike = |f: &IndexField| matches!(f, IndexField::Table(_)) && !mentions.is_empty() && w.show(f).zip(g.show(f)).is_some_and(|(x, y)| scrub(&x, &mentions) == scrub(&y, &mentions));
-            if let Some(f) = w.diff(g).into_iter().find(|f| !exempt(f) && !table_alike(f)) {
+            if let Some(f) = w.diff(g).into_iter().find(|f| !exempt(f)) {
                 return Some(format!("index {f:?}:\n  want {}\n  got  {}", w.show(&f).unwrap_or("<none>".into()), g.show(&f).unwrap_or("<none>".into())));
             }
         }
@@ -1365,13 +1360,6 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
             continue;
         }
         let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
-        if *name == "pending" {
-            // such a commit pends whole at one node, applied with its other parts aside at another
-            let rest = |ls: &[&str]| ls.iter().filter(|l| !expired_ids.iter().any(|c| l.starts_with(c.as_str()))).map(|l| l.to_string()).collect::<Vec<_>>().join("\n");
-            if rest(&xl) == rest(&yl) {
-                continue;
-            }
-        }
         if *name == "reads" || *name == "states" {
             // keyed by thing and aspect: one may lack an aspect the other shows
             let keyed = |ls: &[&str]| -> BTreeMap<(String, String), String> {
@@ -1399,116 +1387,6 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
         return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
     None
-}
-
-/// The children of a `Debug` collection or tuple text `s` (`{..}`, `[..]`, `(..)`), split at its
-/// top-level `, `, with its brackets.
-fn debug_children(s: &str) -> Option<(char, Vec<&str>, char)> {
-    let (open, close) = match s.chars().next()? {
-        '{' => ('{', '}'),
-        '[' => ('[', ']'),
-        '(' => ('(', ')'),
-        _ => return None,
-    };
-    let inner = s.strip_prefix(open)?.strip_suffix(close)?;
-    let (mut out, mut depth, mut quoted, mut escaped, mut start) = (Vec::new(), 0u32, false, false, 0);
-    let b = inner.as_bytes();
-    let mut i = 0;
-    while i < b.len() {
-        let c = b[i];
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if c == b'\\' {
-                escaped = true;
-            } else if c == b'"' {
-                quoted = false;
-            }
-        } else {
-            match c {
-                b'"' => quoted = true,
-                b'(' | b'[' | b'{' => depth += 1,
-                b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-                b',' if depth == 0 && b.get(i + 1) == Some(&b' ') => {
-                    out.push(&inner[start..i]);
-                    start = i + 2;
-                    i += 1;
-                }
-                _ => {}
-            }
-        }
-        i += 1;
-    }
-    if start < inner.len() {
-        out.push(&inner[start..]);
-    }
-    Some((open, out, close))
-}
-
-/// A map entry's key and value in a `Debug` text (`k: v` at its top level).
-fn debug_entry(s: &str) -> Option<(&str, &str)> {
-    let (mut depth, mut quoted, mut escaped) = (0u32, false, false);
-    for (i, c) in s.bytes().enumerate() {
-        if quoted {
-            if escaped {
-                escaped = false;
-            } else if c == b'\\' {
-                escaped = true;
-            } else if c == b'"' {
-                quoted = false;
-            }
-            continue;
-        }
-        match c {
-            b'"' => quoted = true,
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-            b':' if depth == 0 && s.as_bytes().get(i + 1) == Some(&b' ') => return Some((&s[..i], &s[i + 2..])),
-            _ => {}
-        }
-    }
-    None
-}
-
-/// The `Debug` text of an index table (`IndexDigest::tables`) without the entries mentioning any
-/// of `mentions` (a commit ID as `facts_text` prints it, an aspect as `Tid(..), Ak("..")`): an
-/// element or a map entry whose key or scalar value mentions one goes, a map entry whose value
-/// is a collection is scrubbed within and goes once empty.
-fn scrub(s: &str, mentions: &[String]) -> String {
-    let says = |x: &str| mentions.iter().any(|m| x.contains(m.as_str()));
-    let Some((open, children, close)) = debug_children(s) else { return s.to_string() };
-    let collection = open != '(';
-    let mut kept = Vec::new();
-    for c in children {
-        match debug_entry(c).filter(|_| collection) {
-            Some((k, v)) => {
-                if says(k) {
-                    continue;
-                }
-                if v.starts_with('{') || v.starts_with('[') {
-                    let v = scrub(v, mentions);
-                    if v != "{}" && v != "[]" {
-                        kept.push(format!("{k}: {v}"));
-                    }
-                } else if !says(v) {
-                    kept.push(c.to_string());
-                }
-            }
-            None if collection && says(c) => {}
-            None => kept.push(scrub(c, mentions)),
-        }
-    }
-    format!("{open}{}{close}", kept.join(", "))
-}
-
-#[test]
-fn scrub_drops_entries_of_named_commits() {
-    let m = ["CommitId(aaaa..)".to_string(), "Tid(T2), Ak(\"t:x.0\")".to_string()];
-    // a set element, a map entry emptied, a scalar-valued entry, a keyed entry, a tuple key
-    let t = r#"{(Tid(T1), Ak("a.0")): {(Ts(1), CommitId(aaaa..)), (Ts(2), CommitId(bbbb..))}, (Tid(T1), Ak("b.0")): {(Ts(3), CommitId(aaaa..))}, (CommitId(aaaa..), 1): Read, (Tid(T2), Ak("t:x.0")): [Range { lo: 1, hi: 2 }], (Tid(T2), Ak("t:x.0"), Node(N)): {1: (2, CommitId(cccc..))}}"#;
-    assert_eq!(scrub(t, &m), r#"{(Tid(T1), Ak("a.0")): {(Ts(2), CommitId(bbbb..))}}"#);
-    assert_eq!(scrub("{}", &m), "{}");
-    assert_eq!(scrub("[CommitId(bbbb..)]", &m), "[CommitId(bbbb..)]");
 }
 
 /// The packs of the commits `ids` (as `facts_text` prints them).
@@ -2792,31 +2670,30 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     h.extend([NewTop { by: 0 }, Send { from: 0, to: 2, back: 0 }]);
     h.extend([Nested { by: 2, other: 0, t: 5, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 4, k: 2, text: true, compact: true, also: true }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, NestedItem { by: 0, other: 2, t: 4, k: 2, compact: true, also: true }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, New { by: 0, parent: 0, write: true }, Demote { by: 0, t: 6, holder: 2, at: 5, to_read: false }, New { by: 0, parent: 7, write: false }, Typed { by: 2, t: 4, op: 25, k: 1, v: 4 }].map(|s| Aim(Box::new(s))));
     cases.push((7714, h, Cfg { sync: true, ..LARGE }));
-    // seeds 40050, 731018 (spec/commits.md §5, owner-accepted divergence: a part pending at its
-    // expiry counts as never received): a forged two-thing commit, one part expiring (a schema
-    // default) and the other on a thing whose creation is not held. Held after the chain it is
-    // applied, the expired part dropped and the other waiting aside; held before the chain the
-    // expired part goes and the commit pends whole: the harness excuses the commit's bodies,
-    // pending and index lines (was "body known at one node only")
+    // seeds 40050, 731018 (spec/commits.md §4: a part past its expiry decides nothing about its
+    // commit): a forged two-thing commit, one part expiring (a schema default) and the other on
+    // a thing whose creation is not held. It was applied with the other part aside in one order
+    // and pending whole in another (was "body known at one node only")
     let synced = Cfg { sync: true, ..LARGE };
     let h = vec![New { by: 0, parent: 6, write: false }, New { by: 2, parent: 5, write: false }, Forged { by: 1, a: 6, b: 2, how: 1, op: 12, k: 1, v: 0 }, Undo { by: 1, back: 2 }, Advance { who: None, ms: 4851689 }];
     cases.push((40050, h.into_iter().map(|s| if matches!(s, Forged { .. } | Advance { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     let h = vec![NestedItem { by: 0, other: 1, t: 7, k: 2, compact: false, also: false }, Nested { by: 0, other: 2, t: 6, k: 0, text: false, compact: true, also: false }, NestedItem { by: 0, other: 2, t: 0, k: 1, compact: true, also: false }, New { by: 0, parent: 4, write: false }, New { by: 2, parent: 2, write: false }, Sync { from: 0, to: 1 }, New { by: 0, parent: 1, write: false }, Sync { from: 1, to: 2 }, Forged { by: 2, a: 4, b: 3, how: 1, op: 12, k: 0, v: 0 }, Advance { who: None, ms: 3797162 }];
     cases.push((731018, h.into_iter().map(|s| if matches!(s, Forged { .. } | Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
-    // seeds 990031, 83009 (spec/crdt.md §4.7, spec/commits.md §5): an expiring write into
+    // seed 990031 (spec/crdt.md §4.7, spec/commits.md §5): an expiring write into
     // another's map entry, pending at its expiry at one node, and a snapshot listing it (the
     // flag dormant): the snapshot holds its value-less copies in the entry's key-erased record
     // (its writer held the creation value-less), the node that applied the part keeps them in
     // the keyed record too. Reads agree; the states and bodies are excused (`expired_dormant`)
     let h = vec![Write { by: 2, t: 5, op: 28, k: 0, v: 5 }, Leave { by: 2, t: 3 }, Sync { from: 2, to: 0 }, Typed { by: 2, t: 1, op: 28, k: 0, v: 7 }, Advance { who: None, ms: 7048894 }, Compact { by: 0, t: 1, op: 3 }];
     cases.push((990031, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
+    // seed 83009: as 40093 below (fails without `retention::never_received` in `regiven`)
     let h = vec![Roster { by: 0, t: 3 }, Nested { by: 0, other: 2, t: 4, k: 1, text: false, compact: true, also: true }, Roster { by: 0, t: 3 }, Typed { by: 0, t: 3, op: 28, k: 2, v: 7 }, Sync { from: 0, to: 1 }, NestedItem { by: 2, other: 1, t: 7, k: 1, compact: true, also: true }, Advance { who: None, ms: 6192620 }, NewTop { by: 2 }, New { by: 2, parent: 1, write: true }, Demote { by: 0, t: 1, holder: 1, at: 5, to_read: false }, New { by: 2, parent: 2, write: false }, NewTop { by: 0 }, New { by: 2, parent: 6, write: true }];
     cases.push((83009, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 40093 (spec/permissions.md §5.2, spec/commits.md §6): a text part withheld for good
     // expired, and a snapshot carrying its writes turned invalid after joining: the part, never
     // received, was recorded dropped at T, so what the snapshot gave under its dots stayed as
-    // hidden anchors (a node meeting the snapshot invalid had no state). A part never received
-    // stays missing at T
+    // hidden anchors (a node meeting the snapshot invalid had no state). Such a part counts as
+    // never received there (`retention::never_received`)
     let h = vec![Demote { by: 0, t: 2, holder: 2, at: 4, to_read: true }, Typed { by: 2, t: 2, op: 29, k: 2, v: 6 }, Compact { by: 2, t: 4, op: 23 }, Advance { who: None, ms: 5607172 }, New { by: 0, parent: 2, write: true }, New { by: 0, parent: 4, write: true }];
     cases.push((40093, h.into_iter().map(|s| if matches!(s, Advance { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 98057 (spec/commits.md §5): the oracle took an unheld undo whose `t:docs.0` write a
@@ -2830,11 +2707,9 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
         let (seed, h, cfg) = &cases[i as usize];
         check(*seed, h, *cfg)
     });
-    for (r, (seed, ..)) in results.into_iter().zip(&cases) {
-        if let Err(e) = r {
-            panic!("seed {seed}: {e}");
-        }
-    }
+    // every failing case, not the first
+    let fails: Vec<String> = results.into_iter().zip(&cases).filter_map(|(r, (seed, ..))| r.err().map(|e| format!("seed {seed}: {e}"))).collect();
+    assert!(fails.is_empty(), "{}", fails.join("\n\n"));
 }
 
 // spec/crdt.md §4.8 (a write dies once, at its earliest superseder), spec/commits.md §5: order
