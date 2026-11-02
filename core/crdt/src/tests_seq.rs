@@ -107,6 +107,15 @@ proptest! {
         crate::tests_life::holds_stamp_check(seed, &Ty::List(Box::new(inner())));
     }
 
+    /// §4.8: a deleted text creation dies whichever way its record arrives (new or held, at any
+    /// depth).
+    #[test]
+    fn deleted_creation_dies_in_any_order_spec_4_8(seed in any::<u64>()) {
+        crate::tests_life::deleted_creation_dies_check(seed, &Ty::Text);
+        crate::tests_life::deleted_creation_dies_check(seed, &Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
+        crate::tests_life::deleted_creation_dies_check(seed, &Ty::List(Box::new(Ty::Struct([(1, Ty::Text)].into_iter().collect()))));
+    }
+
     /// spec/permissions.md §5.2: `copies_within` and `strip_copies` of text and list states.
     #[test]
     fn seq_copies_agree_and_rejoin_spec_perm_5_2(seed in any::<u64>()) {
