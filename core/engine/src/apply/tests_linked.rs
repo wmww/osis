@@ -346,3 +346,36 @@ fn redemption_on_two_targets_refused_spec_commits_2() {
     let r = lp.peers[1].commit(mu);
     assert!(matches!(r, Err(crate::Error::BadInput(m)) if m.contains("more than one edge")), "{r:?}");
 }
+
+// issues/roster-part-link-order.md: a roster snapshot's two parts on a thing not synced, the
+// `tenures.0` part's linked frontier away. Roles first applies the snapshot; tenures first holds it.
+#[test]
+#[ignore]
+fn repro_linked_frontier_part_order_spec_commits_4() {
+    let (mut lp, t, _, s) = demoted_writer_of(3);
+    let missing = chunk_blobs(&mut lp, &s);
+    assert!(!missing.is_empty());
+    let pk = lp.peers[0].engine.package(&s).unwrap().unwrap();
+    let blobs: Vec<_> = pk.blobs.iter().filter(|(b, _)| !missing.contains(b)).cloned().collect();
+    let part = |ak: &str| {
+        let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        let h = b.header.clone();
+        b.parts.retain(|p| h.aspects[p.ai].ak.as_str() == ak);
+        assert!(!b.parts.is_empty());
+        b.encode()
+    };
+    for p in lp.packages(0).unwrap() {
+        if p.id != s {
+            lp.deliver(1, &p).unwrap();
+            lp.deliver(2, &p).unwrap();
+        }
+    }
+    for (i, order) in [(1, ["roles.0", "tenures.0"]), (2, ["tenures.0", "roles.0"])] {
+        for ak in order {
+            let _ = lp.peers[i].engine.ingest(&part(ak), blobs.clone());
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+    }
+    assert_eq!(lp.peers[1].engine.core.ix.commits.contains_key(&s), lp.peers[2].engine.core.ix.commits.contains_key(&s));
+    assert_eq!(lp.peers[1].engine.roster(&t), lp.peers[2].engine.roster(&t));
+}

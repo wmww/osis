@@ -505,3 +505,179 @@ fn repro_bad_part_together_or_split_spec_commits_4() {
     };
     assert_eq!(read(vec![blob.encode()]), read(vec![part(g), part(h)]));
 }
+
+// Reviewer's differential: random histories with role commits granting across things, commits on
+// three things and hostile spans; every part split by aspect, in random orders. Each fixed sync set
+// and hidden set must read alike. With a sync set that changes during delivery, content may differ
+// (issues/sync-learned-after-apply.md); rosters may not (`role_part_applies_whatever_is_synced`).
+fn diff_steps(rng: &mut Rng) -> Vec<Step> {
+    use Step::*;
+    let aim = |s: Step| Aim(Box::new(s));
+    let mut out = vec![NewTop { by: 0 }, NewTop { by: 0 }, Advance { who: None, ms: 1000 }];
+    for _ in 0..(8 + rng.below(14)) {
+        let (a, b, c) = (rng.below(5) as usize, rng.below(5) as usize, rng.below(5) as usize);
+        let by = rng.below(3) as usize;
+        let holder = rng.pick(&[1, 2]);
+        out.push(match rng.below(14) {
+            0 | 1 => aim(Edge { by: 0, t: a, holder, role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Admin)]) }),
+            2 => aim(New { by: 0, parent: a, write: rng.below(2) == 0 }),
+            3 => Forged { by, a, b, how: 1, op: rng.below(30) as u8, k: 0, v: rng.below(9) as u8 },
+            4 | 5 => Forged { by, a, b, how: 2, op: 0, k: 0, v: rng.below(9) as u8 },
+            6 => Forged { by, a, b, how: 3, op: 0, k: 0, v: 0 },
+            7 => Forged { by, a, b, how: 4, op: 0, k: 0, v: 0 },
+            8 => {
+                let from = rng.below(3) as usize;
+                Sync { from, to: (from + 1 + rng.below(2) as usize) % 3 }
+            }
+            9 => Send { from: by, to: holder, back: rng.below(3) as u8 },
+            10 => Three { by: 0, a: a % 3, b: (a + 1) % 3, c: (a + 2) % 3, v: c as u8 },
+            11 => aim(Demote { by: 0, t: a, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 }),
+            12 => aim(Roster { by: 0, t: a }),
+            _ => Advance { who: None, ms: 1000 },
+        });
+    }
+    out
+}
+
+/// Pack `i` cut into parts by aspect.
+fn cuts(played: &Played, i: usize) -> Vec<Vec<u8>> {
+    let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
+    let ais: std::collections::BTreeSet<usize> = b.parts.iter().map(|p| p.ai).collect();
+    if ais.len() < 2 {
+        return vec![played.packs[i].bytes.clone()];
+    }
+    ais.into_iter()
+        .map(|ai| {
+            let mut x = b.clone();
+            x.parts.retain(|p| p.ai == ai);
+            x.encode()
+        })
+        .collect()
+}
+
+#[test]
+#[ignore]
+fn parts_differential_large_spec_commits_4() {
+    let (from, n) = (std::env::var("OSIS_PARTS_START").ok().and_then(|x| x.parse().ok()).unwrap_or(1u64), std::env::var("OSIS_PARTS_SEEDS").ok().and_then(|x| x.parse().ok()).unwrap_or(150u64));
+    let mut bad = Vec::new();
+    let mut played_n = 0;
+    for seed in from..from + n {
+        let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+        let steps = diff_steps(&mut rng);
+        // a scripted step may be refused after a demotion
+        let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { continue };
+        played_n += 1;
+        let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
+        let later: Vec<usize> = (0..played.packs.len()).collect();
+        for variant in 0..6 {
+            let hidden: Vec<usize> = later.iter().copied().filter(|_| variant > 0 && rng.below(5) == 0).collect();
+            let sync: Vec<Tid> = played.things.iter().copied().filter(|_| variant % 2 == 1 && rng.below(2) == 0).collect();
+            let keep: Vec<usize> = later.iter().copied().filter(|i| !hidden.contains(i)).collect();
+            let read = |toks: &[Vec<u8>], blobs: &[usize], toggles: Option<&[(usize, Tid, bool)]>| {
+                let mut p = Peer::new(FRESH, played.now).unwrap();
+                if toggles.is_none() {
+                    for t in &sync {
+                        p.engine.set_syncing(*t, true).unwrap();
+                    }
+                }
+                for (at, b) in toks.iter().enumerate() {
+                    for (w, t, on) in toggles.unwrap_or(&[]) {
+                        if *w == at {
+                            p.engine.set_syncing(*t, *on).unwrap();
+                        }
+                    }
+                    let _ = p.engine.ingest(b, played.packs[blobs[at]].blobs.clone());
+                }
+                for t in sync.iter() {
+                    p.engine.set_syncing(*t, true).unwrap();
+                }
+                p.engine.reexamine().unwrap();
+                let roster: Vec<String> = played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect();
+                // first and last deaths may date later by order (spec/commits.md §5)
+                let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
+                (seen, roster)
+            };
+            let whole: Vec<Vec<u8>> = keep.iter().map(|i| played.packs[*i].bytes.clone()).collect();
+            let (want, want_r) = read(&whole, &keep, None);
+            for _ in 0..5 {
+                let mut toks: Vec<(usize, Vec<u8>)> = keep.iter().flat_map(|i| cuts(&played, *i).into_iter().map(move |b| (*i, b))).collect();
+                for i in (1..toks.len()).rev() {
+                    toks.swap(i, rng.below(i as u64 + 1) as usize);
+                }
+                let (is, bs): (Vec<usize>, Vec<Vec<u8>>) = toks.into_iter().unzip();
+                let (got, _) = read(&bs, &is, None);
+                if got != want {
+                    let first = got.iter().zip(&want).find(|(a, b)| a != b).map(|x| format!("{x:?}"));
+                    bad.push(format!("seed {seed} variant {variant} fixed sync: {}", first.unwrap_or_default().chars().take(300).collect::<String>()));
+                }
+                // the sync set arriving during delivery, same in the end
+                let toggles: Vec<(usize, Tid, bool)> = sync.iter().map(|t| (rng.below(bs.len() as u64 + 1) as usize, *t, true)).collect();
+                let (_, r) = read(&bs, &is, Some(&toggles));
+                if r != want_r {
+                    let first = r.iter().zip(&want_r).find(|(a, b)| a != b).map(|x| format!("{x:?}"));
+                    bad.push(format!("seed {seed} variant {variant} changing sync, roster: {}", first.unwrap_or_default().chars().take(300).collect::<String>()));
+                }
+            }
+        }
+    }
+    eprintln!("{played_n} of {n} histories played");
+    assert!(played_n > n / 2);
+    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).cloned().collect::<Vec<_>>().join("\n"));
+}
+
+// issues/waiting-part-poison.md: a relay's junk part on a thing whose record is away cannot be
+// hash-checked, sits in the pending copy, and keeps out the true part; when the record comes the
+// junk goes as a bad part and the true part is gone with it.
+#[test]
+#[ignore]
+fn repro_waiting_part_poison_spec_commits_4() {
+    use Step::*;
+    let played = play(SEED, &[New { by: 0, parent: 0, write: true }, Advance { who: None, ms: 1000 }, Two { by: 0, a: 0, b: 1, v: 7 }]);
+    let (rec, last, h) = (played.base, played.packs.len() - 1, played.things[1]);
+    let good = part(&played, last, Some(h));
+    let mut junk = CommitBlob::decode(&good).unwrap();
+    let other = CommitBlob::decode(&played.packs[last].bytes).unwrap();
+    let swap = other.parts.iter().find(|x| !junk.parts.iter().any(|y| y.delta == x.delta)).unwrap().delta.clone();
+    for p in &mut junk.parts {
+        p.delta = swap.clone();
+    }
+    let mut p = Peer::new(FRESH, played.now).unwrap();
+    for pk in &played.packs[..rec] {
+        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    p.engine.ingest(&junk.encode(), Vec::new()).unwrap();
+    p.engine.ingest(&good, Vec::new()).unwrap();
+    p.engine.ingest(&played.packs[rec].bytes, played.packs[rec].blobs.clone()).unwrap();
+    p.engine.reexamine().unwrap();
+    assert_eq!(p.engine.get(&h, &reg()).unwrap(), v("v7"));
+}
+
+// spec/commits.md §4 (`examine`'s invariant): a commit on two synced things, the H part expired
+// (counts as held) with its pages away. The G part first applies the commit, then the H part
+// waits alone; the H part first holds the commit whole, for good: the pages left with the expiry.
+#[test]
+#[ignore]
+fn repro_counted_as_held_part_order_spec_commits_4() {
+    use crate::common::*;
+    let map: std::collections::BTreeMap<Value, Value> = (0..2000).map(|i| (Value::Str(format!("key {i:05}")), Value::Str("v".repeat(60)))).collect();
+    let big = Value::Map(map);
+    let mut read = Vec::new();
+    for first_g in [true, false] {
+        let (mut lp, g, h, pk) = two_things(61, |m, g, h| {
+            m.set(g, &REG, &s("small")).unwrap();
+            m.set(h, &BIG, &big).unwrap();
+            m.expires(h, &BIG, osis_base::WallMs(1_700_000_001_000)).unwrap();
+        });
+        assert!(!pk.blobs.is_empty(), "paged");
+        lp.peers[1].clock.advance(10_000_000);
+        let e = &mut lp.peers[1].engine;
+        e.set_syncing(g, true).unwrap();
+        e.set_syncing(h, true).unwrap();
+        for t in if first_g { [g, h] } else { [h, g] } {
+            let _ = e.ingest(&on(&pk, t), Vec::new());
+        }
+        e.reexamine().unwrap();
+        read.push(e.get(&g, &ak("t:reg.0")).unwrap());
+    }
+    assert_eq!(read[0], read[1]);
+}

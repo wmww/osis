@@ -41,9 +41,10 @@ const MAX_WAIT_BYTES: usize = 64 * 1024;
 const MAX_WAITS_BYTES: usize = 16 << 20;
 
 enum On {
-    /// The creation record of `tid`: held (`true`) or not when examined.
+    /// Creation records: each held (`true`) or not when examined (several: parts on things that
+    /// wait for different ones).
     /// `memory`: the waiting commit is memory class (it sees memory records too).
-    Record { tid: Tid, memory: bool, had: bool },
+    Record { records: Vec<(Tid, bool)>, memory: bool },
     /// The missing deltas, and the earliest expiry or keep-at-most bound among them still to come
     /// (`next_expiry`). Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
@@ -72,7 +73,7 @@ impl Wait {
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         let header = match &on {
             On::Deltas { header, missing, .. } => header.encode().len() + 16 * missing.len(),
-            On::Record { .. } => 0,
+            On::Record { records, .. } => 48 * records.len(),
         };
         let bytes = 160 + 48 * things.len() + header;
         Wait { key: (!h.kind.is_role(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, bytes }
@@ -132,7 +133,11 @@ impl Waits {
                         self.expiring.remove(&(*e, *id));
                     }
                 }
-                On::Record { tid, .. } => unindex(&mut self.by_record, tid, id),
+                On::Record { records, .. } => {
+                    for (t, _) in records {
+                        unindex(&mut self.by_record, t, id);
+                    }
+                }
             }
             for t in &w.things {
                 unindex(&mut self.by_thing, t, id);
@@ -202,8 +207,10 @@ impl Waits {
                     self.expiring.insert((*e, id));
                 }
             }
-            On::Record { tid, .. } => {
-                self.by_record.entry(*tid).or_default().insert(id);
+            On::Record { records, .. } => {
+                for (t, _) in records {
+                    self.by_record.entry(*t).or_default().insert(id);
+                }
             }
         }
         for t in &w.things {
@@ -233,17 +240,23 @@ fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[(usize, usize)
 }
 
 /// Notes what examining pending commit `id` (`blob`, after `examine`) read, if it can be judged
-/// again from that alone.
-pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, now: u64) {
+/// again from that alone. `others`: its other reasons, when parts wait alone for different things.
+pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, others: &[Reason], now: u64) {
     if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() == "secrets.0")) {
         return;
     }
     let h = &blob.header;
     let on = match reason {
-        Reason::UnknownCreated(t) | Reason::MissingChain(t) => {
+        Reason::UnknownCreated(_) | Reason::MissingChain(_) => {
             let memory = h.ephemeral.is_some();
-            On::Record { tid: *t, memory, had: core.created_for(t, memory).is_some() }
+            let mut records = Vec::new();
+            for r in std::iter::once(reason).chain(others) {
+                let (Reason::UnknownCreated(t) | Reason::MissingChain(t)) = r else { return };
+                records.push((*t, core.created_for(t, memory).is_some()));
+            }
+            On::Record { records, memory }
         }
+        Reason::WaitDeltas if !others.is_empty() => return,
         Reason::WaitDeltas => {
             let missing = blob.missing();
             let expiry = next_expiry(core, h, &id, &missing, now);
@@ -284,7 +297,7 @@ pub(crate) fn unchanged(core: &Core, id: &CommitId, now: u64) -> bool {
         return false;
     }
     match &w.on {
-        On::Record { tid, memory, had } => core.created_for(tid, *memory).is_some() == *had,
+        On::Record { records, memory } => records.iter().all(|(t, had)| core.created_for(t, *memory).is_some() == *had),
         On::Deltas { expiry, .. } => core.ix.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
     }
 }
