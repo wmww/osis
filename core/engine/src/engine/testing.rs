@@ -190,6 +190,27 @@ impl Engine {
         })
     }
 
+    /// The held body of `c` on `(tid, ak)`, its pieces joined (diagnosis: what a commit carries,
+    /// value-less writes and copies included, where `body_page` gives only its read).
+    #[doc(hidden)]
+    pub fn body_fragment(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<osis_crdt::Fragment>> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| {
+            let Some(ai) = tx.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak)) else { return Ok(None) };
+            let mut out: Option<osis_crdt::Fragment> = None;
+            crate::apply::each_held_piece(tx, &c, ai, &mut |_, f| {
+                match &mut out {
+                    Some(o) => {
+                        o.join(f);
+                    }
+                    None => out = Some(f),
+                }
+                Ok(())
+            })?;
+            Ok(out)
+        })
+    }
+
     /// Writes the stored pages of `(tid, ak)` hold that their skeleton prunes
     /// (`pages::stale_in_pages`; 0 unpaged). Tests: a join that skipped a page write.
     #[cfg(test)]
