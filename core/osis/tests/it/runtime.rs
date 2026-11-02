@@ -126,7 +126,7 @@ async fn redeem_over(host_ep: Transport, url: &str, a: Transport, b: Transport) 
     let home = alice.home();
     assert!(alice.sync_engine(|s| s.publishes_reach(&home)));
     assert!(!alice.sync_engine(|s| s.publishes_reach(&g)));
-    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true), ..Default::default() });
+    alice.sync_policy(g, osis::GroupPolicy { publish_reach: Some(true), ..Default::default() }).unwrap();
     assert!(alice.sync_engine(|s| s.publishes_reach(&g)));
     drop((alice, bob));
     drop(host_db);
@@ -450,7 +450,7 @@ async fn rotate_reach_relistens_in_process_spec_sync_10() {
         async move { osis_transport::Transport::dial(&probe, &osis_transport::Address { url: osis_transport::peer_url(&[]), key }).await.is_ok() }
     };
     assert!(dial(old.dialable).await);
-    db.rotate_reach();
+    db.rotate_reach().unwrap();
     let new = db.sync_engine(|s| s.own_reach()).unwrap();
     assert_ne!(new.dialable, old.dialable);
     assert_ne!(new.lan_secret, old.lan_secret);
