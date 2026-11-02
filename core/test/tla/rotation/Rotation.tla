@@ -142,7 +142,8 @@ Holders(x, e) == (IF e \in kn[x] THEN ep[e].ob ELSE {})
 \* The group's keyset epochs x knows a box at e to a group names.
 GBoxes(x, e) == (IF e \in kn[x] /\ ep[e].ob \cap Groups # {} THEN {ep[e].gk} ELSE {})
                 \cup {b.gk : b \in {c \in rd[x] : e \in c.eps /\ c.m \in Groups}}
-\* crypto §4: an epoch covers a departure of M if it holds no box for M, and
+\* The box rule (crypto §4 before frozen coverage, the _box cfgs): an epoch
+\* covers a departure of M if it holds no box for M, and
 \* d's departure inside the group if its box to the group names a keyset
 \* epoch d holds no box in (1, made by d's removal, or 2): not 0, nor 3,
 \* written by d (departed). A roster snapshot alone tells x nothing here (as

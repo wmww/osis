@@ -1995,7 +1995,7 @@ fn move_labels_copy_spec_perm_7() {
     assert!(lp.peers[0].engine.group_labels(&copy).unwrap().is_empty());
 }
 
-// spec/crypto.md §4: "An epoch of role r covers a departure of M if it holds no box for M". A
+// spec/crypto.md §4 (covers by names; a departure past its `until` is named by its expiry). A
 // node granted write with `until` while another admin rotated write only (a demotion it had not
 // seen with the grant) keeps its box at the current read epoch. Once `until` passes, the next
 // writer rotates read before encrypting, and the key actor holds none of it.
