@@ -75,4 +75,4 @@ Owner answers (relayed by devbox):
 1. Listing a device's kept writes inside a finite window by ID: fine if necessary.
 2. Permanent tombstones: accepted ("if history is on, the cost of keeping history is expected").
 3. Links, not per-session bounds: "nothing should grow permanently by number of app launches/sessions". `prev` must add nothing per session beyond a header already kept per write. Same line applies to growth.md's "Sequence sessions" row: brought back to the owner.
-4. Open: being explained.
+4. Sanction the deliberate omission (option A), not the crypto-flow fork.
