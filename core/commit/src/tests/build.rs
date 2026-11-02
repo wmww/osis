@@ -109,6 +109,29 @@ fn list_overflow_links() {
     verify_blob(&back, &key().verifying_key(), &dedup, None).unwrap();
 }
 
+// A list no receiver would resolve (`MAX_LIST_BYTES`) fails at its author, so a demotion's frontier
+// too large stamps nothing only the author could apply.
+#[test]
+fn list_over_the_bound_refused_at_the_author() {
+    let at = ts(1_000_000);
+    let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
+    a.retention = retention::ROLE_RETENTION;
+    b.aspects.push(a);
+    let mut sink = MemoryBlobs::default();
+    // the bound's bytes as one value, and one past it
+    let of = |n: usize| Value::Bytes(vec![0; n]);
+    let room = MAX_LIST_BYTES + MAX_LIST_BYTES - osis_base::encode(&of(MAX_LIST_BYTES)).len();
+    let mut fits = b.clone();
+    fits.frontier = Some(of(room));
+    assert_eq!(osis_base::encode(fits.frontier.as_ref().unwrap()).len(), MAX_LIST_BYTES);
+    let built = build(fits, &mut sink).unwrap();
+    assert!(built.commit.header.links.frontier.is_some());
+    let mut over = b;
+    over.frontier = Some(of(room + 1));
+    assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));
+}
+
 // spec/wire.md §4: a linked list at or below the threshold is rejected.
 #[test]
 fn small_linked_list_rejected() {

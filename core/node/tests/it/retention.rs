@@ -6,7 +6,9 @@ use common::*;
 use osis_commit::{Kind, PurgeItem};
 use osis_base::{Role, Value, WallMs};
 use osis_crdt::{Op, PathOp};
+use osis_node::local_peer::LocalPeer;
 use osis_node::{Cause, Event, Mutation};
+use osis_schema::Codec;
 
 fn set(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: osis_base::Tid, k: &osis_schema::Aspect<Value>, v: &str) -> osis_base::CommitId {
     let mut m = Mutation::new();
@@ -1404,4 +1406,90 @@ fn expiry_merging_records_without_death_recomputes_nothing_spec_commits_5() {
     assert_eq!(recomputes, 0);
     // the entries' creations expired: value-less, they hide the entries (spec/crdt.md §5.6)
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:shortmap.0")).unwrap(), Some(Value::Map(Default::default())));
+}
+
+// `any_bounded` reads a count (`Indexes::bounded_held`): exact as bounded parts arrive and drop,
+// and across a restart; none on an unbounded aspect (debug builds compare it with a walk).
+#[test]
+fn bounded_held_count_exact_spec_commits_5() {
+    let mut lp = net(1, 91);
+    let t = new_thing(&mut lp, 0);
+    let count = |lp: &LocalPeer, a: &str| lp.peers[0].engine.core.ix.bounded_held.get(&(t, ak(a))).copied();
+    set(&mut lp, 0, t, &REG, "one");
+    assert_eq!(count(&lp, "t:reg.0"), None);
+    let c1 = set(&mut lp, 0, t, &KEPT, "one");
+    assert_eq!(count(&lp, "t:kept.0"), Some(1));
+    lp.advance(10);
+    let c2 = set(&mut lp, 0, t, &KEPT, "two");
+    assert_eq!(count(&lp, "t:kept.0"), Some(2));
+    lp.peers[0].engine.drop_body(&c1, &t, &ak("t:kept.0")).unwrap();
+    assert_eq!(count(&lp, "t:kept.0"), Some(1));
+    lp.peers[0].restart(92).unwrap();
+    assert_eq!(count(&lp, "t:kept.0"), Some(1));
+    lp.peers[0].engine.drop_body(&c2, &t, &ak("t:kept.0")).unwrap();
+    assert_eq!(count(&lp, "t:kept.0"), None);
+    // keep at most 0 after replaced: the first body drops as the second applies
+    set(&mut lp, 0, t, &GONE, "one");
+    lp.advance(10);
+    set(&mut lp, 0, t, &GONE, "two");
+    assert_eq!(count(&lp, "t:gone.0"), Some(1));
+    lp.peers[0].restart(93).unwrap();
+    assert_eq!(count(&lp, "t:gone.0"), Some(1));
+}
+
+// spec/crdt.md §4.6: a register's rise and its winner's fall read the bodies down to the new
+// winner only, and give what reading all of them gives (debug builds join the rest to check).
+#[test]
+fn register_rebuild_stops_at_the_winner_spec_crdt_4_6() {
+    let mut lp = net(2, 94);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    for i in 0..100 {
+        lp.advance(10);
+        set(&mut lp, 0, t, &REG, &format!("{i}"));
+    }
+    lp.advance(10);
+    set(&mut lp, 1, t, &REG, "winner");
+    sync(&mut lp, 1, 0);
+    let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+    assert_eq!(read(&mut lp), Some(s("winner")));
+    let bodies = || osis_node::costs::take().iter().find(|x| x.0 == "rebuild: body").map_or(0, |x| x.2);
+    bodies();
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    let n = bodies();
+    assert_eq!(read(&mut lp), Some(s("99")));
+    assert!((1..=4).contains(&n), "{n} bodies read for the fall");
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    let n = bodies();
+    assert_eq!(read(&mut lp), Some(s("winner")));
+    assert!(n <= 4, "{n} bodies read for the rise");
+}
+
+// spec/crdt.md §4.6: many deltas falling at once un-merge an unpaged state in one pass.
+#[test]
+fn fall_of_many_one_pass_spec_crdt_4_6() {
+    let mut lp = net(2, 95);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    for i in 0..50 {
+        lp.advance(10);
+        set(&mut lp, 1, t, &REG, &format!("{i}"));
+    }
+    sync(&mut lp, 1, 0);
+    lp.advance(10);
+    set(&mut lp, 0, t, &REG, "winner");
+    let passes = || osis_node::costs::take().iter().find(|x| x.0 == "unmerge: pass").map_or(0, |x| x.2);
+    passes();
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    let n = passes();
+    assert_eq!(lp.peers[0].engine.invalid_writes(&t, &ak("t:reg.0")).len(), 50);
+    assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
+    assert_eq!(n, 1, "un-merge passes");
 }

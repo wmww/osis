@@ -413,6 +413,9 @@ indexes! {
     pub invalid: JSetMap<(Tid, Ak), CommitId>,
     /// Held deltas per aspect: (`ts`, commit).
     pub by_aspect: JSetMap<(Tid, Ak), (Ts, CommitId)>,
+    /// Held parts with a relative keep bound per aspect (`Core::put_meta`), absent at 0:
+    /// `retention::any_bounded` without walking the aspect.
+    pub bounded_held: JMap<(Tid, Ak), u64>,
     /// Held imports per thing and origin: (thing, origin) -> import: the deltas owning the
     /// origin's writes there (spec/permissions.md §7).
     pub imports: JSetMap<(Tid, CommitId), CommitId>,
@@ -586,8 +589,6 @@ pub struct Core {
     pub defer_deaths: bool,
     /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
-    /// `Engine::assume_unbounded`.
-    pub assume_unbounded: bool,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -895,7 +896,6 @@ impl Core {
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
-            assume_unbounded: false,
             timer_floor: 0,
             changed: None,
             sync_records: None,
@@ -917,6 +917,38 @@ impl Core {
 
     pub fn now(&self) -> WallMs {
         self.hlc.wall()
+    }
+
+    /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
+    /// `ix.bounded_held` stays exact.
+    pub fn put_meta(&mut self, id: CommitId, m: Meta) {
+        self.count_bounded(&m, true);
+        if let Some(old) = self.ix.commits.insert(id, m) {
+            self.count_bounded(&old, false);
+        }
+    }
+
+    pub fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
+        let m = self.ix.commits.remove(id)?;
+        self.count_bounded(&m, false);
+        Some(m)
+    }
+
+    fn count_bounded(&mut self, m: &Meta, add: bool) {
+        for (ai, a) in m.view.aspects.iter().enumerate() {
+            if !a.bounded || !m.holds(ai) {
+                continue;
+            }
+            let k = (a.tid, a.ak.clone());
+            match self.ix.bounded_held.get(&k).copied().unwrap_or(0).saturating_add_signed(if add { 1 } else { -1 }) {
+                0 => {
+                    self.ix.bounded_held.remove(&k);
+                }
+                n => {
+                    self.ix.bounded_held.insert(k, n);
+                }
+            }
+        }
     }
 
     /// Re-indexes which parts of commit `id` are invalid here (call after setting `Meta::valid`).

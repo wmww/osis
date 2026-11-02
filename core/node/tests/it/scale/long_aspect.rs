@@ -3,7 +3,7 @@
 //! Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=/some/dir cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`
 //! (`OSIS_SCALE_STEPS`: a comma list of gen, build, open, write, kick, fall, default all;
-//! `OSIS_SCALE_FALL_FEW`: only the small falls; `OSIS_SCALE_UNBOUNDED`: no `any_bounded` scan; a
+//! `OSIS_SCALE_FALL_FEW`: only the small falls; a
 //! built size is reused; each step runs in a process of its own over a copy of the built stores, so its
 //! peak resident set is its own). `scale::long_aspect::first_sync` does the sync steps on the sim.
 
@@ -85,13 +85,6 @@ fn cpu() -> f64 {
     let f: Vec<&str> = s.rsplit(')').next().unwrap_or("").split_whitespace().collect();
     let tick = |k: usize| f.get(k).and_then(|x| x.parse::<f64>().ok()).unwrap_or(0.0);
     (tick(11) + tick(12)) / 100.0
-}
-
-/// `OSIS_SCALE_UNBOUNDED`: without the scan of issues/long-aspect-cost.md.
-fn unscanned(e: &mut Engine) {
-    if std::env::var_os("OSIS_SCALE_UNBOUNDED").is_some() {
-        e.assume_unbounded(true);
-    }
 }
 
 fn load() -> String {
@@ -241,7 +234,6 @@ fn gen_messages(d: &Path, count: usize) {
             .map(|(mut p, sch)| {
                 s.spawn(move || {
                     let mut out = Vec::with_capacity(sch.len());
-                    unscanned(&mut p.engine);
                     for i in sch {
                         p.clock.set(WallMs(msg_time(i)));
                         let mut m = Mutation::new();
@@ -286,7 +278,6 @@ fn build(d: &Path, n: usize, who: &str, seed: u64) {
     let clock = Arc::new(ManualClock::new(WallMs(T0)));
     let c: Arc<dyn Clock> = clock.clone();
     let mut e = Engine::create(Box::new(Unsynced(RedbBackend::open(&db).unwrap(), 0, 0)), Box::new(FileRoot::new(root)), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
-    unscanned(&mut e);
     let up = d.parent().unwrap();
     let meta = meta_read(up);
     assert!(meta.writers.contains(&e.tid()), "the node's tid is not the generated one");
@@ -330,8 +321,7 @@ fn check_page(e: &mut Engine, meta: &Meta, held: usize, last: usize) {
 fn open_at(db: &Path, root: &Path, now: u64, seed: u64) -> (Engine, Arc<ManualClock>) {
     let clock = Arc::new(ManualClock::new(WallMs(now)));
     let c: Arc<dyn Clock> = clock.clone();
-    let mut e = Engine::open(Box::new(RedbBackend::open(db).unwrap()), Box::new(FileRoot::new(root.to_path_buf())), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
-    unscanned(&mut e);
+    let e = Engine::open(Box::new(RedbBackend::open(db).unwrap()), Box::new(FileRoot::new(root.to_path_buf())), Config::default(), c, Box::new(SeededRng::from_u64(seed))).unwrap();
     (e, clock)
 }
 
@@ -489,12 +479,11 @@ enum Omit {
 }
 
 /// The falls measured: 100 messages of an average member; only the state's winner; then with
-/// nothing listed, an average member, its winner and the heavy one. Un-merging is quadratic in
-/// the fallen deltas (over 26 min for 3.7*10^4 of them at 10^6), so 10^6 stops at the first two.
-fn fall_cases(n: usize, meta: &Meta, winner: osis_base::CommitId) -> Vec<(&'static str, Tid, Omit)> {
+/// nothing listed, an average member, its winner and the heavy one.
+fn fall_cases(meta: &Meta, winner: osis_base::CommitId) -> Vec<(&'static str, Tid, Omit)> {
     let (avg, win) = (meta.writers[AVG_FALL], meta.writers[AVG_WINNER]);
     let mut v = vec![("few", avg, Omit::Some(100)), ("winner alone", win, Omit::One(winner))];
-    if n < 1_000_000 && std::env::var_os("OSIS_SCALE_FALL_FEW").is_none() {
+    if std::env::var_os("OSIS_SCALE_FALL_FEW").is_none() {
         v.extend([("avg", avg, Omit::Whole), ("winner", win, Omit::Whole), ("heavy", meta.writers[HEAVY], Omit::Whole)]);
     }
     v
@@ -514,7 +503,7 @@ fn step_fall_m(d: &Path, n: usize) {
     let p = Frames::open(&up.join("msgs.bin")).nth(i).unwrap();
     assert!(matches!(e.ingest(&p.bytes, p.blobs.clone()).unwrap(), Ingested::Applied(_)));
     write_frame(&mut out, &p);
-    for (name, v, omit) in fall_cases(n, &meta, p.id) {
+    for (name, v, omit) in fall_cases(&meta, p.id) {
         clock.advance(60_000);
         // the frontier as today, less what `omit` leaves out: those commits fall, the others stay
         let empty = if let Omit::Whole = omit {
@@ -541,6 +530,15 @@ fn step_fall_m(d: &Path, n: usize) {
         edge_commit(&mut e, n, &format!("fall {name}: M's kick"), (meta.t, v), None, Some(empty), &mut out);
         let g = step(n, &format!("fall {name}: M reads the state"), || e.get(&meta.t, &a).unwrap());
         println!("LONG n={n} fall {name}: state {:?}, {} invalid", g.map(|x| format!("{x:?}").chars().take(16).collect::<String>()), e.invalid_writes(&meta.t, &a).len());
+        // a write while many are invalid: each join looks them over (`Unmerge::probe`)
+        if name == "heavy" {
+            clock.advance(1_000);
+            step(n, "fall heavy: one write while invalid", || {
+                let mut m = Mutation::new();
+                m.set(meta.t, &MSG, &Value::Str(body(n + 2000))).unwrap();
+                e.commit(m).unwrap().unwrap()
+            });
+        }
         clock.advance(60_000);
         edge_commit(&mut e, n, &format!("rise {name}: M's re-add"), (meta.t, v), Some(Role::Write), None, &mut out);
         let g = step(n, &format!("rise {name}: M reads the state"), || e.get(&meta.t, &a).unwrap());
@@ -619,8 +617,6 @@ fn first_sync() {
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "chat");
     net.run();
-    unscanned(net.engine(a));
-    unscanned(net.engine(c));
     net.set_online(c, false);
     let t0 = Instant::now();
     for i in 0..n {

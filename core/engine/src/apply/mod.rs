@@ -1567,7 +1567,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             }
             atomic::index_commit(tx.core, &id, &m.view);
             validity::note_imports(tx.core, &id, &h);
-            tx.core.ix.commits.insert(id, m);
+            tx.core.put_meta(id, m);
             atomic::note_gives(tx.core, &id);
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());

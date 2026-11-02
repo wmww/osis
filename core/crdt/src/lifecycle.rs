@@ -185,6 +185,14 @@ impl Fragment {
         self.dots_in(pred, true)
     }
 
+    /// Whether no writer's delta of a commit at `ts` or earlier can change this fragment (its
+    /// stamps are all at the commit's `ts`, §2.4): a register holding a write or reset past `ts`,
+    /// which resets everything older at the position, in any encoding (§5.1, §7).
+    pub fn settled_above(&self, ts: osis_base::Ts) -> bool {
+        let Fragment::Register(r) = self else { return false };
+        r.reset.iter().map(|s| s.ts).chain(r.write.iter().map(|w| w.stamp.ts)).any(|x| x > ts)
+    }
+
     /// Whether the fragment holds a write stamped exactly `s`: a register, case, reset or `W`
     /// write, a map entry's creation, a sequence element's creation (in a range record too),
     /// position or flag write. Unlike `holds_dots`, a record keyed by `s`'s dot whose creation

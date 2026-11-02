@@ -37,7 +37,45 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
     }
 }
 
+/// A register holding a write or reset past a delta's `ts` keeps it (§5.1, §7): what lets a
+/// rebuild stop at the winner, in any encoding the position has seen (`Fragment::settled_above`).
+fn settled(seed: u64, types: &[Ty]) {
+    use crate::fragment::{RegWrite, Register};
+    use crate::stamp::{Source, Stamp};
+    let mut r = crate::testutil::rng(seed | 1);
+    let commits = history(&mut r, types, 3, 6);
+    // the same joins do change a register below them, and nothing else is settled
+    let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), Source::node(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
+    assert!(commits.iter().any(|c| {
+        let mut j = low.clone();
+        j.join(frag(&c.delta));
+        j != low
+    }));
+    assert!(commits.iter().all(|c| matches!(frag(&c.delta), Fragment::Register(_)) || !frag(&c.delta).settled_above(crate::testutil::ts(1 << 45))));
+    assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
+    let top = osis_base::Tid::from_bytes([7; 15]);
+    let stamp = Stamp::new(crate::testutil::ts(1 << 45), Source::node(top), 1);
+    for st in [Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }, Register { reset: Some(stamp.clone()), write: None }] {
+        let st = Fragment::Register(st);
+        assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
+        assert!(!st.settled_above(crate::testutil::ts(1 << 45)));
+        for c in &commits {
+            let mut j = st.clone();
+            j.join(frag(&c.delta));
+            assert_eq!(j, st, "{:?}", c.delta);
+        }
+    }
+}
+
 proptest! {
+    #[test]
+    fn settled_register_keeps_above_any_encoding_spec_7(seed in any::<u64>()) {
+        let set = Ty::Set(Box::new(Ty::Register));
+        let map = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register));
+        let list = Ty::List(Box::new(Ty::Register));
+        settled(seed, &[Ty::Register, Ty::Counter, Ty::Max, Ty::Min, Ty::Text, list, set, map, sink_no_seq()]);
+    }
+
     /// §4.1–§4.4, §5.1–§5.6: every non-sequence encoding, nested.
     #[test]
     fn join_matches_model_spec_4(seed in any::<u64>()) {

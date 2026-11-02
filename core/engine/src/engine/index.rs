@@ -853,7 +853,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
             return Err(Error::Corrupt("meta row"));
         }
         crate::apply::index_commit(tx.core, &id, &view);
-        tx.core.ix.commits.insert(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
+        tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
         crate::apply::note_gives(tx.core, &id);
         tx.core.index_validity(&id);
     }
