@@ -38,7 +38,7 @@ TLC 2.19, 1 worker, on a shared 4-core machine at load ~10 (two compiling agents
 | `MC_keyset_forge_commit.cfg` | g rotated again and forged, keyset names met only by the named keyset's own commit, no names of departures from g (negative control) | **fails** `DevLocked` (expected) | 45,747 | 3 s |
 | `MC_keyset_forge_write.cfg` | g rotated again and forged, one write | pass under frozen coverage (box rule: fails `DevNoLeak`, AMBIGUITIES.md R18) | 410,060 | 9 min |
 | `MC_c2_box.cfg` | study C2, box rule: m2 granted, removed by a1 as a fork of a2's e1; 1 write | **fails** `NoLeak` (expected, R19) | 12,923 | 2 s |
-| `MC_c2.cfg` | as MC_c2_box, frozen coverage | no violation (unfinished, stopped) | 850,114+ | 60 min |
+| `MC_c2.cfg` | as MC_c2_box, frozen coverage | pass (review rerun, 4 workers, load 10-25) | 1,440,841 | 532 s |
 | `MC_c2_boxcovers.cfg` | as MC_c2, no box counts as covering (negative control) | **fails** `NoLeak` (expected) | 13,363 | 42 s |
 | `MC_c1_box.cfg` | study C1, box rule: R_P's parts apart (a2 never the roles part), g forked by an ignorant admin; 1 write | **fails** `DevNoLeak` (expected) | 133,272 | 5.5 min |
 | `MC_c1.cfg` | as MC_c1_box, frozen coverage | no violation (unfinished, stopped) | 997,589+ | 60 min |
@@ -47,7 +47,7 @@ TLC 2.19, 1 worker, on a shared 4-core machine at load ~10 (two compiling agents
 | `MC_c3_box.cfg` | study C3, box rule: g granted after d left it, a1 knowing; no write | **fails** `DevGranted` (expected) | 5,327 | 36 s |
 | `MC_c3_current.cfg` | C3, frozen, the study's names-of-current-boxes rule | **fails** `DevGranted` (expected, R20) | 2,194 | 55 s |
 | `MC_c3_boxed.cfg` | as MC_c3_current, grants leaving g out refused | **fails** `DevGranted` (expected, R20) | 10,812 | 56 s |
-| `MC_c3.cfg` | C3, frozen, names tied to the grant | no violation (unfinished, stopped) | 5,464,330+ | 80 min |
+| `MC_c3.cfg` | C3, frozen, names tied to the grant | no violation (unfinished, stopped; review rerun, 4 workers, load 25-40: depth 21, 10.8M queued and growing) | 29,048,762+ | 63 min |
 | `MC_c3_lean.cfg` | as MC_c3 without g's fork | no violation (unfinished, stopped) | 889,765+ | 15 min |
 | `MC_c3_nonames.cfg` | as MC_c3, grants carry no names (negative control) | **fails** `DevGranted` (expected) | 5,325 | 34 s |
 
