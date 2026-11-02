@@ -1681,18 +1681,18 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         if let Some(f) = &full {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
-                let mut p = deliver(&played, &order);
-                let flips = |t: &str, a: &str| flipped(&played, &(0..n).collect::<Vec<_>>(), None, t, a) || flipped(&played, &order, None, t, a);
-                if let Some(d) = alike(f, &judged(&mut p, &played), &flips) {
+                let mut p = deliver(played, &order);
+                let flips = |t: &str, a: &str| flipped(played, &(0..n).collect::<Vec<_>>(), None, t, a) || flipped(played, &order, None, t, a);
+                if let Some(d) = alike(f, &judged(&mut p, played), &flips) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
         }
-        let orders = orders(&played, &held, cfg, &mut rng);
+        let orders = orders(played, &held, cfg, &mut rng);
         seen.orders += orders.len();
         // the reference, as made: its deaths dated as the spec allows, a reopen from the
         // persisted index and a rebuild judge alike (an open re-examines what pends)
-        let mut p = deliver(&played, &orders[0]);
+        let mut p = deliver(played, &orders[0]);
         if let Some(d) = dating(&mut p, &o, played.now) {
             return Err(format!("{of}, as made: {d}"));
         }
@@ -1720,7 +1720,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
         let mut want = now;
-        let idx = index_later(&mut p, &played);
+        let idx = index_later(&mut p, played);
         let invalid = idx.commits.values().filter(|c| c.valid.contains(&false)).count();
         seen.invalid += invalid as u64;
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
@@ -1737,14 +1737,14 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             let vs = format!("{of}: order #0 (as made, want) {held:?} vs order #{k}");
             if let Some(rng) = split_rng {
                 let copy = rng.clone();
-                let mut p = deliver_split(&played, order, rng);
-                let flips = |t: &str, a: &str| flipped(&played, &orders[0], None, t, a) || flipped(&played, order, Some(copy.clone()), t, a);
-                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, &played), &flips)) {
+                let mut p = deliver_split(played, order, rng);
+                let flips = |t: &str, a: &str| flipped(played, &orders[0], None, t, a) || flipped(played, order, Some(copy.clone()), t, a);
+                return match dating(&mut p, &o, played.now).or_else(|| alike(&want, &judged(&mut p, played), &flips)) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
             }
-            let mut p = deliver(&played, order);
+            let mut p = deliver(played, order);
             if let Some(d) = dating(&mut p, &o, played.now) {
                 return Err(format!("{of}, order #{k} {order:?}: {d}"));
             }
@@ -1754,8 +1754,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             if let Some(d) = first_diff(&got, &judged_now(&mut p, &played.things)) {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
-            got.index = Some(index_later(&mut p, &played));
-            match alike(&want, &got, &|t, a| flipped(&played, &orders[0], None, t, a) || flipped(&played, order, None, t, a)) {
+            got.index = Some(index_later(&mut p, played));
+            match alike(&want, &got, &|t, a| flipped(played, &orders[0], None, t, a) || flipped(played, order, None, t, a)) {
                 Some(d) => Err(format!("{vs} (got) {order:?}: {d}")),
                 None => Ok(()),
             }
