@@ -11,7 +11,7 @@
 //! records (a commit left with no part is deleted, so a re-grant fetches it again; the others
 //! keep their readable parts, the forgotten ones joining late if they come back), pending parts,
 //! but a re-grant's boxes that may still apply (`rotation::boxes_kept`),
-//! receipts, value-less lists, purge lists, timers, `secrets.0` waits, the sync records of the
+//! receipts, value-less lists, purge lists and what they dropped, timers, `secrets.0` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
 //!
@@ -229,6 +229,19 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         Ok(())
     })?;
     for k in stale {
+        tx.txn.remove_local(&k, Shred::Yes)?;
+    }
+    // what a purge request dropped there (`retention::lasting`)
+    let mut named = Vec::new();
+    tx.scan(records::NAMED_PERMANENT, |k, _| {
+        let mut r = Rd::new(k);
+        let (c, t) = (CommitId(r.arr()?), r.tid()?);
+        if out.commits.contains(&c) || out.things.contains(&t) {
+            named.push([records::NAMED_PERMANENT, k].concat());
+        }
+        Ok(())
+    })?;
+    for k in named {
         tx.txn.remove_local(&k, Shred::Yes)?;
     }
     // labels of forgotten groups, from their `label.0` (kept)
