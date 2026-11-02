@@ -62,7 +62,6 @@ pub struct HostPolicy {
     pub window_ms: u64,
     /// Per label and window.
     pub deletes: u32,
-    pub replacements: u32,
     pub deposits: u32,
     /// Registered steps per label and window (each step and its claim set also count toward
     /// the byte caps): 0 registers nothing, unlimited leaves only the byte caps.
@@ -76,8 +75,6 @@ pub struct HostPolicy {
     /// label's gets code 12; past the total, the label charged most gives way (notes/ephemeral.md).
     pub ephemeral_bytes: u64,
     pub ephemeral_total: u64,
-    /// Wrap replacements per entry and window.
-    pub entry_replacements: u32,
     /// Relay-only uploads pushed per label and window, and their bytes (`osis_proto::RelayLimits`).
     pub relays: u32,
     pub relay_bytes: u64,
@@ -108,13 +105,11 @@ impl Default for HostPolicy {
             log_keep: 1 << 20,
             window_ms: 60_000,
             deletes: 20_000,
-            replacements: 20_000,
             deposits: 600,
             registers: 600,
             over_cap_step_ms: 3_600_000,
             ephemeral_bytes: 16 << 20,
             ephemeral_total: 1 << 30,
-            entry_replacements: 4,
             relays: osis_proto::RelayLimits::default().count,
             relay_bytes: osis_proto::RelayLimits::default().bytes,
             max_labels: 1 << 20,
@@ -143,13 +138,11 @@ impl HostPolicy {
             "log_keep" => self.log_keep = v,
             "window_ms" => self.window_ms = v,
             "deletes" => self.deletes = n32()?,
-            "replacements" => self.replacements = n32()?,
             "deposits" => self.deposits = n32()?,
             "registers" => self.registers = n32()?,
             "over_cap_step_ms" => self.over_cap_step_ms = v,
             "ephemeral_bytes" => self.ephemeral_bytes = v,
             "ephemeral_total" => self.ephemeral_total = v,
-            "entry_replacements" => self.entry_replacements = n32()?,
             "relays" => self.relays = n32()?,
             "relay_bytes" => self.relay_bytes = v,
             "max_labels" => self.max_labels = v,
@@ -177,13 +170,11 @@ impl HostPolicy {
             cap_bytes: u64::MAX,
             log_keep: u64::MAX,
             deletes: u32::MAX,
-            replacements: u32::MAX,
             deposits: u32::MAX,
             registers: u32::MAX,
             over_cap_step_ms: 0,
             ephemeral_bytes: u64::MAX,
             ephemeral_total: u64::MAX,
-            entry_replacements: u32::MAX,
             relays: u32::MAX,
             relay_bytes: u64::MAX,
             max_labels: u64::MAX,
@@ -483,7 +474,6 @@ fn decode_record(b: &[u8]) -> Result<LogRecord, StoreError> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Rate {
     Delete,
-    Replace,
     Deposit,
     Register,
 }
@@ -647,7 +637,6 @@ enum EphRemove {
 struct Rates {
     window: u64,
     labels: HashMap<(LabelId, Rate), u32>,
-    entries: HashMap<(LabelId, BlobId), u32>,
 }
 
 impl Rates {
@@ -656,7 +645,6 @@ impl Rates {
         if w != self.window {
             self.window = w;
             self.labels.clear();
-            self.entries.clear();
         }
     }
 
@@ -997,16 +985,12 @@ impl HostStore {
         Ok(true)
     }
 
-    /// Adds or replaces an ephemeral entry (spec/sync.md §4, §5): stamped only; past the label's
-    /// ephemeral cap (after trimming its log) code 12; past the node's, the label charged most
-    /// gives way; a wrap replacement is rate-limited like a durable one.
+    /// Adds an ephemeral entry (spec/sync.md §4, §5): stamped only; past the label's ephemeral
+    /// cap (after trimming its log) code 12; past the node's, the label charged most gives way.
     fn eph_put(&mut self, label: &LabelId, put: Put<'_>, plan: &Plan) -> Result<Code, StoreError> {
         let Some(stamp) = put.stamp else { return Ok(Code::REFUSED) };
-        let held = self.eph.labels.get(label).and_then(|e| e.entries.get(&put.blob_id)).cloned();
-        if let Some(h) = &held
-            && h.meta.wrap == put.wrap
-            && h.meta.stamp == Some(stamp)
-        {
+        // always stamped: a held one never changes (`LabelStore::put`)
+        if self.eph.labels.get(label).is_some_and(|e| e.entries.contains_key(&put.blob_id)) {
             return Ok(Code::OK);
         }
         // the planned removals' memory still held (an eviction below may take one first)
@@ -1014,48 +998,26 @@ impl HostStore {
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
         let size = put.blob.len() as u64;
-        match &held {
-            Some(_) => {
-                let p = &self.policy;
-                let n = self.rates.entries.get(&(*label, put.blob_id)).copied().unwrap_or(0);
-                if n >= p.entry_replacements || !self.rates.take(label, Rate::Replace, p.replacements) {
-                    return Ok(Code::RATE_LIMITED);
-                }
-                self.rates.entries.insert((*label, put.blob_id), n + 1);
-            }
-            None => {
-                let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
-                let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
-                while used(self).saturating_add(need) > self.policy.ephemeral_bytes && self.eph.trim_log(label) {}
-                if used(self).saturating_add(need) > self.policy.ephemeral_bytes {
-                    return Ok(Code::STORAGE_CAP);
-                }
-                while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
-                    if !self.eph_evict()? {
-                        return Ok(Code::STORAGE_CAP);
-                    }
-                }
+        let need = size.saturating_add(ENTRY_OVERHEAD).saturating_add(REC_OVERHEAD);
+        let used = |s: &Self| s.eph.labels.get(label).map_or(0, |e| e.bytes).saturating_sub(plan.eph_label);
+        while used(self).saturating_add(need) > self.policy.ephemeral_bytes && self.eph.trim_log(label) {}
+        if used(self).saturating_add(need) > self.policy.ephemeral_bytes {
+            return Ok(Code::STORAGE_CAP);
+        }
+        while self.eph.total.saturating_sub(freed(self)).saturating_add(need) > self.policy.ephemeral_total {
+            if !self.eph_evict()? {
+                return Ok(Code::STORAGE_CAP);
             }
         }
         let seq = self.eph_append(label, EphRec::Added(put.blob_id))?;
-        match held {
-            Some(h) => {
-                let e = self.eph.labels.entry(*label).or_default();
-                e.order.remove(&h.meta.add_seq);
-                e.order.insert(seq, put.blob_id);
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), add_seq: seq, ..h.meta }, expiry: h.expiry });
-            }
-            None => {
-                let e = self.eph.labels.entry(*label).or_default();
-                e.order.insert(seq, put.blob_id);
-                e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry });
-                if let Some(t) = put.expiry {
-                    self.eph.due.insert((t, *label, put.blob_id));
-                }
-                self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
-                self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
-            }
+        let e = self.eph.labels.entry(*label).or_default();
+        e.order.insert(seq, put.blob_id);
+        e.entries.insert(put.blob_id, EphEntry { meta: EntryMeta { wrap: put.wrap, stamp: Some(stamp), size, add_seq: seq, pending_delete: None }, expiry: put.expiry });
+        if let Some(t) = put.expiry {
+            self.eph.due.insert((t, *label, put.blob_id));
         }
+        self.eph.charge(label, size.saturating_add(ENTRY_OVERHEAD), Charge::Label);
+        self.eph.blobs.entry(put.blob_id).or_insert_with(|| (put.blob.to_vec(), 0)).1 += 1;
         match self.origin {
             Some(o) => {
                 if self.origins.len() >= MAX_ORIGINS {
@@ -1070,27 +1032,21 @@ impl HostStore {
         Ok(Code::OK)
     }
 
-    /// Adds or replaces a durable entry (spec/sync.md §4, §5): past the label's or the node's
-    /// cap, the room `plan`'s removals free counted, code 12.
+    /// Adds a durable entry or promotes a deposited one (spec/sync.md §4, §5): past the label's
+    /// or the node's cap, the room `plan`'s removals free counted, code 12.
     fn durable_put(&mut self, label: &LabelId, put: Put<'_>, held: Option<Row>, plan: &Plan) -> Result<Code, StoreError> {
         let mut tx = self.tx(label)?;
         if let Some(r) = &held
-            && (put.stamp.is_none() || (r.meta.wrap == put.wrap && r.meta.stamp == put.stamp))
+            && (put.stamp.is_none() || r.meta.stamp.is_some())
         {
             return Ok(Code::OK);
         }
         let size = put.blob.len() as u64;
         let now = self.now();
         self.rates.roll(now, self.policy.window_ms);
-        let p = &self.policy;
         match &held {
-            Some(_) => {
-                let n = self.rates.entries.get(&(*label, put.blob_id)).copied().unwrap_or(0);
-                if n >= p.entry_replacements || !self.rates.take(label, Rate::Replace, p.replacements) {
-                    return Ok(Code::RATE_LIMITED);
-                }
-                self.rates.entries.insert((*label, put.blob_id), n + 1);
-            }
+            // a promotion: once per entry
+            Some(_) => {}
             None => {
                 let m = &tx.meta;
                 let (entries, bytes) = (m.entries.saturating_sub(plan.entries), m.bytes.saturating_sub(plan.bytes));

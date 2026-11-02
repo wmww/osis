@@ -155,7 +155,7 @@ impl HeadKeys {
 }
 
 /// Host state per label. Mutations append their log records; the store applies policy
-/// (storage caps, the ephemeral cap, deposit budget, rate limits on wrap replacements and
+/// (storage caps, the ephemeral cap, deposit budget, rate limits on
 /// deletes) and
 /// answers with a status code.
 pub trait LabelStore {
@@ -225,9 +225,11 @@ pub trait LabelStore {
             b
         }))
     }
-    /// Adds an entry or replaces a held one's wrap and stamp (a stamp clears the deposited flag);
-    /// a deposit of a held blob, or an identical re-upload, changes nothing. Logs an add when
-    /// something changed.
+    /// Adds an entry; a stamped upload replaces a deposited entry's wrap and stamp, clearing its
+    /// flag. Anything else of a held blob changes nothing. Logs an add when something changed.
+    /// Invariant (spec/sync.md §5): a stamped entry's wrap and stamp never change while it lives,
+    /// so no writer can take from readers a wrap they could open: only a first upload can place a
+    /// useless one, and nodes knowing the key place a fresh encryption past it.
     fn put(&mut self, label: &LabelId, put: Put<'_>) -> Result<Code, StoreError>;
     fn budget(&self, label: &LabelId) -> Result<Budget, StoreError>;
     /// Removes an entry, leaving a tombstone, and logs the deletion
@@ -490,7 +492,8 @@ impl LabelStore for MemoryLabelStore {
         }
         let freed_bytes: u64 = gone.iter().filter(|b| s.ephemeral.contains(b)).filter_map(|b| s.entries.get(b)).map(|(m, _)| m.size).sum();
         let held = s.entries.get(&put.blob_id).map(|(m, _)| m.clone());
-        let same = held.as_ref().is_some_and(|m| put.stamp.is_none() || (m.wrap == put.wrap && m.stamp == put.stamp));
+        // a stamped entry never changes (`LabelStore::put`)
+        let same = held.as_ref().is_some_and(|m| put.stamp.is_none() || m.stamp.is_some());
         if !same {
             if held.is_none() && cap.is_some_and(|c| s.entries.len().saturating_sub(gone.len()) >= c) {
                 return Ok(Code::STORAGE_CAP);

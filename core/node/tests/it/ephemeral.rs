@@ -3008,9 +3008,9 @@ fn many_authors_run(authors: usize, secs: u64) -> (usize, usize, u64, u64) {
     let mut net = Net::new();
     let window_ms = secs * 1000;
     let d = osis_host::HostPolicy::default();
-    let (deletes, replacements) = ((d.deletes as u64 * window_ms / 60_000) as u32, (d.replacements as u64 * window_ms / 60_000) as u32);
+    let deletes = (d.deletes as u64 * window_ms / 60_000) as u32;
     let cap = d.ephemeral_bytes * window_ms.min(E) / E;
-    let host = net.add_host_with(osis_host::HostPolicy { window_ms, deletes, replacements, ephemeral_bytes: cap, ..d });
+    let host = net.add_host_with(osis_host::HostPolicy { window_ms, deletes, ephemeral_bytes: cap, ..d });
     let ns: Vec<usize> = (0..authors).map(|i| net.node(1 + i as u64, &[host])).collect();
     let grants: Vec<(usize, Role)> = ns[1..].iter().map(|n| (*n, Role::Write)).collect();
     let g = net.group(ns[0], &grants, &[host]);

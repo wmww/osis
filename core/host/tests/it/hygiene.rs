@@ -97,13 +97,15 @@ fn deleted_wraps_unrecoverable() {
     let blobs: Vec<Vec<u8>> = (0..24u64).map(osis_proto::examples::blob).collect();
     let put = |s: &mut osis_host::HostStore, i: usize, w: u8, expiry: Option<u64>| {
         let b = &blobs[i];
-        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp: Some(Signature([w; 64])), expiry, ephemeral: false, replaces: &[], now: 0 };
+        // entry 3 starts as a deposit
+        let stamp = (i != 3 || w != 103).then_some(Signature([w; 64]));
+        let p = Put { blob_id: osis_label::blob_id(b), blob: b, wrap: wrap(w), stamp, expiry, ephemeral: false, replaces: &[], now: 0 };
         assert_eq!(s.put(&l, p).unwrap(), Code::OK);
     };
     for i in 0..24 {
         put(&mut s, i, 100 + i as u8, (i == 7).then_some(T0 + 1_000));
     }
-    // entry 3's wrap replaced (a rewrap), then deleted; entry 5 deleted; entry 7 expires
+    // entry 3's wrap replaced (a promotion under another wrap), then deleted; entry 5 deleted; entry 7 expires
     put(&mut s, 3, 250, None);
     let (dead, live) = ([wrap(103), wrap(250), wrap(105), wrap(107)], wrap(120));
     let found = |s: &mut osis_host::HostStore, w: &[u8]| {

@@ -1336,7 +1336,7 @@ impl SyncEngine {
     /// entry when `None`: this node's own served state), checked genuine: a forged blob listing
     /// the parts holds nothing, nor a must-not-hold one (`holds_nothing`).
     fn carried_by(&mut self, host: Option<&HostKey>, g: &Tid, l: &LabelId, c: &CommitId, parts: &[(usize, usize)]) -> bool {
-        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(g, c, p)) && host.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
+        let ids: Vec<BlobId> = self.state.entries_of(l, c).filter(|(id, e)| !e.cert && matches!(&e.kind, Kind::Commit { parts: p, .. } if parts.iter().all(|x| p.contains(x)) && !self.holds_nothing(g, c, p)) && host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
         ids.into_iter().any(|id| self.genuine(&id))
     }
 
@@ -1635,7 +1635,7 @@ impl SyncEngine {
             let Kind::Commit { parts, .. } = &e.kind else { continue };
             if e.cert {
                 mine.extend(parts.iter().copied());
-            } else if hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.is_present(s, &l, &id)))
+            } else if hosts.is_none_or(|ss| !ss.is_empty() && ss.iter().all(|s| self.state.holds_at(s, &l, &id)))
                 && (!self.engine.carries_secrets(g, c, parts) || newest.as_ref().is_some_and(|k| osis_crypto::unwrap(k, &id, &e.wrap).is_ok()))
             {
                 others.push((id, parts.clone()));
