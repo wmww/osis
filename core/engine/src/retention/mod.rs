@@ -474,6 +474,20 @@ pub(crate) fn takes_late(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<boo
     Ok(tx.txn.get_local(&key)?.is_none())
 }
 
+/// Whether dropped part `ai` of `c` was never received: held value-less (expired or purged
+/// while missing) with no residue (`make_valueless` keeps one, even empty, from a held body or
+/// its coverers' copies). What a snapshot gave under its dots is the snapshot's alone
+/// (`validity::given_by`).
+pub(crate) fn never_received(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
+    let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
+    let (Some(d), Some(a)) = (m.dropped.get(&ai), m.header.aspects.get(ai)) else { return Ok(false) };
+    if d.as_cover || !valueless(tx.core, c, ai) {
+        return Ok(false);
+    }
+    let key = records::residue_key(&a.tid, &a.ak, c, ai);
+    Ok(tx.txn.get_local(&key)?.is_none())
+}
+
 /// Whether delta `ai` of `c` is held value-less (`make_valueless`): its body is dropped.
 fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
     let Some(m) = core.ix.commits.get(c) else { return false };
@@ -564,7 +578,9 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: &[Fragment]) -
 /// Holds delta `ai` of `c` value-less (`make_valueless`) and drops its body: at expiry, or
 /// `purged`. A memory delta vanishes whole instead (`memory::vanish`). A part of it waiting in
 /// the stored pending copy goes at expiry (`strip_pending`); purged, it is held value-less, as
-/// `pending_drops` holds it (`purge_pending`).
+/// `pending_drops` holds it (`purge_pending`). A part missing is dropped
+/// too (counts as never received: no fetch, a copy joins value-less), with no residue
+/// (`never_received`).
 fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if purged {
         purge_pending(tx, c, ai)?;

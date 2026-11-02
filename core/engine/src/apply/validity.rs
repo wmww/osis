@@ -958,7 +958,8 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 }
 
 /// The writes of held snapshot `snap` on `(tid, ak)` whose owning delta is held, was never
-/// received here, or was dropped as covered with every coverer still giving its writes from a
+/// received here (missing, or expired or purged while missing: `retention::never_received`), or
+/// was dropped as covered with every coverer still giving its writes from a
 /// held body: they go from the state when it turns invalid (spec/permissions.md §5.2), all of
 /// them, also those another held valid snapshot carries (its body gives its own copy back in the
 /// rebuild; the state may hold this one's differing copy, which would otherwise stay: a nested
@@ -971,28 +972,53 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
     let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
     let mut dots = Vec::new();
-    super::each_held_piece(tx, snap, sai, &mut |tx, f| {
-        dots.extend(f.writes().into_iter().filter(|(d, _)| !d.src.is_derived() && regiven(tx.core, tid, ak, d)).map(|(d, _)| d));
+    super::each_held_piece(tx, snap, sai, &mut |_, f| {
+        dots.extend(f.writes().into_iter().filter(|(d, _)| !d.src.is_derived()).map(|(d, _)| d));
         Ok(())
     })?;
-    Ok(Owned::dots(dots))
+    let mut out = Vec::new();
+    let mut memo: BTreeMap<(CommitId, usize), bool> = BTreeMap::new();
+    for d in dots {
+        if regiven(tx, tid, ak, &d, &mut memo)? {
+            out.push(d);
+        }
+    }
+    Ok(Owned::dots(out))
 }
 
 /// Whether the writes under dot `d` on `(tid, ak)` come back from held bodies alone (`given_by`):
 /// its owning delta held, never received, or dropped as covered where no coverer is a snapshot
 /// body dropped other than as covered (its writes live only in the state). Invariant: a turned-
 /// invalid snapshot's copy stays in the state only where nothing held gives the write back, so
-/// the rebuild equals the join of what is held whether the snapshot was ever valid here.
-fn regiven(core: &Core, tid: &Tid, ak: &Ak, d: &Dot) -> bool {
+/// the rebuild equals the join of what is held whether the snapshot was ever valid here. `memo`:
+/// `never_received` per dropped part (a store read).
+fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(CommitId, usize), bool>) -> Result<bool> {
+    let core = &*tx.core;
     let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
-    !owner_received(core, tid, ak, d)
+    // the owner part dropped other than as covered, if that is what decides
+    let dropped = std::cell::Cell::new(None);
+    let given = !owner_received(core, tid, ak, d)
         || any_owner(core, tid, ak, d, &|c, m, ai| {
             !m.missing.contains(&ai)
                 && match m.dropped.get(&ai) {
                     None => true,
-                    Some(x) => x.as_cover && !crate::retention::any_coverer(core, c, ai, &residue),
+                    Some(x) if x.as_cover => !crate::retention::any_coverer(core, c, ai, &residue),
+                    Some(_) => {
+                        dropped.set(Some((*c, ai)));
+                        false
+                    }
                 }
-        })
+        });
+    if given {
+        return Ok(true);
+    }
+    let Some((c, ai)) = dropped.get() else { return Ok(false) };
+    if let Some(x) = memo.get(&(c, ai)) {
+        return Ok(*x);
+    }
+    let x = crate::retention::never_received(tx, &c, ai)?;
+    memo.insert((c, ai), x);
+    Ok(x)
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):

@@ -68,7 +68,7 @@ Every delta carries **retention** on the wire: who may purge it, how long its bo
 
 ## 6. Expiry
 - `expires: T` (wall ms, `T > wall_ms(ts)`, else invalid), per aspect of the commit. The schema may give a default per AK as a duration from the write. The blob prefix carries the T of the deltas it holds (spec/sync.md §1, §3).
-- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less and drops the body, whatever the delta's keep-at-least bound.
+- At T every value-carrying write of the delta dies (spec/crdt.md §4.7): every node holds them value-less and drops the body, whatever the delta's keep-at-least bound. A delta never received stays never received: a copy arriving after T joins value-less, and what a held snapshot gave under its dots goes with the snapshot (spec/permissions.md §5.2).
 - Hosts delete the blob at T unattended (spec/sync.md §5).
 
 ## 7. Undo

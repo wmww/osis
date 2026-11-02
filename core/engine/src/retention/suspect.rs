@@ -134,6 +134,17 @@ impl Engine {
     /// The aspects this node flags suspect, with when each was last flagged (corrected wall ms)
     /// and why (`Why` bits over the bodies it is about).
     pub fn suspects(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
+        self.suspect_flags(false)
+    }
+
+    /// `suspects` with the dormant flags too (tests: an aspect a held snapshot repaired may
+    /// still hold the repairing copies otherwise than a node that applied the part).
+    #[doc(hidden)]
+    pub fn suspects_dormant(&mut self) -> Result<Vec<(Tid, Ak, u64, u8)>> {
+        self.suspect_flags(true)
+    }
+
+    fn suspect_flags(&mut self, dormant_too: bool) -> Result<Vec<(Tid, Ak, u64, u8)>> {
         self.run(|tx| {
             let mut flags = Vec::new();
             tx.scan(records::SUSPECT, |k, v| {
@@ -147,7 +158,7 @@ impl Engine {
             for (tid, ak, at, bodies) in flags {
                 let mut why = 0;
                 for e in &bodies {
-                    if !dormant(tx, e)? {
+                    if dormant_too || !dormant(tx, e)? {
                         why |= e.2;
                     }
                 }
