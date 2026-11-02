@@ -78,7 +78,7 @@ impl Timeline {
 
     /// Where `x` first held `required` on `thing`: `Some(None)` from the beginning, `Some(p)`
     /// from the change at `p`, `None` never.
-    fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
+    pub fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
         let key = (*x, *thing, required);
         // debug builds compare every answer, memoized ones (some carried over `extend`) too
         if let Some(v) = self.memo.first_held.lock().ok().and_then(|m| m.get(&key).copied()) {

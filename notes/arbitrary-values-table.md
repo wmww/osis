@@ -32,6 +32,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_DRIFT`, `ROLE_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
 | `RESOLUTION_HOPS` 8 | M | no resolution / cycles (guarded); past it a tid reads as an intermediate copy |
 | `MAX_HEARTBEAT_SUSPECTS` 32 | R | no repair at all / a heartbeat as long as the label's flagged aspects (a deposit, budgeted); past it the newest flags are reported and the rest wait for those to clear (repair a few intervals late, nothing lost: flags stay until repaired) |
+| `MAX_REQUIRED_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of prefixes in every node's memory per `required.0^` delta; past it the delta requires nothing, a writer refuses it |
 | `MAX_OWNER_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |
 | `MAX_LINKED_FRONTIERS` 64 MiB | R | no linked frontiers / unbounded snapshot work |
 | `MAX_VALUE_DEPTH` 64, `MAX_OBJECT_DEPTH` 512, `MAX_AK_BYTES` 1024, `MAX_URL_BYTES` 256, `MAX_RUN` 2^12 (keeps a run, one page element, far below `MAX_PAGE_ITEMS`), `MAX_STEP_BYTES` | R (decoder limits, refuse) | nothing decodes / stack and memory on hostile input |

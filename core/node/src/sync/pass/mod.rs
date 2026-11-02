@@ -455,7 +455,7 @@ impl SyncEngine {
         let (unsettled, snapping) = sets;
         let mut left = Left::default();
         let entries = w.snaps.clone();
-        let snaps = self.drop_label_covered(&entries, &mut scope, &mut left)?;
+        let snaps = self.drop_label_covered(&entries, &mut scope, !unsettled.contains(&None), &mut left)?;
         let bodies = self.bodies_in(ctx, g, &l, &scope)?;
         let judged: BTreeSet<CommitId> = match &scope {
             Scope::Some { commits, .. } => commits.clone(),
@@ -721,14 +721,16 @@ impl SyncEngine {
     /// bodies they cover (spec/sync.md §7), so every right holder holding the same snapshots
     /// drops alike; a snapshot judges every body of its aspect when in `scope`, else the bodies
     /// `scope` names. Dropped bodies join `scope`. Returns the label's snapshots by aspect.
-    pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, left: &mut Left) -> Result<Snaps> {
+    pub(super) fn drop_label_covered(&mut self, entries: &BTreeMap<(Tid, Ak), BTreeSet<(BlobId, CommitId)>>, scope: &mut Scope, opened: bool, left: &mut Left) -> Result<Snaps> {
         let snaps: BTreeMap<(Tid, Ak), Vec<CommitId>> = entries.iter().map(|(k, v)| (k.clone(), v.iter().map(|(_, c)| *c).collect())).collect();
-        // deltas that broke their thing's required retention go without a right (spec/permissions.md §8)
+        // what goes without a right (spec/permissions.md §8), once every entry is open: what a
+        // setting broke may stand again with a role commit still to come (judged again when
+        // settled, `deletions`)
         let only = match &*scope {
             Scope::All => None,
             Scope::Some { commits, .. } => Some(commits),
         };
-        let mut dropped: BTreeSet<CommitId> = self.engine.drop_broken(only)?.into_iter().collect();
+        let mut dropped: BTreeSet<CommitId> = if opened { self.engine.drop_broken(only)?.into_iter().collect() } else { BTreeSet::new() };
         for ((t, a), ss) in &snaps {
             for s in ss {
                 if !self.engine.core.ix.commits.get(s).is_some_and(|m| m.header.kind == CKind::ContentSnapshot) {

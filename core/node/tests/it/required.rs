@@ -509,3 +509,253 @@ fn setting_as_late_part_spec_perm_5_2() {
     assert_eq!(read(&mut p, d, MSGS), None, "bound once the part is held");
     assert!(!valid(&p, &bad, &d, MSGS));
 }
+
+// Alice (0) owns the group and D's owner, Bob (1) writes, Carol (2) is an admin, Dan (3) reads.
+fn on_host(net: &mut Net, host: usize) -> (usize, usize, usize, usize, Tid, Tid) {
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let d = net.node(4, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Admin), (d, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    (a, b, c, d, g, t)
+}
+
+fn settle(net: &mut Net) {
+    net.run();
+    net.advance(10_000);
+    net.run();
+}
+
+// spec/permissions.md §8: a `required.0^` delta by a node that never held admin binds nothing and
+// goes without a right, from nodes and hosts, whatever its size; it comes back as missing if it
+// turns valid, as any delta dropped so
+#[test]
+fn writers_setting_goes_without_right_spec_perm_8() {
+    let (mut lp, d) = setup(401);
+    let big: RequiredRules = (0..2_000).map(|i| (format!("t:{i:0>40}"), Required::new(permanent(), None))).collect();
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &big).unwrap();
+    let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.drop_broken(None).unwrap(), vec![c]);
+    assert!(!lp.peers[0].engine.body_not_dropped(&c, &d, &ak("required.0^")));
+    assert!(lp.peers[0].engine.core.ix.required.get(&d).is_none(), "out of memory with it");
+    // a fallen setting of one who held admin stays: it may stand again
+    let carol = lp.peers[2].engine.tid();
+    let s = require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    lp.sync_all().unwrap();
+    demote_to_write(&mut lp, d, carol, &[]);
+    lp.sync_all().unwrap();
+    assert!(!valid(&lp.peers[0], &s, &d, "required.0^"));
+    assert!(!lp.peers[0].engine.drop_broken(None).unwrap().contains(&s));
+    // the writer turned admin: its setting, stamped before that, stays invalid; dropped it stays
+    let bob = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
+    lp.advance(1_000);
+    lp.sync_all().unwrap();
+    assert!(!valid(&lp.peers[0], &c, &d, "required.0^"));
+}
+
+// spec/commits.md §5: past `MAX_REQUIRED_ENTRIES` or with a prefix past `MAX_AK_BYTES` a delta
+// requires nothing, and a writer refuses it
+#[test]
+fn setting_over_its_bounds_requires_nothing_spec_commits_5() {
+    let n = osis_base::format::MAX_REQUIRED_ENTRIES;
+    let many: RequiredRules = (0..=n).map(|i| (format!("t:n{i}"), Required::new(permanent(), None))).collect();
+    let long = rules(&[(&"t".repeat(osis_base::format::MAX_AK_BYTES + 1), permanent()), ("t:", permanent())]);
+    let fits: RequiredRules = (0..n).map(|i| (format!("t:{i}"), Required::new(permanent(), None))).collect();
+    assert!(ct::required_fits(&fits));
+    for over in [many, long] {
+        assert!(!ct::required_fits(&over));
+        let (mut lp, d) = setup(407);
+        let mut m = Mutation::new();
+        m.set(d, &ct::REQUIRED, &over).unwrap();
+        assert!(lp.peers[0].commit(m).is_err(), "refused");
+        let mut m = Mutation::new();
+        m.set(d, &ct::REQUIRED, &over).unwrap();
+        lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+        lp.advance(1_000);
+        let w = hostile(&mut lp, 1, d, "t:n0.0", junk(), "fine");
+        lp.sync_all().unwrap();
+        for i in 0..3 {
+            assert!(valid(&lp.peers[i], &w, &d, "t:n0.0"), "{i}");
+        }
+    }
+}
+
+// spec/commits.md §7, §5: an undo of a write valid before a change writes under the change
+#[test]
+fn undo_after_change_fills_spec_commits_5() {
+    let (mut lp, d) = setup(403);
+    let mut m = Mutation::new();
+    m.set(d, &ak("t:a.0"), &s("one")).unwrap();
+    let w = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1000);
+    require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.undo(w);
+    let u = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.header(&u).unwrap().aspects[0].retention, permanent());
+    assert!(valid(&lp.peers[0], &u, &d, "t:a.0"));
+}
+
+// spec/permissions.md §8, spec/sync.md §6: a setting with a key below a body already written. The
+// nodes holding the body keep it; one that gets it after the setting drops it and, with the
+// delete key, deletes it at the host; a new device then never receives it; all read alike. When
+// the setting falls a holder uploads it again and everyone reads it, the new device too.
+#[test]
+fn setting_below_a_body_erases_nothing_held_spec_perm_8() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b, c, d, g, t) = on_host(&mut net, host);
+    net.set_online(d, false);
+    net.set_online(c, false);
+    let mut m = Mutation::new();
+    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    let st = net.engine(c).commit(m).unwrap().unwrap();
+    net.advance(5_000);
+    let k = ak("t:msg.0");
+    let mut m = Mutation::new();
+    m.set(t, &k, &s("msg")).unwrap();
+    m.retention(t, &k, junk()).unwrap();
+    let body = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(a).get(&t, &k).unwrap(), Some(s("msg")));
+    net.set_online(c, true);
+    settle(&mut net);
+    for n in [a, b, c] {
+        assert_eq!(net.engine(n).body_valid(&body, &t, &k), Some(false), "{n}");
+        assert_eq!(net.engine(n).get(&t, &k).unwrap(), None, "{n}");
+    }
+    assert!(net.engine(a).body_not_dropped(&body, &t, &k) && net.engine(b).body_not_dropped(&body, &t, &k), "held before the setting: kept");
+    assert!(!net.engine(c).body_not_dropped(&body, &t, &k), "received after it");
+    net.set_online(d, true);
+    settle(&mut net);
+    assert_eq!(net.engine(d).get(&t, &k).unwrap(), None);
+    // Alice takes Carol's admin, no frontier: the setting falls
+    let carol = net.tid(c);
+    {
+        use osis_crdt::{Op, PathOp, PathSeg};
+        let mut m = Mutation::new();
+        m.op(g, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(carol)) }).unwrap();
+        m.op(g, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(carol))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+        m.frontier(ct::Frontier::default().to_value());
+        net.engine(a).commit_hostile(m).unwrap().unwrap();
+    }
+    settle(&mut net);
+    settle(&mut net);
+    assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required.0^")), Some(false));
+    for n in [a, b, c, d] {
+        assert_eq!(net.engine(n).get(&t, &k).unwrap(), Some(s("msg")), "{n}");
+    }
+}
+
+// spec/commits.md §5, spec/sync.md §7: a writer that has not seen the change: a commit with one
+// delta breaking a setting takes its others that answer to one, on another thing too, in one blob
+// or two; a part on a role-class aspect could not be there, a `required.0^` beside it stands.
+// Bodies go alike; when the setting falls they come back and the commit reads whole.
+#[test]
+fn broken_delta_takes_its_commit_spec_commits_5() {
+    for same_class in [true, false] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, b, c, d, g, t) = on_host(&mut net, host);
+        let u = net.item(a, g, g, "u");
+        net.run();
+        net.set_online(d, false);
+        net.set_online(b, false);
+        let setter = if same_class { c } else { a };
+        let mut m = Mutation::new();
+        m.set(t, &ct::REQUIRED, &rules(&[("t:bad", permanent())])).unwrap();
+        let st = net.engine(setter).commit(m).unwrap().unwrap();
+        settle(&mut net);
+        let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+        let mut m = Mutation::new();
+        m.set(t, &bad, &s("bad")).unwrap();
+        m.retention(t, &bad, junk()).unwrap();
+        m.set(t, &good, &s("good")).unwrap();
+        m.set(u, &good, &s("other")).unwrap();
+        if same_class {
+            m.retention(t, &good, junk()).unwrap();
+            m.retention(u, &good, junk()).unwrap();
+        }
+        let cm = net.engine(b).commit(m).unwrap().unwrap();
+        net.advance(1_000);
+        net.set_online(b, true);
+        settle(&mut net);
+        settle(&mut net);
+        net.set_online(d, true);
+        settle(&mut net);
+        settle(&mut net);
+        for n in [a, b, c, d] {
+            for (x, k) in [(t, &bad), (t, &good), (u, &good)] {
+                assert_eq!(net.engine(n).get(&x, k).unwrap(), None, "{same_class} {n}");
+            }
+        }
+        for k in [&bad, &good] {
+            assert!(!net.engine(a).body_not_dropped(&cm, &t, k), "{same_class}: gone without a right");
+            assert!(net.engine(b).body_not_dropped(&cm, &t, k), "{same_class}: its author's stays");
+        }
+        if same_class {
+            // the setting falls with Carol's admin; the author's node uploads; everyone reads it
+            let carol = net.tid(c);
+            use osis_crdt::{Op, PathOp, PathSeg};
+            let mut m = Mutation::new();
+            m.op(g, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(carol)) }).unwrap();
+            m.op(g, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(carol))], op: Op::Set(edge(Role::Write).to_value()) }).unwrap();
+            m.frontier(ct::Frontier::default().to_value());
+            net.engine(a).commit_hostile(m).unwrap().unwrap();
+            settle(&mut net);
+            settle(&mut net);
+            assert_eq!(net.engine(a).body_valid(&st, &t, &ak("required.0^")), Some(false));
+            for n in [a, b, c, d] {
+                assert_eq!(net.engine(n).get(&t, &good).unwrap(), Some(s("good")), "{n}");
+                assert_eq!(net.engine(n).get(&t, &bad).unwrap(), Some(s("bad")), "{n}");
+                assert_eq!(net.engine(n).get(&u, &good).unwrap(), Some(s("other")), "{n}");
+            }
+        }
+    }
+}
+
+// spec/commits.md §4: a broken delta a node never gets holds its commit, which reads as invalid
+// anyway: a new device with one part reads nothing of it, setting or not at first, and all of it
+// once the setting falls and the part comes
+#[test]
+fn missing_broken_part_reads_alike_spec_commits_4() {
+    let (mut lp, d) = setup(411);
+    let carol = lp.peers[2].engine.tid();
+    let base = base_of(&mut lp);
+    let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+    let s1 = require(&mut lp, 2, d, &rules(&[("t:bad", permanent())]));
+    let mut m = Mutation::new();
+    m.set(d, &bad, &s("bad")).unwrap();
+    m.retention(d, &bad, junk()).unwrap();
+    m.set(d, &good, &s("good")).unwrap();
+    let c = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let setting = pack(&mut lp.peers[2], &s1);
+    let whole = pack(&mut lp.peers[1], &c);
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak == bad).unwrap();
+    part.parts.retain(|x| x.ai != ai);
+    let part = part.encode();
+    let dem = demote_to_write(&mut lp, d, carol, &[]);
+    let demotion = pack(&mut lp.peers[0], &dem);
+    for setting_first in [true, false] {
+        let mut p = fresh(&mut lp, &base, &[]);
+        p.engine.set_syncing(d, true).unwrap();
+        let (x, y): (&[u8], &[u8]) = if setting_first { (&setting.bytes, &part) } else { (&part, &setting.bytes) };
+        p.engine.ingest(x, whole.blobs.clone()).unwrap();
+        p.engine.ingest(y, setting.blobs.clone()).unwrap();
+        assert_eq!(read(&mut p, d, "t:good.0"), None);
+        p.engine.ingest(&demotion.bytes, demotion.blobs.clone()).unwrap();
+        assert_eq!(read(&mut p, d, "t:good.0"), None, "still waits for its other part");
+        p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+        assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")));
+        assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")));
+    }
+}
