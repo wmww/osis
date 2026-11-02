@@ -2716,7 +2716,7 @@ fn newest_event_names_departure_spec_crypto_4() {
 // part without its `secrets.0` part on A. X sees N a current holder and holds no names for it,
 // and its rotation of A boxes N at D's keyset.
 #[test]
-#[ignore = "repro: issues/grant-names-projection.md"]
+#[ignore = "repro: issues/grant-projection-names.md"]
 fn repro_grant_projection_names_unheld_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = LocalPeer::new(4, 4_137, WallMs(1_700_000_000_000)).unwrap();
