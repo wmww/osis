@@ -1,0 +1,7 @@
+# Three order seeds fail on main, not from the parts work
+> Summary: Fresh per-branch offsets found `alike` seed 91048 (a map entry reads older content by arrival order), `exhaustive` seed 92038 (a kept set's death dated with no superseder) and `alike` seed 98057 (a kept body with no death where a superseder exists). All fail the same way on main at b0a0e9e7 and on parts-holes. Not classified.
+> Tags: tests, engine, retention
+
+- `OSIS_ORDER_SEED=91048 OSIS_ORDER_LEN=60 cargo test --workspace --test it order::arrival_order_alike_large_spec_permissions_5_2 -- --include-ignored`: on `t:map.0`, as made reads `k1: {1: 7}`, the reverse order `k1: {0: "v1", 1: 7}`. Shrunk history has a demotion, a nested item, a compaction and an advance past an expiry: perhaps issues/snapshot-copy-of-expiring-write.md again (not checked).
+- `OSIS_ORDER_SEED=92038 OSIS_ORDER_LEN=30 cargo test --workspace --test it order::arrival_order_exhaustive_large_spec_crdt_4_8 -- --include-ignored`: `t:keptset.0`, as made, "death dated early or missing", no earliest superseder. Shrunk history: a typed write, a sync, a compaction, a demotion, an undo. Perhaps near issues/map-snapshot-death-missing.md (not checked).
+- `OSIS_ORDER_SEED=98057 OSIS_ORDER_LEN=60 cargo test --workspace --test it order::arrival_order_alike_large_spec_permissions_5_2 -- --include-ignored`: `t:kept.0`, as made, "death dated early or missing": no death here, earliest superseder known.

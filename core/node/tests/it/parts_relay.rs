@@ -380,6 +380,88 @@ fn junk_with_a_known_record_names_nothing_spec_commits_4() {
     assert!(x.net.engine(b).take_redeliver().is_empty(), "it kept nothing out");
 }
 
+// spec/commits.md §5: a part pending at its expiry counts as never received: a start's look at what pends
+// does not bring it back from the blob of its entry, and its record coming leaves it gone, the flag up.
+#[test]
+fn redelivery_leaves_a_part_past_its_expiry_spec_commits_5() {
+    let mut x = case();
+    let (a, b, h) = (x.a, x.b, x.h);
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &Value::Str("gone at T".into())).unwrap();
+    let t = x.net.engine(a).now().0 + 60_000;
+    m.expires(h, &REG, osis_base::WallMs(t)).unwrap();
+    let c = x.net.engine(a).commit(m).unwrap().unwrap();
+    let good = plain(&mut x.net, a, &c);
+    x.give(good, c, 100);
+    x.net.advance(120_000);
+    x.net.feed(b, Event::Tick);
+    x.net.settle(10_000);
+    assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "flagged at T");
+    x.net.restart(b, 77);
+    x.net.feed(b, Event::Local);
+    x.net.settle(10_000);
+    assert_eq!(x.net.sync(b).redelivered, 0, "its copy stays out");
+    x.give_record(300);
+    assert!(x.holds(c));
+    assert_eq!(x.read(), Some(Value::Str("first".into())));
+    assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "still counts as never received");
+}
+
+// spec/commits.md §5: a body dropped for its keep bounds counts as never received: a name on its commit
+// brings no copy of it back.
+#[test]
+fn redelivery_leaves_a_dropped_body_spec_commits_5() {
+    let mut x = case();
+    let (a, b, h, c) = (x.a, x.b, x.h, x.c);
+    x.give_record(300);
+    let good = plain(&mut x.net, a, &c);
+    x.give(good, c, 100);
+    assert!(x.holds(c));
+    let slots = x.net.engine(b).settled_slots(&c).unwrap();
+    x.net.engine(b).drop_body(&c, &h, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap();
+    assert_eq!(x.net.engine(b).settled_slots(&c).unwrap(), slots);
+}
+
+/// A roster snapshot of `t`, one delta per edge, by `by`, whatever its rights.
+fn roster_snapshot(net: &mut Net, by: usize, t: Tid, holders: [Tid; 2]) -> CommitId {
+    let mut m = osis_node::Mutation::new();
+    let edge = || osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None });
+    m.op(t, &osis_schema::core_types::ROLES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Map(holders.into_iter().map(|h| (Value::Tid(h), edge())).collect())) }).unwrap();
+    m.op(t, &osis_schema::core_types::TENURES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Replace(Value::Set(Default::default())) }).unwrap();
+    m.roster_for_tests();
+    net.engine(by).core.skip_writer_rules = true;
+    let c = net.engine(by).commit(m).unwrap().unwrap();
+    net.engine(by).core.skip_writer_rules = false;
+    c
+}
+
+// spec/commits.md §4 (copies), crash: a roster snapshot on a thing not synced, one delta's first copy
+// junk: the record comes, the junk goes, the commit applies with a hole in one aspect, and the crash
+// takes the name. `missing` is per aspect, so only the entry's several deltas say to look.
+#[test]
+fn restart_with_a_hole_in_an_aspect_spec_commits_4() {
+    let mut x = case();
+    let (a, b, h, r) = (x.a, x.b, x.h, x.r);
+    let holders = [x.net.tid(a), x.net.tid(b)];
+    let c = roster_snapshot(&mut x.net, a, h, holders);
+    let good = x.net.engine(a).package(&c).unwrap().unwrap().bytes;
+    let mut junk = CommitBlob::decode(&good).unwrap();
+    let hole = junk.parts.iter().map(|p| (p.ai, p.di)).find(|p| p.1 > 0).expect("an aspect with several deltas");
+    junk.parts.iter_mut().find(|p| (p.ai, p.di) == hole).unwrap().delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![3; 40])]));
+    x.give(junk.encode(), c, 100);
+    x.give(good, c, 101);
+    let pk = x.net.engine(a).package(&r).unwrap().unwrap();
+    x.net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    x.net.engine(b).reexamine().unwrap();
+    assert!(!x.net.engine(b).take_redeliver().is_empty(), "named");
+    assert!(x.holds(c), "applied with the hole: {:?}", x.net.engine(b).pending());
+    assert!(!x.net.engine(b).settled_slots(&c).unwrap().contains(&hole));
+    x.net.restart(b, 77);
+    x.net.feed(b, Event::Local);
+    x.net.settle(10_000);
+    assert!(x.net.engine(b).settled_slots(&c).unwrap().contains(&hole), "the true delta came");
+}
+
 struct Rng(u64);
 impl Rng {
     fn below(&mut self, n: u64) -> u64 {
@@ -423,6 +505,10 @@ fn relay_seed(seed: u64) {
     let mut m = osis_node::Mutation::new();
     m.op(h1, &osis_schema::core_types::ROLES, edge_op(dt)).unwrap();
     sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
+    x.net.advance(10);
+    // several deltas on one aspect: a junk one leaves a hole in an aspect the commit holds
+    let other = x.net.tid(b);
+    sources.push((a, roster_snapshot(&mut x.net, a, h2, [holder, other])));
     for id in x.net.engine(a).commit_ids() {
         let pk = x.net.engine(a).package(&id).unwrap().unwrap();
         let _ = x.net.engine(d).ingest(&pk.bytes, pk.blobs);
@@ -503,7 +589,7 @@ fn relay_seed(seed: u64) {
     let pending = x.net.engine(b).pending();
     assert!(pending.is_empty(), "seed {seed}: {pending:?}");
     for (c, p) in &slots {
-        assert!(x.net.engine(b).held_slots(c).unwrap().contains(p), "seed {seed}: {c:?} {p:?}");
+        assert!(x.net.engine(b).settled_slots(c).unwrap().contains(p), "seed {seed}: {c:?} {p:?}");
     }
     let got = (x.net.engine(b).get(&h1, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), x.net.engine(b).get(&h2, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap());
     assert_eq!(got, want, "seed {seed}");
@@ -523,9 +609,9 @@ fn relay_differential_spec_commits_4() {
 #[test]
 #[ignore]
 fn relay_differential_large_spec_commits_4() {
-    let (from, n) = (std::env::var("OSIS_RELAY_START").ok().and_then(|x| x.parse().ok()).unwrap_or(1u64), std::env::var("OSIS_RELAY_SEEDS").ok().and_then(|x| x.parse().ok()).unwrap_or(150u64));
-    for seed in from..from + n {
-        relay_seed(seed);
-    }
-    println!("relay differential: seeds {from}..{}", from + n);
+    osis_base::testenv::Seeds::from_env("OSIS_RELAY_START", "OSIS_RELAY_SEEDS", 1..151).run("parts_relay::relay_differential_large_spec_commits_4", relay_replay, relay_seed);
+}
+
+fn relay_replay(s: u64) -> String {
+    format!("OSIS_RELAY_START={s} OSIS_RELAY_SEEDS=1 cargo test --workspace --test it parts_relay::relay_differential_large_spec_commits_4 -- --ignored --exact")
 }
