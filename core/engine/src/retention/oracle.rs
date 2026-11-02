@@ -34,10 +34,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     }
     let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
     let [snap] = snap.as_slice() else { return Ok(None) };
-    if held.is_empty() {
-        return Ok(Some(true));
-    }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    if held.is_empty() {
+        let awaited = m.missing.contains(&cai) && m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some());
+        return Ok(Some(!awaited));
+    }
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
     if is_snapshot && !crate::apply::validity::snapshot_valid(tx.core, c, tid, ak) {

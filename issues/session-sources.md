@@ -63,7 +63,7 @@ B never needs to know which case it is in. Per construct:
 ## Readers and replacements
 | Reader | Today | Without the entry or header | Replacement |
 |---|---|---|---|
-| Atomic apply `listed` (receipt.rs:208, apply/mod.rs:164) | Frontier reaches part | Waits forever for a deleted part | Rule 5. Pre-existing gap without any snapshot: issues/atomic-wait-carrierless-drop.md |
+| Atomic apply `listed` (receipt.rs:208, apply/mod.rs:164) | Frontier reaches part | Waits forever for a deleted part | Rule 5. Pre-existing gap without any snapshot: issues/atomic-wait-no-later-commit.md |
 | Compaction `covered` (retention/mod.rs:1087, :1097) | Frontier and frontier ⊇ check, Node only | Never covers once S is pruned | Rule 4. Session check is missing today (Node only) |
 | Receipts and demotion frontier (`received` :147, `Engine::frontier` :290; perm `Frontier::covers`) | Node ranges plus commit IDs | n/a | Rules 6 and 7: IDs only; `Receipt.sources`, `received`'s snapshot claims, perm `Frontier.writes` go |
 | Receipts-only reads (permissions.md §5.3, receipt.rs:252) | By commit ID | Unchanged | None needed |
@@ -177,5 +177,5 @@ Item 193 code: deleted in step 2, except `Form::Node`/`Source::Node` arms (step 
 ## Owner decisions (round 13)
 - Rule 7 in place of the earlier candidate for decision (a): accepted ("seems fine"), with its 32 B per uncompacted commit and the double-removal residual.
 - Step 3 (compact before an explicit demotion): left to the coordinator, who chose **no** for now: nothing blinks out, and frontiers stay bounded by compaction cadence. Revisit if demotion frontiers measure large.
-- issues/atomic-wait-carrierless-drop.md: count a carrierless-dropped dead part as held, accepted ("fine").
+- atomic-wait-carrierless-drop (built): count a carrierless-dropped dead part as held, accepted ("fine").
 - Owner earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.

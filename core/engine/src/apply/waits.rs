@@ -44,7 +44,8 @@ enum On {
     /// The creation record of `tid`: held (`true`) or not when examined.
     /// `memory`: the waiting commit is memory class (it sees memory records too).
     Record { tid: Tid, memory: bool, had: bool },
-    /// The missing deltas, and the earliest expiry among them still to come. Only commits
+    /// The missing deltas, and the earliest expiry or keep-at-most bound among them still to come
+    /// (`next_expiry`). Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
     /// (`waits_for_deltas`: held snapshots, purge rights).
     Deltas { header: Arc<Header>, missing: Vec<(usize, usize)>, expiry: Option<u64> },
@@ -87,7 +88,7 @@ pub(crate) struct Waits {
     by_thing: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Record waits by the record's thing.
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
-    /// Delta waits by the earliest expiry of their missing deltas.
+    /// Delta waits by the earliest expiry or bound of their missing deltas (`next_expiry`).
     expiring: BTreeSet<(u64, CommitId)>,
     /// Waits whose inputs changed since examined: receipt or purge records of a delta wait's
     /// aspect.
@@ -140,12 +141,17 @@ impl Waits {
         self.woken.remove(id);
     }
 
+    /// When the next delta wait turns on the clock (`next_expiry`).
+    pub fn next_due(&self) -> Option<u64> {
+        self.expiring.first().map(|x| x.0)
+    }
+
     /// Drops every wait: the next `reexamine` examines every pending commit.
     pub fn clear(&mut self) {
         *self = Waits::default();
     }
 
-    /// A receipt or purge record of `(tid, ak)` was written.
+    /// A receipt or purge record of `(tid, ak)` was written, or a commit on it applied.
     pub fn wake(&mut self, tid: &Tid, ak: &Ak) {
         if let Some(s) = self.by_aspect.get(&(*tid, ak.clone())) {
             self.woken.extend(s.iter().copied());
@@ -220,9 +226,10 @@ fn aspects(h: &Header, missing: &[(usize, usize)]) -> BTreeSet<(Tid, Ak)> {
     missing.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect()
 }
 
-/// The earliest expiry after `now` of the aspects of `missing`.
-fn next_expiry(h: &Header, missing: &[(usize, usize)], now: u64) -> Option<u64> {
-    missing.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).filter_map(|a| a.expires).filter(|e| *e > now).min()
+/// The earliest time after `now` a delta of `missing` of commit `id` counts as held by the clock:
+/// its expiry or its keep-at-most bound (`at_most_bound`, lowered by a commit `Waits::wake` tells of).
+fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[(usize, usize)], now: u64) -> Option<u64> {
+    missing.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).flat_map(|a| [a.expires, super::at_most_bound(core, h, id, a)]).flatten().filter(|e| *e > now).min()
 }
 
 /// Notes what examining pending commit `id` (`blob`, after `examine`) read, if it can be judged
@@ -239,7 +246,7 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
         }
         Reason::WaitDeltas => {
             let missing = blob.missing();
-            let expiry = next_expiry(h, &missing, now);
+            let expiry = next_expiry(core, h, &id, &missing, now);
             On::Deltas { header: Arc::new(h.clone()), missing, expiry }
         }
         _ => return,
@@ -299,7 +306,7 @@ pub(crate) fn still_waits(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
         return Ok(false);
     }
     // judged again now: left out until something changes once more
-    let on = On::Deltas { header: h.clone(), expiry: next_expiry(&h, &missing, now), missing };
+    let on = On::Deltas { header: h.clone(), expiry: next_expiry(tx.core, &h, id, &missing, now), missing };
     let w = Wait::new(&h, Reason::WaitDeltas, on, tx.core, now);
     tx.core.waits.insert(*id, w);
     Ok(true)

@@ -48,6 +48,9 @@ impl Rng {
 pub(crate) enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
+    /// `Write` plus a write of `t:rec.0` under default retention in the same commit: two bodies
+    /// when `op` has a keep bound (`random_step` never draws it, so found histories keep).
+    Mixed { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
@@ -313,6 +316,19 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                         let _ = m.op(th(t), &a2, po2);
                     }
                 }
+                if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
+                    marks[by].push(lp.peers[by].engine.now());
+                }
+                Some(by)
+            }
+            Step::Mixed { by, t, op, k, v } => {
+                let (a, po) = content_op(op, k, v);
+                let (a2, po2) = content_op(15, k, v);
+                let mut m = Mutation::new();
+                if let Some(r) = keep_of(op) {
+                    let _ = m.retention(th(t), &a, r);
+                }
+                let _ = m.op(th(t), &a2, po2);
                 if m.op(th(t), &a, po).is_ok() && lp.peers[by].commit(m).is_ok_and(|x| x.is_some()) {
                     marks[by].push(lp.peers[by].engine.now());
                 }
@@ -1359,6 +1375,157 @@ fn arrival_order_exhaustive_small_spec_crdt_4_8() {
 #[ignore = "tier 2"]
 fn arrival_order_exhaustive_large_spec_crdt_4_8() {
     run("arrival_order_exhaustive_large_spec_crdt_4_8", 2023..2063, 30, EXHAUST, focused_history);
+}
+
+/// A history of writes under keep at most, some with a part under default retention, on G.
+fn carrierless_history(seed: u64, len: usize) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut steps = vec![Step::Sync { from: 0, to: 1 }];
+    for _ in 0..len {
+        let (by, op, k, v) = (rng.below(2) as usize, rng.pick(&[17, 18, 19, 19, 20]), rng.below(3) as u8, rng.below(10) as u8);
+        steps.push(match rng.below(8) {
+            0..=2 => Step::Mixed { by, t: 0, op, k, v },
+            3..=5 => Step::Write { by, t: 0, op, k, v },
+            6 => Step::Sync { from: by, to: 1 - by },
+            _ => Step::Advance { who: None, ms: 1 + rng.below(1_000) },
+        });
+    }
+    steps
+}
+
+/// `pk` without the parts `gone` of it holds: `None` when that leaves no part.
+fn without(pk: &Package, gone: &BTreeSet<(CommitId, usize)>) -> Option<Vec<u8>> {
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let had = !b.parts.is_empty();
+    b.parts.retain(|p| !gone.contains(&(pk.id, p.ai)));
+    (b.parts.len() + usize::from(!had) > 0).then(|| b.encode())
+}
+
+/// The invariant `apply::at_most_bound` relies on (spec/commits.md §4): whether a part under keep
+/// at most arrives never, or after its commit applied, or with the rest, in any order, the node
+/// ends alike and nothing pends, for every part a holder dropped with no live write (what hosts
+/// delete with no carrier). A part with no commit on its aspect stamped as late keeps its commit
+/// waiting at any clock.
+fn carrierless_check(seed: u64, len: usize) -> Result<usize, String> {
+    let played = play(seed, &carrierless_history(seed, len));
+    let n = played.packs.len();
+    let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
+    let later = WallMs(played.now.0 + 24 * HOUR);
+    let dump = |p: &mut Peer| judged_now(p, &played.things);
+    let settle = |p: &mut Peer| {
+        p.clock.set(later);
+        p.engine.tick().unwrap();
+    };
+    // only a synced thing's missing part makes its commit wait
+    let syncing_node = || {
+        let mut p = Peer::new(FRESH, played.now).unwrap();
+        p.engine.set_syncing(played.things[0], true).unwrap();
+        p
+    };
+    let mut full = deliver(&played, &(0..n).collect::<Vec<_>>());
+    settle(&mut full);
+    let want = dump(&mut full);
+    if !want.part("pending").is_empty() {
+        return Err(format!("the whole set pends: {}", want.part("pending")));
+    }
+    // what a holder dropped with no live write, and the parts nothing on their aspect is as late as
+    let headers: Vec<osis_commit::Header> = played.packs.iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header).collect();
+    let (mut gone, mut last) = (BTreeSet::new(), Vec::new());
+    for (i, h) in headers.iter().enumerate().skip(played.base) {
+        for (ai, a) in h.aspects.iter().enumerate() {
+            if a.retention.at_most.rel.is_none() {
+                continue;
+            }
+            if !full.engine.body_not_dropped(&played.packs[i].id, &a.tid, &a.ak) && !full.engine.body_live(&played.packs[i].id, &a.tid, &a.ak).unwrap() {
+                gone.insert((played.packs[i].id, ai));
+            }
+            let on = |o: &osis_commit::Header| o.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak);
+            if h.aspects.len() > 1 && !headers.iter().enumerate().any(|(j, o)| j != i && o.ts >= h.ts && on(o)) {
+                last.push((played.packs[i].id, ai));
+            }
+        }
+    }
+    let shuffled = |rng: &mut Rng| {
+        let mut o: Vec<usize> = (played.base..n).collect();
+        for x in (1..o.len()).rev() {
+            o.swap(x, rng.below(x as u64 + 1) as usize);
+        }
+        (0..played.base).chain(o).collect::<Vec<usize>>()
+    };
+    let mut tried = 0;
+    for _ in 0..4 {
+        tried += 1;
+        // never: the bodies are gone
+        let order = shuffled(&mut rng);
+        let mut p = syncing_node();
+        for &i in &order {
+            if let Some(b) = without(&played.packs[i], &gone) {
+                let _ = p.engine.ingest(&b, played.packs[i].blobs.clone());
+            }
+        }
+        let _ = p.engine.reexamine();
+        settle(&mut p);
+        let got = dump(&mut p);
+        let vs = format!("order {order:?}, withheld {gone:?}");
+        if !got.part("pending").is_empty() {
+            return Err(format!("{vs}: pends: {}", got.part("pending")));
+        }
+        for part in ["reads", "states"] {
+            if got.part(part) != want.part(part) {
+                return Err(format!("{vs}: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
+            }
+        }
+        // late: a copy still comes, in another order
+        let order = shuffled(&mut rng);
+        for &i in &order {
+            let _ = p.engine.ingest(&played.packs[i].bytes, played.packs[i].blobs.clone());
+        }
+        let _ = p.engine.reexamine();
+        let got = dump(&mut p);
+        for part in ["reads", "states", "pending"] {
+            if got.part(part) != want.part(part) {
+                return Err(format!("{vs}, then late in {order:?}: {part} differ:\n{}\nvs\n{}", want.part(part), got.part(part)));
+            }
+        }
+    }
+    for (id, ai) in last {
+        let mut p = syncing_node();
+        let held = BTreeSet::from([(id, ai)]);
+        for pk in &played.packs {
+            if let Some(b) = without(pk, &held) {
+                let _ = p.engine.ingest(&b, pk.blobs.clone());
+            }
+        }
+        settle(&mut p);
+        if !p.engine.pending().iter().any(|(c, r)| *c == id && *r == osis_node::Reason::WaitDeltas) {
+            return Err(format!("{id:?} part {ai} is live or may be, nothing on its aspect as late, and did not wait: {:?}", p.engine.pending()));
+        }
+    }
+    Ok(tried)
+}
+
+fn carrierless_run(name: &str, seeds: std::ops::Range<u64>, len: usize) {
+    use osis_base::testenv::{Seeds, u64_var};
+    let seeds: Vec<u64> = match u64_var("OSIS_ORDER_SEED") {
+        Some(o) => vec![o],
+        None => Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds).range.collect(),
+    };
+    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| caught(|| carrierless_check(seed, len)).map_err(|e| format!("seed {seed} (replay: OSIS_ORDER_SEED={seed}, order::{name}): {e}")));
+    let fails: Vec<String> = results.into_iter().filter_map(Result::err).collect();
+    assert!(fails.is_empty(), "{} of {} failing:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
+}
+
+// spec/commits.md §4 (a delta past its keep-at-most bound counts as held), §5: `carrierless_check`.
+#[test]
+fn carrierless_part_alike_small_spec_commits_4() {
+    carrierless_run("carrierless_part_alike_small_spec_commits_4", 0..12, 14);
+}
+
+// The same over more histories, longer.
+#[test]
+#[ignore = "tier 2"]
+fn carrierless_part_alike_large_spec_commits_4() {
+    carrierless_run("carrierless_part_alike_large_spec_commits_4", 1000..1200, 30);
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): three writes of a
