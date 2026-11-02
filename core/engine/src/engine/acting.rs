@@ -6,12 +6,15 @@
 
 use super::write::{check_authority_with, check_role_with, role_with, Mutation, Records};
 use super::Engine;
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::events::ChangeId;
 use crate::flows::Done;
 use crate::rotation;
-use osis_base::{Ak, Role, Tid, Ts};
+use osis_base::{Ak, Role, Tid, Ts, Value};
+use osis_crdt::Op;
 use osis_perm::At;
+use osis_schema::core_types::{CREATED, GROUP, is_role_class};
+use osis_schema::AspectKey;
 use std::collections::BTreeSet;
 
 impl Engine {
@@ -38,7 +41,9 @@ impl Engine {
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
     /// every creation (write on the owner), every thing it persists or frees. A purge names
     /// history whose right (spec/permissions.md §8) is judged at receivers by this node's rights:
-    /// it needs admin, the one role that holds every such right.
+    /// it needs admin, the one role that holds every such right. `group.0` gains only what it may
+    /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: a
+    /// placement carries the thing's data under the group's labels.
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;
@@ -53,21 +58,62 @@ impl Engine {
         for p in &m.purge {
             check_role_with(&self.core, *actor, records, p.tid(), p.ak().as_str(), Role::Admin, ts)?;
         }
+        for ((_, ak), a) in &m.aspects {
+            if ak.as_str() != GROUP.ak() {
+                continue;
+            }
+            for op in &a.ops {
+                let added: &[Value] = match &op.op {
+                    Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Edit { new: v, .. } => std::slice::from_ref(v),
+                    Op::Insert { items, .. } => items,
+                    _ => &[],
+                };
+                let mut bad = None;
+                added.iter().for_each(|v| each_tid(v, &mut |t| {
+                    if !m.creates.contains_key(t) && !self.readable_by(actor, t) {
+                        bad = Some(*t);
+                    }
+                }));
+                if let Some(t) = bad {
+                    return Err(Error::UnknownThing(t));
+                }
+            }
+        }
         Ok(())
     }
 
-    /// Fails `Permission` unless `actor` may write every aspect reverting change `id` writes.
-    pub fn check_revert_as(&self, actor: &Tid, id: ChangeId) -> Result<()> {
-        let ts = self.acting_ts();
-        let records: Records<'_> = &|t| self.ephemeral_thing(t).map(|e| &e.record);
-        let mut aspects: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
+    /// What reverting change `id` writes: the aspects it touched; for a thing it created, which the
+    /// revert deletes (`undo::unmake_ops`), every held aspect and its placements in every group
+    /// this node may write. Things it saved as drafts are not deleted; they count anyway.
+    fn revert_writes(&mut self, id: ChangeId) -> Result<BTreeSet<(Tid, Ak)>> {
+        let mut out: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
         if let ChangeId::Commit(c) = id
             && let Some(h) = self.header(&c)
         {
-            aspects.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+            out.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         }
-        for (t, ak) in &aspects {
-            check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts)?;
+        let made: Vec<Tid> = out.iter().filter(|(_, a)| a.as_str() == CREATED.ak()).map(|(t, _)| *t).collect();
+        let group = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
+        for t in made {
+            out.extend(self.aspects(&t)?.into_iter().filter(|a| a.as_str() != CREATED.ak() && !is_role_class(a.as_str())).map(|a| (t, a)));
+            let (items, subs) = self.listed_in(&t);
+            out.extend(items.into_iter().chain(subs).filter(|g| *g != t && self.role_on(g) >= Some(Role::Write)).map(|g| (g, group.clone())));
+        }
+        Ok(out)
+    }
+
+    /// Fails `Permission` unless `actor` may make every write reverting change `id` makes; the
+    /// error names only what it may read.
+    pub fn check_revert_as(&mut self, actor: &Tid, id: ChangeId) -> Result<()> {
+        let writes = self.revert_writes(id)?;
+        let ts = self.acting_ts();
+        let records: Records<'_> = &|t| self.ephemeral_thing(t).map(|e| &e.record);
+        let shown = writes.iter().map(|(t, _)| *t).find(|t| self.readable_by(actor, t));
+        for (t, ak) in &writes {
+            check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts).map_err(|e| match shown {
+                Some(tid) if !self.readable_by(actor, t) => Error::Permission { tid },
+                _ => e,
+            })?;
         }
         Ok(())
     }
@@ -96,5 +142,20 @@ impl Engine {
             done.add(Engine::commit_tx(tx, also(a)?)?);
             Ok((a, done))
         })
+    }
+}
+
+/// Calls `f` with every tid inside `v`.
+fn each_tid(v: &Value, f: &mut dyn FnMut(&Tid)) {
+    match v {
+        Value::Tid(t) => f(t),
+        Value::List(l) => l.iter().for_each(|x| each_tid(x, f)),
+        Value::Set(s) => s.iter().for_each(|x| each_tid(x, f)),
+        Value::Map(m) => m.iter().for_each(|(k, x)| {
+            each_tid(k, f);
+            each_tid(x, f);
+        }),
+        Value::Enum(_, Some(p)) => each_tid(p, f),
+        _ => {}
     }
 }
