@@ -1058,7 +1058,7 @@ mod tests {
         let (x, c) = (Tid::from_bytes([9; 15]), CommitId([9; 32]));
         lp.peers[0].engine.core.ix.secrets.insert(x, reading_only(9, c));
         lp.peers[0].engine.run(|tx| super::forget_unchecked(tx, &c)).unwrap();
-        assert!(lp.peers[0].engine.core.ix.lost_due.contains(&x));
+        assert!(lp.peers[0].engine.core.ix.lost_due.contains_key(&x));
         lp.peers[0].engine.drop_lost_due().unwrap();
         assert!(lp.peers[0].engine.core.ix.secrets.get(&x).is_none_or(|e| !e.read.holds_any()));
     }

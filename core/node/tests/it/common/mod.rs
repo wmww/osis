@@ -211,3 +211,39 @@ pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collecti
         })
     })
 }
+
+/// Node `e` as a reader to box a secret to.
+pub fn read_recipient(e: &Engine) -> osis_keys::Recipient {
+    osis_keys::Recipient { holder: e.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem: e.identity().keys().kem.public().clone(), seed: None } }
+}
+
+/// A role commit by `by` boxing `rcpt` (`read_recipient`) a fresh read secret of `t` (a
+/// re-grant the recipient judges plausible when `by` is an admin of `t`) that also writes a
+/// thing nobody holds the `created.0` of, so it stays pending for good (hand-built).
+pub fn forge_pending_grant(by: &mut Engine, rcpt: osis_keys::Recipient, t: Tid, seed: u64) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    let mut held = osis_keys::ActorEpochs::default();
+    held.read.set_established(osis_keys::Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
+    let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
+    let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
+    let ak = Ak::new("secrets.0").unwrap();
+    let author = by.tid();
+    let ts = osis_base::Ts::make(by.now(), 0).unwrap();
+    let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
+    let own = Source::commit(CommitId([0; 32]));
+    let mut w = Writer::new(ts, own.clone(), 1);
+    let f = create(&mut w, &view, &v).unwrap();
+    let r = w.range();
+    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
+    cx.own = own;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+    for tid in [t, Tid::from_bytes([0x5a; 15])] {
+        let mut aw = AspectWrite::new(tid, ak.clone(), r.lo, r.hi, bytes.clone());
+        aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+        cb.aspects.push(aw);
+    }
+    let rec = by.get_typed(&t, &ct::CREATED).unwrap().unwrap();
+    cb.build(&by.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}

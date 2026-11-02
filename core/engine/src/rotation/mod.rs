@@ -17,12 +17,12 @@ use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rota
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
-pub use lost::{Dropped, Leaving, LostScope};
+pub use lost::{Dropped, Leaving, LostScope, PENDING_GRANT_WAIT_MS};
 pub(crate) use departures::{departures, held_actors, uncovered_departures, uncovered_roles, Judge};
 use departures::{below_of, collect, uncovered_by_role};
 pub(crate) use lost::{boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
-pub(crate) use lost::{PENDING_GRANT_WAIT_MS, authentic};
+pub(crate) use lost::authentic;
 
 /// The roles of `a` that `may` (the roles the rotator may rotate) holds and a rotation of `a` is
 /// worth now (spec/permissions.md §3): their newest held epoch does not cover a known departure,
