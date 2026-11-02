@@ -70,21 +70,25 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
     held.chain(kept)
 }
 
-/// Whether held commit `c`'s part on `(tid, ak)` is covered here: dropped as covered, or held
-/// and covered by a held valid snapshot stamped after it (spec/commits.md §5). A demoter leaves
-/// such a commit out of its frontier: the covering snapshot vouches for its live writes
-/// (spec/permissions.md §5.2).
-fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+/// Whether held commit `c`'s part on `(tid, ak)` is covered here by snapshots received by
+/// `as_of`: dropped as covered with every coverer received by then (`retention::coverers`,
+/// coverers dropped in turn included), or held and covered by a
+/// held valid snapshot stamped after it and received by then (spec/commits.md §5). A demoter
+/// leaves such a commit out of its frontier: the covering snapshot vouches for its live writes
+/// (spec/permissions.md §5.2). A coverer received after `as_of` (a backdated revoke) would not
+/// be listed if the demoted node wrote it, so it would vouch for nothing after the demotion.
+fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs) -> Result<bool> {
+    let by_then = |core: &crate::engine::Core, s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.received.0 <= as_of.0);
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(false) };
     if let Some(d) = m.dropped.get(&ai) {
-        return Ok(d.as_cover);
+        return Ok(d.as_cover && crate::retention::coverers(tx.core, c, ai).iter().all(|s| by_then(tx.core, s)));
     }
     if m.missing.contains(&ai) {
         return Ok(false);
     }
     let ts = m.view.ts;
-    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c).map(|x| x.1).collect();
+    let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && by_then(tx.core, &x.1)).map(|x| x.1).collect();
     for s in snaps {
         if crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) {
             return Ok(true);
@@ -191,7 +195,7 @@ impl Engine {
                 }
                 let held: Vec<CommitId> = tx.core.durable_on(&(t, ak.clone())).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.author == node && m.received.0 <= as_of.0)).collect();
                 for c in held {
-                    if !covered_here(tx, &c, &t, &ak)? {
+                    if !covered_here(tx, &c, &t, &ak, as_of)? {
                         f.commits.insert(c);
                     }
                 }

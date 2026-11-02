@@ -321,7 +321,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
 
 /// The snapshots that covered dropped part `ai` of `c` when it dropped, or covered such a
 /// coverer dropped in turn, and so on (`Dropped::covered_by`).
-fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
+pub(crate) fn coverers(core: &Core, c: &CommitId, ai: usize) -> Vec<CommitId> {
     let Some(a) = core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)) else { return Vec::new() };
     let (tid, ak) = (a.tid, a.ak.clone());
     let direct = |x: &CommitId| -> Vec<CommitId> {
