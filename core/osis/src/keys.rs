@@ -13,6 +13,12 @@ pub struct Key {
     pub(crate) schema: Option<Arc<Schema>>,
 }
 
+/// The core schema, one shared copy.
+pub(crate) fn core_schema() -> Arc<Schema> {
+    static CORE: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
+    CORE.get_or_init(|| Arc::new(osis_schema::core_schema().clone())).clone()
+}
+
 impl Key {
     /// A key typed by `schema` if it declares `ak`, else untyped.
     pub fn new(ak: Ak, schema: Option<Arc<Schema>>) -> Key {
@@ -28,6 +34,9 @@ impl AspectKey for Key {
     }
     fn schema(&self) -> Option<&Schema> {
         self.schema.as_deref()
+    }
+    fn shared_schema(&self) -> Option<Arc<Schema>> {
+        self.schema.clone()
     }
     fn decode(&self, v: &Value) -> Result<Value, PathError> {
         // `created.0` is typed by its exclusivity rule, not the missing-field rule

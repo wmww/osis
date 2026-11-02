@@ -200,6 +200,7 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// The string or blob at the path as a stream. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
+        let crate::handle::Source::Local = db.route(tid);
         match db.raw_at(tid, key, path)? {
             Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),
             None => Ok(None),

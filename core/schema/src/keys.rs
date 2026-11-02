@@ -16,6 +16,10 @@ pub trait AspectKey {
     fn ak(&self) -> &str;
     /// The writer's schema; `None` for an untyped write (untyped defaults).
     fn schema(&self) -> Option<&Schema>;
+    /// `schema` as a shared copy (a key holding an `Arc` shares it instead of copying).
+    fn shared_schema(&self) -> Option<std::sync::Arc<Schema>> {
+        self.schema().map(|s| std::sync::Arc::new(s.clone()))
+    }
     /// Typed read (reader defaults, open structs), then into `T`.
     fn decode(&self, v: &Value) -> Result<Self::T, PathError>;
     fn encode(&self, t: &Self::T) -> Value;

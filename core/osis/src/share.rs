@@ -384,6 +384,7 @@ impl Osis {
     /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
     /// else `UnknownActor`. The grant reaches the holder's devices through its inbox.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
+        let crate::handle::Source::Local = self.route(target);
         let (target, holder) = (self.resolved(target), self.resolved(holder));
         if !self.holds(target) {
             return Err(Error::UnknownThing { tid: target });
@@ -408,6 +409,7 @@ impl Osis {
     /// on `tid` (or an invite edge of at least `role`, and no edge of the group yet), else
     /// `Permission` before anything is written, unless `opts.place_anyway` (then `Excluded`).
     pub fn share_into(&self, tid: Tid, group: Tid, role: Role, opts: ShareOpts) -> Result<Share> {
+        let crate::handle::Source::Local = self.route(tid);
         let (t, g) = (self.resolved(tid), self.resolved(group));
         for x in [t, g] {
             if !self.holds(x) {
@@ -475,6 +477,7 @@ impl Osis {
     /// rotates). `Invalid` when this node is an admin of `target` (use `demote`), `Permission`
     /// when it is no admin of `group`; nothing is written when there is no such edge.
     pub fn remove_edge_of(&self, group: Tid, target: Tid) -> Result<()> {
+        let crate::handle::Source::Local = self.route(target);
         let (g, t) = (self.resolved(group), self.resolved(target));
         if !self.roster(t).contains_key(&g) {
             return Ok(());
@@ -491,6 +494,7 @@ impl Osis {
     /// listing it as an item or subgroup (`Tied`, `Untied` or `Excluded`), and every group with
     /// a tied edge on it that no longer lists it (`placed: false`, until that edge goes).
     pub fn reach(&self, tid: Tid) -> Vec<GroupReach> {
+        let crate::handle::Source::Local = self.route(tid);
         let t = self.resolved(tid);
         let (gs, roster) = self.read(|r| (r.groups_of(t), r.roster(t)));
         let placed: BTreeSet<Tid> = gs.item_of.into_iter().chain(gs.subgroup_of).collect();
@@ -501,6 +505,7 @@ impl Osis {
 
     /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
     pub fn change_edge(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
+        let crate::handle::Source::Local = self.route(target);
         let (t, m) = (self.resolved(target), self.resolved(holder));
         if let Some(e) = self.roster(t).get(&m)
             && role < e.role
@@ -561,6 +566,7 @@ impl Osis {
     /// (thing, holder) pairs from `target` down to `actor` of a shortest chain, e.g. `[(target,
     /// K), (K, actor)]` for a link joiner; empty when it is none.
     pub fn holder_path(&self, target: Tid, actor: Tid) -> Vec<(Tid, Tid)> {
+        let crate::handle::Source::Local = self.route(target);
         let (t, a) = (self.resolved(target), self.resolved(actor));
         self.read(|r| {
             let mut via: BTreeMap<Tid, Tid> = BTreeMap::from([(t, t)]);
@@ -648,6 +654,7 @@ impl Osis {
 
     /// Removes this person's own edge on `target` (a self-removal; no pre-sync).
     pub fn leave(&self, target: Tid) -> Result<()> {
+        let crate::handle::Source::Local = self.route(target);
         let t = self.resolved(target);
         let me = self.me();
         let done = self.engine(|e| e.demote(&t, &flows::Demotion { holder: me, new: None, presync: PreSync::Synced }))?;
@@ -751,6 +758,7 @@ impl Osis {
 
     /// The links this node made to `target` that still work.
     pub fn links(&self, target: Tid) -> Vec<LinkInfo> {
+        let crate::handle::Source::Local = self.route(target);
         let t = self.resolved(target);
         self.locked(|x| {
             let made: Vec<(Tid, MadeLink)> = x.links.iter().filter(|(_, m)| m.target == t).map(|(k, m)| (*k, *m)).collect();
@@ -1039,6 +1047,7 @@ impl Osis {
     /// Makes `group` synced through `hosts` (default: this database's): its own label
     /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
     pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
+        let crate::handle::Source::Local = self.route(group);
         let g = self.resolved(group);
         if !self.holds(g) {
             return Err(Error::UnknownThing { tid: g });
@@ -1066,6 +1075,7 @@ impl Osis {
     /// Stops syncing `group` under its own labels (marks them replaced without a successor;
     /// the group stays in other synced groups it is placed in).
     pub fn unsync(&self, group: Tid) -> Result<()> {
+        let crate::handle::Source::Local = self.route(group);
         let g = self.resolved(group);
         self.engine(|e| -> Result<()> {
             let ls = e.group_labels(&g)?;
@@ -1179,6 +1189,7 @@ impl Osis {
     /// admin, every current holder of the old thing re-granted on the copy; the copy is placed
     /// into `groups` in one more write. Reads and writes through the old tid then reach the copy.
     pub fn move_thing(&self, tid: Tid, owner: Tid, groups: &[Tid]) -> Result<Tid> {
+        let crate::handle::Source::Local = self.route(tid);
         let tid = self.resolved(tid);
         if !self.holds(owner) {
             return Err(Error::UnknownThing { tid: owner });
