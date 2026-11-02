@@ -80,7 +80,7 @@ type CallReply = std::sync::mpsc::Sender<std::result::Result<Outcome, Code>>;
 type Sink = Box<dyn FnMut(PortEvent) + Send>;
 
 enum Cmd {
-    Auth { session: [u8; 16], reply: CallReply },
+    Auth { session: [u8; 16], secret: Option<osis_crypto::Secret32>, reply: CallReply },
     /// `nonce`: a write's slot, its nonce taken on the I/O thread when first sent (0 until
     /// then) and put first in `args`, so nonces go out in the order the node must see them.
     Call { token: u64, max_reply: usize, method: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>, reply: CallReply },
@@ -150,7 +150,7 @@ impl Remote {
         match crate::net::blocking(|| rx.recv()) {
             Ok(Ok(Outcome::Ok { value, .. })) => Ok(value),
             Ok(Ok(Outcome::Err { code, detail })) => Err(c::error_of(code, detail)),
-            Ok(Err(Code::REFUSED)) => Err(Error::Unsupported("refused by the node (no Owner session)".into())),
+            Ok(Err(Code::REFUSED)) => Err(Error::Unsupported("refused by the node (no session, or revoked)".into())),
             Ok(Err(Code::UNSUPPORTED)) => Err(Error::Unsupported("node too old".into())),
             Ok(Err(code)) => Err(net(format!("node answered error {}", code.0))),
             Err(_) => Err(net(LOST)),
@@ -231,9 +231,9 @@ impl Io {
 
     fn command(&mut self, now: u64, cmd: Cmd) -> Vec<ClientOutput> {
         let c = match cmd {
-            Cmd::Auth { session, reply } => {
+            Cmd::Auth { session, secret, reply } => {
                 self.calls.insert(0, reply);
-                Command::Auth { token: 0, session }
+                Command::Auth { token: 0, session, secret }
             }
             Cmd::Call { token, max_reply, method, mut args, nonce, reply } => {
                 if let Some(slot) = nonce {
@@ -262,9 +262,31 @@ impl Io {
     }
 }
 
+/// How an attachment dials its node: the daemon's unix socket, or a node address over the
+/// in-process transport (tests) or QUIC (and iroh with that feature), the key pinned.
+enum Via {
+    Unix,
+    Mem(osis_transport::InProcess),
+    Net,
+}
+
 /// Runs the connection until it or the handle ends.
-async fn run(addr: Address, clock: Arc<dyn Clock>, mut io: Io, mut rx: mpsc::UnboundedReceiver<Cmd>, ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
-    let link = match osis_transport::link::dial(&Unix, &addr, None, Duration::from_secs(10)).await {
+async fn run(via: Via, addr: Address, clock: Arc<dyn Clock>, mut io: Io, mut rx: mpsc::UnboundedReceiver<Cmd>, ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
+    let wait = Duration::from_secs(10);
+    let dialed = match via {
+        Via::Unix => osis_transport::link::dial(&Unix, &addr, None, wait).await,
+        Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi { mem: Some(m), ..Default::default() }, &addr, None, wait).await,
+        Via::Net => {
+            let m = osis_transport::Multi {
+                quic: Some(osis_transport::Quic::new()),
+                #[cfg(feature = "iroh")]
+                iroh: Some(osis_transport::Iroh::new()),
+                ..Default::default()
+            };
+            osis_transport::link::dial(&m, &addr, None, wait).await
+        }
+    };
+    let link = match dialed {
         Ok(l) => l,
         Err(e) => {
             let _ = ready.send(Err(e.to_string()));
@@ -317,11 +339,35 @@ impl Osis {
     /// clock, dispatcher and materialization bound; its store is not used (a scratch memory
     /// database stands in until the no-store profile, step (f)).
     pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
+        let uid = own_uid()?;
+        let addr = Address { url: osis_transport::unix::url_of(socket), key: osis_transport::unix::uid_key(uid) };
+        Osis::attach_via(Via::Unix, addr, None, cfg)
+    }
+
+    /// Attaches to the node at `addr` (`url#key`: a URL it listens on with that transport key,
+    /// which the transport pins) as the thin client `secret` stands for (notes/client-port.md
+    /// §3): the node acts as the client's actor, so `me()` is that actor, what it may not read
+    /// reads as unknown, process-wide calls fail `Unsupported`. Dials with `cfg.transport` (default
+    /// QUIC). A unix address is `Invalid`: the secret goes only over a keyed transport. Fails
+    /// `Unsupported` when the node refuses the secret, `Network` past its connection cap or when
+    /// it cannot be reached.
+    pub fn attach_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: Config) -> Result<Osis> {
+        if addr.0.url.starts_with("unix://") {
+            return Err(Error::Invalid("a client secret goes only to a key-pinned transport, not a unix socket".into()));
+        }
+        let via = match &cfg.transport {
+            Some(crate::Transport::InProcess(t)) => Via::Mem(t.clone()),
+            _ => Via::Net,
+        };
+        let a = Address { url: addr.0.url.clone(), key: addr.0.key };
+        Osis::attach_via(via, a, Some(secret.0.clone()), cfg)
+    }
+
+    fn attach_via(via: Via, addr: Address, secret: Option<osis_crypto::Secret32>, cfg: Config) -> Result<Osis> {
         let limit = cfg.materialize_limit;
         let scratch = Config { store: crate::StoreAt::Memory(crate::MemStore::new()), runtime: crate::Runtime::None, hosts: Vec::new(), transport: None, ..cfg };
         let (db, _) = Osis::create(scratch)?;
-        let uid = own_uid()?;
-        let addr = Address { url: osis_transport::unix::url_of(socket), key: osis_transport::unix::uid_key(uid) };
+        let keyed = secret.is_some();
         let (tx, rx) = mpsc::unbounded_channel();
         let mut challenge = [0u8; 32];
         let mut session = [0u8; 16];
@@ -337,7 +383,7 @@ impl Osis {
             .name("osis-port-client".into())
             .spawn(move || {
                 let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
-                rt.block_on(run(addr, clock, io, rx, ready_tx));
+                rt.block_on(run(via, addr, clock, io, rx, ready_tx));
             })
             .map_err(|e| Error::Storage(e.to_string()))?;
         match ready_rx.recv() {
@@ -345,11 +391,14 @@ impl Osis {
             Ok(Err(e)) => return Err(net(e)),
             Err(_) => return Err(net("no connection")),
         }
-        // Auth without a key (the Owner tier): the node's epoch; then who the node is
+        // Auth: the Owner's without a secret, a client's with it: the node's epoch; then who the
+        // session is
         let (atx, arx) = std::sync::mpsc::channel();
-        tx.send(Cmd::Auth { session, reply: atx }).map_err(|_| net("connection to the node closed"))?;
+        tx.send(Cmd::Auth { session, secret, reply: atx }).map_err(|_| net("connection to the node closed"))?;
         let epoch = match arx.recv() {
             Ok(Ok(Outcome::Ok { value, .. })) => value.as_array::<16>().ok_or_else(|| net("bad node epoch"))?,
+            Ok(Err(Code::REFUSED)) if keyed => return Err(Error::Unsupported("the node refused this client secret".into())),
+            Ok(Err(Code::RATE_LIMITED)) => return Err(net("the node holds as many connections of this client as it takes")),
             Ok(Err(Code::REFUSED)) => return Err(Error::Unsupported("the node refused this session (not its uid)".into())),
             Ok(Err(Code::UNSUPPORTED)) => return Err(Error::Unsupported("node too old".into())),
             _ => return Err(net("no answer to Auth")),

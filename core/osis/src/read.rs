@@ -118,22 +118,35 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
 pub struct Reader<'a> {
     pub(crate) e: &'a mut Engine,
     pub(crate) limit: usize,
+    /// Reads as this actor (`Osis::act_as`): a thing it may not read answers exactly as a thing
+    /// this node does not know, through every method below.
+    pub(crate) actor: Option<Tid>,
 }
 
 /// `Reader::knows` on an engine already locked (a check inside a commit).
 pub(crate) fn knows_in(e: &mut Engine, tid: Tid) -> bool {
-    Reader { e, limit: 0 }.knows(tid)
+    Reader { e, limit: 0, actor: None }.knows(tid)
 }
 
 impl Reader<'_> {
-    /// The tid that `t` continues as (spec/permissions.md §7).
+    /// The tid that `t` continues as (spec/permissions.md §7). Acting as an actor: `t` itself
+    /// unless it may read both ends.
     pub fn resolve(&self, t: Tid) -> Tid {
-        self.e.resolve(&t, &t)
+        let r = self.e.resolve(&t, &t);
+        if self.hidden(t) || self.hidden(r) { t } else { r }
+    }
+
+    /// Whether the acting actor may not read `t` (never without one).
+    pub(crate) fn hidden(&self, t: Tid) -> bool {
+        self.actor.is_some_and(|a| !self.e.readable_by(&a, &t))
     }
 
     /// The stored value of `tid` resolved (returned too), large values still links.
     pub(crate) fn raw(&mut self, tid: Tid, ak: &Ak) -> Result<(Tid, Option<Value>)> {
         let tid = self.resolve(tid);
+        if self.hidden(tid) {
+            return Ok((tid, None));
+        }
         Ok((tid, self.e.get(&tid, ak)?))
     }
 
@@ -190,6 +203,9 @@ impl Reader<'_> {
     /// AKs present on the thing.
     pub fn aspects(&mut self, tid: Tid) -> Result<Vec<Ak>> {
         let tid = self.resolve(tid);
+        if self.hidden(tid) {
+            return Ok(Vec::new());
+        }
         Ok(self.e.aspects(&tid)?)
     }
 
@@ -197,18 +213,30 @@ impl Reader<'_> {
     /// group holding it transitively. `group.0` and `placed.0~`, local indexes only.
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
         let t = self.resolve(tid);
+        if self.hidden(t) {
+            return GroupsOf::default();
+        }
         let (items, subs) = self.e.listed_in(&t);
-        GroupsOf { item_of: items.into_iter().collect(), subgroup_of: subs.into_iter().collect(), within: self.e.groups_of(&t).into_iter().collect() }
+        let seen = |s: std::collections::BTreeSet<Tid>| s.into_iter().filter(|g| !self.hidden(*g)).collect();
+        GroupsOf { item_of: seen(items), subgroup_of: seen(subs), within: seen(self.e.groups_of(&t)) }
     }
 
     /// The role timeline's roster of `thing` (spec/permissions.md §2).
     pub fn roster(&self, thing: Tid) -> Roster {
+        if self.hidden(self.resolve(thing)) {
+            return Roster::new();
+        }
         self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
     }
 
-    /// This node's effective role on `tid` now (`None`: no access).
+    /// This node's effective role on `tid` now (`None`: no access); the acting actor's when
+    /// there is one.
     pub fn role_on(&self, tid: Tid) -> Option<Role> {
-        self.e.role_on(&self.resolve(tid))
+        let t = self.resolve(tid);
+        match self.actor {
+            Some(a) => self.e.actor_role(&a, &t).filter(|_| !self.hidden(t)),
+            None => self.e.role_on(&t),
+        }
     }
 
     /// Whether the thing is here: its creation is held and it has content, some aspect a
@@ -218,18 +246,26 @@ impl Reader<'_> {
     /// data) reads `false` too.
     pub fn knows(&mut self, tid: Tid) -> bool {
         let t = self.resolve(tid);
+        if self.hidden(t) {
+            return false;
+        }
         self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&t) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
     }
 
     /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a
     /// write, grant or move needs.
     pub(crate) fn holds(&self, tid: Tid) -> bool {
-        self.e.knows(&self.resolve(tid))
+        let t = self.resolve(tid);
+        !self.hidden(t) && self.e.knows(&t)
     }
 
     /// The thing's owner (`None`: unknown, or a key actor).
     pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
-        self.e.owner(&self.resolve(tid)).map(|o| self.resolve(o))
+        let t = self.resolve(tid);
+        if self.hidden(t) {
+            return None;
+        }
+        self.e.owner(&t).map(|o| self.resolve(o))
     }
 
     /// When the thing was created: the oldest valid commit carrying its `created.0` that is no
@@ -237,7 +273,11 @@ impl Reader<'_> {
     /// only a snapshot carrying its `created.0` is here. Follows moves: a moved thing reports
     /// its copy's creation, the move.
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
-        self.e.creation(&self.resolve(tid)).map(stamp)
+        let t = self.resolve(tid);
+        if self.hidden(t) {
+            return None;
+        }
+        self.e.creation(&t).map(stamp)
     }
 
     /// When the thing's content last changed: of the held changes, reverts and imports
@@ -246,7 +286,11 @@ impl Reader<'_> {
     /// `shown()`, else its creation. A delete is a change. A change known here only from a
     /// snapshot is not seen (notes/api.md Attribution). Follows moves.
     pub fn changed(&self, tid: Tid) -> Option<Stamp> {
-        self.e.changed(&self.resolve(tid)).map(stamp)
+        let t = self.resolve(tid);
+        if self.hidden(t) {
+            return None;
+        }
+        self.e.changed(&t).map(stamp)
     }
 }
 
@@ -260,8 +304,8 @@ impl Osis {
 
     /// `read` on this process's engine (callers route first).
     pub(crate) fn read_local<R>(&self, f: impl FnOnce(&mut Reader<'_>) -> R) -> R {
-        let limit = self.inner.limit;
-        self.engine(|e| f(&mut Reader { e, limit }))
+        let (limit, actor) = (self.inner.limit, self.acting);
+        self.engine(|e| f(&mut Reader { e, limit, actor }))
     }
 
     /// A typed read: `None` when absent or the thing is unknown.
@@ -379,9 +423,9 @@ impl Osis {
     /// Reads an aspect and runs `also` under the same engine lock (the dispatcher queues the
     /// events whose effect the read shows).
     pub(crate) fn value_with(&self, tid: Tid, ak: &Ak, also: impl FnOnce()) -> Result<Option<Value>> {
-        let limit = self.inner.limit;
+        let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let v = Reader { e: l.engine(), limit }.value(tid, ak);
+            let v = Reader { e: l.engine(), limit, actor }.value(tid, ak);
             also();
             v
         })
@@ -391,9 +435,9 @@ impl Osis {
     /// atomic with the registration: nothing committed after it is missed or seen twice);
     /// `initial` queues one `Delivery::Initial` call through the dispatcher.
     pub(crate) fn subscribe(&self, filter: Filter, initial: bool, make: impl FnOnce(&mut Reader<'_>) -> Callback) -> Subscription {
-        let limit = self.inner.limit;
+        let (limit, actor) = (self.inner.limit, self.acting);
         self.locked(|l| {
-            let cb = make(&mut Reader { e: l.engine(), limit });
+            let cb = make(&mut Reader { e: l.engine(), limit, actor });
             let d = &self.inner.dispatch;
             let sub = d.register(l.seq + 1, filter, cb);
             if initial && let Some(id) = sub.id() {

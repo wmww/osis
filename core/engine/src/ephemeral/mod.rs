@@ -267,6 +267,9 @@ impl Engine {
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
         let actor = m.actor.unwrap_or(node);
+        if m.confined {
+            self.check_confined(&m, &actor)?;
+        }
         let mut eph_ops: Vec<EphOp> = Vec::new();
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {

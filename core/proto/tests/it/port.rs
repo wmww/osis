@@ -41,7 +41,7 @@ fn ok(seq: u64, v: Value) -> Outcome {
 fn kinds_round_trip_and_id_rules() {
     let small = SMALL_REPLY as u64;
     let msgs = [
-        Message::Auth { id: 1, client_pk: None, session: [9; 16], sig: None },
+        Message::Auth { id: 1, secret: None, session: [9; 16] },
         Message::Call { id: 2, max_reply: small, method: 3, args: vec![Value::Str("x".into()), Value::List(vec![])] },
         Message::Reply { id: 2, outcome: ok(7, Value::Int(5)) },
         Message::Reply { id: 2, outcome: Outcome::Err { code: 1, detail: vec![Value::Bytes(vec![0; 15])] } },
@@ -74,14 +74,14 @@ fn kinds_round_trip_and_id_rules() {
 #[test]
 fn serving_auth_call_and_reply_bound() {
     let (mut h, mut st) = serving(false);
-    let out = h.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None })));
+    let out = h.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     assert_eq!(sent(&out), vec![Message::Error { id: 1, code: Code::UNSUPPORTED }]);
 
     let (mut s, mut st) = serving(true);
     let call = Message::Call { id: 2, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call)));
     assert_eq!(sent(&out), vec![Message::Error { id: 2, code: Code::REFUSED }]);
-    let auth = Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None };
+    let auth = Message::Auth { id: 1, secret: None, session: [0; 16] };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&auth)));
     assert_eq!(requests(&out), vec![auth]);
     assert!(s.none_opened());
@@ -102,7 +102,7 @@ fn serving_auth_call_and_reply_bound() {
 #[test]
 fn serving_sub_ids_and_caps() {
     let (mut s, mut st) = serving(true);
-    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None })));
+    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
     let sub = |id| Message::Sub { id, max_reply: SMALL_REPLY as u64, filter: Value::Int(0) };
     let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&sub(5))));
@@ -146,7 +146,7 @@ fn serving_room_follows_the_push_rule() {
     s.handle(T0, &mut st, ServingInput::Taken(10_000));
     let out = s.handle(T0, &mut st, ServingInput::WantRoom);
     assert!(out.contains(&ServingOutput::Room { budget: REPLY_BUDGET }));
-    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None })));
+    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     // a reply of nearly REPLY_BUDGET unwritten: no room until taken
     let out = s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; SMALL_REPLY - 64]))) });
     assert_eq!(sent(&out).len(), 1);
@@ -219,9 +219,9 @@ fn client_role_over_loopback() {
     }
     // the pings
     pump(&mut c, &mut s, &mut st, first);
-    let b = client_sends(&mut c, Command::Auth { token: 10, session: [7; 16] });
+    let b = client_sends(&mut c, Command::Auth { token: 10, session: [7; 16], secret: None });
     let (_, reqs) = pump(&mut c, &mut s, &mut st, b);
-    let [Message::Auth { id, session, client_pk: None, .. }] = reqs[..] else { panic!("{reqs:?}") };
+    let [Message::Auth { id, session, secret: None }] = reqs[..] else { panic!("{reqs:?}") };
     assert_eq!(session, [7; 16]);
     let f = serving_sends(s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(0, Value::Bytes(vec![1; 16]))) }));
     let evs: Vec<ClientOutput> = c.handle(T0, ClientInput::Bytes(f));
@@ -263,7 +263,7 @@ fn unanswered_auths_close_the_session() {
     let mut handed = 0usize;
     let mut closed = false;
     for id in 1..=20_000u32 {
-        let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id, client_pk: None, session: [0; 16], sig: None })));
+        let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id, secret: None, session: [0; 16] })));
         handed += requests(&out).len();
         if out.contains(&ServingOutput::Close) {
             closed = true;
@@ -278,7 +278,7 @@ fn unanswered_auths_close_the_session() {
 #[test]
 fn unanswered_calls_past_the_window_close() {
     let (mut s, mut st) = serving(true);
-    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None })));
+    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, secret: None, session: [0; 16] })));
     s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
     let call = |id| Message::Call { id, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
     let per = frame(&call(1_000_000)).len() + SMALL_REPLY;

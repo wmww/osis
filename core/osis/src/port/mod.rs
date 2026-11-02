@@ -1,8 +1,9 @@
 //! The client port (notes/client-port.md): the `osis` API over the node-to-node protocol's
 //! client-port kinds (spec/wire.md §11.2). `serve`: a node answers the requests its served
 //! sessions make, on a worker thread off the handle lock; `client`: a process attached to such
-//! a node (`Osis::attach`) routes its tid-addressed calls there (`Source::Remote`). Step (b):
-//! the Owner tier only (the unix socket, `Peer::Unix`); credentials are (c1).
+//! a node (`Osis::attach`, `Osis::attach_client`) routes its tid-addressed calls there
+//! (`Source::Remote`). Sessions: the Owner (the unix socket, `Peer::Unix`) and thin clients (a
+//! bearer secret matching `clients.0^`), whose rows run as the client's actor (`serve`).
 
 pub(crate) mod client;
 pub(crate) mod codec;
@@ -10,8 +11,8 @@ pub(crate) mod serve;
 
 pub use client::socket_path;
 
-/// The method table (`Call.method`): each row's args and result in `codec` forms. Every row is
-/// Owner-only in (b); a method number not listed is answered `Unsupported`.
+/// The method table (`Call.method`): each row's args and result in `codec` forms. A method number
+/// not listed is answered `Unsupported`; a row is Owner-only unless `for_client` lists it.
 pub(crate) mod method {
     /// `[]` -> `[me, node, home]`
     pub const WHOAMI: u64 = 0;
@@ -82,6 +83,21 @@ pub(crate) mod method {
     pub const HOLDER_PATH: u64 = 33;
     /// `[target]` -> `[[id, target, role, Opt(until), single_use]*]`
     pub const LINKS: u64 = 34;
+    /// `[Opt(until)]` -> `[actor, secret]` (`Osis::add_client`)
+    pub const ADD_CLIENT: u64 = 35;
+    /// `[]` -> `[[actor, Opt(until)]*]`
+    pub const CLIENTS: u64 = 36;
+    /// `[actor]` -> bool
+    pub const REMOVE_CLIENT: u64 = 37;
+    /// `[actor]` -> secret
+    pub const ROTATE_CLIENT_SECRET: u64 = 38;
+
+    /// The rows a thin client's session may call, each running on a handle acting as its actor.
+    /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
+    /// node's authority and take no actor (they would be a confused deputy).
+    pub fn for_client(m: u64) -> bool {
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW)
+    }
 }
 
 /// Subscription filters (`Sub.filter`): `[0, tid, ak]` aspect, `[1, tid]` thing, `[2, tid]`

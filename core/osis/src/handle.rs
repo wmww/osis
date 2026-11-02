@@ -205,6 +205,9 @@ pub struct Osis {
     pub(crate) inner: Arc<Inner>,
     /// Counted in `Life` (an app's handle; internal short-lived ones are not).
     user: bool,
+    /// The actor this handle acts as (`act_as`): `me()`, and every read and write held to that
+    /// actor's rights. `None`: this node's own.
+    pub(crate) acting: Option<Tid>,
 }
 
 /// Where an API call on a thing or group goes (notes/client-port.md §1): this process's engine,
@@ -264,7 +267,9 @@ impl Osis {
 impl Clone for Osis {
     /// Always a user handle (a callback may keep a clone of the `&Osis` it is passed).
     fn clone(&self) -> Osis {
-        Osis::user(self.inner.clone())
+        let mut o = Osis::user(self.inner.clone());
+        o.acting = self.acting;
+        o
     }
 }
 
@@ -444,12 +449,22 @@ impl Osis {
 
     fn user(inner: Arc<Inner>) -> Osis {
         inner.life.0.users(1);
-        Osis { inner, user: true }
+        Osis { inner, user: true, acting: None }
     }
 
     /// A handle for osis's own short-lived use (the dispatcher running callbacks), not counted.
     pub(crate) fn internal(inner: Arc<Inner>) -> Osis {
-        Osis { inner, user: false }
+        Osis { inner, user: false, acting: None }
+    }
+
+    /// A handle acting as `actor`, an actor this node administers (notes/client-port.md §3): `me()`
+    /// is that actor, a read shows what it may read and nothing else (what it may not reads as a
+    /// thing this node does not know), a write or revert needs its rights, not this node's. Calls
+    /// on the tid-addressed read and write paths only: the sharing, sync and process-wide calls do
+    /// not honour it yet (issues/grant-rename-multi-actor.md), so it stays inside the crate, used
+    /// by the port worker's client rows (`port::method::for_client`).
+    pub(crate) fn act_as(&self, actor: Tid) -> Osis {
+        Osis { inner: self.inner.clone(), user: false, acting: Some(actor) }
     }
 
     /// A handle that does not keep the database open (for the rare callback that must capture
@@ -500,13 +515,13 @@ impl Osis {
     /// The person actor this database belongs to: the usual owner of what the app creates
     /// (attached: the node's person).
     pub fn me(&self) -> Tid {
-        self.remote().map_or(self.inner.me, |r| r.who.me)
+        self.acting.unwrap_or_else(|| self.remote().map_or(self.inner.me, |r| r.who.me))
     }
 
     /// The person's home group: the person actor itself, synced under its home label
     /// (spec/sync.md §2); things placed in it reach every device of the person.
     pub fn home(&self) -> Tid {
-        self.remote().map_or(self.inner.me, |r| r.who.home)
+        self.acting.unwrap_or_else(|| self.remote().map_or(self.inner.me, |r| r.who.home))
     }
 
     /// The materialization bound in bytes.

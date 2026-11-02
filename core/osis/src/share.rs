@@ -1141,7 +1141,14 @@ impl Osis {
         if self.attached() {
             return crate::port::codec::status(self.rcall(crate::port::method::STATUS, vec![])?);
         }
-        Ok(self.locked(|x| status_of(&mut x.sync)))
+        let acting = self.acting;
+        Ok(self.locked(|x| {
+            let mut s = status_of(&mut x.sync);
+            if let Some(a) = acting {
+                s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
+            }
+            s
+        }))
     }
 
     /// Calls `f` with the status now (through the dispatcher) and on every change.

@@ -222,6 +222,11 @@ codec_struct! {
     }
 }
 codec_struct! {
+    /// One entry of `clients.0^` (spec/data-model.md §9): a thin client's secret hash and end.
+    #[derive(Clone, Debug, PartialEq, Eq)]
+    pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
+}
+codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
 }
@@ -264,6 +269,8 @@ pub const NODE: Aspect<NodeInfo> = Aspect::new("node.0", &CORE);
 pub const REACH: Aspect<Reach> = Aspect::new("reach.0", &CORE);
 pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
 pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
+/// `clients.0^`: by client actor.
+pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients.0^", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 /// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
 pub const PLACED: Aspect<Group> = Aspect::new("placed.0~", &CORE);

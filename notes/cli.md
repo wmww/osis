@@ -40,6 +40,8 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `device ls` / `device rm N` | `devices` / `remove_device` | now |
 | `hosts ls/add/rm` | `hosts`, `add_host`, `remove_host` | now |
 | `hosting show/set/off` | `hosting`, `host_key` / `set_hosting` (`--label GROUP`: `status`'s labels) / `set_hosting(None)` | now |
+| `clients add [--until T]` (prints `ACTOR SECRET`, once) / `clients ls` (`ACTOR UNTIL\|-`) / `clients rm ACTOR` (none: exit 3) / `clients rotate ACTOR` (prints the secret, once); through a daemon too | `add_client` / `clients` / `remove_client` / `rotate_client_secret` | now |
+| (a thin client: `--node ADDR --client-secret FILE` on any command, 64 hex digits in the file; no store; commands holding a store: exit 2; process-wide ones `Unsupported`) | `attach_client` | now; no dialable listener in a default build until the client listener (notes/client-port.md (d)) |
 | `serve [hosting set flags]` | `hosting`, `set_hosting`, `host_address`, then as `diag --follow` | now |
 | `create --owner A [--in G\|--in-all G,G] [--group] [AK V]…` (nothing durable: exit 2, the thing would vanish at exit; `--in`/`--group` alone are ephemeral writes) | `write`, `Write::create`, `place`, `make_group`, `set`, `commit` | now |
 | `get T AK [PATH]` | `get`, `at().path().get_value()`; `--stream` / `--len`: `stream()` (raw bytes to stdout) / its `len` | now |

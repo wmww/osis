@@ -108,8 +108,9 @@ pub enum Command {
     /// Stop following a label's Path pages (the node no longer wants them).
     StopPath { label: LabelId },
     /// Client port (notes/client-port.md §2): `token` is the caller's, echoed in the events.
-    /// Auth of an Owner session (no key) with the client's session id.
-    Auth { token: u64, session: [u8; 16] },
+    /// Auth with the client's session id: an Owner session's without a secret, a thin client's
+    /// with its bearer secret.
+    Auth { token: u64, session: [u8; 16], secret: Option<osis_crypto::Secret32> },
     Call { token: u64, max_reply: u64, method: u64, args: Vec<osis_base::Value> },
     /// A subscription named by `token` until `Unsub` or a `Lapsed` Notify.
     Sub { token: u64, max_reply: u64, filter: osis_base::Value },
@@ -581,8 +582,8 @@ impl ClientSession {
                     }
                 }
             }
-            Command::Auth { token, session } => {
-                self.request(|id| Message::Auth { id, client_pk: None, session, sig: None }, Pending::Api(token));
+            Command::Auth { token, session, secret } => {
+                self.request(|id| Message::Auth { id, secret, session }, Pending::Api(token));
             }
             Command::Call { token, max_reply, method, args } => {
                 self.request(|id| Message::Call { id, max_reply, method, args }, Pending::Api(token));

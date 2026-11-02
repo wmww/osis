@@ -247,6 +247,7 @@
 //! ```
 #![forbid(unsafe_code)]
 
+mod clients;
 mod error;
 mod handle;
 mod hosting;
@@ -265,6 +266,8 @@ mod watch;
 mod write;
 
 mod port;
+pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
+pub use clients::{Client, ClientSecret};
 pub use port::{MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, socket_path};
 pub use port::client::SOCK_FILE;
 #[doc(hidden)]

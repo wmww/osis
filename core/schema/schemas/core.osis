@@ -31,6 +31,8 @@ type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wi
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 type admit = enum { 0 own, 1 open };
 type host_caps = struct { 0 entries: int, 1 bytes: int };       // a label's caps in place of the policy's
+/// A thin client of the node: BLAKE3 of its bearer secret (32 bytes), when it ends.
+type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
 
 aspect tid.0: tid [synthetic, guaranteed];
 /// AKs present on the thing.
@@ -55,6 +57,8 @@ aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret:
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };
 /// Hosting, on a node thing (absent: not hosting): listen URLs, admission, label IDs (16 bytes) admitted beside `own`'s, peer hosts to replicate to, policy knobs by name, per-label caps by label ID.
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };
+/// Thin clients of this node by client actor.
+aspect clients.0^: map<tid, client>;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 /// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };

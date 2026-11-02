@@ -143,6 +143,39 @@ fn group(db: &Osis) -> Tid {
     g
 }
 
+// spec/permissions.md §4, spec/sync.md §10, notes/client-port.md §3 (attribution): a thin client's commit, written by its node as the client's actor, reaches another account holding the group through sync, applied there with that actor and that node in its header (the actor's creation record travels with its edge); its grants to the actor reach the account's other device through the home group
+#[test]
+fn client_commit_reaches_a_third_device() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    w.run();
+    let g = group(&alice);
+    let card: osis::ContactCard = bob.contact_card().unwrap().to_string().parse().unwrap();
+    w.run();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    alice.grant(g, b, Role::Write, Default::default()).unwrap();
+    let t = item(&alice, g, g, "first");
+    let (actor, _) = alice.add_client(None).unwrap();
+    alice.grant(g, actor, Role::Write, Default::default()).unwrap();
+    let c = alice.acting_as(actor);
+    let mut wr = c.write();
+    wr.at(t, ak("t:x.0")).set(&s("by the client")).unwrap();
+    wr.commit().unwrap();
+    w.run();
+    assert_eq!(x(&bob, t), Some(s("by the client")));
+    let last = &bob.commits(&osis::CommitQuery::new().scope(osis::Scope::Thing(t))).unwrap()[0];
+    assert_eq!((last.commit.actor, last.commit.node), (actor, alice.node()));
+    assert_eq!(bob.roster(g).get(&actor).map(|e| e.role), Some(Role::Write));
+    // and Bob's writes still reach Alice's client view
+    let mut wr = bob.write();
+    wr.at(t, ak("t:x.0")).set(&s("by bob")).unwrap();
+    wr.commit().unwrap();
+    w.run();
+    assert_eq!(c.get(t, ak("t:x.0")).unwrap(), Some(s("by bob")));
+}
+
 // spec/sync.md §3 (contact card, inbox), spec/permissions.md §2 (grant): Alice imports Bob's
 // contact card and grants him write on a synced group; the grant reaches Bob's device through
 // his inbox; both read and write things the group owns (entitlement: things owned elsewhere

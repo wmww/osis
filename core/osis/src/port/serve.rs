@@ -6,9 +6,19 @@
 //! signals and diagnostics within `SIGNAL_BYTES`); the worker materializes dirty subscriptions
 //! when push room opens (`Action::Room`). Writes carry a nonce: outcomes are kept per (tier
 //! identity, session) under the node epoch, so a retry is answered once.
+//!
+//! **Invariant** (notes/client-port.md §3): every row of a thin client's session runs on a handle
+//! acting as that client's actor, never as this node's account, and that client's authority ends
+//! at revocation. `Worker::session` is the only way to a row or a send of a client session:
+//! it asks the sync engine whether the session's client is live (its `clients.0^` entry there,
+//! under the same secret, before its `until`) at that moment, not when the request was queued,
+//! and hands out `Osis::act_as` of its actor, whose every read and write the rights of that actor
+//! decide at that moment (`Reader::hidden`, `Mutation::confine`). There is no cached scope or
+//! role to go stale; a call that passed `session` just before a revocation is ordered before it.
 
 use super::codec::{self as c, Args, outcome_err, u};
 use super::{MAX_SCHEMA_BYTES, MAX_WAITS, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
+use osis_node::sync::MAX_CONNS_PER_CLIENT;
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, WeakOsis};
 use crate::watch::{Delivery, Filter, Subscription, lock};
@@ -134,6 +144,9 @@ struct PortSub {
     kind: Kind,
     pending: Arc<Mutex<Pending>>,
     _sub: Option<Subscription>,
+    /// A client's: its actor could read the thing at some point of this subscription. When it no
+    /// longer can the subscription lapses; one it never could stays silent, as for an unknown tid.
+    seen: bool,
 }
 
 struct Conn {
@@ -148,6 +161,10 @@ struct Conn {
     settles: Vec<Id>,
 }
 
+/// Whose write outcomes: the Owner's, or a client actor's (a session id of one identity never
+/// reads another's).
+type Identity = Option<Tid>;
+
 /// Write outcomes of one session: by nonce (at most `WRITE_NONCES`), the highest seen, and
 /// when it was last used (least recently used sessions go first).
 #[derive(Default)]
@@ -161,8 +178,8 @@ struct Worker {
     db: WeakOsis,
     tx: Sender<Job>,
     conns: BTreeMap<ConnId, Conn>,
-    /// Per (identity, session): the Owner's uid is the only identity in (b), so by session.
-    nonces: BTreeMap<[u8; 16], Nonces>,
+    /// Per (identity, session).
+    nonces: BTreeMap<(Identity, [u8; 16]), Nonces>,
     /// Schema sources registered through the port (by hash of file and source): their bytes,
     /// at most `MAX_SCHEMA_BYTES` in all.
     schemas: BTreeMap<[u8; 32], usize>,
@@ -183,7 +200,9 @@ impl Worker {
                 if let Some(c) = self.conns.get_mut(&conn) {
                     c.asked = false;
                 }
-                self.flush(&db, conn, budget);
+                if let Some(h) = self.session(&db, conn) {
+                    self.flush(&h, conn, budget);
+                }
             }
             Job::Act(Action::Ended { conn }) => {
                 self.conns.remove(&conn);
@@ -224,21 +243,45 @@ impl Worker {
         }
     }
 
+    /// The handle a row or a send of session `conn` runs on (the module's invariant): the
+    /// Owner's as it is, a client's acting as its actor while it is live. A client no longer live
+    /// is ended here; `None` then, as for a session this worker does not hold.
+    fn session(&mut self, db: &Osis, conn: ConnId) -> Option<Osis> {
+        match self.conns.get(&conn)?.tier {
+            Tier::Owner => Some(Osis::internal(db.inner.clone())),
+            Tier::Keyed => None,
+            Tier::Client(actor) => {
+                let live = db.locked(|l| l.sync.client_of(conn)) == Some(actor);
+                if !live {
+                    self.conns.remove(&conn);
+                    self.feed(db, Event::End { conn });
+                    return None;
+                }
+                Some(db.act_as(actor))
+            }
+        }
+    }
+
     fn request(&mut self, db: &Osis, conn: ConnId, tier: Tier, msg: Message) {
         match msg {
-            Message::Auth { id, client_pk, session, .. } => {
-                // a keyed Auth (credentials, step (c1)) and any Auth on a keyed transport: Error 1
-                if tier != Tier::Owner || client_pk.is_some() {
+            Message::Auth { id, session, .. } => {
+                // the sync engine sends up only an Owner's Auth and a client's it matched
+                if tier == Tier::Keyed {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
                 }
                 let c = self.conns.entry(conn).or_insert_with(|| Conn { tier, session: None, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new() });
                 c.session = Some(session);
+                if self.session(db, conn).is_none() {
+                    return self.reply(db, conn, id, Err(Code::REFUSED));
+                }
                 let seq = db.locked(|l| l.seq);
                 self.reply(db, conn, id, Ok(Outcome::Ok { seq, value: Value::bytes(&db.inner.port.epoch) }));
             }
             Message::Call { id, method, args, .. } => {
-                if !self.conns.get(&conn).is_some_and(|c| c.tier == Tier::Owner) {
-                    return self.reply(db, conn, id, Err(Code::REFUSED));
+                let Some(h) = self.session(db, conn) else { return self.reply(db, conn, id, Err(Code::REFUSED)) };
+                let db = &h;
+                if db.acting.is_some() && !method::for_client(method) {
+                    return self.reply(db, conn, id, Ok(outcome_err(&unsupported(&format!("method {method} for a thin client")))));
                 }
                 if method == method::SETTLE {
                     db.settle();
@@ -256,6 +299,8 @@ impl Worker {
                 self.reply(db, conn, id, Ok(out));
             }
             Message::Sub { id, max_reply, filter } => {
+                let Some(h) = self.session(db, conn) else { return self.reply(db, conn, id, Err(Code::REFUSED)) };
+                let db = &h;
                 let max = usize::try_from(max_reply).unwrap_or(usize::MAX);
                 let r = self.sub(db, conn, id, max, filter);
                 let seq = db.locked(|l| l.seq);
@@ -286,17 +331,22 @@ impl Worker {
     /// again, `Invalid("outcome unknown")` for one at or below the highest seen and no longer
     /// remembered, else `run`'s, remembered.
     fn once(&mut self, conn: ConnId, nonce: u64, run: impl FnOnce() -> Result<Value>) -> Result<Value> {
-        let Some(session) = self.conns.get(&conn).and_then(|c| c.session) else { return Err(Error::Invalid("no session".into())) };
+        let Some((who, session)) = self.conns.get(&conn).and_then(|c| Some((if let Tier::Client(a) = c.tier { Some(a) } else { None }, c.session?))) else { return Err(Error::Invalid("no session".into())) };
         self.tick += 1;
         let tick = self.tick;
-        // at most as many sessions as the Owner's connection cap: the least recently used goes
-        let cap = self.db.hold().map_or(64, |db| db.locked(|l| l.sync.config().max_clients)).max(1);
-        if !self.nonces.contains_key(&session) && self.nonces.len() >= cap
-            && let Some(old) = self.nonces.iter().min_by_key(|(_, n)| n.used).map(|(k, _)| *k)
+        // at most as many sessions per identity as its connection cap: the least recently used
+        // goes
+        let key = (who, session);
+        let cap = match who {
+            Some(_) => MAX_CONNS_PER_CLIENT.max(1),
+            None => self.db.hold().map_or(64, |db| db.locked(|l| l.sync.config().max_clients)).max(1),
+        };
+        if !self.nonces.contains_key(&key) && self.nonces.keys().filter(|(w, _)| *w == who).count() >= cap
+            && let Some(old) = self.nonces.iter().filter(|((w, _), _)| *w == who).min_by_key(|(_, n)| n.used).map(|(k, _)| *k)
         {
             self.nonces.remove(&old);
         }
-        let n = self.nonces.entry(session).or_default();
+        let n = self.nonces.entry(key).or_default();
         n.used = tick;
         if let Some(o) = n.done.get(&nonce) {
             return match o.clone() {
@@ -313,7 +363,7 @@ impl Worker {
             Ok(v) => Outcome::Ok { seq: 0, value: v.clone() },
             Err(e) => outcome_err(e),
         };
-        let n = self.nonces.entry(session).or_default();
+        let n = self.nonces.entry(key).or_default();
         n.done.insert(nonce, o);
         while n.done.len() > WRITE_NONCES {
             n.done.pop_first();
@@ -388,6 +438,14 @@ impl Worker {
                 }
             }
             method::NOW => u(db.now().0),
+            method::ADD_CLIENT => {
+                let until = a.opt()?.map(|w| w.as_uint().map(osis_base::WallMs).ok_or_else(|| c::bad("time"))).transpose()?;
+                let (actor, secret) = db.add_client(until)?;
+                Value::List(vec![Value::Tid(actor), Value::bytes(secret.expose())])
+            }
+            method::CLIENTS => Value::List(db.clients()?.iter().map(|x| Value::List(vec![Value::Tid(x.actor), c::opt(x.until, |w| Value::uint(w.0))])).collect()),
+            method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
+            method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
             method::HOSTS => Value::List(db.hosts().iter().map(|h| Value::Str(h.to_string())).collect()),
             method::SYNC_NOW => {
                 db.sync_now()?;
@@ -438,10 +496,12 @@ impl Worker {
     /// Registers a subscription: a dispatcher registration taken atomically with its initial
     /// value (the Reply's), whose callback only marks it dirty.
     fn sub(&mut self, db: &Osis, conn: ConnId, id: Id, max_reply: usize, f: Value) -> Result<Value> {
-        let c = self.conns.get(&conn).filter(|c| c.tier == Tier::Owner).ok_or(Error::Closed)?;
+        let c = self.conns.get(&conn).ok_or(Error::Closed)?;
         let held = c.held.clone();
+        let acting = db.acting;
         let mut a = Args::new(f)?;
         let kind = match a.uint()? {
+            filter::SYNCED if acting.is_some() => return Err(unsupported("wait_synced for a thin client")),
             filter::SYNCED => {
                 let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
                 a.end()?;
@@ -483,8 +543,10 @@ impl Worker {
                 None => g.dirty = Some(s),
             }
         };
-        let cb: crate::watch::Callback = Box::new(move |_, d| {
+        let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
+                // a client's diagnostics: those naming only what its actor reads
+                Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 Delivery::Aspect { ak, source, .. } => mark(Some(ak), source),
                 // a fired signal carries a fifth item: delivered even when equal to the last
                 Delivery::Fired { tid, ak, source, value } => queue(Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
@@ -526,6 +588,7 @@ impl Worker {
         if let Kind::Status = kind {
             initial = c::status_v(&db.status()?);
         }
+        let seen = tid.is_none_or(|t| db.read_local(|r| !r.hidden(t)));
         let kind = match kind {
             Kind::Aspect(_, ak) => Kind::Aspect(tid.unwrap_or(db.me()), ak),
             Kind::Thing(_) => Kind::Thing(tid.unwrap_or(db.me())),
@@ -533,7 +596,7 @@ impl Worker {
             k => k,
         };
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.subs.insert(id, PortSub { max_reply, kind, pending, _sub: Some(sub) });
+            c.subs.insert(id, PortSub { max_reply, kind, pending, _sub: Some(sub), seen });
         }
         Ok(initial)
     }
@@ -550,7 +613,7 @@ impl Worker {
             std::task::Poll::Pending => (Kind::Synced(Some(p)), Value::List(vec![])),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
-            c.subs.insert(id, PortSub { max_reply, kind, pending: Arc::default(), _sub: None });
+            c.subs.insert(id, PortSub { max_reply, kind, pending: Arc::default(), _sub: None, seen: true });
         }
         initial
     }
@@ -564,12 +627,30 @@ impl Worker {
         let mut used = 0usize;
         let mut left = false;
         let mut gone = Vec::new();
-        for (id, s) in &cn.subs {
+        for (id, s) in &mut cn.subs {
             let mut g = lock(&s.pending);
             if g.lapsed {
                 notes.push((*id, Payload::Lapsed));
                 gone.push(*id);
                 continue;
+            }
+            // what its actor may read now (the module's invariant): a thing it could read and no
+            // longer can ends the subscription; nothing of one it cannot read is sent
+            if let (Some(_), Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t)) = (db.acting, &s.kind) {
+                if db.read_local(|r| r.hidden(*t)) {
+                    if s.seen {
+                        notes.push((*id, Payload::Lapsed));
+                        gone.push(*id);
+                    } else {
+                        for (_, n) in g.queue.drain(..) {
+                            cn.held.fetch_sub(n, Ordering::AcqRel);
+                        }
+                        g.dirty = None;
+                        g.aks.clear();
+                    }
+                    continue;
+                }
+                s.seen = true;
             }
             // what this subscription would send now, oldest first
             let mut out: Vec<(Value, usize, Option<crate::watch::Source>)> = Vec::new();

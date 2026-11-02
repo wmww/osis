@@ -38,6 +38,12 @@ pub struct Global {
     /// Materialization bound in bytes
     #[arg(long, global = true, value_name = "BYTES")]
     pub limit: Option<usize>,
+    /// Run the command at this node as a thin client (URL#KEY; needs --client-secret, no store)
+    #[arg(long, global = true, value_name = "ADDR", requires = "client_secret")]
+    pub node: Option<String>,
+    /// The file holding the thin client's secret (64 hex digits, as `clients add` printed it)
+    #[arg(long = "client-secret", global = true, value_name = "FILE", requires = "node")]
+    pub client_secret: Option<PathBuf>,
 }
 
 /// Write flags of `set`, `replace`, `rm`, `op`.
@@ -118,6 +124,9 @@ pub enum Cmd {
     /// What this node hosts (`host.0^`): show, set or stop it
     #[command(subcommand)]
     Hosting(HostingCmd),
+    /// Thin clients this node serves (`clients.0^`)
+    #[command(subcommand)]
+    Clients(ClientsCmd),
     /// Keep the store open: sync, host as `host.0^` says (the flags write it, as `hosting set`;
     /// the host address prints first), print diagnostics
     Serve {
@@ -438,6 +447,24 @@ pub enum HostsCmd {
     Ls,
     Add { addr: String },
     Rm { addr: String },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ClientsCmd {
+    /// Registers a thin client: prints `ACTOR SECRET`, the secret (64 hex digits) only here. Grant
+    /// the actor what it may reach
+    Add {
+        /// When it ends (as `share --until`)
+        #[arg(long)]
+        until: Option<String>,
+    },
+    /// List them: `ACTOR UNTIL|-`
+    Ls,
+    /// Revoke one: closes its connections, removes its grants (with their rotations) and its
+    /// entry (none: exit 3)
+    Rm { actor: String },
+    /// A new secret for one (printed only here); the old one and its connections end
+    Rotate { actor: String },
 }
 
 #[derive(Subcommand, Debug)]
