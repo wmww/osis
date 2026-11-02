@@ -76,8 +76,10 @@ impl Edge {
     }
 }
 
-/// `new` removes `old` or lowers it in every component (role, invite, `until`): the shape of a
-/// self-removal (spec/permissions.md §2).
+/// `new` removes `old` or lowers it in every component (role, invite, `until`) keeping its
+/// `keyset`: the shape of a self-removal (spec/permissions.md §2). A changed `keyset` is not: a
+/// holder actor's member could otherwise point the boxers bound by it (spec/crypto.md §4) at a
+/// keyset of its own choice.
 pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
     match (new, old) {
         (None, _) => true,
@@ -88,7 +90,7 @@ pub fn lowers(new: Option<&Edge>, old: Option<&Edge>) -> bool {
                 (None, Some(_)) => false,
                 (Some(a), Some(b)) => a <= b,
             };
-            n.role <= o.role && n.invite <= o.invite && until_le
+            n.role <= o.role && n.invite <= o.invite && until_le && n.keyset == o.keyset
         }
     }
 }

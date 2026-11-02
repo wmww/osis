@@ -177,10 +177,10 @@ pub(crate) enum Sealers {
     /// This node holds a box to `m` carrying its sealer's names (at a current epoch of `a`, or in
     /// a held or dropped commit putting `m`'s edge on `a`), and every such box's names are met
     /// here: the box judgement here keeps out what they knew. Also a grant of `m` while it holds
-    /// nothing on `a` (no earlier sealer).
+    /// nothing on `a` and no commit putting `m`'s edge whose boxes it lacks (no earlier sealer).
     Free,
     /// Some held names are not met here (or do not open), or no such box is held and `m`'s roster
-    /// entry names no keyset: `m` is left out.
+    /// entry (or, `m` holding no edge, the newest put of it held) names no keyset: `m` is left out.
     Unmet,
     /// No such box is held (the grant's boxes deposited and never received, or every box held
     /// was sealed bound): `m` is sealed only to the keyset of the `keys.0` commit its roster
@@ -197,8 +197,12 @@ pub(crate) enum Sealers {
 /// entry names, the one the last grant or raise of `m` sealed to (a bound sealer: the one it was
 /// bound to), so a box this node writes opens to no party that sealer kept out by what it knew.
 /// Names it cannot open (it lacks the boxed epochs' secrets, or they are malformed) count as
-/// unmet. Not covered: a sealer whose box never reaches this node while another sealer's, made
-/// without it, does (notes/crypto.md, Frozen coverage).
+/// unmet. Only valid `secrets.0` parts of applied puts count (a reader's grant-shaped commit
+/// with a box carrying empty names frees nobody); a put whose `secrets.0` part is missing is a
+/// sealer this node lacks, so `m`'s removal and re-grant does not free it (the hole would be C3
+/// again: the re-grant at this node's own keyset choice). Not covered: a sealer whose box never
+/// reaches this node while another sealer's, made without it, does (notes/crypto.md, Frozen
+/// coverage).
 pub(crate) fn sealers(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>) -> Result<Sealers> {
     let Some(epochs) = tx.core.epochs(a) else { return Ok(Sealers::Free) };
     // a box's key and its sealed names; each group needs one whose names open and are met: a
@@ -217,9 +221,18 @@ pub(crate) fn sealers(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>)
         .map(|x| vec![x])
         .collect();
     let secrets_ak = crate::flows::ak("secrets.0")?;
-    for c in edge_puts(tx.core, a, m)? {
+    // the puts whose boxes this node lacks (the part missing), newest first: earlier sealers
+    let mut lacking: Vec<(osis_perm::Point, Option<osis_perm::Point>)> = Vec::new();
+    for (c, point, keyset) in edge_puts(tx.core, a, m)? {
         let Some((ai, dropped)) = tx.core.ix.commits.get(&c).and_then(|meta| {
             let ai = meta.aspect(a, &secrets_ak)?;
+            if meta.missing.contains(&ai) {
+                lacking.push((point, keyset));
+                return None;
+            }
+            if !meta.valid_at(ai) {
+                return None;
+            }
             Some((ai, meta.dropped.get(&ai).map(|d| d.names.iter().filter(|x| x.0 == *m && roles.contains(&x.1)).map(|x| (x.1, x.2, x.3.clone())).collect::<Vec<Sealed>>())))
         }) else {
             continue;
@@ -247,19 +260,28 @@ pub(crate) fn sealers(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>)
         return Ok(Sealers::Free);
     }
     let now = now_ts(tx.core);
-    let Some(entry) = tx.core.timelines.get(a).and_then(|tl| tl.roster(a, At::now(now)).get(m).copied()) else { return Ok(Sealers::Free) };
-    Ok(match entry.keyset {
+    let keyset = match tx.core.timelines.get(a).and_then(|tl| tl.roster(a, At::now(now)).get(m).copied()) {
+        Some(entry) => entry.keyset,
+        // no edge: the newest put this node lacks the boxes of, if any, binds it
+        None => match lacking.iter().max_by_key(|x| x.0) {
+            Some(x) => x.1,
+            None => return Ok(Sealers::Free),
+        },
+    };
+    Ok(match keyset {
         Some(k) => Sealers::Bound(ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit }),
         None => Sealers::Unmet,
     })
 }
 
 /// The held commits putting `m`'s edge on `a` (a grant or raise: their boxes to `m` carry the
-/// sealer's names), whether applied or ordered before `a`'s epoch start (spec/permissions.md
-/// §6; the commit is held either way).
-fn edge_puts(core: &Core, a: &Tid, m: &Tid) -> Result<Vec<osis_base::CommitId>> {
+/// sealer's names), the put applied or the commit ordered before `a`'s epoch start
+/// (spec/permissions.md §6; the commit is held either way): each with its point and the
+/// `keyset` its edge write names.
+fn edge_puts(core: &Core, a: &Tid, m: &Tid) -> Result<Vec<(osis_base::CommitId, osis_perm::Point, Option<osis_perm::Point>)>> {
     let Some(tl) = core.timelines.get(a) else { return Ok(Vec::new()) };
     let roles_ak = crate::flows::ak("roles.0")?;
+    let start = tl.epoch_start(a).and_then(|id| core.ix.commits.get(&id).map(|c| osis_perm::Point { ts: c.view.ts, node: c.view.author, commit: id }));
     Ok(core
         .ix
         .by_aspect
@@ -267,7 +289,12 @@ fn edge_puts(core: &Core, a: &Tid, m: &Tid) -> Result<Vec<osis_base::CommitId>> 
         .into_iter()
         .flatten()
         .map(|x| x.1)
-        .filter(|c| tl.role_commit(c).is_some_and(|mc| mc.ops.iter().any(|op| op.target == *a && op.holder == *m && op.edge.is_some())))
+        .filter_map(|c| {
+            let mc = tl.role_commit(&c)?;
+            let (i, op) = mc.ops.iter().enumerate().find(|(_, op)| op.target == *a && op.holder == *m && op.edge.is_some())?;
+            let counts = tl.is_applied(&WriteId::Op(c, i as u32)) || start.is_some_and(|s| mc.point() < s);
+            counts.then(|| (c, mc.point(), op.edge.and_then(|e| e.keyset)))
+        })
         .collect())
 }
 
