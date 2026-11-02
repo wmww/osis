@@ -18,7 +18,7 @@ The build and test mechanics are in notes/build.md; this note is the process aro
   - Name the three git footguns in the brief:
     1. squash with `git reset --soft $(git merge-base HEAD main)`, never `main`;
     2. wip-commit before a fix-disabled probe, so the `git checkout <file>` that undoes it loses nothing;
-    3. `git rebase main` without a pipe.
+    3. `git rebase main` without a pipe, after the coordinator's `git pull --rebase` in the main checkout (local main lags when the other box merges; three reviewers rebased on stale main and saw "up to date"). `git fetch && git rebase origin/main` from the worktree is the same.
     All three recurred in 13f: two `reset --soft main`, and tied-grants lost uncommitted work to `git checkout` after reading build.md. Its long footgun paragraph is not retained.
   - Put the reviewer's "check these cases" questions in the worker brief too. In tied-grants, the reviewer brief asked about the edge arriving before the placement; the worker brief had not, and that bug cost a second worker and reviewer round. Say "do not loosen an existing test: report it" (eph-unify-1 loosened two tests to hide a cap regression).
   - Name sections of the big notes, not whole files: notes/testing.md (Tiers) and the named sections of ephemeral.md and node.md. The eph-unify-3 worker's reading list was about 380 KB.
