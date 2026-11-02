@@ -487,6 +487,36 @@ fn until_ending_spec_perm_3() {
     }
 }
 
+// spec/permissions.md §3 (lost access): a role commit received on a thing whose edge to this node only expired says nothing of that edge: the loss waits as an `until` passing does (a renewal may follow it); a removal received acts at once.
+#[test]
+fn a_commit_beside_an_expired_edge_waits_spec_perm_3() {
+    use osis_node::rotation::LostScope;
+    let at = osis_base::WallMs(T0.0 + 3_600_000);
+    let mut x = setup(9370, ct::Edge { until: Some(at), ..edge_of(Role::Read) });
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    x.lp.peers[1].clock.set(osis_base::WallMs(at.0 + 1));
+    x.lp.peers[0].clock.set(osis_base::WallMs(at.0 + 1));
+    let pa = x.lp.peers[0].engine.owner(&x.d).unwrap();
+    let other = thing_of(&mut x.lp, 0, pa);
+    x.lp.peers[0].engine.grant(&x.d, &other, &edge_of(Role::Read)).unwrap();
+    spread(&mut x.lp);
+    assert!(x.lp.peers[1].engine.lost_received());
+    let d = x.d;
+    assert!(x.lp.peers[1].engine.forget_lost(LostScope::Received).unwrap().actors.is_empty());
+    assert!(!x.lp.peers[1].engine.lost_received());
+    assert!(x.lp.peers[1].engine.lost_due(), "due by the time alone");
+    assert_eq!(read(&mut x.lp, d), Some(s(&big(D_MARK))));
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_erased(&mut x);
+    // a removal with no `until` in it: at once
+    let mut x = setup(9375, edge_of(Role::Read));
+    let (d, pb) = (x.d, x.pb);
+    x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
+    spread(&mut x.lp);
+    assert!(!x.lp.peers[1].engine.forget_lost(LostScope::Received).unwrap().actors.is_empty());
+    assert_erased(&mut x);
+}
+
 // spec/permissions.md §3, Keep: a holder leaving keeps as its edge says: not its own choice.
 #[test]
 fn self_removal_keeps_as_the_edge_says_spec_perm_3() {

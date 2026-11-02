@@ -124,6 +124,8 @@ impl SyncEngine {
                 LostScope::Received
             } else if self.engine.lost_due() && self.heard_out() {
                 LostScope::Due
+            } else if self.engine.lost_overdue() {
+                LostScope::Overdue
             } else {
                 break;
             };
@@ -136,13 +138,13 @@ impl SyncEngine {
 
     /// Whether every label with hosts has finished a pass with nothing outstanding, or none of them
     /// lets it open: what the labels have for this node has come, and its own writes went. O(labels
-    /// x connections) per step while an expired edge waits on a host down.
+    /// x connections) per step while an expired edge waits on a host down; `labels()` beside it
+    /// runs several times a step. A host that never lets this hold delays by `LOST_HEARD_WAIT_MS`.
     fn heard_out(&mut self) -> bool {
         if !self.is_idle() {
             return false;
         }
-        let skip = self.receipts_only().clone();
-        self.label_status().iter().filter(|s| !s.replaced && s.hosts > 0 && !skip.contains(&s.group)).all(|s| s.stranded || s.refused || (s.open > 0 && s.idle == s.open))
+        self.label_status().iter().filter(|s| !s.replaced && s.hosts > 0).all(|s| s.stranded || s.refused || (s.open > 0 && s.idle == s.open))
     }
 
     /// `Engine::forget_lost`, and the sync state about what it forgot. Returns `Dropped::leaving`.
