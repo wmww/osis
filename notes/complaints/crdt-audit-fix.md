@@ -5,3 +5,4 @@
 - My mid-task `cargo test --workspace --no-fail-fast 2>&1 | grep ... | head` showed nothing, yet the gate then failed on crdt-model's `props` (a test asserting the old leniency). Probably read the wrong run; the gate caught it.
 - Review: the order/walks oracles cannot see an honest delta rejected by a new reader rule: fresh nodes ignore `ingest` errors and every order rejects alike. Only the sim harness fails on `BadInput`. A throwaway patch asserting no `BadInput` in order.rs's ingests (alike + exhaustive, 100 seeds) was the real check; worth making permanent.
 - tools/__pycache__ was committed (no `__pycache__/` in .gitignore); added.
+- Review gate 1 failed on osis-cli `syntax::numbered_round_trip`: its value generator still drew enum cases above i64::MAX (now rejected by the CBOR decoder). The worker's per-crate loop never ran the cli tests; a format-rule change should grep every value generator (`Value::Enum(` with `any::<u64>`).
