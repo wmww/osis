@@ -496,6 +496,37 @@ fn every_api_method_has_a_command_plan_cli_tests() {
     assert!(missing.is_empty(), "API methods without a command (notes/cli.md table): {missing:?}");
 }
 
+// notes/cli.md Command table `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
+#[test]
+fn clients_commands_plan_cli() {
+    let s = S::mem();
+    let add = s.ok(&["clients", "add", "--until", "1900000000000"]);
+    let (actor, secret) = add.line().split_once(' ').unwrap();
+    assert_eq!(secret.len(), 64);
+    assert_eq!(s.ok(&["clients", "ls"]).out, format!("{actor} 1900000000000\n"));
+    assert!(s.ok(&["--json", "clients", "ls"]).out.contains("1900000000000"));
+    let rotated = s.ok(&["clients", "rotate", actor]).line().to_string();
+    assert_eq!(rotated.len(), 64);
+    assert_ne!(rotated, secret);
+    assert_ne!(s.code(&["clients", "add", "--until", "1"]), 0);
+    s.ok(&["clients", "rm", actor]);
+    assert_eq!(s.ok(&["clients", "ls"]).out, "");
+    assert_eq!(s.code(&["clients", "rm", actor]), 3);
+    assert_eq!(s.code(&["clients", "rotate", actor]), 7);
+    // thin arguments
+    assert_eq!(s.code(&["--node", "quic://127.0.0.1:1#00", "whoami"]), 2);
+    assert_eq!(s.code(&["--client-secret", "/nonexistent", "whoami"]), 2);
+    let d = tmp("thin");
+    std::fs::create_dir_all(&d).unwrap();
+    let bad = d.join("bad");
+    std::fs::write(&bad, "xyz").unwrap();
+    let k = "00".repeat(32);
+    let addr = format!("quic://127.0.0.1:1#{k}");
+    assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "whoami"]), 2);
+    assert_eq!(s.code(&["--node", &addr, "--client-secret", "/nonexistent", "whoami"]), 8);
+    assert_eq!(s.code(&["--node", &addr, "--client-secret", bad.to_str().unwrap(), "inspect", "actor", "me"]), 2);
+}
+
 // notes/cli.md Command table `hosting`: `host.0^` written field by field, shown (with the host
 // address each listen URL will have, known without serving), stopped (a new start, a new key); a
 // group names its labels (as `status` lists them), a label ID works too, `''` clears a field.

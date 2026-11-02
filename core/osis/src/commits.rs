@@ -187,16 +187,22 @@ struct Found {
 
 impl Osis {
     fn scope_aspects(&self, s: &Scope) -> Result<Vec<(Tid, Ak)>> {
+        // acting as an actor: of what it may read only
+        let acting = self.acting;
+        let shown = |e: &osis_node::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
         let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
             self.engine(|e| {
-                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, _)| keep(e, t)).collect();
-                out.extend(e.ephemeral_scope_keys().into_iter().filter(|(t, _)| keep(e, t)));
+                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, _)| keep(e, t) && shown(e, t)).collect();
+                out.extend(e.ephemeral_scope_keys().into_iter().filter(|(t, _)| keep(e, t) && shown(e, t)));
                 Ok::<_, osis_node::Error>(out)
             })
             .map_err(Error::from)
         };
         Ok(match s {
-            Scope::Aspects(v) => v.iter().map(|(t, a)| (self.read_local(|r| r.resolve(*t)), a.clone())).collect(),
+            Scope::Aspects(v) => {
+                let v: Vec<(Tid, Ak)> = v.iter().map(|(t, a)| (self.read_local(|r| r.resolve(*t)), a.clone())).collect();
+                self.engine(|e| v.into_iter().filter(|(t, _)| shown(e, t)).collect())
+            }
             Scope::Thing(t) => {
                 let t = self.read_local(|r| r.resolve(*t));
                 things(&|_, x| *x == t)?
@@ -266,6 +272,13 @@ impl Osis {
                 };
                 at.insert(l.id, ts);
                 entries.insert((ts, l.id), CommitEntry { commit: CommitInfo { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, aspects: asp });
+            }
+            // acting as an actor: only the aspects it may read; a change touching none is unknown
+            if let Some(a) = self.acting {
+                entries.retain(|_, en| {
+                    en.aspects.retain(|(t, _)| e.readable_by(&a, t));
+                    !en.aspects.is_empty()
+                });
             }
             // relations over the related commits and the whole log, oldest first
             let mut rel: BTreeMap<(Ts, ChangeId), Option<ChangeId>> = related.iter().map(|c| ((c.header.ts, ChangeId::Commit(c.id)), undoes(&c.header))).collect();
@@ -435,13 +448,16 @@ impl Osis {
         let blocked = |reason| Error::NotUndoable { commit: target, reason };
         self.engine(|e| {
             if let ChangeId::Commit(c) = target {
-                let h = e.header(&c).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
+                let h = e.header(&c).filter(|h| self.acting.is_none_or(|a| h.aspects.iter().any(|x| e.readable_by(&a, &x.tid)))).ok_or_else(|| Error::Invalid("unknown commit".into()))?;
                 if h.kind != Kind::Content {
                     return Err(Error::Invalid("only changes and reverts are reverted".into()));
                 }
                 if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
                     return Err(blocked(DropReason::Compacted));
                 }
+            }
+            if let Some(a) = self.acting {
+                e.check_revert_as(&a, target)?;
             }
             match e.revert_change(target, me)? {
                 Reverted::Written(w) => Ok(Committed { id: w.id, ts: w.ts }),

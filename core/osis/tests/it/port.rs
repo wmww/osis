@@ -165,7 +165,7 @@ fn too_large_then_stream_read() {
 }
 
 /// A raw protocol session (tests of the wire rules).
-struct Raw {
+pub(crate) struct Raw {
     rt: tokio::runtime::Runtime,
     cs: ClientSession,
     link: osis_transport::Link,
@@ -173,7 +173,7 @@ struct Raw {
 }
 
 impl Raw {
-    fn over<T: osis_transport::Transport>(t: &T, addr: osis_transport::Address) -> Raw {
+    pub(crate) fn over<T: osis_transport::Transport>(t: &T, addr: osis_transport::Address) -> Raw {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let link = rt.block_on(osis_transport::link::dial(t, &addr, None, W)).unwrap();
         let mut r = Raw { rt, cs: ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge: [3; 32] }), link, events: Vec::new() };
@@ -202,7 +202,7 @@ impl Raw {
     }
 
     /// Sends `cmd` and waits for the reply of `token`.
-    fn ask(&mut self, cmd: Command, token: u64) -> Result<Outcome, Code> {
+    pub(crate) fn ask(&mut self, cmd: Command, token: u64) -> Result<Outcome, Code> {
         let o = self.cs.handle(0, ClientInput::Command(cmd));
         self.out(o);
         loop {
@@ -216,8 +216,23 @@ impl Raw {
         }
     }
 
+    /// Sends `cmd` without waiting for its reply.
+    pub(crate) fn send(&mut self, cmd: Command) {
+        let o = self.cs.handle(0, ClientInput::Command(cmd));
+        self.out(o);
+    }
+
+    /// Lets the link's tasks run for `ms`: what `send` queued reaches the node.
+    pub(crate) fn pump(&mut self, ms: u64) {
+        self.rt.block_on(async { tokio::time::sleep(Duration::from_millis(ms)).await });
+    }
+
     fn auth(&mut self, session: [u8; 16]) -> Result<Outcome, Code> {
-        self.ask(Command::Auth { token: 0, session }, 0)
+        self.ask(Command::Auth { token: 0, session, secret: None }, 0)
+    }
+
+    pub(crate) fn call_at(&mut self, token: u64, method: u64, args: Vec<Value>) -> Outcome {
+        self.call(token, method, args)
     }
 
     fn call(&mut self, token: u64, method: u64, args: Vec<Value>) -> Outcome {
@@ -226,7 +241,7 @@ impl Raw {
 }
 
 /// A `write` call's args setting `k` of `t` to `v` (the port's batch form: nonce, actor, keys, ops).
-fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: Value) -> Vec<Value> {
+pub(crate) fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: Value) -> Vec<Value> {
     let op = Value::List(vec![Value::List(vec![]), Value::List(vec![Value::Int(0), v])]);
     vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str(k.as_str().into())]), Value::List(vec![Value::List(vec![Value::Int(3), Value::Tid(t), Value::Int(0), op])])]
 }

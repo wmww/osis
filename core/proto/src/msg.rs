@@ -184,8 +184,9 @@ pub enum Message {
     Subscribe { id: Id, labels: Vec<LabelId> },
     Unsubscribe { id: Id, labels: Vec<LabelId> },
     Push { label: LabelId, events: Vec<Event>, cursor: Cursor },
-    /// Client port (notes/client-port.md §2): an Owner session sends no key and no signature.
-    Auth { id: Id, client_pk: Option<[u8; 32]>, session: [u8; 16], sig: Option<Signature> },
+    /// Client port (notes/client-port.md §2): an Owner session sends no secret, a thin client
+    /// its bearer secret (`Debug` redacted, zeroized on drop).
+    Auth { id: Id, secret: Option<osis_crypto::Secret32>, session: [u8; 16] },
     /// `max_reply`: the reply's frame body bound, `SMALL_REPLY..=REPLY_BUDGET`; `args` a list.
     Call { id: Id, max_reply: u64, method: u64, args: Vec<Value> },
     Reply { id: Id, outcome: crate::api::Outcome },
@@ -323,7 +324,7 @@ impl Message {
             ],
             M::Subscribe { labels, .. } | M::Unsubscribe { labels, .. } => vec![k, id, Value::List(labels.iter().map(l).collect())],
             M::Push { label, events, cursor } => vec![k, id, l(label), events_value(events), cursor_value(cursor)],
-            M::Auth { client_pk, session, sig, .. } => vec![k, id, Value::opt(client_pk.as_ref().map(|p| Value::bytes(p))), Value::bytes(session), Value::opt(sig.as_ref().map(|s| Value::bytes(&s.0)))],
+            M::Auth { secret, session, .. } => vec![k, id, Value::opt(secret.as_ref().map(|s| Value::bytes(s.expose()))), Value::bytes(session)],
             M::Call { max_reply, method, args, .. } => vec![k, id, Value::uint(*max_reply), Value::uint(*method), Value::List(args.clone())],
             M::Reply { outcome, .. } => vec![k, id, outcome.to_value()],
             M::Sub { max_reply, filter, .. } => vec![k, id, Value::uint(*max_reply), filter.clone()],
@@ -362,8 +363,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
         0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 => 3,
-        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 | 27 | 29 => 4,
-        7 | 23 | 24 | 25 => 5,
+        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 | 24 | 27 | 29 => 4,
+        7 | 23 | 25 => 5,
         12 => 6,
         15 | 16 => 7,
         _ => return Err(Error::UnknownKind(kind)),
@@ -427,9 +428,8 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         23 => Message::Push { label: label(&mut f)?, events: events(f.list(1, usize::MAX, "events")?)?, cursor: cursor(f.next()?)? },
         24 => Message::Auth {
             id,
-            client_pk: f.opt()?.map(|v| dec::fixed(v, "client key")).transpose()?,
+            secret: f.opt()?.map(|v| dec::fixed(v, "client secret").map(osis_crypto::Secret32::from_bytes)).transpose()?,
             session: f.fixed()?,
-            sig: f.opt()?.map(|v| dec::fixed(v, "auth sig").map(Signature)).transpose()?,
         },
         25 => Message::Call { id, max_reply: max_reply(&mut f)?, method: f.uint()?, args: f.list(0, usize::MAX, "args")? },
         26 => Message::Reply { id, outcome: crate::api::Outcome::from_value(f.next()?)? },

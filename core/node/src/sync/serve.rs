@@ -17,6 +17,9 @@ use super::state::Entry;
 use super::{Action, ConnId, SyncEngine};
 use crate::engine::Engine;
 use crate::error::Result;
+use osis_base::Tid;
+use osis_crypto::Secret32;
+use osis_schema::core_types as ct;
 use osis_base::format::TOMBSTONE_LIFETIME_MS;
 
 /// How often carriers and certificate placements nothing needs are forgotten (they wait
@@ -171,6 +174,15 @@ pub(crate) struct Served {
     pub last: u64,
     /// Raw ms the session started (one that opens nothing is closed).
     since: u64,
+    /// A thin client's: the hash of the secret it authenticated with and its entry's end
+    /// (corrected wall ms). The session ends with the entry, with that hash, at that end.
+    client: Option<ClientBinding>,
+}
+
+#[derive(Clone, Copy)]
+struct ClientBinding {
+    hash: [u8; 32],
+    until: Option<u64>,
 }
 
 /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums per
@@ -529,7 +541,7 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }).with_port(), tier, ported: false, peer, last, since: last });
+        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }).with_port(), tier, ported: false, peer, last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -627,30 +639,13 @@ impl SyncEngine {
                 eph: &self.eph,
                 relays: &mut self.relay_gate,
             };
-            let mut o = s.conn.handle(now, &mut store, input);
-            if s.tier == super::Tier::Keyed {
-                // a keyed session never reaches the port worker unauthenticated, and none can
-                // authenticate before credentials (notes/client-port.md §8 (c1), which checks a
-                // keyed Auth here): its Auth is refused at once (Error 1), so nothing stays
-                // asked; proto refuses its Call, Sub and Unsub before an answered Auth
-                let mut refused = Vec::new();
-                o.retain(|x| match x {
-                    ServingOutput::Request(m) => {
-                        refused.push(m.id());
-                        false
-                    }
-                    _ => true,
-                });
-                for id in refused {
-                    o.extend(s.conn.handle(now, &mut store, ServingInput::Reply { id, reply: Err(osis_proto::Code::REFUSED) }));
-                }
-            }
+            let o = s.conn.handle(now, &mut store, input);
             (o, store.acc)
         };
         let peer = s.conn.co_reader().unwrap_or(s.peer);
         let proven = s.conn.co_reader();
         let co_reader = proven.is_some_and(|k| reach.contains_key(&k));
-        let (tier, closed) = (s.tier, s.conn.is_closed());
+        let closed = s.conn.is_closed();
         if outputs.iter().any(|o| matches!(o, ServingOutput::Request(_))) {
             s.ported = true;
         }
@@ -696,6 +691,7 @@ impl SyncEngine {
             }
         }
         let mut relays = Vec::new();
+        let mut refused = Vec::new();
         for o in outputs {
             match o {
                 ServingOutput::Send(bytes) => out.push(Action::Send { conn, bytes }),
@@ -706,7 +702,11 @@ impl SyncEngine {
                 ServingOutput::Relay(r) => relays.push(r),
                 ServingOutput::PeerError(e) => self.diag(format!("peer: {e}")),
                 ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
-                ServingOutput::Request(msg) => out.push(Action::Request { conn, tier, msg }),
+                // nothing of an unauthenticated keyed session goes up, and no secret ever does
+                ServingOutput::Request(msg) => match self.admit(conn, *msg) {
+                    Ok((tier, msg)) => out.push(Action::Request { conn, tier, msg: Box::new(msg) }),
+                    Err(r) => refused.push(r),
+                },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
             }
         }
@@ -715,7 +715,94 @@ impl SyncEngine {
         for r in relays {
             self.relay_in(super::ephemeral::RelayFrom::Served(conn), r.label, r.blob_id, r.blob.to_vec(), r.wrap, Some(r.stamp), out)?;
         }
+        for (id, code) in refused {
+            self.serve_with(conn, ServingInput::Reply { id, reply: Err(code) }, labels, out)?;
+        }
         Ok(())
+    }
+
+    /// Decides what a served session's client-port request goes up as (notes/client-port.md §3).
+    /// An Owner's Auth without a secret; a keyed session's with a secret matching a current
+    /// `clients.0^` entry, which binds the session to that client actor, its secret stripped;
+    /// any other Auth (a second one too) is Error 1. Proto refuses Call, Sub and Unsub before an
+    /// answered Auth, so a keyed session never gets further unauthenticated.
+    fn admit(&mut self, conn: ConnId, msg: osis_proto::Message) -> std::result::Result<(super::Tier, osis_proto::Message), (osis_proto::msg::Id, osis_proto::Code)> {
+        use super::Tier;
+        use osis_proto::{Code, Message};
+        let tier = self.served.get(&conn).map_or(Tier::Keyed, |s| s.tier);
+        let id = msg.id();
+        let Message::Auth { secret, session, .. } = msg else {
+            return if tier == Tier::Keyed { Err((id, Code::REFUSED)) } else { Ok((tier, msg)) };
+        };
+        match (tier, secret) {
+            (Tier::Owner, None) => Ok((tier, Message::Auth { id, secret: None, session })),
+            (Tier::Keyed, Some(secret)) => {
+                let hash = osis_base::hash::hash(secret.expose());
+                let Some((actor, until)) = self.client_entry_by_hash(&hash) else { return Err((id, Code::REFUSED)) };
+                let of_it = self.served.values().filter(|s| s.tier == Tier::Client(actor)).count();
+                let all = self.served.values().filter(|s| matches!(s.tier, Tier::Client(_))).count();
+                if of_it >= super::MAX_CONNS_PER_CLIENT || all >= self.cfg.max_clients {
+                    return Err((id, Code::RATE_LIMITED));
+                }
+                let Some(s) = self.served.get_mut(&conn) else { return Err((id, Code::REFUSED)) };
+                s.tier = Tier::Client(actor);
+                s.client = Some(ClientBinding { hash, until });
+                Ok((s.tier, Message::Auth { id, secret: None, session }))
+            }
+            _ => Err((id, Code::REFUSED)),
+        }
+    }
+
+    /// This node's `clients.0^`.
+    fn client_entries(&mut self) -> BTreeMap<Tid, ct::Client> {
+        let me = self.engine.tid();
+        self.engine.get_typed(&me, &ct::CLIENTS).ok().flatten().unwrap_or_default()
+    }
+
+    /// The current entry (actor, end) whose secret hash is `hash`: every entry compared in
+    /// constant time, none skipped.
+    fn client_entry_by_hash(&mut self, hash: &[u8; 32]) -> Option<(Tid, Option<u64>)> {
+        let now = self.now();
+        let probe = Secret32::from_bytes(*hash);
+        let mut hit = None;
+        for (t, c) in self.client_entries() {
+            if Secret32::from_bytes(c.secret_hash) == probe {
+                hit = Some((t, c.until.map(|u| u.0)));
+            }
+        }
+        hit.filter(|(_, until)| until.is_none_or(|u| u > now))
+    }
+
+    /// The client actor served session `conn` runs as now: none unless the session is bound to
+    /// a client whose entry is still there, under the same secret, and not past its `until`.
+    /// The port asks at every request and every send, so no answer outlives the entry.
+    pub fn client_of(&mut self, conn: ConnId) -> Option<Tid> {
+        let now = self.now();
+        let (super::Tier::Client(actor), Some(b)) = self.served.get(&conn).map(|s| (s.tier, s.client))? else { return None };
+        let e = self.client_entries().remove(&actor)?;
+        (Secret32::from_bytes(e.secret_hash) == Secret32::from_bytes(b.hash) && e.until.is_none_or(|u| u.0 > now)).then_some(actor)
+    }
+
+    /// After a `clients.0^` change: sessions of a client removed, rotated or past its `until` end;
+    /// the others take their entry's `until` (the timer `serve_timers` closes them by).
+    pub(crate) fn clients_changed(&mut self, out: &mut Vec<Action>) {
+        if !self.served.values().any(|s| s.client.is_some()) {
+            return;
+        }
+        let entries = self.client_entries();
+        let now = self.now();
+        let mut stale = Vec::new();
+        for (c, s) in self.served.iter_mut() {
+            let (super::Tier::Client(actor), Some(b)) = (s.tier, s.client.as_mut()) else { continue };
+            match entries.get(&actor) {
+                Some(e) if Secret32::from_bytes(e.secret_hash) == Secret32::from_bytes(b.hash) && e.until.is_none_or(|u| u.0 > now) => b.until = e.until.map(|u| u.0),
+                _ => stale.push(*c),
+            }
+        }
+        for c in stale {
+            self.end_served(c, out);
+            out.push(Action::Close { conn: c });
+        }
     }
 
     /// After a role or roster change: co-readers that no longer read a label stop
@@ -783,7 +870,9 @@ impl SyncEngine {
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
         // an authenticated client is exempt from the idle bound while its connection is up
         // (notes/client-port.md §3)
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| !s.conn.authed() && s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now).map(|(c, _)| *c).collect();
+        // a thin client's `until` passed: no other change is needed to end it
+        let corrected = self.now();
+        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| !s.conn.authed() && s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now || s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected))).map(|(c, _)| *c).collect();
         for c in stale {
             self.end_served(c, out);
             out.push(Action::Close { conn: c });
@@ -809,6 +898,9 @@ impl SyncEngine {
     pub(crate) fn serve_wake(&self) -> Option<u64> {
         // a session holding pushes back: `Event::Sent` at the next tick may give them room
         let poll = self.served.values().any(|s| s.conn.held()).then(|| self.raw_now().saturating_add(osis_proto::serving::PUSH_POLL_MS));
-        self.served.values().filter(|s| !s.conn.authed()).map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).min()
+        // a thin client's `until`, corrected wall ms, on the raw clock
+        let (raw, wall) = (self.raw_now(), self.now());
+        let until = self.served.values().filter_map(|s| s.client.and_then(|b| b.until)).map(|u| u.saturating_add(raw).saturating_sub(wall)).min();
+        self.served.values().filter(|s| !s.conn.authed()).map(|s| if s.conn.none_opened() { s.since.saturating_add(self.cfg.serve_open_ms).min(s.last.saturating_add(self.cfg.serve_idle_ms)) } else { s.last.saturating_add(self.cfg.serve_idle_ms) }).chain(poll).chain(until).min()
     }
 }

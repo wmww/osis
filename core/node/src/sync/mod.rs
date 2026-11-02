@@ -178,7 +178,14 @@ pub enum Event {
     Notify { conn: ConnId, notes: Vec<(osis_proto::msg::Id, osis_proto::Payload)> },
     /// Notifies wait for a served session: `Action::Room` when the push rule allows.
     WantRoom { conn: ConnId },
+    /// The holder of the engine ends a served session (its client was revoked).
+    End { conn: ConnId },
 }
+
+/// Authenticated connections per thin client (a further Auth is Error 4), and the write sessions
+/// remembered per client. Resource bound: 0 forbids clients, infinity lets one client fill the
+/// `max_clients` pool.
+pub const MAX_CONNS_PER_CLIENT: usize = 8;
 
 /// The tier of a served session (notes/client-port.md §0), decided at accept by the transport
 /// type, never by a key value.
@@ -186,8 +193,11 @@ pub enum Event {
 pub enum Tier {
     /// A unix-socket peer of this process's uid: the same person at the keyboard.
     Owner,
-    /// A keyed transport: no credential tier yet, so its Auth is refused.
+    /// A keyed transport: nothing of it reaches the port until its Auth matches `clients.0^`.
     Keyed,
+    /// A keyed session whose bearer secret matched this client actor's entry in `clients.0^`
+    /// (notes/client-port.md §3). Its requests run as that actor.
+    Client(Tid),
 }
 
 /// Outputs for the driver.
@@ -545,6 +555,8 @@ pub struct SyncEngine {
     pub(crate) pass_peers: BTreeMap<LabelId, BTreeSet<HostKey>>,
     /// A role or roster change since the last step (`holders_changed`).
     pub(crate) holders_moved: bool,
+    /// This node's `clients.0^` changed since the last step (`clients_changed`).
+    pub(crate) clients_moved: bool,
     /// Commit blobs with linked header lists whose prefix was checked against the resolved
     /// header (spec/commits.md §4).
     pub(crate) prefix_checked: BTreeSet<osis_base::BlobId>,
@@ -645,6 +657,7 @@ impl SyncEngine {
             placed_cache: (u64::MAX, BTreeMap::new()),
             pass_peers: BTreeMap::new(),
             holders_moved: false,
+            clients_moved: false,
             prefix_checked: BTreeSet::new(),
             eph: ephemeral::Lane::default(),
             relay_gate: osis_proto::RelayGate::default(),
@@ -837,6 +850,12 @@ impl SyncEngine {
             Event::Reply { conn, id, reply } => self.serve(conn, osis_proto::ServingInput::Reply { id, reply }, out)?,
             Event::Notify { conn, notes } => self.serve(conn, osis_proto::ServingInput::Notify(notes), out)?,
             Event::WantRoom { conn } => self.serve(conn, osis_proto::ServingInput::WantRoom, out)?,
+            Event::End { conn } => {
+                if self.served.contains_key(&conn) {
+                    self.end_served(conn, out);
+                    out.push(Action::Close { conn });
+                }
+            }
             Event::Bytes { conn, bytes } => {
                 let now = self.raw_now();
                 if let Some(c) = self.conns.get_mut(&conn) {
@@ -868,6 +887,9 @@ impl SyncEngine {
         if std::mem::take(&mut self.holders_moved) {
             self.holders_changed(out);
             self.reach_check = true;
+        }
+        if std::mem::take(&mut self.clients_moved) {
+            self.clients_changed(out);
         }
         if std::mem::take(&mut self.reach_check) {
             self.check_reach(out)?;
@@ -914,11 +936,14 @@ impl SyncEngine {
         let mut changed = false;
         // things whose roster or creation record changed
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
+        let me = self.engine.tid();
+        let clients = osis_schema::AspectKey::ak(&osis_schema::core_types::CLIENTS);
         while let Ok(e) = self.events.try_recv() {
             match e {
                 crate::Event::Applied { id, origin, changed: aspects, .. } => {
                     changed = true;
                     self.tied.touched(&aspects);
+                    self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
                     self.placed_cache.0 = u64::MAX;
                     let Some(h) = self.engine.header(&id) else { continue };
                     // a placement applied invalid changes no state but may decide a tie
@@ -957,6 +982,7 @@ impl SyncEngine {
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
                     self.tied.touched(&aspects);
+                    self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
                     if cause == crate::events::Cause::LostAccess {
                         self.touched.full = true;
                     }

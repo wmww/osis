@@ -385,6 +385,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Hosting(HostingCmd::Show) => hosting_show(ctx),
         Cmd::Hosting(HostingCmd::Set(f)) => set_hosting(ctx, f),
         Cmd::Hosting(HostingCmd::Off) => Ok(db.set_hosting(None)?),
+        Cmd::Clients(c) => clients(ctx, &c),
         Cmd::Serve { host } => serve(ctx, host),
         Cmd::Schema(_) => unreachable!("handled before opening"),
         Cmd::Create(a) => one_write(ctx, ScriptCmd::Create(a)),
@@ -1216,6 +1217,33 @@ fn set_hosting(ctx: &mut Ctx<'_>, f: HostFlags) -> anyhow::Result<()> {
         }
     }
     Ok(db.set_hosting(Some(h))?)
+}
+
+/// `clients add|ls|rm|rotate` (notes/cli.md): `clients.0^` of this node.
+fn clients(ctx: &mut Ctx<'_>, c: &ClientsCmd) -> anyhow::Result<()> {
+    use osis_schema::osis_base::hex;
+    match c {
+        ClientsCmd::Add { until } => {
+            let (actor, secret) = ctx.db.add_client(opt_ts(until)?)?;
+            let s = hex::encode(secret.expose());
+            ctx.emit(&[format!("{} {s}", actor.to_uri())], J::obj([("actor", J::tid(actor)), ("secret", J::str(s.clone()))]))
+        }
+        ClientsCmd::Ls => {
+            let cs = ctx.db.clients()?;
+            let lines = cs.iter().map(|c| format!("{} {}", c.actor.to_uri(), c.until.map_or("-".to_string(), |u| u.0.to_string()))).collect::<Vec<_>>();
+            let j = J::Arr(cs.iter().map(|c| J::obj([("actor", J::tid(c.actor)), ("until", c.until.map_or(J::Null, |u| J::int(u.0)))])).collect());
+            ctx.emit(&lines, j)
+        }
+        ClientsCmd::Rm { actor } => {
+            let a = ctx.tid(actor)?;
+            if ctx.db.remove_client(a)? { Ok(()) } else { Err(exit(3, "no such client")) }
+        }
+        ClientsCmd::Rotate { actor } => {
+            let a = ctx.tid(actor)?;
+            let s = hex::encode(ctx.db.rotate_client_secret(a)?.expose());
+            ctx.emit(std::slice::from_ref(&s), J::str(s.clone()))
+        }
+    }
 }
 
 /// `host.0^` as lines (`listen URL`, `address URL#KEY` per listen URL but a port 0, `admit own|open`, `label ID`, `replicate ADDR`,

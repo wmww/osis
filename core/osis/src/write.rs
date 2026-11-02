@@ -114,7 +114,7 @@ pub(crate) fn segs(p: &Path) -> Result<Vec<PathSeg>> {
         .collect()
 }
 
-fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
+pub(crate) fn group_op(items: bool, member: Tid, add: bool) -> PathOp {
     let v = Value::Tid(member);
     let f = if items { crate::core::group::ITEMS } else { crate::core::group::SUBGROUPS };
     PathOp { path: vec![PathSeg::Field(f.0)], op: if add { Op::Add(v) } else { Op::Remove(v) } }
@@ -164,6 +164,12 @@ impl<'d> Write<'d> {
     fn known(&self, t: Tid) -> Result<Tid> {
         let t = self.resolve(t);
         if self.created.contains(&t) || self.db.attached() || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
+    }
+
+    /// A group op's member resolved. Acting as an actor it must be something that actor reads:
+    /// else the commit's checks of the member would tell a hidden thing from an unknown one.
+    fn member(&self, t: Tid) -> Result<Tid> {
+        if self.db.acting.is_some() { self.known(t) } else { Ok(self.resolve(t)) }
     }
 
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
@@ -222,7 +228,7 @@ impl<'d> Write<'d> {
 
     fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
         let g = self.known(g)?;
-        let member = self.resolve(member);
+        let member = self.member(member)?;
         self.group_expiry(g, exp)?;
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
@@ -315,7 +321,12 @@ impl<'d> Write<'d> {
             {
                 return Err(Error::UnknownThing { tid: t });
             }
-            let Built { m, placed, unplaced } = self.build(&mut Reader { e, limit })?;
+            let actor = db.acting;
+            let Built { mut m, placed, unplaced } = self.build(&mut Reader { e, limit, actor })?;
+            // whatever actor the batch names, an acting handle's write is that actor's alone
+            if let Some(a) = actor {
+                m.confine(a);
+            }
             let r = match e.write(m)? {
                 Some(w) => {
                     if w.id.commit().is_some() {
@@ -359,6 +370,7 @@ impl<'d> Write<'d> {
 
     /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
     fn build(self, r: &mut Reader<'_>) -> Result<Built> {
+        let acting = self.db.acting;
         let Write { ops, keys, actor, created, mut group_exp, .. } = self;
         let gk = std::cell::LazyCell::new(group_key);
         let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new() };
@@ -366,6 +378,13 @@ impl<'d> Write<'d> {
         for op in ops {
             match op {
                 WriteOp::Create(rec) => {
+                    // the account's devices administer what a client makes through the groups;
+                    // the client's actor goes away with the client (notes/client-port.md §3)
+                    if let (Some(a), CreationRecord::Thing { owner, .. }) = (acting, &rec)
+                        && *owner == a
+                    {
+                        return Err(Error::Invalid("an acting actor owns nothing: a thing it creates has another owner".into()));
+                    }
                     b.m.create(rec);
                 }
                 WriteOp::MakeGroup(t) => {
@@ -420,6 +439,9 @@ impl Osis {
         use crate::port::codec::{Args, bad, op, retention};
         let mut a = Args::of(args);
         let actor = a.tid()?;
+        if self.acting.is_some_and(|x| x != actor) {
+            return Err(Error::Invalid("a client writes only as its own actor".into()));
+        }
         let keys: Vec<Key> = a.list()?.iter().map(|v| crate::port::codec::ak(v).and_then(|ak| self.key(ak.as_str()))).collect::<Result<_>>()?;
         if let Some(k) = keys.iter().find(|k| read_only(k.ak.as_str()) || is_role_class(k.ak.as_str())) {
             return Err(Error::Invalid(format!("{} is written only by the engine or the sharing calls", k.ak)));
@@ -453,7 +475,7 @@ impl Osis {
                     }
                     WriteOp::MakeGroup(g)
                 }
-                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.resolve(o.tid()?), items: o.bool()?, add: o.bool()? },
+                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.member(o.tid()?)?, items: o.bool()?, add: o.bool()? },
                 3 => WriteOp::Path { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, op: op(o.next()?)? },
                 4 => {
                     let (tid, k, at) = (w.resolve(o.tid()?), key(o.uint()?)?, WallMs(o.uint()?));

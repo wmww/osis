@@ -39,6 +39,8 @@ pub struct Mutation {
     pub(crate) creates: Creates,
     pub(crate) aspects: BTreeMap<(Tid, Ak), AspectMut>,
     pub(crate) actor: Option<Tid>,
+    /// `Engine::write` holds the batch to `actor`'s own rights first (`Mutation::confine`).
+    pub(crate) confined: bool,
     pub(crate) form: Form,
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
@@ -79,12 +81,20 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, form: Form::Node, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), aspects: BTreeMap::new(), actor: None, confined: false, form: Form::Node, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
         self.actor = Some(actor);
+        self
+    }
+
+    /// Acts for `actor` holding the batch to `actor`'s own rights, not this node's
+    /// (`Engine::write`, engine/acting.rs).
+    pub fn confine(&mut self, actor: Tid) -> &mut Self {
+        self.actor = Some(actor);
+        self.confined = true;
         self
     }
 

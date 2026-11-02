@@ -45,6 +45,7 @@ The probe for the M rows: 400 overwrites of one register by one node, compacted 
 | Local derived indexes (`node/metas`, `node/edges` about 2x a roster snapshot, box and epoch indexes) | Node | With their commits | Follow rows 1 and 8 | issues/session-sources.md |
 | Ephemeral headers in memory | Node and host memory | About 15 MB per hour per author at presence rates, until restart | Closable: same forgetting | issues/eph-unify.md |
 | Parked commits (unknown encoding) | Node | Whole commit bytes until a build understands them | Bounded by authenticated writers only | none |
+| Thin clients: `clients.0^` entry (about 50 B, tombstone kept as for any map entry), the client actor's creation record, `keys.0`, `secrets.0` and about 2.6 KB of boxes per grant (notes/permissions.md) | Both | Per client ever added and per grant; the entry and grants go at `remove_client`, the records and their history stay as for any actor (E) | Inherent | none |
 | Undo buffers | Node | Capped at `UNDO_DEPTH` = 16 per aspect | Bounded | none |
 | Death records (DEATH rows) | Node | Live with their body | Bounded | none |
 

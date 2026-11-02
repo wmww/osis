@@ -25,6 +25,8 @@ pub trait Internals {
     /// Live dispatcher registrations: this process's watches and the client port's
     /// subscriptions it serves.
     fn watches(&self) -> usize;
+    /// A handle acting as `actor`, as the client port serves a thin client's session.
+    fn acting_as(&self, actor: osis_base::Tid) -> Osis;
 }
 
 impl Internals for Osis {
@@ -51,6 +53,10 @@ impl Internals for Osis {
     fn watches(&self) -> usize {
         here(self);
         self.inner.dispatch.registrations()
+    }
+    fn acting_as(&self, actor: osis_base::Tid) -> Osis {
+        here(self);
+        self.act_as(actor)
     }
 }
 

@@ -104,6 +104,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `reach.0` | struct { dialable key, relays, lan secret } | on a node thing (spec/sync.md §10); never direct addresses |
 | `seen.0` | struct { ts: timestamp, stranded: bool } | on a node thing: heartbeat, always written with `expires` (spec/permissions.md §4) |
 | `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`; a group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies; `open`: of any label. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5). `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
+| `clients.0^` | map<client actor tid, struct { secret_hash, until }> | on a node thing: the thin clients it serves (spec/sync.md §10). `secret_hash`: BLAKE3 of the client's 32-byte bearer secret; `until`: when its sessions end. The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles. Never part of the node card |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `placed.0~` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
 | `groups.0` | set<tid> | synthetic, guaranteed, local |
@@ -138,6 +139,7 @@ type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wi
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 type admit = enum { 0 own, 1 open };
 type host_caps = struct { 0 entries: int, 1 bytes: int };
+type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
 
 aspect tid.0: tid [synthetic, guaranteed];
 aspect aspects.0: set<string> [synthetic, guaranteed];
@@ -157,6 +159,7 @@ aspect node.0: struct { 0 software: string };
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };   // 32-byte P2P key, relay URLs, 32 bytes
 aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };    // ts: wall ms of the commit's ts
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };   // label IDs: 16 bytes
+aspect clients.0^: map<tid, client>;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 aspect groups.0: set<tid> [synthetic, guaranteed];
@@ -165,7 +168,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

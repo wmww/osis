@@ -189,6 +189,9 @@ fn lock_err(dir: &Path, e: Error) -> anyhow::Error {
 /// whose socket answers, the invocation is that daemon's client instead (`attach`, unless the
 /// command must hold the store itself: `inspect`).
 fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<Osis> {
+    if g.node.is_some() {
+        return if attach { thin(g) } else { Err(usage("this command holds a store: not with --node")) };
+    }
     match sel {
         StoreSel::Dir(d) => {
             if !d.join("db.redb").exists() {
@@ -225,6 +228,20 @@ fn daemon(d: &Path, g: &Global) -> Option<Osis> {
         cfg.materialize_limit = l;
     }
     Osis::attach(Path::new(sock.trim_end()), cfg).ok()
+}
+
+/// The node named by `--node`, attached as the thin client `--client-secret` stands for
+/// (notes/client-port.md §3). No store is opened.
+fn thin(g: &Global) -> anyhow::Result<Osis> {
+    let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
+    let text = std::fs::read_to_string(file).map_err(|e| exit(8, format!("{}: {e}", file.display())))?;
+    let bytes = osis_schema::osis_base::hex::decode(text.trim()).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(|| usage(format!("{}: not 64 hex digits", file.display())))?;
+    let addr: osis::HostAddr = addr.parse()?;
+    let mut cfg = Config::memory();
+    if let Some(l) = g.limit {
+        cfg.materialize_limit = l;
+    }
+    Ok(Osis::attach_client(&addr, &osis::ClientSecret::from_bytes(bytes), cfg)?)
 }
 
 /// Serves the client port while `serve` runs: listens on the store's socket and names it in
@@ -338,6 +355,8 @@ pub(crate) struct Ctx<'a> {
 impl Ctx<'_> {
     fn new<'a>(g: Global, db: Osis, sel: StoreSel, out: &'a mut dyn Write, stdin: &'a mut dyn BufRead, tty: bool) -> anyhow::Result<Ctx<'a>> {
         let mut paths = match &sel {
+            // a thin client has no store, so no registered schemas
+            StoreSel::Dir(_) if g.node.is_some() => Vec::new(),
             StoreSel::Dir(d) => registered(d)?,
             StoreSel::Memory(_) => Vec::new(),
         };
