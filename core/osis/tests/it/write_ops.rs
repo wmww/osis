@@ -77,10 +77,9 @@ const SETUP: usize = 4;
 
 /// A case: how many things it creates (first in the batch: they draw the same tids either
 /// way), then its calls. Lists that would read differently batched and unbatched are
-/// normalized away: a deleted thing has no other call (a batch's `delete` removes what is
-/// committed when it is called), `make_group` only before its thing is used as a group
-/// (`make_group` writes an empty `group.0` when there is none yet), a created thing is not
-/// deleted.
+/// normalized away (a batch's `delete` removes what is held when the batch commits, not what
+/// the batch wrote before it): a thing has no call before its delete, and a created thing is
+/// not deleted.
 fn case(seed: u64) -> (usize, Vec<Call>) {
     let mut r = Rng(seed);
     let creates = r.below(3);
@@ -107,16 +106,17 @@ fn case(seed: u64) -> (usize, Vec<Call>) {
             _ => Call::Delete(r.below(SETUP)),
         });
     }
-    let deleted: Vec<usize> = calls.iter().filter_map(|c| if let Call::Delete(t) = c { Some(*t) } else { None }).collect();
-    let mut seen_delete = Vec::new();
-    calls.retain(|c| match c {
-        Call::Delete(t) if seen_delete.contains(t) => false,
-        Call::Delete(t) => {
-            seen_delete.push(*t);
-            true
-        }
-        c => !c.things().iter().any(|t| deleted.contains(t)),
-    });
+    // the first delete of each thing; a call on it before that, and a second delete, go
+    let first_delete = |t: usize| calls.iter().position(|c| matches!(c, Call::Delete(d) if *d == t));
+    let keep: Vec<bool> = calls
+        .iter()
+        .enumerate()
+        .map(|(i, c)| match c {
+            Call::Delete(t) => first_delete(*t) == Some(i),
+            c => !c.things().iter().any(|t| first_delete(*t).is_some_and(|d| i < d)),
+        })
+        .collect();
+    let calls = calls.into_iter().zip(keep).filter_map(|(c, k)| k.then_some(c)).collect();
     (creates, calls)
 }
 
@@ -216,8 +216,9 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     out
 }
 
-/// Cases in tier 1 (`case` seeds 0..CASES).
-const CASES: u64 = 32;
+/// Cases in tier 1 (`case` seeds 0..CASES): about 1 s per 32; 64 includes a write after a
+/// `delete` of the same thing (seed 48), which fails when `commit` reorders path ops.
+const CASES: u64 = 64;
 
 // notes/client-port.md §8 (a): a `Write` records API ops and builds the engine mutation at
 // commit; a random op list (sets, edits, path ops, typed writes with schema defaults, expiry,
