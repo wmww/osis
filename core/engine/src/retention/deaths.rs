@@ -424,6 +424,16 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             join(&mut st, cur, false, &mut deaths, &mut dead);
         }
     }
+    // a text creation dies once, at its earliest delete (spec/crdt.md §4.8; a delete over an
+    // undelete reports it again)
+    let mut elems: BTreeMap<Stamp, Death> = BTreeMap::new();
+    deaths.retain(|d| {
+        if d.element && elems.get(&d.stamp).is_none_or(|o| d.at < o.at) {
+            elems.insert(d.stamp.clone(), d.clone());
+        }
+        !d.element
+    });
+    deaths.extend(elems.into_values());
     let mut got: BTreeMap<(CommitId, usize), (Ts, Ts)> = BTreeMap::new();
     let mut parts = Parts::default();
     for d in &deaths {

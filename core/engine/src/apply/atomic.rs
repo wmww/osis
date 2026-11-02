@@ -421,7 +421,7 @@ fn copies_before(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, 
 /// the snapshot's copy alone.
 pub(crate) struct Unmerge {
     owned: OwnedSet,
-    vouched: BTreeSet<osis_crdt::Dot>,
+    vouched: BTreeSet<(osis_crdt::Dot, Option<osis_base::Value>)>,
 }
 
 /// A list of `Owned` for a lookup per dot in O(log its length): a fall lists every fallen delta,
@@ -497,17 +497,26 @@ impl Unmerge {
     pub(crate) fn bad(&self, d: &osis_crdt::Dot) -> bool {
         self.owned.owns(d)
     }
+    /// Whether a held valid snapshot holds a write in the record of dot `d` and key `key`: of
+    /// a keyed map entry, its creation's copy under that key; else any write under `d`.
+    fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
+        match key {
+            Some(k) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
+            None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
+        }
+    }
     /// Whether what a valid snapshot's body holds under owner dot `d` goes.
     pub(crate) fn unvouched(&self, d: &osis_crdt::Dot) -> bool {
-        self.bad(d) && !self.vouched.contains(d)
+        self.bad(d) && !self.vouches(d, None)
     }
     /// Removes from a delta body, the state or a residue what un-merging removes (spec/crdt.md
     /// §4.6): the invalid deltas' writes, the records they created and others' writes nested in
-    /// them, except in a record a held valid snapshot's copy keeps (`vouched`): the record
-    /// stays in the state, so others' valid writes in it stay too.
+    /// them, except in a record a held valid snapshot's copy keeps (`vouches`): the record
+    /// stays in the state, so others' valid writes in it stay too. A copy of a map entry's
+    /// creation under another key (misstated) keeps its own record, not the delta's.
     pub(crate) fn strip(&self, f: &mut Fragment) {
         if !self.is_empty() {
-            f.remove_dots_keeping(&|d| self.bad(d), &|d| self.vouched.contains(d));
+            f.remove_dots_keeping(&|d| self.bad(d), &|d, k| self.vouches(d, k));
         }
     }
     /// Whether removing in place from the state can give the join (spec/crdt.md §4.6): no held

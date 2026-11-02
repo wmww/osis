@@ -999,6 +999,51 @@ fn entry_created_after_demotion(snapshot_first: bool) {
     assert_eq!(read(&mut lp, 0), read(&mut lp, 3), "Dave, rebuilt");
 }
 
+// spec/crdt.md §4.6 (a record whose creation a valid snapshot's copy keeps stays with the
+// valid writes nested in it), spec/permissions.md §5.2 (misstated copies): Bob, removed, creates
+// entry "late" offline; Carol writes inside it, then sends a snapshot carrying Bob's creation
+// under another key ("evil"). Bob's record ("late") has no creation left anywhere, so Carol's
+// write nested in it goes with his un-merged writes; the snapshot's own record stays.
+#[test]
+fn misstated_copy_keeps_no_other_record_spec_crdt_4_6() {
+    let (mut lp, d, b, _) = setup(65);
+    lp.peers.push(osis_node::local_peer::Peer::new(6500, T0).unwrap());
+    lp.sync_all().unwrap();
+    let one = |k: &str, v: &str| Value::Map(BTreeMap::from([(s(k), s(v))]));
+    put_at(&mut lp, 1, d, &["k"], one("a", "1"));
+    lp.sync_all().unwrap();
+    lp.advance(DAY);
+    revoke(&mut lp, 0, d, b);
+    lp.advance(DAY);
+    put_at(&mut lp, 1, d, &["late"], one("a", "1"));
+    let late = *lp.peers[1].engine.commit_ids().iter().max_by_key(|id| lp.peers[1].engine.header(id).unwrap().ts).unwrap();
+    let h = lp.peers[1].engine.header(&late).unwrap();
+    let lo = h.aspects.iter().find(|x| x.ak.as_str() == "x:m.0").unwrap().lo;
+    sync(&mut lp, 1, 2);
+    put_at(&mut lp, 2, d, &["late", "b"], s("2"));
+    lp.advance(1);
+    let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
+    let snap = forge_snapshot(&mut lp, 2, d, &ak("x:m.0"), now, entry_by(b, h.ts, lo, "evil", "x"));
+    lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
+    let keys = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&d, &ak("x:m.0")).unwrap() {
+        Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
+        _ => BTreeSet::new(),
+    };
+    let want = BTreeSet::from([s("evil"), s("k")]);
+    // Dave: everything, the snapshot first or last
+    for (i, snap_first) in [(3, true), (0, false)] {
+        let mut pks: Vec<_> = [0, 1, 2].into_iter().flat_map(|from| packages(&mut lp, from)).collect();
+        pks.sort_by_key(|p| (p.bytes != snap) == snap_first);
+        for pk in &pks {
+            lp.deliver(i, pk).unwrap();
+        }
+        lp.peers[i].engine.reexamine().unwrap();
+        assert_eq!(keys(&mut lp, i), want, "peer {i}");
+        lp.peers[i].engine.rebuild_state(&d, &ak("x:m.0")).unwrap();
+        assert_eq!(keys(&mut lp, i), want, "peer {i}, rebuilt");
+    }
+}
+
 // spec/permissions.md §5.2: commit-form writes a valid snapshot carries count: nothing judges
 // them per author.
 #[test]

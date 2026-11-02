@@ -7,12 +7,14 @@ use osis_base::Ts;
 
 /// A write superseded by the join: pruned by a reset, beaten as a register, case, flag or
 /// position winner, or its element removed. `at` is the `ts` of the superseding write, `by` its
-/// dot.
+/// dot. `element`: a text element's creation dying by a delete; its record keeps the write, so
+/// a delete over an undelete reports it again, but it dies once, at the earliest (§4.8).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Death {
     pub stamp: Stamp,
     pub at: Ts,
     pub by: Dot,
+    pub element: bool,
 }
 
 /// Change summary of one join.
@@ -72,6 +74,12 @@ impl Changes {
     /// Records that the write stamped `stamp` died, superseded by the write stamped `by`.
     pub(crate) fn died(&mut self, stamp: &Stamp, by: &Stamp) {
         self.changed = true;
-        self.deaths.push(Death { stamp: stamp.clone(), at: by.ts, by: by.dot.clone() });
+        self.deaths.push(Death { stamp: stamp.clone(), at: by.ts, by: by.dot.clone(), element: false });
+    }
+    /// Records that the text element whose creation is stamped `stamp` was deleted by the write
+    /// stamped `by` (`Death::element`).
+    pub(crate) fn deleted(&mut self, stamp: &Stamp, by: &Stamp) {
+        self.changed = true;
+        self.deaths.push(Death { stamp: stamp.clone(), at: by.ts, by: by.dot.clone(), element: true });
     }
 }

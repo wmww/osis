@@ -1056,11 +1056,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
             let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
             let what = format!("{id:?} ({:?}) {:?} {}: here {x:?}, earliest superseders {y:?}", h.kind, a.tid, a.ak.as_str());
             if e.body_not_dropped(&id, &a.tid, &a.ak) {
-                // issues/seq-redelete-death-order.md (known, open): a text creation deleted,
-                // undeleted and deleted again, or carried by a snapshot, gets a last death earlier
-                // than the oracle's, or none on a snapshot; a first death is still checked
-                let skip_seq_redelete_death_order = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0") && y.is_some_and(|y| if copies { true } else { x.is_some_and(|x| x.0 >= y.0) });
-                let ok = skip_seq_redelete_death_order || match (x, y, copies) {
+                let ok = match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
                     (Some(x), Some(y), true) => x.1 >= y.1,
@@ -2672,6 +2668,49 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
             panic!("seed {seed}: {e}");
         }
     }
+}
+
+// spec/crdt.md §4.8 (a write dies once, at its earliest superseder), spec/commits.md §5: order
+// seed 4900, shrunk. Two deletes of one text element: the replay dated the creation's death at
+// both, so a node meeting only the first had a last death earlier than the oracle's.
+#[test]
+fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Sync { from: 2, to: 0 }, aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 2 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 8 }), Compact { by: 2, t: 0, op: 26 }, Send { from: 2, to: 1, back: 0 }, Compact { by: 1, t: 0, op: 26 }, Send { from: 2, to: 0, back: 1 }, Compact { by: 0, t: 0, op: 11 }];
+    check(4900, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept text inserted,
+// deleted, the delete undone and the text deleted again. The insert's body dies at the first
+// delete, live and recomputed; the re-delete over the undelete does not move its last death.
+#[test]
+fn text_redelete_dies_at_first_delete_spec_crdt_4_8() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1 };
+    let h = vec![Typed { by: 0, t: 0, op: 23, k: 0, v: 0 }, tick.clone(), Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }, tick.clone(), Undo { by: 0, back: 0 }, tick, Typed { by: 0, t: 0, op: 24, k: 0, v: 0 }];
+    let played = play(7, &h);
+    let mut p = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>());
+    let text = osis_base::Ak::new("t:text.0").unwrap();
+    let mut ids: Vec<(osis_base::Ts, CommitId, Tid)> = p.engine.commit_ids().into_iter().filter_map(|id| p.engine.header(&id).and_then(|h| h.aspects.iter().find(|a| a.ak == text).map(|a| (h.ts, id, a.tid)))).collect();
+    ids.sort();
+    let [(_, ins, t), (del, ..), _, (redel, ..)] = ids[..] else { panic!("{ids:?}") };
+    assert!(del < redel);
+    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, del)), "live");
+    p.engine.replay_deaths(&t, &text).unwrap();
+    assert_eq!(p.engine.deaths(&ins, &t, &text).unwrap(), Some((del, del)), "recomputed");
+}
+
+// spec/crdt.md §4.8, spec/commits.md §5 (a snapshot's writes die for it no earlier than its
+// `ts`): order seed 5016, shrunk. A text element's creation and its delete reach a node only
+// through a snapshot, as a new record already deleted: the join reported no death, so a later
+// snapshot whose author had not seen the delete (it carries the char) was never dated.
+#[test]
+fn text_creation_arriving_deleted_dies_seed_5016_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 2 }), aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 9 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 1, v: 8 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 1, t: 0, op: 8, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 0 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 3 }), Sync { from: 0, to: 2 }, aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 8 }), aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 8, k: 0, v: 8 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 6 }), Sync { from: 1, to: 0 }, Compact { by: 1, t: 0, op: 9 }, Compact { by: 1, t: 0, op: 9 }, aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 3 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 9 }), aim(Undo { by: 2, back: 1 }), Compact { by: 2, t: 0, op: 26 }, Compact { by: 0, t: 0, op: 26 }];
+    check(5016, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
 
 // spec/commits.md §5 (dropping a body destroys every local index entry derived from it),

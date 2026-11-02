@@ -338,24 +338,27 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
         }
     }
     let flagged = de.deleted.is_some();
+    let was = se.deleted.as_ref().map(|x| x.1);
     let raised = join_flag(se, de.deleted, de.undel, ch);
     join_pos(d, &mut se.pos, de.pos, ch);
     prune_fields(d, se, e, ch);
     // after pruning (a creation a reset prunes died by the reset, §4.2): a text element's
-    // creation write is dead once a delete newer than it is held (§4.8). The join dates it where
-    // the arriving write is newer than all the record holds: a delete raising the flag (over an
-    // undelete too: a replay in `ts` order meets the same raise), or the creation arriving where
-    // the element is deleted and no copy of it was held. A flag no newer than a held delete
-    // kills nothing new (the creation died at the held delete, a superseder arriving later does
-    // not move it). Anything else, out of order or a copy held already (a flag no newer than a
-    // held undelete, whose delete may be gone from the state; a creation under an undelete; a
-    // copy of a held creation), is dated from the bodies alone. An embedded char (§7) dies with
-    // its register's write: only a delete raised on it counts.
+    // creation write dies once, at the earliest delete newer than it held (§4.8). The join
+    // reports it where a delete raises the flag over none or an undelete, or the creation
+    // arrives where the element is deleted and no copy of it was held; a delete over a held
+    // delete kills nothing new (the creation died at the held one). Over an undelete the
+    // creation may have died already at a delete the state no longer shows (a replay in `ts`
+    // order keeps the earliest, `Death::element`), so that and anything else out of order or a
+    // copy held already (a flag no newer than a held undelete; a creation under an undelete; a
+    // copy of a held creation) is also dated from the bodies alone. An embedded char (§7) dies
+    // with its register's write: only a delete raised on it counts.
     if text && let (Some((c, _)), Some((f, del))) = (&se.created, &se.deleted) {
         let derived = d.src.is_derived();
-        if *del && (raised || (creates && !held && !derived)) {
-            ch.died(c, f);
-        } else if !derived && (creates || (flagged && !raised && !*del)) {
+        let dated = *del && (raised && was != Some(true) || creates && !held && !derived);
+        if dated {
+            ch.deleted(c, f);
+        }
+        if !derived && (dated && raised && was == Some(false) || !dated && (creates || flagged && !raised && !*del)) {
             ch.undatable();
         }
     }
@@ -619,6 +622,13 @@ fn join_record(s: &mut Seq, dot: Dot, de: SeqElem, existing: bool, e: Option<&St
     } else {
         let mut de = de;
         if prune_elem(&dot, &mut de, text, e, ch) {
+            // a creation arriving deleted, as into a bare record (`merge_elem`)
+            if text
+                && !dot.src.is_derived()
+                && let (Some((c, _)), Some((f, true))) = (&de.created, &de.deleted)
+            {
+                ch.deleted(c, f);
+            }
             ch.touch();
             s.elems.insert(dot, de);
         }
@@ -984,7 +994,7 @@ pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut
 
 /// Removes every write whose dot's author matches (un-merge, §4.6); records stay as anchors.
 /// With `nested`, an element a matching dot created keeps others' writes in its list content.
-pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot) -> bool) {
+pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn Fn(&Dot, Option<&Value>) -> bool) {
     let bad = |st: &Stamp| pred(st.dot.owner());
     let elems = s.elems_mut();
     for (d, el) in elems.iter_mut() {
@@ -994,7 +1004,7 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keep: &dyn F
             el.deleted = None;
             el.undel = None;
         }
-        if pred(d.owner()) && !(keep(d.owner()) && matches!(el.content, SeqContent::Frag(_))) {
+        if pred(d.owner()) && !(keep(d.owner(), None) && matches!(el.content, SeqContent::Frag(_))) {
             el.content = SeqContent::None;
             el.undel = None;
         } else if let SeqContent::Frag(f) = &mut el.content {
