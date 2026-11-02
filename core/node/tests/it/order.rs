@@ -51,8 +51,10 @@ pub(crate) enum Step {
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
     Edge { by: usize, t: usize, holder: usize, role: Option<Role> },
     /// `by` grants `holder` `role` on `t` with an `until` (`ms` after the author's clock) and an
-    /// invite level: an edge write, or with `flow` through the engine's grant flow (secrets and
-    /// rotations; an invite grant needs it); scripted only (`random_step` never draws it).
+    /// invite level: a bare edge write like `Edge`, or with `flow` through `Engine::grant` (its
+    /// authority checks, secrets, boxes, rotations). Scripted only (`random_step` never draws
+    /// it): a refusal panics. An invite grant needs the flow, which first gives G (derived
+    /// secrets in the setup) secrets of its own, about 12 KB.
     Grant { by: usize, t: usize, holder: usize, role: Role, until: Option<u64>, invite: Option<Role>, flow: bool },
     /// An explicit demotion (removal, or to read) with a frontier as of one of the holder's
     /// writes (`at`: 0 before all of them, backdated; the last: now).
@@ -291,9 +293,9 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             Step::Grant { by, t, holder, role, until, invite, flow } => {
                 let e = osis_schema::core_types::Edge { until: until.map(|ms| WallMs(lp.peers[by].engine.now().0 + ms)), invite, ..edge(role) };
                 if flow {
-                    let _ = lp.peers[by].engine.grant(&th(t), &ids[holder], &e);
+                    lp.peers[by].engine.grant(&th(t), &ids[holder], &e).unwrap();
                 } else {
-                    let _ = lp.peers[by].commit(edge_write(th(t), ids[holder], Some(e)));
+                    lp.peers[by].commit(edge_write(th(t), ids[holder], Some(e))).unwrap().expect("a grant writes");
                 }
                 Some(by)
             }
