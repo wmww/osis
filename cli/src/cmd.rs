@@ -192,12 +192,30 @@ fn delivers(c: &Cmd) -> bool {
     matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
 
-/// Sends what a `delivers` command queued (within `--timeout`).
-fn deliver(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
+/// The thing a sharing command shares (a `delivers` command its holders fetch).
+fn shared(c: &Cmd) -> Option<String> {
+    match c {
+        Cmd::Grant { t, .. } | Cmd::Edge { t, .. } | Cmd::ShareInto { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+/// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
+/// thing's groups (a hostless one fails: its holders can never fetch it), then on `All`.
+fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.sync_now()?;
     let t = ctx.timeout()?.unwrap_or(FOREVER);
-    wait(ctx, db.wait_synced(SyncScope::All, t)).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e}")))
+    let end = std::time::Instant::now() + t;
+    let mut scopes = vec![SyncScope::All];
+    if let Some(x) = shared {
+        scopes.insert(0, SyncScope::Group(ctx.tid(&x)?));
+    }
+    for s in scopes {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        wait(ctx, db.wait_synced(s, left)).map_err(|e| exit(6, format!("done locally, not yet at the hosts: {e}")))?;
+    }
+    Ok(())
 }
 
 /// Runs one parsed command.
@@ -268,10 +286,10 @@ pub fn dispatch(cli: Cli, store: Option<StoreSel>, stdin: &mut dyn BufRead, out:
             v
         });
         let mut ctx = Ctx::new(g, db, sel, out, stdin, tty)?;
-        let flush = delivers(&cli.cmd);
+        let (flush, shared) = (delivers(&cli.cmd), shared(&cli.cmd));
         let mut r = run(&mut ctx, cli.cmd);
         if r.is_ok() && flush && !ctx.db.hosts().is_empty() {
-            r = deliver(&mut ctx);
+            r = deliver(&mut ctx, shared);
         }
         ctx.db.settle();
         drop(verbose);

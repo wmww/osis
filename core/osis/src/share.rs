@@ -216,7 +216,7 @@ pub enum SyncState {
     Unreachable,
     NoHosts,
     /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
-    /// its worst label's state): `wait_synced(All)` skips `NoHosts` groups, never stranded ones.
+    /// its worst label's state; `wait_synced` judges each label on its own).
     Stranded,
     /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
     ReceiptsOnly,
@@ -241,29 +241,36 @@ pub struct Status {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SyncScope {
-    /// Every synced group with hosts (a `NoHosts` group has nothing to wait for).
+    /// Every synced label with hosts (a hostless one has nothing to wait for) and every
+    /// pending delivery.
     All,
-    /// The labels holding this thing (the group's own, or those of groups containing it).
+    /// The labels holding this thing (the group's own, or those of groups containing it; a
+    /// hostless one fails `Unsynced`) and the deliveries about it, what it holds or those groups.
     Group(Tid),
+}
+
+/// One synced label's state.
+fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
+    if s.hosts == 0 {
+        SyncState::NoHosts
+    } else if s.stranded {
+        SyncState::Stranded
+    } else if s.refused && s.open == 0 {
+        SyncState::Unreachable
+    } else if s.open > 0 && s.idle == s.open {
+        SyncState::Synced
+    } else if s.connected > 0 || s.open > 0 {
+        SyncState::Syncing
+    } else {
+        SyncState::Unreachable
+    }
 }
 
 /// The status from the sync engine's labels (a group with several labels shows the worst).
 pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
-        let state = if s.hosts == 0 {
-            SyncState::NoHosts
-        } else if s.stranded {
-            SyncState::Stranded
-        } else if s.refused && s.open == 0 {
-            SyncState::Unreachable
-        } else if s.open > 0 && s.idle == s.open {
-            SyncState::Synced
-        } else if s.connected > 0 || s.open > 0 {
-            SyncState::Syncing
-        } else {
-            SyncState::Unreachable
-        };
+        let state = label_state(&s);
         let last = s.last_sync.map(WallMs);
         groups
             .entry(s.group)
@@ -298,6 +305,39 @@ fn needs_admin(e: osis_node::Error) -> Error {
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
     status.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+}
+
+/// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
+/// (all their labels) or `None` (every label with hosts), then the pending deliveries about
+/// `deliveries` (every one when `groups` is `None`).
+fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
+    let skip = sync.receipts_only().clone();
+    let labels: Vec<(Tid, SyncState)> = sync
+        .label_status()
+        .iter()
+        .filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group)))
+        .map(|s| (s.group, label_state(s)))
+        .filter(|(_, st)| groups.is_some() || *st != SyncState::NoHosts)
+        .collect();
+    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| matches!(s, SyncState::Stranded | SyncState::NoHosts)).map(|(g, _)| *g).collect();
+    let read = sync.receipts_read(reads);
+    if let Some(Err(b)) = &read {
+        bad.extend(b);
+    }
+    if !bad.is_empty() {
+        return Some(Err(Error::Unsynced { groups: bad.into_iter().collect() }));
+    }
+    let labeled = groups.is_none_or(|gs| gs.iter().all(|g| labels.iter().any(|(x, _)| x == g)));
+    if read.is_none() || !labeled || labels.iter().any(|(_, s)| *s != SyncState::Synced) {
+        return None;
+    }
+    if let Some(about) = deliveries
+        && sync.deliveries_pending() > 0
+        && (groups.is_none() || sync.pending_about().iter().any(|ts| ts.iter().any(|t| about.contains(t))))
+    {
+        return None;
+    }
+    Some(Ok(()))
 }
 
 impl Osis {
@@ -475,7 +515,7 @@ impl Osis {
             WaitForSync::Try(t) => t,
             _ => PRESYNC_WAIT,
         };
-        let r = self.groups_synced(groups.clone(), reads.clone(), wait, false).await;
+        let r = self.groups_synced(Some(groups.clone()), reads.clone(), wait, None).await;
         self.locked(|l| l.sync.end_receipts(&reads));
         let mut all = groups;
         all.extend(reads);
@@ -489,27 +529,13 @@ impl Osis {
         }
     }
 
-    /// Resolves once every group in `groups` is `Synced` and the receipts-only reads of `reads`
-    /// are done (with `deliveries`, also once no inbox blob is unanswered); fails `Unsynced` when one is stranded or has no hosts, `Network` after
-    /// `wait`.
-    fn groups_synced(&self, groups: Vec<Tid>, reads: Vec<Tid>, wait: Duration, deliveries: bool) -> crate::net::Pending<Result<()>> {
-        self.wait_until(
-            Some(wait),
-            Box::new(move |sync, st| {
-                if deliveries && sync.deliveries_pending() > 0 {
-                    return None;
-                }
-                let mut bad: Vec<Tid> = groups.iter().copied().filter(|g| st.groups.get(g).is_some_and(|s| matches!(s.state, SyncState::Stranded | SyncState::NoHosts))).collect();
-                let read = sync.receipts_read(&reads);
-                if let Some(Err(b)) = &read {
-                    bad.extend(b);
-                }
-                if !bad.is_empty() {
-                    return Some(Err(Error::Unsynced { groups: bad }));
-                }
-                (read.is_some() && groups.iter().all(|g| st.groups.get(g).is_some_and(|s| s.state == SyncState::Synced))).then_some(Ok(()))
-            }),
-        )
+    /// Resolves once every label in scope is `Synced` and the receipts-only reads of `reads`
+    /// are done (with `deliveries`, also once no delivery about one of those things is
+    /// pending, any delivery for `groups` `None`); fails `Unsynced` when a label in scope is
+    /// stranded, `Network` after `wait`. The scope: every label of `groups` (a hostless one
+    /// fails `Unsynced`), or for `None` every label with hosts of a synced group.
+    fn groups_synced(&self, groups: Option<Vec<Tid>>, reads: Vec<Tid>, wait: Duration, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
+        self.wait_until(Some(wait), Box::new(move |sync, _| synced(sync, groups.as_deref(), &reads, deliveries.as_ref())))
     }
 
     /// The edges through which `actor` is a holder of `target` (spec/permissions.md §2): the
@@ -1061,30 +1087,45 @@ impl Osis {
     }
 
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
-    /// local commits so far (they are at a host); fails `Unsynced` for a stranded or
-    /// host-less group in scope, `Network` after `timeout` or without a runtime. `All` is
-    /// every synced group with hosts (`status` shows the `NoHosts` ones). Also waits
-    /// for every queued deposit (any scope): a grant to a recipient whose inbox host refuses
-    /// it for now (not registered yet, budget full) keeps it waiting until taken.
+    /// local commits so far (they are at a host) and every pending delivery in scope was
+    /// taken (a grant to a recipient whose inbox host refuses it for now keeps it waiting);
+    /// fails `Unsynced` for a stranded label in scope, `Network` after `timeout` or without a
+    /// runtime. `Group(t)`: the labels of the groups holding `t` (a hostless one fails
+    /// `Unsynced`) and the deliveries about `t`, a thing it holds or one of those groups (a
+    /// grant on one, a non-writer's write under its label). `All`: every label with hosts
+    /// (`status` shows the `NoHosts` ones) and every delivery.
     pub async fn wait_synced(&self, scope: SyncScope, timeout: Duration) -> Result<()> {
-        let groups = self.locked(|x| {
-            let st = status_of(&mut x.sync);
-            match scope {
-                SyncScope::All => st.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::ReceiptsOnly | SyncState::NoHosts)).map(|(g, _)| *g).collect::<Vec<_>>(),
-                SyncScope::Group(t) => {
-                    let t = x.engine().resolve(&t, &t);
-                    groups_holding(&mut x.sync, &st, &[t].into_iter().collect())
+        let (groups, about) = match scope {
+            SyncScope::All => {
+                // nothing to wait for: done, also without a runtime
+                let idle = self.locked(|x| {
+                    let skip = x.sync.receipts_only().clone();
+                    x.sync.deliveries_pending() == 0 && !x.sync.label_status().iter().any(|s| s.hosts > 0 && !skip.contains(&s.group))
+                });
+                if idle {
+                    return Ok(());
                 }
+                (None, BTreeSet::new())
             }
-        });
-        if groups.is_empty() {
-            return match scope {
-                SyncScope::All => Ok(()),
-                SyncScope::Group(t) => Err(Error::Unsynced { groups: vec![t] }),
-            };
-        }
+            SyncScope::Group(t) => {
+                let (groups, about) = self.locked(|x| {
+                    let st = status_of(&mut x.sync);
+                    let t = x.engine().resolve(&t, &t);
+                    let groups = groups_holding(&mut x.sync, &st, &[t].into_iter().collect());
+                    // deliveries about t, what it holds, or a group holding it
+                    let mut about: BTreeSet<Tid> = x.sync.engine().closure(&t).iter().copied().collect();
+                    about.insert(t);
+                    about.extend(groups.iter().copied());
+                    (groups, about)
+                });
+                if groups.is_empty() {
+                    return Err(Error::Unsynced { groups: vec![t] });
+                }
+                (Some(groups), about)
+            }
+        };
         self.sync_now()?;
-        self.groups_synced(groups, Vec::new(), timeout, true).await
+        self.groups_synced(groups, Vec::new(), timeout, Some(about)).await
     }
 
     /// Asks every host to sync every open label now.

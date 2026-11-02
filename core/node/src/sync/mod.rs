@@ -1169,6 +1169,10 @@ impl SyncEngine {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
+        // a queued deposit's host until it takes it (an inbox host of no label synced here)
+        for o in self.state.outbox.values().filter(|o| !peers::is_peer(&o.host)) {
+            m.entry(o.host.key).or_insert_with(|| (o.host.clone(), false));
+        }
         let reads: Vec<Tid> = self.receipts.values().map(|r| r.group).collect();
         for g in reads {
             for l in self.engine.labels_of(&g) {
@@ -1597,9 +1601,25 @@ impl SyncEngine {
     }
 
     /// Inbox blobs (grants, notices) not yet sent or not yet answered by a host (the outbox
-    /// and the delivery records are stored and restored at open); `wait_synced` waits for none.
+    /// and the delivery records are stored and restored at open).
     pub fn deliveries_pending(&self) -> usize {
         self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
+    }
+
+    /// What each pending delivery (`deliveries_pending`) is about, for `wait_synced`'s scope:
+    /// an inbox delivery's things (a grant's target), a non-writer's deposit its label's group;
+    /// empty when none is known (an inbox blob outside a delivery record).
+    pub fn pending_about(&mut self) -> Vec<Vec<Tid>> {
+        let unsent = self.state.sent_inbox.values().filter(|s| s.at == 0).map(|s| s.things.clone());
+        let mut out: Vec<Vec<Tid>> = unsent.collect();
+        let queued: Vec<(LabelId, Option<(Tid, osis_base::CommitId)>)> = self.outbox.keys().map(|k| (k.1, self.state.outbox.get(k).and_then(|o| o.delivery))).collect();
+        for (l, d) in queued {
+            out.push(match d {
+                Some(k) => self.state.sent_inbox.get(&k).map(|s| s.things.clone()).unwrap_or_default(),
+                None => self.group_of(&l).into_iter().collect(),
+            });
+        }
+        out
     }
 
     /// Asks every connection to sync every open label now.
