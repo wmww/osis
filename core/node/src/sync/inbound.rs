@@ -609,13 +609,20 @@ impl SyncEngine {
         Ok(self.inbox_opened(l, b)?.map(|o| (o.ais, o.things.iter().map(|t| t.tid).collect())))
     }
 
+    /// Whether the `label.0` of a group here records `l`.
+    fn recorded(&mut self, l: &LabelId) -> bool {
+        self.engine.labeled_groups().iter().any(|g| self.engine.labels_of(g).iter().any(|x| x.id == *l))
+    }
+
     /// Follows the labels opened inbox blobs name (spec/sync.md §3) as hints, from scratch: per
     /// unexpired blob whose commit is applied or pending, the first payload thing with no known
     /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
     /// (a delivery names one thing), so the hints a sender makes are bounded by the inbox's
     /// deposit budget and go with the blob. The payload is the sender's word: hosts only, never
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
-    /// to that follow. Other inbox hints are dropped.
+    /// to that follow. A label a group here records is that group's, whether synced now or not:
+    /// never a hint (it would take the label's place on the connection under the wrong thing's
+    /// secrets). Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
         // requests admitted since (the sender became connected, a sibling device accepted)
         if self.release_requests(None)? {
@@ -645,14 +652,15 @@ impl SyncEngine {
                 continue;
             }
             for t in &o.things {
-                if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) {
+                let Some(at) = &t.label else { continue };
+                if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) || self.recorded(&at.id) {
                     continue;
                 }
-                let hosts = t.hosts.iter().filter(|a| !super::peers::is_peer(a)).cloned();
+                let hosts = at.hosts.iter().filter(|a| !super::peers::is_peer(a)).cloned();
                 let src = super::state::InboxSource { label: l, blob: b, until: o.until };
-                match want.get_mut(&t.label) {
+                match want.get_mut(&at.id) {
                     // two blobs naming one label: both hosts, the later expiry
-                    Some(h) if h.thing == t.tid && h.index == t.index => {
+                    Some(h) if h.thing == t.tid && h.index == at.index => {
                         for a in hosts {
                             if !h.hosts.contains(&a) {
                                 h.hosts.push(a);
@@ -664,7 +672,7 @@ impl SyncEngine {
                     }
                     Some(_) => {}
                     None => {
-                        want.insert(t.label, Hint { thing: t.tid, index: t.index, hosts: hosts.collect(), via: None, inbox: Some(src) });
+                        want.insert(at.id, Hint { thing: t.tid, index: at.index, hosts: hosts.collect(), via: None, inbox: Some(src) });
                     }
                 }
                 break;

@@ -279,38 +279,10 @@ pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inb
     Ok(None)
 }
 
-/// The newest label of `tid` (not replaced), with its hosts.
 /// The newest unreplaced label of `tid`: ID, index, hosts.
 pub(crate) fn own_label(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
     let labels = tx.state(tid, &ak("label.0")?)?.and_then(Fragment::read).and_then(|v| ct::LABEL.decode(&v).ok()).unwrap_or_default();
     Ok(labels.into_iter().filter(|(_, l)| !l.replaced).max_by_key(|(_, l)| l.index).map(|(id, l)| (id, l.index, l.hosts)))
-}
-
-/// A label a holder can reach `tid` under: its own, a group's containing it, or the home label
-/// of the nearest actor above it.
-pub(crate) fn label_for(tx: &mut Tx<'_>, tid: &Tid) -> Result<Option<(LabelId, u64, Vec<Address>)>> {
-    if let Some(l) = own_label(tx, tid)? {
-        return Ok(Some(l));
-    }
-    let groups: Vec<Tid> = tx.core.ix.groups.of.get(tid).into_iter().flatten().copied().collect();
-    for g in groups {
-        if let Some(l) = own_label(tx, &g)? {
-            return Ok(Some(l));
-        }
-    }
-    let mut cur = *tid;
-    for _ in 0..64 {
-        match tx.core.owner(&cur) {
-            Some(o) => {
-                if let Some(l) = own_label(tx, &o)? {
-                    return Ok(Some(l));
-                }
-                cur = o;
-            }
-            None => return Ok(None),
-        }
-    }
-    Ok(None)
 }
 
 /// Whether key actor `t` is a node (it has a `node.0` card), not a recovery or link key.

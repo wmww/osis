@@ -3,7 +3,7 @@
 //! the pre-sync choice and the receipt-record frontier, inbox delivery and acceptance
 //! (spec/sync.md §3, spec/crypto.md §5).
 
-use super::{Delivery, Done, inbox_of, label_for, now_ts, put_edge, put_secrets, recipient, remove_edge, secrets_in};
+use super::{Delivery, Done, inbox_of, now_ts, own_label, put_edge, put_secrets, recipient, remove_edge, secrets_in};
 use crate::engine::{Engine, Tx};
 use crate::error::{Error, Result};
 use crate::rotation;
@@ -11,7 +11,7 @@ use crate::Mutation;
 use osis_commit::CommitBlob;
 use osis_base::{CommitId, Role, Tid, WallMs};
 use osis_keys::{Departure, ROLES, box_holder, roles_up_to};
-use osis_label::{InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
+use osis_label::{InboxLabel, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 use osis_perm::{At, Edge as PermEdge};
 use osis_schema::core_types::{self as ct, Edge};
 use std::collections::BTreeSet;
@@ -90,11 +90,10 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     let mut ts: Vec<InboxThing> = Vec::new();
     let mut seen = BTreeSet::new();
     for t in things {
-        if seen.insert(*t)
-            && let Some((label, index, hosts)) = label_for(tx, t)?
-        {
+        if seen.insert(*t) {
+            let label = own_label(tx, t)?.map(|(id, index, hosts)| InboxLabel { id, index, hosts });
             let delete_keys = crate::engine::secrets::own_delete_keys(tx, t)?;
-            ts.push(InboxThing { tid: *t, label, index, hosts, delete_keys });
+            ts.push(InboxThing { tid: *t, label, delete_keys });
         }
     }
     ts.sort_by_key(|t| t.tid);

@@ -133,8 +133,8 @@ ClaimSet := [[claim+], {entry: box}]
 
 ## 9. Inbox blobs
 - **Inbox blob** (spec/crypto.md §5): prefix with expiry = the sender's corrected wall ms + `INBOX_LIFETIME` and no commitments, then the raw bytes of a sealed box (§7, not a `sealed` value) to the recipient's newest read keyset KEM key with AD = `[recipient, "inbox", prefix bytes]` (`"inbox"` a text string) and payload the padded (§5) canonical bytes of
-  `InboxPayload := [CommitBlobPlaintext, [[tid, label_id, index, [address*], Opt([admin_pk, write_pk])]*]]`:
-  the role commit with the parts about the recipient (§4), then for each thing it names, its label ID, that label's index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
+  `InboxPayload := [CommitBlobPlaintext, [[tid, Opt([label_id, index, [address*]]), Opt([admin_pk, write_pk])]*]]`:
+  the role commit with the parts about the recipient (§4), then for each thing it names, if the thing has a label of its own (its `label.0`, never a group's holding it), that label's ID, index (uint, spec/sync.md §2) and host addresses (`address` values, spec/data-model.md §9) and, for a thing with secrets of its own, its current admin and write delete keys (spec/crypto.md §7), sorted by tid.
 
 ## 10. Links and recovery cards
 ```

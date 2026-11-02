@@ -25,7 +25,7 @@ pub use blob::{Class, Level, MAX_PREFIX_LEN, Prefix, blob_id, check_size, frame,
 pub use chunks::{LargeParams, LargeReader, StringReader, ValueWriter, chunk_value, read_value};
 pub use bundle::{BundleEvent, BundleReader, BundleWriter, Importer, Record};
 pub use error::Error;
-pub use inbox::{InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
+pub use inbox::{InboxLabel, InboxPayload, InboxThing, open_inbox_blob, seal_inbox_blob};
 pub use labels::{Label, Labels, StepRecord, label_steps, parse_record, step_record, tips};
 pub use link::{Peer, RecoveryCard, ShareLink};
 pub use step::{ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, match_secret, open_entry_box, path_to, register, verify_path};

@@ -187,7 +187,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: home, index: 0, hosts: vec![net.address(host)], delete_keys: None }] };
+    let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -270,7 +270,7 @@ fn stranger_inbox_commit_not_copied_nor_dialed_spec_sync_3() {
     net.run();
     let c = net.engine(a).commit_ids().into_iter().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "created.0"))).unwrap();
     let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
-    let things = vec![osis_label::InboxThing { tid: t, label: LabelId([0x55; 16]), index: 0, hosts: vec![rogue.clone()], delete_keys: None }];
+    let things = vec![osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), index: 0, hosts: vec![rogue.clone()] }), delete_keys: None }];
     let exp = net.now() + INBOX_LIFETIME_MS;
     net.set_online(b, false);
     let id = plant_inbox(&mut net, a, (host, &home), bob, &c, things, exp);
@@ -303,7 +303,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     let now = net.now();
     osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), home, &fresh[0], now).unwrap();
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
-    (c, osis_label::InboxThing { tid: g, label: gl.id, index: gl.index, hosts: gl.hosts.clone(), delete_keys: None })
+    (c, osis_label::InboxThing { tid: g, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None })
 }
 
 // spec/sync.md §3: an inbox blob whose expiry is far below `INBOX_LIFETIME` gets no copy (its
@@ -331,8 +331,7 @@ fn inbox_hint_goes_with_its_blob_spec_sync_3() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
     let (c, mut thing) = grant_undelivered(&mut net, a, b, host, &home, g, bob);
     let rogue = osis_label::Address { url: "quic://rogue".into(), key: [0x77; 32] };
-    thing.label = LabelId([0x55; 16]);
-    thing.hosts = vec![rogue.clone()];
+    thing.label = Some(osis_label::InboxLabel { id: LabelId([0x55; 16]), index: 0, hosts: vec![rogue.clone()] });
     let ttl = 10 * 60_000;
     let exp = net.now() + ttl;
     plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
@@ -593,4 +592,101 @@ fn direct_packages_survive_a_crash_before_carry_out_spec_sync_3() {
     net.run();
     let got: Vec<osis_base::CommitId> = net.sync(b).take_direct_for(&b2t).iter().map(|pk| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().id()).collect();
     assert_eq!(got, want, "the pairing's direct packages after the restart");
+}
+
+/// Whether `n` has `g`'s one label open and idle, stranded on no connection.
+fn settled(net: &mut Net, n: usize, g: Tid) -> bool {
+    let st = net.sync(n).label_status();
+    let of: Vec<_> = st.iter().filter(|s| s.group == g).collect();
+    of.len() == 1 && !of[0].stranded && of[0].open == 1 && of[0].idle == 1
+}
+
+/// Alice's persisted item `t` of `g`: a thing with secrets of its own, labeled by g alone.
+fn persisted_item(net: &mut Net, a: usize, g: Tid) -> Tid {
+    let t = net.item(a, g, g, "item");
+    let mut m = Mutation::new();
+    m.persist(t);
+    net.engine(a).write(m).unwrap();
+    net.run();
+    t
+}
+
+/// Receipts-only on, then off, with nothing but settling in between (no time passes: a retry
+/// timer cannot help).
+fn toggle(net: &mut Net, n: usize, g: Tid) {
+    let acts = net.sync(n).set_receipts_only(g, true);
+    net.actions(n, acts);
+    net.run();
+    let acts = net.sync(n).set_receipts_only(g, false);
+    net.actions(n, acts);
+    net.run();
+}
+
+// spec/wire.md §9: a thing with no label of its own names none: a grant on an item of a group
+// does not take the group's label away from the group when syncing it stops and resumes.
+#[test]
+fn item_grant_leaves_the_groups_label_alone_spec_wire_9() {
+    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    assert!(settled(&mut net, b, g));
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    assert!(net.engine(b).epochs(&t).is_some(), "bob took t's grant");
+    toggle(&mut net, b, g);
+    assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
+    net.write(a, t, "after");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("after")));
+}
+
+// spec/wire.md §9: an earlier grant on an item does not keep the grantee from its group's label
+// (one hint per label, and the item's secrets open nothing under it).
+#[test]
+fn item_grant_then_group_grant_reaches_the_group_spec_wire_9() {
+    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    assert!(net.engine(b).epochs(&t).is_some(), "bob took t's grant");
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
+    assert_eq!(net.read(b, t), Some(s("item")));
+}
+
+// spec/sync.md §3: a label a group here records is never a hint, whatever a blob calls it: not
+// taken while the group is held for receipts only, nor in the way when it syncs again.
+#[test]
+fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    net.advance(61_000);
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None };
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    let id = plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
+    net.set_online(b, true);
+    net.advance(61_000);
+    let kinds = net.sync(b).entries(&home);
+    assert!(kinds.iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(_)))), "bob opened it: {kinds:?}");
+    let acts = net.sync(b).set_receipts_only(g, true);
+    net.actions(b, acts);
+    net.run();
+    // the group's own read, not one under t's secrets
+    let acts = net.sync(b).read_receipts(&[g]);
+    net.actions(b, acts);
+    net.run();
+    assert_eq!(net.sync(b).receipts_read(&[g]), Some(Ok(())));
+    net.sync(b).end_receipts(&[g]);
+    let acts = net.sync(b).set_receipts_only(g, false);
+    net.actions(b, acts);
+    net.run();
+    assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
 }
