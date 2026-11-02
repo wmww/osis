@@ -345,6 +345,17 @@ fn needs_admin(e: osis_node::Error) -> Error {
     }
 }
 
+/// Whether everything carrying `t` here finished a pass: its groups' labels, none of them left to
+/// answer for what they did not bring (a label with no hosts has nothing to bring). The seam for
+/// partial fetch (issues/partial-history-fetch.md): a node that chose not to fetch says `false` too.
+pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
+    let e = l.sync.engine();
+    let mut groups = e.groups_of(&t);
+    groups.insert(t);
+    let stale = l.sync.receipts_only().iter().any(|g| groups.contains(g));
+    !stale && l.sync.label_status().iter().filter(|s| groups.contains(&s.group)).all(|s| matches!(label_state(s), SyncState::Synced | SyncState::NoHosts))
+}
+
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
     status.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()

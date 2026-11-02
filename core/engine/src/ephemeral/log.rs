@@ -93,7 +93,7 @@ pub enum Reverted {
 
 #[derive(Default)]
 pub(super) struct Log {
-    entries: VecDeque<Entry>,
+    pub(super) entries: VecDeque<Entry>,
     bytes: usize,
     /// Per aspect the newest ephemeral-only batch dropped from the log touching it, and
     /// whether it was a revert.

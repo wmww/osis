@@ -178,17 +178,20 @@ pub enum PurgeItem {
     Commit { commit: CommitId, tid: Tid, ak: Ak },
     /// Every delta on that aspect of every commit with a smaller `ts`.
     Aspect { tid: Tid, ak: Ak },
+    /// Every delta on that aspect of every commit with a smaller `ts` whose purge actor
+    /// (`Header::purge_actor`) is `actor`.
+    Author { tid: Tid, ak: Ak, actor: Tid },
 }
 
 impl PurgeItem {
     pub fn tid(&self) -> &Tid {
         match self {
-            PurgeItem::Commit { tid, .. } | PurgeItem::Aspect { tid, .. } => tid,
+            PurgeItem::Commit { tid, .. } | PurgeItem::Aspect { tid, .. } | PurgeItem::Author { tid, .. } => tid,
         }
     }
     pub fn ak(&self) -> &Ak {
         match self {
-            PurgeItem::Commit { ak, .. } | PurgeItem::Aspect { ak, .. } => ak,
+            PurgeItem::Commit { ak, .. } | PurgeItem::Aspect { ak, .. } | PurgeItem::Author { ak, .. } => ak,
         }
     }
 }
@@ -319,6 +322,7 @@ pub(crate) fn purge_value(p: &PurgeItem) -> Value {
     match p {
         PurgeItem::Commit { commit, tid: t, ak: a } => Value::List(vec![Value::bytes(&commit.0), tid(t), ak(a)]),
         PurgeItem::Aspect { tid: t, ak: a } => Value::List(vec![tid(t), ak(a)]),
+        PurgeItem::Author { tid: t, ak: a, actor } => Value::List(vec![tid(t), ak(a), tid(actor)]),
     }
 }
 
@@ -478,7 +482,9 @@ fn as_chunk(v: &Value) -> Result<ChunkEntry, Error> {
 
 fn as_purge(v: &Value) -> Result<PurgeItem, Error> {
     match as_list(v)? {
-        [c, t, a] => Ok(PurgeItem::Commit { commit: CommitId(as_bytes(c)?), tid: as_tid(t)?, ak: as_ak(a)? }),
+        // the second place tells them apart: a tid, or an aspect key's text
+        [c, t, a] if as_tid(t).is_ok() => Ok(PurgeItem::Commit { commit: CommitId(as_bytes(c)?), tid: as_tid(t)?, ak: as_ak(a)? }),
+        [t, a, actor] => Ok(PurgeItem::Author { tid: as_tid(t)?, ak: as_ak(a)?, actor: as_tid(actor)? }),
         [t, a] => Ok(PurgeItem::Aspect { tid: as_tid(t)?, ak: as_ak(a)? }),
         _ => Err(Error::Malformed("purge item arity")),
     }

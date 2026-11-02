@@ -8,7 +8,7 @@ use osis::internals::Internals as _;
 use osis::{ClientSecret, CommitQuery, Config, Demotion, Error, HostAddr, LinkOpts, Lower, ManualClock, MemStore, Osis, Role, Runtime, Scope, StoreAt, Tid, Transport, Value, WaitForSync, WallMs};
 use osis_proto::{Command, Outcome};
 use osis_schema::core_types as ct;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::channel;
 use std::time::Duration;
@@ -149,6 +149,7 @@ pub(crate) fn answers(c: &Osis, t: Tid) -> String {
         format!("{:?}", c.changed(t)),
         format!("{:?}", c.same_thing(t, t)),
         e(c.commits(&CommitQuery::new().scope(Scope::Thing(t))).map(|v| format!("{v:?}"))),
+        e(c.at(t, k.clone()).history(osis::HistoryFrom::Newest, 5).map(|v| format!("{v:?}"))),
         e(c.at(t, k.clone()).stream().map(|s| format!("{:?}", s.map(|x| x.len())))),
         e(c.write_with(|w| w.at(t, k.clone()).set(&Value::Int(1))).map(|_| "written".to_string())),
         e(c.write_with(|w| w.delete(t)).map(|_| "written".to_string())),
@@ -1248,4 +1249,171 @@ fn role_of(x: &Node, t: Tid, g: [Option<Role>; 2], thing: Option<Role>) -> Optio
     } else {
         None
     }
+}
+
+// spec/wire.md §11.2, notes/client-port.md §2, notes/api.md History: a thin client reads a page as the node would for its
+// actor, and a thing it may not read has none, as an unknown tid (`answers`); its watch hears each
+// commit, nothing of what it may not read; a purge through the port is judged by its actor.
+#[test]
+fn history_rows_as_the_actor() {
+    use osis::{HistoryBody, HistoryEvent, HistoryFrom};
+    let x = node();
+    let k = ak("t:msgs.0");
+    let (a, _, c) = x.client(Role::Write);
+    let (tx, rx) = channel();
+    let _s = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let (htx, hrx) = channel();
+    let _h = c.at(x.u, k.clone()).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
+    let say = |t: Tid, v: &str| {
+        let mut w = x.n.write();
+        w.at(t, k.clone()).set(&Value::Str(v.into())).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    let one = say(x.t, "one");
+    say(x.u, "hidden");
+    c.settle();
+    let got: Vec<_> = rx.try_iter().collect();
+    assert!(matches!(got.as_slice(), [HistoryEvent::Commit { id, entry: Some(e) }] if *id == one && e.body == HistoryBody::Held(Some(Value::Str("one".into())))), "{got:?}");
+    assert!(hrx.try_recv().is_err(), "nothing of what it may not read");
+    assert_eq!(c.at(x.t, k.clone()).history(HistoryFrom::Newest, 5).unwrap(), x.n.at(x.t, k.clone()).history(HistoryFrom::Newest, 5).unwrap());
+    assert!(c.at(x.u, k.clone()).history(HistoryFrom::Newest, 5).unwrap().entries.is_empty());
+    // a client's own write, by its actor; its purge by the port
+    let mine = c.write_with(|w| w.at(x.t, k.clone()).set(&Value::Str("mine".into())).map(|_| ())).map(|_| ());
+    mine.unwrap();
+    let e = &c.at(x.t, k.clone()).history(HistoryFrom::Newest, 1).unwrap().entries[0];
+    assert_eq!(e.commit.actor, a);
+    let id = e.commit.id;
+    let mut w = c.write();
+    w.at(x.t, k.clone()).purge_commit(id).unwrap();
+    let rq = w.commit().unwrap().unwrap().id;
+    let e = &x.n.at(x.t, k.clone()).history(HistoryFrom::Newest, 2).unwrap().entries;
+    assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq }), "{e:?}");
+    // what it may not write: refused for that
+    let mut w = c.write();
+    w.at(x.u, k.clone()).purge_author(a).unwrap();
+    assert!(w.commit().is_err());
+    let (_, _, ro) = x.client(Role::Read);
+    let mut w = ro.write();
+    w.at(x.t, k.clone()).purge_commit(one).unwrap();
+    assert!(matches!(w.commit(), Err(Error::Permission { .. })), "a reader's request");
+    // the second layer: a handle acting for it reads nothing either, if a delivery ever reached one
+    let acting = x.n.acting_as(a);
+    let (etx, erx) = channel();
+    let _e = acting.at(x.u, k.clone()).on_history(move |_, e| etx.send(e).unwrap()).unwrap();
+    say(x.u, "hidden too");
+    x.n.settle();
+    let heard: Vec<_> = erx.try_iter().collect();
+    assert!(heard.iter().all(|e| matches!(e, HistoryEvent::Commit { entry: None, .. })), "{heard:?}");
+    assert!(!heard.is_empty());
+    // by author over the port
+    let mut w = c.write();
+    w.at(x.t, k.clone()).purge_author(x.n.me()).unwrap();
+    let rq = w.commit().unwrap().unwrap().id;
+    let e = x.n.at(x.t, k.clone()).history(HistoryFrom::Oldest, 1).unwrap().entries;
+    assert_eq!(e[0].commit.id, one);
+    let by = e[0].body.clone();
+    assert!(by == HistoryBody::Purged { by: rq } || by == HistoryBody::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
+}
+
+// spec/wire.md §11.2, notes/client-port.md Reconnect, notes/api.md History: a dropped connection and its return are
+// told as `Reread`: what changed meanwhile was not told one by one.
+#[test]
+fn history_watch_across_a_restart_says_reread() {
+    use osis::HistoryEvent;
+    let x = node();
+    let k = ak("t:msgs.0");
+    let (_, _, c) = x.client(Role::Read);
+    let (tx, rx) = channel();
+    let _s = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let t = x.t;
+    let Node { n, net, clock, store, g, placed, out, h, u, .. } = x;
+    n.close().unwrap();
+    let wait = |what: &str| {
+        let e = rx.recv_timeout(Duration::from_secs(60));
+        assert!(matches!(e, Ok(HistoryEvent::Reread)), "{what}: {e:?}");
+    };
+    wait("the connection dropped");
+    let n = open(&store, &net, &clock, false);
+    let x = Node { n, net, clock, store, g, t, placed, out, h, u };
+    wait("it came back");
+    let mut w = x.n.write();
+    w.at(t, k.clone()).set(&Value::Int(1)).unwrap();
+    let id = w.commit().unwrap().unwrap().id;
+    let e = rx.recv_timeout(Duration::from_secs(60)).unwrap();
+    assert!(matches!(e, HistoryEvent::Commit { id: i, .. } if i == id), "{e:?}");
+}
+
+// spec/wire.md §11.2, notes/client-port.md §2 (`HISTORY_SEND`): more commits waiting than one send reads all go out,
+// and a `settle` waits for them.
+#[test]
+fn history_watch_sends_everything_waiting() {
+    use osis::HistoryEvent;
+    let x = node();
+    let k = ak("t:msgs.0");
+    let (_, _, c) = x.client(Role::Read);
+    let (tx, rx) = channel();
+    let _s = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let n = osis::HISTORY_SEND * 3;
+    let changes: Vec<(Tid, osis::Ak, osis::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    x.n.engine(|e| {
+        e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
+        e.core.events.flush();
+    });
+    x.n.settle();
+    c.settle();
+    let got: Vec<_> = rx.try_iter().collect();
+    assert_eq!(got.len(), n, "{got:?}");
+    assert!(got.iter().all(|e| matches!(e, HistoryEvent::Commit { entry: None, .. })), "no such commits");
+}
+
+// spec/wire.md §11.2, notes/client-port.md §2 (memory per connection): commits waiting in a history
+// subscription count against the connection's budget: with the worker busy, past it the subscription
+// lapses and the client hears it; the budget comes back, so a new one works.
+#[test]
+fn history_watch_past_its_budget_lapses() {
+    use osis::HistoryEvent;
+    let x = node();
+    let k = ak("t:msgs.0");
+    let (_, _, c) = x.client(Role::Write);
+    let (tx, rx) = channel();
+    let _s = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    // a client's write holds the worker in the hook
+    let (busy_tx, busy) = channel();
+    let (go, wait) = channel::<()>();
+    let (busy_tx, wait) = (Mutex::new(busy_tx), Mutex::new(wait));
+    x.n.set_route(x.h, None); // the hook runs only with routing on; no route is set
+    x.n.after_route(Box::new(move || {
+        busy_tx.lock().unwrap().send(()).unwrap();
+        let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
+    }));
+    let c2 = c.clone();
+    let (t, k2) = (x.t, ak("name.0"));
+    let writer = std::thread::spawn(move || c2.write_with(|w| w.at(t, k2).set(&Value::Int(7))).map(|_| ()));
+    busy.recv_timeout(Duration::from_secs(60)).unwrap();
+    let n = osis::SIGNAL_BYTES / osis::HISTORY_DIRTY_BYTES + 1;
+    let changes: Vec<(Tid, osis::Ak, osis::ChangeId)> = (0..n as u32).map(|i| (x.t, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect();
+    x.n.engine(|e| {
+        e.core.events.queue(osis_node::Event::History(Arc::new(changes)));
+        e.core.events.flush();
+    });
+    x.n.settle();
+    drop(go); // the hook waits no more, however often it runs
+    writer.join().unwrap().unwrap();
+    x.n.after_route(Box::new(|| {}));
+    let mut ended = false;
+    while let Ok(e) = rx.recv_timeout(Duration::from_secs(20)) {
+        if matches!(e, HistoryEvent::Ended(_)) {
+            ended = true;
+            break;
+        }
+    }
+    assert!(ended, "past the budget");
+    // its bytes are back: a new subscription hears
+    let (tx, rx) = channel();
+    let _again = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let mut w = x.n.write();
+    w.at(x.t, k.clone()).set(&Value::Int(1)).unwrap();
+    let id = w.commit().unwrap().unwrap().id;
+    let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert!(matches!(e, HistoryEvent::Commit { id: i, .. } if i == id), "{e:?}");
 }

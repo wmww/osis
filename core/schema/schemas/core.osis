@@ -62,6 +62,9 @@ aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<b
 aspect clients.0^: map<tid, client>;
 /// The retention this thing requires, by AK prefix (spec/commits.md §5).
 aspect required.0^: map<string, required>;
+/// When a purge request by name or by author was last made here: the delta such a commit carries, no
+/// read of the purged aspect changed by it (spec/commits.md §5).
+aspect purge.0: timestamp;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 /// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };

@@ -27,11 +27,14 @@ pub const RESIDUE: &[u8] = b"w/";
 /// commit ID + aspect index + delta index (4 bytes each), the delta's nonce and its stripped
 /// fragment. Its pending copy's slot holds an empty delta (`retention::emptied`) while this is kept.
 pub const STRIPPED: &[u8] = b"j/";
-/// Purge items waiting for the deltas they name: `p/` + aspect key.
+/// Purge requests with an item on a whole aspect or an author's deltas on it, which any delta
+/// arriving may fall under: `p/` + aspect key.
 pub const PURGES: &[u8] = b"p/";
 /// A purge request that dropped a permanent delta on a thing (`retention::lasting`): `z/` + commit
 /// ID + tid, empty.
 pub const NAMED_PERMANENT: &[u8] = b"z/";
+/// Purge requests naming a commit's deltas: `pn/` + aspect key + commit ID, the requests.
+pub const PURGES_NAMED: &[u8] = b"pn/";
 /// Timers: `x/` + T (8 bytes, big endian) + commit ID + aspect index (4 bytes).
 pub const TIMER: &[u8] = b"x/";
 /// Things this node syncs: `s/` + tid.
@@ -88,6 +91,10 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
     k.extend_from_slice(&(a.len() as u16).to_be_bytes());
     k.extend_from_slice(a);
     k
+}
+
+pub fn purges_named_key(tid: &Tid, ak: &Ak, id: &CommitId) -> Vec<u8> {
+    [aspect_key(PURGES_NAMED, tid, ak).as_slice(), &id.0[..]].concat()
 }
 
 pub fn residue_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {

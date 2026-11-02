@@ -24,7 +24,7 @@ use crate::error::{Error, Result};
 use crate::retention::memory::supersedes;
 use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Lifetime, Tid, Ts, Value, WallMs};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, DELTA_PAST_BLOB, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
@@ -135,6 +135,8 @@ pub(crate) struct Held {
     pub bytes: usize,
     /// The things whose records its blobs carried beside their deltas.
     pub records: BTreeSet<Tid>,
+    /// When this node first held it.
+    pub received: WallMs,
 }
 
 /// The synced side of the ephemeral state.
@@ -702,7 +704,8 @@ impl Engine {
                 held_parts.push(HeldPart::new(p.ai, s, p.delta.len()));
             }
             let bytes = held_parts.iter().map(|p| p.bytes).sum();
-            self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes, records: chain });
+            let received = self.now();
+            self.eph.remote.held.insert(id, Held { header, parts: held_parts, own: true, bytes, records: chain, received });
             self.eph.remote.index_lists(id);
             for (i, a) in blob.header.aspects.iter().enumerate() {
                 if let Some(t) = a.expires {
@@ -1031,6 +1034,7 @@ impl Engine {
                 changed.push((a.tid, a.ak.clone()));
             }
         }
+        let fresh_seen: Vec<usize> = fresh.iter().map(|p| p.ai).collect();
         parts.extend(fresh);
         let bytes = parts.iter().map(|p| p.bytes).sum();
         let new = !changed.is_empty();
@@ -1039,8 +1043,12 @@ impl Engine {
         if self.eph.remote.absorbers.contains_key(&id) {
             weigh.insert(id);
         }
-        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own, bytes, records });
+        self.eph.remote.held.insert(id, Held { header: header.clone(), parts, own, bytes, records, received });
         self.eph.remote.index_lists(id);
+        if let Some(h) = self.eph.remote.held.get(&id) {
+            let entries = Self::held_changes(h, &id, fresh_seen);
+            self.memory_touched(entries);
+        }
         // a part waits: its verified parts are held, the blob waits for the rest (another blob of
         // this commit may wait too: a commit past a blob splits)
         let waiting = !waits.is_empty();
@@ -1335,6 +1343,8 @@ impl Engine {
     fn release_held(&mut self, id: &CommitId) -> bool {
         self.eph.remote.unindex_lists(id);
         let Some(h) = self.eph.remote.held.remove(id) else { return false };
+        let entries = Self::held_changes(&h, id, h.parts.iter().map(|p| p.ai));
+        self.memory_touched(entries);
         for p in &h.parts {
             if let Some(a) = h.header.aspects.get(p.ai) {
                 if let Some(ea) = self.eph.aspects.get_mut(&a.tid).and_then(|m| m.get_mut(&a.ak)) {
@@ -1471,6 +1481,7 @@ impl Engine {
         let mut flips: BTreeSet<(Tid, Ak)> = BTreeSet::new();
         // commits with a part turned valid: what they supersede goes, as on arrival
         let mut valid_now = Vec::new();
+        let mut flipped = Vec::new();
         let ids: Vec<CommitId> = self.eph.remote.held.keys().copied().collect();
         for id in ids {
             let Some(mut h) = self.eph.remote.held.remove(&id) else { continue };
@@ -1481,6 +1492,9 @@ impl Engine {
                     && let Some(a) = h.header.aspects.get(p.ai)
                 {
                     flips.insert((a.tid, a.ak.clone()));
+                    if !h.own {
+                        flipped.push((a.tid, a.ak.clone(), ChangeId::Commit(id)));
+                    }
                     if p.valid {
                         valid_now.push(id);
                     }
@@ -1488,6 +1502,7 @@ impl Engine {
             }
             self.eph.remote.held.insert(id, h);
         }
+        self.memory_touched(flipped);
         let mut changed = Vec::new();
         for (t, ak) in flips {
             self.rebuild_aspect(&t, &ak);
@@ -1548,6 +1563,7 @@ impl Engine {
     /// their writes (spec/crdt.md §4.7, ephemeral data). Adds the aspects changed to `changed`
     /// and rebuilds all of them.
     pub(super) fn tick_remote(&mut self, now: u64, changed: &mut BTreeSet<(Tid, Ak)>) {
+        let mut expired = Vec::new();
         let mut gone = Vec::new();
         let mut freed = BTreeSet::new();
         while let Some(entry) = self.eph.remote.timers.first_entry() {
@@ -1567,6 +1583,11 @@ impl Engine {
                 h.bytes = h.bytes.saturating_sub(part.bytes);
                 let header = h.header.clone();
                 let empty = h.parts.is_empty();
+                if !h.own
+                    && let Some(a) = header.aspects.get(ai)
+                {
+                    expired.push((a.tid, a.ak.clone(), ChangeId::Commit(id)));
+                }
                 if !empty {
                     self.eph.remote.index_lists(id);
                 }
@@ -1598,6 +1619,7 @@ impl Engine {
         }
         self.free_unused_records(freed);
         self.eph.remote.check_index();
+        self.memory_touched(expired);
     }
 
     /// The things whose records held commit `id` carried.

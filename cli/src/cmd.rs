@@ -427,6 +427,30 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             };
             commits(ctx, &q)
         }
+        Cmd::History { t, ak, oldest, before, after, max } => {
+            let from = match (before, after) {
+                (Some(p), _) => osis::HistoryFrom::Before(parse_pos(&p)?),
+                (_, Some(p)) => osis::HistoryFrom::After(parse_pos(&p)?),
+                _ if oldest => osis::HistoryFrom::Oldest,
+                _ => osis::HistoryFrom::Newest,
+            };
+            history(ctx, &t, &ak, from, max)
+        }
+        Cmd::Purge { t, ak, commit, author } => {
+            let tid = ctx.tid(&t)?;
+            let key = ctx.key(&ak)?;
+            let commit = commit.as_deref().map(parse_commit).transpose()?;
+            let author = author.as_deref().map(|a| ctx.tid(a)).transpose()?;
+            let mut w = db.write();
+            let mut at = w.at(tid, key);
+            match (commit, author) {
+                (Some(c), _) => at.purge_commit(osis::ChangeId::Commit(c))?,
+                (_, Some(a)) => at.purge_author(a)?,
+                _ => at.purge()?,
+            }
+            let done = w.commit()?;
+            emit_commit(ctx, done.and_then(|d| d.id.commit()))
+        }
         Cmd::Undo { scope: s } => undo(ctx, &s, false),
         Cmd::Redo { scope: s } => undo(ctx, &s, true),
         Cmd::Revert { id } => {
@@ -924,6 +948,46 @@ fn kind_text(k: CommitKind) -> &'static str {
 }
 
 /// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
+/// A place printed by `history`: `TS/COMMIT`.
+fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
+    let (ts, c) = s.split_once('/').ok_or_else(|| usage(format!("a place is TS/COMMIT, not {s:?}")))?;
+    let ts = ts.parse().ok().and_then(Ts::from_u64).ok_or_else(|| usage(format!("a place's time: {ts:?}")))?;
+    Ok(osis::HistoryPos { ts, id: osis::ChangeId::Commit(parse_commit(c)?) })
+}
+
+fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: usize) -> anyhow::Result<()> {
+    let tid = ctx.tid(t)?;
+    let key = osis::Ak::new(ak).map_err(|e| usage(format!("{ak}: {e:?}")))?;
+    let page = ctx.db.at(tid, key).history(from, max)?;
+    let raw = ctx.g.raw;
+    let body = |b: &osis::HistoryBody<osis::Value>| match b {
+        osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
+        osis::HistoryBody::Held(None) => "held-empty".to_string(),
+        osis::HistoryBody::TooLarge { .. } => "too-large".to_string(),
+        osis::HistoryBody::Purged { by } => format!("purged={}", change_text(by)),
+        osis::HistoryBody::Dropped => "dropped".to_string(),
+        osis::HistoryBody::NotFetched => "not-fetched".to_string(),
+    };
+    let pos = |p: osis::HistoryPos| format!("{}/{}", p.ts.to_u64(), change_text(&p.id));
+    let lines: Vec<String> = page
+        .entries
+        .iter()
+        .map(|e| {
+            let i = &e.commit;
+            format!("{} {} {} {} {} {} {}", pos(e.pos()), ts_text(raw, ts_of(i.ts)), i.actor.to_uri(), i.node.to_uri(), kind_text(e.kind), if e.valid { "valid" } else { "invalid" }, body(&e.body))
+        })
+        .collect();
+    let entries = page
+        .entries
+        .iter()
+        .map(|e| {
+            let i = &e.commit;
+            J::obj([("pos", J::str(pos(e.pos()))), ("commit", J::str(change_text(&i.id))), ("ts", J::int(ts_of(i.ts))), ("received", J::int(i.received.0)), ("actor", J::tid(i.actor)), ("node", J::tid(i.node)), ("kind", J::str(kind_text(e.kind))), ("valid", J::Bool(e.valid)), ("body", J::str(body(&e.body)))])
+        })
+        .collect();
+    ctx.emit(&lines, J::obj([("entries", J::Arr(entries)), ("more", J::Bool(page.more)), ("complete", J::Bool(page.complete))]))
+}
+
 fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
     let cs = ctx.db.commits(q)?;
     let raw = ctx.g.raw;

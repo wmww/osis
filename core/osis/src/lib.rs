@@ -263,13 +263,14 @@ mod share;
 mod sources;
 mod text;
 mod commits;
+mod history;
 mod watch;
 mod write;
 
 mod port;
 pub use osis_node::sync::MAX_CONNS_PER_CLIENT;
 pub use clients::{Client, ClientSecret};
-pub use port::{MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, socket_path};
+pub use port::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, socket_path};
 pub use port::client::SOCK_FILE;
 #[doc(hidden)]
 pub use port::client::{own_uid, socket_dir};
@@ -286,6 +287,7 @@ pub use share::{ContactCard, Demotion, Device, EdgeOpts, GroupReach, GroupSync, 
 pub use sources::{GroupSource, RemoteConfig, RemoteStatus};
 pub use text::{Splice, TextSession};
 pub use commits::{CommitEntry, CommitKind, CommitQuery, DropReason, Next, Scope};
+pub use history::{HISTORY_PAGE, HistoryBody, HistoryEntry, HistoryEvent, HistoryFrom, HistoryPage, HistoryPos};
 pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Write};
 

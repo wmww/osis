@@ -986,6 +986,15 @@ fn delivery(v: Value) -> Result<Delivered> {
     Ok((t, ak, r, s, fired))
 }
 
+/// A history subscription's Notify.
+fn history_note(v: Value) -> Result<(osis_node::ChangeId, Option<crate::HistoryEntry<Value>>)> {
+    let mut a = c::Args::new(v)?;
+    let id = c::change(a.next()?)?;
+    let entry = a.opt()?.map(c::hist_entry).transpose()?;
+    a.end()?;
+    Ok((id, entry))
+}
+
 /// What a watch hears when its subscription ends.
 fn sub_ended() -> Error {
     net("the node's subscription ended")
@@ -1052,6 +1061,36 @@ impl Osis {
             }
         });
         Ok(self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
+    }
+
+    /// A page of history at the attached node, within what one reply carries.
+    pub(crate) fn remote_history(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
+        let bytes = self.inner.limit.min(REPLY_BUDGET / 2);
+        c::hist_page(r.call(method::HISTORY, vec![Value::Tid(tid), c::ak_v(ak), c::from_v(&from), u(limit as u64), u(bytes as u64)])?)
+    }
+
+    /// `AspectRef::on_history` at the attached node. A reconnect's Reply says `Reread`: what changed
+    /// in the gap was not told.
+    pub(crate) fn remote_on_history(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: CallbackOf<crate::HistoryEvent<Value>>) -> Result<Subscription> {
+        let mut first = true;
+        let cb: Callback = Box::new(move |db, d| {
+            let Delivery::Port(ev) = d else { return };
+            match ev {
+                PortEvent::Initial(_) => {
+                    if !std::mem::take(&mut first) {
+                        f(db, crate::HistoryEvent::Reread);
+                    }
+                }
+                PortEvent::Notify(Payload::Delivery { value }) => match history_note(value) {
+                    Ok((id, entry)) => f(db, crate::HistoryEvent::Commit { id, entry }),
+                    Err(_) => f(db, crate::HistoryEvent::Reread),
+                },
+                PortEvent::Notify(Payload::TooLarge { .. }) | PortEvent::Closed => f(db, crate::HistoryEvent::Reread),
+                PortEvent::Notify(Payload::Lapsed) => f(db, crate::HistoryEvent::Ended(sub_ended())),
+            }
+        });
+        let filter = Value::List(vec![u(super::filter::HISTORY), Value::Tid(tid), c::ak_v(&ak)]);
+        Ok(self.remote_sub(r, Some(tid), filter, true, cb)?.0)
     }
 
     /// `AspectRef::watch` at the attached node: the state holds the latest value that `valid`

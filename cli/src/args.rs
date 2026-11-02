@@ -221,6 +221,33 @@ pub enum Cmd {
         #[arg(long)]
         count: Option<usize>,
     },
+    /// An aspect's history: its bodies held here, with author, time and validity, newest first
+    History {
+        t: String,
+        ak: String,
+        /// Oldest first
+        #[arg(long, conflicts_with_all = ["before", "after"])]
+        oldest: bool,
+        /// Older than this place (`pos` of a line printed)
+        #[arg(long, value_name = "POS", conflicts_with = "after")]
+        before: Option<String>,
+        /// Newer than this place, oldest first
+        #[arg(long, value_name = "POS")]
+        after: Option<String>,
+        #[arg(long = "max", value_name = "N", default_value_t = osis::HISTORY_PAGE)]
+        max: usize,
+    },
+    /// Purge an aspect's history, one commit's delta or an author's deltas, each where this actor may
+    Purge {
+        t: String,
+        ak: String,
+        /// Only this commit's delta
+        #[arg(long, value_name = "C", conflicts_with = "author")]
+        commit: Option<String>,
+        /// Only this actor's deltas stamped before now, also those arriving later
+        #[arg(long, value_name = "A")]
+        author: Option<String>,
+    },
     /// Held commits (anyone's), newest first
     Commits {
         #[command(flatten)]

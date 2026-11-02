@@ -6,6 +6,7 @@ mod api;
 mod commits;
 mod ephemeral;
 mod ephemeral_undo;
+mod history;
 mod hosting;
 mod runtime;
 mod sharing;

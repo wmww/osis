@@ -2,7 +2,7 @@
 //! message one register write on an aspect of the chat, kept forever. spec/requirements.md, Scale.
 //! Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=/some/dir cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`
-//! (`OSIS_SCALE_STEPS`: a comma list of gen, build, open, write, kick, fall, default all;
+//! (`OSIS_SCALE_STEPS`: a comma list of gen, build, open, history, write, kick, fall, default all;
 //! `OSIS_SCALE_FALL_FEW`: only the small falls; a
 //! built size is reused; each step runs in a process of its own over a copy of the built stores, so its
 //! peak resident set is its own). `scale::long_aspect::first_sync` does the sync steps on the sim.
@@ -367,6 +367,115 @@ fn step_open(d: &Path, n: usize) {
     assert_eq!(p.len(), 50);
 }
 
+/// The history read (notes/api.md History) at this size: pages near either end and at a time in
+/// the middle (no walk), an entry, a write with a watch on, then delete for everyone many times
+/// and purge by author.
+fn step_history(d: &Path, n: usize) {
+    use osis_commit::PurgeItem;
+    use osis_node::engine::history::{HistoryFrom, HistoryPos, RowBody};
+    let up = d.parent().unwrap().to_path_buf();
+    let meta = meta_read(&up);
+    let (db, root) = work_copy(d, "m");
+    let (mut e, clock) = open_at(&db, &root, msg_time(n + SPARE) + 21_600_000, 9);
+    let a = ak_msg();
+    let t = meta.t;
+    println!("LONG n={n} history after open rss {} MiB", rss_kib() / 1024);
+    let page = |e: &mut Engine, what: String, from: HistoryFrom| {
+        let (rows, more) = step(n, &what, || e.history(&t, &a, from, 50, 1 << 26).unwrap());
+        assert_eq!(rows.len(), 50);
+        assert!(more);
+        assert!(rows.iter().all(|r| r.valid && matches!(&r.body, RowBody::Held(Some(Value::Str(s))) if s.len() == 200)));
+        rows
+    };
+    let mut newest = Vec::new();
+    for k in 0..3 {
+        newest = page(&mut e, format!("history page of 50, newest ({k})"), HistoryFrom::Newest);
+    }
+    for k in 0..3 {
+        page(&mut e, format!("history page of 50, oldest ({k})"), HistoryFrom::Oldest);
+    }
+    let pos = HistoryPos { ts: newest[49].ts, id: newest[49].id };
+    page(&mut e, "history page of 50, next from the newest".into(), HistoryFrom::Before(pos));
+    let mid = osis_base::Ts::make(WallMs(msg_time(n / 2)), 0).unwrap();
+    for k in 0..3 {
+        page(&mut e, format!("history page of 50, at a time in the middle ({k})"), HistoryFrom::Before(HistoryPos::time(mid)));
+    }
+    let one = newest[0].id;
+    step(n, "history one entry", || e.history_entry(&t, &a, &one, 1 << 26).unwrap().unwrap());
+    println!("LONG n={n} history after pages rss {} MiB", rss_kib() / 1024);
+    // a write, with and without a watch: what the watch adds
+    let write = |e: &mut Engine, k: usize| {
+        clock.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(t, &MSG, &Value::Str(body(n + 2000 + k))).unwrap();
+        e.commit(m).unwrap().unwrap();
+    };
+    let times = |e: &mut Engine, from: usize| {
+        let mut v = Vec::new();
+        for k in from..from + 30 {
+            let t0 = Instant::now();
+            write(e, k);
+            v.push(t0.elapsed().as_secs_f64() * 1e3);
+        }
+        median(v)
+    };
+    let off = times(&mut e, 0);
+    e.watch_history();
+    let on = times(&mut e, 100);
+    println!("LONG n={n} write, median of 30: no watch {off:.2} ms, watching {on:.2} ms");
+    // delete for everyone, repeatedly: each costs what one purge costs, however many were made. The
+    // aspect's retention is `author`: this node's own messages
+    let me = e.tid();
+    let mut victims: Vec<osis_base::CommitId> = Vec::new();
+    let mut from = HistoryFrom::Oldest;
+    while victims.len() < 50 {
+        let (rows, _) = e.history(&t, &a, from, 256, 1 << 26).unwrap();
+        victims.extend(rows.iter().filter(|r| r.actor == me).filter_map(|r| r.id.commit()));
+        let last = rows.last().unwrap();
+        from = HistoryFrom::After(HistoryPos { ts: last.ts, id: last.id });
+    }
+    victims.truncate(50);
+    let del = |e: &mut Engine, c: osis_base::CommitId| {
+        clock.advance(1_000);
+        let mut m = Mutation::new();
+        let now = e.now();
+        m.set(t, &ct::PURGE, &now).unwrap();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+        e.commit(m).unwrap().unwrap()
+    };
+    let mut first = Vec::new();
+    for c in &victims[..10] {
+        let t0 = Instant::now();
+        del(&mut e, *c);
+        first.push(t0.elapsed().as_secs_f64() * 1e3);
+    }
+    let mut last = Vec::new();
+    for (k, c) in victims[10..].iter().enumerate() {
+        let t0 = Instant::now();
+        del(&mut e, *c);
+        if k >= 30 {
+            last.push(t0.elapsed().as_secs_f64() * 1e3);
+        }
+    }
+    println!("LONG n={n} delete for everyone, median: first ten {:.2} ms, after forty {:.2} ms; a write then {:.2} ms", median(first), median(last), times(&mut e, 200));
+    let at = e.history_entry(&t, &a, &osis_node::ChangeId::Commit(victims[0]), 1 << 26).unwrap().unwrap().ts;
+    let (rows, _) = step(n, "history page of 50, its first purged", || e.history(&t, &a, HistoryFrom::After(HistoryPos::time(at)), 50, 1 << 26).unwrap());
+    assert!(matches!(rows[0].body, RowBody::Purged(_)));
+    // purge by author: a walk of the views, then what falls under it (this node's own, as the
+    // aspect's retention is `author`; a thousand more to see the cost per delta)
+    for k in 0..1000 {
+        write(&mut e, 400 + k);
+    }
+    let held = e.held_bodies(&t, &a);
+    clock.advance(1_000);
+    let mut m = Mutation::new();
+    let now = e.now();
+    m.set(t, &ct::PURGE, &now).unwrap();
+    m.purge(PurgeItem::Author { tid: t, ak: a.clone(), actor: me });
+    step(n, "purge by author, this node's own", || e.commit(m).unwrap().unwrap());
+    println!("LONG n={n} purge by author dropped {} bodies; a write after it {:.2} ms; rss {} MiB", held - e.held_bodies(&t, &a), times(&mut e, 300), rss_kib() / 1024);
+}
+
 /// One local write and one received commit, on a durable store.
 fn step_write(d: &Path, n: usize) {
     let up = d.parent().unwrap().to_path_buf();
@@ -570,6 +679,7 @@ fn cost() {
             "build-m" => build(&d, n, "m", M_SEED),
             "build-r" => build(&d, n, "r", R_SEED),
             "open" => step_open(&d, n),
+            "history" => step_history(&d, n),
             "write" => step_write(&d, n),
             "kick-m" => step_kick_m(&d, n),
             "kick-r" => apply_at_r(&d, n, "kick.bin", &["kick", "re-add"], later),
@@ -580,7 +690,7 @@ fn cost() {
         return;
     }
     std::fs::create_dir_all(&d).unwrap();
-    let steps = std::env::var("OSIS_SCALE_STEPS").unwrap_or_else(|_| "gen,build,open,write,kick,fall".into());
+    let steps = std::env::var("OSIS_SCALE_STEPS").unwrap_or_else(|_| "gen,build,open,history,write,kick,fall".into());
     for s in steps.split(',') {
         let mut kids: Vec<std::process::Child> = match s {
             "build" => vec![run_child("build-m"), run_child("build-r")],

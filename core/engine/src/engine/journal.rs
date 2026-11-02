@@ -51,6 +51,14 @@ impl<K: Ord + Clone, V: Clone> JMap<K, V> {
         }
         old
     }
+    /// What the running transaction changed, each key with its value before it.
+    pub fn before(&self) -> BTreeMap<&K, Option<&V>> {
+        let mut out = BTreeMap::new();
+        for (k, v) in &self.log {
+            out.entry(k).or_insert(v.as_ref());
+        }
+        out
+    }
     /// The value to change in place (its previous value journaled).
     pub fn get_mut(&mut self, k: &K) -> Option<&mut V> {
         let old = self.map.get(k)?.clone();
