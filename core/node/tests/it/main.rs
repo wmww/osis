@@ -46,6 +46,7 @@ mod sync_review;
 mod sync_round2;
 mod synthetic;
 mod timed_dead;
+mod tombstone;
 mod validity;
 mod waits;
 mod walks;

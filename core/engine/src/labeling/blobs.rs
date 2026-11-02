@@ -61,7 +61,8 @@ pub fn open_commit(blob: &[u8], key: &Secret32) -> Result<(Vec<u8>, CommitBlob)>
         return Ok((pt, c));
     }
     let (expiry, keys) = osis_commit::prefix_inputs(&c.header, &parts)?;
-    if !parts.is_empty() && !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys, osis_label::Class::of_marker(c.header.ephemeral)) {
+    // a header-only blob: `prefix_inputs` gives no expiry and no commitment
+    if !prefix.agrees(expiry.map(WallMs), &c.header.blind, &keys, osis_label::Class::of_marker(c.header.ephemeral)) {
         return Err(Error::BadInput("blob prefix disagrees with its header"));
     }
     Ok((pt, c))
@@ -152,6 +153,11 @@ impl Engine {
         if !b.plaintext.is_empty() {
             return Ok(b.plaintext.clone());
         }
+        // a lasting header (`commit_bodies_under`)
+        if b.parts.is_empty() {
+            let id = b.commit;
+            return Ok(self.run(|tx| tx.get_commit(&id))?.map(|c| osis_commit::rewrite(&c, |_, _| true).encode()).unwrap_or_default());
+        }
         Ok(self.bodies(&b.commit)?.into_iter().find(|x| x.parts == b.parts).map(|x| x.plaintext).unwrap_or_default())
     }
 
@@ -213,6 +219,17 @@ impl Engine {
             let inside = touches || b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).any(|a| ctx.published.contains(&a.tid) && matches!(a.ak.as_str(), "label.0" | "created.0"));
             if inside && self.core.may_read(&ctx.actor, &b.reader) {
                 out.push(b);
+            }
+        }
+        // nothing else of it here and a lasting header on the label's things: its header alone
+        // (spec/commits.md §5, spec/sync.md §6)
+        if out.is_empty() && touches {
+            let core = &self.core;
+            let on = |t: &Tid| ctx.closure.contains(t) && core.may_read(&ctx.actor, &core.reader_of(t));
+            if crate::retention::lasting(core, &id, &on)
+                && let Some(blind) = core.ix.commits.get(&id).map(|m| m.header.blind)
+            {
+                out.push(Body { commit: id, reader: ctx.actor, parts: Vec::new(), expires: None, keys: Vec::new(), blind, plaintext: Vec::new(), role_commit: false });
             }
         }
         Ok(out)

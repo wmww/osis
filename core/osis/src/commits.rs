@@ -158,6 +158,9 @@ pub struct CommitEntry {
     pub aspects: Vec<(Tid, Ak)>,
     /// A body in `aspects` is gone: reverting fails `NotUndoable(Compacted)`.
     pub dropped: bool,
+    /// Of `aspects`, those a purge request dropped, with the earliest such request held: the change
+    /// is a tombstone there (spec/commits.md §5). Lasting for a permanent delta, also at a new device.
+    pub purged: Vec<(Tid, Ak, ChangeId)>,
 }
 
 fn kind_of(h: &osis_commit::Header) -> CommitKind {
@@ -240,10 +243,21 @@ impl Osis {
             // (a batch with both halves joins its commit's entry)
             let mut entries: BTreeMap<(Ts, ChangeId), CommitEntry> = BTreeMap::new();
             let mut at: BTreeMap<ChangeId, Ts> = BTreeMap::new();
+            let mut purges: BTreeMap<(Tid, Ak), BTreeMap<osis_base::CommitId, osis_base::CommitId>> = BTreeMap::new();
             for c in base {
                 let h = &c.header;
                 let id = ChangeId::Commit(c.id);
                 at.insert(id, h.ts);
+                let mut purged = Vec::new();
+                for (t, a, _) in c.aspects.iter().filter(|a| !a.2) {
+                    let on = match purges.entry((*t, a.clone())) {
+                        std::collections::btree_map::Entry::Occupied(x) => x.into_mut(),
+                        std::collections::btree_map::Entry::Vacant(x) => x.insert(e.purged_on(t, a)?),
+                    };
+                    if let Some(by) = on.get(&c.id) {
+                        purged.push((*t, a.clone(), ChangeId::Commit(*by)));
+                    }
+                }
                 entries.insert(
                     (h.ts, id),
                     CommitEntry {
@@ -253,6 +267,7 @@ impl Osis {
                         reverted_by: Vec::new(),
                         in_effect: true,
                         dropped: c.aspects.iter().any(|a| !a.2 && a.1.as_str() != "created.0"),
+                        purged,
                         aspects: c.aspects.into_iter().map(|(t, a, _)| (t, a)).collect(),
                     },
                 );
@@ -276,12 +291,13 @@ impl Osis {
                     ChangeId::Ephemeral(_) => (CommitKind::Ephemeral, l.actor, e.tid(), l.ts),
                 };
                 at.insert(l.id, ts);
-                entries.insert((ts, l.id), CommitEntry { commit: CommitInfo { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, aspects: asp });
+                entries.insert((ts, l.id), CommitEntry { commit: CommitInfo { id: l.id, actor, node, ts, received: l.received }, kind, reverts: l.reverts, reverted_by: Vec::new(), in_effect: true, dropped: false, purged: Vec::new(), aspects: asp });
             }
             // acting as an actor: only the aspects it may read; a change touching none is unknown
             if let Some(a) = self.acting {
                 entries.retain(|_, en| {
                     en.aspects.retain(|(t, _)| e.readable_by(&a, t));
+                    en.purged.retain(|(t, _, _)| e.readable_by(&a, t));
                     !en.aspects.is_empty()
                 });
             }
@@ -335,17 +351,19 @@ impl Osis {
                 }
                 depth.get(&id).copied().unwrap_or_default()
             };
-            entries
-                .into_values()
-                .rev()
-                .map(|mut entry| {
-                    let id = entry.commit.id;
-                    entry.reverted_by = by.remove(&id).unwrap_or_default();
-                    entry.in_effect = !out_of.contains(&id);
-                    Found { depth: depth_of(id), entry }
-                })
-                .collect()
-        });
+            Ok::<Vec<Found>, osis_node::Error>(
+                entries
+                    .into_values()
+                    .rev()
+                    .map(|mut entry| {
+                        let id = entry.commit.id;
+                        entry.reverted_by = by.remove(&id).unwrap_or_default();
+                        entry.in_effect = !out_of.contains(&id);
+                        Found { depth: depth_of(id), entry }
+                    })
+                    .collect(),
+            )
+        })?;
         Ok((found, aks))
     }
 

@@ -138,6 +138,14 @@ pub struct AspectEntry {
     pub hashes: Vec<[u8; 32]>,
 }
 
+impl AspectEntry {
+    /// A permanent delta (spec/commits.md §5): keep at least forever, no keep at most, no expiry.
+    /// It leaves only by purge request, and leaves its header behind for good.
+    pub fn permanent(&self) -> bool {
+        self.retention.at_least.abs == Some(FOREVER) && self.retention.at_most == osis_schema::Bound::default() && self.expires.is_none() && self.ak.as_str() != crate::retention::CREATED
+    }
+}
+
 /// A delete key with its level (spec/crypto.md §7); a valid Ed25519 key once decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DeleteKey {

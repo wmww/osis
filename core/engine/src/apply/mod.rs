@@ -274,6 +274,14 @@ fn never_whole(core: &crate::engine::Core, h: &Header, id: &CommitId, blob: &Com
     core.ix.commits.get(id).is_some_and(|m| !opened(m)) || (h.kind == Kind::Role && !blob.parts.is_empty())
 }
 
+/// Whether a commit with no part held waits for every thing and delta of it, synced or not, so that
+/// whether it is recorded applied does not read what the node syncs when it comes. A permanent delta
+/// on a thing the node syncs stands for a held part: it leaves only by purge, so the blob is a lasting
+/// header and the commit waits as if that part were here (spec/commits.md §4).
+fn waits_whole(core: &crate::engine::Core, h: &Header, blob: &CommitBlob, never: bool) -> bool {
+    blob.parts.is_empty() && !never && !h.aspects.iter().any(|a| h.ephemeral.is_none() && a.permanent() && core.syncs(&a.tid))
+}
+
 /// A missing delta and whether it holds the whole commit (`gating`).
 pub(crate) type Gate = ((usize, usize), bool);
 
@@ -284,7 +292,7 @@ pub(crate) type Gate = ((usize, usize), bool);
 pub(crate) fn gating(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Vec<Gate> {
     let h = &blob.header;
     let never = never_whole(core, h, id, blob, skip);
-    let whole = blob.parts.is_empty() && !never;
+    let whole = waits_whole(core, h, blob, never);
     let units = held_units(h, blob.parts.iter().map(|p| (p.ai, p.di)).filter(|x| !skip.contains(x)));
     let mut out = Vec::new();
     for x in blob.missing().into_iter().filter(|x| !skip.contains(x)) {
@@ -478,7 +486,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a commit no part of which is held (a pending part went at its expiry,
     // `retention::pending_drops`; a header-only blob) waits whole for every thing and delta of it,
     // synced or not: whether it is recorded applied must not read what the node syncs when it comes
-    let whole = blob.parts.is_empty() && !never_whole;
+    let whole = waits_whole(tx.core, &h, blob, never_whole);
     for (ai, a) in h.aspects.iter().enumerate() {
         if !whole && !held_ais.contains(&ai) && !tx.core.syncs(&a.tid) {
             continue;

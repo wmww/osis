@@ -303,7 +303,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
 26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a required retention refuses it (issues/required-retention.md).
 27. E: an edit is a new message plus a purge of the old one.
-28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices (frontier study, unbuilt); E1 keeps the tid and time forever by design.
+28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices, with its purge commit (spec/commits.md §5); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
 30. E: nothing is compacted; messages keep at least forever.
 31. E: `nobody` retention plus keep at least forever is must-hold for good and nobody holds a purge right; in A-D an admin removes the member's M instead; core k erases it.
