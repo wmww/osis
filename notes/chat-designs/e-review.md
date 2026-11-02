@@ -90,11 +90,11 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
 
 - Legal AK: `chat:msgs:y2026.0` fits the grammar. Undeclared years go untyped, and each commit sets retention explicitly.
 - Open is O(all commits), sync is per label, and frontiers span all aspects, so yearly names help none of these. Busy chats pass 10^6 a year anyway.
-- Measured since (`scale::long_aspect`, notes/testing.md, issues/long-aspect-cost.md); the guesses below were low: every write scans the aspect today, a write costs 1.65 s at 10^6 and a rise about 3 min.
+- Measured since (`scale::long_aspect`, notes/testing.md, issues/long-aspect-cost.md); the guesses below were low then: every write scanned the aspect, 1.65 s at 10^6, and a rise took about 3 min. Both are fixed; what is left is in that issue.
 - Budget (notes/testing.md) is 10^4 commits per aspect. Extrapolated from there to 10^6:
   - open about 6 s (budget 1 s);
   - first sync about 15 min (9 s at 10^4);
-  - revalidation (re-adding a member, or a fallen winner) rebuilds the aspect, about 70 s under the engine lock (719 ms at 10^4 is the old replay figure, issues/node-core-gaps.md);
+  - revalidation (re-adding a member, or a fallen winner) rebuilt the aspect then, about 70 s under the engine lock; a register now stops at its winner (notes/testing.md);
   - write and sync pass stay fine (about 0.4 ms, about 5 ms).
 - Store: about 1.2 KB per message (body plus about 690 B header row, notes/growth.md). Headers cannot be forgotten while bodies are held. Memory at 10^6 is UNVERIFIED.
 - **Hostile 10^7 messages.**
