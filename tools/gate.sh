@@ -4,7 +4,8 @@
 # fast-forwarded, never built. Usage: tools/gate.sh [--sweep-seeds N] [--all] [--base REV] [--plan]   (from the worktree root)
 # The dev sim sweep runs every scenario at 5 seeds (scenario coverage; seed breadth is the
 # 300-seed periodic check, notes/coordination.md) when the branch touches the simulator or a
-# crate it has caught regressions in (core/test/sim/, osis-engine, osis-node, osis-perm, osis-crdt)
+# crate it has caught regressions in (core/test/sim/, osis-engine, osis-node, osis-perm, osis-crdt,
+# osis-store, osis-crypto: everything the simulated nodes run on)
 # or Cargo.toml/lock since its merge base with main (always on main itself);
 # --sweep-seeds N forces N seeds, 0 skips.
 # Per project (notes/build.md, Merge gate): the GUI workspace (kit/, app/; root manifest kit/Cargo.toml)
@@ -55,7 +56,7 @@ $(git ls-files --others --exclude-standard)"
 fi
 if [ -z "$seeds" ]; then
   seeds=5
-  sweep_paths="Cargo.toml Cargo.lock core/test/sim core/engine core/node core/perm core/crdt"
+  sweep_paths="Cargo.toml Cargo.lock core/test/sim core/engine core/node core/perm core/crdt core/store core/crypto"
   if [ -n "$base" ] && [ "$base" != "$(git rev-parse HEAD)" ] && git diff --quiet "$base" -- $sweep_paths \
       && [ -z "$(git ls-files --others --exclude-standard -- $sweep_paths)" ]; then
     seeds=0
