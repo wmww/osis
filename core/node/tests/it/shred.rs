@@ -950,3 +950,108 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
     let (only, _) = out.iter().next().unwrap();
     assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None Some(List([Str(\"a\")])) None"), "{only}");
 }
+
+// spec/commits.md §4, §5: a purged permanent delta reads alike whatever came first and whatever the
+// node syncs: its body, its header-only blob, the purge request (or the request's own header-only
+// blob with a snapshot listing its delta), a restart anywhere among them. Each ends with the commit
+// applied without its body, the purge named, nothing waiting, nothing of the value recoverable.
+#[test]
+fn tombstone_alike_in_every_order_spec_commits_5() {
+    use osis_commit::CommitBlob;
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: osis_schema::Bound::default() };
+    let marker = "TOMBSTONE-SECRET-8e1a";
+    let mut lp = net2(611);
+    let setup = lp.packages(0).unwrap();
+    let t = new_thing(&mut lp, 0);
+    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
+    assert_eq!(rec.len(), 1);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.retention(t, &REG, forever).unwrap();
+    m.set(t, &REG, &s(&big(marker))).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.set(t, &REG, &s("after")).unwrap();
+    let pc = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&pc).unwrap().unwrap();
+    lp.advance(5);
+    let z = lp.peers[0].engine.snapshot(&t, &ak("t:reg.0")).unwrap().unwrap();
+    let snap = lp.peers[0].engine.package(&z).unwrap().unwrap();
+    let header = |b: &[u8]| osis_commit::rewrite(&CommitBlob::decode(b).unwrap(), |_, _| true).encode();
+    let item = |pk: &osis_node::local_peer::Package| (pk.bytes.clone(), pk.blobs.clone());
+    let (cw, ch, pw, ph, zw, rc) = (item(&whole), (header(&whole.bytes), Vec::new()), item(&request), (header(&request.bytes), Vec::new()), item(&snap), item(&rec[0]));
+    let sets = [("body, header and request", vec![cw.clone(), ch.clone(), pw.clone(), rc.clone()]), ("header and request", vec![ch.clone(), pw, rc.clone()]), ("two headers and a snapshot", vec![ch, ph, zw, rc])];
+    let mut cases = 0;
+    for (what, items) in sets {
+        let mut orders: Vec<Vec<usize>> = vec![Vec::new()];
+        for i in 0..items.len() {
+            orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
+        }
+        for syncing in [true, false] {
+            for order in &orders {
+                for restart in 0..=order.len() {
+                    cases += 1;
+                    let mut p = peer(7000 + cases);
+                    for pk in &setup {
+                        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+                    }
+                    if syncing {
+                        p.engine.set_syncing(t, true).unwrap();
+                    }
+                    for (at, i) in order.iter().enumerate() {
+                        if at == restart {
+                            p = reopened(p, 8000 + cases);
+                        }
+                        p.engine.ingest(&items[*i].0, items[*i].1.clone()).unwrap();
+                    }
+                    let e = &mut p.engine;
+                    let at = format!("{what}, syncing {syncing}, order {order:?}, restart {restart}");
+                    assert!(e.commit_ids().contains(&c), "{at}: not applied");
+                    assert!(!e.body_not_dropped(&c, &t, &ak("t:reg.0")), "{at}: its body is held");
+                    assert_eq!(e.purged_on(&t, &ak("t:reg.0")).unwrap().get(&c), Some(&pc), "{at}");
+                    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("after")), "{at}");
+                    assert!(e.pending().is_empty(), "{at}: {:?}", e.pending());
+                    assert!(e.suspects().unwrap().is_empty(), "{at}: flagged");
+                    // the slow check: a sample
+                    if restart == order.len() {
+                        assert!(!recoverable(&mut p, marker.as_bytes()), "{at}: recoverable");
+                    }
+                }
+            }
+        }
+    }
+    // every case ran: both sync modes, each order, each restart point
+    assert_eq!(cases, 2 * (24 * 5 + 6 * 4 + 24 * 5));
+}
+
+// spec/sync.md §6: a purge request becomes must-hold when the delta it names arrives after it: the
+// purge commit is judged again then, not only at its own changes.
+#[test]
+fn request_is_judged_again_when_the_named_delta_arrives_spec_sync_6() {
+    let forever = osis_schema::Retention { by: osis_schema::PurgeBy::AuthorOrAdmin, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: osis_schema::Bound::default() };
+    let mut lp = net2(631);
+    let t = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.retention(t, &REG, forever).unwrap();
+    m.set(t, &REG, &s("x")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let body = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    m.set(t, &REG, &s("after")).unwrap();
+    let pc = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&pc).unwrap().unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&request.bytes, request.blobs.clone()).unwrap();
+    assert!(e.commit_ids().contains(&pc));
+    e.take_changed();
+    e.ingest(&body.bytes, body.blobs.clone()).unwrap();
+    assert!(e.commit_ids().contains(&c));
+    assert!(e.take_changed().commits.contains(&pc));
+}

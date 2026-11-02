@@ -487,7 +487,15 @@ pub(crate) fn entry_v(e: &CommitEntry) -> Value {
         Value::Bool(e.in_effect),
         aspects_v(&e.aspects),
         Value::Bool(e.dropped),
+        Value::List(e.purged.iter().map(|(t, k, by)| Value::List(vec![Value::Tid(*t), ak_v(k), change_v(by)])).collect()),
     ])
+}
+
+fn purged_one(v: Value) -> Result<(Tid, Ak, ChangeId)> {
+    let mut a = Args::new(v)?;
+    let x = (a.tid()?, a.ak()?, change(a.next()?)?);
+    a.end()?;
+    Ok(x)
 }
 
 pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
@@ -500,6 +508,7 @@ pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
         in_effect: a.bool()?,
         aspects: aspects(a.next()?)?,
         dropped: a.bool()?,
+        purged: a.list()?.into_iter().map(purged_one).collect::<Result<_>>()?,
     };
     a.end()?;
     Ok(e)

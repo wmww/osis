@@ -541,10 +541,10 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
         osis_commit::Form::Commit => w.u8(1),
         osis_commit::Form::Session(n) => w.u8(2).raw(&n),
     };
-    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1));
+    w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2));
     for a in &v.aspects {
         let ak = a.ak.as_str().as_bytes();
-        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded));
+        w = w.raw(a.tid.as_bytes()).raw(&(ak.len() as u16).to_be_bytes()).raw(ak).u64(a.lo).u64(a.hi).u8(u8::from(a.bounded) | (u8::from(a.permanent) << 1));
     }
     w = w.u32(v.chunks.len() as u32);
     for b in &v.chunks {
@@ -582,11 +582,12 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     };
     let (author, actor) = (r.tid()?, r.tid()?);
     let flags = r.u8()?;
-    let (linked, memory) = (flags & 1 != 0, flags & 2 != 0);
+    let (linked, memory, purges) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
     let mut aspects = Vec::with_capacity(n);
     for _ in 0..n {
         let (tid, ak) = (r.tid()?, r.ak()?);
-        aspects.push(super::AspectView { tid, ak, lo: r.u64()?, hi: r.u64()?, bounded: r.u8()? != 0 });
+        let (lo, hi, bits) = (r.u64()?, r.u64()?, r.u8()?);
+        aspects.push(super::AspectView { tid, ak, lo, hi, bounded: bits & 1 != 0, permanent: bits & 2 != 0 });
     }
     let mut chunks = Vec::new();
     for _ in 0..r.u32()? {
@@ -609,7 +610,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, undoes }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, undoes, purges }))
 }
 
 /// A commit record's head and its blob bytes.

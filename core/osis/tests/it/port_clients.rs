@@ -274,6 +274,54 @@ fn client_purge_is_judged_by_the_actor_spec_perm_8() {
     assert_eq!(c.me(), a);
 }
 
+// spec/commits.md §5, notes/api.md Commits: a purged delta reads as a tombstone in the commit query:
+// author, time, the purge that dropped it. A thin client reads it as it reads other history: of what
+// it may read only, and nothing of what it may not.
+#[test]
+fn tombstone_reads_through_the_client_port_spec_commits_5() {
+    let x = node();
+    let k = ak("t:msg.0");
+    let forever = osis::Retention { at_least: osis::schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, ..Default::default() };
+    let (_, _, c) = x.client(Role::Read);
+    let q = |t: Tid| CommitQuery::new().scope(Scope::Thing(t));
+    for t in [x.t, x.u] {
+        x.n.write_with(|w| w.at(t, k.clone()).retention(forever).set(&Value::Str("secret".into()))).unwrap();
+        x.n.write_with(|w| w.at(t, k.clone()).purge()).unwrap();
+    }
+    let entries = x.n.commits(&q(x.t)).unwrap();
+    let e = entries.iter().find(|e| !e.purged.is_empty()).expect("a tombstone");
+    let by = entries[0].commit.id;
+    assert_eq!(e.purged, vec![(x.t, k.clone(), by)]);
+    assert!(e.dropped);
+    assert_eq!(e.commit.actor, x.n.me());
+    assert_eq!(x.n.get(x.t, k.clone()).unwrap(), None);
+    // the same through the port, and only what the client reads
+    assert_eq!(c.commits(&q(x.t)).unwrap(), entries);
+    assert!(x.n.commits(&q(x.u)).unwrap().iter().any(|e| !e.purged.is_empty()));
+    assert!(c.commits(&q(x.u)).unwrap().is_empty());
+    // one commit on both things, both purged: the client reads the half it may read
+    let both = ak("t:both.0");
+    let id = x.n.write_with(|w| {
+        w.at(x.t, both.clone()).retention(forever).set(&Value::Int(1))?;
+        w.at(x.u, both.clone()).retention(forever).set(&Value::Int(2))
+    });
+    id.unwrap();
+    x.n.write_with(|w| {
+        w.at(x.t, both.clone()).purge()?;
+        w.at(x.u, both.clone()).purge()
+    })
+    .unwrap();
+    let sc = CommitQuery::new().scope(Scope::Aspects(vec![(x.t, both.clone()), (x.u, both.clone())]));
+    assert!(x.n.commits(&sc).unwrap().iter().any(|e| e.purged.len() == 2), "the node reads both");
+    let seen = c.commits(&sc).unwrap();
+    assert!(seen.iter().any(|e| !e.purged.is_empty()));
+    assert!(seen.iter().all(|e| e.purged.iter().all(|p| p.0 == x.t)), "{seen:?}");
+    // with no scope too
+    let all = c.commits(&CommitQuery::new()).unwrap();
+    assert!(all.iter().any(|e| e.purged.iter().any(|p| p.1 == both)));
+    assert!(all.iter().all(|e| e.purged.iter().all(|p| p.0 != x.u)), "{all:?}");
+}
+
 // spec/commits.md §7, notes/client-port.md §3 (Undo/redo/revert): undo picks the actor's own commits; a revert of someone else's needs the actor's write on all it touches; a revert of what it may not read is unknown
 #[test]
 fn undo_and_revert_are_the_actors() {

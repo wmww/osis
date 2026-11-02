@@ -943,6 +943,32 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
     holds_right(core, &sm.header, s, a, &m.header)
 }
 
+/// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
+/// §5, a lasting header): a permanent delta of it on such a thing is purged, or its purge request
+/// names one its author may purge (`names_permanent`: a new device needs the request to count the
+/// missing delta as held).
+pub(crate) fn lasting(core: &Core, id: &CommitId, on: &dyn Fn(&Tid) -> bool) -> bool {
+    let Some(m) = core.ix.commits.get(id) else { return false };
+    m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && m.dropped.contains_key(&ai) && on(&a.tid)) || names_permanent(core, id, on)
+}
+
+/// Whether the purge request of `id` names a permanent delta on a thing `on` says that its author
+/// may purge. An aspect-wide item walks the aspect's views, decoding only what could count.
+fn names_permanent(core: &Core, id: &CommitId, on: &dyn Fn(&Tid) -> bool) -> bool {
+    let Some(p) = core.ix.commits.get(id).filter(|m| m.view.purges).map(|m| m.header.clone()) else { return false };
+    p.purge.iter().filter(|i| on(i.tid())).any(|item| {
+        let named: Vec<CommitId> = match item {
+            PurgeItem::Commit { commit, .. } => vec![*commit],
+            PurgeItem::Aspect { .. } => core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).into_iter().flatten().map(|x| x.1).collect(),
+        };
+        named.iter().any(|c| {
+            let Some(m) = core.ix.commits.get(c) else { return false };
+            let Some(ai) = m.aspect(item.tid(), item.ak()) else { return false };
+            m.view.aspects.get(ai).is_some_and(|a| a.permanent) && purge_allowed(core, &p, id, item, &m.header, c, ai)
+        })
+    })
+}
+
 fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
     let mut out = Vec::new();
     if let Some(b) = tx.txn.get_local(&records::aspect_key(records::PURGES, tid, ak))? {
@@ -976,6 +1002,8 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
         return Ok(());
     }
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
+    // it may have become a lasting header (`lasting`): judged again whichever came first
+    tx.core.mark_changed(*pc);
     expire(tx, c, ai, true, changed)?;
     // snapshots carrying the purged values (spec/commits.md §5)
     if let Some(o) = Owned::of(&m.header, c, ai) {
@@ -1138,6 +1166,34 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 }
 
 impl Engine {
+    /// The held commits a held purge request drops a delta of on `(tid, ak)`, each with the earliest
+    /// such request by `(ts, ID)`: what the history read shows as purged (spec/commits.md §5).
+    pub fn purged_on(&mut self, tid: &Tid, ak: &Ak) -> Result<BTreeMap<CommitId, CommitId>> {
+        let (t, a) = (*tid, ak.clone());
+        let reqs = self.run(|tx| purge_requests(tx, &t, &a))?;
+        let core = &self.core;
+        let mut ps: Vec<(Ts, CommitId)> = reqs.into_iter().filter_map(|c| Some((core.ix.commits.get(&c)?.view.ts, c))).collect();
+        ps.sort();
+        let mut out = BTreeMap::new();
+        for (_, pc) in ps {
+            let Some(p) = core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
+            for item in p.purge.iter().filter(|i| i.tid() == tid && i.ak() == ak) {
+                let named: Vec<CommitId> = match item {
+                    PurgeItem::Commit { commit, .. } => vec![*commit],
+                    PurgeItem::Aspect { .. } => core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
+                };
+                for c in named {
+                    let Some(m) = core.ix.commits.get(&c) else { continue };
+                    let Some(ai) = m.aspect(tid, ak) else { continue };
+                    if !out.contains_key(&c) && m.dropped.contains_key(&ai) && purge_allowed(core, &p, &pc, item, &m.header, &c, ai) {
+                        out.insert(c, pc);
+                    }
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Batches deaths recomputes (spec/crdt.md §4.8): while on, a validity flip or an un-merge
     /// marks its aspect and the recompute waits for the next read of deaths or bounds, so a
     /// node-sync step costs one recompute per aspect; off settles what waits. node-sync turns

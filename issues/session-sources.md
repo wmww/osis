@@ -14,7 +14,7 @@
    - every part of it the node held is dropped as covered, expired, or purged;
    - node-sync tracks no entry of its blobs at any host.
 
-   The value-less list (`v/`) and residues (`w/`) of expired or purged parts stay. They, not the header, strip late valued copies. Role commits are not forgotten: the timeline, certificates and epoch introductions read them. A thing's first commit is never forgotten either, because its `created.0` part is never covered. Memory commits follow the same rule (issues/eph-unify.md Header memory).
+   The value-less list (`v/`) and residues (`w/`) of expired or purged parts stay. They, not the header, strip late valued copies. Role commits are not forgotten: the timeline, certificates and epoch introductions read them. A thing's first commit is never forgotten either, because its `created.0` part is never covered. Nor is a lasting commit (spec/commits.md §5, built; `retention::lasting` is the check): a purged permanent delta's, its purge commit's. Memory commits follow the same rule (issues/eph-unify.md Header memory).
 9. **Replays.** A forgotten commit that arrives again is indexed and joined again. Join idempotence keeps the state right; rule 7 keeps it invalid after a demotion that did not list it, and the snapshot that covered it vouches for its live writes. Node-sync's entry rows stop the node fetching it again. No drop-on-arrival check.
 
 ## Owner decision (a): closed by rule 7
@@ -71,7 +71,7 @@ B never needs to know which case it is in. Per construct:
 | Dedup by commit ID (`ingest_class`, node inbound `admits`) | Header held | Forgotten commit re-applies | Rule 9 |
 | Expiry T (`write_expiry`, strip_valueless, moves `excluded`) | Header | Late valued copy shows | `v/` list kept (rule 8) |
 | Death dating, own-delta retention bounds | Header of held bodies | Already falls back to snapshot bodies (commits.md §5) | None |
-| Purge judging (`purge_allowed`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new device today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named |
+| Purge judging (`purge_allowed`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new device today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named. A permanent delta's commit and its request are not forgotten (rule 8) |
 | Undo "in effect" (undo/mod.rs:204, :311) | Headers of later commits | Undo commit forgotten | Forgotten counts as in effect (above) |
 | Validity re-judge (`rejudge_once`, `Judge::part`) | Every meta | Nothing to judge | None. Writes live in snapshots |
 | Imports: self-origin void (validity.rs:845), `import_one` | Origin header | Undetected | Malicious-creator residual; importer already imports from snapshots |

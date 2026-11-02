@@ -171,6 +171,8 @@ pub struct View {
     pub chunks: Vec<osis_base::BlobId>,
     /// The commit it undoes (`Core::undone_by`).
     pub undoes: Option<CommitId>,
+    /// It carries a purge request (`retention::lasting`).
+    pub purges: bool,
 }
 
 /// One aspect entry as `View` keeps it.
@@ -182,6 +184,8 @@ pub struct AspectView {
     pub hi: u64,
     /// A relative keep bound (`retention::bounded`).
     pub bounded: bool,
+    /// A permanent delta (`AspectEntry::permanent`) of a durable commit.
+    pub permanent: bool,
 }
 
 impl View {
@@ -194,10 +198,11 @@ impl View {
             actor: h.actor,
             linked: h.links != osis_commit::Links::default(),
             memory: h.ephemeral.is_some(),
-            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
+            aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a), permanent: a.permanent() && h.ephemeral.is_none() }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
             undoes: h.undoes,
+            purges: !h.purge.is_empty(),
         }
     }
 }
