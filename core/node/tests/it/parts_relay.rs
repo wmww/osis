@@ -711,3 +711,42 @@ fn relay_differential_large_spec_commits_4() {
 fn relay_replay(s: u64) -> String {
     format!("OSIS_RELAY_START={s} OSIS_RELAY_SEEDS=1 cargo test --workspace --test it parts_relay::relay_differential_large_spec_commits_4 -- --ignored --exact")
 }
+
+// spec/commits.md §4 (copies), §5: a commit applies without a part on a thing whose record is away, that
+// part's slot held by a junk copy; a purge drops the applied part. The blob holding both stays while it
+// may hold the waiting part's only true copy, and goes once the commit holds that part.
+#[test]
+fn copy_kept_for_a_junk_held_slot_of_an_applied_commit_spec_commits_5() {
+    let mut x = case();
+    let (a, b, h) = (x.a, x.b, x.h);
+    // the item `a` made before going offline, known at `b`
+    let known = x.net.engine(b).commit_ids();
+    let ids = x.net.engine(a).commit_ids();
+    let x0 = ids.iter().filter(|i| known.contains(i)).flat_map(|i| x.net.engine(a).header(i).unwrap().aspects.clone()).find(|asp| asp.ak.as_str() == "t:reg.0").unwrap().tid;
+    let mut m = osis_node::Mutation::new();
+    m.set(x0, &REG, &Value::Str("secret".into())).unwrap();
+    m.set(h, &REG, &Value::Str("other".into())).unwrap();
+    let c = x.net.engine(a).commit(m).unwrap().unwrap();
+    let good = plain(&mut x.net, a, &c);
+    let hdr = x.net.engine(a).header(&c).unwrap();
+    assert_eq!(CommitBlob::decode(&good).unwrap().parts.len(), 2, "one blob holds both");
+    let mut j = CommitBlob::decode(&good).unwrap();
+    j.parts.retain(|p| hdr.aspects[p.ai].tid == h);
+    for p in &mut j.parts {
+        p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![4; 40])]));
+    }
+    x.give(j.encode(), c, 100);
+    let id = x.give(good, c, 101);
+    x.net.advance(10);
+    let mut m = osis_node::Mutation::new();
+    m.set(x0, &REG, &Value::Str("public".into())).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: x0, ak: osis_base::Ak::new("t:reg.0").unwrap() });
+    let p = x.net.engine(a).commit(m).unwrap().unwrap();
+    let pp = plain(&mut x.net, a, &p);
+    x.give(pp, p, 110);
+    assert!(x.holds(p) && x.holds(c), "applied without h's part");
+    assert!(x.net.sync(b).holds_blob(&id), "kept: it may hold h's only true copy");
+    x.give_record(300);
+    assert_eq!(x.read(), Some(Value::Str("other".into())), "h's part came from the kept copy");
+    assert!(!x.net.sync(b).holds_blob(&id), "then it goes");
+}

@@ -1109,25 +1109,33 @@ impl Engine {
         })
     }
 
-    /// Whether copy `copy` of commit `id`, held pending and not applied, holds a part that went from
-    /// the node (`retention::pending_gone`: past its expiry, purged; spec/commits.md §5) and nothing
-    /// a copy may still be needed for (`SyncEngine::redeliver`): its every other part went too, is
-    /// in the pending copy alike, or provably does not hash to its header entry. Node-sync then
-    /// forgets the copy's blob and key; one that may hold the only true copy of a part a junk copy
-    /// holds the slot of stays until that is judged.
+    /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
+    /// dropped from the applied commit, or held pending past its expiry or purged,
+    /// `retention::pending_gone`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
+    /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
+    /// alike or provably does not hash to its header entry. Node-sync then forgets the copy's blob and
+    /// key; one that may hold the only true copy of a part a junk copy holds the slot of stays until
+    /// that is judged, as does every copy of a commit named for redelivery.
     pub fn spent_copy(&mut self, id: &CommitId, copy: &CommitBlob) -> Result<bool> {
-        if self.core.ix.commits.contains_key(id) {
+        if self.core.redeliver.contains(id) {
             return Ok(false);
         }
         self.run(|tx| {
-            let Some(held) = tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()) else { return Ok(false) };
-            let h = &held.header;
+            let meta = tx.core.ix.commits.get(id).cloned();
+            let pending = if tx.core.ix.pending.contains_key(id) { tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()) } else { None };
+            let Some(h) = meta.as_ref().map(|m| (*m.header).clone()).or_else(|| pending.as_ref().map(|b| b.header.clone())) else { return Ok(false) };
+            let applied: BTreeSet<(usize, usize)> = match &meta {
+                Some(_) => tx.get_commit(id)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default(),
+                None => BTreeSet::new(),
+            };
             let mut gone = false;
             for p in &copy.parts {
-                if crate::retention::pending_gone(tx, id, h, p.ai)? {
+                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && crate::retention::pending_gone(tx, id, &h, p.ai)? {
                     gone = true;
                     continue;
                 }
+                // applied, or nothing of the commit waits: no copy of it is needed
+                let Some(held) = pending.as_ref().filter(|_| !applied.contains(&(p.ai, p.di))) else { continue };
                 if held.parts.iter().any(|q| (q.ai, q.di) == (p.ai, p.di) && q.delta == p.delta) {
                     continue;
                 }
@@ -1142,6 +1150,11 @@ impl Engine {
             }
             Ok(gone)
         })
+    }
+
+    /// Whether commit `id` is named for redelivery (`take_redeliver` has not taken it yet).
+    pub fn redeliver_named(&self, id: &CommitId) -> bool {
+        self.core.redeliver.contains(id)
     }
 
     /// Receives a commit blob's plaintext (`CommitBlobPlaintext`, spec/wire.md §4) with the page,
