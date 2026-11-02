@@ -32,11 +32,28 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
           KeysetBy,   \* "epoch": a keyset name is met by a held valid keyset
                       \* writing or superseding it; "commit": only by the
                       \* commit that wrote it (negative control)
-          GActs       \* group events beside d leaving: "rot" its admin
+          GActs,      \* group events beside d leaving: "rot" its admin
                       \* rotates it again (keyset 2), "forge" d, removed,
                       \* writes keyset 3 superseding every keyset made,
                       \* "snap" a node gets a roster snapshot of the group
-                      \* made after R_P (not R_P)
+                      \* made after R_P (not R_P), "fork" an admin of g
+                      \* that has not seen R_P rotates g from keyset 0 to 4
+                      \* (a fork of 1, boxing d; LWW-newer in keys.0)
+          Frozen,     \* TRUE: frozen coverage (an epoch covers exactly the
+                      \* departures it names; boxes to g carry names);
+                      \* FALSE: the box-inspection covers rule
+          Split,      \* TRUE: R_P reaches A's admins as two parts: its
+                      \* keys.0 delta (body 1, LearnK) and its roles.0 delta
+                      \* (the departure, LearnRP; never to Withhold)
+          GrantNames, \* FALSE: negative control, grant and re-seal boxes
+                      \* to g carry no names
+          NoBoxCovers,\* TRUE: negative control, under Frozen a holder with
+                      \* no box at e counts as covered (the old base case)
+          GNamesBy    \* Frozen: whose names a boxer of g must hold:
+                      \* "current" the study's rule (every grant or re-seal
+                      \* box to g at a current epoch it holds), "grant" every
+                      \* grant of g it holds (a grant leaving g out is
+                      \* refused)
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -71,6 +88,7 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = holders the
           ks,       \* ks[x]: the group's keyset bodies x holds
           gd,       \* gd[x]: x holds R_P (knows d left the group)
           gs,       \* gs[x]: x holds a roster snapshot of the group after R_P
+                    \* (gd[x]: with Split, x holds R_P's roles.0 part)
           online, budget
 vars == <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
           steps, inbox, inRot, via, stranded, enc, leakP, gm, fsup, ks, gd, gs, online, budget>>
@@ -92,7 +110,7 @@ VK(x) == ks[x] \ (IF gd[x] \/ gs[x] THEN {3} ELSE {})
 \* The group's keyset epoch x boxes it at: its newest valid held (crypto §4;
 \* ids follow n, keyset 3 is d's choice of n 3).
 GK(x) == Max(VK(x))
-GSup(k) == CASE k = 0 -> {} [] k = 1 -> {0} [] k = 2 -> {0, 1} [] k = 3 -> fsup
+GSup(k) == CASE k = 0 -> {} [] k = 1 -> {0} [] k = 2 -> {0, 1} [] k = 3 -> fsup [] k = 4 -> {0}
 \* crypto §4: a keyset name is met by a held valid keyset body writing that
 \* epoch or listing it as superseded ("commit": by that epoch's body alone).
 KMet(x, k) == IF KeysetBy = "epoch" THEN \E b \in VK(x) : b = k \/ k \in GSup(b)
@@ -129,8 +147,31 @@ GBoxes(x, e) == (IF e \in kn[x] /\ ep[e].ob \cap Groups # {} THEN {ep[e].gk} ELS
 \* epoch d holds no box in (1, made by d's removal, or 2): not 0, nor 3,
 \* written by d (departed). A roster snapshot alone tells x nothing here (as
 \* for a reader's departure: no ledger entry), so only R_P counts.
-Covers(x, e) == /\ \A m \in dep[x] : m \notin Holders(x, e)
-                /\ gd[x] => GBoxes(x, e) \cap {0, 3} = {}
+CoversBox(x, e) == /\ \A m \in dep[x] : m \notin Holders(x, e)
+                   /\ gd[x] => GBoxes(x, e) \cap {0, 3, 4} = {}
+\* Frozen coverage (notes/epoch-establishment-study.md §3): e covers exactly
+\* the departures its names name: the removals carried by the rotation
+\* commits its rotator held (nm) and by itself (the departs mark), and d's
+\* departure from g when its rotator held R_P (or a snapshot after it) while
+\* g was below A there (ng). Boxes decide nothing (NoBoxCovers: the old base
+\* case back, a negative control). A departure inside g counts only while g
+\* is a holder of A as x knows.
+NamedRem(e) == UNION {ep[j].rem : j \in ep[e].nm} \cup ep[e].rem
+CoversFrozen(x, e) ==
+  /\ \A m \in dep[x] : m \in NamedRem(e) \/ (NoBoxCovers /\ m \notin Holders(x, e))
+  /\ gd[x] /\ Groups \cap hld[x] # {} => ep[e].ng
+Covers(x, e) == IF Frozen THEN CoversFrozen(x, e) ELSE CoversBox(x, e)
+\* permissions §3 Left out: x boxes g only at a keyset it judges covering d's
+\* departure, when it knows it (0 and the ignorant fork 4 box d; 3 is d's);
+\* Frozen: and only holding the names of every grant or re-seal box to g at
+\* a current epoch it holds (it knows R_P where one names it; a rotation's
+\* names are held through establishment).
+GOK(x) == gd[x] => GK(x) \notin {0, 3, 4}
+GNamesOK(x) == \A b \in rd[x] :
+                 (/\ b.m \in Groups /\ b.kd
+                  /\ IF GNamesBy = "grant" THEN b.g ELSE b.eps \cap HeldCur(x) # {})
+                 => gd[x] \/ gs[x]
+BoxG(x) == GOK(x) /\ (Frozen => GNamesOK(x))
 \* crypto §5: a rotation commit is wrapped under the newest epoch it supersedes.
 WrapOf(k) == NewestOf(ep[k].sup)
 Top == steps[Len(steps)]
@@ -219,12 +260,12 @@ RotateR(a, R) ==
   /\ LET k == Cardinality(made)
          sup == Cur(a)
          d == dep[a] \cup R
-         ob == hld[a] \ d
+         ob == hld[a] \ (d \cup (IF BoxG(a) THEN {} ELSE Groups))
      IN /\ ep' = [ep EXCEPT ![k] = [n |-> 1 + Max({ep[e].n : e \in sup}),
                     sup |-> sup, ob |-> ob, hist |-> Hist(a), rem |-> R,
                     nm |-> IF OwnNames THEN {} ELSE {j \in kn[a] : ep[j].rem # {}},
                     nk |-> IF KeysetNames /\ ob \cap Groups # {} THEN {GK(a)} ELSE {},
-                    ng |-> GroupNames /\ (gd[a] \/ gs[a]),
+                    ng |-> GroupNames /\ (gd[a] \/ gs[a]) /\ Groups \cap hld[a] # {},
                     gk |-> GK(a), kd |-> gd[a]]]
         /\ made' = made \cup {k}
         /\ kn' = [kn EXCEPT ![a] = @ \cup {k}]
@@ -237,7 +278,9 @@ RotateR(a, R) ==
   /\ UNCHANGED <<fsec, hld, granted, hostRot, before, bx, rd, steps, inbox, via, stranded, enc,
                  gvars, online, budget>>
 Rotate(a) == RotateR(a, {})
-Remove(m) == m \in Departing \ removed /\ RotateR(Remover, {m})
+\* A Late holder is removed only once granted, and never granted again (a
+\* re-grant of a departed party is out of scope).
+Remove(m) == m \in (Departing \cap Holding) \ removed /\ RotateR(Remover, {m})
 \* permissions §3 / crypto §4: MUST rotate before encrypting under an epoch
 \* that does not cover a known departure: a content write (pending while the
 \* budget lasts) or a re-seal box (boxing is encrypting under). MAY eagerly.
@@ -280,9 +323,13 @@ PlaceBox(a, b) ==
 Grant(a, m) ==
   /\ online[a] /\ m \in Late \ granted /\ ~NeedsReg(a) /\ HeldCur(a) # {}
   /\ \A e \in HeldCur(a) : Covers(a, e)
+  \* permissions §3 Left out: a holder actor g is boxed only where BoxG; else
+  \* the grant boxes nothing (GNamesBy = "grant": it is refused)
+  /\ m \in Groups /\ ~BoxG(a) => Frozen /\ GNamesBy = "current"
   /\ granted' = granted \cup {m}
   /\ hld' = [hld EXCEPT ![a] = @ \cup {m}]
-  /\ PlaceBox(a, [m |-> m, eps |-> HeldCur(a), w |-> EncEp(a), g |-> TRUE, gk |-> GK(a)])
+  /\ PlaceBox(a, [m |-> m, eps |-> IF m \in Groups /\ ~BoxG(a) THEN {} ELSE HeldCur(a),
+                  w |-> EncEp(a), g |-> TRUE, gk |-> GK(a), kn |-> gd[a], kd |-> GrantNames /\ gd[a]])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, hostRot, before, steps, inRot, via,
                  stranded, enc, online, budget, gvars>>
 
@@ -339,7 +386,9 @@ Recv(x, k) == RecvHost(x, k) \/ \E y \in Nodes : RecvPeer(x, y, k)
 Reseal(a, m) ==
   /\ ResealWanted(a, m) /\ HeldCur(a) # {}
   /\ \A e \in ResealE(a, m) \cup {EncEp(a)} : Covers(a, e)
-  /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE, gk |-> GK(a)])
+  /\ m \in Groups => BoxG(a)
+  /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE, gk |-> GK(a),
+                  kn |-> gd[a], kd |-> GrantNames /\ gd[a]])
   /\ stranded' = stranded \ {m}
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, steps,
                  inRot, via, enc, online, budget, gvars>>
@@ -406,14 +455,23 @@ GSnap(x) == /\ "snap" \in GActs /\ 1 \in gm /\ ~gs[x] /\ gs' = [gs EXCEPT ![x] =
             /\ UNCHANGED <<gm, fsup, ks, gd>>
 \* Admin x reads a keyset body of g (published under the labels of what g
 \* holds); R_P never reaches Withhold. Keyset 1 comes in R_P, with the departure.
-LearnK(x, k) == /\ k \in gm /\ k \notin ks[x] /\ ~(k = 1 /\ x \in Withhold)
+LearnK(x, k) == /\ k \in gm /\ k \notin ks[x] /\ ~(k = 1 /\ x \in Withhold /\ ~Split)
                 /\ ks' = [ks EXCEPT ![x] = @ \cup {k}]
-                /\ gd' = IF k = 1 THEN [gd EXCEPT ![x] = TRUE] ELSE gd
+                /\ gd' = IF k = 1 /\ ~Split THEN [gd EXCEPT ![x] = TRUE] ELSE gd
                 /\ UNCHANGED <<gm, fsup, gs>>
+\* Split: R_P's roles.0 part (the departure) reaches x apart from its keys.0
+\* part (body 1), in any order; never Withhold.
+LearnRP(x) == /\ Split /\ 1 \in gm /\ ~gd[x] /\ x \notin Withhold
+              /\ gd' = [gd EXCEPT ![x] = TRUE]
+              /\ UNCHANGED <<gm, fsup, ks, gs>>
+\* An admin of g that has not seen R_P rotates g from keyset 0: an honest fork
+\* 4 of 1 (one n), boxing d; written later, it wins keys.0's LWW. Unfair, once.
+GFork == /\ "fork" \in GActs /\ 1 \in gm /\ 4 \notin gm /\ gm' = gm \cup {4}
+         /\ UNCHANGED <<fsup, ks, gd, gs>>
 GOthers == UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx,
                       rd, steps, inbox, inRot, via, stranded, enc, leakP, online, budget>>
-GStep == /\ \/ GLeave \/ GRot \/ Forge \/ \E x \in Withhold : GSnap(x)
-            \/ \E x \in Admins : \E k \in 0..3 : LearnK(x, k)
+GStep == /\ \/ GLeave \/ GRot \/ Forge \/ GFork \/ \E x \in Withhold : GSnap(x)
+            \/ \E x \in Admins : LearnRP(x) \/ \E k \in 0..4 : LearnK(x, k)
          /\ GOthers
 
 GoOff(x) == /\ online[x] /\ budget.off < Offs
@@ -442,7 +500,8 @@ Fairness ==
   /\ \A a \in Admins : /\ WF_vars(RotateForced(a)) /\ WF_vars(Register(a))
                        /\ \A k \in Ids : WF_vars(UploadRot(a, k))
                        /\ \A m \in Nodes : WF_vars(Reseal(a, m))
-                       /\ \A k \in 0..3 : WF_vars(LearnK(a, k) /\ GOthers)
+                       /\ \A k \in 0..4 : WF_vars(LearnK(a, k) /\ GOthers)
+                       /\ WF_vars(LearnRP(a) /\ GOthers)
   /\ \A x \in Nodes : /\ WF_vars(Heartbeat(x)) /\ WF_vars(GoOn(x))
                       /\ \A k \in Ids : /\ WF_vars(Recv(x, k)) /\ WF_vars(InboxRecv(x, k))
                                        /\ WF_vars(InboxRot(x, k))
@@ -455,7 +514,7 @@ GCur == {e \in made : ~\E f \in made : e \in ep[f].sup}
 
 TypeOK == /\ made \subseteq Ids /\ removed \subseteq Departing /\ granted \subseteq Late
           /\ Groups \subseteq Readers /\ Withhold \subseteq Admins
-          /\ gm \subseteq 0..3 /\ \A x \in Nodes : ks[x] \subseteq gm
+          /\ gm \subseteq 0..4 /\ \A x \in Nodes : ks[x] \subseteq gm
           /\ \A x \in Nodes : sec[x] \subseteq made /\ kn[x] \subseteq made
                               /\ fsec[x] \subseteq made /\ via[x] \subseteq Nodes
                               /\ rd[x] \subseteq bx
@@ -467,15 +526,20 @@ NoLeak == \A c \in enc : \A m \in c[2] : c[1] \notin sec[m]
 \* departed holder never holds an epoch whose rotation did not box it.
 DepartedLocked == \A m \in removed : \A e \in sec[m] : m \in ep[e].ob
 \* The epochs device d opens after leaving its group: those boxed to the group
-\* at keyset epoch 0 or 3 (by a rotation, grant or re-seal), with their history.
-DevBoxed == {e \in made : ep[e].ob \cap Groups # {} /\ ep[e].gk \in {0, 3}}
-            \cup UNION {b.eps : b \in {c \in bx : c.m \in Groups /\ c.gk \in {0, 3}}}
+\* at keyset epoch 0, 3 or 4 (by a rotation, grant or re-seal), with their
+\* history.
+DevBoxed == {e \in made : ep[e].ob \cap Groups # {} /\ ep[e].gk \in {0, 3, 4}}
+            \cup UNION {b.eps : b \in {c \in bx : c.m \in Groups /\ c.gk \in {0, 3, 4}}}
 DevSec == UNION {{e} \cup ep[e].hist : e \in DevBoxed}
 \* permissions §3 for a departure inside a holder (crypto §4 covers rule):
 \* d never opens an epoch whose rotator knew d left (held R_P).
 DevLocked == \A e \in DevSec : ~ep[e].kd
 \* ... nor content written while its writer knew d left.
 DevNoLeak == \A c \in enc : c[3] => c[1] \notin DevSec
+\* With g granted once (Late), by a granter that knew d left: d, gone from g
+\* before g held a role on A, opens no secret of A at all (the study's NoLeak,
+\* second half).
+DevGranted == (\E b \in bx : b.g /\ b.m \in Groups /\ b.kn) => DevSec = {}
 
 \* crypto §4: a secret from a planted box (a non-holder's pending or invalid
 \* commit) never becomes an encrypting key: nothing was wrapped, boxed,

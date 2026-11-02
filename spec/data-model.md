@@ -125,8 +125,8 @@ type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delet
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };
 type box = enum {
-    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed }),
-    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob }),     // epoch of s; wrap: spec/wire.md §7
+    0 sealed(struct { 0 keyset: option<epoch>, 1 suite: int, 2 box: sealed, 3 names: option<blob> }),
+    1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 names: option<blob> }),     // epoch of s; wrap, names: spec/wire.md §7
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
 type frontier = struct {

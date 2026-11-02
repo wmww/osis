@@ -157,11 +157,21 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let secrets = secrets_in(tx, &target)?;
     // a holder actor whose newest epoch still does not cover its departures (this node may not
     // rotate it) is left out of the roles above them (re-sealed once it rotates,
-    // spec/permissions.md §3)
+    // spec/permissions.md §3); its boxes carry what this node knows of it (spec/crypto.md §4),
+    // so a grant leaving it out of every role, which would carry nothing, is refused
     let rcpt = recipient(tx, holder, edge.role)?;
-    let boxes = match rotation::grantee_left_out(tx, &rcpt)? {
-        Some(rcpt) => box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?,
-        None => Default::default(),
+    let mut names = None;
+    let boxes = match rotation::grantee_left_out(tx, &target, &rcpt)? {
+        Some(rcpt) => {
+            let mut w = box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
+            if matches!(rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
+                let n = rotation::grant_names(tx.core, &rcpt, &roles);
+                osis_keys::with_names(&target, &holder, &mut w, &n, &epochs)?;
+                names = Some(n);
+            }
+            w
+        }
+        None => return Err(Error::Misuse("the holder actor's epoch does not cover a departure inside it (it must rotate first)")),
     };
     // an edge past its `until` is out of the roster but still in the state: a set over it would
     // keep its fields the new edge leaves out (the `until` among them)
@@ -187,6 +197,10 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         done.deliveries.extend(deliver_to(tx, holder, c, &[target])?);
         if deposit {
             done.deliveries.push(super::owe(tx, Delivery::Deposit { commit: c, under: target })?);
+        }
+        // the commits its names name go with it, so its target's rotators can meet them
+        if names.as_ref().is_some_and(|n| !n.list.is_empty()) {
+            done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, names.as_ref()), under: vec![target] })?);
         }
     }
     Ok(done)
@@ -314,7 +328,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if let Err(i) = under.binary_search(&target) {
             under.insert(i, target);
         }
-        done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.as_ref()), under })?);
+        done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.as_ref().map(|r| &r.names)), under })?);
         // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
         // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
         // may have left it already (an unplace), so it goes under the labels holding G, where

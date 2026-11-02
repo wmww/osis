@@ -88,8 +88,13 @@ impl Core {
     /// or invalidated.
     pub(crate) fn own_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut e = self.own_record(tid)?.clone();
-        e.establish(&NamesHeld { core: self, actor: *tid });
+        e.establish(&self.names_held(tid));
         Some(e)
+    }
+
+    /// What this node holds for judging the names of `actor`'s epochs (spec/crypto.md §4).
+    pub(crate) fn names_held(&self, actor: &Tid) -> NamesHeld<'_> {
+        NamesHeld { core: self, actor: *actor }
     }
 
     /// The key (spec/permissions.md §6) of this node's epoch start of `thing`, if any.
@@ -333,7 +338,7 @@ impl Core {
 /// The names a node holds (spec/crypto.md §4) for epochs of `actor`: applied commits (a departing
 /// rotation commit by its `ts` and author among the held `roles.0` deltas of `actor`), epoch
 /// starts, and held keyset epochs (`keyset_epochs`).
-struct NamesHeld<'c> {
+pub(crate) struct NamesHeld<'c> {
     core: &'c Core,
     actor: Tid,
 }
@@ -341,8 +346,12 @@ struct NamesHeld<'c> {
 impl osis_keys::Held for NamesHeld<'_> {
     /// Applied: the commit held with its `roles.0` part on the name's thing, or, having none
     /// there, its `keys.0` part (a projection of it, a certificate copy or another label's parts,
-    /// may lack the departure).
+    /// may lack the departure). An expiry's name (no commit) is met: the write that set its
+    /// `until` is named beside it.
     fn met(&self, n: &Name) -> bool {
+        if n.key.commit == osis_keys::EXPIRY {
+            return true;
+        }
         let applied = self.core.ix.commits.get(&n.key.commit).is_some_and(|m| {
             let part = |ak: &str| m.header.aspects.iter().position(|a| a.tid == n.thing && a.ak.as_str() == ak);
             part("roles.0").or_else(|| part("keys.0")).is_none_or(|ai| !m.missing.contains(&ai))

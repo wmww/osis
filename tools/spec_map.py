@@ -123,7 +123,7 @@ RULES = [
     ("spec/commits.md", "5", "purge no expires", "A commit carrying a purge request MUST NOT carry `expires`"),
     ("spec/crypto.md", "1", "batch verification", "Batch and single verification MUST agree"),
     ("spec/crypto.md", "4", "encrypt under covering epoch", "MUST NOT **encrypt under**"),
-    ("spec/crypto.md", "4", "removed holder", "covers** a departure of M if it holds no box for M"),
+    ("spec/crypto.md", "4", "covers by names", "**covers** a departure that concerns r when"),
     ("spec/crypto.md", "3", "fresh deposit seed", "MUST write a fresh one in each rotation of the read role"),
     ("spec/data-model.md", "5", "cbor profile", "A decoder MUST reject anything outside it"),
     ("spec/data-model.md", "6", "chunk threshold", "MUST be chunked; one at or below it MUST NOT be"),

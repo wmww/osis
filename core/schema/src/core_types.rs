@@ -135,13 +135,14 @@ codec_struct! {
     pub struct BoxKey { 0 holder: Tid, 1 role: Role, 2 epoch: Epoch }
 }
 codec_struct! {
+    /// `names`: a grant's names for its holder actor (spec/crypto.md §4, spec/wire.md §7).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SealedBox { 0 keyset: Option<Epoch>, 1 suite: u64, 2 sealed: Sealed }
+    pub struct SealedBox { 0 keyset: Option<Epoch>, 1 suite: u64, 2 sealed: Sealed, 3 names: Option<Vec<u8>> }
 }
 codec_struct! {
-    /// `epoch` of s; `wrap`: spec/wire.md §7.
+    /// `epoch` of s; `wrap`: spec/wire.md §7; `names` as `SealedBox`'s.
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8> }
+    pub struct SymmetricBox { 0 epoch: Epoch, 1 wrap: Vec<u8>, 2 names: Option<Vec<u8>> }
 }
 
 codec_enum! {

@@ -41,9 +41,9 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         boxes: BTreeMap::from([
             (
                 BoxKey { holder: tid(13), role: Role::Read, epoch: epoch(2) },
-                SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]) }),
+                SecretBox::Sealed(SealedBox { keyset: Some(epoch(1)), suite: 1, sealed: Sealed::X25519MlKem768(vec![15; 40]), names: None }),
             ),
-            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48] })),
+            (BoxKey { holder: tid(13), role: Role::Write, epoch: epoch(2) }, SecretBox::Symmetric(SymmetricBox { epoch: epoch(1), wrap: vec![16; 48], names: None })),
         ]),
         history: BTreeMap::from([(HistoryKey { role: Role::Read, epoch: epoch(1) }, vec![17; 64])]),
     };

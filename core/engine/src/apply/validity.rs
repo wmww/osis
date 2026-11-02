@@ -1901,10 +1901,10 @@ mod keys_tests {
         }
     }
 
-    // spec/crypto.md §4 (an epoch a departed party's rotation introduced does not cover its
-    // departure), spec/commits.md §5: admin P rotates read (removing R); the owner grants X at
-    // that epoch, compacts and drops P's rotation bodies. The epoch's introducer stays P's
-    // rotation (not the later grant), at open and after a rebuild; the keyset epoch stays held.
+    // spec/permissions.md §3 (Left out: the commit that set a holder actor's keyset), spec/commits.md
+    // §5: admin P rotates read (removing R); the owner grants X at that epoch, compacts and drops
+    // P's rotation bodies. The epoch's introducer stays P's rotation (not the later grant), at
+    // open and after a rebuild; the keyset epoch stays held.
     #[test]
     fn dropped_rotation_keeps_its_epoch_intro_spec_crypto_4() {
         let mut lp = LocalPeer::new(4, 931, WallMs(1_700_000_000_000)).unwrap();
@@ -1923,7 +1923,9 @@ mod keys_tests {
         lp.sync_all().unwrap();
         let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
         let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);
-        assert_eq!(intro(&lp), Some(p));
+        let p = rot.iter().copied().find(|c| lp.peers[0].engine.core.ix.commits.contains_key(c));
+        assert!(p.is_some());
+        assert_eq!(intro(&lp), p);
         lp.peers[0].engine.grant(&t, &x, &e(Role::Read)).unwrap();
         for k in ["secrets.0", "keys.0"] {
             let k = osis_base::Ak::new(k).unwrap();
@@ -1935,10 +1937,10 @@ mod keys_tests {
             }
         }
         assert!(rot.iter().any(|c| !lp.peers[0].engine.body_not_dropped(c, &t, &osis_base::Ak::new("secrets.0").unwrap())), "rotation body dropped");
-        assert_eq!(intro(&lp), Some(p), "the rotation, not the later grant");
+        assert_eq!(intro(&lp), p, "the rotation, not the later grant");
         let d0 = lp.peers[0].engine.index_digest();
         lp.peers[0].engine.rebuild_index().unwrap();
-        assert_eq!(intro(&lp), Some(p), "rebuilt");
+        assert_eq!(intro(&lp), p, "rebuilt");
         assert_eq!(d0.first_diff(&lp.peers[0].engine.index_digest()), None);
         assert!(lp.peers[0].engine.core.ix.keyset_epochs.get(&t).is_some_and(|s| s.contains(&(Role::Read, ep))), "held keyset epoch kept");
     }

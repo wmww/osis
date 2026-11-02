@@ -9,7 +9,7 @@ use common::*;
 use osis_base::{Role, Tid, WallMs};
 use osis_keys::aspects::{box_key, history_key, to_schema};
 use osis_keys::{
-    ActorEpochs, Departure, KeysWrite, Holder, MemoryHeldActors, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
+    ActorEpochs, Departure, KeysWrite, Holder, Names, Opener, Provenance, Recipient, Rotation, box_holder, ingest,
     may_compact_secrets, may_encrypt_under, reseal_needed, roles_up_to, rotate, snapshot_keyed,
 };
 use osis_crypto::Epoch;
@@ -157,14 +157,16 @@ fn r9_reseal_before_rotation_commit() {
     assert!(m1v.read.secret(&e2).is_some());
     assert!(m1v.read.secret(&e1).is_none(), "e2's history box carries e1");
 
-    // e1's commit reaches a2: established, and e2 (boxing m1) no longer covers the departure.
+    // e1's commit reaches a2: established, and e2 (its rotator did not know it) does not cover the
+    // departure; e1 does (its departs mark).
     assert!(r1.secrets.applied(&mut a2v, cid(4), &r1.keys).unwrap());
     r1.secrets.apply(&mut s3);
+    ingest(&w.a, &s3, &Opener::Actor { holder: w.a2, epochs: &w.a2e }, &mut a2v, None).unwrap();
     assert_eq!(a2v.read.provenance(&e1), Some(Provenance::Rotated));
-    let deps = [Departure::holder(w.m1, Role::Read)];
-    let none = MemoryHeldActors::default();
-    assert!(!may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e2, &deps, &none));
-    assert!(may_encrypt_under(&tid(0), &s3, &a2v, Role::Read, &e1, &deps, &none));
+    let deps = [Departure::holder(w.m1, Role::Read).at(Some(r1_name(&w)))];
+    let all = osis_keys::AllHeld;
+    assert!(!may_encrypt_under(&w.a, &a2v, Role::Read, &e2, &deps, &all));
+    assert!(may_encrypt_under(&w.a, &a2v, Role::Read, &e1, &deps, &all));
 }
 
 // spec/crypto.md §4 (names), spec/permissions.md §3; TLC `MC_reorder`: a1 removes m1 (e1, commit

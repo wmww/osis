@@ -108,8 +108,8 @@ pub(crate) fn forget_dropped(tx: &mut Tx<'_>, h: &Header, ai: usize, bodies: &[F
 
 /// Notes the keysets a valid `keys.0` body of `actor` writes (`keyset_recs`, or a dropped part's
 /// record): each epoch and the epochs it lists are held keyset epochs (`keyset_epochs`); a role
-/// commit's also record the commit's time as the epoch's introduction if earliest: a rotation
-/// writes the rotated roles' keysets, nothing else does, so the epoch's introducer
+/// commit's also record the commit as the epoch's introduction if earliest: a rotation writes
+/// the rotated roles' keysets, nothing else does, so the epoch's introducer
 /// (`Core::epoch_intro`) is its rotation commit, or unknown while that `keys.0` part is not held
 /// (synced after a compaction, or missing again after `retention::uncover`).
 pub(crate) fn note_keysets(core: &mut Core, h: &Header, actor: &Tid, keysets: &[KeysetRec]) {
@@ -229,7 +229,7 @@ pub(crate) fn refresh_own_keys(tx: &mut Tx<'_>, things: &std::collections::BTree
 }
 
 pub(crate) fn note_intro(core: &mut Core, h: &Header, actor: &Tid, r: Role, e: osis_crypto::Epoch) {
-    let v = (h.ts, h.author, h.actor, h.id());
+    let v = (h.ts, h.id());
     core.ix.epoch_intro.upsert((*actor, r, e), || v, |slot| *slot = (*slot).min(v));
 }
 

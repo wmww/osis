@@ -18,28 +18,28 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
 pub use lost::{Dropped, Leaving, LostScope, PENDING_GRANT_WAIT_MS};
-pub(crate) use departures::{departures, held_actors, uncovered_departures, uncovered_roles, Judge};
+pub(crate) use departures::{departures, grant_names, held_actors, uncovered_departures, uncovered_roles};
 use departures::{below_of, collect, uncovered_by_role};
 pub(crate) use lost::{boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
 pub(crate) use lost::authentic;
 
 /// The roles of `a` that `may` (the roles the rotator may rotate) holds and a rotation of `a` is
-/// worth now (spec/permissions.md §3): their newest held epoch does not cover a known departure,
-/// and none of those lies inside a current holder M whose fresh box would not cover the rest
-/// (`fresh_box_covers`) and that `a` is not below (no role cycle through both). Such an M
-/// heals by its own rotation: the node waits for it, so that `a`'s rotation then reaches M's
-/// holders in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving M out
-/// (`rotation_into`). So no actor waits on itself through others. A forked role is due too when
-/// a box to `a` names a fork other than the newest (`fork_named`).
+/// worth now (spec/permissions.md §3): their newest held epoch does not cover a known departure
+/// (by names), and none of those lies inside a current holder M whose fresh box would not keep
+/// the rest out (`fresh_box_covers`) and that `a` is not below (no role cycle through both).
+/// Such an M heals by its own rotation: the node waits for it, so that `a`'s rotation then
+/// reaches M's holders in-band. An M on a cycle with `a` may wait on `a`: `a` rotates, leaving
+/// M out (`rotation_into`). So no actor waits on itself through others.
 fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
-    let Some((held, by_role)) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
+    let Some(by_role) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
+    let held = held_actors(tx)?;
     let current: BTreeSet<Tid> = tx.core.current_holders(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
     'roles: for (r, ds) in by_role {
-        if !may.contains(&r) || (ds.is_empty() && !fork_named(tx, a, r)?) {
+        if !may.contains(&r) || ds.is_empty() {
             continue;
         }
         for d in ds {
@@ -56,43 +56,17 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
     Ok(out)
 }
 
-/// Whether role `r` of `a` is forked (spec/crypto.md §4) and a current box to `a` in an actor
-/// it holds a role on names a current epoch of `a` other than the newest. A node holding no
-/// secret of `a` names its `keys.0` keyset (the LWW winner of the forks' writes) and one holding
-/// the forks names the newest (lowest nonce): each judges the other's box uncovered, so the
-/// actor above was rotated back and forth for good. Rotating `a` ends the fork.
-fn fork_named(tx: &mut Tx<'_>, a: &Tid, r: Role) -> Result<bool> {
-    let Some(e) = tx.core.epochs(a) else { return Ok(false) };
-    let (current, newest) = (e.role(r).current(), e.role(r).newest());
-    if current.len() < 2 {
+/// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3, Left
+/// out; spec/crypto.md §4): this node holds what every grant of `m` on `a` knew of it
+/// (`grant_names_held`), and a fresh box would name `m`'s newest epoch of `r`
+/// (`fresh_box_covers`) whose boxes keep out every departure of `deps` (those of `a`) inside
+/// `m`. Boxing to an epoch is encrypting under it: a rotation leaves such a holder out and the
+/// re-seal trigger skips it until `m` rotates (or this node holds the grants' names).
+fn holder_covers(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
+    if !tx.core.is_key_actor(m) && !departures::grant_names_held(tx, a, m)? {
         return Ok(false);
     }
-    for t in above(tx.core, a).into_iter().filter(|t| t != a) {
-        let Some(te) = tx.core.epochs(&t) else { continue };
-        for (k, b) in secrets_in(tx, &t)?.boxes {
-            let at = osis_keys::aspects::from_schema(&k.epoch).ok();
-            if k.holder != *a || k.role != r || !at.is_some_and(|x| te.role(r).is_current(&x)) {
-                continue;
-            }
-            let named = match &b {
-                osis_schema::core_types::SecretBox::Sealed(sb) => sb.keyset.as_ref().and_then(|x| osis_keys::aspects::from_schema(x).ok()),
-                osis_schema::core_types::SecretBox::Symmetric(sb) => osis_keys::aspects::from_schema(&sb.epoch).ok(),
-            };
-            if named.is_some_and(|x| current.contains(&x) && Some(x) != newest) {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
-}
-
-/// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3,
-/// Role cycles): a fresh box would name `m`'s newest epoch of `r` (`fresh_box_covers`)
-/// and that epoch covers every departure of `deps` (those of `a`) inside `m`. Boxing to an
-/// epoch is encrypting under it: a rotation leaves such a holder out and the re-seal trigger
-/// skips it until `m` rotates.
-fn holder_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
-    for d in deps.iter().filter(|d| d.via.first() == Some(m) && r >= d.from) {
+    for d in deps.iter().filter(|d| d.via.first() == Some(m) && d.concerns(r)) {
         if let Some((_, inner)) = inside_first(d)
             && !fresh_box_covers(tx, held, m, r, &inner)?
         {
@@ -105,18 +79,18 @@ fn holder_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m
 /// The first actor on `d`'s chain and the departure inside it, as that actor sees it.
 fn inside_first(d: &Departure) -> Option<(Tid, Departure)> {
     let (m, rest) = d.via.split_first()?;
-    Some((*m, Departure { via: rest.clone(), holder: d.holder, from: d.from }))
+    Some((*m, Departure { via: rest.clone(), ..d.clone() }))
 }
 
-/// `rc` with its role cut at the first its newest epoch does not cover (`holder_covers`, given
-/// `deps` of the actor boxing it); `None` when that leaves no role. Key actors are kept whole.
-pub(crate) fn left_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
+/// `rc` with its role cut at the first `holder_covers` refuses (given `deps` of actor `a` boxing
+/// it); `None` when that leaves no role. Key actors are kept whole.
+pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
     if !matches!(rc.keys, osis_keys::HolderKeys::Actor { .. }) {
         return Ok(Some(rc.clone()));
     }
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
-        if !holder_covers(tx, held, deps, &rc.holder, r)? {
+        if !holder_covers(tx, a, held, deps, &rc.holder, r)? {
             break;
         }
         top = Some(r);
@@ -124,16 +98,16 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departu
     Ok(top.map(|role| Recipient { role, ..rc.clone() }))
 }
 
-/// `left_out` for a grant to `rc.holder`: by its own departures, as the target will see them
+/// `left_out` for a grant on `a` to `rc.holder`: by its own departures, as `a` will see them
 /// once it is a holder.
-pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, rc: &Recipient) -> Result<Option<Recipient>> {
-    let deps: Vec<Departure> = departures(tx, &rc.holder)?.iter().map(|d| Departure::inside(rc.holder, d)).collect();
+pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Result<Option<Recipient>> {
+    let deps: Vec<Departure> = departures(tx, &rc.holder)?.iter().filter_map(|d| Departure::through(rc.holder, rc.role, d)).collect();
     let held = held_actors(tx)?;
-    left_out(tx, &held, &deps, rc)
+    left_out(tx, a, &held, &deps, rc)
 }
 
 /// Whether a fresh box of role `r` to holder actor `m` would name `m`'s newest epoch (its
-/// newest held secret, else its keyset in `keys.0`) and that epoch covers `inner`.
+/// newest held secret, else its keyset in `keys.0`) and that epoch's boxes keep `inner` out.
 fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
     let (Some(me), Some(ms)) = (osis_keys::HeldActors::epochs(held, m), osis_keys::HeldActors::secrets(held, m)) else { return Ok(false) };
     let keys = Core::keys_in(tx, m)?;
@@ -142,7 +116,7 @@ fn fresh_box_covers(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, 
         Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
         _ => ks,
     };
-    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::covers(m, ms, r, &k, inner, &Judge::new(tx.core, held))))
+    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::boxes_cover(ms, r, &k, inner, held)))
 }
 
 /// Current holders of `a` as box recipients; each of `skip` gets its new role or is left out
@@ -198,7 +172,7 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     let actors = held_actors(tx)?;
     let mut boxed = Vec::with_capacity(holders.len());
     for rc in holders {
-        if let Some(rc) = left_out(tx, &actors, &deps, rc)? {
+        if let Some(rc) = left_out(tx, &a, &actors, &deps, rc)? {
             boxed.push(rc);
         }
     }
@@ -283,15 +257,16 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
     done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
     if let Some(c) = c {
         let under = above(tx.core, &a);
-        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(rot)), under })?);
+        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(&rot.names)), under })?);
     }
     Ok(())
 }
 
-/// Rotation commit `c` and the commits its names name (`rot`'s): placed together, first, under
-/// each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there can meet them.
-pub(crate) fn placed_with(c: osis_base::CommitId, rot: Option<&Rotation>) -> Vec<osis_base::CommitId> {
-    let named: BTreeSet<osis_base::CommitId> = rot.into_iter().flat_map(|r| r.names.list.iter().map(|n| n.key.commit)).filter(|x| *x != c).collect();
+/// Commit `c` (a rotation or a grant) and the commits `names` (its names) name: placed together,
+/// first, under each label `c` goes under (spec/crypto.md §4, names), so whoever reads `c` there
+/// can meet them.
+pub(crate) fn placed_with(c: osis_base::CommitId, names: Option<&osis_keys::Names>) -> Vec<osis_base::CommitId> {
+    let named: BTreeSet<osis_base::CommitId> = names.into_iter().flat_map(|n| n.list.iter().map(|n| n.key.commit)).filter(|x| *x != c && *x != osis_keys::EXPIRY).collect();
     std::iter::once(c).chain(named).collect()
 }
 
@@ -458,7 +433,7 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
             let re = epochs.role(r);
             let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
-            if may.contains(&r) && holds && holder_covers(tx, &held, &deps, &m, r)? {
+            if may.contains(&r) && holds && holder_covers(tx, a, &held, &deps, &m, r)? {
                 keep.insert(r);
             }
         }
@@ -581,7 +556,7 @@ impl Engine {
             let deps = departures(tx, &a)?;
             let held = held_actors(tx)?;
             for &r in &roles {
-                if !holder_covers(tx, &held, &deps, &m, r)? {
+                if !holder_covers(tx, &a, &held, &deps, &m, r)? {
                     return Err(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"));
                 }
             }

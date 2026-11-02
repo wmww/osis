@@ -244,6 +244,23 @@ pub fn open_history(secret: &Secret32, actor: &Tid, role: Role, epoch: &Epoch, c
     Ok((out?, names))
 }
 
+/// The names a grant's box to a holder actor carries (spec/crypto.md §4, spec/wire.md §7): AEAD
+/// under `kdf("history", secret)` (the boxed epoch's), nonce zero, AD `[actor, holder, role, n,
+/// nonce]`, plaintext the names value as written (osis-keys encodes it).
+pub fn seal_box_names(secret: &Secret32, actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch, names: &Value) -> Result<Vec<u8>, Error> {
+    aead::seal(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &box_names_ad(actor, holder, role, epoch), &encode(names))
+}
+
+/// Opens a box's names (`seal_box_names`): the names value as written.
+pub fn open_box_names(secret: &Secret32, actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch, ct: &[u8]) -> Result<Value, Error> {
+    let pt = aead::open(kdf(kdf::HISTORY, secret.expose(), b"").expose(), &ZERO_NONCE, &box_names_ad(actor, holder, role, epoch), ct)?;
+    decode(&pt, &Limits::DEFAULT).map_err(|_| Error::Malformed("box names"))
+}
+
+fn box_names_ad(actor: &Tid, holder: &Tid, role: Role, epoch: &Epoch) -> Vec<u8> {
+    encode(&Value::List(vec![tid(actor), tid(holder), role_value(role), Value::Int(epoch.n), Value::Bytes(epoch.nonce.to_vec())]))
+}
+
 fn parse_history(v: &Value, actor: &Tid, role: Role, epoch: &Epoch) -> Result<Vec<(Epoch, Secret32)>, Error> {
     let Value::List(items) = v else { return Err(Error::Malformed("history")) };
     let mut out: Vec<(Epoch, Secret32)> = Vec::with_capacity(items.len());
