@@ -428,14 +428,16 @@ impl SyncEngine {
     }
 
     /// Whether inbox delivery `d` names a label this node is still opening (so maybe registering)
-    /// at a connected host: its recipient would look for the label before it is there, and try
-    /// again only after a back-off (a new chat's first invite). Ends with the reply on a live
-    /// connection, and no connection holds nothing back: spec/sync.md §3.
+    /// at a connected host, and has at no other: its recipient would look for the label before it
+    /// is there, and try again only after a back-off (a new chat's first invite). Ends with the
+    /// reply on a live connection (a host silent to it while alive holds only what it alone could
+    /// serve), and no connection holds nothing back: spec/sync.md §3.
     fn names_label_opening(&mut self, d: &(Tid, CommitId)) -> bool {
         let Some(things) = self.state.sent_inbox.get(d).map(|s| s.things.clone()) else { return false };
         let labels = self.labels();
         labels.iter().filter(|(g, l)| things.contains(g) && !l.replaced).any(|(_, l)| {
-            self.conns.values().filter(|c| c.session.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).any(|c| c.labels.get(&l.id).is_none_or(|x| matches!(x.phase, Phase::Opening | Phase::Registering)))
+            let phases = || self.conns.values().filter(|c| c.session.is_ready() && l.hosts.iter().any(|a| a.key == c.host)).map(|c| c.labels.get(&l.id).map(|x| &x.phase));
+            phases().any(|p| p.is_none_or(|x| matches!(x, Phase::Opening | Phase::Registering))) && !phases().any(|p| matches!(p, Some(Phase::Open | Phase::Verifying)))
         })
     }
 

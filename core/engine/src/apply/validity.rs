@@ -804,16 +804,25 @@ impl<'a> Judge<'a> {
     }
 }
 
-/// Whether an explicit demotion leaves `a`, a delta of commit `id` not held here, invalid: judged
-/// from the header alone, it would join as nothing, and its author, cut from the label, may never
-/// place it, so a commit must not wait for it (spec/commits.md §4). A re-grant makes it valid
-/// again: it joins late if it comes. A delta invalid for want of any demotion is no such case: its
-/// edge may be on its way.
+/// Whether another actor's explicit lowering of `a`'s author below the role `a` needs, on `a`'s thing
+/// or up its owner chain, is held and its frontier does not list commit `id` (spec/commits.md §4): the
+/// delta, not held here, then need not wait: its author, cut from the label, may never place it. A
+/// frontier tells a demotion from a plain grant of a low role, as the write alone cannot.
+///
+/// Invariant (arrival-order independence, `examine`): the input only grows. So this reads the role
+/// commits and ledgers held, of any validity and whatever follows them, never the timeline: a
+/// re-grant or the lowering's fall would end the release at nodes that learn of them first, while
+/// those that applied stay applied. It decides when the commit's held parts join, never what they
+/// join to: the delta joins on arrival, judged as ever. The price: such an author's later commits on
+/// that thing, once re-granted, may show part by part as they arrive.
 pub(crate) fn removed_author(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
-    let Some(tl) = core.timelines.get(&a.tid) else { return false };
     let required = if h.kind.is_compaction() { crate::engine::write::snapshot_role(a.ak.as_str()) } else { required_role(a.ak.as_str()) };
-    let point = Point { ts: h.ts, node: h.author, commit: *id };
-    matches!(tl.delta_valid(point, &a.tid, required), Validity::Invalid { by: Some(_) })
+    let is_author = |t: &Tid| *t == h.author || *t == h.actor;
+    let unlisted = |f: &Option<Arc<Frontier>>| f.as_ref().is_some_and(|f| !f.covers(id));
+    core.owner_chain(&a.tid).filter_map(|s| s.thing()).any(|t| {
+        let lowered = |r: &RoleCommit| !is_author(&r.actor) && unlisted(&r.frontier) && r.ops.iter().any(|o| o.target == t && is_author(&o.holder) && o.edge.as_ref().is_none_or(|e| e.role < required));
+        core.ix.held.commits_on(&t).iter().any(|r| lowered(r)) || core.ix.held.snapshots_of(&t).iter().flat_map(|s| &s.ledger).any(|l| is_author(&l.holder) && l.role >= required && unlisted(&l.frontier))
+    })
 }
 
 /// `part_valid` of a content part on its thing's timeline `tl`.

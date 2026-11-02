@@ -87,29 +87,7 @@ fn invite_to_a_label_not_yet_at_its_host_looks_again_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")), "{:?}", w.diagnostics(&b));
 }
 
-// spec/sync.md §3: a new chat's first invite waits for the chat's registration at a connected host: the invitee finds it at once, with no time passing
-#[test]
-fn first_invite_goes_after_the_new_labels_registration_spec_sync_3() {
-    let mut w = World::new();
-    let h0 = w.add_host();
-    let (a, b, bob) = pair(&mut w, &[h0]);
-    // the grant makes the chat's label: its registration starts with the invite
-    let g = a
-        .write_with(|x| {
-            let g = x.create(a.me())?;
-            x.place(g, a.home())?;
-            x.make_group(g)?;
-            Ok(g)
-        })
-        .unwrap();
-    w.run();
-    a.grant(g, bob, Role::Write, Default::default()).unwrap();
-    let m = message(&a, g, "hello");
-    w.run();
-    assert_eq!(says(&b, m), Some(s("hello")), "{:?}", w.diagnostics(&b));
-}
-
-// spec: none (API surface, notes/api.md Sync configuration and status): a live node polled by `sync_now` stays Synced and sends nothing, so an app's polling cannot hold `wait_synced` back; a write made meanwhile still goes
+// spec: none (API surface, notes/api.md Sync configuration and status): a live node polled by `sync_now` stays Synced, so an app's polling cannot hold `wait_synced` back; a write made meanwhile still goes. It sends nothing but a ping, once a connection is quiet for `retry_ms`
 #[test]
 fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
     let mut w = World::new();
@@ -129,6 +107,18 @@ fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
     }
     let after = w.traffic(&b);
     assert_eq!((after.up, after.down), (before.up, before.down), "polling a live node sends nothing");
+    // the connection may have died unnoticed (a network change): one ping asks, not one per poll
+    w.advance(6000);
+    w.run();
+    let before = w.traffic(&b);
+    b.sync_now().unwrap();
+    w.run();
+    let pinged = w.traffic(&b);
+    assert!(pinged.up > before.up, "a quiet connection is pinged");
+    assert_eq!((pinged.up - before.up) / 100, 0, "a ping, no Sync");
+    b.sync_now().unwrap();
+    w.run();
+    assert_eq!(w.traffic(&b).up, pinged.up, "not again at once");
     let t = message(&b, g, "written while polled");
     b.sync_now().unwrap();
     w.run();
@@ -268,6 +258,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_9() {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     w.run();
     assert_eq!(a.get(p, name.clone()).unwrap(), Some(s("Bob")));
+    assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 1);
     // what it reads as survives a restart
     a.close().unwrap();
     let a = Osis::open(at(&w, 3)).unwrap();
@@ -285,6 +276,7 @@ fn contact_outlives_the_persons_role_changes_spec_permissions_9() {
     w.run();
     assert_eq!(a.get(p, name.clone()).unwrap(), None, "the link ended: what it read goes (spec/permissions.md §3)");
     assert!(w.diagnostics(&a).iter().any(|d| d.starts_with("Removed")));
+    assert_eq!(a.engine(|e| e.core.ix.bearers.len()), 0, "and its record");
 }
 
 // spec/sync.md §3 (entitlement), notes/api.md (`place`): a thing placed in a shared group whose holders may not read it does not reach them: the writer is told, a wait on it fails; `share_into` is not told, an edge follows

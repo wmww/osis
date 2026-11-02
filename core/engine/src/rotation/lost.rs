@@ -383,6 +383,18 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
     Ok((lost, f))
 }
 
+/// Drops the bearers named on something that no longer hold a role on any of it: the link ended,
+/// what they read went with it, and a new link is a new key (spec/permissions.md §9).
+fn drop_ended_bearers(tx: &mut Tx<'_>) -> Result<()> {
+    let core = &*tx.core;
+    let ended: Vec<Tid> = core.ix.bearers.iter().filter(|l| core.ix.held.named_on(l).next().is_some() && !core.ix.held.named_on(l).any(|t| core.role_now(l, t).is_some())).copied().collect();
+    for l in ended {
+        tx.txn.remove_local(&[BEARERS, l.as_bytes()].concat(), osis_store::Shred::No)?;
+        tx.core.ix.bearers.remove(&l);
+    }
+    Ok(())
+}
+
 /// Which lost actors `Engine::forget_lost` drops.
 #[derive(Clone, Copy, Debug)]
 pub enum LostScope<'a> {
@@ -452,6 +464,9 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         _ => &[],
     };
     let (actors, forgotten) = drop_actors(tx, lost, dropped, rejudge)?;
+    if !actors.is_empty() {
+        drop_ended_bearers(tx)?;
+    }
     Ok(Dropped { actors, forgotten, leaving })
 }
 

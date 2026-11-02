@@ -84,6 +84,10 @@ impl Held {
     pub fn edges(&self) -> u64 {
         self.edges
     }
+    /// Edge commits with a write on `t`, of any validity.
+    pub fn commits_on(&self, t: &Tid) -> &[Arc<RoleCommit>] {
+        self.commits.get(t).map(Vec::as_slice).unwrap_or_default()
+    }
     pub fn snapshots_of(&self, t: &Tid) -> &[Arc<RosterSnapshot>] {
         self.snapshots.get(t).map(Vec::as_slice).unwrap_or_default()
     }

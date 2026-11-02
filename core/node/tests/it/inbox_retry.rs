@@ -108,6 +108,43 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     assert!(net.engine(b).role_on(&g).is_some() || net.sync(b).invite_requests().unwrap().len() == 1);
 }
 
+// spec/sync.md §3: a host of the label silent to its Open holds no invite back while another connected host has it
+#[test]
+fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
+    let mut net = Net::new();
+    let (host, silent) = (net.add_host(), net.add_host());
+    let a = net.node(1, &[host, silent]);
+    let b = net.node(2, &[host]);
+    let (addr, other) = (net.address(host), net.address(silent));
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.pair(b, a);
+    net.run();
+    let inbox = net.engine(a).get_typed(&bob.person, &ct::KEYS).unwrap().unwrap().inbox.unwrap().label;
+    let held = net.host_ids(host, &inbox);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let g = e.new_thing(&mut m, alice.person);
+    m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    net.held_hosts.insert(silent);
+    let (l, done) = net.engine(a).create_label(&g, &[addr, other]).unwrap();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let mut acts = net.sync(a).carry_out(done).unwrap();
+    let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
+    acts.extend(net.sync(a).carry_out(done).unwrap());
+    net.actions(a, acts);
+    net.run();
+    assert!(net.labels_at(host).contains(&l));
+    assert!(!net.labels_at(silent).contains(&l));
+    assert!(net.host_ids(host, &inbox).iter().any(|b| !held.contains(b)), "the invite went");
+}
+
 /// Nodes a (Alice's device) and b (Bob's), persons on one host, Bob's device cut from it
 /// (his inbox label unregistered); Alice's group `g` with a label replaced `replaced` times and
 /// an item in it. Returns (net, a, b, bob's person, g, the item).
