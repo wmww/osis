@@ -45,7 +45,7 @@ impl Rng {
 /// One step of a history. Thing indexes are taken modulo the things made so far (0 is G, owned
 /// by peer 0), so any subsequence of a history is a history (shrinking drops steps).
 #[derive(Clone, Debug)]
-enum Step {
+pub(crate) enum Step {
     /// A content write (`op` picks the aspect and shape) by `by` on thing `t`.
     Write { by: usize, t: usize, op: u8, k: u8, v: u8 },
     /// `holder`'s edge on `t` set to `role` (a grant, re-grant or demotion without frontier).
@@ -212,18 +212,18 @@ fn edge_write(t: Tid, holder: Tid, role: Option<Role>) -> Mutation {
 }
 
 /// A history as played: every commit made, in the order made, and the things.
-struct Played {
-    packs: Vec<Package>,
+pub(crate) struct Played {
+    pub(crate) packs: Vec<Package>,
     /// Each commit's author peer (3: none of the three).
     authors: Vec<usize>,
     /// How many of `packs` are the setup (identities, G, the first grants).
-    base: usize,
+    pub(crate) base: usize,
     things: Vec<Tid>,
-    now: WallMs,
+    pub(crate) now: WallMs,
 }
 
 /// Plays `steps` on three peers: 0 owns G and gives 1 write and 2 admin on it.
-fn play(seed: u64, steps: &[Step]) -> Played {
+pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
     let mut lp = LocalPeer::new(3, seed, T0).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();

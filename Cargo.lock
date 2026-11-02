@@ -2707,6 +2707,7 @@ dependencies = [
  "osis-schema",
  "osis-store",
  "osis-transport",
+ "osis-vectors",
  "tokio",
 ]
 

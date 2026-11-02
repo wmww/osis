@@ -27,3 +27,5 @@ proto/reconcile.vec provisional
 bundle/bundle.vec provisional
 lan/announce.vec provisional
 crdt/deltas.vec provisional
+judgment/models.vec provisional
+judgment/rules.vec provisional

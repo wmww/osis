@@ -28,6 +28,7 @@ osis-node = { path = "core/node" }
 osis = { path = "core/osis" }
 osis-sim = { path = "core/test/sim" }
 crdt-model = { path = "core/test/crdt-model" }
+osis-vectors = { path = "core/test/vectors" }
 roles-model = { path = "core/test/roles-model" }
 blake3 = { version = "1.8", default-features = false, features = ["std", "zeroize"] }
 proptest = { version = "1", default-features = false, features = ["std"] }
