@@ -12,7 +12,7 @@ use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps};
+use osis_crdt::{Changes, Death, Fragment, Stamp, Stamps, TextDeletes};
 use osis_store::Shred;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -350,9 +350,16 @@ pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> 
 /// not held: the later one would date it at a later winner): a death whose stamp died before
 /// and that the snapshot holds a write of (`holds_stamp`; not merely a record keyed by its dot,
 /// such as an entry it removed: a write sharing a dead write's stamp then dies here for the
-/// first time, order seed 7855).
-fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>) {
+/// first time, order seed 7855). A snapshot's copy of a text creation also meets the deletes
+/// joined before it, which the state shows only the last of: unless it died before (seed
+/// 8413009), it dies at the earliest one newer than it (`TextDeletes`), as its own delta, had it
+/// played, would have (seed 7731022). That death adds to what the join reports, never hides one
+/// (a reset's at the same `ts` dates a snapshot that had not applied it, seed 8413015).
+fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>, dels: &mut TextDeletes) {
     let mut ch = Changes::new();
+    let mut late = if copies { dels.deaths(&f) } else { Vec::new() };
+    late.retain(|d| !dead.contains(&d.stamp));
+    dels.add(&f);
     let g = copies.then(|| f.clone());
     st.join_into(f, None, &mut ch);
     for d in ch.into_deaths() {
@@ -365,6 +372,7 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
         dead.insert(d.stamp.clone());
         deaths.push(d);
     }
+    deaths.extend(late);
 }
 
 /// Each write dies at the first superseding write among the held bodies joined in `(ts, ID)`
@@ -381,13 +389,14 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let mut st = Fragment::default();
     let mut deaths = Vec::new();
     let mut dead = BTreeSet::new();
+    let mut dels = TextDeletes::default();
     for c in &held {
         let Some(ai) = held_part(tx.core, c, tid, ak) else {
             // a body dropped value-less (expired, purged) plays as its residue: its writes
             // supersede like any held (spec/crdt.md §4.7)
             if let Some(mut f) = residue_of(tx, c, tid, ak)? {
                 un.strip(&mut f);
-                join(&mut st, f, false, &mut deaths, &mut dead);
+                join(&mut st, f, false, &mut deaths, &mut dead, &mut dels);
             }
             continue;
         };
@@ -414,14 +423,14 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 let plays_own = |x: &CommitId, ai: usize| x != c && core.ix.commits.get(x).is_some_and(|m| m.valid_at(ai));
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, ai)| plays_own(x, *ai)) } else { core.commit_of(tid, ak, d).is_some_and(|x| held_part(core, &x, tid, ak).is_some_and(|ai| plays_own(&x, ai))) });
             }
-            join(&mut st, f, cp, &mut deaths, &mut dead);
+            join(&mut st, f, cp, &mut deaths, &mut dead, &mut dels);
             Ok(())
         })?;
     }
     {
         let _s = crate::costs::span("deaths: state");
         if let Some(cur) = tx.state(tid, ak)?.cloned() {
-            join(&mut st, cur, false, &mut deaths, &mut dead);
+            join(&mut st, cur, false, &mut deaths, &mut dead, &mut dels);
         }
     }
     // a text creation dies once, at its earliest delete (spec/crdt.md §4.8; a delete over an

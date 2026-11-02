@@ -3667,3 +3667,41 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
 }
 
+
+// spec/crdt.md §4.8 (a text creation dies once, at its earliest delete), spec/commits.md §5:
+// order seed 7731022, shrunk. A node holds a delete and an undelete of a text element, then a
+// snapshot whose copy of the element's creation is all it holds of it (the creating delta never
+// came). The state shows only the undelete, so the recompute met the creation with no delete
+// before it and left the snapshot undated; the oracle, playing the creation at its own `ts`,
+// dates it at the delete.
+#[test]
+fn snapshot_copy_of_deleted_text_creation_dies_seed_7731022_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Roster { by: 0, t: 0 }), aim(Nested { by: 0, other: 1, t: 0, k: 0, text: false, compact: false, also: false }), aim(Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Admin) }), aim(Demote { by: 0, t: 1, holder: 2, at: 3, to_read: false }), aim(Typed { by: 1, t: 4, op: 23, k: 0, v: 4 }), aim(Nested { by: 1, other: 0, t: 2, k: 1, text: false, compact: true, also: false }), aim(Nested { by: 1, other: 0, t: 1, k: 1, text: false, compact: false, also: true }), Forged { by: 0, a: 2, b: 4, how: 4, op: 19, k: 2, v: 7 }, aim(New { by: 0, parent: 4, write: false }), aim(Nested { by: 0, other: 1, t: 4, k: 2, text: true, compact: true, also: true }), Forged { by: 2, a: 5, b: 6, how: 2, op: 29, k: 2, v: 0 }, aim(Edge { by: 0, t: 7, holder: 2, role: None }), aim(Write { by: 0, t: 0, op: 19, k: 1, v: 9 }), aim(Typed { by: 1, t: 4, op: 11, k: 1, v: 5 }), aim(Roster { by: 0, t: 7 }), aim(Demote { by: 2, t: 7, holder: 1, at: 2, to_read: false }), aim(Typed { by: 2, t: 6, op: 16, k: 2, v: 4 }), Sync { from: 1, to: 2 }, aim(Compact { by: 2, t: 1, op: 4 }), Sync { from: 2, to: 0 }, aim(Edge { by: 2, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: false, also: true }), aim(Typed { by: 2, t: 0, op: 1, k: 2, v: 8 }), Sync { from: 0, to: 2 }, aim(Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }), aim(Nested { by: 0, other: 1, t: 7, k: 0, text: true, compact: false, also: true }), Forged { by: 1, a: 5, b: 5, how: 2, op: 14, k: 0, v: 0 }, aim(Nested { by: 1, other: 0, t: 5, k: 1, text: true, compact: true, also: false }), aim(Undo { by: 1, back: 2 }), NewTop { by: 1 }, Sync { from: 0, to: 1 }, aim(Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Undo { by: 1, back: 2 }), aim(Compact { by: 1, t: 6, op: 10 }), aim(Typed { by: 0, t: 3, op: 29, k: 2, v: 8 }), Forged { by: 2, a: 1, b: 5, how: 4, op: 14, k: 2, v: 2 }, aim(Compact { by: 2, t: 2, op: 5 }), aim(Compact { by: 0, t: 1, op: 5 })];
+    check(7731022, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/crdt.md §4.8 (a write dies once, at its earliest superseder): seq_compact seed 8413009,
+// shrunk. A reset prunes a text creation as it lands; a later snapshot carries a copy of it after
+// the element's delete. The copy's creation died at the reset already: the delete dates nothing
+// new, so an earlier snapshot carrying it keeps its death at its own `ts`.
+#[test]
+fn pruned_text_creation_copy_not_dated_again_seed_8413009_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 9 }), Compact { by: 0, t: 0, op: 24 }, aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 1 }), Compact { by: 0, t: 0, op: 10 }, aim(Undo { by: 1, back: 2 }), aim(Typed { by: 2, t: 0, op: 10, k: 1, v: 8 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 6 }), Compact { by: 2, t: 0, op: 10 }, aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 3 }), Compact { by: 2, t: 0, op: 10 }];
+    check(8413009, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/crdt.md §4.8, spec/commits.md §5: seq_compact seed 8413015, shrunk. A text creation dies
+// at a reset and at a delete of one `ts`; a later snapshot had applied the delete but not the
+// reset, so the reset's death dates it at its `ts`. The death a snapshot copy's late creation
+// gets at the delete must not hide the reset's.
+#[test]
+fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 3 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 7 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), aim(Undo { by: 1, back: 1 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 2 }), aim(Undo { by: 1, back: 2 }), Compact { by: 1, t: 0, op: 26 }, aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 8 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 1 }), Compact { by: 2, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 9 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 6 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 26 }, aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 5 })];
+    check(8413015, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
