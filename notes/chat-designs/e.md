@@ -59,6 +59,10 @@ Message about 0.5 KB; join about 35 KB; kick 2.7 KB per remaining member. Per de
 
 Retention bounds and purge rights per edit are promised (requirements Deletion); a history read API is not. A writer's snapshot may misstate others' content in state; history reads bodies, so the chat is immune. Member forward secrecy is parked (design D, refuted by review4).
 
+## Core work this depends on
+
+Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
+
 ## Accepted by the owner
 
 A stolen unlocked device shows history; no deniability; deletion binds only honest clients; hosts see metadata. Eventual revocation is a general osis limit, not chat's.
