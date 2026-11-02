@@ -683,10 +683,8 @@ fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Optio
                     return Some(format!("fall {:?} -> {:?} of {} on {} outside the roles scope; {what}", f.held, f.now, name(x), name(n)));
                 }
             }
-            for d in tl2.demotions(x, n).iter().filter(|d| d.point == p && d.below == Write) {
-                if !scope.content.get(x).is_some_and(|s| s.contains(n)) {
-                    return Some(format!("demotion below write of {} on {} outside the content scope; {what}", name(x), name(n)));
-                }
+            if tl2.demotions(x, n).iter().any(|d| d.point == p && d.below == Write) && !scope.content.get(x).is_some_and(|s| s.contains(n)) {
+                return Some(format!("demotion below write of {} on {} outside the content scope; {what}", name(x), name(n)));
             }
         }
     }
