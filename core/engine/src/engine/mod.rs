@@ -457,8 +457,9 @@ indexes! {
     /// (actor, role, epoch) -> (`ts`, author node, actor acted for, commit). Absent: the
     /// introducer is unknown (`rotation`).
     pub epoch_intro: EpochIntro,
-    /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`).
-    pub lost_due: JSet<Tid>,
+    /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
+    /// (engine ms; 0: now).
+    pub lost_due: JMap<Tid, u64>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
     pub deaths_due: JSet<(Tid, Ak)>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a

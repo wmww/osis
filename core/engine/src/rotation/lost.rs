@@ -14,33 +14,51 @@ use std::collections::{BTreeMap, BTreeSet};
 
 /// The lost-access trigger's work list (spec/permissions.md §3, "a node that learns it lost
 /// read access"): `l/` + tid, a roster target of an applied received role commit, or an
-/// aspect's thing of a dropped pending one. The held actors a role on it reaches are
-/// re-evaluated after the apply, in a transaction of their own (node-sync, every step).
+/// aspect's thing of a dropped pending one, due now (empty value); or an actor a plausible
+/// pending grant kept, due when that grant ages out (`PENDING_GRANT_WAIT_MS`; value: engine ms,
+/// u64 BE). The held actors a role on it reaches are re-evaluated once due, in a transaction of
+/// their own (node-sync, every step, with a wake for the next due time).
 pub(crate) const LOST_DUE: &[u8] = b"l/";
 
-/// Adds `tids` to the work list.
+/// Adds `tids` to the work list, due now.
 pub(crate) fn mark_lost_due(tx: &mut Tx<'_>, tids: impl IntoIterator<Item = Tid>) -> Result<()> {
     for t in tids {
         tx.txn.put_local(&[LOST_DUE, t.as_bytes()].concat(), &[], osis_store::Shred::No)?;
-        tx.core.ix.lost_due.insert(t);
+        tx.core.ix.lost_due.insert(t, 0);
     }
+    Ok(())
+}
+
+/// Adds `t` to the work list, due at `at` (an earlier entry stays).
+fn arm_lost_due(tx: &mut Tx<'_>, t: Tid, at: u64) -> Result<()> {
+    if tx.core.ix.lost_due.get(&t).is_some_and(|x| *x <= at) {
+        return Ok(());
+    }
+    tx.txn.put_local(&[LOST_DUE, t.as_bytes()].concat(), &at.to_be_bytes(), osis_store::Shred::No)?;
+    tx.core.ix.lost_due.insert(t, at);
     Ok(())
 }
 
 /// Loads the work list.
 pub(crate) fn load_lost_due(tx: &mut Tx<'_>) -> Result<()> {
     let mut v = Vec::new();
-    tx.scan(LOST_DUE, |k, _| {
-        v.push(Tid::from_bytes(k.try_into().map_err(|_| Error::Corrupt("lost-access work list"))?));
+    tx.scan(LOST_DUE, |k, val| {
+        let bad = || Error::Corrupt("lost-access work list");
+        let at = match val.len() {
+            0 => 0,
+            _ => u64::from_be_bytes(val.try_into().map_err(|_| bad())?),
+        };
+        v.push((Tid::from_bytes(k.try_into().map_err(|_| bad())?), at));
         Ok(())
     })?;
     tx.core.ix.lost_due.extend(v);
     Ok(())
 }
 
-/// Empties the work list, returning it.
-fn take_due(tx: &mut Tx<'_>) -> Result<BTreeSet<Tid>> {
-    let due: BTreeSet<Tid> = tx.core.ix.lost_due.iter().copied().collect();
+/// Takes the work list's entries due now (`all`: every entry), returning them.
+fn take_due(tx: &mut Tx<'_>, all: bool) -> Result<BTreeSet<Tid>> {
+    let now = tx.now().0;
+    let due: BTreeSet<Tid> = tx.core.ix.lost_due.iter().filter(|(_, at)| all || **at <= now).map(|(t, _)| *t).collect();
     for t in &due {
         tx.core.ix.lost_due.remove(t);
         tx.txn.remove_local(&[LOST_DUE, t.as_bytes()].concat(), osis_store::Shred::No)?;
@@ -79,7 +97,7 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
 /// re-learns the secrets from the grant's own boxes when it applies, re-fetching the content. At
 /// 0 every such grant waits that way; at infinity a grant that never applies (a part parked for
 /// good) keeps a node that lost access holding the actor's secrets and content for good.
-pub(crate) const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+pub const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
 
 /// A held, not applied role commit's boxes to this node on actor `x`.
 struct PendingGrant {
@@ -182,18 +200,14 @@ fn may_grant(core: &Core, author: &Tid, x: &Tid) -> bool {
 }
 
 /// Of `cands`, the actors this node holds a secret of and lost read access to
-/// (spec/permissions.md §3): no role on them by any path now and no pending grant or `contested` thing reaching them.
-/// Each actor is judged on its own, so what the node reached only through a lost one is lost
-/// with it. (Epochs observed without a secret are no access.) An actor this node holds checked
-/// secrets of is kept only by a plausible grant: anyone can send a pending commit, which is kept
-/// until it applies, so any other would keep a node that lost access holding it for good;
-/// reading-only candidates go with the commit that gave them.
-fn lost_among(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<Vec<Tid>> {
-    Ok(judge(tx, cands)?.0)
-}
-
-/// `lost_among`, and for the unread actors a plausible pending grant keeps, the earliest time
-/// one of those grants stops counting by age (they may be lost from then on).
+/// (spec/permissions.md §3): no role on them by any path now and no pending grant or
+/// `contested` thing reaching them. Each actor is judged on its own, so what the node reached
+/// only through a lost one is lost with it. (Epochs observed without a secret are no access.)
+/// An actor this node holds checked secrets of is kept only by a plausible grant: anyone can
+/// send a pending commit, which is kept until it applies, so any other would keep a node that
+/// lost access holding it for good; reading-only candidates go with the commit that gave them.
+/// Also returns, for the unread actors a plausible pending grant keeps, the earliest time one of
+/// those grants stops counting by age (they may be lost from then on).
 fn judge(tx: &mut Tx<'_>, cands: Vec<Tid>) -> Result<(Vec<Tid>, BTreeMap<Tid, u64>)> {
     let unread: Vec<Tid> = cands.into_iter().filter(|a| tx.core.ix.secrets.get(a).is_some_and(ActorEpochs::holds_any) && !readable(tx.core, a)).collect();
     if unread.is_empty() {
@@ -260,9 +274,10 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>) -> Result<(Vec<Tid>, Forgotten)>
 pub enum LostScope<'a> {
     /// Every held actor this node lost read access to (the work list is done with it).
     All,
-    /// The trigger: takes the work list and drops the held actors a role on one of its things
-    /// reaches that this node lost read access to (idempotent: the list goes in the same
-    /// transaction), except those lost through its own self-removal (`Engine::lost_leaving`).
+    /// The trigger: takes the work list's due entries and drops the held actors a role on one
+    /// of their things reaches that this node lost read access to (idempotent: the entries go
+    /// in the same transaction), except those lost through its own self-removal
+    /// (`Engine::lost_leaving`).
     Due,
     /// Those of these actors this node lost read access to.
     Only(&'a [Tid]),
@@ -278,18 +293,27 @@ pub struct Dropped {
 }
 
 fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
-    let (lost, leaving) = match scope {
+    let cands: Vec<Tid> = match scope {
         LostScope::All => {
-            take_due(tx)?;
-            let all: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
-            (lost_among(tx, all)?, false)
+            take_due(tx, true)?;
+            tx.core.ix.secrets.keys().copied().collect()
         }
-        LostScope::Only(xs) => (lost_among(tx, xs.to_vec())?, false),
+        LostScope::Only(xs) => xs.to_vec(),
         LostScope::Due => {
-            let due = take_due(tx)?;
-            let cands: Vec<Tid> = tx.core.ix.secrets.keys().filter(|a| due.iter().any(|t| reaches(tx.core, t, a))).copied().collect();
+            let due = take_due(tx, false)?;
+            tx.core.ix.secrets.keys().filter(|a| due.iter().any(|t| reaches(tx.core, t, a))).copied().collect()
+        }
+    };
+    let (judged, kept) = judge(tx, cands)?;
+    // a grant that never applies stops keeping them once it ages out: judged again then
+    for (a, at) in kept {
+        arm_lost_due(tx, a, at)?;
+    }
+    let (lost, leaving) = match scope {
+        LostScope::All | LostScope::Only(_) => (judged, false),
+        LostScope::Due => {
             let (mut lost, mut leaving) = (Vec::new(), false);
-            for a in lost_among(tx, cands)? {
+            for a in judged {
                 // its removal goes up first (spec/permissions.md §3): node-sync's `drop_left`
                 if own_leaving(tx, &a)?.is_empty() {
                     lost.push(a);
@@ -346,17 +370,26 @@ impl Engine {
         })
     }
 
-    /// Whether the lost-access trigger has work (`drop_lost_due`).
+    /// Whether the lost-access trigger has work due now (`drop_lost_due`).
     pub fn lost_due(&self) -> bool {
-        !self.core.ix.lost_due.is_empty()
+        let now = self.now().0;
+        self.core.ix.lost_due.values().any(|at| *at <= now)
+    }
+
+    /// When the lost-access trigger's next entry not due now comes due (engine ms): a plausible
+    /// pending grant keeping an actor ages out. Every scope arms these (a judged actor a
+    /// plausible grant keeps), so the trigger drops it then if the grant never applied.
+    pub fn next_lost_due(&self) -> Option<u64> {
+        let now = self.now().0;
+        self.core.ix.lost_due.values().filter(|at| **at > now).min().copied()
     }
 
     /// The lost-access trigger (spec/permissions.md §3): after received role commits
     /// applied, drops the secrets of the actors they touched that this node lost read access to
     /// by every path, unless a held pending grant reaches them or its own self-removal is
     /// behind the loss (`lost_leaving`), and forgets what only those read. node-sync runs it
-    /// every step; an app driving the engine alone calls it after ingesting. Returns the actors
-    /// dropped.
+    /// every step and wakes at `next_lost_due`; an app driving the engine alone calls it after
+    /// ingesting and when `next_lost_due` passes. Returns the actors dropped.
     pub fn drop_lost_due(&mut self) -> Result<Vec<Tid>> {
         Ok(self.forget_lost(LostScope::Due)?.actors)
     }

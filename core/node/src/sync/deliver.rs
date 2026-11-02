@@ -110,7 +110,7 @@ impl SyncEngine {
     }
 
     /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received
-    /// role commits left it work, until none is left (forgetting re-examines pending
+    /// role commits or an aged-out pending grant left it work, until none is left (forgetting re-examines pending
     /// commits, which may apply more).
     pub(crate) fn drop_lost_due(&mut self) -> Result<()> {
         for _ in 0..16 {

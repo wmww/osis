@@ -1563,9 +1563,9 @@ impl SyncEngine {
     }
 
     /// When the next Tick is wanted (raw wall ms): session timers, re-syncs, served sessions'
-    /// idle ends, redials, inbox retries and the engine's expiry and keep-at-most timers. Never
-    /// before `MIN_WAKE_MS` after the last Tick, so an item due but not serviceable yet cannot
-    /// spin (and later events do not push a due wake back).
+    /// idle ends, redials, inbox retries and the engine's expiry, keep-at-most and lost-access
+    /// timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
+    /// serviceable yet cannot spin (and later events do not push a due wake back).
     fn next_wake(&mut self) -> Option<u64> {
         let now = self.raw_now();
         let mut t: Option<u64> = None;
@@ -1596,6 +1596,10 @@ impl SyncEngine {
         let skew = self.now() as i64 - now as i64;
         // a pending grant keeping a leaver's actor ages out (`drop_left`)
         if let Some(x) = self.left.as_ref().and_then(|l| l.recheck_at()) {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
+        // a pending grant keeping a lost actor ages out (`drop_lost_due`)
+        if let Some(x) = self.engine.next_lost_due() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         if self.local_any {

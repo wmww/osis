@@ -714,3 +714,40 @@ fn strict_subset_needs_superset_at_that_host_spec_sync_6() {
     net.trace(&[a, b]);
     assert!(net.host_ids(h1, &l).contains(&q[0]), "q kept at h1: p is at h2 only");
 }
+
+// spec/permissions.md §3 (a node that learns it lost read access MUST drop): node-sync wakes
+// when an admin's re-grant it holds pending, keeping a group it was removed from, ages out
+// (`PENDING_GRANT_WAIT_MS`), and drops the group then with no other event; also across a
+// restart while waiting.
+#[test]
+fn lost_access_wakes_when_pending_grant_ages_out_spec_permissions_3() {
+    for restart in [false, true] {
+        let mut net = Net::new();
+        let a = net.node(1, &[]);
+        let b = net.node(2, &[]);
+        let g = net.group(a, &[(b, Role::Read)], &[]);
+        let t = net.item(a, g, g, "marker");
+        net.pair(a, b);
+        net.run();
+        assert_eq!(net.read(b, t), Some(s("marker")));
+        let d = osis_node::flows::Demotion { holder: net.tid(b), new: None, presync: osis_node::flows::PreSync::Synced };
+        net.engine(a).demote(&g, &d).unwrap();
+        net.pair(a, b);
+        let rcpt = crate::common::read_recipient(net.engine(b));
+        let bytes = crate::common::forge_pending_grant(net.engine(a), rcpt, g, 3);
+        assert!(matches!(net.engine(b).ingest(&bytes, Vec::new()).unwrap(), osis_node::Ingested::Pending(..)));
+        let now = net.now();
+        let mut acts = net.sync(b).handle(Event::Local);
+        assert_eq!(net.read(b, t), Some(s("marker")), "kept while the grant may apply");
+        if restart {
+            net.restart(b, 9);
+            acts = net.sync(b).handle(Event::Local);
+        }
+        let at = acts.iter().find_map(|x| if let osis_node::sync::Action::Wake { at } = x { Some(*at) } else { None }).expect("a wake");
+        assert!(at > now && at <= now + osis_node::rotation::PENDING_GRANT_WAIT_MS + 1, "at {at}, now {now}");
+        net.clock.advance(at - now);
+        net.sync(b).handle(Event::Tick);
+        assert_eq!(net.read(b, t), None, "restart {restart}");
+        assert!(net.engine(b).epochs(&g).is_none_or(|e| e.read.held().next().is_none()));
+    }
+}

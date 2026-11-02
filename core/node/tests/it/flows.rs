@@ -524,6 +524,46 @@ fn lost_access_trigger_survives_restart_spec_perm_3() {
     assert_forgotten(&mut x);
 }
 
+// spec/permissions.md §3 (a node that learns it lost read access MUST drop): an admin's re-grant
+// bob holds pending keeps d (and f through it) only until it ages out of `PENDING_GRANT_WAIT_MS`;
+// it never applies and no other role commit arrives, yet the trigger comes due then and drops
+// them. `restart`: bob reopens while waiting (the due time is stored).
+fn aged_out_grant(seed: u64, restart: bool) {
+    let mut x = lost_setup(seed);
+    let rcpt = read_recipient(&x.lp.peers[1].engine);
+    let bytes = forge_pending_grant(&mut x.lp.peers[0].engine, rcpt, x.d, seed);
+    assert!(matches!(x.lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), osis_node::Ingested::Pending(..)));
+    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert!(!lost.contains(&x.d) && !lost.contains(&x.f), "{lost:?}");
+    assert!(!x.lp.peers[1].engine.lost_due());
+    let at = x.lp.peers[1].engine.next_lost_due().expect("due when the grant ages out");
+    let now = x.lp.peers[1].engine.now().0;
+    assert!(at > now && at <= now + osis_node::rotation::PENDING_GRANT_WAIT_MS, "{at} {now}");
+    if restart {
+        reopen(&mut x.lp, 1, seed).unwrap();
+        assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at));
+    }
+    x.lp.peers[1].clock.advance(at - now);
+    assert!(x.lp.peers[1].engine.lost_due());
+    let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
+    assert!(!x.lp.peers[1].engine.lost_due() && x.lp.peers[1].engine.next_lost_due().is_none());
+    assert_eq!(x.lp.peers[1].engine.pending().len(), 1, "the grant itself stays pending");
+    assert_forgotten(&mut x);
+}
+
+// spec/permissions.md §3 (a node that learns it lost read access MUST drop): `aged_out_grant`
+#[test]
+fn aged_out_pending_grant_drops_spec_perm_3() {
+    aged_out_grant(523, false);
+}
+
+// spec/permissions.md §3 (a node that learns it lost read access MUST drop): `aged_out_grant`
+#[test]
+fn aged_out_pending_grant_drops_after_restart_spec_perm_3() {
+    aged_out_grant(525, true);
+}
+
 // spec/permissions.md §3: only units the node "can no longer read by another path" go: bob,
 // removed from e, still reads e through d and keeps everything.
 #[test]
