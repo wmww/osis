@@ -247,8 +247,8 @@ fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, 
     out
 }
 
-/// Named arrival orders from each entry's commit index and the setup's commit count.
-type OrdersFn = fn(&[usize], usize) -> Vec<(&'static str, Vec<Tok>)>;
+/// Named arrival orders from the history and each entry's commit index.
+type OrdersFn = fn(&Played, &[usize]) -> Vec<(&'static str, Vec<Tok>)>;
 
 /// A history and the arrival orders it is judged in.
 struct Scenario {
@@ -256,14 +256,14 @@ struct Scenario {
     spec: &'static str,
     source: &'static str,
     steps: Vec<Step>,
-    /// Orders by entry, given each entry's commit index and the setup's commit count; `None`:
-    /// as made, and the setup first with the rest reversed.
+    /// Orders by entry, given the history and each entry's commit index; `None`: as made, and
+    /// the setup first with the rest reversed.
     orders: Option<OrdersFn>,
 }
 
-fn default_orders(of: &[usize], base: usize) -> Vec<(&'static str, Vec<Tok>)> {
+fn default_orders(played: &Played, of: &[usize]) -> Vec<(&'static str, Vec<Tok>)> {
     let made: Vec<Tok> = (0..of.len()).map(Tok::In).collect();
-    let k = of.iter().position(|c| *c >= base).unwrap_or(of.len());
+    let k = of.iter().position(|c| *c >= played.base).unwrap_or(of.len());
     let rev = (0..k).chain((k..of.len()).rev()).map(Tok::In).collect();
     vec![("as made", made), ("reversed", rev)]
 }
@@ -276,7 +276,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>) -> VecFile {
         let played = play(SEED, &sc.steps);
         let (bytes, of, n) = bundle(&played);
         assert_eq!(setup.get_or_insert_with(|| bytes[..n].to_vec())[..], bytes[..n], "{}: one setup per file", sc.name);
-        let orders = sc.orders.unwrap_or(default_orders)(&of, played.base);
+        let orders = sc.orders.unwrap_or(default_orders)(&played, &of);
         let first = format!("{}, {}", sc.name, orders[0].0);
         for (i, (oname, order)) in orders.into_iter().enumerate() {
             let name = format!("{}, {oname}", sc.name);
@@ -296,7 +296,7 @@ fn generate(spec: &str, scenarios: Vec<Scenario>) -> VecFile {
 fn files() -> Vec<(&'static str, String)> {
     vec![
         ("judgment/models.vec", generate("spec/permissions.md §5-§6", models()).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §5-§6, spec/commits.md §5", rules()).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §5-§6, spec/commits.md §5", rules().into_iter().chain(starts()).chain(found()).collect()).render()),
     ]
 }
 
@@ -385,8 +385,8 @@ fn rules() -> Vec<Scenario> {
             spec: "spec/permissions.md §5.2, spec/commits.md §5",
             source: "hand-picked: W by 1, S by 2 covers it, the node drops W as covered, 2 is demoted before S (S invalid: W counts as never received), W arrives again",
             steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }],
-            orders: Some(|of, base| {
-                let k = of.iter().position(|c| *c >= base).unwrap();
+            orders: Some(|played, of| {
+                let (k, base) = (of.iter().position(|c| *c >= played.base).unwrap(), played.base);
                 // the setup, W, S, W dropped as covered, the demotion; then W again
                 let (w, s, d) = (k, k + 1, k + 2);
                 assert_eq!((of[w], of[s], of[d], of.len()), (base, base + 1, base + 2, k + 3), "one body each");
@@ -407,6 +407,225 @@ fn rules() -> Vec<Scenario> {
             spec: "spec/crdt.md §4.6, spec/permissions.md §5.2",
             source: "order harness seed 1038 (order::arrival_order_found_histories_spec_crdt_4_6)",
             steps: vec![Nested { by: 2, other: 1, t: 6, k: 0, text: false, compact: true, also: false }, New { by: 2, parent: 1, write: true }, Send { from: 1, to: 0, back: 1 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Read) }],
+            orders: None,
+        },
+    ]
+}
+
+/// Whether commit `i` of the history writes an edge (`roles.0`), a roster snapshot included.
+fn edge_commit(played: &Played, i: usize) -> bool {
+    osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.ak.as_str() == "roles.0")
+}
+
+/// As made, and a late joiner's order: the setup without its edge writes, the roster snapshot,
+/// then every later commit but the edge writes, newest first (only the snapshot tells it who
+/// held what before it).
+fn late_joiner(played: &Played, of: &[usize]) -> Vec<(&'static str, Vec<Tok>)> {
+    let made = (0..of.len()).map(Tok::In).collect();
+    let kind = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.kind;
+    let snap: Vec<usize> = (0..of.len()).filter(|e| kind(of[*e]) == osis_commit::Kind::RosterSnapshot).collect();
+    assert_eq!(snap.len(), 1, "one roster snapshot");
+    let setup = (0..of.len()).filter(|e| of[*e] < played.base && !edge_commit(played, of[*e]));
+    let rest = (0..of.len()).rev().filter(|e| of[*e] >= played.base && !edge_commit(played, of[*e]));
+    vec![("as made", made), ("late joiner", setup.chain(snap).chain(rest).map(Tok::In).collect())]
+}
+
+/// One hand-picked scenario per rule of epoch starts (roster snapshots), `until` and invite
+/// edges (spec/permissions.md §2, §6).
+fn starts() -> Vec<Scenario> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    vec![
+        // spec/permissions.md §6: before the start, the ledger's tenures and frontiers say who held what
+        Scenario {
+            name: "epoch start: pre-start writes judged by its ledger",
+            spec: "spec/permissions.md §6",
+            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 removes 1 with its frontier, then snapshots the roster (the start); the late joiner holds neither the grants nor the removal: the ledger entry's frontier keeps W1 valid, W2 invalid",
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }, tick.clone(), Roster { by: 0, t: 0 }],
+            orders: Some(late_joiner),
+        },
+        // spec/permissions.md §6: at the start a thing's edges become the snapshot's roster
+        Scenario {
+            name: "epoch start after a removal: a late joiner",
+            spec: "spec/permissions.md §6",
+            source: "hand-picked: 0 removes 2, snapshots the roster (the start), then 1 and 2 (not knowing) write; the late joiner holds the start but not the removal: 1's write valid by the roster, 2's invalid",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Write { by: 2, t: 0, op: 0, k: 0, v: 2 }],
+            orders: Some(late_joiner),
+        },
+        // spec/permissions.md §2, §5.2: an edge counts as removed from `until` on
+        Scenario {
+            name: "until passes: expiry as departure",
+            spec: "spec/permissions.md §2, §5.2",
+            source: "hand-picked: 0 sets 1's write edge to end 2.5 s on (1 not told), 1 writes 1 s and 3 s on (the first valid, the second invalid: the edge expired)",
+            steps: vec![Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: Some(2500), invite: None, flow: false }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }],
+            orders: None,
+        },
+        // spec/permissions.md §2: an invite grant adds an edge up to the author's invite
+        Scenario {
+            name: "invite grant",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-picked: 0 removes 2 and grants 1 write with invite write; 1 grants 2 write by invite (applies); 2 writes (valid)",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(Role::Write), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, invite: None, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
+            orders: None,
+        },
+    ]
+}
+
+/// The order harness's pinned histories (order.rs, notes/testing.md), each found under its own
+/// seed and played here with `SEED`, under which each judges as under its own (checked when
+/// added: the same verdicts, held sets, deaths, rosters, waiting sets and D, by commit and
+/// thing; not the digests).
+/// Left out: seed 1053's shorter shrink (a prefix of the one here), seeds 12236, 1042, 583188
+/// and 845143 (other shapes of 12161, 1006 and 47289), and 1085 (under `SEED` it shows 1024's
+/// case, its own is 1200's).
+fn found() -> Vec<Scenario> {
+    use Step::*;
+    vec![
+        Scenario {
+            name: "order seed 1558",
+            spec: "spec/permissions.md §5.1, §6",
+            source: "order harness seed 1558 (order.rs), played with seed 1038: C lowers its own edge (a nested write into A's roster snapshot's entry) with a clock behind A's, so it sorts before the snapshot",
+            steps: vec![Demote { by: 0, t: 5, holder: 1, at: 4, to_read: false }, Roster { by: 0, t: 4 }, Sync { from: 0, to: 1 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Sync { from: 1, to: 2 }, Write { by: 0, t: 7, op: 7, k: 0, v: 4 }, Send { from: 0, to: 2, back: 0 }, Edge { by: 2, t: 4, holder: 2, role: Some(Role::Read) }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1173",
+            spec: "spec/crdt.md §4.6, §4.8",
+            source: "order harness seed 1173 (order.rs), played with seed 1038: A's kept write inside B's entry dies at C's; B's creation turns invalid and un-merges both",
+            steps: vec![Nested { by: 1, other: 2, t: 7, k: 1, text: false, compact: false, also: false }, Send { from: 1, to: 0, back: 0 }, Edge { by: 2, t: 2, holder: 1, role: Some(Role::Read) }, Write { by: 0, t: 0, op: 22, k: 1, v: 9 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 93004",
+            spec: "spec/permissions.md §5.2",
+            source: "order harness seed 93004 (order.rs), played with seed 1038: C's slot reset prunes its own nested entries' creations; B's write inside them survives in B's snapshot, the entries keep their keys",
+            steps: vec![Write { by: 1, t: 5, op: 3, k: 2, v: 6 }, Write { by: 1, t: 1, op: 5, k: 2, v: 7 }, Write { by: 1, t: 5, op: 0, k: 1, v: 9 }, Send { from: 1, to: 2, back: 2 }, Sync { from: 2, to: 0 }, Nested { by: 0, other: 2, t: 4, k: 2, text: false, compact: true, also: true }, New { by: 0, parent: 5, write: false }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 12161",
+            spec: "spec/crdt.md §4.6",
+            source: "order harness seed 12161 (order.rs), played with seed 1038: B's entry creation, held only through C's snapshot, turns invalid with C's demotion; A's valid snapshot carrying it re-merges A's nested write",
+            steps: vec![Nested { by: 1, other: 2, t: 0, k: 2, text: false, compact: true, also: true }, Sync { from: 2, to: 0 }, Write { by: 0, t: 1, op: 22, k: 2, v: 1 }, Compact { by: 0, t: 1, op: 25 }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Read) }, New { by: 0, parent: 5, write: false }, New { by: 0, parent: 6, write: true }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 61165",
+            spec: "spec/permissions.md §5.2, spec/crdt.md §7",
+            source: "order harness seed 61165 (order.rs), played with seed 1038: A's entry, its creation held only through C's snapshot, holds two encodings with A's later writes in its inner entries",
+            steps: vec![New { by: 0, parent: 0, write: false }, Write { by: 0, t: 5, op: 15, k: 0, v: 5 }, Write { by: 0, t: 5, op: 1, k: 1, v: 3 }, Roster { by: 0, t: 2 }, Demote { by: 2, t: 4, holder: 1, at: 2, to_read: true }, Nested { by: 0, other: 1, t: 6, k: 2, text: false, compact: true, also: true }, Write { by: 0, t: 6, op: 3, k: 0, v: 5 }, Send { from: 0, to: 2, back: 0 }, Write { by: 0, t: 3, op: 19, k: 1, v: 8 }, Write { by: 0, t: 4, op: 16, k: 0, v: 2 }, Demote { by: 0, t: 2, holder: 1, at: 5, to_read: false }, Write { by: 2, t: 6, op: 7, k: 2, v: 0 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Write) }, Nested { by: 0, other: 2, t: 2, k: 0, text: false, compact: true, also: false }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 583175",
+            spec: "spec/permissions.md §5.2",
+            source: "order harness seed 583175 (order.rs), played with seed 1038: B's invalid snapshot carries A's removal, not held: it gives nothing",
+            steps: vec![Demote { by: 2, t: 3, holder: 1, at: 3, to_read: false }, Nested { by: 1, other: 2, t: 4, k: 1, text: false, compact: true, also: false }, Edge { by: 0, t: 3, holder: 2, role: Some(Role::Write) }, Sync { from: 2, to: 1 }, Demote { by: 0, t: 5, holder: 2, at: 4, to_read: false }, Advance { who: Some(0), ms: 1093 }, Sync { from: 1, to: 0 }, Write { by: 0, t: 3, op: 25, k: 1, v: 5 }, Send { from: 0, to: 1, back: 2 }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Edge { by: 0, t: 2, holder: 2, role: None }, Sync { from: 1, to: 2 }, Send { from: 0, to: 1, back: 2 }, Compact { by: 1, t: 2, op: 22 }, Write { by: 2, t: 0, op: 25, k: 1, v: 9 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 15085",
+            spec: "spec/permissions.md §5.2, spec/crdt.md §5.6",
+            source: "order harness seed 15085 (order.rs), played with seed 1038: two demotions un-merge 1's and 2's compacted nested writes; an entry's creation whose own dot stays is kept",
+            steps: vec![Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: false, also: false }, Write { by: 0, t: 6, op: 3, k: 2, v: 9 }, Nested { by: 2, other: 0, t: 0, k: 2, text: false, compact: true, also: true }, Write { by: 1, t: 2, op: 0, k: 1, v: 0 }, Write { by: 1, t: 6, op: 16, k: 1, v: 2 }, Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Demote { by: 0, t: 4, holder: 1, at: 1, to_read: true }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Demote { by: 0, t: 6, holder: 1, at: 5, to_read: true }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 2700027",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 2700027 (order.rs), played with seed 1038: B's keep-at-most-0 snapshot carries A's write that A's undo (lower `ts`) killed: the snapshot dies and drops",
+            steps: vec![Write { by: 0, t: 1, op: 18, k: 1, v: 6 }, Send { from: 0, to: 1, back: 0 }, Undo { by: 0, back: 0 }, Compact { by: 1, t: 0, op: 18 }, Write { by: 0, t: 0, op: 18, k: 0, v: 5 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 7855",
+            spec: "spec/crdt.md §4.8",
+            source: "order harness seed 7855 (order.rs), played with seed 1038: W1, W2 put one keep-at-most-0 map key, U undoes W1, W3 puts it again, S compacts: S's copy of U's removal kills W1's creation",
+            steps: vec![Write { by: 0, t: 1, op: 19, k: 1, v: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 0 }, Undo { by: 0, back: 1 }, Write { by: 0, t: 1, op: 19, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 19 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1291",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 1291 (order.rs), played with seed 1038: a keep-at-most-0 write, its compaction snapshot, the write undone: both bodies drop dead",
+            steps: vec![Write { by: 0, t: 2, op: 18, k: 2, v: 3 }, Compact { by: 0, t: 3, op: 18 }, Demote { by: 0, t: 3, holder: 1, at: 3, to_read: false }, Undo { by: 0, back: 2 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1006",
+            spec: "spec/permissions.md §5.2, spec/crdt.md §4.6",
+            source: "order harness seed 1006 (order.rs), played with seed 1038: B's snapshot, invalid after B's demotion, carries A's entry creation; A's commit gives back A's later write nested in that entry",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Demote { by: 0, t: 2, holder: 1, at: 5, to_read: true }, Write { by: 0, t: 0, op: 3, k: 2, v: 9 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1053",
+            spec: "spec/commits.md §5, spec/crdt.md §4.8",
+            source: "order harness seed 1053 (order.rs), played with seed 1038: two keep-at-most-0 writes with one `ts`, the later by commit ID dies on arrival; its killer's author demoted: a drop before a validity flip stays final",
+            steps: vec![Write { by: 2, t: 4, op: 18, k: 2, v: 4 }, Write { by: 1, t: 6, op: 18, k: 1, v: 4 }, Demote { by: 0, t: 4, holder: 2, at: 3, to_read: false }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1024",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 1024 (order.rs), played with seed 1038: a keep-at-most-0 body dropped at a killer that turns invalid: the drop is final",
+            steps: vec![Write { by: 0, t: 7, op: 18, k: 0, v: 9 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Write { by: 2, t: 4, op: 18, k: 2, v: 4 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 1200",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 1200 (order.rs), played with seed 1038: keep at most 30 min, the bound passed: a body whose own write turns invalid dropped or held by arrival order, final",
+            steps: vec![Demote { by: 0, t: 7, holder: 1, at: 5, to_read: true }, Write { by: 1, t: 5, op: 17, k: 0, v: 1 }, Write { by: 0, t: 5, op: 17, k: 0, v: 5 }, Advance { who: None, ms: 5183786 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 64197",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 64197 (order.rs), played with seed 1038: A's keep-at-most-0 map entry undone: the entry's tombstone is no live write, the body drops with the undo",
+            steps: vec![Write { by: 0, t: 1, op: 19, k: 0, v: 3 }, Write { by: 0, t: 1, op: 19, k: 1, v: 6 }, Undo { by: 0, back: 0 }, Undo { by: 0, back: 2 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 47289",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 47289 (order.rs), played with seed 1038: B's keep-at-most-0 map entry dropped once B's later write killed it; that write invalid before the re-grant",
+            steps: vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 3401073",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 3401073 (order.rs), played with seed 1038: B's write kills A's keep-at-most-0 write and A's snapshot of it; B's demotion makes it invalid: the dropped snapshot keeps its frontiers",
+            steps: vec![Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 2, t: 2, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 21187",
+            spec: "spec/commits.md §5",
+            source: "order harness seed 21187 (order.rs), played with seed 1038: A's keep-at-most-0 snapshot carries B's entry, which B's undo stamped before it killed; A's demotion of B makes the undo invalid",
+            steps: vec![Write { by: 1, t: 1, op: 19, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Compact { by: 1, t: 4, op: 0 }, Undo { by: 1, back: 1 }, Advance { who: None, ms: 6766743 }, Compact { by: 0, t: 0, op: 20 }, Demote { by: 0, t: 6, holder: 1, at: 1, to_read: false }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 24111",
+            spec: "spec/crdt.md §4.6, §4.7",
+            source: "order harness seed 24111 (order.rs), played with seed 1038: an expired undo's value-less write beats v1; A's later undo superseded it and is un-merged by A's backdated demotion: the value-less write wins again",
+            steps: vec![Write { by: 1, t: 7, op: 12, k: 2, v: 5 }, Write { by: 1, t: 5, op: 0, k: 2, v: 4 }, New { by: 0, parent: 3, write: false }, Write { by: 0, t: 0, op: 12, k: 2, v: 1 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) }, Undo { by: 1, back: 0 }, Undo { by: 0, back: 1 }, Advance { who: None, ms: 7126221 }, Undo { by: 1, back: 2 }, Demote { by: 0, t: 0, holder: 1, at: 0, to_read: false }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 50036",
+            spec: "spec/crdt.md §4.7",
+            source: "order harness seed 50036 (order.rs), played with seed 1038: two expired map puts: their value-less records",
+            steps: vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }],
+            orders: None,
+        },
+        Scenario {
+            name: "order seed 27039",
+            spec: "spec/permissions.md §5.2, spec/crdt.md §4.7",
+            source: "order harness seed 27039 (order.rs), played with seed 1038: a snapshot carries another's writes nested in an expiring put's entry; its author revoked, its copies go",
+            steps: vec![Demote { by: 0, t: 0, holder: 2, at: 3, to_read: true }, Demote { by: 2, t: 3, holder: 2, at: 0, to_read: false }, Write { by: 1, t: 3, op: 28, k: 1, v: 0 }, Sync { from: 1, to: 0 }, Nested { by: 0, other: 1, t: 0, k: 1, text: false, compact: true, also: true }, Compact { by: 1, t: 4, op: 5 }, Write { by: 0, t: 2, op: 7, k: 1, v: 9 }, Nested { by: 0, other: 2, t: 7, k: 2, text: false, compact: true, also: true }, Roster { by: 0, t: 6 }, Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }, Write { by: 0, t: 3, op: 1, k: 0, v: 4 }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 0, t: 7, op: 5, k: 2, v: 3 }, Edge { by: 0, t: 0, holder: 1, role: None }],
             orders: None,
         },
     ]
@@ -462,3 +681,4 @@ fn judgment_vectors_write() {
         println!("wrote {path}");
     }
 }
+
