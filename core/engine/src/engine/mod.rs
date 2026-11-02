@@ -586,6 +586,8 @@ pub struct Core {
     pub defer_deaths: bool,
     /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
+    /// `Engine::assume_unbounded`.
+    pub assume_unbounded: bool,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -893,6 +895,7 @@ impl Core {
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
+            assume_unbounded: false,
             timer_floor: 0,
             changed: None,
             sync_records: None,
@@ -1465,7 +1468,7 @@ pub(crate) fn clear_table(txn: &mut Transaction<'_>, t: osis_store::Table, start
 /// `(head, blob)`.
 pub(crate) fn decode_commit_record(v: &[u8]) -> Result<CommitRecord> {
     let (head, rest) = index::parse_head(v)?;
-    let blob = CommitBlob::decode(rest).map_err(|_| Error::Corrupt("commit blob"))?;
+    let blob = CommitBlob::decode_stored(rest).map_err(|_| Error::Corrupt("commit blob"))?;
     Ok((head, blob))
 }
 

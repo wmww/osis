@@ -651,6 +651,8 @@ fn demotion_heavy_open() {
     assert_eq!(lp.peers[0].engine.roster(&docs[0]), roster);
 }
 
+mod long_aspect;
+
 use crate::net;
 
 // spec/sync.md §6; spec/requirements.md, Scale: a first sync of N commits costs O(N). A writer

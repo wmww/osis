@@ -47,9 +47,19 @@ impl CommitBlob {
     /// Decodes a commit blob plaintext. Linked header lists stay unresolved; part indices are
     /// checked against the header by [`crate::verify_part`].
     pub fn decode(b: &[u8]) -> Result<CommitBlob, Error> {
+        Self::decode_as(b, false)
+    }
+
+    /// `decode` of a commit this node stored, checked when it arrived: its delete keys are not
+    /// decompressed again (a third of what re-reading an aspect's bodies cost).
+    pub fn decode_stored(b: &[u8]) -> Result<CommitBlob, Error> {
+        Self::decode_as(b, true)
+    }
+
+    fn decode_as(b: &[u8], stored: bool) -> Result<CommitBlob, Error> {
         let v = osis_base::decode(b, &LIMITS)?;
         let [hv, sv, pv] = as_list(&v)? else { return Err(Error::Malformed("commit blob arity")) };
-        let header = Header::from_value(hv)?;
+        let header = if stored { Header::from_stored_value(hv)? } else { Header::from_value(hv)? };
         let signature = Signature::from_value(sv)?;
         let mut parts = Vec::new();
         for p in as_list(pv)? {

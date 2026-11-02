@@ -90,6 +90,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
 
 - Legal AK: `chat:msgs:y2026.0` fits the grammar. Undeclared years go untyped, and each commit sets retention explicitly.
 - Open is O(all commits), sync is per label, and frontiers span all aspects, so yearly names help none of these. Busy chats pass 10^6 a year anyway.
+- Measured since (`scale::long_aspect`, notes/testing.md, issues/long-aspect-cost.md); the guesses below were low: every write scans the aspect today, a write costs 1.65 s at 10^6 and a rise about 3 min.
 - Budget (notes/testing.md) is 10^4 commits per aspect. Extrapolated from there to 10^6:
   - open about 6 s (budget 1 s);
   - first sync about 15 min (9 s at 10^4);
