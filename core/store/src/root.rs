@@ -204,7 +204,8 @@ mod file {
             self.write_slot(&mut f, 1, &bytes)
         }
 
-        /// Overwrites both slots in place, then removes the file.
+        /// Overwrites both slots in place (each synced), then removes the file and syncs its
+        /// directory. A crash before the removal is durable leaves zeroed slots: no record.
         fn erase(&mut self) -> Result<(), BackendError> {
             let mut f = match OpenOptions::new().write(true).open(&self.path) {
                 Ok(f) => f,
@@ -214,7 +215,11 @@ mod file {
             self.write_slot(&mut f, 0, &[0; SLOT])?;
             self.write_slot(&mut f, 1, &[0; SLOT])?;
             drop(f);
-            std::fs::remove_file(&self.path).map_err(io)
+            std::fs::remove_file(&self.path).map_err(io)?;
+            if let Some(dir) = self.path.parent().filter(|d| !d.as_os_str().is_empty()) {
+                File::open(dir).and_then(|d| d.sync_all()).map_err(io)?;
+            }
+            Ok(())
         }
     }
 }
