@@ -23,7 +23,7 @@ Who sent this: a valid delta on the message aspect; its sender is the header's a
 
 - **Send.** One commit, one delta, about 0.5 KB. Order by commit time; each device knows when it received it.
 - **Read.** History, not state: held bodies with author, time and validity, paged by time. Reactions and read markers likewise, so nobody can fake another's.
-- **Edit.** A new message referring to the old, plus a purge of the old.
+- **Edit.** Not osis editing: a new message with `replaces` naming the commit ID of the original, honored only if both have the same verified sender; newest by (time, commit ID) wins, in any arrival order. Replies and reactions keep naming the original. Modes: old text purged; old text kept as visible edit history; editing off (ignore `replaces`). Owner notes this is the one place E does not use normal osis editing.
 - **Delete for everyone.** A purge request: one body dropped everywhere honest, deleted at hosts with the sender's account key. The header-only blob is the tombstone until headers are forgotten; a durable tombstone is a small marker write.
 - **Moderator delete.** An admin purges the delta (`author` includes admins). No new feature; "admins cannot delete" is not expressible.
 - **Disappearing.** `expires` on the delta; hosts delete unattended.
@@ -58,6 +58,10 @@ Message about 0.5 KB; join about 35 KB; kick 2.7 KB per remaining member. Per de
 ## Rules leaned on
 
 Retention bounds and purge rights per edit are promised (requirements Deletion); a history read API is not. A writer's snapshot may misstate others' content in state; history reads bodies, so the chat is immune. Member forward secrecy is parked (design D, refuted by review4).
+
+## Accepted by the owner
+
+A stolen unlocked device shows history; no deniability; deletion binds only honest clients; hosts see metadata. Eventual revocation is a general osis limit, not chat's.
 
 ## Sorting into the owner's categories
 
