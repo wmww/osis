@@ -56,7 +56,7 @@ fn pair(w: &mut World, hosts: &[usize]) -> (Osis, Osis, Tid) {
 }
 
 fn skip() -> Demotion {
-    Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false }
+    Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }
 }
 
 // spec/sync.md §3 (a recipient looks for what an inbox blob names), §5: the invite to a chat its maker has not registered at the chat's host yet: the invitee is told "not here" and looks again after a back-off, well before the periodic resync, not stranded meanwhile

@@ -89,7 +89,7 @@ fn invite_goes_after_the_labels_registration_spec_sync_3() {
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
     let (l, done) = net.engine(a).create_label(&g, std::slice::from_ref(&addr)).unwrap();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
@@ -134,7 +134,7 @@ fn silent_host_of_the_label_holds_no_invite_back_spec_sync_3() {
     e.commit(m).unwrap();
     net.held_hosts.insert(silent);
     let (l, done) = net.engine(a).create_label(&g, &[addr, other]).unwrap();
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let mut acts = net.sync(a).carry_out(done).unwrap();
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     acts.extend(net.sync(a).carry_out(done).unwrap());
