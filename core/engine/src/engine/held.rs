@@ -4,7 +4,7 @@
 //! looked (`take_touched`), so the timelines re-partition only around them.
 
 use super::journal::Journaled;
-use osis_base::{CommitId, CreationRecord, Tid};
+use osis_base::{CommitId, CreationRecord, Owner, Role, Tid};
 use osis_perm::{HeldSet, RoleCommit, RosterSnapshot};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -115,6 +115,49 @@ impl Held {
             stack.extend(self.named_on(&t).copied());
         }
         out
+    }
+
+    /// `t`'s possible admins (spec/commits.md §4): `t`, its owner's or first admin's possible admins,
+    /// and those of a holder named with admin on `t` by an edge write, roster or ledger entry that
+    /// one of them signed; of any validity and whatever followed. The least such set: a forger is in
+    /// it only if a possible admin named it. Held inputs only grow, so this set does.
+    pub fn ever_admins(&self, t: &Tid) -> BTreeSet<Tid> {
+        let grants = |c: &Tid| -> Vec<(Tid, Tid)> {
+            let edges = self.commits_on(c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == *c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| (r.author, o.holder)));
+            let snaps = self.snapshots_of(c).iter().flat_map(|s| {
+                let roster = s.roster.iter().filter(|(_, e)| e.role >= Role::Admin).map(|(h, _)| *h);
+                roster.chain(s.ledger.iter().filter(|l| l.role >= Role::Admin).map(|l| l.holder)).map(|h| (s.author, h))
+            });
+            edges.chain(snaps).collect()
+        };
+        let above = |c: &Tid| match self.created(c).map(CreationRecord::owner_link) {
+            Some(Owner::Actor(x) | Owner::Ownerless(x)) => Some(x),
+            _ => None,
+        };
+        let mut sets: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        let mut todo = vec![*t];
+        while let Some(c) = todo.pop() {
+            if sets.insert(c, BTreeSet::from([c])).is_none() {
+                todo.extend(above(&c));
+                todo.extend(grants(&c).into_iter().map(|g| g.1));
+            }
+        }
+        let things: Vec<Tid> = sets.keys().copied().collect();
+        loop {
+            let mut grown = false;
+            for c in &things {
+                let mine = sets.get(c).cloned().unwrap_or_default();
+                let from = above(c).into_iter().chain(grants(c).into_iter().filter(|g| mine.contains(&g.0)).map(|g| g.1));
+                let gain: Vec<Tid> = from.flat_map(|x| sets.get(&x).into_iter().flatten().copied()).collect();
+                let set = sets.entry(*c).or_default();
+                let before = set.len();
+                set.extend(gain);
+                grown |= set.len() > before;
+            }
+            if !grown {
+                return sets.remove(t).unwrap_or_default();
+            }
+        }
     }
 
     fn set_created(&mut self, t: Tid, r: Option<Rec>) -> Option<Rec> {

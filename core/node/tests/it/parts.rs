@@ -1842,13 +1842,17 @@ fn removed_steps(rng: &mut Rng) -> Vec<Step> {
     for _ in 0..(6 + rng.below(10)) {
         let t = rng.below(2) as usize;
         let writer = 1 + rng.below(2) as usize;
-        out.push(match rng.below(9) {
+        out.push(match rng.below(12) {
             0..=2 => Two { by: writer, a: t, b: 1 - t, v: rng.below(9) as u8 },
             3 => Demote { by: 2, t, holder: 1, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
             4 => Demote { by: 0, t, holder: writer, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
             5 => Edge { by: 0, t, holder: writer, role: Some(Role::Write) },
             6 => Roster { by: 0, t },
             7 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
+            // Carol makes Bob an admin, he lowers her: a signer's grant that may fall
+            8 => Edge { by: 2, t, holder: 1, role: Some(Role::Admin) },
+            9 => Demote { by: 1, t, holder: 2, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
+            10 => Edge { by: 1, t, holder: 2, role: Some(Role::Write) },
             _ => tick.clone(),
         });
         out.push(tick.clone());
@@ -1957,4 +1961,166 @@ fn removed_author_differential_large_spec_commits_4() {
     assert!(played_n > n / 2);
     assert!(n < 10 || (released > 0 && waiting > 0), "the histories reach the rule");
     assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
+}
+
+
+/// A lowering of `who` on `t` by peer `by` with a frontier listing nothing, as no writer here makes it.
+fn forge_lowering(lp: &mut osis_node::local_peer::LocalPeer, by: usize, t: Tid, who: Tid) -> Vec<u8> {
+    use crate::common::*;
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_schema::Codec as _;
+    let roles = ak("roles.0");
+    let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(who), edge(Role::Read).to_value())]));
+    let author = lp.peers[by].engine.tid();
+    let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+    let own = Source::commit(osis_base::CommitId([0; 32]));
+    let mut w = Writer::new(ts, own.clone(), 1 << 40);
+    let f = create(&mut w, &osis_schema::core_schema().view(roles.as_str()).unwrap(), &v).unwrap();
+    let r = w.range();
+    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
+    cx.own = own;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let mut aw = AspectWrite::new(t, roles.clone(), r.lo, r.hi, bytes);
+    aw.retention = osis_commit::retention::write_retention(roles.as_str(), None, None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+    cb.aspects.push(aw);
+    cb.frontier = Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value());
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+// spec/commits.md §4: a lowering ends the wait for a removed author's delta only when signed by a
+// possible admin of its thing. A plain holder's forgery on the thing or up its owner chain, after granting
+// itself admin or not, tears no commit; an ex-admin's, and an admin through a group's or an owner's, ends
+// it, before or after the commit, on the thing or on its owner.
+#[test]
+fn lowering_ends_a_wait_only_by_a_possible_admin_spec_commits_4() {
+    use crate::common::*;
+    use osis_schema::Codec as _;
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Who {
+        Writer,
+        Reader,
+        OwnerReader,
+        SelfGranted,
+        ExAdmin,
+        ByGroup,
+        OnOwner,
+    }
+    let empty = || Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value());
+    for who in [Who::Writer, Who::Reader, Who::OwnerReader, Who::SelfGranted, Who::ExAdmin, Who::ByGroup, Who::OnOwner] {
+        for before in [true, false] {
+            let mut lp = net(4, 77);
+            let (x, o) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+            let y = {
+                let p = lp.peer(0).unwrap();
+                let mut m = Mutation::new();
+                let t = p.engine.new_thing(&mut m, o);
+                m.set(t, &REG, &s("new")).unwrap();
+                p.commit(m).unwrap();
+                t
+            };
+            let (bob, att, admin) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+            for (t, w, r) in [(x, bob, Role::Write), (y, bob, Role::Write), (y, admin, Role::Admin)] {
+                set_edge(&mut lp.peers[0].engine, t, w, Some(edge(r)), None);
+            }
+            let e = &mut lp.peers[0].engine;
+            match who {
+                Who::Writer | Who::SelfGranted => drop(set_edge(e, y, att, Some(edge(Role::Write)), None)),
+                Who::Reader => drop(set_edge(e, y, att, Some(edge(Role::Read)), None)),
+                Who::OwnerReader => drop(set_edge(e, o, att, Some(edge(Role::Read)), None)),
+                Who::ExAdmin => {
+                    set_edge(e, y, att, Some(edge(Role::Admin)), None);
+                    set_edge(e, y, att, None, empty());
+                }
+                // the group is an actor the owner made admin of `y`, `att` an admin of the group
+                Who::ByGroup => {
+                    set_edge(e, y, x, Some(edge(Role::Admin)), None);
+                    set_edge(e, x, att, Some(edge(Role::Admin)), None);
+                }
+                Who::OnOwner => {
+                    set_edge(e, o, bob, Some(edge(Role::Write)), None);
+                    set_edge(e, o, att, Some(edge(Role::Admin)), None);
+                }
+            }
+            lp.sync_all().unwrap();
+            let base: Vec<_> = (0..4).flat_map(|i| packages(&mut lp, i)).collect();
+            lp.advance(1_000);
+            let mut extra = Vec::new();
+            if who == Who::SelfGranted {
+                let v = Value::Map(std::collections::BTreeMap::from([(Value::Tid(att), edge(Role::Admin).to_value())]));
+                extra.push(crate::validity::forge_role_commit(&mut lp, 2, y, &ak("roles.0"), &v, 1 << 39));
+                lp.advance(1_000);
+            }
+            let forged = forge_lowering(&mut lp, 2, if who == Who::OnOwner { o } else { y }, bob);
+            lp.advance(1_000);
+            let mut m = Mutation::new();
+            m.set(x, &REG, &s("by bob")).unwrap();
+            m.set(y, &REG, &s("by bob")).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
+            let mut p = Peer::new(7000, lp.peers[0].engine.now()).unwrap();
+            p.engine.set_syncing(x, true).unwrap();
+            p.engine.set_syncing(y, true).unwrap();
+            for pk in &base {
+                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+            }
+            for b in &extra {
+                let _ = p.engine.ingest(b, Vec::new());
+            }
+            let part = on(&cp, x);
+            for b in if before { [&forged, &part] } else { [&part, &forged] } {
+                let _ = p.engine.ingest(b, Vec::new());
+                p.engine.reexamine().unwrap();
+            }
+            let want = if matches!(who, Who::ExAdmin | Who::ByGroup | Who::OnOwner) { "by bob" } else { "new" };
+            assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s(want)), "{who:?} before={before}");
+        }
+    }
+}
+
+// spec/commits.md §4: the signer's admin may fall with its grant left out by the frontier that fells its
+// granter, so that on the final timeline it never held admin: a possible admin all the same, in every order.
+#[test]
+fn lowering_by_one_whose_grant_fell_alike_in_every_order_spec_commits_4() {
+    use crate::common::*;
+    use osis_schema::Codec as _;
+    let mut lp = net(4, 91);
+    let (x, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let (bob, carol, z) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    for (t, w, r) in [(x, bob, Role::Write), (y, bob, Role::Write), (y, z, Role::Admin)] {
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(r)), None);
+    }
+    lp.sync_all().unwrap();
+    let base: Vec<_> = (0..4).flat_map(|i| packages(&mut lp, i)).collect();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(x, &REG, &s("by bob")).unwrap();
+    m.set(y, &REG, &s("by bob")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
+    lp.advance(1_000);
+    let g = set_edge(&mut lp.peers[3].engine, y, carol, Some(edge(Role::Admin)), None);
+    let gp = packages(&mut lp, 3).into_iter().find(|p| p.id == g).unwrap();
+    sync(&mut lp, 3, 2);
+    lp.advance(1_000);
+    let lowering = forge_lowering(&mut lp, 2, y, bob);
+    lp.advance(1_000);
+    let fall = set_edge(&mut lp.peers[0].engine, y, z, None, Some(osis_schema::core_types::Frontier { commits: Default::default() }.to_value()));
+    let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
+    let items = [on(&cp, x), gp.bytes.clone(), lowering, fp.bytes.clone()];
+    for (k, order) in permutations(4).into_iter().enumerate() {
+        let mut p = Peer::new(7000 + k as u64, lp.peers[0].engine.now()).unwrap();
+        p.engine.set_syncing(x, true).unwrap();
+        p.engine.set_syncing(y, true).unwrap();
+        for pk in &base {
+            let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+        for i in order.iter() {
+            let _ = p.engine.ingest(&items[*i], Vec::new());
+            p.engine.reexamine().unwrap();
+        }
+        assert_eq!(p.engine.get(&x, &reg()).unwrap(), Some(s("by bob")), "{order:?}");
+    }
 }
