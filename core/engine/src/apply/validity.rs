@@ -60,7 +60,6 @@ fn dots_of(form: Form, range: Option<(u64, u64)>) -> Dots {
     }
 }
 
-
 /// Entries of a `roles.0` (map) fragment: (dot, key, fragment).
 fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
     let Some(osis_crdt::SlotRef::Frag(Fragment::Map(m))) = f.slot(osis_crdt::Encoding::Map) else { return Vec::new() };

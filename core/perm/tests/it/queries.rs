@@ -647,3 +647,72 @@ fn patched_view_equals_cloned_edges() {
         }
     }
 }
+
+/// §5.1 "Frontier" against step 4: an explicit write appended after a random history audits
+/// nothing outside the scope `demotion_scope` gave for it beforehand (each fall it audits is in
+/// `roles`, each fall below write in `content`). Its frontier covers every held write, so its
+/// audit drops nothing and the walk before it stays the one the scope was read from (a drop that
+/// takes away a standing widens the fall: issues/demotion-scope-cascade.md).
+fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Option<String> {
+    use osis_perm::{EdgeOp, Frontier, RoleCommit};
+    let tl = Timeline::evaluate(&w.held());
+    let ents: Vec<Tid> = nodes.iter().chain(things).copied().collect();
+    let author = nodes[rng.below(nodes.len())];
+    let target = things[rng.below(things.len())];
+    let holder = ents[rng.below(ents.len())];
+    let new = [None, edge(Read), edge(Write), edge_inv(Read, Some(Write), None)][rng.below(4)];
+    let t = 500;
+    let scope = tl.demotion_scope(&author, &holder, &target, new, ts(t));
+    let mut held = w.held();
+    let all = Frontier { commits: w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|s| s.id)).collect(), ..Frontier::default() };
+    let id = osis_base::CommitId([0xee; 32]);
+    held.add_commit(RoleCommit { id, ts: ts(t), author, actor: author, frontier: Some(std::sync::Arc::new(all)), ops: vec![EdgeOp { target, holder, edge: new }] });
+    let tl2 = Timeline::evaluate(&held);
+    if !tl2.is_applied(&WriteId::Op(id, 0)) || !residue(&tl2).is_empty() {
+        return None;
+    }
+    let p = Point { ts: ts(t), node: author, commit: id };
+    let name = |x: &Tid| nodes.iter().position(|y| y == x).map(|i| format!("n{i}")).or_else(|| things.iter().position(|y| y == x).map(|i| format!("A{i}"))).unwrap_or_default();
+    let names = |m: &BTreeMap<Tid, std::collections::BTreeSet<Tid>>| m.iter().map(|(x, s)| format!("{}: {:?}", name(x), s.iter().map(name).collect::<Vec<_>>())).collect::<Vec<_>>().join(", ");
+    let what = format!("R: {} sets {} on {} := {new:?}; scope roles {{{}}} content {{{}}}", name(&author), name(&holder), name(&target), names(&scope.roles), names(&scope.content));
+
+    for x in nodes {
+        for n in &ents {
+            for f in tl2.falls(x, n).iter().filter(|f| f.point == p) {
+                if !scope.roles.get(x).is_some_and(|s| s.contains(n)) {
+                    return Some(format!("fall {:?} -> {:?} of {} on {} outside the roles scope; {what}", f.held, f.now, name(x), name(n)));
+                }
+            }
+            for d in tl2.demotions(x, n).iter().filter(|d| d.point == p && d.below == Write) {
+                if !scope.content.get(x).is_some_and(|s| s.contains(n)) {
+                    return Some(format!("demotion below write of {} on {} outside the content scope; {what}", name(x), name(n)));
+                }
+            }
+        }
+    }
+    None
+}
+
+fn scope_run(samples: u64, seed: u64) {
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    for s in 0..samples {
+        let fail = if s % 2 == 0 {
+            let h = edges::random_hist(&mut rng);
+            let (w, nodes, t) = edges_world(&h, 1);
+            scope_check(&w, &nodes, &[t], &mut rng).map(|d| format!("{d}\n{h}"))
+        } else {
+            let h = joint::random_hist(&mut rng);
+            let (w, nodes, actors) = joint_world(&h, 1);
+            scope_check(&w, &nodes, &actors, &mut rng).map(|d| format!("{d}\n{h}"))
+        };
+        if let Some(d) = fail {
+            panic!("seed {seed:#x} sample {s}: {d}");
+        }
+    }
+}
+
+#[test]
+fn demotion_scope_covers_audits_spec_permissions_5_1() {
+    scope_run(4000, 0x5eed_0301);
+}
