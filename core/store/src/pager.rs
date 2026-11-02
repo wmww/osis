@@ -22,7 +22,7 @@ use crate::root::{RootRecord, RootStorage};
 use crate::Error;
 use osis_base::BlobId;
 use osis_crypto::aead::{self, NONCE_LEN};
-use osis_crypto::{CryptoRngCore, Secret32, Zeroizing};
+use osis_crypto::{CryptoRngCore, Secret32, Zeroizing, padme};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 /// Shape and budgets. `arity`, `depth` and `page_max` are fixed when the store is created
@@ -132,17 +132,42 @@ impl Meta {
     }
 }
 
+/// Least padded plaintext of a unit row (class M): units below it all show this one length, so
+/// a small page's version lengths say nothing; Padmé's class width reaches 32 bytes here. 0:
+/// small units leak their length to within Padmé's few bytes; infinity: every unit this big.
+const UNIT_MIN: usize = 512;
+
+/// Padded plaintext length of a row: Padmé of `len + 1` (spec/wire.md §5), units at least
+/// `UNIT_MIN`. Tree, top and journal rows hold keys and row names only: their lengths count
+/// entries, which the row names show anyway.
+fn padded_len(row: &[u8], len: usize) -> usize {
+    let p = padme(len.saturating_add(1));
+    if row.first() == Some(&b'u') { p.max(UNIT_MIN) } else { p }
+}
+
+/// `nonce || AEAD(key, AD row, plaintext || 0x80 || zeros)` up to `padded_len`.
 fn seal(key: &Secret32, row: &[u8], plaintext: &[u8], rng: &mut dyn CryptoRngCore) -> Result<Vec<u8>, Error> {
     let mut nonce = [0u8; NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    let ct = aead::seal(key.expose(), &nonce, row, plaintext).map_err(|_| Error::Misuse("unit too large"))?;
+    let mut padded = Zeroizing::new(Vec::with_capacity(padded_len(row, plaintext.len())));
+    padded.extend_from_slice(plaintext);
+    padded.push(0x80);
+    padded.resize(padded_len(row, plaintext.len()), 0);
+    let ct = aead::seal(key.expose(), &nonce, row, &padded).map_err(|_| Error::Misuse("unit too large"))?;
     Ok([&nonce[..], &ct].concat())
 }
 
+/// Opens and unpads a row; the padded length must be `padded_len`'s.
 fn open(key: &Secret32, row: &[u8], value: &[u8]) -> Result<Vec<u8>, Error> {
     let (nonce, ct) = value.split_at_checked(NONCE_LEN).ok_or(Error::Corrupt("row"))?;
     let nonce: [u8; NONCE_LEN] = nonce.try_into().map_err(|_| Error::Corrupt("row"))?;
-    aead::open(key.expose(), &nonce, row, ct).map_err(|_| Error::Corrupt("row decryption"))
+    let mut plain = aead::open(key.expose(), &nonce, row, ct).map_err(|_| Error::Corrupt("row decryption"))?;
+    let end = plain.iter().rposition(|&b| b != 0).ok_or(Error::Corrupt("row padding"))?;
+    if plain.get(end) != Some(&0x80) || padded_len(row, end) != plain.len() {
+        return Err(Error::Corrupt("row padding"));
+    }
+    plain.truncate(end);
+    Ok(plain)
 }
 
 /// A journal record: rows and blobs a transaction wrote (deleted on rollback) and, for the
@@ -990,5 +1015,67 @@ mod tests {
         assert_eq!(changed.len(), 1 + 5 + 1 + 1, "{changed:?}");
         assert_eq!(p.read(123_456).unwrap(), Some(b"x".to_vec()));
         assert_eq!(p.read(7).unwrap(), Some(7u64.to_be_bytes().to_vec()));
+    }
+
+    // spec/commits.md §5: dropping destroys every local copy, no fingerprint left; spec/wire.md §5:
+    // Padmé; notes/local-store.md, Row padding: a row's length shows only its Padmé class, at least `UNIT_MIN` for units, and
+    // the plaintext round-trips at every length around the class boundaries.
+    #[test]
+    fn row_lengths_show_only_the_class() {
+        let key = Secret32::from_bytes([7; 32]);
+        let mut rng = SeededRng::from_u64(2);
+        let (unit, node) = (unit_row(5, 9), node_row(1, 3, 9));
+        let sealed = |row: &[u8], len: usize, rng: &mut SeededRng| seal(&key, row, &vec![0xa5; len], rng).unwrap();
+        assert_eq!(sealed(&unit, 0, &mut rng).len(), sealed(&unit, UNIT_MIN - 1, &mut rng).len(), "below the floor: one length");
+        assert_eq!(sealed(&unit, 4200, &mut rng).len(), sealed(&unit, 4220, &mut rng).len(), "one class at 4 KB");
+        assert!(sealed(&node, 1, &mut rng).len() < sealed(&unit, 1, &mut rng).len(), "no floor for tree nodes");
+        for row in [&unit, &node] {
+            let mut lens: Vec<usize> = (0..=16).collect();
+            for len in 0..9000 {
+                if padded_len(row, len) != padded_len(row, len + 1) {
+                    lens.extend([len, len + 1]);
+                }
+            }
+            for len in lens {
+                let plain: Vec<u8> = (0..len).map(|i| i as u8 | 1).collect();
+                let v = seal(&key, row, &plain, &mut rng).unwrap();
+                assert_eq!(v.len(), NONCE_LEN + padded_len(row, len) + aead::TAG_LEN);
+                assert_eq!(open(&key, row, &v).unwrap(), plain, "len {len}");
+            }
+        }
+        // A trailing zero in the plaintext survives (the marker ends the scan).
+        let v = seal(&key, &unit, &[0, 0x80, 0], &mut rng).unwrap();
+        assert_eq!(open(&key, &unit, &v).unwrap(), vec![0, 0x80, 0]);
+    }
+
+    // spec/wire.md §5: Padmé; notes/local-store.md, Row padding: overhead measurement (no timing). Units above the floor
+    // pay under 1/16 of their length; prints the mean over every length up to 16 KiB.
+    #[test]
+    fn row_padding_overhead() {
+        let unit = unit_row(1, 1);
+        let (mut plain, mut padded) = (0usize, 0usize);
+        for len in UNIT_MIN..16 << 10 {
+            let p = padded_len(&unit, len);
+            assert!(p > len && p <= (len + 1) * 17 / 16, "len {len} pads to {p}");
+            plain += len;
+            padded += p;
+        }
+        println!("unit padding over {UNIT_MIN}..16 KiB: {:.2}% mean", 100.0 * (padded - plain) as f64 / plain as f64);
+    }
+
+    proptest::proptest! {
+        // spec/commits.md §5, spec/wire.md §5; notes/local-store.md, Row padding: rows of lengths in one
+        // class seal to one length; every length round-trips.
+        #[test]
+        fn row_padding_classes(a in 0usize..6000, b in 0usize..6000, unit in proptest::bool::ANY) {
+            let key = Secret32::from_bytes([3; 32]);
+            let mut rng = SeededRng::from_u64(a as u64);
+            let row = if unit { unit_row(2, 4) } else { node_row(0, 1, 4) };
+            let (pa, pb): (Vec<u8>, Vec<u8>) = (vec![0x11; a], vec![0; b]);
+            let (va, vb) = (seal(&key, &row, &pa, &mut rng).unwrap(), seal(&key, &row, &pb, &mut rng).unwrap());
+            proptest::prop_assert_eq!(va.len() == vb.len(), padded_len(&row, a) == padded_len(&row, b));
+            proptest::prop_assert_eq!(open(&key, &row, &va).unwrap(), pa);
+            proptest::prop_assert_eq!(open(&key, &row, &vb).unwrap(), pb);
+        }
     }
 }
