@@ -245,7 +245,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let ts = now_ts(tx.core);
     let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
     let old = tl.edges_at(None).get(&holder, &target).copied();
-    let new_p = d.new.as_ref().map(perm_edge);
+    // the lowered edge keeps the standing edge's `keyset` (spec/crypto.md §4), as written below
+    let new_p = d.new.as_ref().map(|n| PermEdge { keyset: old.and_then(|o| o.keyset), ..perm_edge(n) });
     if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
