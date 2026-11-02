@@ -392,11 +392,13 @@ fn redelivery_leaves_a_part_past_its_expiry_spec_commits_5() {
     m.expires(h, &REG, osis_base::WallMs(t)).unwrap();
     let c = x.net.engine(a).commit(m).unwrap().unwrap();
     let good = plain(&mut x.net, a, &c);
-    x.give(good, c, 100);
+    let id = x.give(good, c, 100);
+    assert!(x.net.sync(b).holds_blob(&id));
     x.net.advance(120_000);
     x.net.feed(b, Event::Tick);
     x.net.settle(10_000);
     assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "flagged at T");
+    assert!(!x.net.sync(b).holds_blob(&id), "its blob and key go at T");
     x.net.restart(b, 77);
     x.net.feed(b, Event::Local);
     x.net.settle(10_000);
@@ -405,6 +407,41 @@ fn redelivery_leaves_a_part_past_its_expiry_spec_commits_5() {
     assert!(x.holds(c));
     assert_eq!(x.read(), Some(Value::Str("first".into())));
     assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "still counts as never received");
+}
+
+// spec/commits.md §5: a part of a pending commit named by a held purge request goes from the node:
+// the pending copy and the blob holding it. The commit waits for its other delta.
+#[test]
+fn purged_pending_part_leaves_its_blob_spec_commits_5() {
+    let mut x = case();
+    let (a, b, g, h) = (x.a, x.b, x.g, x.h);
+    x.give_record(90);
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &Value::Str("purged".into())).unwrap();
+    m.set(h, &BRIEF, &Value::Str("brief".into())).unwrap();
+    let c = x.net.engine(a).commit(m).unwrap().unwrap();
+    // sealed before the purge drops it at its author: the body of `t:reg.0` alone
+    let reg = x.net.engine(a).bodies(&c).unwrap().into_iter().find(|y| CommitBlob::decode(&y.plaintext).unwrap().parts.iter().any(|p| x.net.engine(a).header(&c).unwrap().aspects[p.ai].ak.as_str() == "t:reg.0")).unwrap();
+    assert_eq!(reg.parts.len(), 1);
+    let (id, e) = entry(&mut x.net, a, a, g, reg.plaintext, &c, 100);
+    x.net.advance(10);
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &Value::Str("public".into())).unwrap();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: h, ak: osis_base::Ak::new("t:reg.0").unwrap() });
+    let p = x.net.engine(a).commit(m).unwrap().unwrap();
+    let (host, l) = (x.host, x.l);
+    push(&mut x.net, b, host, l, e, 100);
+    assert!(x.net.engine(b).pending().iter().any(|q| q.0 == c), "it waits for its other delta");
+    assert!(x.net.sync(b).holds_blob(&id));
+    let pp = plain(&mut x.net, a, &p);
+    x.give(pp, p, 110);
+    assert!(x.holds(p));
+    assert!(x.net.engine(b).pending().iter().any(|q| q.0 == c), "it still waits");
+    assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "flagged");
+    assert!(!x.net.sync(b).holds_blob(&id), "the purged part's blob and key go");
+    every_body(&mut x.net, a, a, g, b, host, l, &c, 120);
+    assert!(x.holds(c), "{:?}", x.net.engine(b).pending());
+    assert_eq!(x.read(), Some(Value::Str("public".into())));
 }
 
 // spec/commits.md §5: a body dropped for its keep bounds counts as never received: a name on its commit

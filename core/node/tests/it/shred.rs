@@ -95,6 +95,74 @@ fn purged_after_pending_unrecoverable_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "purged content recovered from the pending copy");
 }
 
+/// Node 0 writes `marker` on `t` and a value on `t2` in commit `c` (`whole`: its package), then purges
+/// `c`'s part on `t` (`request`). Node 1 knows `t`, syncs both, and lacks `t2`'s record: `c` waits whole.
+fn pending_purge(seed: u64, marker: &str) -> (LocalPeer, Tid, osis_base::CommitId, osis_node::local_peer::Package, osis_node::local_peer::Package) {
+    let mut lp = net2(seed);
+    let t = new_thing(&mut lp, 0);
+    lp.sync(0, 1).unwrap();
+    let t2 = new_thing(&mut lp, 0);
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.peers[1].engine.set_syncing(t2, true).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s(&big(marker))).unwrap();
+    m.set(t2, &REG, &s("other")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    // taken before the purge drops it at its author
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("public")).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    (lp, t, c, whole, request)
+}
+
+// spec/commits.md §5: a part of a commit held pending that a held purge request names goes from
+// the pending copy, whether the request comes first or after
+#[test]
+fn purged_while_pending_unrecoverable_spec_commits_5() {
+    for request_first in [true, false] {
+        let marker = "PENDING-PURGE-3f1a";
+        let (mut lp, t, c, whole, request) = pending_purge(75 + 10 * u64::from(request_first), marker);
+        let order = if request_first { [&request, &whole] } else { [&whole, &request] };
+        for pk in order {
+            lp.deliver(1, pk).unwrap();
+            lp.peers[1].engine.reexamine().unwrap();
+        }
+        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "request first {request_first}: it waits for t2");
+        assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("public")));
+        assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "request first {request_first}: purged content recovered from the pending copy");
+        assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1, "request first {request_first}: flagged");
+    }
+}
+
+// spec/commits.md §4 (copies), §5: a copy of a pending commit holding a purged part is spent (node-sync
+// forgets its blob) once the pending copy holds its other parts alike; while a junk copy holds another
+// part's slot (its thing's record away, the hash uncheckable) it may hold the only true copy: not spent.
+#[test]
+fn copy_with_a_purged_part_spent_unless_it_may_be_needed_spec_commits_5() {
+    for junk in [false, true] {
+        let (mut lp, t, c, whole, request) = pending_purge(95 + u64::from(junk), "SPENT-MARK-0c4d");
+        let copy = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+        if junk {
+            let mut j = copy.clone();
+            j.parts.retain(|p| j.header.aspects[p.ai].tid != t);
+            for p in &mut j.parts {
+                p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![6; 40])]));
+            }
+            lp.peers[1].engine.ingest(&j.encode(), Vec::new()).unwrap();
+        }
+        lp.deliver(1, &whole).unwrap();
+        assert!(!lp.peers[1].engine.spent_copy(&c, &copy).unwrap(), "junk {junk}: nothing went yet");
+        lp.deliver(1, &request).unwrap();
+        lp.peers[1].engine.reexamine().unwrap();
+        assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "junk {junk}");
+        assert_eq!(lp.peers[1].engine.spent_copy(&c, &copy).unwrap(), !junk, "junk {junk}");
+    }
+}
+
 // spec/commits.md §6: at T the body is dropped; spec/commits.md §5: no local copy survives
 #[test]
 fn expired_body_unrecoverable_spec_commits_6() {

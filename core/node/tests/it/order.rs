@@ -1153,7 +1153,7 @@ fn plain_state(state: &str) -> String {
 /// The aspects (as `facts_text` prints them) node `e` flags suspect for a part it held pending
 /// at its expiry.
 fn expired_pending(e: &mut osis_node::Engine) -> BTreeSet<(String, String)> {
-    e.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
+    e.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingDrop as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
 }
 
 /// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
