@@ -1,0 +1,6 @@
+# Un-merge vouching of key-erased map records
+> Summary: `Unmerge::vouches` keys map records by (dot, key) but a key-erased record (key `None`) is vouched by any copy under its dot, a misstated one under another key included; and a snapshot's value-less creation copy vouches only the key-erased record, not a keyed record of the dot a node with a slower clock still holds. Found by reading; not reproduced.
+> Tags: security, engine, crdt
+
+- Misstated copy: an invalid writer's entry whose key expired or was purged; a valid forger's snapshot copies its creation under "evil". The key-erased record keeps others' nested writes, and the live "evil" record reads joined with it (spec/crdt.md §5.6 Live), so they read under "evil". The node cannot tell the copy's key from the erased one; before crdt-leftovers the keyed case behaved the same.
+- Clock skew: a snapshot written after the entry's expiry T carries the creation value-less; a node before T holds the keyed record, which that copy does not vouch, so others' nested writes in it go there and stay at nodes past T. The dot is hidden either way (a value-less creation hides it), so reads may agree while states differ.
