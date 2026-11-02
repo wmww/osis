@@ -1099,8 +1099,8 @@ impl Engine {
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
     /// unchanged, and for a node-form body, the snapshot's frontier holds its counters, for a
     /// body judged by commit ID, the snapshot lists it as absorbed (so every holder of the
-    /// snapshot counts the body as received once it is dropped, spec/crdt.md §8).
-    /// `None` when either is not held (nothing is established).
+    /// snapshot counts the body as received once it is dropped, spec/crdt.md §8). A carrier
+    /// only covers none. `None` when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {
@@ -1113,6 +1113,21 @@ impl Engine {
             Ok(r)
         })
     }
+}
+
+/// Whether part `ai` of snapshot `s` is a carrier only (`osis_commit::retention::carrier_only`).
+fn carrier_at(core: &Core, s: &CommitId, ai: usize) -> bool {
+    core.ix.commits.get(s).and_then(|m| m.header.aspects.get(ai).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
+}
+
+/// Whether frontiers `fr` miss some of the counters below `hi` of commit `c` (header `h`), a
+/// node- or session-form commit with own writes (judged by counters); `false` for others.
+fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi: u64) -> bool {
+    if !h.form.counted() || !h.kind.has_own_writes() {
+        return false;
+    }
+    let src = h.form.own_source(h.author, *c);
+    fr.sources().find(|(s, _)| *s == src).is_none_or(|(_, f)| f.saturating_add(1) < hi)
 }
 
 /// Whether a commit's writes are judged by its ID (commit form, imports: snapshots list them
@@ -1128,8 +1143,9 @@ fn by_id(kind: Kind, form: Form) -> bool {
 /// pull decoder walking them side by side (issues/durable-decode-bound.md).
 fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2)
-    if !crate::apply::validity::snapshot_valid(tx.core, s, tid, ak) {
+    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); a
+    // carrier only covers none (spec/commits.md §5)
+    if !crate::apply::validity::snapshot_valid(tx.core, s, tid, ak) || carrier_at(tx.core, s, sai) {
         return Ok(Some(false));
     }
     // a snapshot body still to arrive (or missing again, `uncover`): nothing is established
@@ -1182,8 +1198,7 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
     let [g] = gives.as_slice() else { return Ok(None) };
     if let Some((fr, abs)) = g {
         let h = &m.header;
-        let by_frontier = h.form == Form::Node && h.kind.has_own_writes();
-        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| fr.nodes.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
+        let unseen = h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi));
         if unseen || (by_id(h.kind, h.form) && !abs.iter().any(|x| x.0 == *c)) {
             return Ok(Some(false));
         }

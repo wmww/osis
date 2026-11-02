@@ -179,6 +179,7 @@ impl Engine {
             ("void", format!("{:?}", *ix.void)),
             ("valueless", format!("{:?}", *ix.valueless)),
             ("imports", format!("{:?}", *ix.imports)),
+            ("undone_by", format!("{:?}", *ix.undone_by)),
         ].into_iter().collect();
         IndexDigest { commits, held, by_chunk: (*ix.by_chunk).clone(), snapshots, dropped_snapshots, carried, tables }
     }

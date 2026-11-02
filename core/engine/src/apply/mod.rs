@@ -213,6 +213,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         osis_commit::verify_signature(id, &blob.signature, &vk)?;
     }
     h.validate()?;
+    // a frontier that does not decode is bad input, never a demotion without one (spec/wire.md
+    // §4 field 12)
+    if h.frontier.is_some() && validity::header_frontier(&h).is_none() {
+        return Err(Error::BadInput("a frontier that is not a frontier"));
+    }
     // an own commit this store does not know of (it was restored from a backup) takes its
     // counters: this node never uses them again (spec/crdt.md §2.1)
     if h.author == tx.core.id.tid() && h.form == osis_commit::Form::Node && h.kind.has_own_writes() && h.ephemeral.is_none() {

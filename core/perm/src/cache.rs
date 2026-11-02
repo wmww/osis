@@ -15,7 +15,7 @@
 use crate::graph::{Class, Edges, Owner, Owners};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Dots, Edge, Frontier, RoleCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
+use crate::types::{Edge, Frontier, RoleCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};
 use crate::walk::{Applied, Attr, Change, Demotion, Fall, Input, Outcome, Undo, Walked};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
@@ -132,16 +132,6 @@ impl W {
         self.n(t.ctr);
         self.bool(t.subgroup);
     }
-    fn dots(&mut self, d: &Dots) {
-        match d {
-            Dots::Node { lo, hi } => {
-                self.u8(0);
-                self.n(*lo);
-                self.n(*hi);
-            }
-            Dots::Commit => self.u8(1),
-        }
-    }
     fn wid(&mut self, w: &WriteId) {
         match w {
             WriteId::Op(c, k) => {
@@ -181,7 +171,6 @@ impl W {
                 self.tid(&on);
             }
         }
-        self.dots(&a.dots);
     }
     fn edge_map(&mut self, m: &BTreeMap<Tid, Edge>) {
         self.len(m.len());
@@ -243,7 +232,6 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
             w.tid(&o.target);
             w.tid(&o.holder);
             w.opt(o.edge.as_ref(), W::edge);
-            w.dots(&o.dots);
         }
         flush(&mut w);
     }
@@ -254,7 +242,6 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
         w.tid(&s.author);
         w.tid(&s.actor);
         w.tid(&s.thing);
-        w.dots(&s.dots);
         w.len(s.roster.len());
         for (m, e) in &s.roster {
             w.tid(m);
@@ -612,13 +599,6 @@ impl<'a> R<'a> {
         };
         Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })
     }
-    fn dots(&mut self) -> Option<Dots> {
-        match self.u8()? {
-            0 => Some(Dots::Node { lo: self.n()?, hi: self.n()? }),
-            1 => Some(Dots::Commit),
-            _ => None,
-        }
-    }
     fn wid(&mut self) -> Option<WriteId> {
         match self.u8()? {
             0 => Some(WriteId::Op(self.cid()?, u32::try_from(self.n()?).ok()?)),
@@ -642,7 +622,7 @@ impl<'a> R<'a> {
             1 => Attr::SelfRemoval(self.class()?, self.tid()?),
             _ => return None,
         };
-        Some(Applied { author, target, point, attr, dots: self.dots()? })
+        Some(Applied { author, target, point, attr })
     }
     fn pair(&mut self) -> Option<(Tid, Tid)> {
         Some((self.tid()?, self.tid()?))

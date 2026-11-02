@@ -596,38 +596,6 @@ fn extend_over_commits_and_leaves_together() {
     assert!(extended > 10, "{extended}");
 }
 
-/// spec/commits.md §4 (overlapping node-form `roles.0` ranges void both commits), spec/permissions.md §5.1:
-/// writes after every held one go on by `Timelines::append` alone while their ranges are
-/// disjoint; one overlapping a held range (or a voided one) takes the general path, and every
-/// step equals an evaluation from scratch.
-#[test]
-fn append_declines_overlapping_ranges_spec_commits_4() {
-    use osis_base::Role::{Admin, Read, Write};
-    let mut w = World::new();
-    let n = w.nodes(4);
-    let (k, a) = (n[0], n[1]);
-    let g = w.thing(k);
-    w.set(k, g, a, edge(Admin), 1, &[]);
-    // holders already known: a new node always takes the general path
-    w.set(k, g, n[2], edge(Read), 2, &[]);
-    w.set(k, g, n[3], edge(Read), 3, &[]);
-    let mut held = w.held();
-    let mut inc = Timelines::new();
-    inc.update(&held);
-    // (holder, role, range, appended alone)
-    let steps = [(n[2], Write, (0, 2), true), (n[3], Read, (2, 4), true), (n[2], Read, (3, 5), false), (n[3], Write, (4, 6), false), (n[2], Write, (6, 7), true)];
-    for (i, (m, r, (lo, hi), alone)) in steps.into_iter().enumerate() {
-        let op = osis_perm::EdgeOp { target: g, holder: m, edge: edge(r), dots: osis_perm::Dots::Node { lo, hi } };
-        let id = osis_base::CommitId([0x40 + i as u8; 32]);
-        held.add_commit(osis_perm::RoleCommit { id, ts: ts(10 + i as u64), author: a, actor: a, frontier: None, ops: vec![op] });
-        inc.update_touched(&held, &BTreeSet::from([g]));
-        assert_eq!(inc.appended() == 1, alone, "step {i}");
-        assert!(check(&held, &inc, &n).is_none(), "step {i}: {:?}", check(&held, &inc, &n));
-    }
-    let full = Timeline::evaluate(&held);
-    assert!(full.role_commit(&osis_base::CommitId([0x41; 32])).is_none(), "voided");
-}
-
 /// §5.1 steps 4-5: a write arriving late before a demotion whose audit dropped an earlier write
 /// goes on from the dropped write (that drop is forgotten and found again), not from scratch;
 /// a later one that keeps the demoted node's class (a second admin edge) undoes the drop.

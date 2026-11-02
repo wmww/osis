@@ -153,6 +153,8 @@ pub struct View {
     pub frontier: Option<Arc<osis_perm::Frontier>>,
     /// The blobs of the chunk list (`Core::by_chunk`).
     pub chunks: Vec<osis_base::BlobId>,
+    /// The commit it undoes (`Core::undone_by`).
+    pub undoes: Option<CommitId>,
 }
 
 /// One aspect entry as `View` keeps it.
@@ -179,6 +181,7 @@ impl View {
             aspects: h.aspects.iter().map(|a| AspectView { tid: a.tid, ak: a.ak.clone(), lo: a.lo, hi: a.hi, bounded: crate::retention::bounded(a) }).collect(),
             frontier: if h.kind == osis_commit::Kind::Role { crate::apply::validity::header_frontier(h) } else { None },
             chunks: h.chunks.iter().map(|c| c.blob).collect(),
+            undoes: h.undoes,
         }
     }
 }
@@ -414,6 +417,8 @@ indexes! {
     pub by_thing: JSetMap<Tid, CommitId>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
+    /// Held undo commits per commit they undo (`undo::in_effect`).
+    pub undone_by: JSetMap<CommitId, CommitId>,
     /// Node- and session-form ranges per (tid, ak, own source): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,

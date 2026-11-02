@@ -1,12 +1,11 @@
 //! Layer 2 (spec/permissions.md §5.2): per-delta validity of content and of the
-//! role-class writes judged like content, and the node-form overlap rule
-//! (spec/commits.md §4).
+//! role-class writes judged like content.
 
 use crate::graph::{EdgesAt, View};
 use crate::timeline::{At, Timeline};
 use crate::types::{earliest, Dots, Edge, Point};
-use osis_base::{CommitId, Role, Tid, Ts, WallMs};
-use std::collections::{BTreeMap, BTreeSet};
+use osis_base::{Role, Tid, Ts, WallMs};
+use std::collections::BTreeMap;
 
 /// A node's roles replayed over the history up to change `pos` (`first_held_uncached`), and
 /// the first change after which it held the replayed role on each thing (`None`: from the
@@ -176,44 +175,3 @@ impl Timeline {
     }
 }
 
-/// One commit's node-form range on one aspect.
-#[derive(Clone, PartialEq, Eq, Debug)]
-pub struct Range {
-    pub commit: CommitId,
-    pub node: Tid,
-    pub tid: Tid,
-    pub ak: String,
-    pub lo: u64,
-    pub hi: u64,
-}
-
-/// spec/commits.md §4, §5.2: commits by one node whose node-form ranges on one aspect overlap
-/// are all invalid. Returns the voided commit IDs. A commit listed twice with one range is one.
-pub fn overlapping(ranges: impl IntoIterator<Item = Range>) -> BTreeSet<CommitId> {
-    type Key = (Tid, Tid, String);
-    let mut groups: BTreeMap<Key, BTreeSet<(u64, u64, CommitId)>> = BTreeMap::new();
-    for r in ranges {
-        if r.lo < r.hi {
-            groups.entry((r.node, r.tid, r.ak)).or_default().insert((r.lo, r.hi, r.commit));
-        }
-    }
-    let mut out = BTreeSet::new();
-    for set in groups.values() {
-        let mut active: Vec<(u64, CommitId)> = Vec::new();
-        for &(lo, hi, c) in set {
-            active.retain(|&(h, _)| h > lo);
-            let mut hit = false;
-            for &(_, other) in &active {
-                if other != c {
-                    out.insert(other);
-                    hit = true;
-                }
-            }
-            if hit {
-                out.insert(c);
-            }
-            active.push((hi, c));
-        }
-    }
-    out
-}

@@ -289,6 +289,38 @@ fn undo_chain_stops_at_a_live_change_spec_crdt_4_6() {
     assert_eq!(db.get(t, k).unwrap(), Some(Value::Int(1)));
 }
 
+// spec/crdt.md §4.6: "in effect" is a property of the whole commit. Z writes x = 5 and z, X
+// writes x = 1 and y; their undos write only z and y (on x, neither write was the winner any
+// more). Undoing Y (x = 3) restores x = 1; a revert of W (the first x = 1) then steps back
+// through that restoring write: Z and X are out of effect (undone by commits that never wrote
+// x), so no live change stands after W.
+#[test]
+fn in_effect_is_whole_commit_spec_crdt_4_6() {
+    let db = db(1);
+    let (x, y, z) = (ak("t:x.0"), ak("t:y.0"), ak("t:z.0"));
+    let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
+    commit_with(&db, |w| w.at(t, x.clone()).set(&Value::Int(0)));
+    let cw = commit_with(&db, |w| w.at(t, x.clone()).set(&Value::Int(1)));
+    let cz = commit_with(&db, |w| {
+        w.at(t, x.clone()).set(&Value::Int(5))?;
+        w.at(t, z.clone()).set(&Value::Int(1))
+    });
+    let cx = commit_with(&db, |w| {
+        w.at(t, x.clone()).set(&Value::Int(1))?;
+        w.at(t, y.clone()).set(&Value::Int(2))
+    });
+    let cy = commit_with(&db, |w| w.at(t, x.clone()).set(&Value::Int(3)));
+    for c in [cx.id, cz.id] {
+        let u = db.revert(c).unwrap();
+        assert!(db.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, x.clone())]))).unwrap().iter().all(|e| e.commit.id != u.id), "the undo writes nothing on x");
+    }
+    assert_eq!((db.get(t, y.clone()).unwrap(), db.get(t, z).unwrap()), (None, None));
+    db.revert(cy.id).unwrap();
+    assert_eq!(db.get(t, x.clone()).unwrap(), Some(Value::Int(1)));
+    db.revert(cw.id).unwrap();
+    assert_eq!(db.get(t, x).unwrap(), Some(Value::Int(0)));
+}
+
 // notes/api.md Attribution, spec/permissions.md §5.2: the API reports only verifiable authorship.
 // B holds A's signed change: history lists it with A's node and `ts`. C holds only A's snapshot
 // of the aspect: the value reads the same, its watch reports the change as the snapshot's (its

@@ -39,11 +39,6 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             since: (rng.below(3) == 0).then(|| Point { ts: ts(rng.below(12) as u64), node: pick(rng, &tids), commit: cid(rng.below(16) as u32) }), tied: None,
         })
     };
-    let dots = |rng: &mut Rng| match rng.below(3) {
-        0 => Dots::Commit,
-        1 => Dots::Node { lo: rng.below(5) as u64, hi: rng.below(5) as u64 },
-        _ => Dots::Node { lo: u64::MAX - 1, hi: u64::MAX },
-    };
     let frontier = |rng: &mut Rng, tids: &[Tid]| -> Option<Arc<Frontier>> {
         (rng.below(2) == 0).then(|| {
             let mut f = Frontier::default();
@@ -54,9 +49,9 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     };
     for i in 0..(2 + rng.below(12)) {
         let target = pick(rng, &tids);
-        let mut ops = vec![EdgeOp { target, holder: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) }];
+        let mut ops = vec![EdgeOp { target, holder: pick(rng, &tids), edge: any_edge(rng) }];
         if rng.below(4) == 0 {
-            ops.push(EdgeOp { target: pick(rng, &tids), holder: pick(rng, &tids), edge: any_edge(rng), dots: dots(rng) });
+            ops.push(EdgeOp { target: pick(rng, &tids), holder: pick(rng, &tids), edge: any_edge(rng) });
         }
         let author = pick(rng, &tids);
         h.add_commit(RoleCommit { id: cid(i as u32), ts: ts(rng.below(12) as u64), author, actor: author, frontier: frontier(rng, &tids), ops });
@@ -78,7 +73,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
             })
             .collect();
         let author = pick(rng, &tids);
-        h.add_snapshot(RosterSnapshot { id: cid(100 + i as u32), ts: ts(rng.below(12) as u64), author, actor: author, thing: pick(rng, &tids), dots: dots(rng), roster, ledger });
+        h.add_snapshot(RosterSnapshot { id: cid(100 + i as u32), ts: ts(rng.below(12) as u64), author, actor: author, thing: pick(rng, &tids), roster, ledger });
     }
     (h, tids)
 }

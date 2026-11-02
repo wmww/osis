@@ -94,7 +94,8 @@ impl UndoBuffer for Before {
 /// The undo delta of `undone` (spec/crdt.md §4.6) and its expiry. Invariant (§4.6, §4.7): an
 /// undo never extends a value's lifetime past its original expiry. What it writes back from
 /// `pre` (`Writer::copied`) takes the earliest expiry among the writes it copies (`expiry` of
-/// an owner dot: `Some(0)` for one gone, expired or no longer held); content whose expiry is at
+/// an owner dot: `None` for none, or for a dot whose commit is not known; a header outlives its
+/// body, so the commit of a write still held is known); content whose expiry is at
 /// or before `wall` (the undo's `ts`) is stripped from `pre` and the undo run again, until it
 /// copies no gone write not yet stripped, so none of it comes back.
 #[allow(clippy::too_many_arguments)]
@@ -321,13 +322,19 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, n
 
 /// From the commits holding writes of `(tid, ak)`: who undoes whom, and whether every change
 /// (a commit that is not an undo) ordered after `after` is out of effect (spec/crdt.md §4.6).
+/// Being in effect is a property of the whole commit: its undoers are every held undo commit
+/// naming it, wherever they write (`undone_by`), and theirs in turn.
 fn chain_judge(core: &crate::engine::Core, tid: &Tid, ak: &Ak, after: (Ts, CommitId)) -> (BTreeMap<CommitId, Vec<CommitId>>, bool) {
     let held: Vec<(Ts, CommitId)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect();
     let mut undoers: BTreeMap<CommitId, Vec<CommitId>> = BTreeMap::new();
-    for (_, id) in &held {
-        if let Some(t) = core.ix.commits.get(id).and_then(|m| m.header.undoes) {
-            undoers.entry(t).or_default().push(*id);
+    let mut todo: Vec<CommitId> = held.iter().map(|x| x.1).collect();
+    while let Some(c) = todo.pop() {
+        if undoers.contains_key(&c) {
+            continue;
         }
+        let us: Vec<CommitId> = core.ix.undone_by.get(&c).into_iter().flatten().copied().collect();
+        todo.extend(us.iter().copied());
+        undoers.insert(c, us);
     }
     let clear = held.iter().filter(|x| **x > after).all(|(_, id)| core.ix.commits.get(id).is_some_and(|m| m.header.undoes.is_some()) || !in_effect(id, &undoers));
     (undoers, clear)

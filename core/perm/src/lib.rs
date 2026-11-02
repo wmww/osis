@@ -20,7 +20,7 @@ pub mod types;
 mod walk;
 
 pub use cert::{project, verify, Certificates};
-pub use content::{overlapping, Range, Validity};
+pub use content::Validity;
 pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
 pub use incremental::{Changed, SaveDone, Saves, Timelines};

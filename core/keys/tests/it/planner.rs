@@ -10,7 +10,7 @@ use osis_keys::{
     ActorEpochs, Departure, Graph, MemoryGraph, PermGraph, WrapEpoch, label_role, lost_access, newer_than_head, plan_departure, plan_inside, reached,
     registered_epoch, registration_epochs, roles_up_to, delete_candidates, delete_key, wrap_epoch,
 };
-use osis_perm::{At, Dots, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
+use osis_perm::{At, Edge, EdgeOp, RoleCommit, MemoryHeldSet, Timeline};
 use std::collections::BTreeSet;
 
 fn set(r: &[Role]) -> BTreeSet<Role> {
@@ -154,7 +154,7 @@ fn perm_graph() {
         author: d,
         actor: d,
         frontier: None,
-        ops: vec![EdgeOp { target: a2, holder: p, edge: Some(Edge::new(Role::Write)), dots: Dots::Node { lo: 0, hi: 1 } }],
+        ops: vec![EdgeOp { target: a2, holder: p, edge: Some(Edge::new(Role::Write)) }],
     });
     let tl = Timeline::evaluate(&held);
     let own = |x: &Tid| *x != t;

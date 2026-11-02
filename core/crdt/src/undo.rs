@@ -19,6 +19,11 @@ pub trait UndoBuffer {
     fn complete(&self) -> bool {
         true
     }
+    /// Whether the position `path`s start from sits below positions all present before the
+    /// commit, so it may be "Absent before"'s outermost absent one: the aspect root does.
+    fn above_present(&self) -> bool {
+        true
+    }
 }
 
 /// The pre-commit state itself is an undo buffer.
@@ -79,7 +84,7 @@ fn absent_before(u: &Undone, o: &Fragment, s: Option<&Fragment>, buffer: &dyn Un
     (root || !matches!(o, Fragment::Register(_)))
         && buffer.complete()
         && !present(path)
-        && path.split_last().is_none_or(|(_, up)| present(up))
+        && path.split_last().map_or(buffer.above_present(), |(_, up)| present(up))
         && s.is_none_or(|s| only_from(u, s))
 }
 
@@ -253,7 +258,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                     });
                     let own = cur.and_then(|c| c.record_frag(id));
                     let sub = joined.as_ref().or(own.as_deref());
-                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, id, k)), buffer.complete());
+                    let pre = Sub(prev.as_ref().and_then(|p| entry_frag(p, id, k)), buffer.complete(), prev.as_ref().is_some_and(Fragment::present));
                     let res = undo_at(w, u, f, sub, &pre, &vview, &mut vec![], false);
                     path.pop();
                     if let Some(c) = res? {
@@ -344,6 +349,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
                 _ => None,
             };
             let before = buffer.before(path).map(|f| f.chosen());
+            let up = before.as_ref().is_some_and(Fragment::present);
             let before = match &before {
                 Some(Fragment::Seq(b)) => Some(b),
                 _ => None,
@@ -351,7 +357,7 @@ fn undo_at<V: View>(w: &mut Writer, u: &Undone, o: &Fragment, s: Option<&Fragmen
             let ev = view.element();
             let complete = buffer.complete();
             let mut nested = |w: &mut Writer, f: &Fragment, c: Option<&Fragment>, pre: Option<Fragment>| match &ev {
-                Some(ev) => undo_at(w, u, f, c, &Sub(pre, complete), ev, &mut vec![], false),
+                Some(ev) => undo_at(w, u, f, c, &Sub(pre, complete, up), ev, &mut vec![], false),
                 None => Ok(None),
             };
             return Ok(seq::undo(w, x, cur, before, u, view, &mut nested)?.map(Fragment::Seq));
@@ -380,8 +386,9 @@ fn contribution<V: View>(w: &mut Writer, ev: Option<&V>, v: osis_base::Value, r:
 }
 
 /// The buffer below a map entry or list element: paths are relative to the entry the undone
-/// write edited; complete as the buffer it came from.
-struct Sub(Option<Fragment>, bool);
+/// write edited; complete as the buffer it came from; whether the map or list was present
+/// before (else an absent position below it is not the outermost, §4.6 "Absent before").
+struct Sub(Option<Fragment>, bool, bool);
 
 impl UndoBuffer for Sub {
     fn before(&self, path: &[PathSeg]) -> Option<Fragment> {
@@ -389,6 +396,9 @@ impl UndoBuffer for Sub {
     }
     fn complete(&self) -> bool {
         self.1
+    }
+    fn above_present(&self) -> bool {
+        self.2
     }
 }
 

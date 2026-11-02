@@ -133,8 +133,6 @@ pub struct EdgeOp {
     pub target: Tid,
     pub holder: Tid,
     pub edge: Option<Edge>,
-    /// The commit's dots on `(target, roles.0)`.
-    pub dots: Dots,
 }
 
 /// The edge writes of a role commit (spec/commits.md §2), roster snapshots excluded.
@@ -192,8 +190,6 @@ pub struct RosterSnapshot {
     pub author: Tid,
     pub actor: Tid,
     pub thing: Tid,
-    /// The commit's dots on `(thing, roles.0)`.
-    pub dots: Dots,
     pub roster: BTreeMap<Tid, Edge>,
     pub ledger: Vec<Tenure>,
 }
@@ -206,7 +202,7 @@ impl RosterSnapshot {
     /// `RoleCommit::same_input` for a roster snapshot (its `tenures.0` part may arrive
     /// after its `roles.0` part).
     pub(crate) fn same_input(&self, o: &RosterSnapshot) -> bool {
-        (self.id, self.ts, self.author, self.actor, self.thing, self.dots, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, o.dots, &o.roster)
+        (self.id, self.ts, self.author, self.actor, self.thing, &self.roster) == (o.id, o.ts, o.author, o.actor, o.thing, &o.roster)
             && self.ledger.len() == o.ledger.len()
             && self.ledger.iter().zip(&o.ledger).all(|(a, b)| (a.holder, a.role, a.since, a.until) == (b.holder, b.role, b.since, b.until) && same_frontier(&a.frontier, &b.frontier))
     }
