@@ -263,6 +263,32 @@ fn bench_certificates() {
     eprintln!("{n} edge writes ({} dropped): evaluate {eval:?}, chain certificates of an admin {:?} ({} commits), of another {:?} ({} commits)", tl.dropped().len(), t1 - t0, certs.commits.len(), t1.elapsed(), certs2.commits.len());
 }
 
+// spec: none (cost measurement, notes/permissions.md): `Timeline::demotion_scope` on the org
+// history (`OSIS_BENCH_N`, default 10^4): the walk copied and the demotion appended, for a
+// holder removed from a doc and an admin removed from the root, with a frontier listing
+// nothing (its audit drops every write it puts in question) and `Timeline::all_held`.
+#[test]
+#[ignore]
+fn bench_demotion_scope() {
+    use osis_perm::{EdgeOp, Frontier, RoleCommit};
+    let n: usize = std::env::var("OSIS_BENCH_N").ok().and_then(|v| v.parse().ok()).unwrap_or(10_000);
+    let (w, nodes, root) = org_root(n, &mut Rng(0x5eed_0401));
+    let tl = Timeline::evaluate(&w.held());
+    let doc = *w.created.keys().last().unwrap();
+    let t = n as u64 + 10;
+    let holder = tl.roster(&doc, At::END).into_keys().find(|h| nodes.contains(h)).unwrap();
+    for (what, target, holder) in [("a holder from a doc", doc, holder), ("an admin from the root", root, nodes[1])] {
+        for (fname, f) in [("empty", Frontier::default()), ("all held", tl.all_held())] {
+            let r = RoleCommit { id: osis_base::CommitId([0xee; 32]), ts: ts(t), author: nodes[0], actor: nodes[0], frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: None }] };
+            let t0 = Instant::now();
+            let s = tl.demotion_scope(r);
+            let el = t0.elapsed();
+            let size = |m: &std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>>| m.values().map(|s| s.len()).sum::<usize>();
+            eprintln!("{n} edge writes: removing {what}, {fname} frontier: {el:?} (roles {}, content {})", size(&s.roles), size(&s.content));
+        }
+    }
+}
+
 // spec: none (cost measurement, issues/perm-eval-cost.md): layer-2 re-judging alone on the org
 // history (`OSIS_BENCH_N`, default 10^4), for profiling: 1000 admins' deltas (one per applied
 // write, by its author on its target) and holders' deltas (one by each holder granted write,

@@ -515,6 +515,14 @@ fn move_resolution() {
     assert_eq!(tl.resolve(&idx, &r, &t, now), t, "a cycle stops after RESOLUTION_HOPS (even)");
 }
 
+/// `Timeline::demotion_scope` of `author` setting `holder`'s edge on `target` to `new` at `t`,
+/// with an empty frontier.
+fn scope_of(tl: &Timeline, author: Tid, holder: Tid, target: Tid, new: Option<Edge>, t: u64) -> osis_perm::DemotionScope {
+    let ops = vec![osis_perm::EdgeOp { target, holder, edge: new }];
+    let frontier = Some(std::sync::Arc::new(osis_perm::Frontier::default()));
+    tl.demotion_scope(osis_perm::RoleCommit { id: osis_base::CommitId([0xee; 32]), ts: ts(t), author, actor: author, frontier, ops })
+}
+
 /// §5.1 "Frontier": removing a device from P puts in question its writes on P and on G below
 /// (every aspect: it falls below write); lowering an admin to write only the role-class
 /// aspects; a grant nothing.
@@ -530,13 +538,13 @@ fn demotion_scope() {
     w.set(k, p, d2, edge(Admin), 0, &all);
     let tl = Timeline::evaluate(&w.held());
     let both: std::collections::BTreeSet<Tid> = [p, g].into_iter().collect();
-    let s = tl.demotion_scope(&d2, &d1, &p, None, ts(5));
+    let s = scope_of(&tl, d2, d1, p, None, 5);
     assert_eq!((s.content.get(&d1), s.roles.get(&d1)), (Some(&both), Some(&both)));
-    let s = tl.demotion_scope(&d2, &d1, &p, edge(Write), ts(5));
+    let s = scope_of(&tl, d2, d1, p, edge(Write), 5);
     assert!(s.content.is_empty());
     assert_eq!(s.roles.get(&d1), Some(&both));
-    assert!(tl.demotion_scope(&d2, &x, &g, edge(Write), ts(5)).is_empty());
-    assert!(tl.demotion_scope(&d1, &d1, &p, None, ts(5)).is_empty(), "never its own subject");
+    assert!(scope_of(&tl, d2, x, g, edge(Write), 5).is_empty());
+    assert!(scope_of(&tl, d1, d1, p, None, 5).is_empty(), "never its own subject");
 }
 
 /// spec/permissions.md §5.1 step 4 ("as restored"), §5.1 "Frontier": after x removed its own
@@ -555,7 +563,7 @@ fn demotion_scope_as_restored_spec_permissions_5_1() {
     w.set(x, p, x, None, 1, &all);
     let tl = Timeline::evaluate(&w.held());
     let both: std::collections::BTreeSet<Tid> = [p, g].into_iter().collect();
-    let s = tl.demotion_scope(&a, &x, &p, None, ts(5));
+    let s = scope_of(&tl, a, x, p, None, 5);
     assert_eq!(s.content.get(&x), Some(&both));
 }
 
@@ -648,43 +656,73 @@ fn patched_view_equals_cloned_edges() {
     }
 }
 
-/// §5.1 "Frontier" against step 4: an explicit write appended after a random history audits
-/// nothing outside the scope `demotion_scope` gave for it beforehand (each fall it audits is in
-/// `roles`, each fall below write in `content`). Its frontier covers every held write, so its
-/// audit drops nothing and the walk before it stays the one the scope was read from (a drop that
-/// takes away a standing widens the fall: issues/demotion-scope-cascade.md).
+/// §5.1 "Frontier" against step 4: an explicit write R appended after a random history, by an
+/// author that had received a random part of it, with the frontier a demoter builds (what it
+/// received of each demoted node's writes on the things `demotion_scope` gives, plus its chain
+/// certificates): R's audit drops no write the author had received, and each fall below a role
+/// it records is in the scope (`roles`; below write also `content`). R's audit can drop a write
+/// that held up another standing, widening the fall (notes/permissions.md, Readings of §5.1).
 fn scope_check(w: &World, nodes: &[Tid], things: &[Tid], rng: &mut Rng) -> Option<String> {
     use osis_perm::{EdgeOp, Frontier, RoleCommit};
-    let tl = Timeline::evaluate(&w.held());
+    use std::collections::BTreeSet;
+    let held = w.held();
+    let tl = Timeline::evaluate(&held);
     let ents: Vec<Tid> = nodes.iter().chain(things).copied().collect();
     let author = nodes[rng.below(nodes.len())];
     let target = things[rng.below(things.len())];
     let holder = ents[rng.below(ents.len())];
     let new = [None, edge(Read), edge(Write), edge_inv(Read, Some(Write), None)][rng.below(4)];
     let t = 500;
-    let scope = tl.demotion_scope(&author, &holder, &target, new, ts(t));
-    let mut held = w.held();
-    let all = Frontier { commits: w.commits.iter().map(|c| c.id).chain(w.snaps.iter().map(|s| s.id)).collect(), ..Frontier::default() };
+    // what the author had received: everything, nothing, or about half
+    let mode = rng.below(3);
+    let writes: Vec<(osis_base::CommitId, Tid, Vec<Tid>)> = w.commits.iter().map(|c| (c.id, c.author, c.ops.iter().map(|o| o.0).collect())).chain(w.snaps.iter().map(|s| (s.id, s.author, vec![s.thing]))).collect();
+    let received: BTreeSet<osis_base::CommitId> = writes.iter().filter(|_| mode == 0 || (mode == 2 && rng.below(2) == 0)).map(|c| c.0).collect();
+    let certs = tl.certificates(&author, &target);
+    let own: BTreeSet<osis_base::CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| received.contains(c)).collect();
+    let frontier = |s: &osis_perm::DemotionScope| {
+        let mut f = Frontier { commits: own.clone(), ..Frontier::default() };
+        for (id, by, on) in &writes {
+            let listed = |m: &BTreeMap<Tid, BTreeSet<Tid>>| m.get(by).is_some_and(|ts| on.iter().any(|t| ts.contains(t)));
+            if received.contains(id) && (listed(&s.roles) || listed(&s.content)) {
+                f.commits.insert(*id);
+            }
+        }
+        f
+    };
     let id = osis_base::CommitId([0xee; 32]);
-    held.add_commit(RoleCommit { id, ts: ts(t), author, actor: author, frontier: Some(std::sync::Arc::new(all)), ops: vec![EdgeOp { target, holder, edge: new }] });
+    let r = |f: Frontier| RoleCommit { id, ts: ts(t), author, actor: author, frontier: Some(std::sync::Arc::new(f)), ops: vec![EdgeOp { target, holder, edge: new }] };
+    // as a demoter builds it: from the scope with every held write received, until the scope
+    // for the frontier is inside the scope it was built from
+    let mut scope = tl.demotion_scope(r(tl.all_held()));
+    let f = loop {
+        let f = frontier(&scope);
+        let s = tl.demotion_scope(r(f.clone()));
+        if scope.covers(&s) {
+            break f;
+        }
+        scope.join(s);
+    };
+    let mut held = held;
+    held.add_commit(r(f));
     let tl2 = Timeline::evaluate(&held);
     if !tl2.is_applied(&WriteId::Op(id, 0)) || !residue(&tl2).is_empty() {
         return None;
     }
     let p = Point { ts: ts(t), node: author, commit: id };
     let name = |x: &Tid| nodes.iter().position(|y| y == x).map(|i| format!("n{i}")).or_else(|| things.iter().position(|y| y == x).map(|i| format!("A{i}"))).unwrap_or_default();
-    let names = |m: &BTreeMap<Tid, std::collections::BTreeSet<Tid>>| m.iter().map(|(x, s)| format!("{}: {:?}", name(x), s.iter().map(name).collect::<Vec<_>>())).collect::<Vec<_>>().join(", ");
-    let what = format!("R: {} sets {} on {} := {new:?}; scope roles {{{}}} content {{{}}}", name(&author), name(&holder), name(&target), names(&scope.roles), names(&scope.content));
-
+    let names = |m: &BTreeMap<Tid, BTreeSet<Tid>>| m.iter().map(|(x, s)| format!("{}: {:?}", name(x), s.iter().map(name).collect::<Vec<_>>())).collect::<Vec<_>>().join(", ");
+    let what = format!("R: {} sets {} on {} := {new:?}, received {mode}; scope roles {{{}}} content {{{}}}", name(&author), name(&holder), name(&target), names(&scope.roles), names(&scope.content));
+    for (d, at) in tl2.dropped() {
+        if *at == p && received.contains(&d.commit()) {
+            return Some(format!("R drops received write {d:?}; {what}"));
+        }
+    }
     for x in nodes {
         for n in &ents {
-            for f in tl2.falls(x, n).iter().filter(|f| f.point == p) {
-                if !scope.roles.get(x).is_some_and(|s| s.contains(n)) {
-                    return Some(format!("fall {:?} -> {:?} of {} on {} outside the roles scope; {what}", f.held, f.now, name(x), name(n)));
+            for d in tl2.demotions(x, n).iter().filter(|d| d.point == p) {
+                if !scope.roles.get(x).is_some_and(|s| s.contains(n)) || (d.below == Write && !scope.content.get(x).is_some_and(|s| s.contains(n))) {
+                    return Some(format!("demotion below {:?} of {} on {} outside the scope; {what}", d.below, name(x), name(n)));
                 }
-            }
-            if tl2.demotions(x, n).iter().any(|d| d.point == p && d.below == Write) && !scope.content.get(x).is_some_and(|s| s.contains(n)) {
-                return Some(format!("demotion below write of {} on {} outside the content scope; {what}", name(x), name(n)));
             }
         }
     }
@@ -713,4 +751,10 @@ fn scope_run(samples: u64, seed: u64) {
 #[test]
 fn demotion_scope_covers_audits_spec_permissions_5_1() {
     scope_run(4000, 0x5eed_0301);
+}
+
+#[test]
+#[ignore]
+fn demotion_scope_covers_audits_large_spec_permissions_5_1() {
+    sharded(64_000, 0x5eed_0302, scope_run);
 }
