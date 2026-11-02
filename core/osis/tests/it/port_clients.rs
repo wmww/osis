@@ -163,7 +163,7 @@ fn answers(c: &Osis, t: Tid) -> String {
 #[test]
 fn reads_are_exactly_the_actors() {
     let x = node();
-    let (a, s, c) = x.client(Role::Read);
+    let (a, _, c) = x.client(Role::Read);
     assert_eq!(c.me(), a);
     assert_eq!(c.home(), a);
     assert_eq!(c.at(x.t, ak("name.0")).get_value().unwrap(), Some(Value::Str("x".into())));
@@ -180,8 +180,6 @@ fn reads_are_exactly_the_actors() {
     // what it may not read: the person, its node, a link, another group
     let link_target = x.u;
     let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
-    // its target now has a label K reads, which rotates this node's reach: the old address is dead
-    let c = x.attach(&s).unwrap();
     let k = x.n.links(link_target)[0].id;
     let home = x.n.get(x.n.me(), ct::GROUP).unwrap().unwrap();
     let seed = home.items.iter().copied().find(|i| x.n.aspects(*i).unwrap().iter().any(|a| a.as_str() == "link:seed.0")).unwrap();
