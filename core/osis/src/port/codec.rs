@@ -706,6 +706,14 @@ pub(crate) fn done(v: Value) -> Result<Result<()>> {
     }
 }
 
+/// A call's result as a Reply outcome.
+pub(crate) fn outcome(r: Result<Value>) -> Outcome {
+    match r {
+        Ok(value) => Outcome::Ok { value },
+        Err(e) => outcome_err(&e),
+    }
+}
+
 /// An error as a Reply outcome (spec/wire.md §11.2 codes).
 pub(crate) fn outcome_err(e: &Error) -> Outcome {
     let t = |s: &str| Value::Str(s.to_owned());
