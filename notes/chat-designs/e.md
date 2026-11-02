@@ -7,7 +7,7 @@
 
 ## What is different
 
-There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. The app shows only deltas with the requested retention.
+There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. A required retention on the chat **[unbuilt]** refuses deltas with any other.
 
 ## Permissions and topology
 
@@ -27,7 +27,7 @@ There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of it
 - **Disappearing.** `expires` on the delta; hosts delete unattended. Expiring deltas are not permanent and take the ordinary frontier path.
 - **Kick.** One commit: removal and C's rotation (2.7 KB per remaining member). With the frontier study **[unbuilt]** the frontier names one head per message aspect and device, so a kick costs the same at 10 messages and 10 million, no snapshot can hide the kicked member's past, and a device removal is one head per aspect it wrote. Posts the kicker had not received still drop for everyone (`WaitForSync::Required` narrows this to the 30 s before the stamp); later or backdated posts are invalid wherever the kick is held; re-adding revives them. A modified kicked client gets nothing through. What the kicked device keeps is a property of the removal or the actor **[unbuilt]**; the chat default is the owner's to confirm.
 - **Leave.** Self-removal; an admin follows with an explicit removal, so backdated posts are audited.
-- **Hostile member.** Can only add. Junk written under `nobody` is hidden but cannot be erased, since nothing overrides that retention; a thing-level required retention (issues/purge-by-author.md) would refuse it in the first place. Wrap poisoning at hosts is a general osis hole (issue filed).
+- **Hostile member.** Can only add. Junk written under `nobody` is hidden but cannot be erased, since nothing overrides that retention; a required retention on the chat **[unbuilt]** (issues/required-retention.md) makes it invalid and droppable. Wrap poisoning at hosts is a general osis hole (issue filed).
 - **Hosts, block, links, strangers.** As C. An ownerless C needs a host that admits its label explicitly.
 
 ## Adding without history
@@ -52,7 +52,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
+Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
 
 ## Accepted by the owner
 

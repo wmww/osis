@@ -259,7 +259,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 23. D: the window is the current and previous hour (`MAX_DRIFT`); below it in-flight uploads become unreadable.
 24. D: a forward hash chain; cut off at the next membership change, or by an optional periodic re-seed (1.2 KB per member each).
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
-26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a thing-level required retention refuses it (issues/purge-by-author.md).
+26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a required retention refuses it (issues/required-retention.md).
 27. E: an edit is a new message plus a purge of the old one.
 28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices (frontier study, unbuilt); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
