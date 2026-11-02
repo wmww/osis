@@ -249,7 +249,7 @@ impl Fragment {
             // (its sequence's records gone) goes with it
             Fragment::Map(m) => {
                 if keys {
-                    m.erase_keys(&|d| pred(d.owner()));
+                    m.erase_keys(&|d| pred(d.owner()), &mut crate::changes::Changes::new());
                 }
                 m.entries.retain(|_, e| {
                     if let Some(x) = e.frag.as_deref_mut() {

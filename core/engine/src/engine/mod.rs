@@ -1304,18 +1304,20 @@ impl Tx<'_> {
     /// Holds value-less the writes of `(tid, ak)` that `owned` owns (a delta expired or
     /// purged, spec/crdt.md §4.7), shredding every copy of their values; `bodies` are the deltas
     /// owning them (where they lie). A paged state strips and rewrites only their pages and
-    /// its skeleton; anything else is rewritten whole.
-    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<()> {
+    /// its skeleton; anything else is rewritten whole. `true`: an entry's records merged into
+    /// its key-erased record with a death between them (`Fragment::strip_merging`).
+    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<bool> {
         let pred = |d: &osis_crdt::Dot| owned.owns(d);
-        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| pages::strip_touched(txn, idx, tid, ak, f, touches, &pred))?;
+        let mut merged = false;
+        let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| pages::strip_touched(txn, idx, tid, ak, f, touches, &pred, &mut merged))?;
         if !done {
             self.load(tid, ak)?;
             if let Some(mut st) = self.take_cached(tid, ak) {
-                st.strip(&pred);
+                merged |= st.strip_merging(&pred);
                 self.set_state(tid, ak, Some(st), Shred::Yes, true)?;
             }
         }
-        Ok(())
+        Ok(merged)
     }
 
     /// For a paged state: loads the pages `bodies` touch, runs `rewrite` on them, then writes

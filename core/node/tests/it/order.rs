@@ -666,7 +666,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     }
                     if compact {
                         lp.peers[other].clock.advance(1);
-                                let _ = lp.peers[other].engine.snapshot(&th(t), &a);
+                        let _ = lp.peers[other].engine.snapshot(&th(t), &a);
                     }
                 }
                 collect(&mut lp, by, &mut seen, &mut packs, &mut authors, &mut own);

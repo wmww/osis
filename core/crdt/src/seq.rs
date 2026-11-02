@@ -962,11 +962,11 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 }
 
 /// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
-pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool) {
+pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
     for (d, el) in s.elems_mut().iter_mut() {
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
-            SeqContent::Frag(f) => f.strip_values(expired),
+            SeqContent::Frag(f) => f.strip_values(expired, ch),
             // a text element's char, the undelete's copy included (§4.7)
             _ if expired(d.owner()) => {
                 el.content = SeqContent::None;
