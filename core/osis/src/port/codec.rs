@@ -334,7 +334,7 @@ pub(crate) fn status_v(s: &Status) -> Value {
 pub(crate) fn status(v: Value) -> Result<Status> {
     let mut a = Args::new(v)?;
     let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default() };
+    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new() };
     for g in a.list()? {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
@@ -720,6 +720,7 @@ pub(crate) fn outcome_err(e: &Error) -> Outcome {
         Error::Invalid(m) => (ApiCode::INVALID, vec![t(m)]),
         Error::Storage(m) => (ApiCode::STORAGE, vec![t(m)]),
         Error::Network(m) => (ApiCode::NETWORK, vec![t(m)]),
+        Error::OutcomeUnknown => (ApiCode::OUTCOME_UNKNOWN, vec![]),
         Error::Unsupported(m) => (ApiCode::UNSUPPORTED, vec![t(m)]),
         Error::Closed => (ApiCode::STORAGE, vec![t("the node's database closed")]),
         Error::StillOpen { .. } => (ApiCode::INVALID, vec![t(&e.to_string())]),
@@ -744,6 +745,7 @@ pub(crate) fn error_of(code: u64, detail: Vec<Value>) -> Error {
             ApiCode::STORAGE => Error::Storage(text(&mut a)),
             ApiCode::NETWORK => Error::Network(text(&mut a)),
             ApiCode::UNSUPPORTED => Error::Unsupported(text(&mut a)),
+            ApiCode::OUTCOME_UNKNOWN => Error::OutcomeUnknown,
             _ => Error::Invalid(format!("port: error code {code}")),
         })
     })();

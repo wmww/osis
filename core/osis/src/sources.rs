@@ -1,0 +1,578 @@
+//! Sources per group (notes/client-port.md §1, §6): a process's calls go to its own engine or to a
+//! node it is attached to, group by group.
+//!
+//! **Routing invariant.** Each call goes to exactly one source, decided once, under the one lock
+//! that also orders every change of the table (`eng`), and never falls back to another source: an
+//! unreachable source is that call's `Network`, not another source's answer. No route, result or
+//! membership is cached outside that table; a thing's groups are read from the engine's own index
+//! at each decision. The rule (`decide_in`), for a thing `t` and S = `t` and the groups holding it
+//! here:
+//! 1. a process with no store: its attachments;
+//! 2. a routed group in S, unless a group in S that is not routed syncs here (local wins): the node
+//!    of the route, attached or not;
+//! 3. `t` known here: this engine;
+//! 4. else the attachments, in order: the first that knows `t`, the first unreachable one stopping
+//!    the search (a later one must not answer for it); none: this engine, which says unknown.
+//!
+//! A local write is decided twice for one reason: a route decided Local before a move may run
+//! after it, so the commit checks again under its own lock (`guard_local`) and fails rather than
+//! land in a group that no longer syncs here. A read decided before a move is ordered before it.
+//! `group_source` writes a route before it stops the local sync and drops one only after local
+//! sync caught up, so a crash or failure between leaves "routed and synced", which reads remote:
+//! there is no moment when this engine's copy answers while behind. A remote copy can: a move away
+//! waits for this node's writes to reach a host, not for that node to pull them.
+//!
+//! The port worker (`port::serve`) serves every client of its node one call at a time, so it never
+//! waits on another node: an Owner's call that routes there fails `Unsupported`.
+
+use crate::error::{Error, Result};
+use crate::handle::{Locked, Osis};
+use crate::net::Pending;
+use crate::port::client::Remote;
+use crate::port::method;
+use crate::share::{HostAddr, Status, SyncScope};
+use crate::watch::{Msg, PortEvent};
+use osis_base::{Tid, Value};
+use osis_node::{ChangeId, Engine};
+use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+/// The local record of `routes`: a line `tid url#key` per routed group.
+const SOURCES: &str = "sources";
+
+/// How often `group_source` asks a node whether its writes reached a host. Minor: 0 spins on the
+/// node's worker, infinity never finishes the move (`wait_timeout` ends it).
+const UPLOAD_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+
+/// A node to attach to as a thin client (`Config::remotes`).
+#[derive(Clone, Debug)]
+pub struct RemoteConfig {
+    pub addr: HostAddr,
+    pub secret: crate::ClientSecret,
+}
+
+/// One attachment or routed node in `Status::remotes`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemoteStatus {
+    /// `url#key`.
+    pub address: String,
+    pub connected: bool,
+}
+
+/// Where a group's calls go (`Osis::group_source`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GroupSource {
+    /// This node's engine: it syncs the group.
+    Local,
+    /// The node at this address, which must be attached.
+    Remote(HostAddr),
+}
+
+/// Where an API call on a thing or group goes. Every call addressed by a tid or group checks it.
+#[derive(Clone)]
+pub(crate) enum Source {
+    /// This process's engine.
+    Local,
+    /// The node at this attachment.
+    Remote(Arc<Remote>),
+}
+
+/// A decision made under the lock: `Ask` needs the network, off the lock.
+enum Decided {
+    Local,
+    Remote(Arc<Remote>),
+    Ask(Arc<Remote>, Vec<Arc<Remote>>),
+}
+
+/// What a watch whose group moved gets (`Delivery::Moved`).
+pub(crate) fn moved() -> Error {
+    Error::Network("the group's source moved: watch it again".into())
+}
+
+/// The group labels syncing here: a live label, not held for receipts only.
+fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
+    !l.sync.receipts_only().contains(g) && l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
+}
+
+/// S of the module comment.
+fn scope_of(e: &Engine, t: Tid) -> BTreeSet<Tid> {
+    let mut s = e.groups_of(&t);
+    s.insert(t);
+    s
+}
+
+fn remote_named(l: &Locked, addr: &str) -> Arc<Remote> {
+    l.remotes.iter().find(|r| r.addr == addr).cloned().unwrap_or_else(|| Remote::absent(addr))
+}
+
+/// The module comment's rule.
+fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
+    if !thin {
+        let t = l.sync.engine().resolve(&tid, &tid);
+        let s = scope_of(l.sync.engine(), t);
+        if let Some(addr) = s.iter().find_map(|g| l.routes.get(g)).cloned() {
+            let others: Vec<Tid> = s.iter().filter(|g| !l.routes.contains_key(g)).copied().collect();
+            if !others.iter().any(|g| syncs_here(l, g)) {
+                return Decided::Remote(remote_named(l, &addr));
+            }
+            return Decided::Local;
+        }
+        if l.sync.engine().knows(&t) {
+            return Decided::Local;
+        }
+    }
+    match l.remotes.as_slice() {
+        [] => Decided::Local,
+        [r] => Decided::Remote(r.clone()),
+        rs @ [r, ..] => Decided::Ask(r.clone(), rs.to_vec()),
+    }
+}
+
+/// The attachment that answers for a thing known here to none (rule 4).
+fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
+    for r in rs {
+        match r.call(method::KNOWS, vec![Value::Tid(tid)]) {
+            Ok(Value::Bool(false)) => {}
+            // it knows, or cannot say: this call goes there, and fails `Network` if down
+            _ => return r.clone(),
+        }
+    }
+    first.clone()
+}
+
+impl Osis {
+    /// Whether this handle has no store of its own.
+    #[inline]
+    pub(crate) fn attached(&self) -> bool {
+        self.inner.thin.get().is_some()
+    }
+
+    fn decide(&self, tid: Tid) -> Decided {
+        let thin = self.attached();
+        let mut g = crate::watch::lock(&self.inner.eng);
+        decide_in(&mut g, thin, tid)
+    }
+
+    /// `r`, unless this thread must not wait on another node.
+    fn reachable(&self, r: Arc<Remote>) -> Arc<Remote> {
+        if crate::port::serve::on_worker() {
+            return Remote::failing(&r.addr, Error::Unsupported("through this node's daemon, of a thing it does not hold or reads at another node: ask that node".into()));
+        }
+        r
+    }
+
+    /// Whether this thread may wait on another node for something that can do without it: not a
+    /// port worker, nor the dispatcher, which runs every callback of this process.
+    fn may_wait(&self) -> bool {
+        !crate::port::serve::on_worker() && !self.inner.dispatch.shared.on_dispatcher()
+    }
+
+    /// Whether routing applies: an acting handle (the port worker's, for a client of this node)
+    /// is never routed on: reading through this node's attachment would run as this node's
+    /// actor there, and it reads only what this engine syncs (`Engine::readable_by`).
+    #[inline]
+    fn routed(&self) -> bool {
+        self.acting.is_none() && self.inner.routing.load(Ordering::Acquire)
+    }
+
+    /// The source of calls on `tid`, a thing or a group (the module's invariant).
+    #[inline]
+    pub(crate) fn route(&self, tid: Tid) -> Source {
+        if !self.routed() {
+            return Source::Local;
+        }
+        match self.decide(tid) {
+            Decided::Local => Source::Local,
+            Decided::Remote(r) => Source::Remote(self.reachable(r)),
+            Decided::Ask(first, _) if crate::port::serve::on_worker() => Source::Remote(self.reachable(first)),
+            Decided::Ask(first, rs) => Source::Remote(ask(&first, &rs, tid)),
+        }
+    }
+
+    /// Whether calls on `t` run on this engine, as far as the lock can say (no network).
+    pub(crate) fn is_local(&self, t: Tid) -> bool {
+        !self.routed() || matches!(self.decide(t), Decided::Local)
+    }
+
+    /// `is_local` under the lock.
+    pub(crate) fn local_in(&self, l: &mut Locked, t: Tid) -> bool {
+        !self.routed() || matches!(decide_in(l, self.attached(), t), Decided::Local)
+    }
+
+    /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
+    /// a call on no thing (`route_scope(None)`).
+    pub(crate) fn route_all(&self, things: &[Tid]) -> Result<Source> {
+        let mut out: Option<Source> = None;
+        for t in things.iter().collect::<BTreeSet<_>>() {
+            let s = self.route(*t);
+            match (&out, &s) {
+                (None, _) | (Some(Source::Local), Source::Local) => {}
+                (Some(Source::Remote(a)), Source::Remote(b)) if Arc::ptr_eq(a, b) => {}
+                _ => return Err(Error::Invalid("a call on things at two sources: one call, one source".into())),
+            }
+            out = Some(s);
+        }
+        match out {
+            Some(s) => Ok(s),
+            None => self.route_scope(None),
+        }
+    }
+
+    /// The source of calls over `scope` (`None`: every held change; for a process with a store,
+    /// its own).
+    pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Result<Source> {
+        Ok(match scope {
+            Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
+            Some(crate::commits::Scope::Aspects(a)) => return self.route_all(&a.iter().map(|(t, _)| *t).collect::<Vec<_>>()),
+            None => match self.inner.thin.get() {
+                Some(t) if self.acting.is_none() => Source::Remote(t.primary.clone()),
+                _ => Source::Local,
+            },
+        })
+    }
+
+    /// The source holding change `id`: of what it touched when this engine holds it; else an
+    /// only attachment. `Invalid` among several: a change id does not say whose it is.
+    pub(crate) fn route_change(&self, id: ChangeId) -> Result<Source> {
+        if !self.routed() {
+            return Ok(Source::Local);
+        }
+        let thin = self.attached();
+        let (known, remotes) = self.locked(|l| {
+            let known: Option<Vec<Tid>> = if thin {
+                None
+            } else {
+                match id {
+                    ChangeId::Commit(c) => l.engine().header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
+                    ChangeId::Ephemeral(_) => {
+                        let hit: Vec<Tid> = l.engine().ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
+                        (!hit.is_empty()).then_some(hit)
+                    }
+                }
+            };
+            (known, l.remotes.clone())
+        });
+        match (known, remotes.as_slice()) {
+            (Some(ts), _) => self.route_all(&ts),
+            (None, []) => Ok(Source::Local),
+            (None, [r]) => Ok(Source::Remote(self.reachable(r.clone()))),
+            (None, _) => Err(Error::Invalid("a change this node does not hold, with several nodes attached: revert it through a handle with one".into())),
+        }
+    }
+
+    /// Under the commit's lock: every thing of a local write is still this engine's.
+    pub(crate) fn guard_local(&self, l: &mut Locked, things: &[Tid]) -> Result<()> {
+        if !self.inner.routing.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let thin = self.attached();
+        for t in things {
+            if !matches!(decide_in(l, thin, *t), Decided::Local) {
+                // a client of this node, or a write that lost a race with a move: nothing written
+                return Err(if self.acting.is_some() { Error::UnknownThing { tid: *t } } else { moved() });
+            }
+        }
+        Ok(())
+    }
+
+    /// Runs a sharing flow's engine step under the lock, its things still this engine's: a step
+    /// decided Local before a move fails rather than sit unsent (a revocation the caller believes
+    /// happened).
+    pub(crate) fn guarded<R>(&self, things: &[Tid], f: impl FnOnce(&mut Engine) -> Result<R>) -> Result<R> {
+        self.after_route();
+        self.locked(|l| {
+            self.guard_local(l, things)?;
+            f(l.engine())
+        })
+    }
+
+    /// A test's way into the gap between a route and its lock (`Internals::after_route`).
+    pub(crate) fn after_route(&self) {
+        if self.inner.routing.load(Ordering::Acquire)
+            && let Some(f) = crate::watch::lock(&self.inner.port.after_route).as_ref()
+        {
+            f();
+        }
+    }
+
+    /// `guard_local` for a revert: what the change touched.
+    pub(crate) fn guard_change(&self, l: &mut Locked, id: ChangeId) -> Result<()> {
+        if !self.inner.routing.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let things: Vec<Tid> = match id {
+            ChangeId::Commit(c) => l.engine().header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default(),
+            ChangeId::Ephemeral(_) => l.engine().ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect(),
+        };
+        self.guard_local(l, &things)
+    }
+
+    /// A status of this engine `local`, with what the attachments add: each attachment and routed
+    /// node with whether it is up, the groups a connected one reports where this node does not
+    /// sync them. A disconnected node takes nothing away and adds no group.
+    pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
+        if !self.inner.routing.load(Ordering::Acquire) {
+            return Ok(local);
+        }
+        let (remotes, routes) = self.locked(|l| {
+            let mut all = l.remotes.clone();
+            for a in l.routes.values() {
+                if !all.iter().any(|r| r.addr == *a) {
+                    all.push(Remote::absent(a));
+                }
+            }
+            (all, l.routes.clone())
+        });
+        if self.attached() {
+            local = Status::default();
+        }
+        for r in remotes {
+            local.remotes.push(crate::sources::RemoteStatus { address: r.addr.clone(), connected: r.connected() });
+            if !self.may_wait() {
+                continue;
+            }
+            let Ok(v) = r.call(method::STATUS, vec![]) else { continue };
+            let Ok(there) = crate::port::codec::status(v) else { continue };
+            local.connected = local.connected.saturating_add(there.connected);
+            for (g, s) in there.groups {
+                let mine = routes.get(&g).is_some_and(|a| *a == r.addr);
+                if mine || !local.groups.contains_key(&g) {
+                    local.groups.insert(g, s);
+                }
+            }
+        }
+        Ok(local)
+    }
+
+    /// Mirrors a schema's source to the attached nodes (notes/client-port.md §1), now and on each
+    /// reconnect. A thin client's node takes none from it (`Unsupported`, issues/cli-proxy.md):
+    /// that is the caller's error on a process with no store, nothing on a node's own handle,
+    /// whose schema stays local for what it reads.
+    pub(crate) fn mirror_schema(&self, file: &str, src: &str) -> Result<()> {
+        if !self.inner.routing.load(Ordering::Acquire) || crate::port::serve::on_worker() {
+            return Ok(());
+        }
+        let thin = self.attached();
+        for r in self.locked(|l| l.remotes.clone()) {
+            match r.call(method::REGISTER_SCHEMA, vec![Value::Str(file.into()), Value::Str(src.into())]) {
+                Err(e) if thin => return Err(e),
+                Err(Error::Unsupported(_)) => {}
+                // down: registered when it is up again
+                _ => r.remember_schema(file, src),
+            }
+        }
+        Ok(())
+    }
+
+    /// Ends the watch of every subscription whose source this table change changed: `change` runs
+    /// between looking at each before and after, all under this one lock.
+    fn moving<R>(&self, l: &mut Locked, change: impl FnOnce(&mut Locked) -> Result<R>) -> Result<R> {
+        let thin = self.attached();
+        let key = |d: Decided| match d {
+            Decided::Local => "local".to_string(),
+            Decided::Remote(r) => r.addr.clone(),
+            Decided::Ask(..) => "ask".to_string(),
+        };
+        let subs = self.inner.dispatch.subs_on();
+        let before: Vec<String> = subs.iter().map(|(_, _, t)| key(decide_in(l, thin, *t))).collect();
+        let r = change(l)?;
+        for ((id, token, t), was) in subs.iter().zip(before) {
+            if key(decide_in(l, thin, *t)) == was {
+                continue;
+            }
+            l.seq += 1;
+            if *token {
+                self.inner.dispatch.send(l.seq, Msg::Port(*id, PortEvent::Closed));
+                for x in &l.remotes {
+                    x.unsub(*id);
+                }
+            } else {
+                self.inner.dispatch.send(l.seq, Msg::Moved(*id));
+            }
+        }
+        Ok(r)
+    }
+
+    /// Moves `group` between this node's engine and a node it is attached to
+    /// (notes/client-port.md §6), one group at a time, never losing a write.
+    ///
+    /// To `Remote(addr)`: the attachment must be up and know the group (else `Network` or
+    /// `UnknownThing`, nothing changed); waits for this node's writes in it to reach a host
+    /// (within `Config::wait_timeout`, else `Network` or `Unsynced`, nothing changed); then this
+    /// node stops syncing it, for itself alone (`GroupPolicy::receipts_only`, not `unsync`, which
+    /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
+    /// group still synced here through a parent (local would win: move the parent). A write made
+    /// during the wait fails the move `Unsynced` rather than strand it: call it again.
+    ///
+    /// To `Local`: this node must hold the group (a thin client has no keys: `Unsupported`; a node
+    /// without it: `Invalid`). It syncs the group again and, until the node's writes are at a host
+    /// and this engine caught up (`wait_timeout`, else `Network` or `Unsynced`, syncing goes on and
+    /// calling this again finishes the move), calls keep going to the node, so nothing reads this
+    /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
+    ///
+    /// A thing also in a group that syncs here stays on this engine (local wins), and sees only what
+    /// that group carries: writes made under this one alone do not reach it, its writes do not
+    /// reach this group's other holders until the group comes home (issues/cli-proxy.md Follows).
+    ///
+    /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
+    /// The route survives a restart (the `sources` record); a store-less process has none.
+    pub async fn group_source(&self, group: Tid, to: GroupSource) -> Result<()> {
+        self.local_only("group_source")?;
+        match to {
+            GroupSource::Remote(addr) => self.source_remote(group, addr).await,
+            GroupSource::Local => self.source_local(group).await,
+        }
+    }
+
+    async fn source_remote(&self, group: Tid, addr: HostAddr) -> Result<()> {
+        let g = self.read_local(|r| r.resolve(group));
+        let text = addr.to_string();
+        if g == self.me() {
+            return Err(Error::Invalid("the home group stays on this node".into()));
+        }
+        let Some(r) = self.locked(|l| l.remotes.iter().find(|r| r.addr == text).cloned()) else { return Err(Error::Invalid(format!("not attached to {text}"))) };
+        crate::net::blocking(|| r.first())?;
+        // Value::Bool(false): the node does not know it, or the client's actor may not read it
+        if r.call(method::KNOWS, vec![Value::Tid(g)])? != Value::Bool(true) {
+            return Err(Error::UnknownThing { tid: g });
+        }
+        let (held, live) = self.locked(|l| {
+            let held = l.engine().knows(&g);
+            (held, syncs_here(l, &g))
+        });
+        if live {
+            self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout).await?;
+        }
+        self.locked(|l| {
+            let parents: Vec<Tid> = l.engine().groups_of(&g).into_iter().filter(|p| *p != g && !l.routes.contains_key(p)).collect();
+            if parents.iter().any(|p| syncs_here(l, p)) {
+                return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));
+            }
+            // written since the wait: never strand it
+            if syncs_here(l, &g) && crate::share::synced_now(l, g) != Some(Ok(())) {
+                return Err(Error::Unsynced { groups: vec![g] });
+            }
+            let db = self;
+            db.moving(l, |l| {
+                l.routes.insert(g, text.clone());
+                save_routes(l)?;
+                db.inner.routing.store(true, Ordering::Release);
+                if held && !l.sync.receipts_only().contains(&g) {
+                    let acts = l.sync.set_receipts_only(g, true);
+                    db.inner.apply(acts);
+                }
+                Ok(())
+            })
+        })
+    }
+
+    async fn source_local(&self, group: Tid) -> Result<()> {
+        let g = self.read_local(|r| r.resolve(group));
+        let (held, role, stopped, labeled, route) = self.locked(|l| {
+            let held = l.engine().knows(&g);
+            let limit = self.inner.limit;
+            let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(g);
+            let stopped = l.sync.receipts_only().contains(&g);
+            let labeled = l.sync.engine_mut().labels_of(&g).iter().any(|x| !x.replaced);
+            (held, role, stopped, labeled, l.routes.get(&g).cloned())
+        });
+        if route.is_none() && !stopped {
+            return Ok(());
+        }
+        if !held || role.is_none() {
+            return Err(Error::Invalid("this node does not hold the group: its keys are not here".into()));
+        }
+        if !labeled {
+            // its first label here: needs admin, as `sync`
+            self.sync_here(g, &[], true)?;
+        }
+        if stopped {
+            self.act(|l| l.sync.set_receipts_only(g, false));
+        }
+        // what was written at the node reaches a host first, else this engine would catch up
+        // without it; not asked of a node that is gone
+        if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
+            self.node_uploaded(&r, g)?;
+        }
+        let wait: Pending<Result<()>> = self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout);
+        wait.await?;
+        self.locked(|l| {
+            self.moving(l, |l| {
+                l.routes.remove(&g);
+                save_routes(l)
+            })
+        })
+    }
+
+    /// Waits (within `wait_timeout`, else `Network`) until `r` reports `g` synced: nothing it was
+    /// written waits there. Done at once when it is down or does not report the group (a client's
+    /// actor no longer reads it): nothing more can be learned from it.
+    fn node_uploaded(&self, r: &Remote, g: Tid) -> Result<()> {
+        let end = std::time::Instant::now() + self.inner.wait_timeout;
+        loop {
+            let Ok(there) = r.call(method::STATUS, vec![]).and_then(crate::port::codec::status) else { return Ok(()) };
+            match there.groups.get(&g).map(|s| s.state) {
+                Some(crate::share::SyncState::Synced) | None => return Ok(()),
+                Some(_) if std::time::Instant::now() >= end => return Err(Error::Network(format!("{} has not uploaded this group yet", r.addr))),
+                Some(_) => crate::net::blocking(|| std::thread::sleep(UPLOAD_POLL)),
+            }
+        }
+    }
+
+    /// Lets go of the attachment to `addr`. A route naming it stays and fails `Network` until it is
+    /// attached again or the group moves. `false`: no such attachment. `Unsupported` on a handle
+    /// with no store of its own.
+    pub fn detach_node(&self, addr: &HostAddr) -> Result<bool> {
+        self.local_only("detach_node")?;
+        let text = addr.to_string();
+        Ok(self.locked(|l| {
+            let n = l.remotes.len();
+            l.remotes.retain(|r| r.addr != text);
+            l.remotes.len() != n
+        }))
+    }
+
+    /// Waits for each attachment's first connection attempt (`Config::remotes` come up behind
+    /// `open`, within `wait_timeout` each); a node down then still fails its calls `Network`.
+    pub fn await_remotes(&self) {
+        for r in self.locked(|l| l.remotes.clone()) {
+            let _ = crate::net::blocking(|| r.first());
+        }
+    }
+
+    /// The groups this node reads and writes at another node, with its address.
+    pub fn routes(&self) -> BTreeMap<Tid, String> {
+        self.locked(|l| l.routes.clone())
+    }
+}
+
+fn save_routes(l: &mut Locked) -> Result<()> {
+    l.show_routes();
+    let text: Vec<String> = l.routes.iter().map(|(g, a)| format!("{} {a}", g.to_uri())).collect();
+    l.engine().set_app_record(SOURCES, text.join("\n").as_bytes())?;
+    Ok(())
+}
+
+impl Locked {
+    /// Tells the engine which groups are routed (`Engine::readable_by`).
+    pub(crate) fn show_routes(&mut self) {
+        let routed = self.routes.keys().copied().collect();
+        self.engine().core.routed_away = routed;
+    }
+}
+
+/// The `sources` record.
+pub(crate) fn load_routes(e: &mut Engine) -> Result<BTreeMap<Tid, String>> {
+    let bad = || Error::Storage("sources record".into());
+    let Some(b) = e.app_record(SOURCES)? else { return Ok(BTreeMap::new()) };
+    let s = String::from_utf8(b).map_err(|_| bad())?;
+    s.lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| {
+            let (g, a) = l.split_once(' ').ok_or_else(bad)?;
+            Ok((Tid::parse(g).map_err(|_| bad())?, a.to_string()))
+        })
+        .collect()
+}
+

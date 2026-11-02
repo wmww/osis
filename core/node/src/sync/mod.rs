@@ -108,6 +108,10 @@ pub struct SyncConfig {
     /// oldest one that has not authenticated is closed, else the newcomer. Resource bound: 0
     /// serves no client, infinity lets local dials exhaust memory.
     pub max_clients: usize,
+    /// Connections and sessions on the client listener not yet authenticated (notes/client-port.md
+    /// §5), apart from `max_served` and `max_clients`: past it the oldest gives way. Resource
+    /// bound: 0 lets no client in, infinity lets a flood hold unbounded memory.
+    pub client_pending: usize,
     /// A served session without bytes this long is closed.
     pub serve_idle_ms: u64,
     /// A served session that opened no label this long after it started is closed.
@@ -143,6 +147,7 @@ impl Default for SyncConfig {
             peer_total_bytes: 1 << 30,
             max_served: 64,
             max_clients: 64,
+            client_pending: 64,
             serve_idle_ms: 120_000,
             serve_open_ms: 30_000,
             peer_pass_wait_ms: 300_000,
@@ -225,6 +230,9 @@ pub enum Action {
     Room { conn: ConnId, budget: usize },
     /// A served session that made client-port requests ended: drop its subscriptions.
     Ended { conn: ConnId },
+    /// This served session authenticated as a thin client: its connection leaves the listener's
+    /// pending slots (`link::Slots::Pending`). For the driver.
+    Authed { conn: ConnId },
 }
 
 /// Open state of a label on a connection.
@@ -584,6 +592,7 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
+        engine.core.receipts_only = state.receipts_only.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
         let mut rng = rng;

@@ -51,6 +51,7 @@ pub fn category(e: &Error) -> (i32, &'static str) {
         Error::Type { .. } => (5, "Type"),
         Error::Network(_) => (6, "Network"),
         Error::Unsynced { .. } => (6, "Unsynced"),
+        Error::OutcomeUnknown => (6, "OutcomeUnknown"),
         Error::Invalid(_) => (7, "Invalid"),
         Error::NotUndoable { .. } => (1, "NotUndoable"),
         Error::Storage(_) => (1, "Storage"),
@@ -171,6 +172,26 @@ fn config(sel: &StoreSel, g: &Global, net: bool) -> Config {
     c
 }
 
+/// `--timeout` also bounds reaching an attached node.
+fn attach_wait(g: &Global, cfg: &mut Config) {
+    if let Some(d) = g.timeout.as_deref().and_then(|t| parse_dur(t).ok()) {
+        cfg.wait_timeout = d;
+    }
+}
+
+/// The attachment `--remote ADDR --remote-secret FILE` asks for.
+fn remote_flags(g: &Global) -> anyhow::Result<Vec<osis::RemoteConfig>> {
+    let (Some(addr), Some(file)) = (&g.remote, &g.remote_secret) else { return Ok(Vec::new()) };
+    Ok(vec![osis::RemoteConfig { addr: addr.parse()?, secret: read_secret(file)? }])
+}
+
+/// A thin client's secret file: 64 hex digits.
+fn read_secret(file: &Path) -> anyhow::Result<osis::ClientSecret> {
+    let text = std::fs::read_to_string(file).map_err(|e| exit(8, format!("{}: {e}", file.display())))?;
+    let bytes = osis_schema::osis_base::hex::decode(text.trim()).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(|| usage(format!("{}: not 64 hex digits", file.display())))?;
+    Ok(osis::ClientSecret::from_bytes(bytes))
+}
+
 const PID_FILE: &str = "pid";
 const SCHEMAS_FILE: &str = "cli.toml";
 
@@ -197,7 +218,12 @@ fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<O
             if !d.join("db.redb").exists() {
                 return Err(exit(8, format!("no store at {} (run osis init)", d.display())));
             }
-            let db = match Osis::open(config(sel, g, net)) {
+            let mut cfg = config(sel, g, net);
+            cfg.remotes = remote_flags(g)?;
+            if !cfg.remotes.is_empty() {
+                attach_wait(g, &mut cfg);
+            }
+            let db = match Osis::open(cfg) {
                 Ok(db) => db,
                 Err(Error::Storage(m)) if attach && m.contains("already open") => match daemon(d, g) {
                     Some(db) => return Ok(db),
@@ -206,6 +232,7 @@ fn open(sel: &StoreSel, g: &Global, net: bool, attach: bool) -> anyhow::Result<O
                 Err(e) => return Err(lock_err(d, e)),
             };
             let _ = std::fs::write(d.join(PID_FILE), std::process::id().to_string());
+            db.await_remotes();
             Ok(db)
         }
         StoreSel::Memory(_) => Osis::open(config(sel, g, net)).map_err(|e| match e {
@@ -234,14 +261,14 @@ fn daemon(d: &Path, g: &Global) -> Option<Osis> {
 /// (notes/client-port.md §3). No store is opened.
 fn thin(g: &Global) -> anyhow::Result<Osis> {
     let (Some(addr), Some(file)) = (&g.node, &g.client_secret) else { return Err(usage("--node needs --client-secret")) };
-    let text = std::fs::read_to_string(file).map_err(|e| exit(8, format!("{}: {e}", file.display())))?;
-    let bytes = osis_schema::osis_base::hex::decode(text.trim()).and_then(|b| <[u8; 32]>::try_from(b).ok()).ok_or_else(|| usage(format!("{}: not 64 hex digits", file.display())))?;
+    let secret = read_secret(file)?;
     let addr: osis::HostAddr = addr.parse()?;
     let mut cfg = Config::memory();
     if let Some(l) = g.limit {
         cfg.materialize_limit = l;
     }
-    Ok(Osis::attach_client(&addr, &osis::ClientSecret::from_bytes(bytes), cfg)?)
+    attach_wait(g, &mut cfg);
+    Ok(Osis::attach_client(&addr, &secret, cfg)?)
 }
 
 /// Serves the client port while `serve` runs: listens on the store's socket and names it in

@@ -11,6 +11,21 @@ use std::process::{Child, Command, Stdio};
 
 const OSIS: &str = env!("CARGO_BIN_EXE_osis");
 
+thread_local! {
+    /// This test's `osis` runs have no `XDG_RUNTIME_DIR` (a client follows `<store>/sock` only to
+    /// the socket its own environment names, so client and daemon must agree).
+    static NO_XDG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The binary, in this test's environment.
+fn cmd() -> Command {
+    let mut c = Command::new(OSIS);
+    if NO_XDG.get() {
+        c.env_remove("XDG_RUNTIME_DIR");
+    }
+    c
+}
+
 /// Kills the host when the test ends, also on a panic.
 struct Host(Child);
 
@@ -29,7 +44,7 @@ fn dir(name: &str) -> PathBuf {
 
 /// Runs `osis -s STORE --timeout 60s ARGS` with `stdin`; returns stdout, panics on failure.
 fn osis_in(store: &Path, args: &[&str], stdin: &[u8]) -> Vec<u8> {
-    let mut c = Command::new(OSIS).arg("-s").arg(store).args(["--timeout", "60s"]).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = cmd().arg("-s").arg(store).args(["--timeout", "60s"]).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(stdin).unwrap();
     let o = c.wait_with_output().unwrap();
     assert!(o.status.success(), "osis {args:?}: {}", String::from_utf8_lossy(&o.stderr));
@@ -136,12 +151,85 @@ fn two_people_three_devices_one_host_localhost() {
 /// Only that first line is read, then stdout is closed: the diagnostics `serve` prints after it
 /// are best effort (notes/cli.md serve), so the host goes on (the tests below need it).
 fn serve(store: &Path, args: &[&str]) -> (Host, String) {
-    let mut c = Command::new(OSIS).arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
+    let mut c = cmd().arg("-s").arg(store).arg("serve").args(args).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
     let mut out = BufReader::new(c.stdout.take().unwrap());
     let mut addr = String::new();
     out.read_line(&mut addr).unwrap();
     drop(out);
     (Host(c), addr.trim().to_string())
+}
+
+/// A `serve` of `store` that prints a `client URL#KEY` line first: that address.
+fn serve_clients(store: &Path) -> (Host, String) {
+    let (h, line) = serve(store, &["--client-listen", "quic://127.0.0.1:0"]);
+    let a = line.strip_prefix("client ").unwrap_or_else(|| panic!("{line}")).to_string();
+    (h, a)
+}
+
+// spec/sync.md §10 (client port), notes/client-port.md §3, §5, notes/cli.md: a thin CLI (`--node ADDR --client-secret FILE`, no store) over real QUIC with bearer Auth: the client listener's address from `serve --client-listen`; reads and writes within its grant, as its actor; not beyond it; a rotated client key strands the old address, exit 6-class `Network`, while the new one works; a wrong secret is refused; `--remote` and `group source` route a group of another store there, and fail, not fall back, once it is gone
+#[test]
+#[ignore]
+fn thin_cli_quic_localhost() {
+    let n = dir("thin-node");
+    osis(&n, &["init"]);
+    let g = osis(&n, &["create", "--owner", "me", "--group", "note:title.0", "\"g\""]);
+    let t = osis(&n, &["create", "--owner", &g, "--in", &g, "note:title.0", "\"hello\""]);
+    let hidden = osis(&n, &["create", "--owner", "me", "note:title.0", "\"hidden\""]);
+    let add = osis(&n, &["clients", "add"]);
+    let (actor, secret) = add.split_once(' ').unwrap();
+    osis(&n, &["grant", &g, actor, "write"]);
+    let f = dir("thin-secret").join("client.secret");
+    std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+    std::fs::write(&f, secret).unwrap();
+    let file = f.to_str().unwrap();
+    let (daemon, addr) = serve_clients(&n);
+    let none = dir("thin-unused");
+    let thin = |args: &[&str]| {
+        let mut a = vec!["--timeout", "30s", "--node", addr.as_str(), "--client-secret", file];
+        a.extend_from_slice(args);
+        run(&none, &a)
+    };
+    let g1 = thin(&["get", &t, "note:title.0"]);
+    assert_eq!((g1.0, g1.1.trim()), (0, "\"hello\""), "{}", g1.2);
+    let w = thin(&["set", &t, "note:title.0", "\"from thin\""]);
+    assert_eq!(w.0, 0, "{}", w.2);
+    let g2 = thin(&["get", &t, "note:title.0"]);
+    assert_eq!(g2.1.trim(), "\"from thin\"");
+    // what its actor may not read reads as absent, what it may not write fails
+    assert_ne!(thin(&["get", &hidden, "note:title.0"]).0, 0);
+    assert_ne!(thin(&["set", &hidden, "note:title.0", "\"x\""]).0, 0);
+    // through the daemon, the store sees the client's write
+    assert_eq!(osis(&n, &["get", &t, "note:title.0"]), "\"from thin\"");
+    // a wrong secret
+    let bad = f.with_extension("bad");
+    std::fs::write(&bad, "00".repeat(32)).unwrap();
+    let r = run(&none, &["--timeout", "30s", "--node", &addr, "--client-secret", bad.to_str().unwrap(), "get", &t, "note:title.0"]);
+    assert_ne!(r.0, 0);
+    assert!(r.2.contains("refused"), "{}", r.2);
+    // a new client listener key: the old address is out, the new one in
+    let new = osis(&n, &["clients", "rotate-key"]);
+    assert_ne!(new, addr);
+    let old = run(&none, &["--timeout", "3s", "--node", &addr, "--client-secret", file, "get", &t, "note:title.0"]);
+    assert_ne!(old.0, 0);
+    let r = run(&none, &["--timeout", "30s", "--node", &new, "--client-secret", file, "get", &t, "note:title.0"]);
+    assert_eq!(r.0, 0, "{}", r.2);
+    // another node's store routes a group it does not hold there; with the node gone it fails
+    let m = dir("thin-other");
+    osis(&m, &["init"]);
+    let route = |args: &[&str]| {
+        let mut a = vec!["--timeout", "5s", "--remote", new.as_str(), "--remote-secret", file];
+        a.extend_from_slice(args);
+        run(&m, &a)
+    };
+    let r = route(&["group", "source", &g, &new]);
+    assert_eq!(r.0, 0, "{}", r.2);
+    let r = route(&["get", &t, "note:title.0"]);
+    assert_eq!((r.0, r.1.trim()), (0, "\"from thin\""), "{}", r.2);
+    drop(daemon);
+    let r = route(&["get", &g, "note:title.0"]);
+    assert_ne!(r.0, 0, "not a local answer: {}", r.1);
+    let r = run(&m, &["get", &g, "note:title.0"]);
+    assert_ne!(r.0, 0, "without the attachment too: {}", r.1);
 }
 
 // spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
@@ -188,7 +276,7 @@ fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
 
 /// `run` with `stdin`.
 fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
-    let mut c = Command::new(OSIS).arg("-s").arg(store).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let mut c = cmd().arg("-s").arg(store).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     c.stdin.take().unwrap().write_all(stdin).unwrap();
     let o = c.wait_with_output().unwrap();
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
@@ -226,11 +314,8 @@ fn daemon_clients_localhost() {
     for xdg in [true, false] {
         // a killed daemon's pointer stays (stale): wait for the new one
         let _ = std::fs::remove_file(s.join("sock"));
-        let mut c = Command::new(OSIS);
-        if !xdg {
-            c.env_remove("XDG_RUNTIME_DIR");
-        }
-        let child = c.arg("-s").arg(&s).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+        NO_XDG.set(!xdg);
+        let child = cmd().arg("-s").arg(&s).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
         let host = Host(child);
         // `serve` names its socket in the store once it listens
         let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
@@ -257,7 +342,7 @@ fn daemon_clients_localhost() {
         let bad = run_in(&s, &["write"], BAD_SCRIPT);
         assert_eq!((bad.0, bad.1.as_str(), bad.2.as_str()), (lbad.0, lbad.1.as_str(), lbad.2.as_str()));
         // a watch through the daemon: its initial line, then the change another client makes
-        let mut w = Command::new(OSIS).arg("-s").arg(&s).args(["--timeout", "60s", "watch", &t, "note:title.0", "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        let mut w = cmd().arg("-s").arg(&s).args(["--timeout", "60s", "watch", &t, "note:title.0", "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let mut wout = BufReader::new(w.stdout.take().unwrap());
         let mut first = String::new();
         wout.read_line(&mut first).unwrap();

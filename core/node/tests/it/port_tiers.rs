@@ -329,3 +329,58 @@ fn minting_a_client_is_all_or_nothing() {
     assert!(net.sync(a).engine_mut().epochs(&t).is_some(), "secrets of its own");
     assert!(net.sync(a).engine_mut().get_typed(&node, &ct::CLIENTS).unwrap().unwrap().contains_key(&t));
 }
+
+// spec/sync.md §10, notes/client-port.md §5: unauthenticated sessions on the client listener are a pool of their own: a flood there evicts its own oldest, never a co-reader's session on another listener, and a session of another listener's flood never takes a client listener's place; `Authed` tells the driver a session left the pool; the key is random, kept, rotated, shredded
+#[test]
+fn client_listener_sessions_are_a_pool_of_their_own() {
+    let mut net = Net::new();
+    let cfg = SyncConfig { max_served: 1, client_pending: 2, serve_open_ms: 1_000_000, ..SyncConfig::default() };
+    let a = net.add_node(1, cfg);
+    let secret = net.sync(a).client_listen_secret(false);
+    let key = net.sync(a).client_listen_key().unwrap();
+    assert_eq!(*net.sync(a).client_listen_secret(false).expose(), *secret.expose());
+    assert_ne!(key, LOCAL);
+    let (peer, _) = net.sync(a).accept_peer(LOCAL, Peer::Key([1; 32]));
+    let (p1, _) = net.sync(a).accept_peer(key, Peer::Key([2; 32]));
+    let (_p2, _) = net.sync(a).accept_peer(key, Peer::Key([3; 32]));
+    // the flood's third: its own oldest goes, no co-reader
+    let (_p3, acts) = net.sync(a).accept_peer(key, Peer::Key([4; 32]));
+    assert!(acts.contains(&Action::Close { conn: p1 }), "{acts:?}");
+    assert!(!acts.contains(&Action::Close { conn: peer }), "{acts:?}");
+    // the other way: a second peer session evicts the first peer, no client listener session
+    let (_peer2, acts) = net.sync(a).accept_peer(LOCAL, Peer::Key([5; 32]));
+    assert!(acts.contains(&Action::Close { conn: peer }), "{acts:?}");
+    assert!(!acts.contains(&Action::Close { conn: _p2 }), "{acts:?}");
+    // an Auth that matches: Authed for the driver, then out of the pool
+    let (actor, bytes) = (Tid::from_bytes([3; 15]), [7u8; 32]);
+    set_entry(&mut net, a, actor, Some(entry(&bytes, None)));
+    let cs_key = key;
+    let (conn, acts) = net.sync(a).accept_peer(cs_key, Peer::Key([6; 32]));
+    let mut cs = ClientSession::new(ClientConfig { peer_static_key: cs_key, challenge: [0; 32] });
+    let o = cs.handle(0, ClientInput::Start);
+    feed(&mut net, a, conn, &mut cs, o, acts);
+    let (got, code) = bearer(&mut net, a, conn, &mut cs, Some(bytes));
+    assert_eq!(code, None);
+    assert!(got.contains(&Action::Authed { conn }), "{got:?}");
+    // a bad Auth tells nothing
+    let (c2, acts) = net.sync(a).accept_peer(cs_key, Peer::Key([7; 32]));
+    let mut cs2 = ClientSession::new(ClientConfig { peer_static_key: cs_key, challenge: [0; 32] });
+    let o = cs2.handle(0, ClientInput::Start);
+    feed(&mut net, a, c2, &mut cs2, o, acts);
+    let (got, code) = bearer(&mut net, a, c2, &mut cs2, Some([8; 32]));
+    assert!(code.is_some() && !got.contains(&Action::Authed { conn: c2 }), "{got:?}");
+    // a client listener serves the client port alone: a sync kind is Error 11, before Auth and after
+    let open = Message::Subscribe { id: 9, labels: vec![osis_base::LabelId([1; 16])] };
+    let frame = |m: &Message| { let e = m.encode(); let mut f = (e.len() as u32).to_be_bytes().to_vec(); f.extend(e); f };
+    let reply = |acts: Vec<Action>| acts.into_iter().find_map(|a| if let Action::Send { bytes, .. } = a { Message::decode(&bytes[4..]).ok() } else { None });
+    for c in [c2, conn] {
+        let r = reply(net.sync(a).handle(Event::Bytes { conn: c, bytes: frame(&open) }));
+        assert!(matches!(r, Some(Message::Error { id: 9, code }) if code == osis_proto::Code::UNSUPPORTED), "{r:?}");
+    }
+    // rotation and shredding
+    let rotated = net.sync(a).client_listen_secret(true);
+    assert_ne!(*rotated.expose(), *secret.expose());
+    assert_ne!(net.sync(a).client_listen_key(), Some(key));
+    net.sync(a).drop_client_listen_secret();
+    assert_eq!(net.sync(a).client_listen_key(), None);
+}

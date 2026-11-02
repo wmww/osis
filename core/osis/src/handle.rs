@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
 use crate::share::{RecoveryCard, HostAddr, Status};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
-use osis_base::{Clock, SystemClock, Tid, Value};
+use osis_base::{Clock, SystemClock, Tid};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
 use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
@@ -88,6 +88,10 @@ pub struct Config {
     pub ephemeral_history: usize,
     /// Where watch callbacks run (default: a dispatcher thread).
     pub dispatch: Dispatcher,
+    /// Nodes this process is attached to as a thin client (`Osis::attach_remotes` without a store;
+    /// with one, the credentials for the routes its `sources` record names: no secret is
+    /// ever stored, and a route naming a node not listed here fails `Network`).
+    pub remotes: Vec<crate::sources::RemoteConfig>,
 }
 
 impl Config {
@@ -97,7 +101,7 @@ impl Config {
     }
 
     pub fn at(store: StoreAt) -> Config {
-        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), hosts: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread }
+        Config { store, materialize_limit: DEFAULT_LIMIT, clock: None, seed: None, runtime: Runtime::None, transport: None, peers: true, relays: Vec::new(), hosts: Vec::new(), idle_commit: DEFAULT_IDLE_COMMIT, wait_timeout: DEFAULT_WAIT, ephemeral_history: osis_node::engine::DEFAULT_EPHEMERAL_HISTORY, dispatch: Dispatcher::Thread, remotes: Vec::new() }
     }
 
     pub fn dir(path: impl Into<std::path::PathBuf>) -> Config {
@@ -129,6 +133,11 @@ pub(crate) struct Locked {
     pub offers: Vec<([u8; 32], u64)>,
     /// Links made here, by K.
     pub links: BTreeMap<Tid, MadeLink>,
+    /// This process's attachments to other nodes, in the order they were attached.
+    pub remotes: Vec<Arc<crate::port::client::Remote>>,
+    /// Groups this node reads and writes at another node: its address (`url#key`), persisted as
+    /// the `sources` record (notes/client-port.md §6). See `crate::sources`.
+    pub routes: BTreeMap<Tid, String>,
 }
 
 impl Locked {
@@ -151,6 +160,12 @@ impl Inner {
     }
 }
 
+/// A process with no store of its own: where its process-wide calls go, and who it is there.
+pub(crate) struct Thin {
+    pub primary: Arc<crate::port::client::Remote>,
+    pub who: crate::port::client::Who,
+}
+
 pub(crate) struct Inner {
     pub eng: Mutex<Locked>,
     pub dispatch: Dispatch,
@@ -166,8 +181,10 @@ pub(crate) struct Inner {
     pub net: Net,
     /// The client port this node serves (notes/client-port.md): requests its served sessions make.
     pub port: crate::port::serve::Port,
-    /// The node this process is attached to (`Osis::attach`): every tid-addressed call goes there.
-    pub remote: std::sync::OnceLock<Arc<crate::port::client::Remote>>,
+    /// A process with no store of its own (`Osis::attach`): the scratch database stands in.
+    pub thin: std::sync::OnceLock<Thin>,
+    /// Any attachment or route exists: only then is a route looked up (no cost on a local path).
+    pub routing: std::sync::atomic::AtomicBool,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -208,60 +225,6 @@ pub struct Osis {
     /// The actor this handle acts as (`act_as`): `me()`, and every read and write held to that
     /// actor's rights. `None`: this node's own.
     pub(crate) acting: Option<Tid>,
-}
-
-/// Where an API call on a thing or group goes (notes/client-port.md §1): this process's engine,
-/// or the node it is attached to. Every call addressed by a tid or group checks it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Source {
-    /// This process's engine.
-    Local,
-    /// The node this process is attached to (`Osis::attach`).
-    Remote,
-}
-
-impl Osis {
-    /// The source of calls on `tid` (a thing or a group): the attached node when there is one
-    /// (step (b): one attachment, every group remote), else this process's engine.
-    #[inline]
-    pub(crate) fn route(&self, _tid: Tid) -> Source {
-        if self.attached() { Source::Remote } else { Source::Local }
-    }
-
-    /// The source of a call on things this process does not name by tid (a sharing call's
-    /// several things): the attached node when there is one.
-    #[inline]
-    pub(crate) fn route_any(&self) -> Source {
-        if self.attached() { Source::Remote } else { Source::Local }
-    }
-
-    /// Whether this handle is attached to a node (`Osis::attach`).
-    #[inline]
-    pub(crate) fn attached(&self) -> bool {
-        self.inner.remote.get().is_some()
-    }
-
-    /// The attached node, if any.
-    pub(crate) fn remote(&self) -> Option<&Arc<crate::port::client::Remote>> {
-        self.inner.remote.get()
-    }
-
-    /// The source of calls over `scope` (`None`: every held change).
-    #[inline]
-    pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Source {
-        match scope {
-            Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
-            Some(crate::commits::Scope::Aspects(a)) => a.first().map_or(Source::Local, |(t, _)| self.route(*t)),
-            None if self.attached() => Source::Remote,
-            None => Source::Local,
-        }
-    }
-
-    /// The source holding change `id`.
-    #[inline]
-    pub(crate) fn route_change(&self, _id: osis_node::ChangeId) -> Source {
-        if self.attached() { Source::Remote } else { Source::Local }
-    }
 }
 
 impl Clone for Osis {
@@ -432,9 +395,16 @@ impl Osis {
         let events = sync.engine_mut().subscribe();
         let dispatch = Dispatch::new(&cfg.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
-        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
+        let routes = crate::sources::load_routes(sync.engine_mut())?;
+        sync.engine_mut().core.routed_away = routes.keys().copied().collect();
+        let routing = !routes.is_empty() || !cfg.remotes.is_empty();
+        let mut remotes = Vec::new();
+        for x in &cfg.remotes {
+            remotes.push(crate::port::client::spawn_client(&x.addr, &x.secret, cfg, clock.clone())?);
+        }
+        let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new(), remotes, routes };
         let port = crate::port::serve::Port::new();
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, remote: std::sync::OnceLock::new(), life: LifeGuard(Arc::default()) });
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, thin: std::sync::OnceLock::new(), routing: routing.into(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -509,19 +479,19 @@ impl Osis {
 
     /// This device's node tid (attached: the node's).
     pub fn node(&self) -> Tid {
-        self.remote().map_or(self.inner.node, |r| r.who.node)
+        self.inner.thin.get().map_or(self.inner.node, |t| t.who.node)
     }
 
     /// The person actor this database belongs to: the usual owner of what the app creates
     /// (attached: the node's person).
     pub fn me(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.remote().map_or(self.inner.me, |r| r.who.me))
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.me))
     }
 
     /// The person's home group: the person actor itself, synced under its home label
     /// (spec/sync.md §2); things placed in it reach every device of the person.
     pub fn home(&self) -> Tid {
-        self.acting.unwrap_or_else(|| self.remote().map_or(self.inner.me, |r| r.who.home))
+        self.acting.unwrap_or_else(|| self.inner.thin.get().map_or(self.inner.me, |t| t.who.home))
     }
 
     /// The materialization bound in bytes.
@@ -642,9 +612,9 @@ impl Osis {
     /// call it inside an `Osis::read` or `Internals::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
-        // attached: the node's deliveries so far reach the queue first (not from a callback:
-        // the reply would wait for this very dispatcher)
-        if self.attached() && !self.inner.dispatch.shared.on_dispatcher() {
+        // attached nodes' deliveries so far reach the queue first (not from a callback: the reply
+        // would wait for this very dispatcher)
+        if self.inner.routing.load(std::sync::atomic::Ordering::Acquire) && !self.inner.dispatch.shared.on_dispatcher() && !crate::port::serve::on_worker() {
             self.remote_settle();
         }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
@@ -670,10 +640,8 @@ impl Osis {
     /// Parses and registers a `*.osis` source (errors carry file:line:col).
     pub fn register_schema_source(&self, file: &str, src: &str) -> Result<Arc<Schema>> {
         let s = osis_schema::parse(file, src).map_err(|e| Error::Invalid(e.to_string()))?;
-        // attached: the node needs it for structural diffs and undo write-back
-        if self.attached() {
-            self.rcall(crate::port::method::REGISTER_SCHEMA, vec![Value::Str(file.into()), Value::Str(src.into())])?;
-        }
+        // the nodes need it for structural diffs and undo write-back
+        self.mirror_schema(file, src)?;
         self.register_schema(s)
     }
 

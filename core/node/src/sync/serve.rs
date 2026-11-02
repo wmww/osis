@@ -168,6 +168,8 @@ pub(crate) struct Served {
     tier: super::Tier,
     /// It made a client-port request (`Action::Ended` when it goes).
     ported: bool,
+    /// On the client listener (its unauthenticated sessions are a pool of their own).
+    public: bool,
     /// The dialer's authenticated key (budgets are charged to it).
     peer: [u8; 32],
     /// Raw ms of the last bytes received (idle sessions are closed).
@@ -514,18 +516,21 @@ impl SyncEngine {
     /// `accept` with the peer as the transport type reported it: a `Peer::Unix` session of this
     /// process's uid is a client in the Owner tier (notes/client-port.md §0, §5), in its own
     /// pool of `SyncConfig.max_clients` (an authenticated one counts as opened); every other
-    /// session is keyed, in `max_served` (another uid's too, whatever its listener let in).
+    /// session is keyed, in `max_served` (another uid's too, whatever its listener let in), but
+    /// one on the client listener, in `client_pending`, so a flood there costs co-readers nothing.
     pub fn accept_peer(&mut self, local: [u8; 32], peer: osis_transport::Peer) -> (ConnId, Vec<Action>) {
         let (tier, peer, cap) = match peer {
             osis_transport::Peer::Unix { uid } if osis_transport::unix::own_uid().is_ok_and(|o| o == uid) => (super::Tier::Owner, osis_transport::unix::uid_key(uid), self.cfg.max_clients),
             osis_transport::Peer::Unix { uid } => (super::Tier::Keyed, osis_transport::unix::uid_key(uid), self.cfg.max_served),
             osis_transport::Peer::Key(k) => (super::Tier::Keyed, k, self.cfg.max_served),
         };
+        let public = tier == super::Tier::Keyed && self.client_listen_key() == Some(local);
+        let cap = if public { self.cfg.client_pending } else { cap };
         let conn = self.next_conn;
         self.next_conn += 1;
         let mut out = Vec::new();
-        if self.served.values().filter(|s| s.tier == tier).count() >= cap {
-            let idle = self.served.iter().filter(|(_, s)| s.tier == tier && s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
+        if self.served.values().filter(|s| s.tier == tier && s.public == public).count() >= cap {
+            let idle = self.served.iter().filter(|(_, s)| s.tier == tier && s.public == public && s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
             match idle {
                 Some(old) => {
                     self.end_served(old, &mut out);
@@ -541,7 +546,8 @@ impl SyncEngine {
         let mut challenge = [0u8; 32];
         self.rng.fill_bytes(&mut challenge);
         let last = self.raw_now();
-        self.served.insert(conn, Served { conn: ServingSession::new(ServingConfig { static_key: local, challenge }).with_port(), tier, ported: false, peer, last, since: last, client: None });
+        let session = ServingSession::new(ServingConfig { static_key: local, challenge });
+        self.served.insert(conn, Served { conn: if public { session.port_only() } else { session.with_port() }, tier, public, ported: false, peer, last, since: last, client: None });
         if let Err(e) = self.serve(conn, ServingInput::Start, &mut out) {
             self.diag(format!("serve: {e}"));
         }
@@ -704,7 +710,12 @@ impl SyncEngine {
                 ServingOutput::StoreError(e) => self.diag(format!("serve: {e}")),
                 // nothing of an unauthenticated keyed session goes up, and no secret ever does
                 ServingOutput::Request(msg) => match self.admit(conn, *msg) {
-                    Ok((tier, msg)) => out.push(Action::Request { conn, tier, msg: Box::new(msg) }),
+                    Ok((tier, msg)) => {
+                        if matches!(tier, super::Tier::Client(_)) && matches!(msg, osis_proto::Message::Auth { .. }) {
+                            out.push(Action::Authed { conn });
+                        }
+                        out.push(Action::Request { conn, tier, msg: Box::new(msg) });
+                    }
                     Err(r) => refused.push(r),
                 },
                 ServingOutput::Room { budget } => out.push(Action::Room { conn, budget }),
@@ -750,6 +761,37 @@ impl SyncEngine {
                 Ok((s.tier, Message::Auth { id, secret: None, session }))
             }
             _ => Err((id, Code::REFUSED)),
+        }
+    }
+
+    /// The client listener's key (every transport's key is the Ed25519 key of its secret), while
+    /// it has one. Independent of the dialable key, LAN keys and the signing key: nothing links
+    /// them (notes/client-port.md §5).
+    pub fn client_listen_key(&self) -> Option<[u8; 32]> {
+        self.state.client_listen.as_ref().map(|s| osis_crypto::SigningSecret::from_seed(s).verifying_key().to_bytes())
+    }
+
+    /// The secret the client listener listens with, made on first use, drawn afresh: it derives
+    /// from nothing else. `rotate`: a new one replaces it (the old shredded).
+    pub fn client_listen_secret(&mut self, rotate: bool) -> Secret32 {
+        if !rotate && let Some(s) = &self.state.client_listen {
+            return s.clone();
+        }
+        let mut b = [0u8; 32];
+        self.rng.fill_bytes(&mut b);
+        let s = Secret32::from_bytes(b);
+        self.state.set_client_listen(Some(s.clone()));
+        if let Err(e) = self.state.flush(&mut self.engine) {
+            self.diag(format!("sync state: {e}"));
+        }
+        s
+    }
+
+    /// Shreds the client listener's secret: its address is gone for good.
+    pub fn drop_client_listen_secret(&mut self) {
+        self.state.set_client_listen(None);
+        if let Err(e) = self.state.flush(&mut self.engine) {
+            self.diag(format!("sync state: {e}"));
         }
     }
 

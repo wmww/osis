@@ -209,6 +209,8 @@ pub struct ServingSession {
     room_wanted: bool,
     /// Client-port kinds are served (`with_port`); else they get Error 11 (a host).
     port: bool,
+    /// Only the client port: every other kind is answered Error 11 (a client listener).
+    port_only: bool,
 }
 
 /// The label's head keys, reloaded when the head changed (a store read, never the path); none
@@ -278,11 +280,20 @@ impl ServingSession {
             authed: false,
             room_wanted: false,
             port: false,
+            port_only: false,
         }
     }
 
     /// Serves the client-port kinds (a node's listeners; notes/client-port.md §5): they are
     /// handed out as `ServingOutput::Request`.
+    /// `with_port`, and nothing else served: a client listener is dialable by anyone it was given
+    /// to, and holds no peer's labels or deposits.
+    pub fn port_only(mut self) -> ServingSession {
+        self.port = true;
+        self.port_only = true;
+        self
+    }
+
     pub fn with_port(mut self) -> ServingSession {
         self.port = true;
         self
@@ -612,6 +623,9 @@ impl ServingSession {
     }
 
     fn dispatch(&mut self, now: u64, store: &mut dyn LabelStore, msg: Message, out: &mut Vec<ServingOutput>) -> Result<Option<Message>, StoreError> {
+        if self.port_only && !matches!(msg, Message::Ping { .. } | Message::Auth { .. } | Message::Call { .. } | Message::Sub { .. } | Message::Unsub { .. }) {
+            return Ok(Some(Message::Error { id: msg.id(), code: Code::UNSUPPORTED }));
+        }
         use Message as M;
         Ok(Some(match msg {
             M::Ping { id, .. } => M::Pong { id, wall_ms: now },

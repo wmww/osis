@@ -31,6 +31,9 @@ pub enum Error {
     Storage(String),
     /// Another node could not be reached in time.
     Network(String),
+    /// A write through another node may or may not have applied (its reply was lost and the node
+    /// cannot tell). Repeating it is a new write: read first, repeat only if it is not there.
+    OutcomeUnknown,
     /// Not provided by this build yet (issues/api-deferred.md).
     Unsupported(String),
     /// The database is closed.
@@ -50,6 +53,7 @@ osis_base::impl_error!(Error {
     Invalid(m) => ("invalid: {m}"),
     Storage(m) => ("storage: {m}"),
     Network(m) => ("network: {m}"),
+    OutcomeUnknown => ("outcome unknown: the write may have applied, read before repeating it"),
     Unsupported(m) => ("not supported yet: {m}"),
     Closed => ("database closed"),
     StillOpen { handles } => ("{handles} other handle(s) keep the database open"),

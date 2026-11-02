@@ -51,6 +51,7 @@ impl SyncEngine {
     /// receipts (`read_receipts`). What is already stored stays, no longer updated.
     pub fn set_receipts_only(&mut self, group: Tid, on: bool) -> Vec<Action> {
         self.state.set_receipts_only(group, on);
+        self.engine.core.receipts_only = self.state.receipts_only.clone();
         self.served_cache = None;
         if on {
             // its labels' sessions stop here: nothing more runs on them

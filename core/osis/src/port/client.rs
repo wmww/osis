@@ -1,11 +1,28 @@
-//! The client side of the client port (notes/client-port.md §1, §2): `Osis::attach` dials a node
-//! (step (b): its unix socket, as Owner) and every tid-addressed call of the handle goes there
-//! (`Source::Remote`). One connection per attachment, driven by a proto `ClientSession` on a
-//! thread of its own; a call blocks its caller until its Reply. Watches are subscriptions whose
-//! Reply and Notifies enter the handle's dispatcher queue in wire order, so remote callbacks run
-//! on the dispatcher like local ones. Writes carry a nonce from 1 per session.
+//! The client side of the client port (notes/client-port.md §1, §2, §6): a `Remote` is one
+//! attachment to a node: a proto `ClientSession` on a thread of its own that a call blocks on until
+//! its Reply. A handle routes tid-addressed calls to it (`crate::sources`). Watches are
+//! subscriptions whose Reply and Notifies enter the handle's dispatcher queue in wire order, so
+//! remote callbacks run on the dispatcher like local ones. Writes carry a nonce from 1 per session.
+//!
+//! **Reconnect contract** (§1): a dropped connection is redialed with back-off, under the same
+//! session id. Once up: Auth, schemas again, every live subscription again (its new Reply closes the
+//! gap; signals in the gap are lost), and writes still unanswered are sent again under their nonce,
+//! marked (the node answers a nonce it remembers with its first result, and never runs one it
+//! cannot tell apart from a repeat: `OutcomeUnknown`). What the caller sees:
+//! - a call while the connection is down: `Network` at once; it was not sent;
+//! - a read in flight when it drops: `Network`;
+//! - a write in flight when it drops: blocks until reconnected, then its one result;
+//!   `OutcomeUnknown` if the node restarted, forgot the nonce, refused the session or
+//!   `Config::wait_timeout` passed with no connection;
+//! - a watch: `Err(Network)` while down, then the value again as a new `Source::Initial`; a
+//!   `watch_thing` or `watch_status` started while down too. `watch_roster` and `on_diagnostic`
+//!   have no way to say it is down: quiet until it is up, then as a live one.
+//!
+//! `OutcomeUnknown` means the write may or may not have applied. Repeating it is a new write (a
+//! new nonce), so a blind repeat can apply it twice: read what it wrote first, and repeat only if
+//! that is not there.
 
-use super::codec::{self as c, u};
+use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Config, Osis, WeakOsis};
@@ -18,13 +35,25 @@ use osis_transport::{Address, Unix};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tokio::time::Instant;
 
 /// Bytes queued for the node and not yet taken before the connection is dropped (as the
 /// driver's `MAX_QUEUED`; a session within its window never comes near it).
 const MAX_QUEUED: usize = 64 * 1024 * 1024;
+/// First pause before a redial, doubled after each failure up to `RETRY_MAX`. Minor: 0 redials in
+/// a tight loop (each dial is real work on both sides); infinity never redials, so a dropped
+/// attachment stays `Network`; `RETRY_MAX` is how late a client notices its node came back.
+const RETRY_MIN: Duration = Duration::from_millis(100);
+const RETRY_MAX: Duration = Duration::from_secs(30);
+/// The tokens of a connection's own Auth and `whoami`; every other comes from `TOKENS`.
+const AUTH_TOKEN: u64 = 0;
+const WHO_TOKEN: u64 = 1;
+/// Subscription and call tokens, unique in the process (the dispatcher's `Filter::Port` holds
+/// subscriptions of every attachment).
+static TOKENS: AtomicU64 = AtomicU64::new(16);
 /// The name of the file in a store directory naming the socket a daemon listens on.
 pub const SOCK_FILE: &str = "sock";
 
@@ -69,7 +98,7 @@ pub fn own_uid() -> Result<u32> {
 }
 
 /// The node's person and node actors (`Osis::me`, `node`, `home` of an attached handle).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct Who {
     pub me: Tid,
     pub node: Tid,
@@ -80,21 +109,60 @@ type CallReply = std::sync::mpsc::Sender<std::result::Result<Outcome, Code>>;
 type Sink = Box<dyn FnMut(PortEvent) + Send>;
 
 enum Cmd {
-    Auth { session: [u8; 16], secret: Option<osis_crypto::Secret32>, reply: CallReply },
     /// `nonce`: a write's slot, its nonce taken on the I/O thread when first sent (0 until
     /// then) and put first in `args`, so nonces go out in the order the node must see them.
     Call { token: u64, max_reply: usize, method: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>, reply: CallReply },
-    Sub { token: u64, filter: Value, sink: Sink },
+    /// `again`: subscribed again on each reconnect (not a `wait_synced`, which answers once).
+    Sub { token: u64, filter: Value, again: bool, sink: Sink },
     Unsub { token: u64 },
+    /// Registered again on each reconnect.
+    Schema { file: String, src: String },
+}
+
+/// Marks a write's nonce as sent again (spec/wire.md §11.2): a node that holds no state for the
+/// session must not take it for new, since it may have run before that state was evicted.
+pub(crate) const NONCE_RESENT: u64 = 1 << 62;
+
+/// What the connection is doing, for callers and for `status`.
+#[derive(Default)]
+struct LinkInner {
+    up: bool,
+    /// How the latest connection attempt ended (none yet).
+    tried: Option<Result<()>>,
+    /// Never up again: the node refused this session, or there is no attachment.
+    ended: Option<Error>,
+    who: Option<Who>,
+}
+
+#[derive(Default)]
+struct LinkState {
+    m: Mutex<LinkInner>,
+    cv: Condvar,
+}
+
+impl LinkState {
+    fn tried(&self, r: Result<()>) {
+        let mut g = lock(&self.m);
+        g.up = r.is_ok();
+        g.tried = Some(r);
+        self.cv.notify_all();
+    }
+
+    fn end(&self, e: Error) {
+        let mut g = lock(&self.m);
+        g.up = false;
+        g.tried = Some(Err(e.clone()));
+        g.ended = Some(e);
+        self.cv.notify_all();
+    }
 }
 
 /// One attachment: the connection's command channel and the session's state.
 pub(crate) struct Remote {
-    pub who: Who,
-    /// The node epoch Auth returned (a retry after a reconnect is safe only under the same one).
-    pub epoch: [u8; 16],
+    /// `url#key`: what routes name.
+    pub addr: String,
     tx: mpsc::UnboundedSender<Cmd>,
-    tokens: AtomicU64,
+    link: Arc<LinkState>,
     /// The materialization bound of reads.
     limit: usize,
 }
@@ -102,11 +170,10 @@ pub(crate) struct Remote {
 /// A call sent whose connection ended before its reply.
 const LOST: &str = "connection to the node ended before the reply";
 
-/// A nonce'd call's error: one whose reply was lost may or may not have applied (no reconnect
-/// in step (b), so no retry under its nonce).
+/// A nonce'd call's error: one whose reply was lost may or may not have applied.
 fn once_err(e: Error) -> Error {
     match e {
-        Error::Network(m) if m == LOST => Error::Invalid("outcome unknown".into()),
+        Error::Network(m) if m == LOST => Error::OutcomeUnknown,
         e => e,
     }
 }
@@ -116,8 +183,53 @@ fn net(m: impl std::fmt::Display) -> Error {
 }
 
 impl Remote {
+    /// A route's stand-in for a node no attachment names (notes/client-port.md §6): every call
+    /// fails `Network`, never reaches another source.
+    pub fn absent(addr: &str) -> Arc<Remote> {
+        Remote::failing(addr, net(format!("no attachment to node {addr}")))
+    }
+
+    /// A stand-in whose every call fails `e`.
+    pub fn failing(addr: &str, e: Error) -> Arc<Remote> {
+        let (tx, _) = mpsc::unbounded_channel();
+        let link = Arc::new(LinkState::default());
+        lock(&link.m).ended = Some(e);
+        Arc::new(Remote { addr: addr.to_string(), tx, link, limit: 0 })
+    }
+
     fn token(&self) -> u64 {
-        self.tokens.fetch_add(1, Ordering::AcqRel)
+        TOKENS.fetch_add(1, Ordering::AcqRel)
+    }
+
+    /// Whether the connection is up now.
+    pub fn connected(&self) -> bool {
+        lock(&self.link.m).up
+    }
+
+    /// Why a call fails now, if it does: the connection is down.
+    fn down(&self) -> Option<Error> {
+        let g = lock(&self.link.m);
+        if g.up {
+            return None;
+        }
+        Some(g.ended.clone().unwrap_or_else(|| net(format!("node {} not connected", self.addr))))
+    }
+
+    /// Waits for the first connection attempt's outcome (each is bounded by the attachment's
+    /// `wait_timeout`).
+    pub fn first(&self) -> Result<()> {
+        let g = lock(&self.link.m);
+        let g = crate::net::blocking(|| self.link.cv.wait_while(g, |x| x.tried.is_none()).unwrap_or_else(|e| e.into_inner()));
+        g.tried.clone().unwrap_or(Ok(()))
+    }
+
+    fn who(&self) -> Option<Who> {
+        lock(&self.link.m).who
+    }
+
+    /// Who this process is at the node: its actor there.
+    pub fn acts_as(&self) -> Option<Tid> {
+        self.who().map(|w| w.me)
     }
 
     /// One Call, waited for: its result value; a `TooLarge` reply under the small allowance is
@@ -129,12 +241,19 @@ impl Remote {
     /// `call` of a write under a fresh nonce (the next of this session, taken when sent); a
     /// `TooLarge` retry goes under the same nonce.
     pub fn call_once(&self, m: u64, args: Vec<Value>) -> Result<Value> {
-        self.call_n(m, args, Some(Arc::new(AtomicU64::new(0))))
+        self.call_n(m, args, Some(Arc::new(AtomicU64::new(0)))).map_err(once_err)
     }
 
     fn call_n(&self, m: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>) -> Result<Value> {
         match self.call_with(m, args.clone(), SMALL_REPLY, nonce.clone()) {
-            Err(Error::TooLarge { limit }) if limit == SMALL_REPLY => self.call_with(m, args, REPLY_BUDGET.min(self.limit.saturating_add(SMALL_REPLY)).max(SMALL_REPLY), nonce),
+            Err(Error::TooLarge { limit }) if limit == SMALL_REPLY => {
+                let once = nonce.is_some();
+                match self.call_with(m, args, REPLY_BUDGET.min(self.limit.saturating_add(SMALL_REPLY)).max(SMALL_REPLY), nonce) {
+                    // the first send ran: the node's answer to it is what was lost
+                    Err(Error::Network(_)) if once => Err(Error::OutcomeUnknown),
+                    r => r,
+                }
+            }
             r => r,
         }
     }
@@ -145,6 +264,9 @@ impl Remote {
     }
 
     fn call_with(&self, m: u64, args: Vec<Value>, max_reply: usize, nonce: Option<Arc<AtomicU64>>) -> Result<Value> {
+        if let Some(e) = self.down() {
+            return Err(e);
+        }
         let (tx, rx) = std::sync::mpsc::channel();
         self.tx.send(Cmd::Call { token: self.token(), max_reply, method: m, args, nonce, reply: tx }).map_err(|_| net("connection to the node closed"))?;
         match crate::net::blocking(|| rx.recv()) {
@@ -160,30 +282,92 @@ impl Remote {
     pub fn unsub(&self, token: u64) {
         let _ = self.tx.send(Cmd::Unsub { token });
     }
+
+    /// Whether a schema's source is registered on each reconnect from now on.
+    pub fn remember_schema(&self, file: &str, src: &str) {
+        let _ = self.tx.send(Cmd::Schema { file: file.into(), src: src.into() });
+    }
 }
 
-/// The session driver: the proto client session over a unix link, on its own thread.
+/// A write sent and not yet answered.
+struct Held {
+    method: u64,
+    max_reply: usize,
+    /// The nonce first.
+    args: Vec<Value>,
+    /// Sent before: an earlier send may have run, so a refusal of this one says nothing of it.
+    resent: bool,
+    reply: CallReply,
+}
+
+struct SubEntry {
+    filter: Value,
+    again: bool,
+    sink: Sink,
+}
+
+/// How a connection's start ended.
+enum Started {
+    Up,
+    /// Try again later.
+    Failed(Error),
+    /// The node will not take this session: no redial.
+    Refused(Error),
+    HandleGone,
+}
+
+/// The session driver: the proto client session over a link, on its own thread; survives
+/// reconnects, the session itself (`cs`) renewed per connection.
 struct Io {
     cs: ClientSession,
+    peer_key: [u8; 32],
+    secret: Option<osis_crypto::Secret32>,
+    /// The client's 16 random bytes in Auth: the same across reconnects.
+    session: [u8; 16],
     calls: BTreeMap<u64, CallReply>,
-    sinks: BTreeMap<u64, Sink>,
+    writes: BTreeMap<u64, Held>,
+    /// While down: when held writes fail.
+    give_up: Option<Instant>,
+    subs: BTreeMap<u64, SubEntry>,
+    schemas: Vec<(String, String)>,
     timer: Option<u64>,
     taken: u64,
     /// The next write nonce of this session (from 1).
     nonce: u64,
+    who: Option<Who>,
+    wait: Duration,
+    clock: Arc<dyn Clock>,
+    link: Arc<LinkState>,
+}
+
+fn new_session(peer_static_key: [u8; 32]) -> ClientSession {
+    let mut challenge = [0u8; 32];
+    {
+        use osis_crypto::RngCore;
+        osis_crypto::OsRng.fill_bytes(&mut challenge);
+    }
+    ClientSession::new(ClientConfig { peer_static_key, challenge })
 }
 
 impl Io {
-    /// Puts a write's nonce first in its args: the slot's, else the next of the session, kept
-    /// in the slot for a retry. Run as each command is sent, so nonces go out in order.
-    fn stamp(&mut self, slot: &AtomicU64, args: &mut Vec<Value>) {
-        let mut n = slot.load(Ordering::Acquire);
-        if n == 0 {
-            n = self.nonce;
-            self.nonce += 1;
-            slot.store(n, Ordering::Release);
+    fn now(&self) -> u64 {
+        self.clock.now_wall_ms().0
+    }
+
+    /// Puts a write's nonce first in its args: the slot's, marked as sent again (a `TooLarge`
+    /// retry), else the next of the session, kept in the slot for a retry. Run as each command is
+    /// sent, so nonces go out in order. Whether it was sent before.
+    fn stamp(&mut self, slot: &AtomicU64, args: &mut Vec<Value>) -> bool {
+        let n = slot.load(Ordering::Acquire);
+        if n != 0 {
+            args.insert(0, u(n | NONCE_RESENT));
+            return true;
         }
+        let n = self.nonce;
+        self.nonce += 1;
+        slot.store(n, Ordering::Release);
         args.insert(0, u(n));
+        false
     }
 
     /// Carries out the session's outputs; `false` once it closed.
@@ -198,29 +382,32 @@ impl Io {
                 ClientOutput::Close => return false,
                 ClientOutput::SetTimer(t) => self.timer = Some(t),
                 ClientOutput::Event(ClientEvent::Reply { token, reply }) => {
-                    if let Some(r) = self.calls.remove(&token) {
+                    if let Some(h) = self.writes.remove(&token) {
+                        // a protocol error answers this send only: an earlier one may have run
+                        let _ = h.reply.send(if h.resent && reply.is_err() { Ok(outcome_err(&Error::OutcomeUnknown)) } else { reply });
+                    } else if let Some(r) = self.calls.remove(&token) {
                         let _ = r.send(reply);
-                    } else if let Some(s) = self.sinks.get_mut(&token) {
+                    } else if let Some(s) = self.subs.get_mut(&token) {
                         match reply {
-                            Ok(Outcome::Ok { value, .. }) => s(PortEvent::Initial(value)),
+                            Ok(Outcome::Ok { value, .. }) => (s.sink)(PortEvent::Initial(value)),
                             Ok(Outcome::Err { code, detail }) => {
-                                s(PortEvent::Initial(c::outcome_err(&c::error_of(code, detail)).to_value()));
-                                self.sinks.remove(&token);
+                                (s.sink)(PortEvent::Initial(outcome_err(&c::error_of(code, detail)).to_value()));
+                                self.subs.remove(&token);
                             }
                             Err(_) => {
-                                s(PortEvent::Closed);
-                                self.sinks.remove(&token);
+                                (s.sink)(PortEvent::Closed);
+                                self.subs.remove(&token);
                             }
                         }
                     }
                 }
                 ClientOutput::Event(ClientEvent::Notify { token, payload }) => {
                     let lapsed = payload == Payload::Lapsed;
-                    if let Some(s) = self.sinks.get_mut(&token) {
-                        s(PortEvent::Notify(payload));
+                    if let Some(s) = self.subs.get_mut(&token) {
+                        (s.sink)(PortEvent::Notify(payload));
                     }
                     if lapsed {
-                        self.sinks.remove(&token);
+                        self.subs.remove(&token);
                     }
                 }
                 ClientOutput::Event(_) => {}
@@ -229,35 +416,224 @@ impl Io {
         true
     }
 
-    fn command(&mut self, now: u64, cmd: Cmd) -> Vec<ClientOutput> {
-        let c = match cmd {
-            Cmd::Auth { session, secret, reply } => {
-                self.calls.insert(0, reply);
-                Command::Auth { token: 0, session, secret }
-            }
-            Cmd::Call { token, max_reply, method, mut args, nonce, reply } => {
-                if let Some(slot) = nonce {
-                    self.stamp(&slot, &mut args);
-                }
-                self.calls.insert(token, reply);
-                Command::Call { token, max_reply: max_reply as u64, method, args }
-            }
-            Cmd::Sub { token, filter, sink } => {
-                self.sinks.insert(token, sink);
-                Command::Sub { token, max_reply: REPLY_BUDGET as u64, filter }
-            }
-            Cmd::Unsub { token } => {
-                self.sinks.remove(&token);
-                Command::Unsub { token }
-            }
-        };
+    fn input(&mut self, c: Command) -> Vec<ClientOutput> {
+        let now = self.now();
         self.cs.handle(now, ClientInput::Command(c))
     }
 
+    /// A command while the connection is up.
+    fn command(&mut self, cmd: Cmd) -> Vec<ClientOutput> {
+        let c = match cmd {
+            Cmd::Call { token, max_reply, method, mut args, nonce, reply } => {
+                if let Some(slot) = nonce {
+                    let resent = self.stamp(&slot, &mut args);
+                    self.writes.insert(token, Held { method, max_reply, args: args.clone(), resent, reply });
+                } else {
+                    self.calls.insert(token, reply);
+                }
+                Command::Call { token, max_reply: max_reply as u64, method, args }
+            }
+            Cmd::Sub { token, filter, again, sink } => {
+                self.subs.insert(token, SubEntry { filter: filter.clone(), again, sink });
+                Command::Sub { token, max_reply: REPLY_BUDGET as u64, filter }
+            }
+            Cmd::Unsub { token } => {
+                self.subs.remove(&token);
+                Command::Unsub { token }
+            }
+            Cmd::Schema { file, src } => {
+                if !self.schemas.iter().any(|(f, s)| *f == file && *s == src) {
+                    self.schemas.push((file, src));
+                }
+                return Vec::new();
+            }
+        };
+        self.input(c)
+    }
+
+    /// A command while the connection is down: never sent (so a write's failure is definite).
+    fn command_down(&mut self, cmd: Cmd) {
+        match cmd {
+            Cmd::Call { reply, .. } => {
+                let _ = reply.send(Ok(outcome_err(&lock(&self.link.m).ended.clone().unwrap_or_else(|| net("node not connected")))));
+            }
+            // one that comes back lives on the next connection, unless there will be none
+            Cmd::Sub { token, filter, again, mut sink } => {
+                sink(PortEvent::Closed);
+                if again && lock(&self.link.m).ended.is_none() {
+                    self.subs.insert(token, SubEntry { filter, again, sink });
+                }
+            }
+            Cmd::Unsub { token } => {
+                self.subs.remove(&token);
+            }
+            Cmd::Schema { .. } => {
+                let _ = self.command(cmd);
+            }
+        }
+    }
+
+    /// `fut`'s output, commands failing meanwhile; `None` once the handle is gone.
+    async fn while_down<F: std::future::Future>(&mut self, rx: &mut mpsc::UnboundedReceiver<Cmd>, fut: F) -> Option<F::Output> {
+        tokio::pin!(fut);
+        loop {
+            let give_up = self.give_up;
+            tokio::select! {
+                biased;
+                r = &mut fut => return Some(r),
+                c = rx.recv() => self.command_down(c?),
+                () = async { tokio::time::sleep_until(give_up.unwrap_or_else(Instant::now)).await }, if give_up.is_some() => self.fail_writes(),
+            }
+        }
+    }
+
+    /// Unanswered writes get their one answer: unknown.
+    fn fail_writes(&mut self) {
+        self.give_up = None;
+        for (_, h) in std::mem::take(&mut self.writes) {
+            let _ = h.reply.send(Ok(outcome_err(&Error::OutcomeUnknown)));
+        }
+    }
+
+    /// A timer or the idle poll: reports what the transport took, ticks the session.
+    fn timer_fired(&mut self, tx: &osis_transport::link::LinkTx) -> bool {
+        let mut up = true;
+        let now = self.now();
+        if tx.taken() != self.taken {
+            self.taken = tx.taken();
+            let o = self.cs.handle(now, ClientInput::Sent);
+            up = self.outputs(tx, o);
+        }
+        self.timer = None;
+        let o = self.cs.handle(now, ClientInput::Timer);
+        up && self.outputs(tx, o)
+    }
+
+    fn wake_in(&self) -> Duration {
+        self.timer.map_or(Duration::from_secs(60), |t| Duration::from_millis(t.saturating_sub(self.now())))
+    }
+
+    /// Auth and `whoami` on a new connection, within `wait`.
+    async fn start(&mut self, tx: &osis_transport::link::LinkTx, lrx: &mut osis_transport::link::LinkRx, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> Started {
+        self.cs = new_session(self.peer_key);
+        self.timer = None;
+        self.taken = 0;
+        let keyed = self.secret.is_some();
+        let now = self.now();
+        let o = self.cs.handle(now, ClientInput::Start);
+        let mut up = self.outputs(tx, o);
+        let (rtx, rrx) = std::sync::mpsc::channel();
+        self.calls.insert(AUTH_TOKEN, rtx.clone());
+        let o = self.input(Command::Auth { token: AUTH_TOKEN, session: self.session, secret: self.secret.clone() });
+        up = up && self.outputs(tx, o);
+        let end = Instant::now() + self.wait;
+        let mut authed = false;
+        loop {
+            while let Ok(r) = rrx.try_recv() {
+                if !authed {
+                    match r {
+                        Ok(Outcome::Ok { .. }) => {
+                            authed = true;
+                            self.calls.insert(WHO_TOKEN, rtx.clone());
+                            let o = self.input(Command::Call { token: WHO_TOKEN, max_reply: SMALL_REPLY as u64, method: method::WHOAMI, args: Vec::new() });
+                            up = up && self.outputs(tx, o);
+                        }
+                        Err(Code::REFUSED) if keyed => return Started::Refused(Error::Unsupported("the node refused this client secret".into())),
+                        Err(Code::RATE_LIMITED) => return Started::Failed(net("the node holds as many connections of this client as it takes")),
+                        Err(Code::REFUSED) => return Started::Refused(Error::Unsupported("the node refused this session (not its uid)".into())),
+                        Err(Code::UNSUPPORTED) => return Started::Refused(Error::Unsupported("node too old".into())),
+                        _ => return Started::Failed(net("no answer to Auth")),
+                    }
+                    continue;
+                }
+                let who = match r {
+                    Ok(Outcome::Ok { value, .. }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()?, home: a.tid()? })),
+                    Ok(Outcome::Err { code, detail }) => Err(c::error_of(code, detail)),
+                    Err(c) => Err(net(format!("node answered error {}", c.0))),
+                };
+                let who = match who {
+                    Ok(w) => w,
+                    Err(e) => return Started::Failed(e),
+                };
+                // the pinned key answers as someone else: never mix two identities in one attachment
+                if self.who.is_some_and(|w| w != who) {
+                    return Started::Refused(Error::Invalid("the node at this address now answers as another identity".into()));
+                }
+                self.who = Some(who);
+                lock(&self.link.m).who = Some(who);
+                self.reattach(tx);
+                return Started::Up;
+            }
+            if !up {
+                return Started::Failed(net("connection to the node ended"));
+            }
+            let wake = self.wake_in();
+            tokio::select! {
+                b = lrx.recv() => match b {
+                    Some(b) => {
+                        let now = self.now();
+                        let o = self.cs.handle(now, ClientInput::Bytes(b));
+                        up = self.outputs(tx, o);
+                    }
+                    None => up = false,
+                },
+                c = rx.recv() => match c {
+                    Some(c) => self.command_down(c),
+                    None => return Started::HandleGone,
+                },
+                () = tokio::time::sleep(wake) => up = self.timer_fired(tx),
+                () = tokio::time::sleep_until(end) => return Started::Failed(net("the node did not answer in time")),
+            }
+        }
+    }
+
+    /// On a new connection, once Auth answered: schemas, subscriptions and unanswered writes again.
+    fn reattach(&mut self, tx: &osis_transport::link::LinkTx) {
+        self.give_up = None;
+        for (file, src) in self.schemas.clone() {
+            let (rtx, _) = std::sync::mpsc::channel();
+            let token = TOKENS.fetch_add(1, Ordering::AcqRel);
+            self.calls.insert(token, rtx);
+            let o = self.input(Command::Call { token, max_reply: SMALL_REPLY as u64, method: method::REGISTER_SCHEMA, args: vec![Value::Str(file), Value::Str(src)] });
+            self.outputs(tx, o);
+        }
+        let subs: Vec<(u64, Value)> = self.subs.iter().map(|(t, s)| (*t, s.filter.clone())).collect();
+        for (token, filter) in subs {
+            let o = self.input(Command::Sub { token, max_reply: REPLY_BUDGET as u64, filter });
+            self.outputs(tx, o);
+        }
+        // in nonce order, marked: the first send may have run, the node's memory tells
+        let mut held: Vec<(u64, u64)> = self.writes.iter().filter_map(|(t, h)| Some((h.args.first()?.as_uint()? & !NONCE_RESENT, *t))).collect();
+        held.sort_unstable();
+        for (n, token) in held {
+            let Some(h) = self.writes.get_mut(&token) else { continue };
+            h.resent = true;
+            let mut args = h.args.clone();
+            if let Some(first) = args.first_mut() {
+                *first = u(n | NONCE_RESENT);
+            }
+            let (max_reply, method) = (h.max_reply as u64, h.method);
+            let o = self.input(Command::Call { token, max_reply, method, args });
+            self.outputs(tx, o);
+        }
+    }
+
+    /// The connection ended: reads fail, subscriptions hear of it, writes wait for the next one.
+    fn dropped(&mut self) {
+        self.calls.clear();
+        self.give_up = (!self.writes.is_empty()).then(|| Instant::now() + self.wait);
+        self.subs.retain(|_, s| {
+            (s.sink)(PortEvent::Closed);
+            s.again
+        });
+    }
+
+    /// The handle is gone.
     fn close(&mut self) {
         self.calls.clear();
-        for (_, mut s) in std::mem::take(&mut self.sinks) {
-            s(PortEvent::Closed);
+        self.writes.clear();
+        for (_, mut s) in std::mem::take(&mut self.subs) {
+            (s.sink)(PortEvent::Closed);
         }
     }
 }
@@ -270,64 +646,123 @@ enum Via {
     Net,
 }
 
-/// Runs the connection until it or the handle ends.
-async fn run(via: Via, addr: Address, clock: Arc<dyn Clock>, mut io: Io, mut rx: mpsc::UnboundedReceiver<Cmd>, ready: std::sync::mpsc::Sender<std::result::Result<(), String>>) {
-    let wait = Duration::from_secs(10);
-    let dialed = match via {
-        Via::Unix => osis_transport::link::dial(&Unix, &addr, None, wait).await,
-        Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi { mem: Some(m), ..Default::default() }, &addr, None, wait).await,
-        Via::Net => {
-            let m = osis_transport::Multi {
-                quic: Some(osis_transport::Quic::new()),
-                #[cfg(feature = "iroh")]
-                iroh: Some(osis_transport::Iroh::new()),
-                ..Default::default()
-            };
-            osis_transport::link::dial(&m, &addr, None, wait).await
-        }
-    };
-    let link = match dialed {
-        Ok(l) => l,
-        Err(e) => {
-            let _ = ready.send(Err(e.to_string()));
-            return;
-        }
-    };
-    let _ = ready.send(Ok(()));
-    let osis_transport::Link { tx, rx: mut lrx, .. } = link;
-    let now = || clock.now_wall_ms().0;
-    let start = io.cs.handle(now(), ClientInput::Start);
-    let mut up = io.outputs(&tx, start);
-    while up {
-        let wait = io.timer.map_or(Duration::from_secs(60), |t| Duration::from_millis(t.saturating_sub(now())));
-        tokio::select! {
-            b = lrx.recv() => match b {
-                Some(b) => {
-                    let o = io.cs.handle(now(), ClientInput::Bytes(b));
-                    up = io.outputs(&tx, o);
-                }
-                None => up = false,
-            },
-            c = rx.recv() => match c {
-                Some(c) => {
-                    let o = io.command(now(), c);
-                    up = io.outputs(&tx, o);
-                }
-                None => up = false,
-            },
-            _ = tokio::time::sleep(wait) => {
-                if tx.taken() != io.taken {
-                    io.taken = tx.taken();
-                    let o = io.cs.handle(now(), ClientInput::Sent);
-                    up = io.outputs(&tx, o);
-                }
-                io.timer = None;
-                let o = io.cs.handle(now(), ClientInput::Timer);
-                up = up && io.outputs(&tx, o);
+async fn dial_via(via: &Via, addr: &Address, wait: Duration) -> std::result::Result<osis_transport::Link, String> {
+    let d = async {
+        match via {
+            Via::Unix => osis_transport::link::dial(&Unix, addr, None, wait).await,
+            Via::Mem(m) => osis_transport::link::dial(&osis_transport::Multi { mem: Some(m.clone()), ..Default::default() }, addr, None, wait).await,
+            Via::Net => {
+                let m = osis_transport::Multi {
+                    quic: Some(osis_transport::Quic::new()),
+                    #[cfg(feature = "iroh")]
+                    iroh: Some(osis_transport::Iroh::new()),
+                    ..Default::default()
+                };
+                osis_transport::link::dial(&m, addr, None, wait).await
             }
         }
+    };
+    match tokio::time::timeout(wait, d).await {
+        Ok(r) => r.map_err(|e| e.to_string()),
+        Err(_) => Err("the node did not answer in time".into()),
     }
-    io.close();
+}
+
+/// Keeps the attachment connected until the handle ends (module comment).
+async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceiver<Cmd>) {
+    let mut backoff = RETRY_MIN;
+    let wait = io.wait;
+    let link = io.link.clone();
+    loop {
+        let Some(dialed) = io.while_down(&mut rx, dial_via(&via, &addr, wait)).await else { return io.close() };
+        match dialed {
+            Err(e) => link.tried(Err(net(e))),
+            Ok(l) => {
+                let osis_transport::Link { tx, rx: mut lrx, .. } = l;
+                match io.start(&tx, &mut lrx, &mut rx).await {
+                    Started::HandleGone => return io.close(),
+                    Started::Failed(e) => link.tried(Err(e)),
+                    Started::Refused(e) => {
+                        drop((tx, lrx));
+                        link.end(e);
+                        io.fail_writes();
+                        io.dropped();
+                        while let Some(c) = rx.recv().await {
+                            io.command_down(c);
+                        }
+                        return io.close();
+                    }
+                    Started::Up => {
+                        link.tried(Ok(()));
+                        backoff = RETRY_MIN;
+                        let mut up = true;
+                        while up {
+                            let wake = io.wake_in();
+                            tokio::select! {
+                                b = lrx.recv() => match b {
+                                    Some(b) => {
+                                        let now = io.now();
+                                        let o = io.cs.handle(now, ClientInput::Bytes(b));
+                                        up = io.outputs(&tx, o);
+                                    }
+                                    None => up = false,
+                                },
+                                c = rx.recv() => match c {
+                                    Some(c) => {
+                                        let o = io.command(c);
+                                        up = io.outputs(&tx, o);
+                                    }
+                                    None => return io.close(),
+                                },
+                                () = tokio::time::sleep(wake) => up = io.timer_fired(&tx),
+                            }
+                        }
+                        link.tried(Err(net("connection to the node ended")));
+                        io.dropped();
+                    }
+                }
+            }
+        }
+        let pause = tokio::time::sleep(backoff);
+        backoff = (backoff * 2).min(RETRY_MAX);
+        if io.while_down(&mut rx, pause).await.is_none() {
+            return io.close();
+        }
+    }
+}
+
+/// Starts an attachment's thread; the connection comes up behind it.
+fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+    let (tx, rx) = mpsc::unbounded_channel();
+    let mut session = [0u8; 16];
+    {
+        use osis_crypto::RngCore;
+        osis_crypto::OsRng.fill_bytes(&mut session);
+    }
+    let link = Arc::new(LinkState::default());
+    let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, who: None, wait, clock, link: link.clone() };
+    std::thread::Builder::new()
+        .name("osis-port-client".into())
+        .spawn(move || {
+            let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
+            rt.block_on(run(via, addr, io, rx));
+        })
+        .map_err(|e| Error::Storage(e.to_string()))?;
+    Ok(Arc::new(Remote { addr: shown, tx, link, limit }))
+}
+
+/// An attachment to the thin client `secret` stands for at `addr`.
+pub(crate) fn spawn_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: &Config, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
+    // the secret goes only over a transport pinned to the node's key
+    if addr.0.url.starts_with("unix://") {
+        return Err(Error::Invalid("a client secret goes only to a key-pinned transport, not a unix socket".into()));
+    }
+    let via = match &cfg.transport {
+        Some(crate::Transport::InProcess(t)) => Via::Mem(t.clone()),
+        _ => Via::Net,
+    };
+    let a = Address { url: addr.0.url.clone(), key: addr.0.key };
+    spawn_remote(via, a, addr.to_string(), Some(secret.0.clone()), cfg.materialize_limit, cfg.wait_timeout, clock)
 }
 
 impl Osis {
@@ -340,8 +775,13 @@ impl Osis {
     /// database stands in until the no-store profile, step (f)).
     pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
         let uid = own_uid()?;
-        let addr = Address { url: osis_transport::unix::url_of(socket), key: osis_transport::unix::uid_key(uid) };
-        Osis::attach_via(Via::Unix, addr, None, cfg)
+        let url = osis_transport::unix::url_of(socket);
+        let addr = Address { url: url.clone(), key: osis_transport::unix::uid_key(uid) };
+        let (limit, wait) = (cfg.materialize_limit, cfg.wait_timeout);
+        let db = Osis::scratch(cfg)?;
+        let r = spawn_remote(Via::Unix, addr, url, None, limit, wait, db.inner.clock.clone())?;
+        db.thin_over(vec![r])?;
+        Ok(db)
     }
 
     /// Attaches to the node at `addr` (`url#key`: a URL it listens on with that transport key,
@@ -350,81 +790,84 @@ impl Osis {
     /// reads as unknown, process-wide calls fail `Unsupported`. Dials with `cfg.transport` (default
     /// QUIC). A unix address is `Invalid`: the secret goes only over a keyed transport. Fails
     /// `Unsupported` when the node refuses the secret, `Network` past its connection cap or when
-    /// it cannot be reached.
-    pub fn attach_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: Config) -> Result<Osis> {
-        if addr.0.url.starts_with("unix://") {
-            return Err(Error::Invalid("a client secret goes only to a key-pinned transport, not a unix socket".into()));
-        }
-        let via = match &cfg.transport {
-            Some(crate::Transport::InProcess(t)) => Via::Mem(t.clone()),
-            _ => Via::Net,
-        };
-        let a = Address { url: addr.0.url.clone(), key: addr.0.key };
-        Osis::attach_via(via, a, Some(secret.0.clone()), cfg)
+    /// it cannot be reached (within `cfg.wait_timeout`). Reconnects by itself afterwards (module
+    /// comment).
+    pub fn attach_client(addr: &crate::HostAddr, secret: &crate::ClientSecret, mut cfg: Config) -> Result<Osis> {
+        cfg.remotes = vec![crate::RemoteConfig { addr: addr.clone(), secret: secret.clone() }];
+        Osis::attach_remotes(cfg)
     }
 
-    fn attach_via(via: Via, addr: Address, secret: Option<osis_crypto::Secret32>, cfg: Config) -> Result<Osis> {
-        let limit = cfg.materialize_limit;
-        let scratch = Config { store: crate::StoreAt::Memory(crate::MemStore::new()), runtime: crate::Runtime::None, hosts: Vec::new(), transport: None, ..cfg };
-        let (db, _) = Osis::create(scratch)?;
-        let keyed = secret.is_some();
-        let (tx, rx) = mpsc::unbounded_channel();
-        let mut challenge = [0u8; 32];
-        let mut session = [0u8; 16];
-        {
-            use osis_crypto::RngCore;
-            osis_crypto::OsRng.fill_bytes(&mut challenge);
-            osis_crypto::OsRng.fill_bytes(&mut session);
+    /// A process with no store (notes/client-port.md §6): every group is at `cfg.remotes`, in that
+    /// order for a thing the routes do not place. All must answer as one actor (`Invalid`
+    /// otherwise: `me()` is one actor per process); failures as `attach_client`'s. `cfg.store` is
+    /// not used.
+    pub fn attach_remotes(mut cfg: Config) -> Result<Osis> {
+        let remotes = std::mem::take(&mut cfg.remotes);
+        if remotes.is_empty() {
+            return Err(Error::Invalid("attach_remotes needs Config.remotes".into()));
         }
-        let io = Io { cs: ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge }), calls: BTreeMap::new(), sinks: BTreeMap::new(), timer: None, taken: 0, nonce: 1 };
-        let clock = db.inner.clock.clone();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        std::thread::Builder::new()
-            .name("osis-port-client".into())
-            .spawn(move || {
-                let Ok(rt) = tokio::runtime::Builder::new_current_thread().enable_all().build() else { return };
-                rt.block_on(run(via, addr, clock, io, rx, ready_tx));
-            })
-            .map_err(|e| Error::Storage(e.to_string()))?;
-        match ready_rx.recv() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => return Err(net(e)),
-            Err(_) => return Err(net("no connection")),
-        }
-        // Auth: the Owner's without a secret, a client's with it: the node's epoch; then who the
-        // session is
-        let (atx, arx) = std::sync::mpsc::channel();
-        tx.send(Cmd::Auth { session, secret, reply: atx }).map_err(|_| net("connection to the node closed"))?;
-        let epoch = match arx.recv() {
-            Ok(Ok(Outcome::Ok { value, .. })) => value.as_array::<16>().ok_or_else(|| net("bad node epoch"))?,
-            Ok(Err(Code::REFUSED)) if keyed => return Err(Error::Unsupported("the node refused this client secret".into())),
-            Ok(Err(Code::RATE_LIMITED)) => return Err(net("the node holds as many connections of this client as it takes")),
-            Ok(Err(Code::REFUSED)) => return Err(Error::Unsupported("the node refused this session (not its uid)".into())),
-            Ok(Err(Code::UNSUPPORTED)) => return Err(Error::Unsupported("node too old".into())),
-            _ => return Err(net("no answer to Auth")),
-        };
-        let r = Remote { who: Who { me: db.me(), node: db.node(), home: db.home() }, epoch, tx, tokens: AtomicU64::new(1), limit };
-        let w = r.call(method::WHOAMI, vec![])?;
-        let mut a = c::Args::new(w)?;
-        let who = Who { me: a.tid()?, node: a.tid()?, home: a.tid()? };
-        let r = Remote { who, ..r };
-        let _ = db.inner.remote.set(Arc::new(r));
+        let keep = cfg.clone();
+        let db = Osis::scratch(cfg)?;
+        let list = remotes.iter().map(|x| spawn_client(&x.addr, &x.secret, &keep, db.inner.clock.clone())).collect::<Result<Vec<_>>>()?;
+        db.thin_over(list)?;
         Ok(db)
     }
 
-    /// Whether this handle is attached to a node (`Osis::attach`).
+    /// The stand-in database of a process without a store.
+    fn scratch(cfg: Config) -> Result<Osis> {
+        let scratch = Config { store: crate::StoreAt::Memory(crate::MemStore::new()), runtime: crate::Runtime::None, hosts: Vec::new(), transport: None, remotes: Vec::new(), ..cfg };
+        Ok(Osis::create(scratch)?.0)
+    }
+
+    /// Makes this handle a process with no store of its own over `list`, each up.
+    fn thin_over(&self, list: Vec<Arc<Remote>>) -> Result<()> {
+        let mut who = None;
+        for r in &list {
+            r.first()?;
+            let w = r.who().ok_or_else(|| net("no connection"))?;
+            if who.is_some_and(|x| x != w) {
+                return Err(Error::Invalid("attached nodes answer as different actors: one acting actor per process".into()));
+            }
+            who = Some(w);
+        }
+        let (Some(primary), Some(who)) = (list.first().cloned(), who) else { return Err(net("no connection")) };
+        self.locked(|l| l.remotes = list);
+        let _ = self.inner.thin.set(crate::handle::Thin { primary, who });
+        self.inner.routing.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Attaches this node's handle to the node at `addr` as the thin client `secret` stands for,
+    /// beside its own store (notes/client-port.md §6): `group_source` can then route groups there,
+    /// and a thing known nowhere here goes there. Reconnects by itself. Fails as `attach_client`,
+    /// not attached then; `Invalid` when already attached to it. `Unsupported` on a handle with no
+    /// store of its own.
+    pub fn attach_node(&self, addr: &crate::HostAddr, secret: &crate::ClientSecret, cfg: &Config) -> Result<()> {
+        self.local_only("attach_node")?;
+        let text = addr.to_string();
+        if self.locked(|l| l.remotes.iter().any(|r| r.addr == text)) {
+            return Err(Error::Invalid(format!("already attached to {text}")));
+        }
+        let r = spawn_client(addr, secret, cfg, self.inner.clock.clone())?;
+        r.first()?;
+        self.locked(|l| l.remotes.push(r));
+        self.inner.routing.store(true, Ordering::Release);
+        Ok(())
+    }
+
+    /// Whether this handle has no store of its own (`Osis::attach`, `attach_client`).
     pub fn is_attached(&self) -> bool {
         self.attached()
     }
 
-    /// The attached node, or `Unsupported` naming `what`.
-    pub(crate) fn rem(&self) -> &Remote {
-        self.remote().map(|r| &**r).unwrap_or_else(|| unreachable!("routed remote without an attachment"))
+    /// The attachment process-wide calls go to on a handle with no store of its own.
+    fn primary(&self) -> &Remote {
+        self.inner.thin.get().map(|t| &*t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
     }
 
-    /// A call at the attached node.
+    /// A process-wide call at the attached node.
     pub(crate) fn rcall(&self, m: u64, args: Vec<Value>) -> Result<Value> {
-        self.rem().call(m, args)
+        self.primary().call(m, args)
     }
 
     /// Fails `Unsupported` on an attached handle: a process-wide call the port does not carry.
@@ -432,44 +875,32 @@ impl Osis {
         if self.attached() { Err(Error::Unsupported(format!("{what} on a handle attached to a node"))) } else { Ok(()) }
     }
 
-    /// A write batch at the attached node, under a fresh nonce (a reply lost to a `TooLarge`
-    /// retry is answered again from the node's memory).
-    pub(crate) fn remote_write(&self, wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
-        let v = self.rem().call_once(method::WRITE, wire).map_err(once_err)?;
+    /// A write batch at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
+    /// again from the node's memory).
+    pub(crate) fn remote_write(&self, r: &Remote, wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
+        let v = r.call_once(method::WRITE, wire)?;
         let o = c::Args::of(vec![v]).opt()?;
         o.map(c::committed).transpose()
     }
 
-    /// A nonce'd undo/redo/revert at the attached node.
-    pub(crate) fn remote_once(&self, m: u64, arg: Value) -> Result<Value> {
-        self.rem().call_once(m, vec![arg]).map_err(once_err)
+    /// A nonce'd undo/redo/revert at `r`.
+    pub(crate) fn remote_once(&self, r: &Remote, m: u64, arg: Value) -> Result<Value> {
+        r.call_once(m, vec![arg])
     }
 
     /// Registers `cb` for a subscription at the attached node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
-    pub(crate) fn remote_sub(&self, filter: Value, cb: Callback) -> Result<(Subscription, Value)> {
-        let r = self.remote().ok_or(Error::Closed)?.clone();
+    pub(crate) fn remote_sub(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, again: bool, cb: Callback) -> Result<(Subscription, Value)> {
+        if let Some(e) = r.down() {
+            return Err(e);
+        }
         let token = r.token();
-        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token), cb));
-        sub.port = Some((Arc::downgrade(&r), token));
-        let weak: WeakOsis = self.downgrade();
+        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
+        sub.port = Some((Arc::downgrade(r), token));
         let (itx, irx) = std::sync::mpsc::channel::<Value>();
-        let first = Mutex::new(Some(itx));
-        let sink: Sink = Box::new(move |ev: PortEvent| {
-            if let PortEvent::Initial(v) = &ev
-                && let Some(tx) = lock(&first).take()
-            {
-                let _ = tx.send(v.clone());
-            }
-            if let Some(db) = weak.hold() {
-                db.locked(|l| {
-                    l.seq += 1;
-                    db.inner.dispatch.send(l.seq, Msg::Port(token, ev));
-                });
-            }
-        });
-        r.tx.send(Cmd::Sub { token, filter, sink }).map_err(|_| net("connection to the node closed"))?;
+        let sink = self.port_sink(token, Some(itx));
+        r.tx.send(Cmd::Sub { token, filter, again, sink }).map_err(|_| net("connection to the node closed"))?;
         let v = crate::net::blocking(|| irx.recv()).map_err(|_| net("connection to the node closed"))?;
         // a Sub answered by an error: `[1, code, detail*]`
         if let Value::List(l) = &v
@@ -481,10 +912,51 @@ impl Osis {
         Ok((sub, v))
     }
 
+    /// What a subscription's events do: reach the dispatcher in wire order; the first value also
+    /// goes to `first`, whose end says it will not come.
+    fn port_sink(&self, token: u64, first: Option<std::sync::mpsc::Sender<Value>>) -> Sink {
+        let weak: WeakOsis = self.downgrade();
+        let first = Mutex::new(first);
+        Box::new(move |ev: PortEvent| {
+            match &ev {
+                PortEvent::Initial(v) => {
+                    if let Some(tx) = lock(&first).take() {
+                        let _ = tx.send(v.clone());
+                    }
+                }
+                // nobody waits for the first value any more
+                PortEvent::Closed => drop(lock(&first).take()),
+                PortEvent::Notify(_) => {}
+            }
+            if let Some(db) = weak.hold() {
+                db.locked(|l| {
+                    l.seq += 1;
+                    db.inner.dispatch.send(l.seq, Msg::Port(token, ev));
+                });
+            }
+        })
+    }
+
+    /// `remote_sub` for a call that cannot return an error: with the node down the callback hears
+    /// `Closed` now and the first value when it is up (a live one's reconnect).
+    fn remote_sub_kept(&self, r: &Arc<Remote>, on: Option<Tid>, filter: Value, cb: Callback) -> Subscription {
+        if r.down().is_none() {
+            return self.remote_sub(r, on, filter, true, cb).map(|x| x.0).unwrap_or_else(|e| self.dead_sub(e));
+        }
+        let token = r.token();
+        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
+        sub.port = Some((Arc::downgrade(r), token));
+        // the handle of a stand-in has no connection to tell it
+        if r.tx.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
+            self.port_sink(token, None)(PortEvent::Closed);
+        }
+        sub
+    }
+
     /// Waits for the attached node's deliveries for changes made so far to reach the
     /// dispatcher queue (`settle` then runs them).
     pub(crate) fn remote_settle(&self) {
-        if let Some(r) = self.remote() {
+        for r in self.locked(|l| l.remotes.clone()) {
             let _ = r.call(method::SETTLE, vec![]);
         }
     }
@@ -508,27 +980,27 @@ pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
 pub(crate) type ChangeFn = CallbackOf<crate::watch::Change<Value>>;
 
 impl Osis {
-    /// `get` / `get_path` at the attached node.
-    pub(crate) fn remote_get(&self, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
-        let v = self.rcall(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+    /// `get` / `get_path` at `r`.
+    pub(crate) fn remote_get(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<Value>> {
+        let v = r.call(method::GET, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::read(v)?
     }
 
     /// The length of a string or blob at the attached node (`None`: absent).
-    pub(crate) fn remote_len(&self, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
-        let v = self.rcall(method::LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
+    pub(crate) fn remote_len(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path) -> Result<Option<u64>> {
+        let v = r.call(method::LEN, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path)])?;
         c::Args::of(vec![v]).opt()?.map(|n| n.as_uint().ok_or_else(|| c::bad("length"))).transpose()
     }
 
     /// One `stream_read` page.
-    pub(crate) fn remote_read(&self, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
-        let v = self.rem().call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
+    pub(crate) fn remote_read(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, path: &osis_schema::Path, offset: u64, n: usize) -> Result<Vec<u8>> {
+        let v = r.call_big(method::STREAM_READ, vec![Value::Tid(tid), c::ak_v(ak), c::path_v(path), u(offset), u(n as u64)], n.saturating_add(SMALL_REPLY))?;
         c::Args::of(vec![v]).bytes()
     }
 
     /// `AspectRef::on_change` at the attached node: the initial value, then each change that
     /// differs from the last delivered (an error always), signals as they fire.
-    pub(crate) fn remote_on_change(&self, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
+    pub(crate) fn remote_on_change(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
         use crate::watch::{Change, Delivery, PortEvent, Source};
         let mut last: Option<Result<Option<Value>>> = None;
         let ak2 = ak.clone();
@@ -559,12 +1031,12 @@ impl Osis {
                 }
             }
         });
-        Ok(self.remote_sub(Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), cb)?.0)
+        Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), true, cb)?.0)
     }
 
     /// `AspectRef::watch` at the attached node: the state holds the latest value that `valid`
     /// accepts (else absent), set from the Sub's reply before this returns.
-    pub(crate) fn remote_watch(&self, tid: Tid, ak: osis_base::Ak, valid: Box<dyn Fn(&Value) -> bool + Send>) -> Result<(Arc<crate::watch::WatchState>, Subscription)> {
+    pub(crate) fn remote_watch(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, valid: Box<dyn Fn(&Value) -> bool + Send>) -> Result<(Arc<crate::watch::WatchState>, Subscription)> {
         use crate::watch::{Delivery, PortEvent, WatchState};
         let st = WatchState::new(Ok(None));
         let s2 = st.clone();
@@ -582,26 +1054,37 @@ impl Osis {
                 PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => s2.update(Err(net("the node's subscription ended"))),
             }
         });
-        let (sub, initial) = self.remote_sub(Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), cb)?;
-        // the value at registration, before this returns (the dispatcher's copy is the same)
-        st.update(c::read(initial)?);
+        let (sub, initial) = self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), true, cb)?;
+        // the value at registration, before this returns (the dispatcher's copy is the same, and
+        // what it already ran after that is newer)
+        st.first(c::read(initial)?);
         Ok((st, sub))
     }
 
     /// `watch_thing` at the attached node.
-    pub(crate) fn remote_watch_thing(&self, tid: Tid, mut f: ChangeFn) -> Subscription {
+    pub(crate) fn remote_watch_thing(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Subscription {
         use crate::watch::{Change, Delivery, PortEvent, Source};
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
             match ev {
+                // the first, or again after a reconnect: what changed in the gap, what went too
                 PortEvent::Initial(v) => {
+                    let mut now: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
                     for x in c::Args::of(vec![v]).list().unwrap_or_default() {
                         let Ok(mut a) = c::Args::new(x) else { continue };
                         let (Ok(ak), Ok(Ok(value))) = (a.ak(), a.next().map(c::read)) else { continue };
-                        last.insert(ak.clone(), value.clone());
-                        f(db, Change { tid, ak, value, source: Source::Initial });
+                        now.insert(ak, value);
                     }
+                    for ak in std::mem::take(&mut last).into_keys() {
+                        if !now.contains_key(&ak) {
+                            f(db, Change { tid, ak, value: Ok(None), source: Source::Initial });
+                        }
+                    }
+                    for (ak, value) in &now {
+                        f(db, Change { tid, ak: ak.clone(), value: value.clone(), source: Source::Initial });
+                    }
+                    last = now;
                 }
                 PortEvent::Notify(Payload::Delivery { value, .. }) => {
                     let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
@@ -610,14 +1093,20 @@ impl Osis {
                         f(db, Change { tid: t, ak, value, source });
                     }
                 }
-                _ => {}
+                PortEvent::Notify(Payload::TooLarge { .. }) => {}
+                // what the callback sees of an end: an error on the thing's own `tid.0`
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
+                    if let Ok(ak) = osis_base::Ak::new("tid.0") {
+                        f(db, Change { tid, ak, value: Err(net("the node's subscription ended")), source: Source::Initial });
+                    }
+                }
             }
         });
-        self.remote_sub(Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), cb).map(|x| x.0).unwrap_or_else(|_| self.dead_sub())
+        self.remote_sub_kept(r, Some(tid), Value::List(vec![u(super::filter::THING), Value::Tid(tid)]), cb)
     }
 
     /// `watch_roster` at the attached node.
-    pub(crate) fn remote_watch_roster(&self, actor: Tid, mut f: CallbackOf<crate::read::Roster>) -> Subscription {
+    pub(crate) fn remote_watch_roster(&self, r: &Arc<Remote>, actor: Tid, mut f: CallbackOf<crate::read::Roster>) -> Subscription {
         use crate::watch::{Delivery, PortEvent};
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
@@ -629,7 +1118,7 @@ impl Osis {
                 f(db, r);
             }
         });
-        self.remote_sub(Value::List(vec![u(super::filter::ROSTER), Value::Tid(actor)]), cb).map(|x| x.0).unwrap_or_else(|_| self.dead_sub())
+        self.remote_sub_kept(r, Some(actor), Value::List(vec![u(super::filter::ROSTER), Value::Tid(actor)]), cb)
     }
 
     /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).
@@ -642,26 +1131,32 @@ impl Osis {
                 f(db, x);
             }
         });
-        self.remote_sub(Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb).map(|x| x.0).unwrap_or_else(|_| self.dead_sub())
+        self.remote_sub_kept(&self.thin_primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
 
     /// `watch_status` at the attached node.
     pub(crate) fn remote_watch_status(&self, mut f: CallbackOf<crate::share::Status>) -> Subscription {
-        use crate::watch::{Delivery, PortEvent};
+        use crate::watch::Delivery;
+        // every change, and the attachment going down or up, shows as the merged status now
         let cb: Callback = Box::new(move |db, d| {
-            if let Delivery::Port(PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v, .. })) = d
-                && let Ok(s) = c::status(v)
+            if matches!(d, Delivery::Port(_))
+                && let Ok(s) = db.status()
             {
                 f(db, s);
             }
         });
-        self.remote_sub(Value::List(vec![u(super::filter::STATUS)]), cb).map(|x| x.0).unwrap_or_else(|_| self.dead_sub())
+        self.remote_sub_kept(&self.thin_primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
+    }
+
+    /// The attachment a handle with no store of its own makes its process-wide calls at.
+    fn thin_primary(&self) -> Arc<Remote> {
+        self.inner.thin.get().map(|t| t.primary.clone()).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
     }
 
     /// `wait_synced` at the attached node: a subscription the node answers once with the
     /// outcome of its own `wait_synced(scope, timeout)` (its rule, its clock and deadline); no
     /// Call waits and nothing holds the node's worker. The connection ending is `Network`.
-    pub(crate) fn remote_wait_synced(&self, scope: crate::share::SyncScope, timeout: Duration) -> Result<(Subscription, crate::net::Pending<Result<()>>)> {
+    pub(crate) fn remote_wait_synced(&self, r: &Arc<Remote>, scope: crate::share::SyncScope, timeout: Duration) -> Result<(Subscription, crate::net::Pending<Result<()>>)> {
         use crate::watch::{Delivery, PortEvent};
         let (pending, slot) = crate::net::Pending::new();
         // the first outcome stands (a later end of the connection does not replace it)
@@ -682,7 +1177,7 @@ impl Osis {
             _ => {}
         });
         let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-        let (sub, initial) = self.remote_sub(Value::List(vec![u(super::filter::SYNCED), c::sync_scope_v(scope), u(ms)]), cb)?;
+        let (sub, initial) = self.remote_sub(r, None, Value::List(vec![u(super::filter::SYNCED), c::sync_scope_v(scope), u(ms)]), false, cb)?;
         if let Some(v) = c::Args::of(vec![initial]).opt()? {
             put(c::done(v)?);
         }
@@ -691,8 +1186,9 @@ impl Osis {
 
     /// A subscription that never fires (a remote watch whose Sub failed on a call that cannot
     /// return an error).
-    fn dead_sub(&self) -> Subscription {
-        self.inner.dispatch.register(u64::MAX, Filter::Port(u64::MAX), Box::new(|_, _| {}))
+    fn dead_sub(&self, e: Error) -> Subscription {
+        self.infallible::<()>(Err(e));
+        self.inner.dispatch.register(u64::MAX, Filter::Port(u64::MAX, None), Box::new(|_, _| {}))
     }
 }
 

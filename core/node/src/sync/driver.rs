@@ -47,6 +47,12 @@ pub const LAN_ANNOUNCE: Duration = Duration::from_secs(30);
 /// Network changes rejoin the LAN at most this often (each join drops the LAN listener and its
 /// connections; provisional).
 pub const LAN_REJOIN_MIN: Duration = Duration::from_secs(30);
+/// How long a client listener tries its URL again when replacing a listener, and how often: the
+/// old one's UDP socket lives until its connections finished closing. Minor: 0 fails the replace
+/// when they have not (calling it again works), infinity waits on a port someone else holds; each
+/// try blocks this driver as any listen does.
+const REBIND_WAIT: Duration = Duration::from_secs(5);
+const REBIND_RETRY: Duration = Duration::from_millis(50);
 /// A failed listen with a new dialable key is tried again after this long.
 pub const RELISTEN_RETRY: Duration = Duration::from_secs(5);
 
@@ -94,6 +100,11 @@ pub enum Control {
     /// Serve the sessions a listener at `url` accepts (a client socket, `unix://`; its
     /// sessions are clients, notes/client-port.md §5), with a fresh secret of its own.
     Listen { url: String, reply: Option<oneshot::Sender<Result<Address, String>>> },
+    /// Serve the client listeners at `urls` with the client listener's secret (none given: stop,
+    /// and shred the secret). `Rotate`: a new secret at the same addresses; those of the old key
+    /// stop, their sessions end. Answers the addresses (notes/client-port.md §5). All or none: on
+    /// an error nothing listens.
+    ClientListen { urls: ClientUrls, reply: oneshot::Sender<Result<Vec<Address>, String>> },
     /// Run the LAN loop (feature `lan`; ignored without it).
     Lan(LanConfig),
     /// The network may have changed (an app's OS callback): join the LAN again with a fresh key
@@ -101,6 +112,13 @@ pub enum Control {
     LanRejoin,
     /// Close every connection and return the engine.
     Shutdown,
+}
+
+/// What `Control::ClientListen` does.
+#[derive(Clone, Debug)]
+pub enum ClientUrls {
+    Listen(Vec<String>),
+    Rotate,
 }
 
 /// Where diagnostics go.
@@ -118,7 +136,16 @@ async fn forward(conn: ConnId, rx: link::LinkRx, ev: mpsc::Sender<Ev>) {
     link::forward(rx, ev, move |b| Ev::Bytes(conn, b), Ev::Closed(conn)).await
 }
 
+/// The client listeners, all of one key: their bound URLs and tasks.
+struct ClientListeners {
+    key: [u8; 32],
+    urls: Vec<String>,
+    tasks: Vec<[JoinHandle<()>; 2]>,
+}
+
 struct Conn {
+    /// Leaves the listener's pending slots when set (`Action::Authed`).
+    authed: Option<Arc<std::sync::atomic::AtomicBool>>,
     tx: Option<LinkTx>,
     task: JoinHandle<()>,
     /// `LinkTx::taken` when last reported (`Event::Sent`; `u64::MAX` before the first report).
@@ -244,7 +271,9 @@ struct Driver<T: Transport, H: Shared> {
     link_tx: mpsc::Sender<([u8; 32], Link)>,
     /// Running listeners by key: their serve and forward tasks.
     listeners: HashMap<[u8; 32], [JoinHandle<()>; 2]>,
+    client: Option<ClientListeners>,
     max_served: usize,
+    client_pending: usize,
     #[cfg(feature = "lan")]
     lan: Option<LanLoop>,
     #[cfg_attr(not(feature = "lan"), allow(dead_code))]
@@ -341,7 +370,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                             forward(conn, rx, ev).await;
                         }
                     });
-                    self.conns.insert(conn, Conn { tx: None, task, taken: u64::MAX });
+                    self.conns.insert(conn, Conn { authed: None, tx: None, task, taken: u64::MAX });
                 }
                 Action::Send { conn, bytes } => {
                     let ok = self.conns.get(&conn).and_then(|c| c.tx.as_ref()).is_some_and(|tx| tx.send(bytes, MAX_QUEUED));
@@ -354,6 +383,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 Action::Close { conn } => self.close(conn),
                 Action::Wake { at } => self.wake = Some(at),
                 Action::Reach => self.relisten = true,
+                Action::Authed { conn } => {
+                    if let Some(a) = self.conns.get(&conn).and_then(|c| c.authed.as_ref()) {
+                        a.store(true, std::sync::atomic::Ordering::Release);
+                    }
+                }
                 Action::Host(_) => {}
                 // the client port is the engine holder's (`osis`); a bare driver answers none
                 Action::Request { .. } | Action::Room { .. } | Action::Ended { .. } => {}
@@ -394,8 +428,14 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         let addr = l.address();
         let key = addr.key;
         self.unlisten(key);
+        let tasks = self.serve_tasks(l, key, link::Slots::Shared(self.max_served));
+        self.listeners.insert(key, tasks);
+        addr
+    }
+
+    fn serve_tasks(&mut self, l: T::Listener, key: [u8; 32], slots: link::Slots) -> [JoinHandle<()>; 2] {
         let (tx, mut rx) = mpsc::channel::<Link>(64);
-        let serve = tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx, self.max_served));
+        let serve = tokio::spawn(link::serve(l, SERVE_IDLE, FINISH_WAIT, tx, slots));
         let out = self.link_tx.clone();
         let fwd = tokio::spawn(async move {
             while let Some(link) = rx.recv().await {
@@ -404,8 +444,64 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 }
             }
         });
-        self.listeners.insert(key, [serve, fwd]);
-        addr
+        [serve, fwd]
+    }
+
+    /// Replaces the client listeners: the old ones stop first with their sessions (a new one may
+    /// want the same URL, a socket a session's connection still holds); every URL listens or none
+    /// does. A UDP port the old connections still drain is tried again for `REBIND_WAIT`.
+    async fn client_listen(&mut self, what: ClientUrls) -> Result<Vec<Address>, String> {
+        let rotate = matches!(what, ClientUrls::Rotate);
+        let old = self.client.take();
+        let urls = match what {
+            ClientUrls::Listen(u) => u,
+            ClientUrls::Rotate => old.as_ref().map(|c| c.urls.clone()).unwrap_or_default(),
+        };
+        let stop = urls.is_empty() && !rotate;
+        let secret = self.read(|s| {
+            if stop {
+                s.drop_client_listen_secret();
+                None
+            } else {
+                Some(transport_secret(&s.client_listen_secret(rotate)))
+            }
+        });
+        let Some(secret) = secret else { return Err("engine gone".into()) };
+        if let Some(ClientListeners { key, tasks, .. }) = old {
+            for t in tasks.into_iter().flatten() {
+                t.abort();
+                let _ = t.await;
+            }
+            for conn in self.served_by.remove(&key).unwrap_or_default() {
+                if self.conns.contains_key(&conn) {
+                    self.close(conn);
+                    self.feed(Event::Down { conn });
+                }
+            }
+        }
+        let Some(secret) = secret else { return Ok(Vec::new()) };
+        let mut ls = Vec::new();
+        for url in urls {
+            let end = tokio::time::Instant::now() + REBIND_WAIT;
+            ls.push(loop {
+                match self.transport.listen(ListenConfig { url: url.clone(), secret: secret.clone() }).await {
+                    Ok(l) => break l,
+                    Err(e) if tokio::time::Instant::now() >= end => return Err(e.to_string()),
+                    Err(_) => tokio::time::sleep(REBIND_RETRY).await,
+                }
+            });
+        }
+        let mut addrs = Vec::new();
+        let mut tasks = Vec::new();
+        for l in ls {
+            let a = l.address();
+            tasks.push(self.serve_tasks(l, a.key, link::Slots::Pending(self.client_pending)));
+            addrs.push(a);
+        }
+        if let Some(a) = addrs.first() {
+            self.client = Some(ClientListeners { key: a.key, urls: addrs.iter().map(|x| x.url.clone()).collect(), tasks });
+        }
+        Ok(addrs)
     }
 
     fn unlisten(&mut self, key: [u8; 32]) {
@@ -465,7 +561,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
 
     /// A peer's session on the listener of key `key`.
     fn accepted(&mut self, key: [u8; 32], l: Link) {
-        let Link { peer, tx, rx, .. } = l;
+        let Link { peer, tx, rx, authed, .. } = l;
         // the connection exists before its first actions are carried out
         let mut conn = None;
         let shared = &self.shared;
@@ -478,7 +574,7 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         });
         if let Some(conn) = conn {
             let task = tokio::spawn(forward(conn, rx, self.ev_tx.clone()));
-            self.conns.insert(conn, Conn { tx: Some(tx), task, taken: u64::MAX });
+            self.conns.insert(conn, Conn { authed: Some(authed), tx: Some(tx), task, taken: u64::MAX });
             let conns = &self.conns;
             let v = self.served_by.entry(key).or_default();
             v.retain(|c| conns.contains_key(c));
@@ -656,6 +752,10 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                     let _ = reply.send(r);
                 }
             }
+            Some(Control::ClientListen { urls, reply }) => {
+                let r = self.client_listen(urls).await;
+                let _ = reply.send(r);
+            }
             #[cfg(feature = "lan")]
             Some(Control::Lan(cfg)) => self.lan_start(cfg).await,
             #[cfg(feature = "lan")]
@@ -815,8 +915,10 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
     #[cfg_attr(not(feature = "lan"), allow(unused_mut))]
     let (net_tx, mut net_rx) = mpsc::channel::<()>(1);
     let mut max = 0;
+    let mut client_pending = 0;
     let _ = shared.with(&mut |s| {
         max = s.config().max_served;
+        client_pending = s.config().client_pending;
         Vec::new()
     });
     let mut d = Driver {
@@ -830,7 +932,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         ev_tx,
         link_tx,
         listeners: HashMap::new(),
+        client: None,
         max_served: max,
+        client_pending,
         #[cfg(feature = "lan")]
         lan: None,
         lan_tx,

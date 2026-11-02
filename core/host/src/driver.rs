@@ -295,7 +295,7 @@ pub async fn run<T: Transport>(hub: Hub, ep: Endpoint<T>, peers: Vec<Address>, c
     let idle = Duration::from_millis(hub.store().policy().hello_ms);
     // transport connections capped like sessions (each connection may carry several)
     let max = hub.store().policy().max_connections;
-    let serving: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), max))).collect();
+    let serving: Vec<JoinHandle<()>> = listeners.into_iter().map(|l| tokio::spawn(link::serve(l, idle, FINISH_WAIT, in_tx.clone(), link::Slots::Shared(max)))).collect();
     drop(in_tx);
     let mut d = Driver { hub, clock, log, conns: HashMap::new(), turns: Turns::default(), next: 1, ev_tx };
     let mut listening = true;

@@ -27,6 +27,13 @@ pub trait Internals {
     fn watches(&self) -> usize;
     /// A handle acting as `actor`, as the client port serves a thin client's session.
     fn acting_as(&self, actor: osis_base::Tid) -> Osis;
+    /// The port worker's next job panics: before running (`false`), or after a Call ran and
+    /// before its reply (`true`, the reply is lost).
+    fn port_panic_next(&self, after_call: bool);
+    /// Runs `f` between each local write's route and its lock.
+    fn after_route(&self, f: Box<dyn Fn() + Send>);
+    /// Sets a route with nothing else `group_source` does.
+    fn set_route(&self, group: osis_base::Tid, to: Option<String>);
 }
 
 impl Internals for Osis {
@@ -57,6 +64,21 @@ impl Internals for Osis {
     fn acting_as(&self, actor: osis_base::Tid) -> Osis {
         here(self);
         self.act_as(actor)
+    }
+    fn port_panic_next(&self, after_call: bool) {
+        let p = &self.inner.port;
+        (if after_call { &p.panic_after_call } else { &p.panic_next }).store(true, std::sync::atomic::Ordering::Release);
+    }
+    fn after_route(&self, f: Box<dyn Fn() + Send>) {
+        *crate::watch::lock(&self.inner.port.after_route) = Some(f);
+    }
+    fn set_route(&self, group: osis_base::Tid, to: Option<String>) {
+        self.inner.routing.store(true, std::sync::atomic::Ordering::Release);
+        self.locked(|l| match to {
+            Some(a) => l.routes.insert(group, a),
+            None => l.routes.remove(&group),
+        });
+        self.locked(|l| l.show_routes());
     }
 }
 
