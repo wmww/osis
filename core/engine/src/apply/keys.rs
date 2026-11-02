@@ -53,16 +53,16 @@ pub(crate) fn keysets_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<Keys
     out.into_iter().collect()
 }
 
-/// The sealed names part `ai` of role commit `h` writes in `bodies` (its `secrets.0` deltas):
-/// what a grant's boxes carry (spec/crypto.md §4), kept in its record when it drops
-/// (`Dropped::names`).
-pub(crate) fn names_of(h: &Header, ai: usize, bodies: &[Fragment]) -> Vec<NamesRec> {
+/// The sealed names part `ai` of role commit `h` writes in `bodies` (its `secrets.0` deltas)
+/// in its boxes to `holders`: what a grant's boxes carry (spec/crypto.md §4), kept in its record
+/// when it drops (`Dropped::names`).
+pub(crate) fn names_of(h: &Header, ai: usize, bodies: &[Fragment], holders: &std::collections::BTreeSet<Tid>) -> Vec<NamesRec> {
     if !h.kind.is_role() || !h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "secrets.0") {
         return Vec::new();
     }
     let mut out = std::collections::BTreeSet::new();
     for b in bodies {
-        for (k, x) in secrets_write(b).boxes {
+        for (k, x) in secrets_write(b).boxes.into_iter().filter(|(k, _)| holders.contains(&k.holder)) {
             if let (Some(sealed), Ok(e)) = (osis_keys::names_of(&x), osis_keys::aspects::from_schema(&k.epoch)) {
                 out.insert((k.holder, k.role, e, sealed.clone()));
             }

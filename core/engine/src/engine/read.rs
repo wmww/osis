@@ -49,7 +49,8 @@ fn value_at(v: Value, path: &[osis_crdt::PathSeg]) -> Option<Value> {
 }
 
 fn edge_value(e: &Edge) -> Value {
-    ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit }), tied: e.tied.map(crate::flows::tied::tie_ct), keyset: None }.to_value()
+    let key = |k: osis_perm::Point| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit };
+    ct::Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(key), tied: e.tied.map(crate::flows::tied::tie_ct), keyset: e.keyset.map(key) }.to_value()
 }
 
 impl Core {

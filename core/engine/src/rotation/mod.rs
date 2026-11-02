@@ -14,6 +14,7 @@ use crate::flows::{self, Delivery, Done, SyncState, put_keysets, put_secrets, re
 use crate::Mutation;
 use osis_base::{Role, Tid};
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, ROLES, Recipient, Rotation, rotate};
+use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
@@ -57,26 +58,30 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
 }
 
 /// How this node may seal `a`'s secrets to holder actor `m` (spec/crypto.md §4, boxing a holder
-/// actor; `departures::grant_names_held`).
+/// actor; `departures::sealers`).
 enum Seal {
-    /// At the keyset a fresh box names, by this node's box judgement.
+    /// At the keyset a fresh box names, by this node's box judgement; the box carries this
+    /// node's names for `m`.
     Free,
     /// Not at all: left out.
     Out,
-    /// Only at these keysets, per role of `m`: the read keyset of the applied valid `keys.0` commit
-    /// the edge writes of `m` on `a` name, whose `secrets.0` parts this node lacks (the edge names
-    /// the read box's commit only; the roles above are left out).
-    Bound(BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>),
+    /// Only at these keysets, per role of `m`: the read keyset of the applied valid `keys.0`
+    /// commit `m`'s roster entry on `a` names (its key first; the entry names the read box's
+    /// commit only, so the roles above are left out); the box carries no names.
+    Bound(ct::EdgeKey, BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>),
 }
 
-fn seal_of(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<Seal> {
+fn seal_of(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>) -> Result<Seal> {
     if tx.core.is_key_actor(m) {
         return Ok(Seal::Free);
     }
-    Ok(match departures::grant_names_held(tx, a, m)? {
-        departures::GrantNames::Held => Seal::Free,
-        departures::GrantNames::Unmet => Seal::Out,
-        departures::GrantNames::Bound(k) => Seal::Bound(named_keysets(tx, m, &k)?),
+    Ok(match departures::sealers(tx, a, m, roles)? {
+        departures::Sealers::Free => Seal::Free,
+        departures::Sealers::Unmet => Seal::Out,
+        departures::Sealers::Bound(k) => {
+            let ks = named_keysets(tx, m, &k)?;
+            Seal::Bound(k, ks)
+        }
     })
 }
 
@@ -85,7 +90,7 @@ fn seal_of(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<Seal> {
 /// is the one the part wrote); else none. Only read: the edge names the commit of the granter's
 /// read box, and its boxes of the roles above may name later keysets (a write rotation of `m`
 /// after a departure from write the granter knew), so the commit's older ones may open to it.
-fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &osis_schema::core_types::EdgeKey) -> Result<BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>> {
+fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &ct::EdgeKey) -> Result<BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>> {
     let mut out = BTreeMap::new();
     let keys_ak = flows::ak("keys.0")?;
     let Some((ai, dropped)) = tx.core.ix.commits.get(&k.commit).filter(|c| c.view.ts == k.ts && c.view.author == k.node && !tx.core.ix.pending.contains_key(&k.commit)).and_then(|c| {
@@ -133,7 +138,7 @@ fn role_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], 
     let named = match seal {
         Seal::Out => return Ok(false),
         Seal::Free => None,
-        Seal::Bound(ks) => match ks.get(&r) {
+        Seal::Bound(_, ks) => match ks.get(&r) {
             Some((e, _)) => Some(*e),
             None => return Ok(false),
         },
@@ -154,7 +159,7 @@ fn role_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], 
 
 /// `role_keeps_out` for role `r` of `a` and holder `m`.
 fn holder_keeps_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
-    let seal = seal_of(tx, a, m)?;
+    let seal = seal_of(tx, a, m, &BTreeSet::from([r]))?;
     role_keeps_out(tx, held, deps, m, r, &seal)
 }
 
@@ -164,14 +169,30 @@ fn inside_first(d: &Departure) -> Option<(Tid, Departure)> {
     Some((*m, Departure { via: rest.clone(), ..d.clone() }))
 }
 
-/// `rc` as this node may box it on `a` (given `deps` of `a`): sealed to the named keysets where
-/// bound (`Seal`), its role cut at the first `role_keeps_out` refuses; `None` when that leaves no
-/// role. Key actors are kept whole.
-pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
-    if !matches!(rc.keys, osis_keys::HolderKeys::Actor { .. }) {
-        return Ok(Some(rc.clone()));
+/// A holder as this node may box it on `a` (`left_out`): the recipient, and the key of the
+/// `keys.0` commit it is sealed bound to (spec/crypto.md §4), none when sealed free (a holder
+/// actor's boxes then carry this node's names for it, `grant_names`) or a key actor.
+pub(crate) struct Boxed {
+    pub rcpt: Recipient,
+    pub bound: Option<ct::EdgeKey>,
+}
+
+impl Boxed {
+    /// The names the boxes to this holder carry for `roles`: a holder actor's sealed free.
+    pub(crate) fn names(&self, core: &Core, roles: &BTreeSet<Role>) -> Option<osis_keys::Names> {
+        (self.bound.is_none() && matches!(self.rcpt.keys, osis_keys::HolderKeys::Actor { .. })).then(|| grant_names(core, &self.rcpt, roles))
     }
-    let seal = seal_of(tx, a, &rc.holder)?;
+}
+
+/// `rc` as this node may box it on `a` for `roles` (given `deps` of `a`): sealed to the named
+/// keysets where bound (`Seal`), its role cut at the first `role_keeps_out` refuses; `None` when
+/// that leaves no role. Key actors are kept whole.
+pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient, roles: &BTreeSet<Role>) -> Result<Option<Boxed>> {
+    if !matches!(rc.keys, osis_keys::HolderKeys::Actor { .. }) {
+        return Ok(Some(Boxed { rcpt: rc.clone(), bound: None }));
+    }
+    let sealed: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rc.role).collect();
+    let seal = seal_of(tx, a, &rc.holder, &sealed)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
         if !role_keeps_out(tx, held, deps, &rc.holder, r, &seal)? {
@@ -179,19 +200,19 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: 
         }
         top = Some(r);
     }
-    let keys = match seal {
-        Seal::Bound(ks) => osis_keys::HolderKeys::Actor { keysets: ks, own: BTreeMap::new() },
-        _ => rc.keys.clone(),
+    let (keys, bound) = match seal {
+        Seal::Bound(k, ks) => (osis_keys::HolderKeys::Actor { keysets: ks, own: BTreeMap::new() }, Some(k)),
+        _ => (rc.keys.clone(), None),
     };
-    Ok(top.map(|role| Recipient { holder: rc.holder, role, keys }))
+    Ok(top.map(|role| Boxed { rcpt: Recipient { holder: rc.holder, role, keys }, bound }))
 }
 
 /// `left_out` for a grant on `a` to `rc.holder`: by its own departures, as `a` will see them
 /// once it is a holder.
-pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Result<Option<Recipient>> {
+pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Result<Option<Boxed>> {
     let deps: Vec<Departure> = departures(tx, &rc.holder)?.iter().filter_map(|d| Departure::through(rc.holder, rc.role, d)).collect();
     let held = held_actors(tx)?;
-    left_out(tx, a, &held, &deps, rc)
+    left_out(tx, a, &held, &deps, rc, &osis_keys::roles_up_to(rc.role))
 }
 
 /// The epoch of `m` a fresh box of role `r` names (its newest held secret, else its keyset in
@@ -267,15 +288,20 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 /// switch to secrets of its own). `pending`: departures from `a` the same commit makes (a
 /// removal's: the names' departs flag).
 /// A holder actor is boxed only the roles up to the first its newest epoch does not cover
-/// (`holder_keeps_out`): left out, it is re-sealed once it rotates (spec/permissions.md §3).
+/// (`holder_keeps_out`): left out, it is re-sealed once it rotates (spec/permissions.md §3);
+/// sealed free, its boxes carry this node's names for it (spec/crypto.md §4).
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, &mut None, pending)?.into_iter().collect() };
     let actors = held_actors(tx)?;
     let mut boxed = Vec::with_capacity(holders.len());
+    let mut box_names = Vec::new();
     for rc in holders {
-        if let Some(rc) = left_out(tx, &a, &actors, &deps, rc)? {
-            boxed.push(rc);
+        if let Some(b) = left_out(tx, &a, &actors, &deps, rc, roles)? {
+            if let Some(n) = b.names(tx.core, roles) {
+                box_names.push((b.rcpt.holder, n));
+            }
+            boxed.push(b.rcpt);
         }
     }
     // a departing commit names itself by its `ts`, fixed here, and signer (set before this)
@@ -287,7 +313,10 @@ pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &B
     };
     let mut names = departures::names(tx.core, &a, departs);
     names.keysets = departures::keyset_names(&boxed, roles);
-    let rot = rotate(&a, roles, held, &secrets, &boxed, &names, &mut *tx.rng)?;
+    let mut rot = rotate(&a, roles, held, &secrets, &boxed, &names, &mut *tx.rng)?;
+    for (holder, n) in &box_names {
+        rot.with_names(&a, holder, n, &mut *tx.rng)?;
+    }
     put_secrets(m, a, &rot.secrets, false)?;
     put_keysets(m, a, &rot.keys)?;
     Ok(rot)
@@ -535,12 +564,21 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
             let re = epochs.role(r);
             let missing = osis_keys::reseal_missing(&secrets, &epochs, &m, r);
             let holds = missing.iter().any(|e| re.secret(e).is_some());
-            if may.contains(&r) && holds && holder_keeps_out(tx, a, &held, &deps, &m, r)? {
+            if may.contains(&r) && holds {
                 keep.insert(r);
             }
         }
-        if !keep.is_empty() {
-            out.push((m, keep));
+        // as `reseal_one` will box it (`left_out`): a holder actor left out of a role is left out
+        // of the roles above, whether or not it lacks a box at that role
+        if !keep.is_empty()
+            && let Some(role) = holders.iter().find(|h| h.holder == m).map(|h| h.role)
+            && let Ok(rc) = recipient(tx, m, role)
+            && let Some(b) = left_out(tx, a, &held, &deps, &rc, &keep)?
+        {
+            keep.retain(|r| *r <= b.rcpt.role);
+            if !keep.is_empty() {
+                out.push((m, keep));
+            }
         }
     }
     Ok(out)
@@ -562,11 +600,14 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let rcpt = recipient(tx, holder, role)?;
     let deps = departures(tx, &a)?;
     let held = held_actors(tx)?;
-    let rcpt = left_out(tx, &a, &held, &deps, &rcpt)?.ok_or(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"))?;
-    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role).collect();
-    let Some(w) = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)? else {
+    let b = left_out(tx, &a, &held, &deps, &rcpt, roles)?.ok_or(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"))?;
+    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= b.rcpt.role).collect();
+    let Some(mut w) = osis_keys::box_holder(&a, &epochs, &secrets, &b.rcpt, &roles, &mut *tx.rng)? else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };
+    if let Some(n) = b.names(tx.core, &roles) {
+        osis_keys::with_names(&a, &holder, &mut w, &n, &epochs, &mut *tx.rng)?;
+    }
     let mut m = Mutation::new();
     put_secrets(&mut m, a, &w, false)?;
     let c = Engine::commit_tx(tx, m)?;

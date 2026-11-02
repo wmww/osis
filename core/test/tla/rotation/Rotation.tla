@@ -56,9 +56,10 @@ CONSTANTS Admins,     \* may rotate, register, grant, write content
                       \* refused)
           Proj        \* a grant of g may reach an admin as its edge alone
                       \* (a projection: the boxes deposited, never received):
-                      \* "none" never; "bound" the admin then seals g only
-                      \* to the keyset the grant's edge names (crypto §4);
-                      \* "free": at its own choice (negative control)
+                      \* "none" never; "bound" a node holding no box to g
+                      \* carrying names then seals g only to the keyset g's
+                      \* roster entry names (crypto §4), its box carrying
+                      \* none; "free": at its own choice (negative control)
 
 Nodes == Admins \cup Readers
 Ids == 0..MaxE
@@ -95,10 +96,12 @@ VARIABLES ep,       \* ep[e] = [n, sup, ob, hist, rem]; ob = holders the
           gs,       \* gs[x]: x holds a roster snapshot of the group after R_P
                     \* (gd[x]: with Split, x holds R_P's roles.0 part)
           pj,       \* pj[x]: grant commits of bx x holds as their edge alone
+          rk,       \* rk[x]: the keyset epoch g's roster entry names at x
+                    \* (the edge's `keyset`; 5: none, or one nobody holds)
           online, budget
 vars == <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx, rd,
-          steps, inbox, inRot, via, stranded, enc, leakP, gm, fsup, ks, gd, gs, pj, online, budget>>
-gvars == <<gm, fsup, ks, gd, gs, pj>>
+          steps, inbox, inRot, via, stranded, enc, leakP, gm, fsup, ks, gd, gs, pj, rk, online, budget>>
+gvars == <<gm, fsup, ks, gd, gs, pj, rk>>
 
 ep_n(e) == ep[e].n
 \* crypto §4: newest = greatest n, ties by lowest nonce (here: lowest id).
@@ -173,15 +176,18 @@ Covers(x, e) == IF Frozen THEN CoversFrozen(x, e) ELSE CoversBox(x, e)
 \* Frozen: and only holding the names of every grant or re-seal box to g at
 \* a current epoch it holds (it knows R_P where one names it; a rotation's
 \* names are held through establishment).
-\* crypto §4: holding a grant of g as its edge alone (pj, its boxes not read),
-\* x seals g only to the keyset that edge names (the grant's gk, by its
-\* granter's judgement), one for every such grant, holding that keyset valid,
-\* and, knowing d left, only if it is the newest it holds and keeps d out.
-PB(x) == {b \in pj[x] \ rd[x] : b.m \in Groups}
-SealK(x) == IF Proj = "bound" /\ PB(x) # {} THEN Max({b.gk : b \in PB(x)}) ELSE GK(x)
-BoundOK(x) == Proj = "bound" /\ PB(x) # {} =>
-                /\ \A b \in PB(x) : b.gk = SealK(x)
-                /\ SealK(x) \in VK(x) /\ (gd[x] => SealK(x) = GK(x))
+\* crypto §4: every box to g carries its sealer's names unless sealed bound
+\* (fr). x seals g free holding such a box (a grant's it read, one at a
+\* current epoch it holds, a free rotation's it applied); holding none (the
+\* grant's boxes deposited and never received, pj; or every box held sealed
+\* bound) it seals g bound: only to the keyset g's roster entry names (rk,
+\* the last grant's choice), holding that keyset valid, and, knowing d left,
+\* only if it is the newest it holds and keeps d out.
+Free(x) == \/ \E b \in rd[x] : b.m \in Groups /\ b.fr /\ (b.g \/ b.eps \cap HeldCur(x) # {})
+           \/ \E e \in HeldCur(x) \cap kn[x] : ep[e].ob \cap Groups # {} /\ ep[e].fr
+Bound(x) == Proj # "free" /\ Groups \cap hld[x] # {} /\ ~Free(x)
+SealK(x) == IF Bound(x) THEN rk[x] ELSE GK(x)
+BoundOK(x) == Bound(x) => rk[x] \in VK(x) /\ (gd[x] => rk[x] = GK(x))
 GOK(x) == gd[x] => SealK(x) \notin {0, 3, 4}
 GNamesOK(x) == \A b \in rd[x] :
                  (/\ b.m \in Groups /\ b.kd
@@ -242,9 +248,9 @@ ResealWanted(a, m) ==
 Init ==
   /\ ep = [e \in Ids |-> IF e = 0
              THEN [n |-> 0, sup |-> {}, ob |-> Nodes \ Late, hist |-> {}, rem |-> {},
-                   nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE]
+                   nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE, fr |-> TRUE]
              ELSE [n |-> 0, sup |-> {}, ob |-> {}, hist |-> {}, rem |-> {},
-                   nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE]]
+                   nm |-> {}, nk |-> {}, ng |-> FALSE, gk |-> 0, kd |-> FALSE, fr |-> TRUE]]
   /\ made = {0}
   /\ kn = [x \in Nodes |-> {0}]
   /\ sec = [x \in Nodes |-> IF x \in Late THEN {} ELSE {0}]
@@ -258,6 +264,7 @@ Init ==
   /\ enc = {} /\ leakP = FALSE
   /\ gm = {0} /\ fsup = {} /\ ks = [x \in Nodes |-> {0}]
   /\ gd = [x \in Nodes |-> FALSE] /\ gs = [x \in Nodes |-> FALSE] /\ pj = [x \in Nodes |-> {}]
+  /\ rk = [x \in Nodes |-> 5]
   /\ online = [x \in Nodes |-> TRUE]
   /\ budget = [w |-> 0, off |-> 0, p |-> 0]
 
@@ -282,7 +289,7 @@ RotateR(a, R) ==
                     nm |-> IF OwnNames THEN {} ELSE {j \in kn[a] : ep[j].rem # {}},
                     nk |-> IF KeysetNames /\ ob \cap Groups # {} THEN {SealK(a)} ELSE {},
                     ng |-> GroupNames /\ (gd[a] \/ gs[a]) /\ Groups \cap hld[a] # {},
-                    gk |-> SealK(a), kd |-> gd[a]]]
+                    gk |-> SealK(a), kd |-> gd[a] /\ ~Bound(a), fr |-> ~Bound(a)]]
         /\ made' = made \cup {k}
         /\ kn' = [kn EXCEPT ![a] = @ \cup {k}]
         /\ sec' = [sec EXCEPT ![a] = @ \cup {k}]
@@ -344,10 +351,12 @@ Grant(a, m) ==
   /\ m \in Groups /\ ~BoxG(a) => Frozen /\ GNamesBy = "current"
   /\ granted' = granted \cup {m}
   /\ hld' = [hld EXCEPT ![a] = @ \cup {m}]
+  /\ rk' = IF m \in Groups THEN [rk EXCEPT ![a] = SealK(a)] ELSE rk
   /\ PlaceBox(a, [m |-> m, eps |-> IF m \in Groups /\ ~BoxG(a) THEN {} ELSE HeldCur(a),
-                  w |-> EncEp(a), g |-> TRUE, gk |-> SealK(a), kn |-> gd[a], kd |-> GrantNames /\ gd[a]])
+                  w |-> EncEp(a), g |-> TRUE, gk |-> SealK(a), kn |-> gd[a],
+                  kd |-> GrantNames /\ gd[a] /\ ~Bound(a), fr |-> ~Bound(a)])
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, hostRot, before, steps, inRot, via,
-                 stranded, enc, online, budget, gvars>>
+                 stranded, enc, online, budget, gm, fsup, ks, gd, gs, pj>>
 
 \* Reading a grant or re-seal commit from the label: a grant teaches the
 \* holder; the boxed holder itself takes the secrets and history boxes.
@@ -355,10 +364,11 @@ RecvBox(x, b) ==
   /\ online[x] /\ CanOpen(x) /\ b \in bx \ rd[x] /\ b.w \in sec[x]
   /\ rd' = [rd EXCEPT ![x] = @ \cup {b}]
   /\ hld' = IF b.g THEN [hld EXCEPT ![x] = @ \cup {b.m}] ELSE hld
+  /\ rk' = IF b.g /\ b.m \in Groups THEN [rk EXCEPT ![x] = b.gk] ELSE rk
   /\ sec' = IF b.m = x THEN [sec EXCEPT ![x] = @ \cup b.eps \cup UNION {ep[e].hist : e \in b.eps}]
             ELSE sec
   /\ UNCHANGED <<ep, made, kn, fsec, dep, removed, granted, hostRot, before, bx, steps,
-                 inbox, inRot, via, stranded, enc, leakP, online, budget, gvars>>
+                 inbox, inRot, via, stranded, enc, leakP, online, budget, gm, fsup, ks, gd, gs, pj>>
 
 \* crypto §4: never encrypt under an epoch that does not cover a known
 \* departure; crypto §5: a node holding no current secret writes nothing.
@@ -404,7 +414,7 @@ Reseal(a, m) ==
   /\ \A e \in ResealE(a, m) \cup {EncEp(a)} : Covers(a, e)
   /\ m \in Groups => BoxG(a)
   /\ PlaceBox(a, [m |-> m, eps |-> ResealE(a, m), w |-> EncEp(a), g |-> FALSE, gk |-> SealK(a),
-                  kn |-> gd[a], kd |-> GrantNames /\ gd[a]])
+                  kn |-> gd[a], kd |-> GrantNames /\ gd[a] /\ ~Bound(a), fr |-> ~Bound(a)])
   /\ stranded' = stranded \ {m}
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, steps,
                  inRot, via, enc, online, budget, gvars>>
@@ -455,35 +465,35 @@ Drop(i) ==
 \* model) rotates its keyset to epoch 1, which d does not hold; R_P carries
 \* the departure. Unfair, once.
 GLeave == /\ Groups # {} /\ gm = {0} /\ gm' = {0, 1}
-          /\ UNCHANGED <<fsup, ks, gd, gs, pj>>
+          /\ UNCHANGED <<fsup, ks, gd, gs, pj, rk>>
 \* g's admin rotates it again (keyset 2, listing 0 and 1; carries no
 \* departure of d). Unfair, once.
 GRot == /\ "rot" \in GActs /\ 1 \in gm /\ 2 \notin gm /\ gm' = gm \cup {2}
-        /\ UNCHANGED <<fsup, ks, gd, gs, pj>>
+        /\ UNCHANGED <<fsup, ks, gd, gs, pj, rk>>
 \* d, removed, writes keyset 3 (its own KEM keys) listing every keyset made
 \* as superseded: their epochs are public. Unfair, once.
 Forge == /\ "forge" \in GActs /\ 1 \in gm /\ 3 \notin gm
          /\ gm' = gm \cup {3} /\ fsup' = gm
-         /\ UNCHANGED <<ks, gd, gs, pj>>
+         /\ UNCHANGED <<ks, gd, gs, pj, rk>>
 \* x, a node R_P is withheld from, gets a roster snapshot of g made after R_P
 \* (an epoch start). Unfair.
 GSnap(x) == /\ "snap" \in GActs /\ 1 \in gm /\ ~gs[x] /\ gs' = [gs EXCEPT ![x] = TRUE]
-            /\ UNCHANGED <<gm, fsup, ks, gd, pj>>
+            /\ UNCHANGED <<gm, fsup, ks, gd, pj, rk>>
 \* Admin x reads a keyset body of g (published under the labels of what g
 \* holds); R_P never reaches Withhold. Keyset 1 comes in R_P, with the departure.
 LearnK(x, k) == /\ k \in gm /\ k \notin ks[x] /\ ~(k = 1 /\ x \in Withhold /\ ~Split)
                 /\ ks' = [ks EXCEPT ![x] = @ \cup {k}]
                 /\ gd' = IF k = 1 /\ ~Split THEN [gd EXCEPT ![x] = TRUE] ELSE gd
-                /\ UNCHANGED <<gm, fsup, gs, pj>>
+                /\ UNCHANGED <<gm, fsup, gs, pj, rk>>
 \* Split: R_P's roles.0 part (the departure) reaches x apart from its keys.0
 \* part (body 1), in any order; never Withhold.
 LearnRP(x) == /\ Split /\ 1 \in gm /\ ~gd[x] /\ x \notin Withhold
               /\ gd' = [gd EXCEPT ![x] = TRUE]
-              /\ UNCHANGED <<gm, fsup, ks, gs, pj>>
+              /\ UNCHANGED <<gm, fsup, ks, gs, pj, rk>>
 \* An admin of g that has not seen R_P rotates g from keyset 0: an honest fork
 \* 4 of 1 (one n), boxing d; written later, it wins keys.0's LWW. Unfair, once.
 GFork == /\ "fork" \in GActs /\ 1 \in gm /\ 4 \notin gm /\ gm' = gm \cup {4}
-         /\ UNCHANGED <<fsup, ks, gd, gs, pj>>
+         /\ UNCHANGED <<fsup, ks, gd, gs, pj, rk>>
 \* A grant of g reaches admin x as its edge alone (a certificate copy; its
 \* boxes deposited under the label and never received): x knows g a holder.
 \* Unfair.
@@ -491,11 +501,19 @@ LearnEdge(x, b) ==
   /\ Proj # "none" /\ b \in bx /\ b.g /\ b.m \in Groups /\ b \notin rd[x] \cup pj[x]
   /\ pj' = [pj EXCEPT ![x] = @ \cup {b}]
   /\ hld' = [hld EXCEPT ![x] = @ \cup {b.m}]
+  /\ rk' = [rk EXCEPT ![x] = b.gk]
   /\ UNCHANGED <<ep, made, kn, sec, fsec, dep, removed, granted, hostRot, before, bx, rd, steps,
                  inbox, inRot, via, stranded, enc, leakP, online, budget, gm, fsup, ks, gd, gs>>
+\* A second edge write of g on A naming a keyset nobody holds (an invite
+\* holder's grant whose deposit never lands) reaches x and stands: x, holding
+\* no box to g carrying names, is bound to it and leaves g out until a free
+\* sealer's box reaches it (crypto §4). Unfair, once per node.
+BadEdge(x) == /\ "badedge" \in GActs /\ Groups \cap hld[x] # {} /\ rk[x] # 5
+              /\ rk' = [rk EXCEPT ![x] = 5]
+              /\ UNCHANGED <<gm, fsup, ks, gd, gs, pj>>
 GOthers == UNCHANGED <<ep, made, kn, sec, fsec, dep, hld, removed, granted, hostRot, before, bx,
                       rd, steps, inbox, inRot, via, stranded, enc, leakP, online, budget>>
-GStep == /\ \/ GLeave \/ GRot \/ Forge \/ GFork \/ \E x \in Withhold : GSnap(x)
+GStep == /\ \/ GLeave \/ GRot \/ Forge \/ GFork \/ \E x \in Withhold : GSnap(x) \/ BadEdge(x)
             \/ \E x \in Admins : LearnRP(x) \/ \E k \in 0..4 : LearnK(x, k)
          /\ GOthers
 
@@ -540,7 +558,7 @@ GCur == {e \in made : ~\E f \in made : e \in ep[f].sup}
 
 TypeOK == /\ made \subseteq Ids /\ removed \subseteq Departing /\ granted \subseteq Late
           /\ Groups \subseteq Readers /\ Withhold \subseteq Admins
-          /\ gm \subseteq 0..4 /\ \A x \in Nodes : ks[x] \subseteq gm
+          /\ gm \subseteq 0..4 /\ \A x \in Nodes : ks[x] \subseteq gm /\ rk[x] \in 0..5
           /\ \A x \in Nodes : sec[x] \subseteq made /\ kn[x] \subseteq made
                               /\ fsec[x] \subseteq made /\ via[x] \subseteq Nodes
                               /\ rd[x] \subseteq bx

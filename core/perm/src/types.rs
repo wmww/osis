@@ -35,6 +35,10 @@ pub struct Edge {
     /// The placement of the target in its holder group this edge is tied to
     /// (spec/permissions.md §2): carried, never an authority.
     pub tied: Option<Tie>,
+    /// A holder actor's edge: the key of its `keys.0` commit the last grant or raise sealed to
+    /// (spec/crypto.md §4); carried by every later write of the edge and by roster snapshots,
+    /// never an authority.
+    pub keyset: Option<Point>,
 }
 
 /// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
@@ -56,7 +60,7 @@ pub enum TieSource {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None, tied: None }
+        Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {

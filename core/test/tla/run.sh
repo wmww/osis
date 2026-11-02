@@ -52,6 +52,7 @@ instances=(
   "rotation Rotation MC_c3.cfg all pass"               # names tied to the grant
   "rotation Rotation MC_c3_proj.cfg small pass"        # a grant held as its edge alone: sealed at the named keyset
   "rotation Rotation MC_c3_proj_free.cfg small fail"   # negative control: the boxer's own keyset choice
+  "rotation Rotation MC_c3_proj_bad.cfg small pass"    # a second edge naming a keyset nobody holds: bound until a free box arrives
   "rotation Rotation MC_c3_lean.cfg all pass"          # MC_c3 without the fork of g
   "rotation Rotation MC_c3_nonames.cfg small fail"     # negative control: grants carry no names
   "roles Roles MC_core.cfg small pass"

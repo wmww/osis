@@ -38,7 +38,7 @@ pub struct Demotion {
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm) }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -162,14 +162,22 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let mut names = None;
     let mut edge = Edge { keyset: None, ..edge.clone() };
     let boxes = match rotation::grantee_left_out(tx, &target, &rcpt)? {
-        Some(rcpt) => {
-            let mut w = box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
-            if matches!(rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
-                let n = rotation::grant_names(tx.core, &rcpt, &roles);
+        Some(b) => {
+            let mut w = box_holder(&target, &epochs, &secrets, &b.rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
+            // the edge names the `keys.0` commit whose keyset the read box seals to: a boxer
+            // holding no box to the holder seals it there only (spec/crypto.md §4)
+            if matches!(b.rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
+                edge.keyset = match &b.bound {
+                    Some(k) => Some(k.clone()),
+                    // holding no such commit (the keyset from a compaction snapshot): the
+                    // standing edge's, an earlier sealer's choice
+                    None => osis_keys::box_epoch(&w, &holder, Role::Read).and_then(|e| keyset_commit(tx.core, &holder, Role::Read, &e)).or_else(|| {
+                        tx.core.timelines.get(&target).and_then(|tl| tl.edges_at(None).get(&holder, &target).and_then(|o| o.keyset)).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit })
+                    }),
+                };
+            }
+            if let Some(n) = b.names(tx.core, &roles) {
                 osis_keys::with_names(&target, &holder, &mut w, &n, &epochs, &mut *tx.rng)?;
-                // the edge names the `keys.0` commit whose keyset the read box seals to: a boxer
-                // lacking these boxes seals the holder there only (spec/crypto.md §4)
-                edge.keyset = n.keysets.iter().find(|k| k.role == Role::Read).and_then(|k| keyset_commit(tx.core, &holder, k.role, &k.epoch));
                 names = Some(n);
             }
             w
@@ -277,9 +285,11 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             m.dead_resets.insert((target, super::ak("roles.0")?), dots);
         }
     }
-    // a lowering seals nothing to the holder: it names no keyset (spec/crypto.md §4)
+    // a lowering seals nothing to the holder: the edge keeps the keyset the standing one names
+    // (spec/crypto.md §4)
     if let Some(n) = &d.new {
-        put_edge(&mut m, target, holder, &Edge { keyset: None, ..n.clone() })?;
+        let keyset = old.and_then(|o| o.keyset).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
+        put_edge(&mut m, target, holder, &Edge { keyset, ..n.clone() })?;
     }
     for (o, _) in &gone {
         remove_edge(&mut m, target, *o)?;

@@ -4,3 +4,6 @@
 - The judgment vectors change for any schema change (bundle bytes and `read=` hashes), not only for judgment changes: checking "did judgments change" needs a hash-normalized diff of the verdict lines.
 - Gate took 1074 s at load 50+ (mostly the post-rebase rebuild and tier 1).
 - (review) The perm tier-2 command at load 30-50 took 470 s wall (221 s in the one test binary that runs anything; the rest is building/launching 15 binaries that filter everything out).
+- (fable round) `send_skipping(from, to, {})` re-sends every package of `from`, so a test that keeps one part withheld must pass the skip set on every later delivery too; one new test first passed for the wrong reason (the grant arrived whole). Worth a helper that remembers a peer's withheld set.
+- (fable round) After a rebase that conflicted on the judgment vectors (taken from main, meaning to regenerate), `gen-vectors` left them stale: the judgment vectors are written by `cargo test -p osis-node --test it -- --ignored judgment_vectors_write`, not by gen-vectors; one gate run (15 min at load 30) lost to that. notes/build.md could say so next to the gen-vectors line.
+- (fable round) A branch's rotation `_large` run (`rotation::tests:: -- --ignored`) also runs the ignored repros, which fail by design; use `--skip repro_`.
