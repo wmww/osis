@@ -2957,3 +2957,71 @@ fn grant_names_before_boxing_holder_spec_crypto_4() {
     lp.peers[3].engine.reseal_due(&a, &Pass).unwrap();
     assert!(opens_through(&mut lp, 3, a, n, &d_n).read.reading_secret(&x_e).is_none(), "nor through X's re-seal");
 }
+
+/// Peers: 0 a hostile admin of G, 1 an honest admin, 2 a writer who stays, 3 a reader removed by 0's
+/// rotation, whose parts on `bad` do not decode, or never come (`leave_out`). What each then holds, and
+/// what the honest admin's own rotation gives.
+fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
+    let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.tid()).collect();
+    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None };
+    let mut m = Mutation::new();
+    let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&g).unwrap();
+    lp.peers[0].engine.grant(&g, &ids[1], &edge(Role::Admin)).unwrap();
+    lp.peers[0].engine.grant(&g, &ids[2], &edge(Role::Write)).unwrap();
+    lp.peers[0].engine.grant(&g, &ids[3], &edge(Role::Read)).unwrap();
+    lp.sync_all().unwrap();
+    let before: BTreeSet<_> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    lp.advance(1000);
+    lp.peers[0].engine.core.skip_writer_rules = true;
+    lp.peers[0].engine.core.forge_bad = bad.iter().map(|a| (g, osis_base::Ak::new(*a).unwrap())).collect();
+    lp.peers[0].engine.demote(&g, &Demotion { holder: ids[3], new: None, presync: PreSync::Synced }).unwrap();
+    lp.peers[0].engine.core.forge_bad = Default::default();
+    lp.peers[0].engine.core.skip_writer_rules = false;
+    let forged = lp.peers[0].engine.core.forged.take().unwrap();
+    let forged_id = osis_commit::CommitBlob::decode(&forged).unwrap().id();
+    for pk in lp.packages(0).unwrap() {
+        if before.contains(&pk.id) {
+            continue;
+        }
+        let b = osis_commit::CommitBlob::decode(&forged).unwrap();
+        let bytes = match (pk.id == forged_id, leave_out) {
+            (true, true) => osis_commit::rewrite(&b, |ai, _| bad.contains(&b.header.aspects[ai].ak.as_str())).encode(),
+            (true, false) => forged.clone(),
+            _ => pk.bytes.clone(),
+        };
+        for i in [1, 2, 3] {
+            assert!(matches!(lp.peers[i].engine.ingest(&bytes, pk.blobs.clone()).unwrap(), crate::Ingested::Applied(_)));
+        }
+    }
+    let mut out = Vec::new();
+    for i in [1, 2, 3] {
+        assert!(lp.peers[i].engine.pending().is_empty(), "{i}");
+        assert!(!lp.peers[i].engine.roster(&g).contains_key(&ids[3]), "{i}: the removal stands");
+        out.push(format!("{i}: {} secrets", lp.peers[i].engine.read_secrets(&g).len()));
+    }
+    lp.advance(1000);
+    assert!(lp.peers[1].engine.ensure_rotated(&g).unwrap().1.is_empty());
+    for pk in lp.packages(1).unwrap() {
+        for i in [2, 3] {
+            let _ = lp.peers[i].engine.ingest(&pk.bytes, pk.blobs.clone());
+        }
+    }
+    let fresh = newest_read(&lp, 1, g);
+    assert_eq!(newest_read(&lp, 2, g), fresh, "the writer is boxed again");
+    assert_ne!(newest_read(&lp, 3, g), fresh, "the removed reader is left out");
+    out
+}
+
+// spec/commits.md §4, spec/permissions.md §3: a part of a role commit that hashes and does not decode
+// is as one that never came: the removal in it stands, nothing is stuck, and any other admin's rotation
+// gives what the hostile one's did not.
+#[test]
+fn bad_rotation_parts_read_as_missing_spec_commits_4() {
+    for bad in [&["secrets.0"][..], &["keys.0"], &["secrets.0", "keys.0"]] {
+        assert_eq!(removal_with(9931, bad, false), removal_with(9931, bad, true), "{bad:?}");
+    }
+}

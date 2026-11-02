@@ -305,9 +305,11 @@ enum Turn {
 ///   never applies, is dropped alone, and counts as held while the commit pends (it stays in the
 ///   pending copy, so `missing` does not list it): no copy of it holds back what a held copy of it
 ///   would not.
-/// - it waits (its thing's record or chain, its pages, a linked frontier's blobs, parked): for a thing
-///   the node syncs the commit waits whole, for any other the part waits alone. That reads the
-///   commit's kind and what the node syncs, never whether another part is here.
+/// - it waits (its thing's record or chain, its pages, parked): for a thing the node syncs the commit
+///   waits whole, for any other the part waits alone. That reads the commit's kind and what the node
+///   syncs, never whether another part is here.
+/// - it is a `tenures.0` part with a linked frontier away: it waits alone wherever, its snapshot out
+///   of the walk: what the walk reads of the other parts (`note_keys`) is alike at every node.
 ///
 /// A judgment across parts cannot refuse: an earlier part may have applied. It only keeps a roster
 /// snapshot out of the walk (`validity::add_role_commit`), recomputed from the parts held.
@@ -442,11 +444,12 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
         let judged = judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner, &mut out);
-        // a part whose page or frontier is away, by the rules for a missing delta counted as held,
+        // a part whose page is away, by the rules for a missing delta counted as held,
         // holds nothing back: a missing one would not (its thing synced or not)
         let waits_alone = |tx: &mut Tx<'_>| -> Result<bool> { Ok(alone(tx.core, &a.tid) || !waits_for_deltas(tx, &h, id, std::iter::once((p.ai, p.di)))?) };
         match judged {
             Ok(Judged::Good) => {}
+            Ok(Judged::Frontier) => aside.add(Reason::WaitBlobs, [(p.ai, p.di)]),
             Ok(Judged::Blobs) => {
                 if !waits_alone(tx)? {
                     return Ok(Exam::Pending(Reason::WaitBlobs, Vec::new()));
@@ -466,15 +469,15 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             Err(e) => return Err(e),
         }
     }
+    // A bad part on a synced thing of a commit not applied answers that delta's wait, so it is kept
+    // as the applied commit, whatever else of it waits; a role commit waits for no delta
+    let answers = h.kind != Kind::Role && !tx.core.ix.commits.contains_key(id) && bad.iter().any(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| tx.core.ix.syncing.contains(&a.tid)));
     // nothing to apply: the commit (or, already applied, these parts) keeps waiting
-    if !aside.keys.is_empty() && out.ais().is_empty() {
+    if !aside.keys.is_empty() && out.ais().is_empty() && !answers {
         return Ok(aside.verdict());
     }
     if !bad.is_empty() {
-        // only bad parts, and nothing they hold as held or a wait they answer: refused, nothing
-        // stored. A bad part on a synced thing of a commit not applied answers that delta's wait, so
-        // it is kept as the applied commit; a role commit waits for no delta
-        let answers = h.kind != Kind::Role && !tx.core.ix.commits.contains_key(id) && bad.iter().any(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| tx.core.ix.syncing.contains(&a.tid)));
+        // only bad parts, and no wait they answer: refused, nothing stored
         if rules && out.ais().is_empty() && !answers {
             return Err(out.bad.take().unwrap_or(Error::BadInput("a bad part")));
         }
@@ -497,8 +500,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
 enum Judged {
     /// In `out`.
     Good,
-    /// A page or linked frontier blob is not held.
+    /// A page is not held.
     Blobs,
+    /// A linked frontier's blob is not held.
+    Frontier,
 }
 
 /// Judges part `p` by itself, from the signed header, its bytes and held data; a good one goes in
@@ -550,7 +555,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     if rules {
         validity::check_holders_parts(h, id, std::slice::from_ref(&part))?;
         if !validity::linked_frontiers(tx, h, &validity::EdgeParts::of(h, std::slice::from_ref(&part)))?.waiting.is_empty() {
-            return Ok(Judged::Blobs);
+            return Ok(Judged::Frontier);
         }
     }
     out.whole.push(part);
