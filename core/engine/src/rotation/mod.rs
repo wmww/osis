@@ -56,24 +56,101 @@ fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeS
     Ok(out)
 }
 
-/// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3, Left
-/// out; spec/crypto.md §4): this node holds what every grant of `m` on `a` knew of it
-/// (`grant_names_held`), and a fresh box would name `m`'s newest epoch of `r`
-/// (`fresh_box_keeps_out`) whose boxes keep out every departure of `deps` (those of `a`) inside
-/// `m`. Boxing to an epoch is encrypting under it: a rotation leaves such a holder out and the
-/// re-seal trigger skips it until `m` rotates (or this node holds the grants' names).
-fn holder_keeps_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
-    if !tx.core.is_key_actor(m) && !departures::grant_names_held(tx, a, m)? {
-        return Ok(false);
+/// How this node may seal `a`'s secrets to holder actor `m` (spec/crypto.md §4, boxing a holder
+/// actor; `departures::grant_names_held`).
+enum Seal {
+    /// At the keyset a fresh box names, by this node's box judgement.
+    Free,
+    /// Not at all: left out.
+    Out,
+    /// Only at these keysets, per role of `m`: those of the applied valid `keys.0` commit the edge
+    /// writes of `m` on `a` name, whose `secrets.0` parts this node lacks.
+    Bound(BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>),
+}
+
+fn seal_of(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<Seal> {
+    if tx.core.is_key_actor(m) {
+        return Ok(Seal::Free);
     }
+    Ok(match departures::grant_names_held(tx, a, m)? {
+        departures::GrantNames::Held => Seal::Free,
+        departures::GrantNames::Unmet => Seal::Out,
+        departures::GrantNames::Bound(k) => Seal::Bound(named_keysets(tx, m, &k)?),
+    })
+}
+
+/// The keysets per role that the `keys.0` commit of `m` with key `k` wrote, when this node holds
+/// it applied with that part valid and not missing (a dropped body: the role's keyset in `m`'s
+/// `keys.0` now, if it is the one the part wrote); else none.
+fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &osis_schema::core_types::EdgeKey) -> Result<BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>> {
+    let mut out = BTreeMap::new();
+    let keys_ak = flows::ak("keys.0")?;
+    let Some((ai, dropped)) = tx.core.ix.commits.get(&k.commit).filter(|c| c.view.ts == k.ts && c.view.author == k.node && !tx.core.ix.pending.contains_key(&k.commit)).and_then(|c| {
+        let ai = c.aspect(m, &keys_ak).filter(|ai| c.valid_at(*ai) && !c.missing.contains(ai))?;
+        Some((ai, c.dropped.get(&ai).map(|d| d.keysets.iter().map(|x| (x.0, x.1)).collect::<Vec<_>>())))
+    }) else {
+        return Ok(out);
+    };
+    let kem = |ks: &osis_schema::core_types::Keyset| -> Option<(osis_crypto::Epoch, osis_crypto::KemPublicKey)> {
+        let osis_schema::core_types::KemKey::X25519MlKem768(b) = &ks.kem_key;
+        (ks.suite == osis_keys::SUITE).then_some(())?;
+        Some((osis_keys::aspects::from_schema(&ks.epoch).ok()?, osis_crypto::KemPublicKey::from_slice(b).ok()?))
+    };
+    match dropped {
+        Some(ds) => {
+            let now = Core::keys_in(tx, m)?;
+            for (r, e) in ds {
+                if let Some(x) = now.as_ref().and_then(|k| osis_keys::aspects::keyset_of(k, r)).and_then(kem).filter(|x| x.0 == e) {
+                    out.insert(r, x);
+                }
+            }
+        }
+        None => {
+            for d in crate::apply::held_parts(tx, &k.commit, ai)? {
+                for (r, ks) in crate::apply::keys::keys_write(d.fragment()).keysets {
+                    if let Some(x) = kem(&ks) {
+                        out.insert(r, x);
+                    }
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Whether holder actor `m` of `a` may be boxed role `r` of `a` (spec/permissions.md §3, Left
+/// out; spec/crypto.md §4) as `seal` allows: free, a fresh box would name `m`'s newest epoch of
+/// `r` (`fresh_box_keeps_out`); bound, at the named keyset of `r`; either way that epoch's boxes
+/// keep out every departure of `deps` (those of `a`) inside `m`. Boxing to an epoch is
+/// encrypting under: a rotation leaves such a holder out and the re-seal trigger skips it until
+/// `m` rotates (or this node holds the grants' names).
+fn role_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role, seal: &Seal) -> Result<bool> {
+    let named = match seal {
+        Seal::Out => return Ok(false),
+        Seal::Free => None,
+        Seal::Bound(ks) => match ks.get(&r) {
+            Some((e, _)) => Some(*e),
+            None => return Ok(false),
+        },
+    };
     for d in deps.iter().filter(|d| d.via.first() == Some(m) && d.concerns(r)) {
-        if let Some((_, inner)) = inside_first(d)
-            && !fresh_box_keeps_out(tx, held, m, r, &inner)?
-        {
-            return Ok(false);
+        if let Some((_, inner)) = inside_first(d) {
+            let at = match named {
+                Some(e) => Some(e),
+                None => fresh_box_epoch(tx, held, m, r)?,
+            };
+            if !at.is_some_and(|e| epoch_keeps_out(held, m, r, &e, &inner)) {
+                return Ok(false);
+            }
         }
     }
     Ok(true)
+}
+
+/// `role_keeps_out` for role `r` of `a` and holder `m`.
+fn holder_keeps_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], m: &Tid, r: Role) -> Result<bool> {
+    let seal = seal_of(tx, a, m)?;
+    role_keeps_out(tx, held, deps, m, r, &seal)
 }
 
 /// The first actor on `d`'s chain and the departure inside it, as that actor sees it.
@@ -82,20 +159,26 @@ fn inside_first(d: &Departure) -> Option<(Tid, Departure)> {
     Some((*m, Departure { via: rest.clone(), ..d.clone() }))
 }
 
-/// `rc` with its role cut at the first `holder_keeps_out` refuses (given `deps` of actor `a` boxing
-/// it); `None` when that leaves no role. Key actors are kept whole.
+/// `rc` as this node may box it on `a` (given `deps` of `a`): sealed to the named keysets where
+/// bound (`Seal`), its role cut at the first `role_keeps_out` refuses; `None` when that leaves no
+/// role. Key actors are kept whole.
 pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: &[Departure], rc: &Recipient) -> Result<Option<Recipient>> {
     if !matches!(rc.keys, osis_keys::HolderKeys::Actor { .. }) {
         return Ok(Some(rc.clone()));
     }
+    let seal = seal_of(tx, a, &rc.holder)?;
     let mut top = None;
     for r in ROLES.into_iter().filter(|r| *r <= rc.role) {
-        if !holder_keeps_out(tx, a, held, deps, &rc.holder, r)? {
+        if !role_keeps_out(tx, held, deps, &rc.holder, r, &seal)? {
             break;
         }
         top = Some(r);
     }
-    Ok(top.map(|role| Recipient { role, ..rc.clone() }))
+    let keys = match seal {
+        Seal::Bound(ks) => osis_keys::HolderKeys::Actor { keysets: ks, own: BTreeMap::new() },
+        _ => rc.keys.clone(),
+    };
+    Ok(top.map(|role| Recipient { holder: rc.holder, role, keys }))
 }
 
 /// `left_out` for a grant on `a` to `rc.holder`: by its own departures, as `a` will see them
@@ -106,17 +189,31 @@ pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Resu
     left_out(tx, a, &held, &deps, rc)
 }
 
-/// Whether a fresh box of role `r` to holder actor `m` would name `m`'s newest epoch (its
-/// newest held secret, else its keyset in `keys.0`) and that epoch's boxes keep `inner` out.
-fn fresh_box_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
-    let (Some(me), Some(ms)) = (osis_keys::HeldActors::epochs(held, m), osis_keys::HeldActors::secrets(held, m)) else { return Ok(false) };
+/// The epoch of `m` a fresh box of role `r` names (its newest held secret, else its keyset in
+/// `keys.0`), when that is `m`'s newest epoch in this node's view (`held`).
+fn fresh_box_epoch(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role) -> Result<Option<osis_crypto::Epoch>> {
+    let Some(me) = osis_keys::HeldActors::epochs(held, m) else { return Ok(None) };
     let keys = Core::keys_in(tx, m)?;
     let ks = keys.as_ref().and_then(|k| osis_keys::aspects::keyset_of(k, r)).and_then(|ks| osis_keys::aspects::from_schema(&ks.epoch).ok());
     let named = match me.role(r).newest_held().map(|x| x.0) {
         Some(es) if osis_keys::symmetric_box(&es, ks.as_ref()) => Some(es),
         _ => ks,
     };
-    Ok(me.role(r).newest().is_some_and(|k| named == Some(k) && osis_keys::keeps_out(ms, r, &k, inner, held)))
+    Ok(named.filter(|e| me.role(r).newest() == Some(*e)))
+}
+
+/// Whether epoch `e` of role `r` of holder actor `m`, `m`'s newest in this node's view (`held`),
+/// keeps `inner` out (the box judgement, `osis_keys::keeps_out`). An older epoch never does: its
+/// boxes are judged from the newest only.
+fn epoch_keeps_out(held: &MemoryHeldActors, m: &Tid, r: Role, e: &osis_crypto::Epoch, inner: &Departure) -> bool {
+    let (Some(me), Some(ms)) = (osis_keys::HeldActors::epochs(held, m), osis_keys::HeldActors::secrets(held, m)) else { return false };
+    me.role(r).newest() == Some(*e) && osis_keys::keeps_out(ms, r, e, inner, held)
+}
+
+/// Whether a fresh box of role `r` to holder actor `m` would name `m`'s newest epoch and that
+/// epoch's boxes keep `inner` out.
+fn fresh_box_keeps_out(tx: &mut Tx<'_>, held: &MemoryHeldActors, m: &Tid, r: Role, inner: &Departure) -> Result<bool> {
+    Ok(fresh_box_epoch(tx, held, m, r)?.is_some_and(|e| epoch_keeps_out(held, m, r, &e, inner)))
 }
 
 /// Current holders of `a` as box recipients; each of `skip` gets its new role or is left out
@@ -456,8 +553,13 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     let epochs = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
     let secrets = secrets_in(tx, &a)?;
     let role = tx.core.current_holders(&a).into_iter().find(|(m, _, _)| *m == holder).map(|x| x.1).ok_or(Error::Misuse("not a current holder"))?;
+    // a holder actor at the keyset this node may seal it to (`left_out`)
     let rcpt = recipient(tx, holder, role)?;
-    let Some(w) = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, roles, &mut *tx.rng)? else {
+    let deps = departures(tx, &a)?;
+    let held = held_actors(tx)?;
+    let rcpt = left_out(tx, &a, &held, &deps, &rcpt)?.ok_or(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"))?;
+    let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= rcpt.role).collect();
+    let Some(w) = osis_keys::box_holder(&a, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)? else {
         return Err(Error::Misuse("the holder's keyset is unknown"));
     };
     let mut m = Mutation::new();

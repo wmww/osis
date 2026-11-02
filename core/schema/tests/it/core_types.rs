@@ -21,8 +21,8 @@ fn edge_key() -> EdgeKey {
 /// (vector name, AK, encoded sample) per core aspect a commit can write.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }) }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), keyset: None }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]) }),
@@ -120,7 +120,7 @@ fn fixed_lengths_and_unknown_cases_spec_wire_3() {
     let e = KemKey::from_value(&Value::Enum(2, Some(Box::new(Value::Bytes(vec![]))))).unwrap_err();
     assert_eq!((e.kind.clone(), e.class()), (PathErrorKind::UnknownCase(2), ErrorClass::Parked));
     // An unknown role case in a holder edge: parked, with the path.
-    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None })]));
+    let mut m = ROLES.encode(&BTreeMap::from([(tid(1), Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None })]));
     if let Value::Map(mm) = &mut m {
         let e = mm.get_mut(&Value::Tid(tid(1))).unwrap();
         if let Value::Map(f) = e {

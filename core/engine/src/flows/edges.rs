@@ -160,18 +160,23 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     // so a grant leaving it out of every role, which would carry nothing, is refused
     let rcpt = recipient(tx, holder, edge.role)?;
     let mut names = None;
+    let mut edge = Edge { keyset: None, ..edge.clone() };
     let boxes = match rotation::grantee_left_out(tx, &target, &rcpt)? {
         Some(rcpt) => {
             let mut w = box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
             if matches!(rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
                 let n = rotation::grant_names(tx.core, &rcpt, &roles);
                 osis_keys::with_names(&target, &holder, &mut w, &n, &epochs, &mut *tx.rng)?;
+                // the edge names the `keys.0` commit whose keyset the read box seals to: a boxer
+                // lacking these boxes seals the holder there only (spec/crypto.md §4)
+                edge.keyset = n.keysets.iter().find(|k| k.role == Role::Read).and_then(|k| keyset_commit(tx.core, &holder, k.role, &k.epoch));
                 names = Some(n);
             }
             w
         }
         None => return Err(Error::Misuse("the holder actor's epoch does not cover a departure inside it (it must rotate first)")),
     };
+    let edge = &edge;
     // an edge past its `until` is out of the roster but still in the state: a set over it would
     // keep its fields the new edge leaves out (the `until` among them)
     let held = old.is_some() || tx.core.timelines.get(&target).is_some_and(|tl| tl.edges_at(None).get(&holder, &target).is_some());
@@ -203,6 +208,14 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
         }
     }
     Ok(done)
+}
+
+/// The key of the rotation commit that introduced epoch `e` of role `r` of `m` (its valid
+/// `keys.0` part held: `Core::epoch_intro`).
+fn keyset_commit(core: &crate::engine::Core, m: &Tid, r: Role, e: &osis_crypto::Epoch) -> Option<ct::EdgeKey> {
+    let c = core.ix.epoch_intro.get(&(*m, r, *e))?.1;
+    let v = &core.ix.commits.get(&c)?.view;
+    Some(ct::EdgeKey { ts: v.ts, node: v.author, commit: c })
 }
 
 /// The dots of `holder`'s `roles.0` entries on `target` this node has seen, live or dead.
@@ -264,8 +277,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
             m.dead_resets.insert((target, super::ak("roles.0")?), dots);
         }
     }
+    // a lowering seals nothing to the holder: it names no keyset (spec/crypto.md §4)
     if let Some(n) = &d.new {
-        put_edge(&mut m, target, holder, n)?;
+        put_edge(&mut m, target, holder, &Edge { keyset: None, ..n.clone() })?;
     }
     for (o, _) in &gone {
         remove_edge(&mut m, target, *o)?;

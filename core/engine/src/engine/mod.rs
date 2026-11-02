@@ -111,7 +111,14 @@ pub struct Dropped {
     /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in
     /// `keyset_epochs` (keyset names, spec/crypto.md §4).
     pub keysets: Vec<KeysetRec>,
+    /// The sealed names of the boxes a role commit's `secrets.0` body wrote that carry them (a
+    /// grant's, spec/crypto.md §4): what the part was judged to carry stays (spec/commits.md
+    /// §5), so a boxer of their holder still holds them (`rotation::departures::grant_names`).
+    pub names: Vec<NamesRec>,
 }
+
+/// A box's sealed names a `secrets.0` body wrote, by the box's key: holder, role, epoch.
+pub(crate) type NamesRec = (Tid, osis_base::Role, osis_crypto::Epoch, Vec<u8>);
 
 /// A keyset a `keys.0` body wrote: its role, epoch and the epochs it lists as superseded.
 pub(crate) type KeysetRec = (osis_base::Role, osis_crypto::Epoch, Vec<osis_crypto::Epoch>);
@@ -1758,7 +1765,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();

@@ -316,7 +316,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None }
+    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None, keyset: None }
 }
 
 fn share_of(e: crate::Edge) -> Share {
@@ -521,7 +521,7 @@ impl Osis {
                 true => Some(e.placement(&t, &g, opts.subgroup)?.ok_or_else(|| Error::Invalid(format!("{t} is not placed in {g} here")))?),
                 false => None,
             };
-            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct) };
+            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None };
             e.grant(&t, &g, &edge).map_err(needs_admin)
         })?;
         self.carry(done)?;
@@ -726,7 +726,7 @@ impl Osis {
         let new = match to {
             Lower::To(role) => {
                 let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct) })
+                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
             }
             Lower::Remove => None,
         };

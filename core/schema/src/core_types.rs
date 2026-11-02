@@ -116,9 +116,11 @@ codec_struct! {
 }
 codec_struct! {
     /// A role edge; `since` only in roster snapshots (spec/permissions.md §6); `tied`: the
-    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2).
+    /// placement of the target in its holder, a group, the edge goes with (spec/permissions.md §2);
+    /// `keyset`: on a grant or raise of a holder actor, the key of its `keys.0` commit whose
+    /// keyset the granter sealed to (spec/crypto.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie> }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie>, 5 keyset: Option<EdgeKey> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, and the epochs its rotation

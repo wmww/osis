@@ -276,8 +276,10 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
     let (role, overreach) = (tx.core.ix.rotation_role.get(&(*c, ai)).copied(), tx.core.ix.grant_overreach.contains(&(*c, ai)));
     // a role-class body whole: what keys noted from it (`keys::keysets_of`, `forget_dropped`)
+    // and the names its boxes carry (`keys::names_of`)
     let role_bodies: Vec<Fragment> = if is_role_class(a.ak.as_str()) { crate::apply::held_fragments(tx, c, ai)? } else { Vec::new() };
     let keysets = crate::apply::keys::keysets_of(&m.header, ai, &role_bodies);
+    let names = crate::apply::keys::names_of(&m.header, ai, &role_bodies);
     // what of the state holds copies of the dropped deltas' writes, shredded a piece at a time
     // while the part is still stored (none held: the state alone)
     let held = crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
@@ -288,7 +290,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     if held.is_empty() {
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, keysets });
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, keysets, names });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
@@ -1518,7 +1520,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1548,7 +1550,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();

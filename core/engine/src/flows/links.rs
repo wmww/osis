@@ -84,7 +84,7 @@ impl Engine {
         if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
-        let grant = Edge { role: edge.role, until: None, invite: None, since: None, tied: None };
+        let grant = Edge { role: edge.role, until: None, invite: None, since: None, tied: None, keyset: None };
         // L signs with its own role, so `grant_in` deposits only below write
         self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))
     }
@@ -213,7 +213,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
     let boxes = box_holder(&k, &epochs, &secrets, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
-    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), since: None, tied: None })?;
+    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), since: None, tied: None, keyset: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
@@ -230,7 +230,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
         done.deliveries.push(super::owe(tx, Delivery::Certificate { commits: vec![c], under: k })?);
     }
     // K on the target
-    let target_edge = Edge { role: spec.role, until: None, invite: None, since: None, tied: None };
+    let target_edge = Edge { role: spec.role, until: None, invite: None, since: None, tied: None, keyset: None };
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false)?);
     // the seed on a thing only the sharer's actor reads (derived secrets)
     let mut m = Mutation::new();
