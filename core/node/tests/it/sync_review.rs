@@ -31,7 +31,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     net.pair(c, a);
     let ct_ = net.tid(c);
     let until = WallMs(net.now() + 1_000);
-    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    let done = net.engine(a).grant(&g, &ct_, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for (_, pks) in net.sync(a).take_direct() {
@@ -50,7 +50,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     let n1 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap().n();
     assert!(n1 > n0, "rotated before wrapping: {n0} -> {n1}");
     assert_eq!(net.read(b, t), Some(s("after")));
-    assert_eq!(net.read(c, t), Some(s("before")), "the departed reader gets nothing new");
+    assert_eq!(net.read(c, t), None, "the departed reader gets nothing new, and its edge said erase");
 }
 
 // spec/commits.md §5 (purge drops every copy): after a purge applied, a reader holds neither

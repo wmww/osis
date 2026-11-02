@@ -93,12 +93,16 @@ pub(crate) mod method {
     pub const ROTATE_CLIENT_SECRET: u64 = 38;
     /// `[]` -> `[node addr text*]`
     pub const ROTATE_CLIENT_KEY: u64 = 39;
+    /// `[]` -> `[actor*]`
+    pub const KEPT: u64 = 40;
+    /// `[actor]` -> `[]`
+    pub const DROP_KEPT: u64 = 41;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
     /// node's authority and take no actor (they would be a confused deputy).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT)
     }
 }
 

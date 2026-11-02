@@ -33,6 +33,7 @@ fn junk(rng: &mut Rng) -> (MemoryHeldSet, Vec<Tid>) {
     let roles = [Role::Read, Role::Write, Role::Admin];
     let any_edge = |rng: &mut Rng| -> Option<Edge> {
         (rng.below(4) != 0).then(|| Edge {
+            keep: false,
             role: pick(rng, &roles),
             until: (rng.below(3) == 0).then(|| WallMs(rng.below(12) as u64)),
             invite: (rng.below(2) == 0).then(|| pick(rng, &roles)),

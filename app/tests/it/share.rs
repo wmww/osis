@@ -89,7 +89,7 @@ fn reach_counts_an_edge_until_it_ends() {
     let (a, b) = two_people();
     let tag = a.create(NewKind::Tag).unwrap();
     let until = WallMs(a.db.now().0 + 86_400_000);
-    a.db.grant(tag, b.db.me(), Role::Read, EdgeOpts { until: Some(until), invite: None }).unwrap();
+    a.db.grant(tag, b.db.me(), Role::Read, EdgeOpts { until: Some(until), invite: None, keep: None }).unwrap();
     assert_eq!(a.reach(tag).unwrap().people.len(), 1);
 }
 

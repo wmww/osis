@@ -12,13 +12,13 @@ use osis_node::Mutation;
 use osis_schema::core_types as ct;
 use std::collections::BTreeSet;
 
-fn hosts() -> Vec<Address> {
+pub(crate) fn hosts() -> Vec<Address> {
     vec![Address { url: "quic://s1:1".into(), key: [7; 32] }]
 }
 
 /// Every peer's new commits to every other peer, twice (cheaper than `sync_all`'s n rounds);
 /// commits that arrive before their chain wait and apply on the second pass.
-fn spread(lp: &mut LocalPeer) {
+pub(crate) fn spread(lp: &mut LocalPeer) {
     let n = lp.peers.len();
     let mut sent: Vec<BTreeSet<CommitId>> = vec![BTreeSet::new(); n];
     for _ in 0..2 {
@@ -37,7 +37,7 @@ fn spread(lp: &mut LocalPeer) {
 }
 
 /// Delivers commits `ids` of peer `from` to peer `to`.
-fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
+pub(crate) fn send(lp: &mut LocalPeer, from: usize, to: usize, ids: &[CommitId]) {
     for id in ids {
         let pk = lp.peers[from].engine.package(id).unwrap().unwrap();
         lp.deliver(to, &pk).unwrap();
@@ -116,7 +116,7 @@ fn add_tag(lp: &mut LocalPeer, i: usize, t: Tid, tag: &str) {
 }
 
 /// A thing owned by actor `owner`, written by peer `i`.
-fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
+pub(crate) fn thing_of(lp: &mut LocalPeer, i: usize, owner: Tid) -> Tid {
     let e = &mut lp.peers[i].engine;
     let mut m = Mutation::new();
     let t = e.new_thing(&mut m, owner);
@@ -182,8 +182,8 @@ fn people(n: usize, seed: u64) -> (LocalPeer, Vec<Tid>) {
     (lp, ps)
 }
 
-fn edge_of(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
+pub(crate) fn edge_of(role: Role) -> ct::Edge {
+    ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }
 }
 
 fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -330,7 +330,7 @@ fn persisted_index_equals_rebuild_spec_perm_5_2() {
 
 /// A peer for forensic and crash checks: small key tree and pages (a shred elsewhere does not
 /// incidentally rotate a leaked copy away), every row recorded, faults injectable.
-fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {
+pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node::local_peer::Peer {
     let clock = std::sync::Arc::new(osis_base::ManualClock::new(T0));
     let (backend, root) = (osis_store::MemoryBackend::with_faults(faults.clone()), osis_store::MemoryRoot::with_faults(faults.clone()));
     backend.record_history();
@@ -345,7 +345,7 @@ fn forensic_cfg() -> osis_node::Config {
 }
 
 /// Reopens peer `i` over its durable state.
-fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
+pub(crate) fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
     let p = &mut lp.peers[i];
     let c: std::sync::Arc<dyn osis_base::Clock> = p.clock.clone();
     let mut engine = osis_node::Engine::open(Box::new(p.backend.clone()), Box::new(p.root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed)))?;
@@ -354,7 +354,7 @@ fn reopen(lp: &mut LocalPeer, i: usize, seed: u64) -> osis_node::Result<()> {
     Ok(())
 }
 
-fn big(marker: &str) -> String {
+pub(crate) fn big(marker: &str) -> String {
     format!("{marker}{}", "x".repeat(400))
 }
 
@@ -657,7 +657,7 @@ fn invite_power_spec_perm_2() {
     let (mut lp, ps) = people(3, 504);
     let (pa, pb, pc) = (ps[0], ps[1], ps[2]);
     let d = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&d, &pb, &ct::Edge { role: Role::Write, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None, keep: false }).unwrap();
     spread(&mut lp);
     // bob invites carol with read, not with write
     assert!(lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Write)).is_err());
@@ -806,7 +806,7 @@ fn grantor_cannot_backdate_removers_edge_spec_perm_5_1() {
     assert!(g.iter().all(|c| frontier_ids(&mut lp, 1, &r).contains(c)), "Bob lists the grant he holds");
     let until = osis_base::WallMs(lp.peers[0].clock.as_ref().now_wall_ms().0 + 3_600_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
     let forged = new_ids(&lp, 2, &before);
     assert!(lp.peers[2].engine.header(&forged[0]).unwrap().ts < lp.peers[1].engine.header(&r).unwrap().ts, "backdated");
     spread(&mut lp);
@@ -837,7 +837,7 @@ fn future_stamped_setter_spec_perm_5_1() {
     // a rewrite of Bob's edge stamped half an hour ahead
     lp.peers[2].clock.advance(1_800_000);
     let before = ids(&lp, 2);
-    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[2].engine.grant(&t, &pb, &ct::Edge { role: Role::Admin, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None, keep: false }).unwrap();
     let f = new_ids(&lp, 2, &before);
     send(&mut lp, 2, 1, &f);
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: None, presync: PreSync::Synced }).unwrap();
@@ -1031,7 +1031,7 @@ fn stolen_device_recovery_spec_perm_9() {
 }
 
 fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_node::flows::LinkSpec {
-    osis_node::flows::LinkSpec { target, role, until, hosts: hosts(), peers: Vec::new(), single_use: false }
+    osis_node::flows::LinkSpec { target, role, until, hosts: hosts(), peers: Vec::new(), single_use: false, keep: false }
 }
 
 // spec/crdt.md §3.2 (commit form: own writes first among commits), spec/commits.md §4: a
@@ -1407,7 +1407,7 @@ fn departures_follow_the_clock_spec_crypto_4() {
     let (pa, pb) = (ps[0], ps[1]);
     let t = thing_of(&mut lp, 0, pa);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 5_000);
-    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &pb, &ct::Edge { role: Role::Read, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
     assert!(lp.peers[0].engine.departures(&t).unwrap().is_empty());
     lp.advance(10_000);
     let deps = lp.peers[0].engine.departures(&t).unwrap();
@@ -2054,7 +2054,7 @@ fn raced_grant_read_box_after_until_spec_crypto_4() {
     spread(&mut lp);
     lp.advance(1000);
     let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 3_600_000);
-    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
+    lp.peers[0].engine.grant(&t, &n3, &ct::Edge { role: Role::Write, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
     lp.peers[1].engine.demote(&t, &Demotion { holder: pc, new: Some(edge_of(Role::Read)), presync: PreSync::Synced }).unwrap();
     spread(&mut lp);
     let r0 = newest_read(&lp, 1, t).unwrap();

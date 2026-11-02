@@ -38,7 +38,7 @@ pub struct Demotion {
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None, keep: e.keep }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -122,8 +122,12 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
+    // an invite grant carries the `keep` it is made through, and no other (spec/permissions.md §2)
+    let keep = edge.keep;
+    let through = !admin && tx.core.timelines.get(&target).is_some_and(|tl| tl.invite_keeps(&who, &target, At::now(ts)));
+    let edge = &Edge { keep: if admin { keep } else { through }, ..edge.clone() };
     if !admin {
-        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
+        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i)) && (!keep || through);
         if !ok {
             return Err(Error::Permission { tid: target });
         }
@@ -264,6 +268,9 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target });
     }
+    if selfr && d.new.as_ref().is_some_and(|n| n.keep && !old.is_some_and(|o| o.keep)) {
+        return Err(Error::Misuse("a holder does not raise its own edge's keep"));
+    }
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
         return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
     }
@@ -338,7 +345,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
                     "this node lacks a current secret of the target even with the demoted holders' rotations it cannot open repudiated (only those of a holder this demotion audits are; another node's rotation or a compaction snapshot can keep such an epoch current)"
                 }));
             }
-            let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, d.new.as_ref().map(|e| e.role))).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
+            let skip: Vec<(Tid, Option<Role>)> = std::iter::once((holder, new_role)).chain(gone.iter().map(|(x, _)| (*x, None))).collect();
             let holders = rotation::recipients(tx, &target, &skip)?;
             let r = rotation::rotation_into(tx, &mut m, target, &roles, &held, &holders, &pending)?;
             if rotation::refreshes_deposit(tx.core, &who, &target, &roles) {
@@ -377,7 +384,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
         // may have left it already (an unplace), so it goes under the labels holding G, where
         // G's holders learn it (G's inbox reaches only its admins)
-        let first = (d.new.is_none() || selfr).then_some(holder);
+        let first = (new_role.is_none() || selfr).then_some(holder);
         for x in first.into_iter().chain(gone.iter().map(|(x, _)| *x)) {
             if x != who && !tx.core.is_key_actor(&x) {
                 done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: x })?);

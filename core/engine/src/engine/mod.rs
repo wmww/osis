@@ -490,6 +490,10 @@ indexes! {
     /// The lost-access trigger's work list (`rotation::lost::LOST_DUE`): tid -> when due
     /// (engine ms; 0: now).
     pub lost_due: JMap<Tid, u64>,
+    /// The same, by time.
+    pub lost_due_at: JSet<(u64, Tid)>,
+    /// Kept copies (`rotation::lost`): each lost actor kept and the holders it hangs on.
+    pub kept: JMap<Tid, BTreeSet<Tid>>,
     /// Aspects whose deaths wait for a recompute (`records::DEATHS_DUE`).
     pub deaths_due: JSet<(Tid, Ak)>,
     /// `rotation::departures` per actor with the time it holds until (an edge's `until`, a
@@ -1812,7 +1816,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();

@@ -839,7 +839,7 @@ fn recipient(e: &mut Engine, t: Tid, role: Role) -> Recipient {
 
 pub fn set_edge(e: &mut Engine, thing: Tid, holder: Tid, role: Role) -> CommitId {
     let mut m = Mutation::new();
-    let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     // remove + put (spec/permissions.md §2)
     m.op(thing, &ct::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(holder)) }).unwrap();
     m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();

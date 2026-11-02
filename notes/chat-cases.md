@@ -257,7 +257,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
-- **c** Keep-after-removal: whether a removed holder keeps what it held is a property of the removal or the actor, not the node (issues/keep-after-removal.md); chat default: keep (owner); erase for device removal.
+- **c** Keep-after-removal: whether a removed holder keeps what it held is `keep` on the edge it held, overridable by the removal, not the node's (spec/permissions.md §3, Keep); chat default: keep (owner); erase for device removal.
 - **e** Sender card in invite requests (owner: yes).
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.

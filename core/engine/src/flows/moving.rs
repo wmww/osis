@@ -23,7 +23,7 @@ impl Engine {
             .roster(t)
             .into_iter()
             .filter(|(_, e)| e.alive_at(Some(ts)))
-            .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_ct), keyset: None }))
+            .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_ct), keyset: None, keep: e.keep }))
             .collect();
         let hosts = self.group_labels(t)?.into_iter().find(|l| !l.replaced).map(|l| l.hosts);
         let (copy, imports) = self.move_thing(t, *owner)?;

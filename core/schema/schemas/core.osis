@@ -15,7 +15,7 @@ type source = enum { 0 node(tid), 1 commit(blob) };             // a dot's sourc
 /// An aspect a heartbeat reports suspect, with its keyed state digest (16 bytes, spec/permissions.md §4).
 type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
-type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie>, 5 keyset: option<edge_key> };
+type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie>, 5 keyset: option<edge_key>, 6 keep: bool };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch> };   // suite ID of the epoch; delete key: spec/crypto.md §7; supersedes: spec/crypto.md §4
 type inbox = struct { 0 label: blob, 1 hosts: list<address> };  // label ID: 16 bytes
 type box_key = struct { 0 holder: tid, 1 role: role, 2 epoch: epoch };

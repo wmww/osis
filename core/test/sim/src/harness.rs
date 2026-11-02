@@ -281,7 +281,7 @@ impl Sim {
     /// Node `i` writes node `j`'s edge on `thing` (spec/permissions.md §2).
     pub fn grant(&mut self, i: usize, thing: Tid, j: usize, role: Role) -> Res<CommitId> {
         let holder = self.tid(j)?;
-        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
         let mut m = Mutation::new();
         m.op(thing, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).map_err(|e| self.fail(e.to_string()))?;
         let id = self.commit(i, m)?;

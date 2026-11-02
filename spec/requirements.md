@@ -58,7 +58,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - A body dropped at its keep-at-most bound stays dropped only at nodes that cannot get it back: if the write that replaced it turns out invalid, the value is live and returns from any node that still holds it. Expired and purged content never returns.
 - Granularity is one edit of one aspect. Part of a value's history can be purged. An author's purge of a large value removes at untrusted nodes only the chunks that author wrote; an admin's removes all of them.
 - No fingerprint: nothing retained lets anyone, even a reader, confirm a guess of purged content, however low-entropy. Deduplication is therefore only against content the writer already holds.
-- Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read.
+- Forward secure where the platform offers erasable key storage (a hardware keystore, a TPM): a node that deleted honestly and is compromised later yields nothing. Elsewhere, browsers included, deleted data is unrecoverable through the platform's own storage only. A node that lost access to data yields nothing it can no longer read, unless the edge it lost said to keep a read-only copy; the default is to erase.
 - Nothing depends on retaining full history.
 
 ## Ephemeral data
@@ -123,5 +123,6 @@ Binds released formats only; until a stable release formats change in place (spe
 - Recovery of a lost owning key.
 - Revocation reaches a group only when one of the revoker's devices next syncs it.
 - Forward secrecy against a removed holder: what it could read before removal stays readable to it, from a copy it kept or from a dishonest untrusted node.
+- Deletion reaching a kept copy: a purge after the removal may stay undone there.
 - A holder an untrusted node does not list yet (its grant raced a rotation) or that missed more rotations than the kept role history reads from that node again only after a holder with rotation rights re-seals; re-sealing is triggered, never guaranteed.
 - Anonymity against network, timing and style analysis.

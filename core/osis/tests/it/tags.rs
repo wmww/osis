@@ -76,7 +76,7 @@ fn list(db: &Osis, tag: Tid) -> Result<(Vec<Tid>, Vec<Tid>)> {
 }
 
 fn share(db: &Osis, tag: Tid, person: Tid, role: Role, invite: Option<Role>) -> Result<()> {
-    db.grant(tag, person, role, EdgeOpts { until: None, invite })
+    db.grant(tag, person, role, EdgeOpts { until: None, invite, keep: None })
 }
 
 // notes/tags.md (sharing a tag per item through one roster), spec/sync.md §3 (entitlement),

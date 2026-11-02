@@ -26,7 +26,7 @@ fn team(seed: u64) -> (LocalPeer, Tid, Tid, Tid, Tid) {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, b, w, z) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
-    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, b);
     lp.peers[1].commit(m).unwrap();
@@ -140,7 +140,7 @@ fn departure_inside_unheld_actor_uncovered_spec_crypto_4() {
     let mut lp = LocalPeer::new(3, 931, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let (a, b, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
-    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     // X: b's team with W
     let mut m = Mutation::new();
     let x = lp.peers[1].engine.new_thing(&mut m, b);
@@ -260,7 +260,7 @@ fn group(lp: &mut LocalPeer, i: usize) -> Tid {
 }
 
 fn edge(role: Role) -> ct::Edge {
-    ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
+    ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }
 }
 
 fn newest_read(lp: &LocalPeer, i: usize, t: Tid) -> Option<osis_crypto::Epoch> {
@@ -2013,7 +2013,7 @@ fn withheld_departures(seed: u64, more: bool) {
                     if j != i
                         && let Some(r) = lp.peers[i].engine.core.role_now(&tids[j], &g)
                     {
-                        let e = ct::Edge { role: r, until: Some(until), invite: None, since: None, tied: None, keyset: None };
+                        let e = ct::Edge { role: r, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false };
                         if let Ok(d) = lp.peers[i].engine.demote(&g, &Demotion { holder: tids[j], new: Some(e), presync: PreSync::Synced }) {
                             departing.extend(d.commits);
                         }
@@ -3411,7 +3411,7 @@ fn removal_with(seed: u64, bad: &[&str], leave_out: bool) -> Vec<String> {
     let mut lp = LocalPeer::new(4, seed, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
     let ids: Vec<Tid> = lp.peers.iter().map(|p| p.engine.tid()).collect();
-    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let mut m = Mutation::new();
     let g = lp.peers[0].engine.new_thing(&mut m, ids[0]);
     lp.peers[0].commit(m).unwrap();

@@ -547,7 +547,7 @@ fn acting_valid_once_grant_arrives_spec_perm_5_2() {
 
 /// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
 /// the writer-side rules; its counters start at `lo`.
-fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
+pub(crate) fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {
     forge_commit(lp, by, t, ak, v, lo, osis_commit::Kind::Role)
 }
 

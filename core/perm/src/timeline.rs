@@ -538,6 +538,25 @@ impl Timeline {
         f(&view, &view.roles_from(node))
     }
 
+    /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: each one's
+    /// last value and the point of its last write (`None`: unchanged since an epoch start).
+    /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Keep).
+    pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (Edge, Option<Point>)> {
+        let mut out: BTreeMap<Tid, (Edge, Option<Point>)> = EdgesAt::new(&self.walked.initial).holders(thing).map(|(m, e)| (*m, (*e, None))).collect();
+        for c in self.walked.history.iter().filter(|c| c.target == *thing) {
+            match (c.edge, out.get_mut(&c.holder)) {
+                (Some(e), _) => {
+                    out.insert(c.holder, (e, Some(c.point)));
+                }
+                (None, Some(x)) => x.1 = Some(c.point),
+                (None, None) => {}
+            }
+        }
+        let edges = self.edges_at(None);
+        out.retain(|m, _| !edges.get(m, thing).is_some_and(|e| e.alive_at(Some(ts))));
+        out
+    }
+
     /// Standing (class and effective role) of `node` on `thing`.
     pub fn standing(&self, node: &Tid, thing: &Tid, at: At) -> Standing {
         self.with_roles(node, at, |view, best| view.standing(node, best, thing))
@@ -567,6 +586,11 @@ impl Timeline {
     /// Effective invite (§2).
     pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         self.with_roles(node, at, |view, best| view.invite(best, thing))
+    }
+
+    /// Whether an edge giving `node` its invite on `thing` has `keep` (§2).
+    pub fn invite_keeps(&self, node: &Tid, thing: &Tid, at: At) -> bool {
+        self.with_roles(node, at, |view, best| view.invite_keeps(best, thing))
     }
 
     /// Effective roles of `node` on every thing it reaches.

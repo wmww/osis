@@ -14,6 +14,10 @@
 //! receipts, value-less lists, purge lists, timers, `secrets.0` waits, the sync records of the
 //! labels of forgotten groups and of the commit blobs holding forgotten parts, and their blob
 //! ciphertexts.
+//!
+//! A kept copy (spec/permissions.md §3, Keep) goes the same way but for its content, which stays
+//! whole, state and bodies and timers: only `secrets.0`, the labels' sync records and the blob
+//! ciphertexts nothing still lists go.
 
 use crate::engine::records::{self, Rd};
 use crate::engine::{Core, Tx};
@@ -28,6 +32,16 @@ use std::collections::{BTreeMap, BTreeSet};
 /// no secret.
 const KEPT: [&str; 7] = ["created.0", "roles.0", "tenures.0", "keys.0", "label.0", "moved.0", "was.0"];
 
+/// What goes of a thing `forget` reaches.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Fate {
+    /// It stays: another path reads it, or its actor was not lost.
+    Stays,
+    /// A kept copy (`Core::ix.kept`).
+    Kept,
+    Erased,
+}
+
 /// What one forgetting removed.
 #[derive(Default)]
 pub struct Forgotten {
@@ -38,26 +52,46 @@ pub struct Forgotten {
     pub commits: BTreeSet<CommitId>,
 }
 
-/// Whether `t` is forgotten when the secrets of `lost` are dropped: its secrets derive from a
-/// lost actor's and no held path reads it (the node's effective role on it is none).
-fn forgets(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> bool {
-    let Some(a) = core.secret_actor(t) else { return false };
-    if !lost.contains(&a) {
-        return false;
-    }
+/// Whether a held path reads `t` (the node's or a held key actor's effective role on it).
+fn read_path(core: &Core, t: &Tid) -> bool {
     let node = core.id.tid();
-    !(core.may_read(&node, t) || core.key_actors.keys().any(|k| core.may_read(k, t)))
+    core.may_read(&node, t) || core.key_actors.keys().any(|k| core.may_read(k, t))
 }
 
-fn forgotten_ak(ak: &Ak) -> bool {
-    !KEPT.contains(&ak.as_str())
+/// `t` when the secrets of `lost` are dropped: forgotten when its secrets derive from a lost
+/// actor's and no held path reads it.
+fn fate(core: &Core, lost: &BTreeSet<Tid>, t: &Tid) -> Fate {
+    let Some(a) = core.secret_actor(t) else { return Fate::Stays };
+    if !lost.contains(&a) || read_path(core, t) {
+        return Fate::Stays;
+    }
+    if core.ix.kept.contains_key(&a) { Fate::Kept } else { Fate::Erased }
+}
+
+fn forgotten_ak(fate: Fate, ak: &Ak) -> bool {
+    match fate {
+        Fate::Stays => false,
+        Fate::Kept => ak.as_str() == "secrets.0",
+        Fate::Erased => !KEPT.contains(&ak.as_str()),
+    }
+}
+
+/// Whether a part on `(t, ak)` is content of a kept copy, which takes none: everything an erased
+/// thing's forgetting would drop but `secrets.0`, where a re-grant's boxes come.
+pub(crate) fn frozen(core: &Core, t: &Tid, ak: &Ak) -> bool {
+    !KEPT.contains(&ak.as_str()) && ak.as_str() != "secrets.0" && copy_of(core, t).is_some()
+}
+
+/// The kept actor `t` is a copy under, unless a held path still reads `t`, which is then no copy.
+pub(crate) fn copy_of(core: &Core, t: &Tid) -> Option<Tid> {
+    core.secret_actor(t).filter(|a| core.ix.kept.contains_key(a) && !read_path(core, t))
 }
 
 /// Aspect indices of `h` forgotten.
-fn lost_aspects(core: &Core, lost: &BTreeSet<Tid>, h: &Header, memo: &mut BTreeMap<Tid, bool>) -> BTreeSet<usize> {
+fn lost_aspects(core: &Core, lost: &BTreeSet<Tid>, h: &Header, memo: &mut BTreeMap<Tid, Fate>) -> BTreeSet<usize> {
     let mut out = BTreeSet::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if forgotten_ak(&a.ak) && *memo.entry(a.tid).or_insert_with(|| forgets(core, lost, &a.tid)) {
+        if forgotten_ak(*memo.entry(a.tid).or_insert_with(|| fate(core, lost, &a.tid)), &a.ak) {
             out.insert(ai);
         }
     }
@@ -75,7 +109,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     // commit records change below the indexes: the reload rebuilds the persisted index
     crate::engine::index::invalidate(tx)?;
-    let mut memo: BTreeMap<Tid, bool> = BTreeMap::new();
+    let mut memo: BTreeMap<Tid, Fate> = BTreeMap::new();
     // forgotten aspects: held in states or in commits
     let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut indexed = Vec::new();
@@ -86,9 +120,10 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     })?;
     let known: Vec<(Tid, Ak)> = tx.core.ix.by_aspect.keys().cloned().chain(indexed).collect();
     for (t, ak) in known {
-        if *memo.entry(t).or_insert_with(|| forgets(tx.core, &lost, &t)) {
+        let f = *memo.entry(t).or_insert_with(|| fate(tx.core, &lost, &t));
+        if f != Fate::Stays {
             out.things.insert(t);
-            if forgotten_ak(&ak) {
+            if forgotten_ak(f, &ak) {
                 aspects.insert((t, ak));
             }
         }
@@ -137,7 +172,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     for (id, k, bytes) in pend {
         // unreadable by this build: its header names nothing we can judge
         let Ok(blob) = CommitBlob::decode(&bytes) else { continue };
-        let mut ais = lost_aspects(tx.core, &lost, &blob.header, &mut memo);
+        // a kept copy's content takes nothing new: what waits goes too
+        let mut ais: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| frozen(tx.core, &a.tid, &a.ak)).map(|(ai, _)| ai).collect();
+        ais.extend(lost_aspects(tx.core, &lost, &blob.header, &mut memo));
         if ais.is_empty() {
             continue;
         }
