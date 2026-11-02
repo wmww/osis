@@ -133,6 +133,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | crdt `BLOCK` 256, `STEP` 8, `SIBS` 256, `isqrt().max(64)`, work `max(1024)`, `LIN_MIN` 64, `MAX_D` 512, `CTX` 32 | P | |
 | store `arity` 256, `depth` 5 | R: 2^40 unit slots, never reused; exhaustion refuses writes for good, after about 35 years at 1000 unit writes/s | |
 | store `page_max` 8 KiB, `spill_bytes` 16 MiB, `node_cache` 4096, `unit_cache_bytes` 16 MiB | P | |
+| store row padding `UNIT_MIN` 512 B (`pager.rs`; above it Padmé, spec/wire.md §5) | M (length leak of small units; notes/local-store.md, Row padding) | 0: units below a few hundred bytes show their length to within Padmé's 1-16 bytes, so a small page's drop shows / every unit that big. At 512 Padmé's class width is 32 B; measured cost on engine tests' unit rows: 3.7% (Padmé alone 2.3%, 1024: 6.5%) |
 | schema `MAX_EXPAND`, `MAX_TYPE_DEPTH`, `MAX_INSTANCES`, `MAX_CHECK_WORK`, `MAX_NEST`, `MAX_CHECK_DEPTH` | R (refuse; sign-off: not specced) | |
 | osis `DEFAULT_LIMIT` 64 MiB | R (error past it) | |
 | osis `DEFAULT_WAIT` 60 s, `PRESYNC_WAIT` 30 s, cli `DEFAULT_WAIT` 30 s | M (the caller gets an error) | |
@@ -151,4 +152,4 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | seed runner `SEED_TIMEOUT_SECS` 600 (`osis_base::testenv`, CPU-seconds a seed's thread uses, or seconds it uses none; `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seeds take a few CPU-s) | M | 0: every seed is hung; ∞: a hung seed hangs the run silently |
 
 ## Counts
-Table rows (a row may group several related values): P 17, R 33, M 34, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.
+Table rows (a row may group several related values): P 17, R 33, M 35, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.

@@ -3,7 +3,7 @@
 
 Marks: **M** = measured, **E** = estimated from encodings or spec, **C** = the code says so.
 
-The probe for the M rows: 400 overwrites of one register by one node, compacted after each 200. Store bytes are MemoryBackend `dump()` key+value totals, page overhead included, debug build. Results:
+The probe for the M rows: 400 overwrites of one register by one node, compacted after each 200. Store bytes are MemoryBackend `dump()` key+value totals, page overhead included, debug build. Measured before store rows were padded (notes/local-store.md, Row padding: about +4% on rows, small units at least 512 B), not re-measured. Results:
 - Node store: 47 KB to 186 KB to 326 KB. That is about **690 B per overwrite, kept after compaction**. It is still there after 32 days, once tombstones and entry rows have gone.
 - Host store: 7.5 KB to 119 KB, then 66 KB after 32 days. That is about **146 B per overwrite after tombstones expire**.
 
