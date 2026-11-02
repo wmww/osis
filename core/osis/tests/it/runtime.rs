@@ -287,7 +287,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(!alice.sync_engine(|s| s.served_co_readers()).contains(&bob_key));
     // the link ends (revoked): the key it carried rotates
     let k = alice.links(g)[0].id;
-    tokio::time::timeout(GUARD, alice.revoke_link(k, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None })).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, alice.revoke_link(k, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false })).await.unwrap().unwrap();
     tokio::time::timeout(GUARD, async {
         while alice.sync_engine(|s| s.own_reach()).unwrap().dialable == now.dialable {
             tokio::time::sleep(Duration::from_millis(20)).await;

@@ -32,6 +32,23 @@ impl Engine {
         Ok(r?.zip(forged))
     }
 
+    /// Rotates `roles` of `actor` as a hostile writer would: boxing only those of its current
+    /// holders in `boxed` (issues/writer-rotates-to-itself.md: itself alone locks out the rest).
+    #[doc(hidden)]
+    pub fn rotate_boxing_only(&mut self, actor: &Tid, roles: &[osis_base::Role], boxed: &[Tid]) -> Result<Option<CommitId>> {
+        let (a, roles) = (*actor, roles.iter().copied().collect());
+        self.run(|tx| {
+            let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
+            let mut holders = crate::rotation::recipients(tx, &a, &[])?;
+            holders.retain(|r| boxed.contains(&r.holder));
+            let mut m = crate::Mutation::new();
+            let rot = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, &[])?;
+            let c = Engine::commit_tx(tx, m)?;
+            crate::rotation::record(tx, a, &rot)?;
+            Ok(c)
+        })
+    }
+
     /// Stops `reexamine` here, so what pends stays pending whatever else happens. For what a
     /// pending commit does to the rest of the node: the only wait a role commit's one part has
     /// once its author and thing are known is the clock's (spec/commits.md §4).

@@ -72,6 +72,11 @@ pub struct Demotion {
     pub sync: WaitForSync,
     /// An explicitly backdated revoke: no pre-sync; the frontier as of this time.
     pub backdate: Option<WallMs>,
+    /// Also repudiate the demoted holder's rotations of the target this device cannot open (a
+    /// writer that rotated it and sealed the new secrets to itself alone, locking everyone else
+    /// out: a plain demotion then fails). Those rotations are undone everywhere and the target
+    /// rotates from the secrets before them (spec/permissions.md §3). A direct edge only.
+    pub repudiate: bool,
 }
 
 /// The role after a demotion.
@@ -732,7 +737,8 @@ impl Osis {
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
         let presync = self.presync(things, d).await?;
-        let done = self.guarded(&[t], |e| e.demote(&t, &flows::Demotion { holder: m, new, presync }).map_err(needs_admin))?;
+        let fd = flows::Demotion { holder: m, new, presync };
+        let done = self.guarded(&[t], |e| (if d.repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
         self.carry(done)
     }
 
@@ -890,6 +896,9 @@ impl Osis {
     pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
         self.local_only("revoke_joiner")?;
         self.not_routed("revoke_joiner", id)?;
+        if d.repudiate {
+            return Err(Error::Invalid("repudiating rotations needs the holder's direct edge".into()));
+        }
         let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
         let m = self.resolved(joiner);
         let things = self.engine(|e| {

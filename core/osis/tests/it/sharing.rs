@@ -95,7 +95,7 @@ fn revoke_link_spec_permissions_9() {
     assert_eq!(ls.len(), 1);
     assert!(!ls[0].single_use);
     w.run();
-    w.until(alice.revoke_link(ls[0].id, Demotion { sync: WaitForSync::Skip, backdate: None }), 1000, 5).unwrap();
+    w.until(alice.revoke_link(ls[0].id, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false }), 1000, 5).unwrap();
     assert!(alice.links(g).is_empty());
 }
 
@@ -112,7 +112,7 @@ fn demotion_presync_policies_spec_permissions_5_3() {
     assert!(matches!(r, Err(Error::Unsynced { ref groups }) if groups.contains(&g)), "{r:?}");
     assert!(alice.roster(g).contains_key(&bob.me()), "nothing stamped");
     let unsynced = diags(&alice, DiagnosticKind::Unsynced);
-    let t = Demotion { sync: WaitForSync::Try(Duration::from_secs(5)), backdate: None };
+    let t = Demotion { sync: WaitForSync::Try(Duration::from_secs(5)), backdate: None, repudiate: false };
     w.until(alice.demote(g, bob.me(), Lower::To(Role::Read), t), 1000, 10).unwrap();
     assert_eq!(alice.roster(g).get(&bob.me()).map(|e| e.role), Some(Role::Read));
     assert!(recv(&unsynced).contains(&g));
@@ -142,7 +142,7 @@ fn watch_status_and_stranded_spec_permissions_3() {
     w.run();
     let stranded = diags(&db, DiagnosticKind::Stranded);
     w.set_online(&db, false);
-    w.until(da.remove_device(node, Demotion { sync: WaitForSync::Skip, backdate: None }), 1000, 5).unwrap();
+    w.until(da.remove_device(node, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false }), 1000, 5).unwrap();
     item(&da, da.me(), home, "after the removal");
     w.run();
     w.set_online(&db, true);
@@ -270,7 +270,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     assert_eq!((bob.role_on(g), carol.role_on(g)), (Some(Role::Admin), Some(Role::Admin)));
     w.set_online(&carol, false);
     w.advance(60_000);
-    w.until(bob.demote(g, c, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None }), 1000, 10).unwrap();
+    w.until(bob.demote(g, c, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false }), 1000, 10).unwrap();
     w.run();
     let until = osis::WallMs(w.now() + 3_600_000);
     carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
