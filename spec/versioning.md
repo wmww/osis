@@ -10,7 +10,7 @@ Four independent extension points, each parked separately so a node with one unk
 Local storage, indexes, the node-to-node protocol (spec/sync.md §6, which negotiates its own version) and the API are not part of the format and change freely.
 
 ## 2. Parking rule
-- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta pends its whole commit (atomic apply, spec/commits.md §4).
+- A node MUST NOT discard, reject or crash on data it cannot interpret: an unknown format version, encoding ID, tag, field ID, enum case, AK, algorithm case or suite. It stores and relays the data, joins what it can, treats the rest as not yet received, and re-examines it after an upgrade. A parked delta waits as spec/commits.md §4 says: on a thing the node syncs it pends its whole commit, otherwise it waits alone.
 - A parked delta is kept as bytes with its header entry. A parked commit is pending (spec/commits.md §4).
 - A body a node could not join is never covered for it (spec/commits.md §5), so it never compacts one; purge requests, expiry and absolute keep-at-most bounds still apply. It relays other nodes' snapshots and deletions of such blobs like a host does.
 - A role-class value the node cannot type (an unknown role case, say) counts as not received; what depends on it stays pending.

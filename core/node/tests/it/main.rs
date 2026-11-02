@@ -24,6 +24,7 @@ mod local_serve;
 mod metadata;
 mod negative;
 mod order;
+mod parts;
 mod pass_marks;
 mod peers;
 mod peers_review;

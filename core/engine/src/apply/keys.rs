@@ -731,7 +731,7 @@ mod tests {
                 let mut rng = osis_crypto::SeededRng::from_u64((x * 10_000 + i) as u64);
                 let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut rng).unwrap();
                 let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-                let bytes = forge_role_commit(lp, x, t, &rec, &v, None);
+                let bytes = forge_role_commit(lp, x, t, &rec, &v);
                 assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)), "a bogus commit pends at the grantee");
                 sent += 1;
             }
@@ -739,10 +739,9 @@ mod tests {
         sent
     }
 
-    /// A role commit by peer `by` setting `t`'s `secrets.0` to `v` (and `also`'s, a thing
-    /// whose `created.0` nobody holds, so the commit stays pending), signed past every writer
-    /// rule (its author holds no chain to `t`).
-    fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value, also: Option<Tid>) -> Vec<u8> {
+    /// A role commit by peer `by` setting `t`'s `secrets.0` to `v`, signed past every writer rule
+    /// (its author may hold no chain to `t`).
+    fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, rec: &osis_base::CreationRecord, v: &Value) -> Vec<u8> {
         use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
         use osis_crdt::{Delta, Source, Writer, create, encode_delta};
         struct Dedup(osis_base::CreationRecord);
@@ -774,17 +773,28 @@ mod tests {
         cx.own = own;
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
-        for tid in std::iter::once(t).chain(also) {
-            let mut aw = AspectWrite::new(tid, ak.clone(), r.lo, r.hi, bytes.clone());
-            aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
-            cb.aspects.push(aw);
-        }
+        let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());
+        aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
+        cb.aspects.push(aw);
         cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
     }
 
-    /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t` (`also`: as in
-    /// `forge_role_commit`).
-    fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid, seed: u64, also: Option<Tid>) {
+    /// Puts peer `by`'s clock past the drift bound of peer 1's, so its next commit pends at peer 1
+    /// (spec/commits.md §4): with its author and thing known nothing else keeps a role commit's
+    /// only part pending, and `pending_for_good` keeps it there as the clock catches up.
+    fn ahead_of_drift(lp: &mut LocalPeer, by: usize) {
+        lp.peers[by].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
+    }
+
+    /// Peer 1's clock catches up with peer `by`'s and it stops examining what pends.
+    fn pending_for_good(lp: &mut LocalPeer, by: usize) {
+        let now = lp.peers[by].engine.now();
+        lp.peers[1].clock.set(now);
+        lp.peers[1].engine.freeze_pending();
+    }
+
+    /// A pending commit by peer `by` boxing peer 1 a fresh read secret of `t`.
+    fn forged_grant(lp: &mut LocalPeer, by: usize, t: Tid, seed: u64) {
         let b = lp.peers[1].engine.tid();
         let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
@@ -793,7 +803,7 @@ mod tests {
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
         let v = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-        let bytes = forge_role_commit(lp, by, t, &rec, &v, also);
+        let bytes = forge_role_commit(lp, by, t, &rec, &v);
         assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
     }
 
@@ -900,7 +910,7 @@ mod tests {
     #[test]
     fn strangers_pending_box_keeps_no_lost_secrets_spec_perm_3() {
         let (mut lp, t) = removed_reader(911);
-        forged_grant(&mut lp, 2, t, 1, None);
+        forged_grant(&mut lp, 2, t, 1);
         remove(&mut lp, t);
         assert!(lp.peers[1].engine.drop_lost_due().unwrap().contains(&t));
         assert!(lp.peers[1].engine.core.ix.secrets.get(&t).is_none());
@@ -913,8 +923,9 @@ mod tests {
     fn admins_pending_grant_keeps_lost_secrets_for_a_while_spec_perm_3() {
         let (mut lp, t) = removed_reader(912);
         remove(&mut lp, t);
-        // pending for good: it also writes a thing nobody holds the `created.0` of
-        forged_grant(&mut lp, 0, t, 2, Some(Tid::from_bytes([0x5a; 15])));
+        ahead_of_drift(&mut lp, 0);
+        forged_grant(&mut lp, 0, t, 2);
+        pending_for_good(&mut lp, 0);
         assert!(lp.peers[1].engine.drop_lost_due().unwrap().is_empty());
         assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().is_empty());
         lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
@@ -939,13 +950,15 @@ mod tests {
         let rcpt = osis_keys::Recipient { holder: b, role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let w = osis_keys::box_holder(&t, &epochs, &secrets, &rcpt, &[Role::Read].into(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap().unwrap();
         let v = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }.to_value();
-        // signed before the removal; pending for good (a thing nobody holds the `created.0` of)
-        let bytes = forge_role_commit(&mut lp, 0, t, &rec, &v, Some(Tid::from_bytes([0x5b; 15])));
+        // boxes made before the removal: only the epoch held then
         remove(&mut lp, t);
+        ahead_of_drift(&mut lp, 0);
+        let bytes = forge_role_commit(&mut lp, 0, t, &rec, &v);
         assert!(matches!(lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), crate::Ingested::Pending(..)));
+        pending_for_good(&mut lp, 0);
         lp.peers[1].clock.advance(2 * crate::rotation::PENDING_GRANT_WAIT_MS);
         assert!(lp.peers[1].engine.drop_lost_secrets().unwrap().contains(&t));
-        let (id, _) = lp.peers[1].engine.pending().into_iter().next().unwrap();
+        let id = osis_commit::CommitBlob::decode(&bytes).unwrap().id();
         assert_eq!(secrets_parts(&mut lp, &id, t), 0, "a held epoch's box goes");
     }
 
@@ -1020,14 +1033,14 @@ mod tests {
         let (mut lp, t) = removed_reader(913);
         let rec = lp.peers[0].engine.get_typed(&t, &ct::CREATED).unwrap().unwrap();
         let v = ct::Secrets::default().to_value();
-        let genuine = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 0, t, &rec, &v, None)).unwrap();
+        let genuine = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 0, t, &rec, &v)).unwrap();
         let kem = lp.peers[1].engine.identity().keys().kem.public().clone();
         let rcpt = osis_keys::Recipient { holder: lp.peers[1].engine.tid(), role: Role::Read, keys: osis_keys::HolderKeys::KeyActor { kem, seed: None } };
         let mut held = ActorEpochs::default();
         held.read.set_established(Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
         let rot = osis_keys::rotate(&t, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(3)).unwrap();
         let boxed = ct::Secrets { boxes: rot.secrets.boxes, history: rot.secrets.history.into_iter().collect() }.to_value();
-        let mut forged = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 2, t, &rec, &boxed, None)).unwrap();
+        let mut forged = osis_commit::CommitBlob::decode(&forge_role_commit(&mut lp, 2, t, &rec, &boxed)).unwrap();
         forged.header.author = lp.peers[0].engine.tid();
         let core = &lp.peers[1].engine.core;
         assert!(crate::rotation::authentic(core, &genuine, &genuine.id(), &t));

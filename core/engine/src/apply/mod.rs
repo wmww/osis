@@ -72,9 +72,49 @@ pub enum Ingested {
 }
 
 pub(crate) enum Exam {
+    /// `Parts::waiting`: the parts that wait alone, taken out of the blob.
     Ready(Parts),
-    Pending(Reason),
+    /// Every part waits: the reason, and whether it is the only one (one reason's wait can be
+    /// noted, `waits::note`).
+    Pending(Reason, bool),
     Parked,
+}
+
+/// Parts of an examined commit that wait alone (`examine`): the first reason, whether there is
+/// another, and which.
+#[derive(Default)]
+struct Aside {
+    reason: Option<Reason>,
+    several: bool,
+    keys: BTreeSet<(usize, usize)>,
+}
+
+impl Aside {
+    /// `keys` wait for `r`; no key (a synced thing no part of which is held) waits for nothing.
+    fn add(&mut self, r: Reason, keys: impl IntoIterator<Item = (usize, usize)>) {
+        let before = self.keys.len();
+        self.keys.extend(keys);
+        if self.keys.len() > before {
+            self.several |= self.reason.as_ref().is_some_and(|x| *x != r);
+            self.reason.get_or_insert(r);
+        }
+    }
+    /// The verdict when no part is left to apply.
+    fn verdict(self) -> Exam {
+        match self.reason {
+            Some(Reason::Parked) if !self.several => Exam::Parked,
+            Some(r) => Exam::Pending(r, !self.several),
+            None => Exam::Parked,
+        }
+    }
+}
+
+/// Parts `examine` set aside: stored pending under the commit's ID while the rest apply.
+pub(crate) struct Waiting {
+    pub parts: Vec<osis_commit::Part>,
+    pub reason: Reason,
+    /// Whether `reason` is the only one.
+    pub one: bool,
 }
 
 /// A part `examine` checked and keeps no content of: apply streams it again, one page at a
@@ -95,6 +135,8 @@ pub(crate) struct Streamed {
 pub(crate) struct Parts {
     pub whole: Vec<(usize, usize, Decoded)>,
     pub streamed: Vec<Streamed>,
+    /// Held parts that wait alone (spec/commits.md §4).
+    pub waiting: Option<Waiting>,
 }
 
 impl Parts {
@@ -221,12 +263,20 @@ enum Turn {
 }
 
 /// Checks a commit and decodes its parts, or says why it waits.
+///
+/// Invariant (arrival-order independence, spec/commits.md §4): what applies is a function of the
+/// parts held and everything else held, never of which came first. Whether a thing's wait (its
+/// record, its chain, a part's pages, a parked part) holds the commit or only that thing's parts
+/// reads the commit's kind and what the node syncs, never whether another part is here. Every wait
+/// only ends as the held set grows, so the applied parts are the least fixpoint of a monotone
+/// rule, one result for every order (`parts::split_delivery_*` plays them). What the node syncs
+/// is the one input that is not held data (issues/sync-learned-after-apply.md).
 pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Result<Exam> {
     if !blob.header.is_resolved() {
-        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor))) };
+        let Some(dedup) = tx.core.dedup(&blob.header.actor) else { return Ok(Exam::Pending(Reason::UnknownCreated(blob.header.actor), true)) };
         match blob.header.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES) {
             Ok(()) => {}
-            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
+            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs, true)),
             Err(e) => return Err(e.into()),
         }
     }
@@ -238,7 +288,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let held: BTreeMap<Tid, CreationRecord> = h.aspects.iter().map(|a| a.tid).chain([h.author, h.actor]).filter_map(|t| tx.core.created_for(&t, memory).map(|r| (t, r.clone()))).collect();
     let chain_rec = |t: &Tid, core: &crate::engine::Core| -> Option<CreationRecord> { core.created_for(t, memory).cloned().or_else(|| carried.get(t).cloned()) };
     let record = |t: &Tid| -> Option<CreationRecord> { held.get(t).cloned().or_else(|| carried.get(t).cloned()) };
-    let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author))) };
+    let Some(author) = record(&h.author) else { return Ok(Exam::Pending(Reason::MissingChain(h.author), true)) };
     let CreationRecord::KeyActor { public_key, .. } = &author else { return Err(Error::BadInput("author is not a key actor")) };
     let vk = VerifyingKey::from_slice(public_key)?;
     {
@@ -261,8 +311,17 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // the bound is for received commits (spec/crdt.md §2.2): this node's own are as far ahead
     // as its HLC, which a clock correction moving back must not turn against them
     if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
-        return Ok(Exam::Pending(Reason::Drift));
+        return Ok(Exam::Pending(Reason::Drift, true));
     }
+    // a role commit any part of which is held waits for nothing whole: it may be held only as a
+    // projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest need never come,
+    // and the node cannot tell one from its things' labels' bodies; the rest joins on arrival.
+    // Nor does an applied commit: it has nothing left to hold back
+    let never_whole = tx.core.ix.commits.contains_key(id) || (h.kind == Kind::Role && !blob.parts.is_empty());
+    // what atomic apply covers: a commit waits whole for a thing the node syncs, a part on any
+    // other thing waits alone
+    let alone = |core: &crate::engine::Core, t: &Tid| never_whole || !core.ix.syncing.contains(t);
+    let mut aside = Aside::default();
     // only things whose deltas it holds or syncs gate the commit: a thing it neither holds a
     // delta of nor syncs (another's private thing in a mixed commit) is not applied here
     let held_ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
@@ -270,30 +329,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         if !held_ais.contains(&ai) && !tx.core.ix.syncing.contains(&a.tid) {
             continue;
         }
-        if record(&a.tid).is_none() {
-            return Ok(Exam::Pending(Reason::UnknownCreated(a.tid)));
+        let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) else { continue };
+        if !alone(tx.core, &a.tid) {
+            return Ok(Exam::Pending(wait, true));
         }
-        // the owner chain up to a key actor (spec/permissions.md §4)
-        // a chain deeper than `MAX_OWNER_DEPTH` is not waited for further: its deltas are
-        // invalid (`validity::too_deep`, spec/permissions.md §1)
-        let mut cur = a.tid;
-        let mut chain = vec![cur];
-        for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-            match chain_rec(&cur, tx.core) {
-                Some(CreationRecord::Thing { owner, .. }) => {
-                    cur = owner;
-                    chain.push(cur);
-                }
-                Some(CreationRecord::KeyActor { .. }) => break,
-                None => return Ok(Exam::Pending(Reason::MissingChain(cur))),
-            }
-        }
-        // the author's chain certificates: it is on the owner chain, or held edge writes lead
-        // from it to the chain (a revoked author keeps its certificates and still applies,
-        // judged invalid)
-        if !chain.contains(&h.author) && !validity::reaches(tx.core, &h.author, &chain) {
-            return Ok(Exam::Pending(Reason::MissingChain(h.author)));
-        }
+        aside.add(wait, blob.parts.iter().filter(|p| p.ai == ai).map(|p| (p.ai, p.di)));
     }
     // an import applies only to a copy its author created (spec/permissions.md §7; tests let a
     // local writer break this, to test receivers); it waits for the copy's record even where it
@@ -301,7 +341,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if h.kind == osis_commit::Kind::Import && !(tx.core.skip_writer_rules && h.author == tx.core.id.tid()) {
         for a in &h.aspects {
             match record(&a.tid) {
-                None => return Ok(Exam::Pending(Reason::UnknownCreated(a.tid))),
+                None => return Ok(Exam::Pending(Reason::UnknownCreated(a.tid), true)),
                 Some(CreationRecord::Thing { creator: Some(c), .. }) if c == h.author => {}
                 Some(_) => return Err(Error::BadInput("an import into a thing its author did not create")),
             }
@@ -336,13 +376,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::CollidingRecord, tids: vec![*t], commit: Some(*id), peer: Some(h.author), detail: String::new() }, now);
         }
     }
-    // a role commit any part of which is held does not wait for the rest: it may be held
-    // only as a projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest
-    // need never come, and the node cannot tell one from its things' labels' bodies; the rest
-    // joins on arrival (spec/commits.md §4)
-    let projection = h.kind == Kind::Role && !blob.parts.is_empty();
-    if !projection && waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
-        return Ok(Exam::Pending(Reason::WaitDeltas));
+    if !never_whole && waits_for_deltas(tx, &h, id, blob.missing().into_iter().filter(|x| !skip.contains(x)))? {
+        return Ok(Exam::Pending(Reason::WaitDeltas, true));
     }
     let mut out = Parts::default();
     let mut interner = Interner::new();
@@ -351,7 +386,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
     let mut late = false;
     for p in &blob.parts {
-        if skip.contains(&(p.ai, p.di)) {
+        if skip.contains(&(p.ai, p.di)) || aside.keys.contains(&(p.ai, p.di)) {
             continue;
         }
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
@@ -379,10 +414,24 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         };
         match r {
             Ok(()) => {}
-            Err(e) if e.class() == ErrorClass::Parked => return Ok(Exam::Parked),
-            Err(e) if is_missing_page(&e) => return Ok(Exam::Pending(Reason::WaitBlobs)),
+            Err(e) if e.class() == ErrorClass::Parked => {
+                if !alone(tx.core, &a.tid) {
+                    return Ok(Exam::Parked);
+                }
+                aside.add(Reason::Parked, [(p.ai, p.di)]);
+            }
+            Err(e) if is_missing_page(&e) => {
+                if !alone(tx.core, &a.tid) {
+                    return Ok(Exam::Pending(Reason::WaitBlobs, true));
+                }
+                aside.add(Reason::WaitBlobs, [(p.ai, p.di)]);
+            }
             Err(e) => return Err(e.into()),
         }
+    }
+    // nothing to apply: the commit (or, already applied, these parts) keeps waiting
+    if !aside.keys.is_empty() && out.ais().is_empty() {
+        return Ok(aside.verdict());
     }
     // a roster snapshot's tenures are judged by their frontiers: linked ones are fetched first
     // (tests let a local writer break these rules, to test receivers)
@@ -390,13 +439,51 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         validity::check_roster_parts(&h, &out.whole)?;
         validity::check_holders_parts(&h, id, &out.whole)?;
         if !validity::linked_frontiers(tx, &h, &validity::EdgeParts::of(&h, &out.whole))?.waiting.is_empty() {
-            return Ok(Exam::Pending(Reason::WaitBlobs));
+            return Ok(Exam::Pending(Reason::WaitBlobs, true));
         }
     }
     if late {
         return Err(Error::BadInput("carried write stamped after its commit"));
     }
+    if let Some(reason) = aside.reason {
+        let (parts, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut blob.parts).into_iter().partition(|p| aside.keys.contains(&(p.ai, p.di)));
+        blob.parts = rest;
+        if !parts.is_empty() {
+            out.waiting = Some(Waiting { parts, reason, one: !aside.several });
+        }
+    }
     Ok(Exam::Ready(out))
+}
+
+/// What thing `a.tid` waits for: its `created.0` record, the owner chain up to a key actor, the
+/// author's chain certificates (spec/permissions.md §4). A function of the thing, not of the part.
+fn thing_wait(
+    core: &crate::engine::Core,
+    h: &Header,
+    a: &osis_commit::AspectEntry,
+    record: &dyn Fn(&Tid) -> Option<CreationRecord>,
+    chain_rec: &dyn Fn(&Tid, &crate::engine::Core) -> Option<CreationRecord>,
+) -> Option<Reason> {
+    if record(&a.tid).is_none() {
+        return Some(Reason::UnknownCreated(a.tid));
+    }
+    let mut cur = a.tid;
+    let mut chain = vec![cur];
+    // a chain deeper than `MAX_OWNER_DEPTH` is not waited for further: its deltas are invalid
+    // (`validity::too_deep`, spec/permissions.md §1)
+    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
+        match chain_rec(&cur, core) {
+            Some(CreationRecord::Thing { owner, .. }) => {
+                cur = owner;
+                chain.push(cur);
+            }
+            Some(CreationRecord::KeyActor { .. }) => break,
+            None => return Some(Reason::MissingChain(cur)),
+        }
+    }
+    // it is on the owner chain, or held edge writes lead from it to the chain (a revoked author
+    // keeps its certificates and still applies, judged invalid)
+    (!chain.contains(&h.author) && !validity::reaches(core, &h.author, &chain)).then_some(Reason::MissingChain(h.author))
 }
 
 /// Applies or stores one decoded commit blob.
@@ -422,19 +509,25 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     let inline = blob.header.is_resolved();
     let _s = crate::costs::span("examine");
     match examine(tx, &mut blob, &id, &BTreeSet::new())? {
-        Exam::Ready(parts) => {
+        Exam::Ready(mut parts) => {
+            let waiting = parts.waiting.take();
             let was_pending = unpend(tx, &id)?;
             apply_verified(tx, &blob, parts, origin, received)?;
-            if was_pending {
-                keys::forget_unchecked(tx, &id)?;
+            // what a part still waiting read of its boxes may be what opens what it waits for
+            match waiting {
+                Some(w) => pend_aside(tx, &id, &blob, w)?,
+                None if was_pending => keys::forget_unchecked(tx, &id)?,
+                None => {}
             }
             Ok(Ingested::Applied(id))
         }
-        Exam::Pending(r) => {
+        Exam::Pending(r, one) => {
             pend(tx, &id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, &id)?;
-            let now = tx.now().0;
-            waits::note(tx.core, id, &blob, inline, &r, now);
+            if one {
+                let now = tx.now().0;
+                waits::note(tx.core, id, &blob, inline, &r, now);
+            }
             Ok(Ingested::Pending(id, r))
         }
         Exam::Parked => {
@@ -453,6 +546,28 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
     Ok(())
 }
 
+/// Keeps the parts of applied commit `id` that wait alone pending under its ID. `applied`: its
+/// blob. The `reexamine` an applied commit is followed by reads their boxes (`late_parts`).
+fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
+    let mut rest = applied.clone();
+    rest.parts = w.parts;
+    let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
+    pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
+    if w.one {
+        note_record_wait(tx, id, applied, &w.reason);
+    }
+    Ok(())
+}
+
+/// `waits::note` for parts of applied commit `id` (held: `merged`) waiting on a record: a delta
+/// wait is judged with the applied commit's dropped parts, which `note` does not read.
+fn note_record_wait(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, r: &Reason) {
+    if matches!(r, Reason::UnknownCreated(_) | Reason::MissingChain(_)) {
+        let now = tx.now().0;
+        waits::note(tx.core, *id, merged, merged.header.is_resolved(), r, now);
+    }
+}
+
 /// Commit `id` pends no more: its stored bytes go. Whether it was pending.
 fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     tx.core.waits.unpended(id);
@@ -467,7 +582,7 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 /// `blob` with the parts the stored pending copy of `id` holds.
 fn with_pending(tx: &mut Tx<'_>, id: &CommitId, blob: CommitBlob) -> Result<CommitBlob> {
     if tx.core.ix.pending.contains_key(id)
-        && let Some((PendingKind::Pending, old)) = tx.txn.get_pending(id)?
+        && let Some((_, old)) = tx.txn.get_pending(id)?
         && let Ok(old) = CommitBlob::decode(&old)
     {
         return Ok(merge_parts(old, blob));
@@ -490,14 +605,7 @@ fn merge_parts(mut a: CommitBlob, b: CommitBlob) -> CommitBlob {
 /// (their thing's `created.0`, chain or pages) are kept pending under the commit's ID and
 /// joined once they apply.
 fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<Ingested> {
-    let held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
-    let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
-    let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
-    for ai in meta.dropped.keys() {
-        if !crate::retention::takes_late(tx, id, *ai)? {
-            skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
-        }
-    }
+    let (held, skip) = held_and_skip(tx, id)?;
     blob = with_pending(tx, id, blob)?;
     blob.parts.retain(|p| !skip.contains(&(p.ai, p.di)));
     if blob.parts.is_empty() {
@@ -505,21 +613,48 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         return Ok(Ingested::Duplicate(*id));
     }
     let mut merged = merge_parts(held, blob.clone());
-    merged.header = (*meta.header).clone();
     let _s = crate::costs::span("examine");
     match examine(tx, &mut merged, id, &skip)? {
-        Exam::Ready(parts) => {
-            unpend(tx, id)?;
+        Exam::Ready(mut parts) => {
+            let waiting = parts.waiting.take();
+            let was_pending = unpend(tx, id)?;
             crate::retention::reopen_late(tx, id, &parts.ais())?;
             atomic::join_late(tx, id, &merged, parts)?;
+            match waiting {
+                Some(w) => pend_aside(tx, id, &merged, w)?,
+                None if was_pending => keys::forget_unchecked(tx, id)?,
+                None => {}
+            }
             Ok(Ingested::Applied(*id))
         }
-        Exam::Pending(r) => {
+        Exam::Pending(r, one) => {
             pend(tx, id, PendingKind::Pending, &blob.encode(), r.clone())?;
+            keys::read_pending_boxes(tx, &blob, id)?;
+            if one {
+                note_record_wait(tx, id, &merged, &r);
+            }
             Ok(Ingested::Pending(*id, r))
         }
-        Exam::Parked => Ok(Ingested::Parked(*id)),
+        Exam::Parked => {
+            pend(tx, id, PendingKind::Parked, &blob.encode(), Reason::Parked)?;
+            Ok(Ingested::Parked(*id))
+        }
     }
+}
+
+/// Applied commit `id`'s stored blob (its resolved header), and the parts a late copy brings
+/// nothing for: those held, those dropped for good.
+fn held_and_skip(tx: &mut Tx<'_>, id: &CommitId) -> Result<(CommitBlob, BTreeSet<(usize, usize)>)> {
+    let mut held = tx.get_commit(id)?.ok_or(Error::Corrupt("commit record"))?;
+    let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let mut skip: BTreeSet<(usize, usize)> = held.parts.iter().map(|p| (p.ai, p.di)).collect();
+    for ai in meta.dropped.keys() {
+        if !crate::retention::takes_late(tx, id, *ai)? {
+            skip.extend((0..meta.header.aspects.get(*ai).map_or(0, |a| a.hashes.len())).map(|di| (*ai, di)));
+        }
+    }
+    held.header = (*meta.header).clone();
+    Ok((held, skip))
 }
 
 /// Applies a commit this node just built (no signature check: it signed it).
@@ -527,6 +662,7 @@ pub(crate) fn apply_local(tx: &mut Tx<'_>, blob: &CommitBlob, received: WallMs) 
     let id = blob.id();
     let mut b = blob.clone();
     match examine(tx, &mut b, &id, &BTreeSet::new())? {
+        Exam::Ready(parts) if parts.waiting.is_some() => Err(Error::Misuse("own commit not applicable")),
         Exam::Ready(parts) => {
             // writer-side rules: a received commit is judged by perm instead
             if !tx.core.skip_writer_rules {
@@ -650,6 +786,9 @@ impl Engine {
     /// Role commits are tried first. A commit whose examination's inputs have not changed
     /// since it was last examined is left out (`apply::waits`).
     pub fn reexamine(&mut self) -> Result<()> {
+        if self.core.frozen_pending {
+            return Ok(());
+        }
         let _s = crate::costs::span("reexamine");
         loop {
             let now = self.core.now().0;
@@ -729,8 +868,16 @@ impl Engine {
                 let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
                 let Ok(mut b) = CommitBlob::decode(&bytes) else { continue };
                 let want = tx.core.ix.pending.get(id).cloned();
-                match examine(tx, &mut b, id, &BTreeSet::new()) {
-                    Ok(Exam::Pending(r)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
+                // parts of an applied commit are examined with it, as `late_parts` does
+                let skip = if tx.core.ix.commits.contains_key(id) {
+                    let (held, skip) = held_and_skip(tx, id)?;
+                    b = merge_parts(held, b);
+                    skip
+                } else {
+                    BTreeSet::new()
+                };
+                match examine(tx, &mut b, id, &skip) {
+                    Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
                     Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
                     Ok(Exam::Parked) => debug_assert!(false, "pending commit {id:?} left out of reexamine would park"),
                     Err(e) => debug_assert!(false, "pending commit {id:?} left out of reexamine: {e}"),
