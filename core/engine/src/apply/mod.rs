@@ -150,6 +150,8 @@ pub(crate) struct Parts {
     /// Aspects of the parts in `whole` held value-less while they waited
     /// (`retention::strip_purged`): held so once joined (`retention::stripped_joined`).
     pub stripped: Vec<usize>,
+    /// The slots of the parts that did not hash: no part of this commit.
+    pub junk: Vec<(usize, usize)>,
 }
 
 impl Parts {
@@ -537,7 +539,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if let Some(r) = &hold {
         aside.add(r.clone(), blob.parts.iter().map(|p| (p.ai, p.di)).filter(|x| !opening.contains(x) && !skip.contains(x)));
     }
-    let mut out = Parts::default();
+    let mut out = Parts { junk, ..Parts::default() };
     let mut interner = Interner::new();
     // tests let a local writer break the writer rules, to test receivers
     let rules = !(tx.core.skip_writer_rules && h.author == tx.core.id.tid());
@@ -759,15 +761,17 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
     // what `waits_without_expired` judges: `examine` takes bad parts and those waiting out of `blob`
     let held = (!inline || blob.header.aspects.iter().any(|a| a.expires.is_some())).then(|| blob.parts.clone());
     let exam = examine(tx, &mut blob, &id, &BTreeSet::new())?;
-    if let (Exam::Ready(_), Some(held)) = (&exam, held)
-        && let Some(rest) = waits_without_expired(tx, &blob, &held, &id)?
-    {
-        let h = blob.header.clone();
-        blob.parts = held;
-        // those past their expiry go, a purged one is held value-less (its slot kept as stripped)
-        crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
-        blob.parts.retain(|p| rest.contains(&(p.ai, p.di)));
-        return ingest_class(tx, blob, origin);
+    if let (Exam::Ready(parts), Some(mut held)) = (&exam, held) {
+        // a relay's junk is no part that went: no flag for it
+        held.retain(|p| !parts.junk.contains(&(p.ai, p.di)));
+        if let Some(rest) = waits_without_expired(tx, &blob, &held, &id)? {
+            let h = blob.header.clone();
+            blob.parts = held;
+            // those past their expiry go, a purged one is held value-less (its slot kept as stripped)
+            crate::retention::pending_drops(tx, &id, &mut blob, &h)?;
+            blob.parts.retain(|p| rest.contains(&(p.ai, p.di)));
+            return ingest_class(tx, blob, origin);
+        }
     }
     let out = match exam {
         Exam::Ready(parts) => {

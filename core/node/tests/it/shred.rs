@@ -28,6 +28,16 @@ fn peer(seed: u64) -> Peer {
     Peer { engine, clock, backend, root, events }
 }
 
+/// `p` restarted over its durable state, as `peer` opens it.
+fn reopened(p: Peer, seed: u64) -> Peer {
+    let Peer { clock, backend, root, .. } = p;
+    let cfg = Config { store: StoreConfig { arity: 4, depth: 8, page_max: 512, ..StoreConfig::default() }, ..Config::default() };
+    let c: Arc<dyn Clock> = clock.clone();
+    let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
+    let events = engine.subscribe();
+    Peer { engine, clock, backend, root, events }
+}
+
 fn net2(seed: u64) -> LocalPeer {
     LocalPeer::of(vec![peer(seed), peer(seed + 1)], seed)
 }
@@ -744,4 +754,199 @@ fn purged_while_pending_large_or_paged_unrecoverable_spec_commits_5() {
         assert_eq!(lp.peers[1].engine.state_digest(&t, &a).unwrap(), lp.peers[0].engine.state_digest(&t, &a).unwrap(), "large {large} request first {request_first}");
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "large {large} request first {request_first}: recovered once applied");
     }
+}
+
+/// The parts of `pk` on `(t, a)`, each slot's delta replaced by what a stripped slot holds, if `empty`.
+fn part_on(pk: &osis_node::local_peer::Package, t: Tid, a: &osis_base::Ak, empty: bool) -> Vec<u8> {
+    let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let h = b.header.clone();
+    b.parts.retain(|p| h.aspects[p.ai].tid == t && h.aspects[p.ai].ak == *a);
+    assert!(!b.parts.is_empty());
+    if empty {
+        for p in &mut b.parts {
+            p.delta = osis_base::encode(&Value::List(Vec::new()));
+        }
+    }
+    b.encode()
+}
+
+// spec/commits.md §5: a part held value-less, past its expiry when its commit applies beside it, goes
+// with its kept stripped delta: nothing is left for a relay's empty slot to bring back.
+#[test]
+fn stripped_delta_goes_with_its_part_past_expiry_spec_commits_5() {
+    let mut lp = net2(301);
+    let (t, y, q) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-R5b")).unwrap();
+    m.expires(t, &REG, exp).unwrap();
+    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+    m.set(y, &REG, &s("y")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(q, &REG, &s("q")).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    lp.deliver(1, &request).unwrap();
+    lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), false), Vec::new()).unwrap();
+    assert_eq!(lp.peers[1].engine.stripped_count(&c).unwrap(), 1);
+    lp.peers[1].clock.advance(120_000);
+    lp.peers[1].engine.ingest(&part_on(&pk, y, &ak("t:reg.0"), false), Vec::new()).unwrap();
+    assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
+    assert_eq!(lp.peers[1].engine.stripped_count(&c).unwrap(), 0);
+    let _ = lp.peers[1].engine.ingest(&part_on(&pk, t, &ak("t:reg.0"), true), Vec::new());
+    assert!(lp.peers[1].engine.pending().is_empty());
+    assert!(!recoverable(&mut lp.peers[1], b"SECRET-R5b"));
+}
+
+// spec/commits.md §4, §5: a relay's junk beside a true part past its expiry is no part that went: only
+// the true part's aspect is flagged.
+#[test]
+fn junk_beside_a_part_past_expiry_raises_no_flag_spec_commits_5() {
+    let mut lp = net2(302);
+    let (t, y) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    lp.sync(0, 1).unwrap();
+    lp.advance(5);
+    let exp = osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.expires(t, &REG, exp).unwrap();
+    m.set(t, &BRIEF, &s("b")).unwrap();
+    m.expires(t, &BRIEF, exp).unwrap();
+    m.set(y, &REG, &s("y")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.peers[1].clock.advance(120_000);
+    let mut b = osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:reg.0"), false)).unwrap();
+    b.parts.extend(osis_commit::CommitBlob::decode(&part_on(&pk, t, &ak("t:brief.0"), true)).unwrap().parts);
+    b.parts.sort_by_key(|p| (p.ai, p.di));
+    let r = lp.peers[1].engine.ingest(&b.encode(), Vec::new()).unwrap();
+    assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), "{r:?}");
+    let flagged: Vec<_> = lp.peers[1].engine.suspects().unwrap().into_iter().map(|x| x.1).collect();
+    assert_eq!(flagged, vec![ak("t:reg.0")]);
+}
+
+/// Of each 5040 orders of `past_expiry_and_purge_alike_in_every_order`, this stride's: 1 runs them all
+/// (with the sync sets and clocks 75600 cases, 670 s on 16 threads at load).
+const ORDER_STRIDE: usize = 389;
+
+// spec/commits.md §4, §5: a purged part, a part past its expiry, an unchecked first copy of a slot and
+// a relay's empty slots (the bytes of a stripped one, no record behind them or one), in any order, T
+// passing and a restart anywhere among them: each true copy delivered again at the end, the node reads
+// alike whatever it syncs, its commit applied, no flag left, nothing of either value recoverable.
+#[test]
+fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
+    let mut lp = net2(304);
+    let (t2, t3) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    let setup = lp.packages(0).unwrap();
+    let t = new_thing(&mut lp, 0);
+    let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !setup.iter().any(|k| k.id == p.id)).collect();
+    assert_eq!(rec.len(), 1);
+    lp.advance(5);
+    let start = lp.peers[0].engine.now().0;
+    let exp = osis_base::WallMs(start + 60_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("SECRET-R5c")).unwrap();
+    m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+    m.set(t2, &BRIEF, &s("BRIEF-R5c")).unwrap();
+    m.expires(t2, &BRIEF, exp).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.set(t3, &REG, &s("other3")).unwrap();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+    let p = lp.peers[0].commit(m).unwrap().unwrap();
+    let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
+    let ids: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+    let (reg, list, brief) = (ak("t:reg.0"), ak("t:list.0"), ak("t:brief.0"));
+    let items = [
+        (request.bytes.clone(), request.blobs.clone()),
+        (part_on(&whole, t, &reg, false), Vec::new()),
+        (part_on(&whole, t, &list, false), Vec::new()),
+        (part_on(&whole, t2, &brief, false), Vec::new()),
+        (part_on(&whole, t, &reg, true), Vec::new()),
+        (part_on(&whole, t2, &brief, true), Vec::new()),
+        (rec[0].bytes.clone(), rec[0].blobs.clone()),
+    ];
+    let mut orders: Vec<Vec<usize>> = vec![Vec::new()];
+    for i in 0..items.len() {
+        orders = orders.iter().flat_map(|q| (0..=q.len()).map(move |at| { let mut x = q.clone(); x.insert(at, i); x })).collect();
+    }
+    // (what it syncs, deliveries before T, whether a tick follows T)
+    let shapes: Vec<(usize, usize, bool)> = (0..3).flat_map(|sync| [(0, false), (2, false), (2, true), (4, false), (4, true)].map(|(k, tick)| (sync, k, tick))).collect();
+    let cases: Vec<(usize, usize)> = shapes.iter().enumerate().flat_map(|(n, _)| (0..orders.len()).step_by(ORDER_STRIDE).map(move |o| (n, o))).collect();
+    let outcomes = std::sync::Mutex::new(std::collections::BTreeMap::<String, String>::new());
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get());
+    let (setup, items, orders, shapes, cases, ids) = (&setup, &items, &orders, &shapes, &cases, &ids);
+    std::thread::scope(|sc| {
+        for _ in 0..threads {
+            sc.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(&(n, o)) = cases.get(at) else { return };
+                let ((sync, k, tick), order) = (shapes[n], &orders[o]);
+                let mut p = peer(9000 + at as u64);
+                for pk in setup {
+                    p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+                }
+                match sync {
+                    1 => p.engine.set_syncing(t, true).unwrap(),
+                    2 => p.engine.set_syncing(t2, true).unwrap(),
+                    _ => {}
+                }
+                let late = exp.0 + 5_000;
+                let to = |p: &mut Peer, when: u64| {
+                    let now = p.engine.now().0;
+                    p.clock.advance(when.saturating_sub(now));
+                };
+                to(&mut p, if k > 0 { start + 20 } else { late });
+                for (i, x) in order.iter().enumerate() {
+                    if i == k && k > 0 {
+                        to(&mut p, late);
+                        if tick {
+                            p.engine.tick().unwrap();
+                        }
+                    }
+                    if i == 3 && at % 2 == 1 {
+                        p = reopened(p, at as u64);
+                    }
+                    let _ = p.engine.ingest(&items[*x].0, items[*x].1.clone());
+                    p.engine.reexamine().unwrap();
+                    // never shown past its expiry (a value held before T goes at the tick), nor after the request
+                    if (k == 0 || tick) && p.engine.now().0 >= exp.0 {
+                        assert_eq!(p.engine.get(&t2, &brief).unwrap(), None, "order {order:?}");
+                    }
+                    if order[..=i].contains(&0) {
+                        assert_ne!(p.engine.get(&t, &reg).unwrap(), Some(s("SECRET-R5c")), "order {order:?}");
+                    }
+                }
+                // before the copies that would heal it: every item delivered once
+                assert!(!recoverable(&mut p, b"SECRET-R5c"), "order {order:?}: purged value kept");
+                assert!(!(k == 0 || tick) || !recoverable(&mut p, b"BRIEF-R5c"), "order {order:?}: expired value kept");
+                if p.engine.pending().is_empty() {
+                    assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
+                }
+                for x in [1, 2, 3] {
+                    let _ = p.engine.ingest(&items[x].0, items[x].1.clone());
+                    p.engine.reexamine().unwrap();
+                }
+                p.engine.tick().unwrap();
+                p.engine.reexamine().unwrap();
+                let e = &mut p.engine;
+                let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
+                let gone = !recoverable(&mut p, b"SECRET-R5c") && !recoverable(&mut p, b"BRIEF-R5c");
+                outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("sync {sync} k {k} tick {tick} order {order:?}"));
+            });
+        }
+    });
+    let out = outcomes.into_inner().unwrap();
+    assert_eq!(out.len(), 1, "{out:#?}");
+    let (only, _) = out.iter().next().unwrap();
+    assert!(only.starts_with("gone true applied true pending [] stripped 0 flags [] reads None Some(List([Str(\"a\")])) None"), "{only}");
 }

@@ -98,6 +98,13 @@ impl Engine {
         Ok(osis_store::attack(&ev, Some(&ciphers)))
     }
 
+    /// How many stripped deltas are kept for commit `id` (`retention::strip_purged`).
+    #[doc(hidden)]
+    pub fn stripped_count(&mut self, id: &osis_base::CommitId) -> Result<usize> {
+        let id = *id;
+        self.run(|tx| Ok(crate::retention::stripped_of(tx, &id)?.len()))
+    }
+
     /// About the bytes the pending commits' kept examinations hold (`apply::waits`).
     #[doc(hidden)]
     pub fn waits_bytes(&self) -> usize {
