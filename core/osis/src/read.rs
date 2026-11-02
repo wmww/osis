@@ -115,8 +115,8 @@ pub(crate) fn lenient<T>(tid: Tid, ak: &Ak, r: std::result::Result<T, PathError>
 
 /// A consistent view for several reads (`Osis::read`); also what every single read uses.
 pub struct Reader<'a> {
-    e: &'a mut Engine,
-    limit: usize,
+    pub(crate) e: &'a mut Engine,
+    pub(crate) limit: usize,
 }
 
 /// `Reader::knows` on an engine already locked (a check inside a commit).
@@ -258,6 +258,7 @@ impl Osis {
 
     /// A typed read: `None` when absent or the thing is unknown.
     pub fn get<K: AspectKey>(&self, tid: Tid, key: K) -> Result<Option<K::T>> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.get(tid, &key))
     }
 
@@ -267,24 +268,29 @@ impl Osis {
     }
 
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.aspects(tid))
     }
 
     /// `Reader::groups_of`.
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.groups_of(tid))
     }
 
     pub fn roster(&self, thing: Tid) -> Roster {
+        let crate::handle::Source::Local = self.route(thing);
         self.read(|r| r.roster(thing))
     }
 
     pub fn role_on(&self, tid: Tid) -> Option<Role> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.role_on(tid))
     }
 
     /// `Reader::knows`: the thing is here, not unknown or deleted.
     pub fn knows(&self, tid: Tid) -> bool {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.knows(tid))
     }
 
@@ -294,16 +300,19 @@ impl Osis {
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
     pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.owner_of(tid))
     }
 
     /// When the thing was created (`Reader::created`).
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.created(tid))
     }
 
     /// When the thing's content last changed (`Reader::changed`).
     pub fn changed(&self, tid: Tid) -> Option<Stamp> {
+        let crate::handle::Source::Local = self.route(tid);
         self.read(|r| r.changed(tid))
     }
 
@@ -316,6 +325,7 @@ impl Osis {
     /// Whether two tids name the same thing across moves (spec/permissions.md §7): the only
     /// explicit resolution call; `Tid` equality is plain bits.
     pub fn same_thing(&self, a: Tid, b: Tid) -> bool {
+        let crate::handle::Source::Local = self.route(a);
         self.read(|r| r.resolve(a) == r.resolve(b))
     }
 
@@ -352,6 +362,7 @@ impl Osis {
     /// callback, `f` gets the database handle, so it need not capture one (a captured clone in
     /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
     pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Subscription {
+        let crate::handle::Source::Local = self.route(tid);
         let tid = self.read(|r| r.resolve(tid));
         self.subscribe(Filter::Thing(tid), true, move |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -378,6 +389,7 @@ impl Osis {
 
     /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change.
     pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Roster) + Send + 'static) -> Subscription {
+        let crate::handle::Source::Local = self.route(actor);
         let actor = self.read(|r| r.resolve(actor));
         self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
@@ -416,11 +428,13 @@ pub struct AspectRef<'d, K> {
 
 impl<'d, K: AspectKey> AspectRef<'d, K> {
     pub fn get(&self) -> Result<Option<K::T>> {
+        let crate::handle::Source::Local = self.db.route(self.tid);
         self.db.read(|r| r.get(self.tid, &self.key))
     }
 
     /// The whole value, untyped.
     pub fn get_value(&self) -> Result<Option<Value>> {
+        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
         self.db.read(|r| r.value(self.tid, &ak))
     }
@@ -438,6 +452,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     where
         K: Sync,
     {
+        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
         let tid = self.db.read(|r| r.resolve(self.tid));
         let mut state = None;
@@ -463,6 +478,7 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
     /// source; an unchanged value is not repeated, an error always is. Follows moves.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
+        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
         let tid = self.db.read(|r| r.resolve(self.tid));
         let key = self.key.clone();
@@ -496,6 +512,7 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
 
     /// The untyped value at the path (typed projection when the key has a schema).
     pub fn get_value(&self) -> Result<Option<Value>> {
+        let crate::handle::Source::Local = self.a.db.route(self.a.tid);
         self.a.db.read(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
     }
 

@@ -376,6 +376,26 @@ fn bench_ephemeral_sets() {
     assert_eq!(db.get(t, k).unwrap(), (n > 0).then(|| Value::Int(n - 1)));
 }
 
+// The write path's batch cost (notes/client-port.md §8 (a)): `OSIS_BENCH_N` map puts into one
+// durable aspect in one batch: recording, building the mutation, one commit. spec: none (cost)
+#[test]
+#[ignore = "bench: release, by hand"]
+fn bench_batch_puts() {
+    let n = bench_n();
+    let db = db(1);
+    let k = ak("app:m.0");
+    let t = db.write_with(|w| w.create_durable(db.me())).unwrap();
+    db.write_with(|w| {
+        let mut a = w.at(t, k.clone());
+        for i in 0..n {
+            a.path(osis::p!()).put(&Value::Int(i), &Value::Int(i))?;
+        }
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(db.at(t, k).path(osis::p!(Value::Int(0))).get_value().unwrap().is_some(), n > 0);
+}
+
 // The baseline of `bench_ephemeral_sets`: the same sets into an in-memory map. spec: none (cost)
 #[test]
 #[ignore = "bench: release, by hand"]

@@ -2,16 +2,20 @@
 //! thing, of any size. `set` makes a value equal (structural diff, spec/crdt.md §9), `edit`
 //! writes only what changed between what the app showed and what the user produced, `replace`
 //! resets then writes, path ops change one position. Rights are checked locally before signing.
+//!
+//! A batch records its API ops in wire-ready form (`WriteOp`, notes/client-port.md §1), checking
+//! each as it is recorded; `commit` builds the engine `Mutation` from them under the lock.
 
 use crate::error::{Error, Result};
-use crate::handle::Osis;
-use crate::read::ak_of;
+use crate::handle::{Osis, Source};
+use crate::keys::Key;
+use crate::read::{Reader, ak_of};
+use osis_base::{Ak, CreationRecord, Role, Tid, Ts, Value, WallMs};
 use osis_commit::PurgeItem;
-use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{AnyView, Op, PathOp, PathSeg, diff_values};
 use osis_node::{ChangeId, Mutation};
 use osis_schema::core_types::{GROUP, PLACED, is_role_class};
-use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Step, type_at, validate_write};
+use osis_schema::{AspectKey, CaseId, Codec, Path, PathError, Retention, Schema, Step, type_at, validate_write};
 use std::collections::BTreeMap;
 use std::ops::Range;
 use std::time::Duration;
@@ -24,22 +28,54 @@ pub struct Committed {
     pub ts: Ts,
 }
 
+/// One API op of a batch in wire-ready form: tids resolved, aspects by index into the batch's
+/// key table (`Write::keys`), values untyped and validated, expiry as wall time.
+#[derive(Clone, Debug)]
+pub(crate) enum WriteOp {
+    /// A new thing; its record fixes its tid.
+    Create(CreationRecord),
+    /// An empty `group.0` (the thing was no group when recorded).
+    MakeGroup(Tid),
+    /// Adds (removes) `member` to the items, or the subgroups, of `g`.
+    Group { g: Tid, member: Tid, items: bool, add: bool },
+    /// An op at a path of an aspect (whole-value ops at the root).
+    Path { tid: Tid, key: u32, op: PathOp },
+    /// The aspect's delta in this batch expires at `at`.
+    Expires { tid: Tid, key: u32, at: WallMs },
+    /// The aspect's delta in this batch has retention `r`.
+    Retention { tid: Tid, key: u32, r: Retention },
+    /// Purges the aspect's history (after its removal, recorded before).
+    Purge { tid: Tid, key: u32 },
+    /// Removes the thing's aspects and the placements this node may remove, as held at commit.
+    Delete(Tid),
+}
+
+impl WriteOp {
+    /// The thing it names; `None` for a create (it goes where its batch goes).
+    fn tid(&self) -> Option<Tid> {
+        match self {
+            WriteOp::Create(_) => None,
+            WriteOp::MakeGroup(t) | WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
+            WriteOp::Path { tid, .. } | WriteOp::Expires { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } => Some(*tid),
+        }
+    }
+}
+
 /// A batch of writes: its durable ops become one commit, its ephemeral ops (keys declared
 /// `ephemeral` or `signal`) apply in memory, all or nothing. Reads see written state only.
 #[must_use = "a Write does nothing until commit()"]
 pub struct Write<'d> {
     db: &'d Osis,
-    m: Mutation,
+    ops: Vec<WriteOp>,
+    /// The aspect keys the ops name, each once per (AK, schema).
+    keys: Vec<Key>,
+    /// `keys` by AK and the address of the writer's schema (0: untyped).
+    key_ix: BTreeMap<(Ak, usize), u32>,
     actor: Tid,
     created: Vec<Tid>,
-    /// Things placed into groups by this batch (the `NotSynced` check).
-    placed: Vec<Tid>,
     /// Per group whose `group.0` this batch writes through the group calls: the expiry those
     /// writes asked for. Expiry is per aspect write, so one batch cannot mix them.
     group_exp: BTreeMap<Tid, Option<Duration>>,
-    /// (thing, group) placements and subgroup edges this batch removes: their tied edges go
-    /// after the commit where that is a self-removal (`Osis::untie_now`).
-    unplaced: Vec<(Tid, Tid)>,
     /// A thing that must still be known (`Osis::knows`) when the batch commits, checked under
     /// the commit's lock: a text session never recreates a thing deleted since it knew it.
     pub(crate) alive: Option<Tid>,
@@ -48,7 +84,7 @@ pub struct Write<'d> {
 impl Osis {
     /// A new write batch acting as `me()`.
     pub fn write(&self) -> Write<'_> {
-        Write { db: self, m: Mutation::new(), actor: self.me(), created: Vec::new(), placed: Vec::new(), group_exp: BTreeMap::new(), unplaced: Vec::new(), alive: None }
+        Write { db: self, ops: Vec::new(), keys: Vec::new(), key_ix: BTreeMap::new(), actor: self.me(), created: Vec::new(), group_exp: BTreeMap::new(), alive: None }
     }
 
     /// Runs `f` on a new batch and commits it if `f` succeeds; returns what `f` returned (the
@@ -93,6 +129,24 @@ fn expiry_in(db: &Osis, d: Duration) -> Result<WallMs> {
     Ok(WallMs(db.now().0.saturating_add(ms)))
 }
 
+/// `group.0` as a key of the shared core schema.
+fn group_key() -> Key {
+    Key { ak: Ak::new(GROUP.ak()).unwrap_or_else(|_| unreachable!("a core AK")), schema: Some(crate::keys::core_schema()) }
+}
+
+/// Records that a batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another write
+/// of it in the batch asked for a different one. `true` when this is its first.
+fn note_expiry(exp: &mut BTreeMap<Tid, Option<Duration>>, g: Tid, d: Option<Duration>) -> Result<bool> {
+    match exp.get(&g) {
+        Some(x) if *x == d => Ok(false),
+        Some(_) => Err(Error::Invalid(format!("this batch writes the groups of {g} with different expiries (expiry is per aspect write): use one batch each"))),
+        None => {
+            exp.insert(g, d);
+            Ok(true)
+        }
+    }
+}
+
 impl<'d> Write<'d> {
     /// Acts for `actor` instead of `me()` (header actor; this node needs its rights).
     pub fn act_as(&mut self, actor: Tid) -> &mut Self {
@@ -109,14 +163,30 @@ impl<'d> Write<'d> {
         if self.created.contains(&t) || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
+    /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
+    /// per (AK, schema) of the batch. A schema is told apart by address: keys borrow theirs
+    /// from a static or an `Arc` the table shares, so the address is not reused meanwhile.
+    fn intern<K: AspectKey>(&mut self, ak: Ak, key: &K) -> u32 {
+        let at = key.schema().map_or(0, |s: &Schema| std::ptr::from_ref(s).addr());
+        let id = (ak, at);
+        if let Some(i) = self.key_ix.get(&id) {
+            return *i;
+        }
+        let i = u32::try_from(self.keys.len()).unwrap_or(u32::MAX);
+        self.keys.push(Key { ak: id.0.clone(), schema: key.shared_schema() });
+        self.key_ix.insert(id, i);
+        i
+    }
+
     /// A new thing owned by `owner` (fixed forever; needs write on it). It is ephemeral (in
     /// memory, gone at restart) until its first durable write, which persists it with its owner
     /// chain and its placements, keeping its tid. Group ops in the same batch place it
     /// atomically; placing an ephemeral thing is an ephemeral write of the group.
     pub fn create(&mut self, owner: Tid) -> Result<Tid> {
         let owner = self.known(owner)?;
-        let m = &mut self.m;
-        let t = self.db.engine(|e| e.new_thing(m, owner));
+        let rec = self.db.engine(|e| e.thing_record(owner));
+        let t = rec.tid();
+        self.ops.push(WriteOp::Create(rec));
         self.created.push(t);
         Ok(t)
     }
@@ -129,23 +199,21 @@ impl<'d> Write<'d> {
             return Ok(());
         }
         self.group_expiry(t, None)?;
-        self.m.set(t, &GROUP, &osis_schema::core_types::Group::default())?;
+        self.ops.push(WriteOp::MakeGroup(t));
         Ok(())
     }
 
     /// Records that this batch writes `g`'s `group.0` with expiry `d`; `Invalid` when another
     /// write of it in this batch asked for a different one.
     fn group_expiry(&mut self, g: Tid, d: Option<Duration>) -> Result<()> {
-        match self.group_exp.get(&g) {
-            Some(x) if *x == d => return Ok(()),
-            Some(_) => return Err(Error::Invalid(format!("this batch writes the groups of {g} with different expiries (expiry is per aspect write): use one batch each"))),
-            None => {}
+        if !note_expiry(&mut self.group_exp, g, d)? {
+            return Ok(());
         }
         if let Some(d) = d {
-            let t = expiry_in(self.db, d)?;
-            self.m.expires(g, &GROUP, t)?;
+            let at = expiry_in(self.db, d)?;
+            let key = self.intern(group_key().ak, &group_key());
+            self.ops.push(WriteOp::Expires { tid: g, key, at });
         }
-        self.group_exp.insert(g, d);
         Ok(())
     }
 
@@ -155,10 +223,7 @@ impl<'d> Write<'d> {
         self.group_expiry(g, exp)?;
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
-        self.m.op(g, &GROUP, group_op(items, member, add))?;
-        if !add {
-            self.unplaced.push((member, g));
-        }
+        self.ops.push(WriteOp::Group { g, member, items, add });
         Ok(())
     }
 
@@ -177,12 +242,7 @@ impl<'d> Write<'d> {
     /// write, so every group call on `g` in this batch must ask for the same expiry (else
     /// `Invalid`).
     pub fn place_expiring(&mut self, tid: Tid, g: Tid, expires: Option<Duration>) -> Result<()> {
-        let t = self.resolve(tid);
-        self.group(g, true, tid, true, expires)?;
-        let g = self.resolve(g);
-        self.m.require_synced(t, g);
-        self.placed.push(t);
-        Ok(())
+        self.group(g, true, tid, true, expires)
     }
     /// Removes `tid` from the items of `g`. A tied edge of `g` on `tid` (`Osis::share_into`)
     /// goes in a commit right after when this node may remove it as a self-removal (admin on `g`
@@ -200,64 +260,53 @@ impl<'d> Write<'d> {
 
     /// Removes every aspect the node knows of `tid` and its placements and subgroup edges in
     /// every group this node may write (one it may not keeps listing it; it reads deleted
-    /// there). Afterwards `knows(tid)` is `false`; the tid stays valid and a later write
-    /// recreates the thing.
+    /// there), as held when the batch commits. Afterwards `knows(tid)` is `false`; the tid stays
+    /// valid and a later write recreates the thing.
     pub fn delete(&mut self, tid: Tid) -> Result<()> {
         let t = self.known(tid)?;
-        let aks = self.db.aspects(t)?;
-        for ak in aks.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
-            // the key decides the side that holds it
-            self.m.remove_aspect(t, ak)?;
-        }
-        let gs = self.db.groups_of(t);
-        let writable = |g: &Tid| matches!(self.db.role_on(*g), Some(Role::Write | Role::Admin));
-        let items: Vec<Tid> = gs.item_of.into_iter().filter(|g| *g != t && writable(g)).collect();
-        let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(g)).collect();
-        for g in items {
-            self.unplace(t, g)?;
-        }
-        for g in subs {
-            self.remove_subgroup(g, t)?;
-        }
-        self.m.free(t);
+        self.ops.push(WriteOp::Delete(t));
         Ok(())
     }
 
     /// A raw path op through `key` (text sessions).
-    pub(crate) fn raw_op(&mut self, tid: Tid, key: &crate::Key, op: PathOp) -> Result<()> {
+    pub(crate) fn raw_op(&mut self, tid: Tid, key: &Key, op: PathOp) -> Result<()> {
         let t = self.known(tid)?;
-        self.m.op(t, key, op)?;
+        let key = self.intern(key.ak.clone(), key);
+        self.ops.push(WriteOp::Path { tid: t, key, op });
         Ok(())
     }
 
     /// One aspect of a thing, for whole-value and path ops.
     pub fn at<K: AspectKey>(&mut self, tid: Tid, key: K) -> AspectWrite<'_, 'd, K> {
-        let bad = match ak_of(&key) {
-            Err(e) => Some(e),
-            Ok(ak) if read_only(ak.as_str()) || is_role_class(ak.as_str()) => Some(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
-            Ok(_) => None,
+        let ix = match ak_of(&key) {
+            Err(e) => Err(e),
+            Ok(ak) if read_only(ak.as_str()) || is_role_class(ak.as_str()) => Err(Error::Invalid(format!("{ak} is written only by the engine or the sharing calls"))),
+            Ok(ak) => Ok(self.intern(ak, &key)),
         };
         let tid = self.resolve(tid);
-        AspectWrite { w: self, tid, key, bad }
+        AspectWrite { w: self, tid, key, ix }
+    }
+
+    /// The batch's source: that of the first thing it names.
+    fn source(&self) -> Source {
+        self.ops.iter().find_map(WriteOp::tid).map_or(Source::Local, |t| self.db.route(t))
     }
 
     /// Writes every op: the durable ones as one atomic commit, the ephemeral ones in memory;
     /// `None` when nothing changes. Fails before anything applies with `Permission`,
     /// `UnknownThing` or `Invalid`.
-    pub fn commit(mut self) -> Result<Option<Committed>> {
-        self.m.act_as(self.actor);
-        let m = std::mem::take(&mut self.m);
-        let placed = std::mem::take(&mut self.placed);
-        let unplaced = std::mem::take(&mut self.unplaced);
-        let alive = self.alive;
+    pub fn commit(self) -> Result<Option<Committed>> {
+        let Source::Local = self.source();
         let db = self.db;
-        let r = self.db.engine(|e| {
-            if let Some(t) = alive
+        let limit = db.inner.limit;
+        let (r, unplaced) = db.engine(|e| {
+            if let Some(t) = self.alive
                 && !crate::read::knows_in(e, t)
             {
                 return Err(Error::UnknownThing { tid: t });
             }
-            Ok(match e.write(m)? {
+            let Built { m, placed, unplaced } = self.build(&mut Reader { e, limit })?;
+            let r = match e.write(m)? {
                 Some(w) => {
                     if w.id.commit().is_some() {
                         not_synced(e, &placed);
@@ -265,10 +314,89 @@ impl<'d> Write<'d> {
                     Some(Committed { id: w.id, ts: w.ts })
                 }
                 None => None,
-            })
+            };
+            Ok((r, unplaced))
         })?;
         db.untie_now(&unplaced);
         Ok(r)
+    }
+
+    /// The engine mutation of the recorded ops, against the state `r` holds (`delete`).
+    fn build(self, r: &mut Reader<'_>) -> Result<Built> {
+        let Write { ops, keys, actor, created, mut group_exp, .. } = self;
+        let gk = std::cell::LazyCell::new(group_key);
+        let mut b = Built { m: Mutation::new(), placed: Vec::new(), unplaced: Vec::new() };
+        let key = |i: u32| keys.get(i as usize).ok_or_else(|| Error::Invalid("op names no key of its batch".into()));
+        for op in ops {
+            match op {
+                WriteOp::Create(rec) => {
+                    b.m.create(rec);
+                }
+                WriteOp::MakeGroup(t) => {
+                    b.m.op(t, &*gk, PathOp { path: Vec::new(), op: Op::Set(osis_schema::core_types::Group::default().to_value()) })?;
+                }
+                WriteOp::Group { g, member, items, add } => b.group(&gk, g, member, items, add)?,
+                WriteOp::Path { tid, key: k, op } => {
+                    b.m.op(tid, key(k)?, op)?;
+                }
+                WriteOp::Expires { tid, key: k, at } => {
+                    b.m.expires(tid, key(k)?, at)?;
+                }
+                WriteOp::Retention { tid, key: k, r } => {
+                    b.m.retention(tid, key(k)?, r)?;
+                }
+                WriteOp::Purge { tid, key: k } => {
+                    b.m.purge(PurgeItem::Aspect { tid, ak: key(k)?.ak.clone() });
+                }
+                WriteOp::Delete(t) => {
+                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
+                        // the key decides the side that holds it
+                        b.m.remove_aspect(t, ak)?;
+                    }
+                    let gs = r.groups_of(t);
+                    let writable = |r: &Reader<'_>, g: &Tid| matches!(r.role_on(*g), Some(Role::Write | Role::Admin));
+                    let items: Vec<Tid> = gs.item_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
+                    let subs: Vec<Tid> = gs.subgroup_of.into_iter().filter(|g| *g != t && writable(r, g)).collect();
+                    for (g, items) in items.into_iter().map(|g| (g, true)).chain(subs.into_iter().map(|g| (g, false))) {
+                        // as `unplace` / `remove_subgroup` would record it
+                        let g = if created.contains(&g) { g } else { r.resolve(g) };
+                        if !created.contains(&g) && !r.holds(g) {
+                            return Err(Error::UnknownThing { tid: g });
+                        }
+                        let member = if created.contains(&t) { t } else { r.resolve(t) };
+                        note_expiry(&mut group_exp, g, None)?;
+                        b.group(&gk, g, member, items, false)?;
+                    }
+                    b.m.free(t);
+                }
+            }
+        }
+        b.m.act_as(actor);
+        Ok(b)
+    }
+}
+
+/// A batch's engine mutation and the placements its commit acts on.
+struct Built {
+    m: Mutation,
+    /// Things placed into groups (the `NotSynced` check).
+    placed: Vec<Tid>,
+    /// (thing, group) placements and subgroup edges removed: their tied edges go after the
+    /// commit where that is a self-removal (`Osis::untie_now`).
+    unplaced: Vec<(Tid, Tid)>,
+}
+
+impl Built {
+    fn group(&mut self, gk: &Key, g: Tid, member: Tid, items: bool, add: bool) -> Result<()> {
+        self.m.op(g, gk, group_op(items, member, add))?;
+        if items && add {
+            self.m.require_synced(member, g);
+            self.placed.push(member);
+        }
+        if !add {
+            self.unplaced.push((member, g));
+        }
+        Ok(())
     }
 }
 
@@ -292,21 +420,31 @@ pub struct AspectWrite<'w, 'd, K> {
     w: &'w mut Write<'d>,
     tid: Tid,
     key: K,
-    bad: Option<Error>,
+    /// The key's index in the batch's key table, or why no op on it may be recorded.
+    ix: Result<u32>,
 }
 
 impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
-    fn ok(&self) -> Result<()> {
-        match &self.bad {
-            Some(e) => Err(e.clone()),
-            None => Ok(()),
-        }
+    fn ok(&self) -> Result<u32> {
+        self.ix.clone()
+    }
+
+    fn push(&mut self, op: WriteOp) {
+        self.w.ops.push(op);
     }
 
     fn op(&mut self, op: PathOp) -> Result<()> {
-        self.ok()?;
-        self.w.m.op(self.tid, &self.key, op)?;
+        let key = self.ok()?;
+        self.push(WriteOp::Path { tid: self.tid, key, op });
         Ok(())
+    }
+
+    /// A whole-value op of `v`, validated against the writer's schema.
+    fn whole(&mut self, v: &K::T, op: fn(Value) -> Op) -> Result<()> {
+        self.ok()?;
+        let v = self.key.encode(v);
+        self.key.validate(&v)?;
+        self.op(PathOp { path: Vec::new(), op: op(v) })
     }
 
     /// Makes the aspect read `v` (structural diff against the current state: a concurrent
@@ -314,9 +452,7 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// it differs from the current state). For "must be exactly this"; interactive edits use
     /// `edit`.
     pub fn set(&mut self, v: &K::T) -> Result<()> {
-        self.ok()?;
-        self.w.m.set(self.tid, &self.key, v)?;
-        Ok(())
+        self.whole(v, Op::Set)
     }
 
     /// Writes only what differs between `base` (what the app showed) and `new` (what the user
@@ -340,16 +476,12 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
 
     /// Resets the aspect, then writes `v` (discards concurrent edits inside it).
     pub fn replace(&mut self, v: &K::T) -> Result<()> {
-        self.ok()?;
-        self.w.m.replace(self.tid, &self.key, v)?;
-        Ok(())
+        self.whole(v, Op::Replace)
     }
 
     /// Removes the aspect.
     pub fn remove(&mut self) -> Result<()> {
-        self.ok()?;
-        self.w.m.remove_aspect(self.tid, &self.key)?;
-        Ok(())
+        self.op(PathOp { path: Vec::new(), op: Op::RemoveAspect })
     }
 
     /// Counter increment (or max/min observation) at the root.
@@ -364,16 +496,20 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
             return Err(Error::Invalid("purge applies to durable aspects only".into()));
         }
         self.remove()?;
-        let ak = ak_of(&self.key)?;
-        self.w.m.purge(PurgeItem::Aspect { tid: self.tid, ak });
+        let key = self.ok()?;
+        self.push(WriteOp::Purge { tid: self.tid, key });
         Ok(())
     }
 
     /// This write's delta expires at `t` (spec/commits.md §6); default from the key.
     /// Fails the following op with `Invalid` when `t` is not in the future.
     pub fn expires_at(mut self, t: WallMs) -> Self {
-        if self.bad.is_none() {
-            self.bad = if t <= self.w.db.now() { Some(Error::Invalid(format!("expiry {} ms is not in the future", t.0))) } else { self.w.m.expires(self.tid, &self.key, t).err().map(Error::from) };
+        if let Ok(key) = self.ix {
+            if t <= self.w.db.now() {
+                self.ix = Err(Error::Invalid(format!("expiry {} ms is not in the future", t.0)));
+            } else {
+                self.push(WriteOp::Expires { tid: self.tid, key, at: t });
+            }
         }
         self
     }
@@ -389,7 +525,9 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
             None => self,
             Some(Ok(t)) => self.expires_at(t),
             Some(Err(e)) => {
-                self.bad.get_or_insert(e);
+                if self.ix.is_ok() {
+                    self.ix = Err(e);
+                }
                 self
             }
         }
@@ -398,8 +536,8 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
     /// Retention of this write's delta instead of the key's default (spec/commits.md §5);
     /// checked at commit (`Invalid`).
     pub fn retention(mut self, r: Retention) -> Self {
-        if self.bad.is_none() {
-            self.bad = self.w.m.retention(self.tid, &self.key, r).err().map(Error::from);
+        if let Ok(key) = self.ix {
+            self.push(WriteOp::Retention { tid: self.tid, key, r });
         }
         self
     }

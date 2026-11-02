@@ -113,10 +113,8 @@ impl Mutation {
         let ak = ak_of(key)?;
         let defaults = key.defaults();
         let e = self.aspects.entry((tid, ak)).or_insert_with(|| AspectMut { default_expiry: defaults.expires, ..AspectMut::default() });
-        if e.schema.is_none()
-            && let Some(s) = key.schema()
-        {
-            e.schema = Some(Arc::new(s.clone()));
+        if e.schema.is_none() {
+            e.schema = key.shared_schema();
         }
         Ok(e)
     }
@@ -495,7 +493,12 @@ impl Engine {
 
     /// A new thing owned by `owner`, created by `m` (spec/data-model.md §1).
     pub fn new_thing(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
-        m.create(crate::identity::thing_record(owner, None, &mut *self.rng))
+        m.create(self.thing_record(owner))
+    }
+
+    /// The creation record of a new thing owned by `owner` (`Mutation::create` writes it).
+    pub fn thing_record(&mut self, owner: Tid) -> CreationRecord {
+        crate::identity::thing_record(owner, None, &mut *self.rng)
     }
 
     /// A new copy owned by `owner` that this node creates and imports into (spec/permissions.md §7).

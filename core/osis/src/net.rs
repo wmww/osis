@@ -448,6 +448,7 @@ impl crate::Osis {
     /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) {
+        let crate::handle::Source::Local = self.route(group);
         self.act(|l| {
             let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
             if l.sync.receipts_only().contains(&group) != policy.receipts_only {

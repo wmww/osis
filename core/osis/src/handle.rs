@@ -189,6 +189,40 @@ pub struct Osis {
     user: bool,
 }
 
+/// Where an API call on a thing or group goes (notes/client-port.md §1): today always this
+/// process's engine. Every call addressed by a tid or group matches on it (`let
+/// Source::Local = ..` while it has one variant), so adding a source makes each site a compile
+/// error until it is handled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Source {
+    /// This process's engine.
+    Local,
+}
+
+impl Osis {
+    /// The source of calls on `tid` (a thing or a group): a constant until remotes exist.
+    #[inline]
+    pub(crate) fn route(&self, _tid: Tid) -> Source {
+        Source::Local
+    }
+
+    /// The source of calls over `scope` (`None`: every held change).
+    #[inline]
+    pub(crate) fn route_scope(&self, scope: Option<&crate::commits::Scope>) -> Source {
+        match scope {
+            Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
+            Some(crate::commits::Scope::Aspects(a)) => a.first().map_or(Source::Local, |(t, _)| self.route(*t)),
+            None => Source::Local,
+        }
+    }
+
+    /// The source holding change `id`.
+    #[inline]
+    pub(crate) fn route_change(&self, _id: osis_node::ChangeId) -> Source {
+        Source::Local
+    }
+}
+
 impl Clone for Osis {
     /// Always a user handle (a callback may keep a clone of the `&Osis` it is passed).
     fn clone(&self) -> Osis {
@@ -588,10 +622,9 @@ impl Osis {
     /// The key for `ak`: typed by the registered schema that declares it, else untyped.
     pub fn key(&self, ak: &str) -> Result<crate::Key> {
         let ak = osis_base::Ak::new(ak).map_err(|_| Error::Invalid(format!("bad AK {ak:?}")))?;
-        static CORE: std::sync::OnceLock<Arc<Schema>> = std::sync::OnceLock::new();
-        let core = CORE.get_or_init(|| Arc::new(osis_schema::core_schema().clone()));
+        let core = crate::keys::core_schema();
         let schema = if core.aspects.contains_key(ak.as_str()) {
-            Some(core.clone())
+            Some(core)
         } else {
             lock(&self.inner.schemas).iter().rev().find(|s| s.aspects.contains_key(ak.as_str())).cloned()
         };

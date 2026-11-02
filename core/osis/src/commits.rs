@@ -333,6 +333,7 @@ impl Osis {
 
     /// Changes matching `q`, newest first (by `ts`, then ID).
     pub fn commits(&self, q: &CommitQuery) -> Result<Vec<CommitEntry>> {
+        let crate::handle::Source::Local = self.route_scope(q.scope.as_ref());
         let (mut found, aks) = self.found(q.scope.as_ref())?;
         if let Some(n) = q.next {
             if q.scope.is_none() || q.after.is_some() {
@@ -366,12 +367,14 @@ impl Osis {
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Committed>> {
+        let crate::handle::Source::Local = self.route_scope(Some(scope));
         self.step(scope, false)
     }
 
     /// Redoes this actor's newest undo in effect in `scope`, unless a new change of this actor
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Committed>> {
+        let crate::handle::Source::Local = self.route_scope(Some(scope));
         self.step(scope, true)
     }
 
@@ -380,6 +383,7 @@ impl Osis {
     /// as one). An ephemeral change without a log here (another node's, or from before a
     /// restart) is `Invalid`.
     pub fn revert(&self, id: ChangeId) -> Result<Committed> {
+        let crate::handle::Source::Local = self.route_change(id);
         let _g = lock(&self.inner.undo);
         self.revert_one(id)
     }
