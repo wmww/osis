@@ -38,85 +38,212 @@ pub(crate) fn array_head(n: usize) -> usize {
     }
 }
 
-/// An element array, paged when its plain encoding exceeds the target (§8, spec/wire.md §6).
-pub(crate) fn elems_value(cx: &mut Enc, items: Vec<Value>) -> Result<Value, Error> {
-    if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
-        return Ok(v);
+/// An element array (or, `map`, a struct's field map or an enum's payload map) as written (§8,
+/// spec/wire.md §6), built element by element: itself while its plain encoding is at or below
+/// the page target; past it, cut into pages as elements come (`PageCutter`; a field's key and
+/// value bytes are one element, a page of fields a map), each page put through the sink as it
+/// closes; at the end `[Link+]`, or link pages when that list is above the target. Holds the
+/// elements of one page (all of them while the array may still be plain) and the links. The
+/// collecting pass keeps nothing (§3.3 rule 1 notes sources as elements are encoded).
+pub(crate) struct Pager {
+    map: bool,
+    keep: bool,
+    params: PageParams,
+    cutter: PageCutter,
+    /// Elements not yet in a closed page: a list element, or a field's key and value.
+    items: Vec<Item>,
+    /// Elements and their encoded bytes so far: paged once the plain form passes the target.
+    count: usize,
+    size: usize,
+    paging: bool,
+    links: Vec<Value>,
+    /// The test oracle's whole paging (`oracle`): every element held, then cut at the end.
+    #[cfg(any(test, fuzzing))]
+    whole: bool,
+}
+
+impl Pager {
+    pub(crate) fn new(map: bool, params: PageParams) -> Pager {
+        Pager {
+            map,
+            keep: true,
+            params,
+            cutter: PageCutter::new(params.cut),
+            items: Vec::new(),
+            count: 0,
+            size: 0,
+            paging: false,
+            links: Vec::new(),
+            #[cfg(any(test, fuzzing))]
+            whole: false,
+        }
     }
-    if cx.collecting() {
-        return Ok(Value::List(items));
+
+    /// A pager for an array `cx` encodes.
+    pub(crate) fn of(cx: &mut Enc, map: bool) -> Pager {
+        let params = cx.sink().map_or(PageParams::FORMAT, |p| p.params());
+        let mut p = Pager::new(map, params);
+        #[cfg(any(test, fuzzing))]
+        {
+            p.whole = cx.whole;
+        }
+        p.keep = !cx.collecting() || p.oracle();
+        p
     }
-    page_array(cx.sink(), items)
+
+    fn oracle(&self) -> bool {
+        #[cfg(any(test, fuzzing))]
+        return self.whole;
+        #[cfg(not(any(test, fuzzing)))]
+        false
+    }
+
+    /// The next list element.
+    pub(crate) fn push(&mut self, sink: Option<&mut dyn PageSink>, v: Value) -> Result<(), Error> {
+        self.add(sink, Item::Elem(v))
+    }
+
+    /// The next field (`map`).
+    pub(crate) fn push_field(&mut self, sink: Option<&mut dyn PageSink>, k: Value, v: Value) -> Result<(), Error> {
+        self.add(sink, Item::Field(k, v))
+    }
+
+    fn add(&mut self, mut sink: Option<&mut dyn PageSink>, item: Item) -> Result<(), Error> {
+        if !self.keep {
+            return Ok(());
+        }
+        let bytes = item.bytes();
+        self.count += 1;
+        self.size = self.size.saturating_add(bytes.len());
+        if self.paging {
+            return self.feed(sink, item, &bytes);
+        }
+        self.items.push(item);
+        if self.oracle() || array_head(self.count).saturating_add(self.size) <= self.params.target {
+            return Ok(());
+        }
+        // paged (the plain form only grows): cut what is held, then go on as elements come
+        self.paging = true;
+        for item in std::mem::take(&mut self.items) {
+            let b = item.bytes();
+            self.feed(re(&mut sink), item, &b)?;
+        }
+        Ok(())
+    }
+
+    fn feed(&mut self, sink: Option<&mut dyn PageSink>, item: Item, bytes: &[u8]) -> Result<(), Error> {
+        self.items.push(item);
+        self.cutter.feed(bytes);
+        if self.cutter.end_element() { self.put_page(sink) } else { Ok(()) }
+    }
+
+    fn whole(&self, items: Vec<Item>) -> Value {
+        let it = items.into_iter();
+        if self.map {
+            Value::Map(it.filter_map(|i| if let Item::Field(k, v) = i { Some((k, v)) } else { None }).collect())
+        } else {
+            Value::List(it.filter_map(|i| if let Item::Elem(v) = i { Some(v) } else { None }).collect())
+        }
+    }
+
+    fn put_page(&mut self, sink: Option<&mut dyn PageSink>) -> Result<(), Error> {
+        let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+        let items = std::mem::take(&mut self.items);
+        let page = self.whole(items);
+        self.links.push(Value::Link(sink.put(&osis_base::encode(&page))?));
+        Ok(())
+    }
+
+    /// The array as written: at a streamed position of a root being checked (`stream`), its
+    /// link list as the input has it.
+    pub(crate) fn done(self, cx: &mut Enc) -> Result<Value, Error> {
+        if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
+            return Ok(v);
+        }
+        #[cfg(any(test, fuzzing))]
+        if self.whole {
+            return self.done_whole(cx);
+        }
+        self.finish(cx.sink())
+    }
+
+    /// `done` as the whole encoder (`oracle`): the collecting pass returns the elements, the
+    /// real one cuts them all at once.
+    #[cfg(any(test, fuzzing))]
+    fn done_whole(mut self, cx: &mut Enc) -> Result<Value, Error> {
+        let items = std::mem::take(&mut self.items);
+        if cx.collecting() {
+            return Ok(self.whole(items));
+        }
+        let encoded = items.iter().map(Item::bytes).collect();
+        oracle::paged(cx.sink(), items, encoded, |v| self.whole(v))
+    }
+
+    /// The array as written (the collecting pass: an empty one).
+    pub(crate) fn finish(mut self, mut sink: Option<&mut dyn PageSink>) -> Result<Value, Error> {
+        if !self.paging {
+            let items = std::mem::take(&mut self.items);
+            return Ok(self.whole(items));
+        }
+        if !self.items.is_empty() {
+            self.put_page(re(&mut sink))?;
+        }
+        let list = Value::List(std::mem::take(&mut self.links));
+        if osis_base::encode(&list).len() <= self.params.target {
+            return Ok(list);
+        }
+        // link pages: the tree-node grouping rule, level 1 only
+        let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
+        let sink = sink.ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+        let mut groups = Vec::new();
+        for g in link_groups(&links, self.params.fanout) {
+            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
+        }
+        let top = Value::List(groups);
+        if osis_base::encode(&top).len() > self.params.target {
+            return Err(Error::Mismatch("fragment needs a third page level"));
+        }
+        Ok(top)
+    }
+}
+
+/// `sink` reborrowed.
+fn re<'s>(sink: &'s mut Option<&mut dyn PageSink>) -> Option<&'s mut dyn PageSink> {
+    match sink {
+        Some(p) => Some(&mut **p),
+        None => None,
+    }
+}
+
+/// A `Pager` element: a list element, or a field's key and value.
+enum Item {
+    Elem(Value),
+    Field(Value, Value),
+}
+
+impl Item {
+    /// Its bytes as the cutter reads them.
+    fn bytes(&self) -> Vec<u8> {
+        match self {
+            Item::Elem(v) => osis_base::encode(v),
+            Item::Field(k, v) => {
+                let mut b = osis_base::encode(k);
+                b.extend(osis_base::encode(v));
+                b
+            }
+        }
+    }
 }
 
 /// An element array as written (§8, spec/wire.md §6): itself at or below the sink's page target,
 /// else `[Link+]` to pages, or to link pages when that list is above the target. Pages are put
 /// through the sink; `None` is fine only for an array that does not page.
-pub fn page_array(pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result<Value, Error> {
-    let encoded: Vec<Vec<u8>> = items.iter().map(osis_base::encode).collect();
-    paged(pages, items, encoded, Value::List)
-}
-
-/// A struct's field map or an enum's payload map as written (§8): a map at or below the page
-/// target, else paged like an element array with each field (key and value bytes) an element
-/// and each page a map of consecutive fields.
-fn page_map(cx: &mut Enc, items: Vec<(Value, Value)>) -> Result<Value, Error> {
-    let whole = |v: Vec<(Value, Value)>| Value::Map(v.into_iter().collect());
-    if let Some(v) = cx.check.as_mut().and_then(|c| c.streamed()) {
-        return Ok(v);
+pub fn page_array(mut pages: Option<&mut dyn PageSink>, items: Vec<Value>) -> Result<Value, Error> {
+    let mut p = Pager::new(false, pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
+    for v in items {
+        p.push(re(&mut pages), v)?;
     }
-    if cx.collecting() {
-        return Ok(whole(items));
-    }
-    let encoded: Vec<Vec<u8>> = items
-        .iter()
-        .map(|(k, v)| {
-            let mut b = osis_base::encode(k);
-            b.extend(osis_base::encode(v));
-            b
-        })
-        .collect();
-    paged(cx.sink(), items, encoded, whole)
-}
-
-/// Pages `items` (canonical bytes `encoded`) when the plain form `whole(items)` is above the
-/// target (spec/wire.md §6).
-fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Vec<u8>>, whole: impl Fn(Vec<T>) -> Value) -> Result<Value, Error> {
-    let params = pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
-    // array and map heads have the same length
-    let size = encoded.iter().fold(array_head(items.len()), |n, e| n.saturating_add(e.len()));
-    if size <= params.target {
-        return Ok(whole(items));
-    }
-    let sink = pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
-    let mut cutter = PageCutter::new(params.cut);
-    let mut links = Vec::new();
-    let mut page = Vec::new();
-    for (item, bytes) in items.into_iter().zip(&encoded) {
-        page.push(item);
-        cutter.feed(bytes);
-        if cutter.end_element() {
-            links.push(Value::Link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
-        }
-    }
-    if !page.is_empty() {
-        links.push(Value::Link(sink.put(&osis_base::encode(&whole(page)))?));
-    }
-    let list = Value::List(links);
-    if osis_base::encode(&list).len() <= params.target {
-        return Ok(list);
-    }
-    // link pages: the tree-node grouping rule, level 1 only
-    let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
-    let mut groups = Vec::new();
-    for g in link_groups(&links, params.fanout) {
-        groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
-    }
-    let top = Value::List(groups);
-    if osis_base::encode(&top).len() > params.target {
-        return Err(Error::Mismatch("fragment needs a third page level"));
-    }
-    Ok(top)
+    p.finish(pages)
 }
 
 /// Links grouped into link pages by the tree-node rule (spec/wire.md §6): a group closes after
@@ -147,11 +274,12 @@ pub(crate) fn encode_elem(cx: &mut Enc, d: &Dot, e: &Elem) -> Result<Value, Erro
 }
 
 fn encode_elems(cx: &mut Enc, elems: &BTreeMap<Dot, Elem>) -> Result<Value, Error> {
-    let mut items = Vec::with_capacity(elems.len());
+    let mut p = Pager::of(cx, false);
     for (d, e) in cx.sorted(elems) {
-        items.push(encode_elem(cx, d, e)?);
+        let v = encode_elem(cx, d, e)?;
+        p.push(cx.sink(), v)?;
     }
-    elems_value(cx, items)
+    p.done(cx)
 }
 
 /// A map entry record `[Dot, Ci?, R, Key?, Opt(Fragment)]`.
@@ -183,11 +311,12 @@ fn head(cx: &mut Enc, enc: Encoding, meta: &Meta) -> Vec<Value> {
 }
 
 fn encode_children(cx: &mut Enc, c: &BTreeMap<u64, Fragment>, step: fn(u64) -> Step) -> Result<Value, Error> {
-    let mut items = Vec::with_capacity(c.len());
+    let mut p = Pager::of(cx, true);
     for (k, f) in c {
-        items.push(encode_field(cx, *k, f, step)?);
+        let (k, v) = encode_field(cx, *k, f, step)?;
+        p.push_field(cx.sink(), k, v)?;
     }
-    page_map(cx, items)
+    p.done(cx)
 }
 
 fn encode_register(cx: &mut Enc, r: &Register) -> Value {
@@ -239,17 +368,19 @@ fn encode_fragment_at(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
         }
         Fragment::Map(m) => {
             let mut a = head(cx, Encoding::Map, &m.meta);
-            let mut items = Vec::with_capacity(m.entries.len());
+            let mut p = Pager::of(cx, false);
             for (id, e) in cx.sorted_by(&m.entries, |id| &id.dot) {
-                items.push(encode_entry(cx, id, e)?);
+                let v = encode_entry(cx, id, e)?;
+                p.push(cx.sink(), v)?;
             }
-            a.push(elems_value(cx, items)?);
+            a.push(p.done(cx)?);
             Value::List(a)
         }
         Fragment::Seq(s) => {
             let mut a = head(cx, s.encoding(), &s.meta);
-            let runs = seq::encode_elems(s, cx)?;
-            a.push(elems_value(cx, runs)?);
+            let mut p = Pager::of(cx, false);
+            seq::encode_elems(s, cx, &mut p)?;
+            a.push(p.done(cx)?);
             Value::List(a)
         }
         Fragment::Slots(s) => {
@@ -276,6 +407,13 @@ fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pa
 
 /// Encodes a delta (§3.2) against its header facts.
 pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+    #[cfg(test)]
+    return oracle::twin(pages, |p| encode_delta_in(d, cx, p), |p| oracle::encode_delta(d, cx, p));
+    #[cfg(not(test))]
+    encode_delta_in(d, cx, pages)
+}
+
+pub(crate) fn encode_delta_in(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     let (enc, frag, _) = encode_top(cx, &d.fragment, None, pages)?;
     let top = Value::List(vec![Value::Bytes(d.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag]);
     Ok(osis_base::encode(&top))
@@ -283,6 +421,13 @@ pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) 
 
 /// Encodes a snapshot delta (§8). The caller strips values of expiring deltas first (§4.7).
 pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+    #[cfg(test)]
+    return oracle::twin(pages, |p| encode_snapshot_in(s, cx, p), |p| oracle::encode_snapshot(s, cx, p));
+    #[cfg(not(test))]
+    encode_snapshot_in(s, cx, pages)
+}
+
+fn encode_snapshot_in(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
     if s.frontiers.sources().any(|(_, c)| c == 0) {
         return Err(Error::Mismatch("frontier counter 0"));
     }
@@ -823,12 +968,121 @@ pub(crate) fn absorbed_value(absorbed: &BTreeMap<osis_base::CommitId, osis_base:
     Value::List(absorbed.iter().map(|(c, a)| Value::List(vec![Value::Bytes(c.0.to_vec()), Value::Tid(*a)])).collect())
 }
 
-/// The whole-delta decoder before streaming: decodes every page into one fragment, then
-/// re-encodes all of it (two passes) and requires the input bytes. The test oracle of
-/// `stream` (it must accept and reject exactly the same inputs).
+/// The whole-delta decoder and encoder before streaming. The decoder decodes every page into one
+/// fragment, then re-encodes all of it (two passes) and requires the input bytes: the test
+/// oracle of `stream` (it must accept and reject exactly the same inputs). The encoder holds
+/// every element of an array before cutting it into pages, and its collecting pass builds the
+/// whole value tree: the test oracle of `Pager` (byte-identical output).
 #[cfg(any(test, fuzzing))]
 pub mod oracle {
     use super::*;
+
+    /// Pages `items` (canonical bytes `encoded`) when the plain form `whole(items)` is above the
+    /// target (spec/wire.md §6).
+    pub(crate) fn paged<T>(mut pages: Option<&mut dyn PageSink>, items: Vec<T>, encoded: Vec<Vec<u8>>, whole: impl Fn(Vec<T>) -> Value) -> Result<Value, Error> {
+        let params = pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
+        // array and map heads have the same length
+        let size = encoded.iter().fold(array_head(items.len()), |n, e| n.saturating_add(e.len()));
+        if size <= params.target {
+            return Ok(whole(items));
+        }
+        let sink = pages.as_mut().ok_or(Error::Mismatch("a paged array needs a page sink"))?;
+        let mut cutter = PageCutter::new(params.cut);
+        let mut links = Vec::new();
+        let mut page = Vec::new();
+        for (item, bytes) in items.into_iter().zip(&encoded) {
+            page.push(item);
+            cutter.feed(bytes);
+            if cutter.end_element() {
+                links.push(Value::Link(sink.put(&osis_base::encode(&whole(std::mem::take(&mut page))))?));
+            }
+        }
+        if !page.is_empty() {
+            links.push(Value::Link(sink.put(&osis_base::encode(&whole(page)))?));
+        }
+        let list = Value::List(links);
+        if osis_base::encode(&list).len() <= params.target {
+            return Ok(list);
+        }
+        let Value::List(links) = list else { return Err(Error::Mismatch("links")) };
+        let mut groups = Vec::new();
+        for g in link_groups(&links, params.fanout) {
+            groups.push(Value::Link(sink.put(&osis_base::encode(&Value::List(g.to_vec())))?));
+        }
+        let top = Value::List(groups);
+        if osis_base::encode(&top).len() > params.target {
+            return Err(Error::Mismatch("fragment needs a third page level"));
+        }
+        Ok(top)
+    }
+
+    /// A content-addressed sink (`twin`): equal pages get equal links whatever the order of puts.
+    #[cfg(test)]
+    struct Cas {
+        params: PageParams,
+        pages: Vec<Vec<u8>>,
+    }
+
+    #[cfg(test)]
+    impl PageSink for Cas {
+        fn put(&mut self, p: &[u8]) -> Result<osis_base::Link, PageError> {
+            self.pages.push(p.to_vec());
+            let hash = osis_base::hash::hash(p);
+            Ok(osis_base::Link { hash, blob: osis_base::BlobId(hash), suite: 1, key: [0; 32] })
+        }
+        fn params(&self) -> PageParams {
+            self.params
+        }
+    }
+
+    /// In this crate's tests every encode runs `new` (the streaming encoder) beside the oracle
+    /// `old`, each into a content-addressed sink, and requires the same root bytes and the same
+    /// pages, or both an error; then `new` into `pages`.
+    #[cfg(test)]
+    pub(crate) fn twin(mut pages: Option<&mut dyn PageSink>, new: impl Fn(Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error>, old: impl Fn(Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error>) -> Result<Vec<u8>, Error> {
+        type Encode<'f> = dyn Fn(Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> + 'f;
+        let run = |f: &Encode| {
+            let mut cas = pages.as_ref().map(|p| Cas { params: p.params(), pages: Vec::new() });
+            let out = f(cas.as_mut().map(|c| c as &mut dyn PageSink));
+            let mut written = cas.map(|c| c.pages).unwrap_or_default();
+            written.sort();
+            (out, written)
+        };
+        let (a, b) = (run(&new), run(&old));
+        match (&a.0, &b.0) {
+            (Ok(x), Ok(y)) => assert!(x == y && a.1 == b.1, "streaming encoder and oracle differ"),
+            (Err(_), Err(_)) => {}
+            (x, y) => panic!("streaming encoder {x:?}, oracle {y:?}"),
+        }
+        new(re(&mut pages))
+    }
+
+    fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
+        let mut enc = Enc::new(cx, pages);
+        enc.whole = true;
+        encode_fragment(&mut enc, f)?;
+        let extra: Vec<Source> = frontiers.map(|fr| fr.sources().map(|(s, _)| s).collect()).unwrap_or_default();
+        enc.finish_collecting(&extra);
+        let frag = encode_fragment(&mut enc, f)?;
+        let fr = frontiers.map(|fr| enc.frontiers_value(fr));
+        Ok((enc, frag, fr))
+    }
+
+    pub fn encode_delta(d: &Delta, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+        let (enc, frag, _) = encode_top(cx, &d.fragment, None, pages)?;
+        let top = Value::List(vec![Value::Bytes(d.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag]);
+        Ok(osis_base::encode(&top))
+    }
+
+    pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
+        if s.frontiers.sources().any(|(_, c)| c == 0) {
+            return Err(Error::Mismatch("frontier counter 0"));
+        }
+        let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
+        let fr = fr.unwrap_or(Value::List(Vec::new()));
+        let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed_value(&s.absorbed)];
+        Ok(osis_base::encode(&Value::List(top)))
+    }
 
     fn replay(dec: &mut Dec) -> crate::wire::Replay {
         let mut r = crate::wire::Replay::new(dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params()));
@@ -845,7 +1099,7 @@ pub mod oracle {
         let fragment = decode_fragment(&mut dec, frag, true)?;
         let mut replay = replay(&mut dec);
         let d = Delta { nonce: nonce(n)?, fragment };
-        canonical(bytes, encode_delta(&d, cx, Some(&mut replay)))?;
+        canonical(bytes, self::encode_delta(&d, cx, Some(&mut replay)))?;
         prune_stable(&d.fragment, None)?;
         Ok(d)
     }
@@ -860,7 +1114,7 @@ pub mod oracle {
         let (frontiers, absorbed) = snapshot_tail(&dec, fr, ab)?;
         let mut replay = replay(&mut dec);
         let s = Snapshot { nonce: nonce(n)?, fragment, frontiers, absorbed };
-        canonical(bytes, encode_snapshot(&s, cx, Some(&mut replay)))?;
+        canonical(bytes, self::encode_snapshot(&s, cx, Some(&mut replay)))?;
         prune_stable(&s.fragment, None)?;
         Ok(s)
     }
