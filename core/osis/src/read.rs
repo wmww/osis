@@ -415,7 +415,7 @@ impl Osis {
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
     /// for app timestamps.
     pub fn now(&self) -> WallMs {
-        if self.attached()
+        if self.is_attached()
             && let Ok(Some(n)) = self.rcall(m::NOW, vec![]).map(|v| v.as_uint())
         {
             return WallMs(n);
@@ -531,7 +531,7 @@ impl Osis {
 
     /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine).
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Subscription {
-        if self.attached() {
+        if self.is_attached() {
             return self.remote_on_diagnostic(Box::new(f));
         }
         self.subscribe(Filter::Diagnostics, false, |_| {

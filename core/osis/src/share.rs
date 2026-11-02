@@ -1049,7 +1049,7 @@ impl Osis {
 
     /// The hosts new labels go to (and kept connected).
     pub fn hosts(&self) -> Vec<HostAddr> {
-        if self.attached() {
+        if self.is_attached() {
             let v = self.rcall(crate::port::method::HOSTS, vec![]).and_then(|v| crate::port::codec::Args::of(vec![v]).list());
             return v.unwrap_or_default().into_iter().filter_map(|h| crate::port::codec::Args::of(vec![h]).text().ok()?.parse().ok()).collect();
         }
@@ -1197,7 +1197,7 @@ impl Osis {
 
     /// Calls `f` with the status now (through the dispatcher) and on every change.
     pub fn watch_status(&self, mut f: impl FnMut(&Osis, Status) + Send + 'static) -> Subscription {
-        if self.attached() {
+        if self.is_attached() {
             return self.remote_watch_status(Box::new(f));
         }
         // a node with attachments shows them too: not a watch of them, a status at each change here
@@ -1282,7 +1282,7 @@ impl Osis {
 
     /// Asks every host to sync every open label now.
     pub fn sync_now(&self) -> Result<()> {
-        if self.attached() {
+        if self.is_attached() {
             return self.rcall(crate::port::method::SYNC_NOW, vec![]).map(drop);
         }
         self.act(|x| x.sync.sync_now());

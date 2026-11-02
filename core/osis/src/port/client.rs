@@ -26,7 +26,7 @@ use super::codec::{self as c, outcome_err, u};
 use super::method;
 use crate::error::{Error, Result};
 use crate::handle::{Config, Osis, WeakOsis};
-use crate::watch::{Callback, Filter, Msg, PortEvent, Subscription, lock};
+use crate::watch::{Callback, Change, Delivery, Filter, Msg, PortEvent, Source, Subscription, WatchState, lock};
 use osis_base::{Clock, Tid, Value};
 use osis_proto::client::SMALL_REPLY;
 use osis_proto::serving::REPLY_BUDGET;
@@ -54,6 +54,11 @@ const WHO_TOKEN: u64 = 1;
 /// Subscription and call tokens, unique in the process (the dispatcher's `Filter::Port` holds
 /// subscriptions of every attachment).
 static TOKENS: AtomicU64 = AtomicU64::new(16);
+
+fn next_token() -> u64 {
+    TOKENS.fetch_add(1, Ordering::AcqRel)
+}
+
 /// The name of the file in a store directory naming the socket a daemon listens on.
 pub const SOCK_FILE: &str = "sock";
 
@@ -170,14 +175,6 @@ pub(crate) struct Remote {
 /// A call sent whose connection ended before its reply.
 const LOST: &str = "connection to the node ended before the reply";
 
-/// A nonce'd call's error: one whose reply was lost may or may not have applied.
-fn once_err(e: Error) -> Error {
-    match e {
-        Error::Network(m) if m == LOST => Error::OutcomeUnknown,
-        e => e,
-    }
-}
-
 fn net(m: impl std::fmt::Display) -> Error {
     Error::Network(m.to_string())
 }
@@ -195,10 +192,6 @@ impl Remote {
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
         Arc::new(Remote { addr: addr.to_string(), tx, link, limit: 0 })
-    }
-
-    fn token(&self) -> u64 {
-        TOKENS.fetch_add(1, Ordering::AcqRel)
     }
 
     /// Whether the connection is up now.
@@ -241,7 +234,7 @@ impl Remote {
     /// `call` of a write under a fresh nonce (the next of this session, taken when sent); a
     /// `TooLarge` retry goes under the same nonce.
     pub fn call_once(&self, m: u64, args: Vec<Value>) -> Result<Value> {
-        self.call_n(m, args, Some(Arc::new(AtomicU64::new(0)))).map_err(once_err)
+        self.call_n(m, args, Some(Arc::new(AtomicU64::new(0))))
     }
 
     fn call_n(&self, m: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>) -> Result<Value> {
@@ -267,14 +260,17 @@ impl Remote {
         if let Some(e) = self.down() {
             return Err(e);
         }
+        let once = nonce.is_some();
         let (tx, rx) = std::sync::mpsc::channel();
-        self.tx.send(Cmd::Call { token: self.token(), max_reply, method: m, args, nonce, reply: tx }).map_err(|_| net("connection to the node closed"))?;
+        self.tx.send(Cmd::Call { token: next_token(), max_reply, method: m, args, nonce, reply: tx }).map_err(|_| net("connection to the node closed"))?;
         match crate::net::blocking(|| rx.recv()) {
-            Ok(Ok(Outcome::Ok { value, .. })) => Ok(value),
+            Ok(Ok(Outcome::Ok { value })) => Ok(value),
             Ok(Ok(Outcome::Err { code, detail })) => Err(c::error_of(code, detail)),
             Ok(Err(Code::REFUSED)) => Err(Error::Unsupported("refused by the node (no session, or revoked)".into())),
             Ok(Err(Code::UNSUPPORTED)) => Err(Error::Unsupported("node too old".into())),
             Ok(Err(code)) => Err(net(format!("node answered error {}", code.0))),
+            // a write whose reply was lost may or may not have applied
+            Err(_) if once => Err(Error::OutcomeUnknown),
             Err(_) => Err(net(LOST)),
         }
     }
@@ -334,19 +330,40 @@ struct Io {
     taken: u64,
     /// The next write nonce of this session (from 1).
     nonce: u64,
-    who: Option<Who>,
     wait: Duration,
     clock: Arc<dyn Clock>,
     link: Arc<LinkState>,
 }
 
+fn random<const N: usize>() -> [u8; N] {
+    use osis_crypto::RngCore;
+    let mut b = [0u8; N];
+    osis_crypto::OsRng.fill_bytes(&mut b);
+    b
+}
+
 fn new_session(peer_static_key: [u8; 32]) -> ClientSession {
-    let mut challenge = [0u8; 32];
-    {
-        use osis_crypto::RngCore;
-        osis_crypto::OsRng.fill_bytes(&mut challenge);
+    ClientSession::new(ClientConfig { peer_static_key, challenge: random() })
+}
+
+/// How a session ends when its Auth is not answered by a Reply. `keyed`: it sent a secret.
+fn not_authed(r: std::result::Result<Outcome, Code>, keyed: bool) -> Started {
+    match r {
+        Err(Code::REFUSED) if keyed => Started::Refused(Error::Unsupported("the node refused this client secret".into())),
+        Err(Code::RATE_LIMITED) => Started::Failed(net("the node holds as many connections of this client as it takes")),
+        Err(Code::REFUSED) => Started::Refused(Error::Unsupported("the node refused this session (not its uid)".into())),
+        Err(Code::UNSUPPORTED) => Started::Refused(Error::Unsupported("node too old".into())),
+        _ => Started::Failed(net("no answer to Auth")),
     }
-    ClientSession::new(ClientConfig { peer_static_key, challenge })
+}
+
+/// A `whoami` reply.
+fn who_of(r: std::result::Result<Outcome, Code>) -> Result<Who> {
+    match r {
+        Ok(Outcome::Ok { value }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()?, home: a.tid()? })),
+        Ok(Outcome::Err { code, detail }) => Err(c::error_of(code, detail)),
+        Err(c) => Err(net(format!("node answered error {}", c.0))),
+    }
 }
 
 impl Io {
@@ -389,7 +406,7 @@ impl Io {
                         let _ = r.send(reply);
                     } else if let Some(s) = self.subs.get_mut(&token) {
                         match reply {
-                            Ok(Outcome::Ok { value, .. }) => (s.sink)(PortEvent::Initial(value)),
+                            Ok(Outcome::Ok { value }) => (s.sink)(PortEvent::Initial(value)),
                             Ok(Outcome::Err { code, detail }) => {
                                 (s.sink)(PortEvent::Initial(outcome_err(&c::error_of(code, detail)).to_value()));
                                 self.subs.remove(&token);
@@ -531,36 +548,27 @@ impl Io {
         loop {
             while let Ok(r) = rrx.try_recv() {
                 if !authed {
-                    match r {
-                        Ok(Outcome::Ok { .. }) => {
-                            authed = true;
-                            self.calls.insert(WHO_TOKEN, rtx.clone());
-                            let o = self.input(Command::Call { token: WHO_TOKEN, max_reply: SMALL_REPLY as u64, method: method::WHOAMI, args: Vec::new() });
-                            up = up && self.outputs(tx, o);
-                        }
-                        Err(Code::REFUSED) if keyed => return Started::Refused(Error::Unsupported("the node refused this client secret".into())),
-                        Err(Code::RATE_LIMITED) => return Started::Failed(net("the node holds as many connections of this client as it takes")),
-                        Err(Code::REFUSED) => return Started::Refused(Error::Unsupported("the node refused this session (not its uid)".into())),
-                        Err(Code::UNSUPPORTED) => return Started::Refused(Error::Unsupported("node too old".into())),
-                        _ => return Started::Failed(net("no answer to Auth")),
+                    if !matches!(r, Ok(Outcome::Ok { .. })) {
+                        return not_authed(r, keyed);
                     }
+                    authed = true;
+                    self.calls.insert(WHO_TOKEN, rtx.clone());
+                    let o = self.input(Command::Call { token: WHO_TOKEN, max_reply: SMALL_REPLY as u64, method: method::WHOAMI, args: Vec::new() });
+                    up = up && self.outputs(tx, o);
                     continue;
                 }
-                let who = match r {
-                    Ok(Outcome::Ok { value, .. }) => c::Args::new(value).and_then(|mut a| Ok(Who { me: a.tid()?, node: a.tid()?, home: a.tid()? })),
-                    Ok(Outcome::Err { code, detail }) => Err(c::error_of(code, detail)),
-                    Err(c) => Err(net(format!("node answered error {}", c.0))),
-                };
-                let who = match who {
+                let who = match who_of(r) {
                     Ok(w) => w,
                     Err(e) => return Started::Failed(e),
                 };
-                // the pinned key answers as someone else: never mix two identities in one attachment
-                if self.who.is_some_and(|w| w != who) {
-                    return Started::Refused(Error::Invalid("the node at this address now answers as another identity".into()));
+                {
+                    let mut g = lock(&self.link.m);
+                    // the pinned key answers as someone else: never mix two identities in one attachment
+                    if g.who.is_some_and(|w| w != who) {
+                        return Started::Refused(Error::Invalid("the node at this address now answers as another identity".into()));
+                    }
+                    g.who = Some(who);
                 }
-                self.who = Some(who);
-                lock(&self.link.m).who = Some(who);
                 self.reattach(tx);
                 return Started::Up;
             }
@@ -587,12 +595,39 @@ impl Io {
         }
     }
 
+    /// Serves a connection that is up until it ends; `false` once the handle is gone.
+    async fn connected(&mut self, tx: &osis_transport::link::LinkTx, lrx: &mut osis_transport::link::LinkRx, rx: &mut mpsc::UnboundedReceiver<Cmd>) -> bool {
+        let mut up = true;
+        while up {
+            let wake = self.wake_in();
+            tokio::select! {
+                b = lrx.recv() => match b {
+                    Some(b) => {
+                        let now = self.now();
+                        let o = self.cs.handle(now, ClientInput::Bytes(b));
+                        up = self.outputs(tx, o);
+                    }
+                    None => up = false,
+                },
+                c = rx.recv() => match c {
+                    Some(c) => {
+                        let o = self.command(c);
+                        up = self.outputs(tx, o);
+                    }
+                    None => return false,
+                },
+                () = tokio::time::sleep(wake) => up = self.timer_fired(tx),
+            }
+        }
+        true
+    }
+
     /// On a new connection, once Auth answered: schemas, subscriptions and unanswered writes again.
     fn reattach(&mut self, tx: &osis_transport::link::LinkTx) {
         self.give_up = None;
         for (file, src) in self.schemas.clone() {
             let (rtx, _) = std::sync::mpsc::channel();
-            let token = TOKENS.fetch_add(1, Ordering::AcqRel);
+            let token = next_token();
             self.calls.insert(token, rtx);
             let o = self.input(Command::Call { token, max_reply: SMALL_REPLY as u64, method: method::REGISTER_SCHEMA, args: vec![Value::Str(file), Value::Str(src)] });
             self.outputs(tx, o);
@@ -695,27 +730,8 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
                     Started::Up => {
                         link.tried(Ok(()));
                         backoff = RETRY_MIN;
-                        let mut up = true;
-                        while up {
-                            let wake = io.wake_in();
-                            tokio::select! {
-                                b = lrx.recv() => match b {
-                                    Some(b) => {
-                                        let now = io.now();
-                                        let o = io.cs.handle(now, ClientInput::Bytes(b));
-                                        up = io.outputs(&tx, o);
-                                    }
-                                    None => up = false,
-                                },
-                                c = rx.recv() => match c {
-                                    Some(c) => {
-                                        let o = io.command(c);
-                                        up = io.outputs(&tx, o);
-                                    }
-                                    None => return io.close(),
-                                },
-                                () = tokio::time::sleep(wake) => up = io.timer_fired(&tx),
-                            }
+                        if !io.connected(&tx, &mut lrx, &mut rx).await {
+                            return io.close();
                         }
                         link.tried(Err(net("connection to the node ended")));
                         io.dropped();
@@ -734,13 +750,9 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
 /// Starts an attachment's thread; the connection comes up behind it.
 fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_crypto::Secret32>, limit: usize, wait: Duration, clock: Arc<dyn Clock>) -> Result<Arc<Remote>> {
     let (tx, rx) = mpsc::unbounded_channel();
-    let mut session = [0u8; 16];
-    {
-        use osis_crypto::RngCore;
-        osis_crypto::OsRng.fill_bytes(&mut session);
-    }
+    let session = random();
     let link = Arc::new(LinkState::default());
-    let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, who: None, wait, clock, link: link.clone() };
+    let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, wait, clock, link: link.clone() };
     std::thread::Builder::new()
         .name("osis-port-client".into())
         .spawn(move || {
@@ -856,13 +868,14 @@ impl Osis {
     }
 
     /// Whether this handle has no store of its own (`Osis::attach`, `attach_client`).
+    #[inline]
     pub fn is_attached(&self) -> bool {
-        self.attached()
+        self.inner.thin.get().is_some()
     }
 
     /// The attachment process-wide calls go to on a handle with no store of its own.
-    fn primary(&self) -> &Remote {
-        self.inner.thin.get().map(|t| &*t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
+    fn primary(&self) -> &Arc<Remote> {
+        self.inner.thin.get().map(|t| &t.primary).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
     }
 
     /// A process-wide call at the attached node.
@@ -872,7 +885,7 @@ impl Osis {
 
     /// Fails `Unsupported` on an attached handle: a process-wide call the port does not carry.
     pub(crate) fn local_only(&self, what: &str) -> Result<()> {
-        if self.attached() { Err(Error::Unsupported(format!("{what} on a handle attached to a node"))) } else { Ok(()) }
+        if self.is_attached() { Err(Error::Unsupported(format!("{what} on a handle attached to a node"))) } else { Ok(()) }
     }
 
     /// A write batch at `r`, under a fresh nonce (a reply lost to a `TooLarge` retry is answered
@@ -883,11 +896,6 @@ impl Osis {
         o.map(c::committed).transpose()
     }
 
-    /// A nonce'd undo/redo/revert at `r`.
-    pub(crate) fn remote_once(&self, r: &Remote, m: u64, arg: Value) -> Result<Value> {
-        r.call_once(m, vec![arg])
-    }
-
     /// Registers `cb` for a subscription at the attached node: its Reply (`PortEvent::Initial`)
     /// and Notifies reach `cb` through the dispatcher, in wire order. Returns the subscription
     /// and the initial value (or the Sub's error).
@@ -895,9 +903,8 @@ impl Osis {
         if let Some(e) = r.down() {
             return Err(e);
         }
-        let token = r.token();
-        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
-        sub.port = Some((Arc::downgrade(r), token));
+        let token = next_token();
+        let sub = self.port_register(r, token, on, cb);
         let (itx, irx) = std::sync::mpsc::channel::<Value>();
         let sink = self.port_sink(token, Some(itx));
         r.tx.send(Cmd::Sub { token, filter, again, sink }).map_err(|_| net("connection to the node closed"))?;
@@ -910,6 +917,13 @@ impl Osis {
             return Err(e);
         }
         Ok((sub, v))
+    }
+
+    /// The dispatcher's side of a subscription at `r`.
+    fn port_register(&self, r: &Arc<Remote>, token: u64, on: Option<Tid>, cb: Callback) -> Subscription {
+        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
+        sub.port = Some((Arc::downgrade(r), token));
+        sub
     }
 
     /// What a subscription's events do: reach the dispatcher in wire order; the first value also
@@ -943,9 +957,8 @@ impl Osis {
         if r.down().is_none() {
             return self.remote_sub(r, on, filter, true, cb).map(|x| x.0).unwrap_or_else(|e| self.dead_sub(e));
         }
-        let token = r.token();
-        let mut sub = self.locked(|l| self.inner.dispatch.register(l.seq + 1, Filter::Port(token, on), cb));
-        sub.port = Some((Arc::downgrade(r), token));
+        let token = next_token();
+        let sub = self.port_register(r, token, on, cb);
         // the handle of a stand-in has no connection to tell it
         if r.tx.send(Cmd::Sub { token, filter, again: true, sink: self.port_sink(token, None) }).is_err() {
             self.port_sink(token, None)(PortEvent::Closed);
@@ -962,10 +975,10 @@ impl Osis {
     }
 }
 
-/// An aspect delivery `[tid, ak, read, source]`, or a fired signal `[.., true]`.
 /// What an aspect delivery holds: thing, aspect, read result, source, fired.
 type Delivered = (Tid, osis_base::Ak, Result<Option<Value>>, crate::watch::Source, bool);
 
+/// An aspect delivery `[tid, ak, read, source]`, or a fired signal `[.., true]`.
 fn delivery(v: Value) -> Result<Delivered> {
     let mut a = c::Args::new(v)?;
     let (t, ak, r, s) = (a.tid()?, a.ak()?, c::read(a.next()?)?, c::source(a.next()?)?);
@@ -973,6 +986,14 @@ fn delivery(v: Value) -> Result<Delivered> {
     Ok((t, ak, r, s, fired))
 }
 
+/// What a watch hears when its subscription ends.
+fn sub_ended() -> Error {
+    net("the node's subscription ended")
+}
+
+fn aspect_filter(tid: Tid, ak: &osis_base::Ak) -> Value {
+    Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(ak)])
+}
 
 /// A remote callback of `T`s.
 pub(crate) type CallbackOf<T> = Box<dyn FnMut(&Osis, T) + Send>;
@@ -1001,7 +1022,6 @@ impl Osis {
     /// `AspectRef::on_change` at the attached node: the initial value, then each change that
     /// differs from the last delivered (an error always), signals as they fire.
     pub(crate) fn remote_on_change(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, mut f: ChangeFn) -> Result<Subscription> {
-        use crate::watch::{Change, Delivery, PortEvent, Source};
         let mut last: Option<Result<Option<Value>>> = None;
         let ak2 = ak.clone();
         let cb: Callback = Box::new(move |db, d| {
@@ -1012,7 +1032,7 @@ impl Osis {
                     last = Some(value.clone());
                     f(db, Change { tid, ak: ak2.clone(), value, source: Source::Initial });
                 }
-                PortEvent::Notify(Payload::Delivery { value, .. }) => {
+                PortEvent::Notify(Payload::Delivery { value }) => {
                     let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
                     if fired {
                         f(db, Change { tid: t, ak, value, source });
@@ -1021,23 +1041,22 @@ impl Osis {
                         f(db, Change { tid: t, ak, value, source });
                     }
                 }
-                PortEvent::Notify(Payload::TooLarge { source, .. }) => {
+                PortEvent::Notify(Payload::TooLarge { source }) => {
                     let source = c::source(source).unwrap_or(Source::Initial);
                     last = None;
                     f(db, Change { tid, ak: ak2.clone(), value: Err(Error::TooLarge { limit: REPLY_BUDGET }), source });
                 }
                 PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
-                    f(db, Change { tid, ak: ak2.clone(), value: Err(net("the node's subscription ended")), source: Source::Initial });
+                    f(db, Change { tid, ak: ak2.clone(), value: Err(sub_ended()), source: Source::Initial });
                 }
             }
         });
-        Ok(self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), true, cb)?.0)
+        Ok(self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?.0)
     }
 
     /// `AspectRef::watch` at the attached node: the state holds the latest value that `valid`
     /// accepts (else absent), set from the Sub's reply before this returns.
     pub(crate) fn remote_watch(&self, r: &Arc<Remote>, tid: Tid, ak: osis_base::Ak, valid: Box<dyn Fn(&Value) -> bool + Send>) -> Result<(Arc<crate::watch::WatchState>, Subscription)> {
-        use crate::watch::{Delivery, PortEvent, WatchState};
         let st = WatchState::new(Ok(None));
         let s2 = st.clone();
         let check = move |r: Result<Option<Value>>| r.map(|v| v.filter(|x| valid(x)));
@@ -1045,16 +1064,16 @@ impl Osis {
             let Delivery::Port(ev) = d else { return };
             match ev {
                 PortEvent::Initial(v) => s2.update(check(c::read(v).unwrap_or_else(Err))),
-                PortEvent::Notify(Payload::Delivery { value, .. }) => {
+                PortEvent::Notify(Payload::Delivery { value }) => {
                     if let Ok((_, _, v, _, false)) = delivery(value) {
                         s2.update(check(v));
                     }
                 }
                 PortEvent::Notify(Payload::TooLarge { .. }) => s2.update(Err(Error::TooLarge { limit: REPLY_BUDGET })),
-                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => s2.update(Err(net("the node's subscription ended"))),
+                PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => s2.update(Err(sub_ended())),
             }
         });
-        let (sub, initial) = self.remote_sub(r, Some(tid), Value::List(vec![u(super::filter::ASPECT), Value::Tid(tid), c::ak_v(&ak)]), true, cb)?;
+        let (sub, initial) = self.remote_sub(r, Some(tid), aspect_filter(tid, &ak), true, cb)?;
         // the value at registration, before this returns (the dispatcher's copy is the same, and
         // what it already ran after that is newer)
         st.first(c::read(initial)?);
@@ -1063,7 +1082,6 @@ impl Osis {
 
     /// `watch_thing` at the attached node.
     pub(crate) fn remote_watch_thing(&self, r: &Arc<Remote>, tid: Tid, mut f: ChangeFn) -> Subscription {
-        use crate::watch::{Change, Delivery, PortEvent, Source};
         let mut last: BTreeMap<osis_base::Ak, Result<Option<Value>>> = BTreeMap::new();
         let cb: Callback = Box::new(move |db, d| {
             let Delivery::Port(ev) = d else { return };
@@ -1086,7 +1104,7 @@ impl Osis {
                     }
                     last = now;
                 }
-                PortEvent::Notify(Payload::Delivery { value, .. }) => {
+                PortEvent::Notify(Payload::Delivery { value }) => {
                     let Ok((t, ak, value, source, fired)) = delivery(value) else { return };
                     if fired || value.is_err() || last.get(&ak) != Some(&value) {
                         last.insert(ak.clone(), value.clone());
@@ -1097,7 +1115,7 @@ impl Osis {
                 // what the callback sees of an end: an error on the thing's own `tid.0`
                 PortEvent::Notify(Payload::Lapsed) | PortEvent::Closed => {
                     if let Ok(ak) = osis_base::Ak::new("tid.0") {
-                        f(db, Change { tid, ak, value: Err(net("the node's subscription ended")), source: Source::Initial });
+                        f(db, Change { tid, ak, value: Err(sub_ended()), source: Source::Initial });
                     }
                 }
             }
@@ -1107,10 +1125,9 @@ impl Osis {
 
     /// `watch_roster` at the attached node.
     pub(crate) fn remote_watch_roster(&self, r: &Arc<Remote>, actor: Tid, mut f: CallbackOf<crate::read::Roster>) -> Subscription {
-        use crate::watch::{Delivery, PortEvent};
         let mut last = None;
         let cb: Callback = Box::new(move |db, d| {
-            let Delivery::Port(PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v, .. })) = d else { return };
+            let Delivery::Port(PortEvent::Initial(v) | PortEvent::Notify(Payload::Delivery { value: v })) = d else { return };
             if let Ok(r) = c::roster(v)
                 && last.as_ref() != Some(&r)
             {
@@ -1123,20 +1140,18 @@ impl Osis {
 
     /// `on_diagnostic` at the attached node (its diagnostics; this process's own go nowhere).
     pub(crate) fn remote_on_diagnostic(&self, mut f: CallbackOf<osis_node::Diagnostic>) -> Subscription {
-        use crate::watch::{Delivery, PortEvent};
         let cb: Callback = Box::new(move |db, d| {
-            if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value, .. })) = d
+            if let Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) = d
                 && let Ok(x) = c::diag(value)
             {
                 f(db, x);
             }
         });
-        self.remote_sub_kept(&self.thin_primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
+        self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::DIAGNOSTICS)]), cb)
     }
 
     /// `watch_status` at the attached node.
     pub(crate) fn remote_watch_status(&self, mut f: CallbackOf<crate::share::Status>) -> Subscription {
-        use crate::watch::Delivery;
         // every change, and the attachment going down or up, shows as the merged status now
         let cb: Callback = Box::new(move |db, d| {
             if matches!(d, Delivery::Port(_))
@@ -1145,19 +1160,13 @@ impl Osis {
                 f(db, s);
             }
         });
-        self.remote_sub_kept(&self.thin_primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
-    }
-
-    /// The attachment a handle with no store of its own makes its process-wide calls at.
-    fn thin_primary(&self) -> Arc<Remote> {
-        self.inner.thin.get().map(|t| t.primary.clone()).unwrap_or_else(|| unreachable!("a process-wide remote call on a node's own handle"))
+        self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
     }
 
     /// `wait_synced` at the attached node: a subscription the node answers once with the
     /// outcome of its own `wait_synced(scope, timeout)` (its rule, its clock and deadline); no
     /// Call waits and nothing holds the node's worker. The connection ending is `Network`.
     pub(crate) fn remote_wait_synced(&self, r: &Arc<Remote>, scope: crate::share::SyncScope, timeout: Duration) -> Result<(Subscription, crate::net::Pending<Result<()>>)> {
-        use crate::watch::{Delivery, PortEvent};
         let (pending, slot) = crate::net::Pending::new();
         // the first outcome stands (a later end of the connection does not replace it)
         let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1168,7 +1177,7 @@ impl Osis {
         };
         let p2 = put.clone();
         let cb: Callback = Box::new(move |_, d| match d {
-            Delivery::Port(PortEvent::Notify(Payload::Delivery { value, .. })) => {
+            Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) => {
                 if let Ok(Some(v)) = c::Args::of(vec![value]).opt() {
                     p2(c::done(v).unwrap_or_else(Err));
                 }

@@ -532,7 +532,7 @@ impl crate::Osis {
     /// until it attaches to a new address, handed to it out of band. No listener up (a process
     /// that has not called `client_listen`): only the key changes. Needs a runtime.
     pub fn rotate_client_key(&self) -> crate::Result<Vec<crate::HostAddr>> {
-        if self.attached() {
+        if self.is_attached() {
             let v = self.rcall(crate::port::method::ROTATE_CLIENT_KEY, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|h| crate::port::codec::Args::of(vec![h]).text()?.parse()).collect();
         }

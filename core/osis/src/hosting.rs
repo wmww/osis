@@ -34,7 +34,7 @@ pub struct Hosting {
 impl Osis {
     /// What this node hosts (none: it does not).
     pub fn hosting(&self) -> Option<Hosting> {
-        if self.attached() {
+        if self.is_attached() {
             return None;
         }
         let h = self.get(self.node(), ct::HOST).ok().flatten()?;
@@ -92,7 +92,7 @@ impl Osis {
     /// without listening: made when `host.0^` is first set, kept until hosting stops. With a
     /// fixed listen URL, `HostAddr::new(url, key)` is the address `host_address` will report.
     pub fn host_key(&self) -> Option<[u8; 32]> {
-        if self.attached() {
+        if self.is_attached() {
             return None;
         }
         self.locked(|l| l.sync.host_key())

@@ -82,6 +82,10 @@ impl Args {
             _ => Err(bad("option")),
         }
     }
+    /// An optional wall time.
+    pub fn opt_wall(&mut self) -> Result<Option<WallMs>> {
+        self.opt()?.map(|w| wall(&w)).transpose()
+    }
     /// A tid if one is left.
     pub fn opt_tid(&mut self) -> Result<Option<Tid>> {
         self.0.next().map(|v| tid(&v)).transpose()
@@ -184,6 +188,10 @@ fn wall(v: &Value) -> Result<WallMs> {
     v.as_uint().map(WallMs).ok_or_else(|| bad("time"))
 }
 
+fn commit_id(v: Value) -> Result<CommitId> {
+    Args::of(vec![v]).bytes()?.try_into().map(CommitId).map_err(|_| bad("commit id"))
+}
+
 pub(crate) fn change_v(c: &ChangeId) -> Value {
     Value::List(match c {
         ChangeId::Commit(c) => vec![u(0), Value::bytes(&c.0)],
@@ -194,7 +202,7 @@ pub(crate) fn change_v(c: &ChangeId) -> Value {
 pub(crate) fn change(v: Value) -> Result<ChangeId> {
     let mut a = Args::new(v)?;
     let c = match a.uint()? {
-        0 => ChangeId::Commit(CommitId(a.bytes()?.try_into().map_err(|_| bad("commit id"))?)),
+        0 => ChangeId::Commit(commit_id(a.next()?)?),
         1 => ChangeId::Ephemeral(EphemeralId { session: a.bytes()?.try_into().map_err(|_| bad("session"))?, n: a.uint()? }),
         _ => return Err(bad("change")),
     };
@@ -219,7 +227,7 @@ pub(crate) fn stamp_v(s: &Stamp) -> Value {
 
 pub(crate) fn stamp(v: Value) -> Result<Stamp> {
     let mut a = Args::new(v)?;
-    let commit = a.opt()?.map(|c| Args::of(vec![c]).bytes().and_then(|b| b.try_into().map(CommitId).map_err(|_| bad("commit id")))).transpose()?;
+    let commit = a.opt()?.map(commit_id).transpose()?;
     let s = Stamp { commit, ts: ts(&a.next()?)?, node: a.tid()?, actor: a.tid()?, received: wall(&a.next()?)? };
     a.end()?;
     Ok(s)
@@ -245,7 +253,7 @@ pub(crate) fn roster(v: Value) -> Result<Roster> {
     for x in Args::of(vec![v]).list()? {
         let mut a = Args::new(x)?;
         let t = a.tid()?;
-        let e = Edge { role: role(&a.next()?)?, until: a.opt()?.map(|w| wall(&w)).transpose()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, tied: a.bool()? };
+        let e = Edge { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, tied: a.bool()? };
         a.end()?;
         out.insert(t, e);
     }
@@ -339,7 +347,7 @@ pub(crate) fn status(v: Value) -> Result<Status> {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
         let state = *usize::try_from(b.uint()?).ok().and_then(|i| STATES.get(i)).ok_or_else(|| bad("state"))?;
-        let last_sync = b.opt()?.map(|w| wall(&w)).transpose()?;
+        let last_sync = b.opt_wall()?;
         let labels = b.list()?.into_iter().map(|l| Args::of(vec![l]).bytes().and_then(|x| x.try_into().map(LabelId).map_err(|_| bad("label")))).collect::<Result<_>>()?;
         let not_admitted = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<HostAddr>())).collect::<Result<_>>()?;
         let leaving = b.bool()?;
@@ -377,17 +385,30 @@ pub(crate) fn diag(v: Value) -> Result<Diagnostic> {
     let mut a = Args::new(v)?;
     let kind = *usize::try_from(a.uint()?).ok().and_then(|i| KINDS.get(i)).ok_or_else(|| bad("diagnostic kind"))?;
     let tids = tids(a.next()?)?;
-    let commit = a.opt()?.map(|c| Args::of(vec![c]).bytes().and_then(|b| b.try_into().map(CommitId).map_err(|_| bad("commit id")))).transpose()?;
+    let commit = a.opt()?.map(commit_id).transpose()?;
     let peer = a.opt()?.map(|p| tid(&p)).transpose()?;
     let detail = a.text()?;
     a.end()?;
     Ok(Diagnostic { kind, tids, commit, peer, detail })
 }
 
-fn scope_v(s: &Scope) -> Value {
+fn aspects_v(v: &[(Tid, Ak)]) -> Value {
+    Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_v(a)])).collect())
+}
+
+fn aspects(v: Value) -> Result<Vec<(Tid, Ak)>> {
+    Args::of(vec![v]).list()?.into_iter().map(|x| {
+        let mut p = Args::new(x)?;
+        let r = (p.tid()?, p.ak()?);
+        p.end()?;
+        Ok(r)
+    }).collect()
+}
+
+pub(crate) fn scope_v(s: &Scope) -> Value {
     Value::List(match s {
         Scope::Thing(t) => vec![u(0), Value::Tid(*t)],
-        Scope::Aspects(v) => vec![u(1), Value::List(v.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_v(a)])).collect())],
+        Scope::Aspects(v) => vec![u(1), aspects_v(v)],
         Scope::Group(t) => vec![u(2), Value::Tid(*t)],
     })
 }
@@ -396,21 +417,12 @@ pub(crate) fn scope(v: Value) -> Result<Scope> {
     let mut a = Args::new(v)?;
     let s = match a.uint()? {
         0 => Scope::Thing(a.tid()?),
-        1 => Scope::Aspects(a.list()?.into_iter().map(|x| {
-            let mut p = Args::new(x)?;
-            let r = (p.tid()?, p.ak()?);
-            p.end()?;
-            Ok(r)
-        }).collect::<Result<_>>()?),
+        1 => Scope::Aspects(aspects(a.next()?)?),
         2 => Scope::Group(a.tid()?),
         _ => return Err(bad("scope")),
     };
     a.end()?;
     Ok(s)
-}
-
-pub(crate) fn scope_value(s: &Scope) -> Value {
-    scope_v(s)
 }
 
 const CKINDS: [CommitKind; 6] = [CommitKind::Change, CommitKind::Revert, CommitKind::Role, CommitKind::Snapshot, CommitKind::Import, CommitKind::Ephemeral];
@@ -469,7 +481,7 @@ pub(crate) fn entry_v(e: &CommitEntry) -> Value {
         opt(e.reverts.as_ref(), change_v),
         Value::List(e.reverted_by.iter().map(change_v).collect()),
         Value::Bool(e.in_effect),
-        Value::List(e.aspects.iter().map(|(t, a)| Value::List(vec![Value::Tid(*t), ak_v(a)])).collect()),
+        aspects_v(&e.aspects),
         Value::Bool(e.dropped),
     ])
 }
@@ -482,16 +494,7 @@ pub(crate) fn entry(v: Value) -> Result<CommitEntry> {
         reverts: a.opt()?.map(change).transpose()?,
         reverted_by: a.list()?.into_iter().map(change).collect::<Result<_>>()?,
         in_effect: a.bool()?,
-        aspects: a
-            .list()?
-            .into_iter()
-            .map(|x| {
-                let mut p = Args::new(x)?;
-                let r = (p.tid()?, p.ak()?);
-                p.end()?;
-                Ok(r)
-            })
-            .collect::<Result<_>>()?,
+        aspects: aspects(a.next()?)?,
         dropped: a.bool()?,
     };
     a.end()?;
@@ -602,7 +605,7 @@ pub(crate) fn edge_opts_v(o: &EdgeOpts) -> Value {
 
 pub(crate) fn edge_opts(v: Value) -> Result<EdgeOpts> {
     let mut a = Args::new(v)?;
-    let until = a.opt()?.map(|w| wall(&w)).transpose()?;
+    let until = a.opt_wall()?;
     let invite = a.opt()?.map(|r| role(&r)).transpose()?;
     a.end()?;
     Ok(EdgeOpts { until, invite })
@@ -662,7 +665,7 @@ pub(crate) fn links_v(l: &[LinkInfo]) -> Value {
 pub(crate) fn links(v: Value) -> Result<Vec<LinkInfo>> {
     Args::of(vec![v]).list()?.into_iter().map(|x| {
         let mut a = Args::new(x)?;
-        let r = LinkInfo { id: a.tid()?, target: a.tid()?, role: role(&a.next()?)?, until: a.opt()?.map(|w| wall(&w)).transpose()?, single_use: a.bool()? };
+        let r = LinkInfo { id: a.tid()?, target: a.tid()?, role: role(&a.next()?)?, until: a.opt_wall()?, single_use: a.bool()? };
         a.end()?;
         Ok(r)
     }).collect()
