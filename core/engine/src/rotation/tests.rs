@@ -2675,6 +2675,42 @@ fn audit_dropped_grant_named_spec_crypto_4() {
     withheld_then_arrives(&mut lp, 3, g, e, &all, &dem);
 }
 
+// spec/crypto.md §4 (a node attributes a departure to the name of the newest of its events,
+// by key, whatever thing names it): A removes D from G (rotation e1 names that removal on G);
+// W, an admin of G's owner O, grants D read on G again, boxing it at e1; A demotes W on O
+// without that grant, so the audit drops it (named on O). D's newest departure is the drop,
+// which e1 does not name: A must rotate before encrypting under e1, which D holds.
+#[test]
+fn newest_event_names_departure_spec_crypto_4() {
+    for seed in [3_990, 3_991, 3_992, 3_993] {
+        let mut lp = LocalPeer::new(3, seed, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let tids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+        let o = group(&mut lp, 0);
+        lp.peers[0].engine.grant(&o, &tids[1], &edge(Role::Admin)).unwrap();
+        let mut m = Mutation::new();
+        let g = lp.peers[0].engine.new_thing(&mut m, o);
+        lp.peers[0].commit(m).unwrap();
+        lp.peers[0].engine.give_own_secrets(&g).unwrap();
+        lp.peers[0].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+        lp.sync_all().unwrap();
+        lp.peers[0].engine.demote(&g, &Demotion { holder: tids[2], new: None, presync: PreSync::Synced }).unwrap();
+        lp.sync_all().unwrap();
+        let e1 = newest_read(&lp, 0, g).unwrap();
+        lp.peers[1].engine.grant(&g, &tids[2], &edge(Role::Read)).unwrap();
+        lp.sync(1, 2).unwrap();
+        assert!(lp.peers[2].engine.epochs(&g).is_some_and(|x| x.read.secret(&e1).is_some()), "seed {seed}: D holds e1");
+        // ordered after the re-grant, whose author it has not seen: audited, not plain invalid
+        lp.peers[0].clock.advance(5_000);
+        lp.peers[0].engine.demote(&o, &Demotion { holder: tids[1], new: Some(edge(Role::Write)), presync: PreSync::Synced }).unwrap();
+        lp.sync(1, 0).unwrap();
+        assert!(lp.peers[0].engine.core.role_now(&tids[2], &g).is_none(), "seed {seed}: the re-grant audited away at A");
+        assert_eq!(newest_read(&lp, 0, g), Some(e1), "seed {seed}");
+        let _ = lp.peers[0].engine.ensure_rotated(&g).unwrap();
+        assert_ne!(newest_read(&lp, 0, g), Some(e1), "seed {seed}: e1 names only the earlier removal");
+    }
+}
+
 /// Delivers every package of peer `from` to peer `to` but those in `skip`.
 fn send_skipping(lp: &mut LocalPeer, from: usize, to: usize, skip: &BTreeSet<osis_base::CommitId>) {
     for pk in lp.packages(from).unwrap().iter().filter(|p| !skip.contains(&p.id)) {

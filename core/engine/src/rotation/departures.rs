@@ -269,7 +269,10 @@ pub(crate) fn direct_departures(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<W
         let x = left.entry(m).or_insert((from, upto, None));
         x.0 = x.0.min(from);
         x.1 = x.1.max(upto);
-        x.2 = x.2.max(at);
+        // the newest event by key (spec/permissions.md §6), whatever thing names it
+        if at.map(|n| n.key) > x.2.map(|n| n.key) {
+            x.2 = at;
+        }
     };
     let mut start = None;
     if let Some(tl) = tx.core.timelines.get(a) {
