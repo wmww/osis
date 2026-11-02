@@ -125,9 +125,9 @@ impl World {
     }
 }
 
-// spec/sync.md §10, notes/client-port.md §6: a group synced here is local whatever a remote also offers; a thing known only at the attached node goes there; with the node unreachable the local thing still reads and the remote one fails Network
+// spec/sync.md §10, notes/client-port.md §6: a group with no route is local whatever a remote also offers; a thing known only at the attached node goes there; with the node unreachable the local thing still reads and the remote one fails Network
 #[test]
-fn local_wins_and_unknown_goes_to_the_node() {
+fn known_stays_here_and_unknown_goes_to_the_node() {
     let x = world();
     x.attach_p();
     // only at N, in the group the client may read, not synced to P yet (N is cut from the host)
@@ -139,7 +139,7 @@ fn local_wins_and_unknown_goes_to_the_node() {
         Ok(o)
     }).unwrap();
     x.set_n("n's");
-    // local wins: P reads its own synced copy, not N's newer one
+    // no route: P reads its own synced copy, not N's newer one
     assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("first")));
     // known here nowhere: the attachment answers
     assert_eq!(x.p.get(only_n, title()).unwrap(), Some(s("at n")));
@@ -911,12 +911,12 @@ impl Rng {
 // spec/sync.md §10, notes/client-port.md §6, the invariant of core/osis/src/sources.rs: random groups, routes, syncs and attachments against a model of the rule: each call reaches exactly the source the model names, a value only from it, a write only to it, Network when that one is down, never another's answer
 #[test]
 fn routing_differential_against_a_model() {
-    for seed in [1, 2] {
-        differential(seed);
-    }
+    let refused: usize = [1, 2].into_iter().map(differential).sum();
+    assert!(refused > 0, "the seeds wrote on no split thing");
 }
 
-fn differential(seed: u64) {
+/// Returns how many writes on a split thing were refused.
+fn differential(seed: u64) -> usize {
     let x = world();
     let mut r = Rng(seed);
     // three groups and a thing per placement mix, every thing known on both sides, then the host goes
@@ -970,6 +970,7 @@ fn differential(seed: u64) {
     let mut attached = true;
     let mut local: Vec<String> = vec!["start".into(); things.len()];
     let mut remote = local.clone();
+    let mut refused = 0;
     let ix = |g: &Tid| gs.iter().position(|x| x == g).unwrap();
     for step in 0..120 {
         let which = r.next(things.len() as u64) as usize;
@@ -1001,7 +1002,10 @@ fn differential(seed: u64) {
                 let v = format!("v{step}");
                 let w = x.p.write_with(|w| w.at(*t, title()).set(&s(&v)));
                 match (is_remote, attached) {
-                    _ if split => assert!(matches!(w, Err(Error::Invalid(_))), "step {step}: {w:?}"),
+                    _ if split => {
+                        assert!(matches!(w, Err(Error::Invalid(_))), "step {step}: {w:?}");
+                        refused += 1;
+                    }
                     (false, _) => {
                         w.unwrap();
                         local[which] = v;
@@ -1031,6 +1035,7 @@ fn differential(seed: u64) {
         }
     }
     drop(x.host);
+    refused
 }
 
 // spec/permissions.md §3, notes/client-port.md §6: a demotion of a holder of a group this node reads at another node is refused: run here it would commit to a copy that no longer syncs, and the revocation would silently never leave
@@ -1617,5 +1622,69 @@ fn moving_home_after_a_share_into_a_second_group() {
     x.to_remote();
     block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
     assert!(x.p.routes().is_empty());
+    drop(x.host);
+}
+
+// spec/sync.md §10: undo and revert refuse what they would write on a split thing, also when the call names only the routed group, or a change this engine never held
+#[test]
+fn undo_and_revert_refuse_a_split_thing_they_cannot_name() {
+    let x = world();
+    let h = second_group(&x);
+    until("N has H", || {
+        let _ = x.n.sync_now();
+        x.n.knows(h) && x.n.status().unwrap().groups.contains_key(&h)
+    });
+    x.attach_p();
+    x.to_remote();
+    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    // a change this engine never holds, of a thing that stays out of H: it cannot tell
+    let mut w = x.p.write();
+    w.at(x.g, title()).set(&s("on g")).unwrap();
+    let c = w.commit().unwrap().unwrap();
+    x.n.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.n.wait_synced(SyncScope::Group(h), W)).unwrap();
+    until("P learnt it through H", || {
+        let _ = x.p.sync_now();
+        x.p.status().unwrap().split.contains(&x.t)
+    });
+    let r = x.p.undo(&osis::Scope::Group(x.g));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    assert!(!x.p.engine(|e| e.header(&c.id.commit().unwrap()).is_some()));
+    let r = x.p.revert(c.id);
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("acked")), "nothing written");
+    assert_eq!(x.n.get(x.g, title()).unwrap(), Some(s("on g")), "nothing written");
+    drop(x.host);
+}
+
+// spec/sync.md §10, notes/client-port.md §6, cli `status`: a process attached to the node as its Owner sees what the node's status lists as split; so does a reopened node, whose routes come from its record
+#[test]
+fn split_shows_through_the_port_and_after_a_restart() {
+    let mut x = world();
+    let h = second_group(&x);
+    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    x.attach_p();
+    x.to_remote();
+    let d = std::env::temp_dir().join(format!("osis-sources-split-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let sock = d.join("p.sock");
+    x.p.listen_unix(&sock).unwrap();
+    let o = Osis::attach(&sock, Config::memory()).unwrap();
+    assert!(o.status().unwrap().split.contains(&x.t));
+    let r = o.write_with(|w| w.at(x.t, title()).set(&s("via owner")));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    drop(o);
+    let (net, pstore, addr) = (x.net.clone(), x.p_store.clone(), x.addr.clone());
+    std::mem::replace(&mut x.p, Osis::create(Config::memory()).unwrap().0).close().unwrap();
+    let mut c = cfg_on(&net, "p", &pstore, vec![addr]);
+    c.remotes = vec![RemoteConfig { addr: x.nc.clone(), secret: x.secret.clone() }];
+    let p = Osis::open(c).unwrap();
+    assert!(p.status().unwrap().split.contains(&x.t));
+    let r = p.write_with(|w| w.at(x.t, title()).set(&s("reopened")));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    until("the attachment came up", || p.get(x.t, title()).ok().flatten() == Some(s("first")));
+    p.close().unwrap();
+    let _ = std::fs::remove_dir_all(&d);
     drop(x.host);
 }

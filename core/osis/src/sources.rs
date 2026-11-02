@@ -165,6 +165,12 @@ fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
     Some((routed, other))
 }
 
+/// Every split thing: they are all in the closure of a route.
+fn split_things(l: &mut Locked) -> BTreeSet<Tid> {
+    let closures: Vec<_> = l.routes.keys().map(|g| l.sync.engine().closure(g)).collect();
+    closures.iter().flat_map(|c| c.iter().copied()).collect::<BTreeSet<_>>().into_iter().filter(|t| split_in(l, *t).is_some()).collect()
+}
+
 /// The attachment that answers for a thing known here to none (rule 4).
 fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
     for r in rs {
@@ -226,34 +232,55 @@ impl Osis {
         }
     }
 
-    /// `route` for a call that writes: `Invalid` on a split thing (the module's invariant).
+    /// `route` for a call that writes: `Invalid` on a split thing (the module's invariant). The check
+    /// comes after the route: a move in between fails it instead of passing a route it never saw.
     pub(crate) fn route_write(&self, tid: Tid) -> Result<Source> {
+        let s = self.route(tid);
         self.check_split(&[tid])?;
-        Ok(self.route(tid))
+        Ok(s)
     }
 
     /// `route_all` for a call that writes.
     pub(crate) fn route_write_all(&self, things: &[Tid]) -> Result<Source> {
+        let s = self.route_all(things)?;
         self.check_split(things)?;
-        self.route_all(things)
+        Ok(s)
     }
 
-    /// `route_scope` for a call that writes.
+    /// `route_scope` for a call that writes. Over a group: whichever of its things the write turns
+    /// out to touch, which only the source knows.
     pub(crate) fn route_write_scope(&self, scope: &crate::commits::Scope) -> Result<Source> {
+        let s = self.route_scope(Some(scope))?;
         match scope {
-            crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t) => self.check_split(&[*t])?,
+            crate::commits::Scope::Thing(t) => self.check_split(&[*t])?,
+            crate::commits::Scope::Group(g) if self.routed() => {
+                let things: Vec<Tid> = self.locked(|l| {
+                    let e = l.sync.engine();
+                    e.closure(&e.resolve(g, g)).iter().copied().collect()
+                });
+                self.check_split(&things)?;
+            }
+            crate::commits::Scope::Group(_) => {}
             crate::commits::Scope::Aspects(a) => self.check_split(&a.iter().map(|(t, _)| *t).collect::<Vec<_>>())?,
         }
-        self.route_scope(Some(scope))
+        Ok(s)
     }
 
-    /// `route_change` for a call that writes: what the change touched, when held here.
+    /// `route_change` for a call that writes. A change not held here says nothing of what it touched
+    /// (a write through a route never comes here): `Invalid` while anything is split.
     pub(crate) fn route_write_change(&self, id: ChangeId) -> Result<Source> {
+        let s = self.route_change(id)?;
         if self.routed() && !self.is_attached() {
-            let touched = self.locked(|l| touched_by(l.engine(), id)).unwrap_or_default();
-            self.check_split(&touched)?;
+            match self.locked(|l| touched_by(l.engine(), id)) {
+                Some(touched) => self.check_split(&touched)?,
+                None => {
+                    if let Some(t) = self.locked(split_things).first() {
+                        return Err(Error::Invalid(format!("a change this node does not hold may touch {t}, which is split: see `status`")));
+                    }
+                }
+            }
         }
-        self.route_change(id)
+        Ok(s)
     }
 
     fn check_split(&self, things: &[Tid]) -> Result<()> {
@@ -386,15 +413,7 @@ impl Osis {
                     all.push(Remote::absent(a));
                 }
             }
-            let mut split = BTreeSet::new();
-            if !thin {
-                let closures: Vec<_> = l.routes.keys().map(|g| l.sync.engine().closure(g)).collect();
-                for t in closures.iter().flat_map(|c| c.iter()) {
-                    if split_in(l, *t).is_some() {
-                        split.insert(*t);
-                    }
-                }
-            }
+            let split = if thin { BTreeSet::new() } else { split_things(l) };
             (all, l.routes.clone(), split)
         });
         if thin {
@@ -409,6 +428,7 @@ impl Osis {
             let Ok(v) = r.call(method::STATUS, vec![]) else { continue };
             let Ok(there) = crate::port::codec::status(v) else { continue };
             local.connected = local.connected.saturating_add(there.connected);
+            local.split.extend(there.split);
             for (g, s) in there.groups {
                 let mine = routes.get(&g).is_some_and(|a| *a == r.addr);
                 if mine || !local.groups.contains_key(&g) {
@@ -476,7 +496,7 @@ impl Osis {
     /// (within `Config::wait_timeout`, else `Network` or `Unsynced`, nothing changed); then this
     /// node stops syncing it, for itself alone (`GroupPolicy::receipts_only`, not `unsync`, which
     /// stops it for every holder), and calls go there. `Invalid`: the person's home group, or a
-    /// group still synced here through a parent (local would win: move the parent). A write made
+    /// group still synced here through a parent (all of it would be split: move the parent). A write made
     /// during the wait fails the move `Unsynced` rather than strand it: call it again.
     ///
     /// To `Local`: this node must hold the group (a thin client has no keys: `Unsupported`; a node

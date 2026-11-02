@@ -399,44 +399,43 @@ impl Osis {
         self.guarded(tids, |e| persist_in(e, me, tids))
     }
 
-    /// Gives `t` a label of its own unless `holder` already reads a label that carries it
-    /// (spec/sync.md §2). The invariant: no grant is acknowledged and silently never reaches its
-    /// holder. Its secrets alone open nothing: a thing's blobs travel under the labels of the
-    /// groups holding it, opened under those groups' secrets. `None`: a link's K, which gets `t`'s
-    /// secrets alone, so only `t`'s own label will do. Not for this person or a client of this
-    /// node: this node serves those, and the thing stays as local as it was.
-    fn label_for_grant(&self, t: Tid, holder: Option<Tid>) -> Result<()> {
-        if let Some(h) = holder
-            && (h == self.me() || self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().contains_key(&h))
-        {
-            return Ok(());
-        }
-        let reached = self.locked(|l| {
-            if crate::sources::labeled(l, &t) {
-                return true;
-            }
-            let Some(h) = holder else { return false };
-            let gs = l.engine().groups_of(&t);
-            gs.iter().any(|g| {
-                let via = crate::sources::labeled(l, g);
-                let e = l.engine();
-                // a group granted its own item: the edge being written is what makes it carry it
-                via && (*g == h || (e.may_read(&h, g) && e.may_read(&e.group_actor(g), &t)))
-            })
-        });
+    /// `holder` is this person or a client of this node: this node serves it, and the thing stays
+    /// as local as it was.
+    fn served_here(&self, holder: Tid) -> Result<bool> {
+        Ok(holder == self.me() || self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().contains_key(&holder))
+    }
+
+    /// Whether a grant needs `t` to get a label of its own (spec/sync.md §2): `holder` reads no live
+    /// label that carries it. `None`: a link's K, which gets `t`'s secrets alone, so only `t`'s own
+    /// label will do. The invariant: no grant is acknowledged and silently never reaches its holder.
+    /// `Permission` when it does and this node may not make one (an invite edge alone: `label.0` is
+    /// an admin's). Taken under the lock of the grant, before its edge is written.
+    fn grant_needs_label(&self, l: &mut crate::handle::Locked, t: Tid, holder: Option<Tid>) -> Result<bool> {
+        let reached = crate::sources::labeled(l, &t)
+            || holder.is_some_and(|h| {
+                l.engine().groups_of(&t).iter().any(|g| {
+                    let via = crate::sources::labeled(l, g);
+                    let e = l.engine();
+                    // a group granted its own item: the edge being written is what makes it carry it
+                    via && (*g == h || (e.may_read(&h, g) && e.may_read(&e.group_actor(g), &t)))
+                })
+            });
         if reached {
-            return Ok(());
+            return Ok(false);
         }
-        // an invite edge alone grants but cannot make a label (`label.0` is an admin's):
-        // `Permission`, nothing written
-        self.sync_here(t, &[], false)
+        let limit = self.inner.limit;
+        let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(t);
+        if role != Some(Role::Admin) {
+            return Err(Error::Permission { tid: t, needs: Role::Admin });
+        }
+        Ok(true)
     }
 
     /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
     /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
     /// else `UnknownActor`. The grant reaches the holder's devices through its inbox. A holder who
-    /// reads no label carrying the target gets one: the target's own, made now (spec/sync.md §2),
-    /// which needs admin (an invite edge alone: `Permission`). Grants one by one cost a label each:
+    /// reads no label carrying the target gets one: the target's own, made with the edge (spec/sync.md
+    /// §2), which needs admin (an invite edge alone: `Permission`). Grants one by one cost a label each:
     /// share sets through a group.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
@@ -447,20 +446,25 @@ impl Osis {
             return Err(Error::UnknownThing { tid: target });
         }
         self.persist(&[target])?;
-        // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
-        let known = |e: &mut osis_node::Engine| -> Result<()> {
+        let (served, hosts) = (self.served_here(holder)?, self.host_addrs());
+        self.after_route();
+        let done = self.locked(|l| {
+            self.guard_local(l, &[target])?;
+            let e = l.engine();
+            // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
             if !e.knows(&holder) || (e.owner(&holder).is_none() && e.get_typed(&holder, &ct::KEYS)?.is_none()) {
                 return Err(Error::UnknownActor { tid: holder });
             }
-            Ok(())
-        };
-        self.guarded(&[target], known)?;
-        self.label_for_grant(target, Some(holder))?;
-        let done = self.guarded(&[target], |e| {
-            known(e)?;
+            let label = !served && self.grant_needs_label(l, target, Some(holder))?;
+            let e = l.engine();
             // an edge change keeps its tie; a new hand grant is untied
             let tied = e.roster(&target).get(&holder).and_then(|x| x.tied).map(flows::tied::tie_ct);
-            e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
+            let done = e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)?;
+            // after the edge, as `make_link`: its first pass then knows who reads it (`reach.0`)
+            if label {
+                self.make_label(l, target, hosts)?;
+            }
+            Ok(done)
         })?;
         self.carry(done)
     }
@@ -759,8 +763,18 @@ impl Osis {
             return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
         }
         self.persist(&[t])?;
-        self.label_for_grant(t, None)?;
-        let (mut link, keep, done) = self.guarded(&[t], |e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts, peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin))?;
+        self.after_route();
+        let (mut link, keep, done) = self.locked(|l| {
+            self.guard_local(l, &[t])?;
+            let label = self.grant_needs_label(l, t, None)?;
+            let made = l.engine().create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
+            // K is on it before the label's first pass: this device's `reach.0` never goes under
+            // it, and nothing rotates (spec/permissions.md §4, §9)
+            if label {
+                self.make_label(l, t, hosts)?;
+            }
+            Ok::<_, Error>(made)
+        })?;
         // the seed thing in the home group: every device of this person holds it and may
         // finalize the link (spec/permissions.md §9)
         let home = self.home();
@@ -1188,18 +1202,23 @@ impl Osis {
             if !home {
                 self.guard_local(x, &[g])?;
             }
-            if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
-                return Ok(());
-            }
-            // the label's keys derive from the group's own secrets from the start, so holders
-            // granted later verify its whole path (notes/api.md Implementation)
-            let done = x.engine().give_own_secrets(&g)?;
-            let acts = x.sync.carry_out(done)?;
-            self.inner.apply(acts);
-            let (_, acts) = x.sync.create_label(&g, hosts)?;
-            self.inner.apply(acts);
-            Ok(())
+            self.make_label(x, g, hosts)
         })
+    }
+
+    /// A live label for `g` unless it has one.
+    fn make_label(&self, x: &mut crate::handle::Locked, g: Tid, hosts: Vec<osis_label::Address>) -> Result<()> {
+        if x.engine().group_labels(&g)?.iter().any(|l| !l.replaced) {
+            return Ok(());
+        }
+        // the label's keys derive from the group's own secrets from the start, so holders
+        // granted later verify its whole path (notes/api.md Implementation)
+        let done = x.engine().give_own_secrets(&g)?;
+        let acts = x.sync.carry_out(done)?;
+        self.inner.apply(acts);
+        let (_, acts) = x.sync.create_label(&g, hosts)?;
+        self.inner.apply(acts);
+        Ok(())
     }
 
     /// Stops syncing `group` under its own labels (marks them replaced without a successor;

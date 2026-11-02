@@ -1105,3 +1105,14 @@ fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
     assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
     assert!(!alice.status().unwrap().groups.contains_key(&t));
 }
+
+// spec/sync.md §2: a grant refused for any reason makes no label
+#[test]
+fn a_refused_grant_makes_no_label() {
+    let mut w = World::new();
+    let (alice, _, ids) = people(&mut w, 1);
+    let t = plain(&alice, "local");
+    let r = alice.grant(t, ids[0], Role::Read, osis::EdgeOpts { invite: Some(Role::Write), ..Default::default() });
+    assert!(matches!(r, Err(osis::Error::Invalid(_))), "{r:?}");
+    assert!(!alice.status().unwrap().groups.contains_key(&t));
+}
