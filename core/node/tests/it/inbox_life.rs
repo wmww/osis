@@ -690,3 +690,43 @@ fn inbox_blob_cannot_rename_a_groups_label_spec_sync_3() {
     net.run();
     assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
 }
+
+// spec/sync.md §3: a blob naming a group's label under an item, before the group is known, holds
+// the label only while that hint stands: once it fails and the group's own grant names the label
+// (or the blob expires), the label goes to the group on the same connection.
+#[test]
+fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    let t = persisted_item(&mut net, a, g);
+    grant(&mut net, a, t, bob);
+    net.advance(61_000);
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1;
+    let c = net.engine(a).commit_ids().into_iter().rev().find(|c| net.engine(a).header(c).is_some_and(|h| h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "secrets.0") && h.aspects.iter().any(|x| x.tid == t && x.ak.as_str() == "roles.0"))).unwrap();
+    let thing = osis_label::InboxThing { tid: t, label: Some(osis_label::InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts.clone() }), delete_keys: None };
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    plant_inbox(&mut net, a, (host, &home), bob, &c, vec![thing], exp);
+    net.advance(61_000);
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(INBOX_LIFETIME_MS / 2 + 1000);
+    }
+    assert!(settled(&mut net, b, g), "{:?}", net.sync(b).label_status());
+    assert_eq!(net.read(b, t), Some(s("item")));
+}
+
+// spec/wire.md §9: a grant's payload names a thing's own label, or none: never a group's holding it.
+#[test]
+fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
+    let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
+    let t = persisted_item(&mut net, a, g);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let names = |on: Tid, net: &mut Net| {
+        let done = net.engine(a).grant(&on, &bob, &edge).unwrap();
+        let blob = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
+        let (things, _) = net.engine(b).accept_inbox(&blob).unwrap();
+        things.into_iter().find(|x| x.tid == on).expect("the payload names it").label.map(|l| l.id)
+    };
+    assert_eq!(names(t, &mut net), None);
+    assert_eq!(names(g, &mut net), Some(gl));
+}
