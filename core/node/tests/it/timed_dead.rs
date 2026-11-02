@@ -225,7 +225,7 @@ fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Ret
     assert_eq!(net.engine(b).state(&t, &gone).unwrap(), net.engine(a).state(&t, &gone).unwrap());
 }
 
-fn most(abs: Option<u64>, rel: Option<u64>) -> Option<osis_schema::Retention> {
+pub(crate) fn most(abs: Option<u64>, rel: Option<u64>) -> Option<osis_schema::Retention> {
     use osis_schema::{Bound, PurgeBy, Retention};
     Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs, rel } })
 }
@@ -377,4 +377,37 @@ fn first_sync_waits_for_hidden_body_spec_commits_4() {
     net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
     assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("k")));
     assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")));
+}
+
+// spec/commits.md §4: a reader's first sync of a label, a commit across two of its things, a host hiding
+// the body on one: the group is asked for before the label's entries come, so the commit waits whole.
+#[test]
+fn first_sync_waits_across_things_spec_commits_4() {
+    use osis_base::Role;
+    let (gone, reg) = (osis_base::Ak::new("t:gone.0").unwrap(), osis_base::Ak::new("t:reg.0").unwrap());
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(72, &[host]);
+    let b = net.node(73, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    net.set_online(b, false);
+    let t = net.item(a, g, g, "t");
+    let u = net.item(a, g, g, "u");
+    net.run();
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(None, Some(3_600_000)).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(u, &REG, &s("k")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let h = net.engine(a).header(&c).unwrap();
+    let ai = h.aspects.iter().position(|x| x.ak == gone).unwrap();
+    let hide: std::collections::BTreeSet<_> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if *commit == c && parts.iter().any(|p| p.0 == ai))).map(|(id, _)| id).collect();
+    assert_eq!(hide.len(), 1);
+    net.hide_blobs.insert(b, hide);
+    net.set_online(b, true);
+    net.run();
+    assert_eq!(net.engine(b).get(&u, &reg).unwrap(), Some(s("u")), "the part on the other thing waits");
+    assert_eq!(net.engine(b).pending(), vec![(c, osis_node::Reason::WaitDeltas)]);
 }
