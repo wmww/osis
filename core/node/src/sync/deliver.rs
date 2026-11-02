@@ -109,9 +109,9 @@ impl SyncEngine {
         self.forget_lost(LostScope::All).map(|_| ())
     }
 
-    /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received
-    /// role commits or an aged-out pending grant left it work, until none is left (forgetting re-examines pending
-    /// commits, which may apply more).
+    /// The lost-access trigger (`Engine::drop_lost_due`), run every step while received role
+    /// commits or an aged-out pending grant left it work due, until none is (forgetting
+    /// re-examines pending commits, which may apply more).
     pub(crate) fn drop_lost_due(&mut self) -> Result<()> {
         for _ in 0..16 {
             if !self.engine.lost_due() {
