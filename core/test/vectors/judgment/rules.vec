@@ -364,8 +364,8 @@ body 9f59f847dbdd8489de888ae809afc2e1eca0dbdda7e1debeb4f2bf597eea47a3 7loH6i_G7G
 body a8fa47be92447d85476ed235d43d59f88740439ad81647c046c8b630cd8a5ece 7loH6i_G7GA9WPnGkkf7 t:reg.0: valid held covered-by=-
 body 87fe17ee6b7d13c036bd69f67f00da0fd0a0556d04594956213e0d8d87555f03 7loH6i_G7GA9WPnGkkf7 t:reg.0: invalid held covered-by=-
 body 02ca5528fa6934600b862138dc2805ff7bd2eae8c84f84c045f7be656bca2da3 7loH6i_G7GA9WPnGkkf7 roles.0: unapplied held covered-by=- deaths=111411200196608000,111411200196608000
-body d72a9275496d74a88f7826b44ce0897f37931ff539ee9c9c7cf1b291fb4e320a 7loH6i_G7GA9WPnGkkf7 roles.0: unapplied held covered-by=- deaths=111411200262144000,111411200327680000
-body d72a9275496d74a88f7826b44ce0897f37931ff539ee9c9c7cf1b291fb4e320a 7loH6i_G7GA9WPnGkkf7 tenures.0: unapplied held covered-by=- deaths=111411200262144000,111411200327680000
+body d72a9275496d74a88f7826b44ce0897f37931ff539ee9c9c7cf1b291fb4e320a 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=111411200262144000,111411200327680000
+body d72a9275496d74a88f7826b44ce0897f37931ff539ee9c9c7cf1b291fb4e320a 7loH6i_G7GA9WPnGkkf7 tenures.0: applied held covered-by=- deaths=111411200262144000,111411200327680000
 body 517be67013ec9814a3345592f2600856c25831b402a390144122a6993820690c 7loH6i_G7GA9WPnGkkf7 roles.0: unapplied held covered-by=- deaths=111411200327680000,111411200327680000
 body 3ac7b7c18f24618152473d60d167364e63be8de2ff7fe1cb4dcea47adfd34948 7loH6i_G7GA9WPnGkkf7 roles.0: applied held covered-by=- deaths=none
 body 3ac7b7c18f24618152473d60d167364e63be8de2ff7fe1cb4dcea47adfd34948 7loH6i_G7GA9WPnGkkf7 tenures.0: applied held covered-by=- deaths=none
@@ -506,8 +506,8 @@ body fcca8d160d761355820fc9ab3c026a7c49a9b4ad25f2c3dfff8b3e1d40ca0a8c iVPkJsiEaG
 body ea76b5ee354ff99ef54c0c837640fbbbb66e324c5366defdf0b3d8960a61ffdc mqn2XinyK2_P_9afuw_6 created.0: valid held covered-by=-
 body e8239838437ed9dd002909541eaa291befc8a12401661ff1cf9326a24232635c iVPkJsiEaGmviNGfCsaO roles.0: applied held covered-by=- deaths=none
 body 5a4e96eb01278005ecb29dc63c5dfb8ef217a86df5808a85a236bc78178c573c mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=111411200065536000,111411200065536000
-body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=none
-body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 tenures.0: unapplied held covered-by=- deaths=none
+body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=none
+body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=none
 thing iVPkJsiEaGmviNGfCsaO: start=- roster=mqn2XinyK2_P_9afuw_6:admin
 thing mqn2XinyK2_P_9afuw_6: start=- roster=wUktf8JBT64Wjf6DQU60:admin
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
@@ -534,8 +534,8 @@ body fcca8d160d761355820fc9ab3c026a7c49a9b4ad25f2c3dfff8b3e1d40ca0a8c iVPkJsiEaG
 body ea76b5ee354ff99ef54c0c837640fbbbb66e324c5366defdf0b3d8960a61ffdc mqn2XinyK2_P_9afuw_6 created.0: valid held covered-by=-
 body e8239838437ed9dd002909541eaa291befc8a12401661ff1cf9326a24232635c iVPkJsiEaGmviNGfCsaO roles.0: applied held covered-by=- deaths=none
 body 5a4e96eb01278005ecb29dc63c5dfb8ef217a86df5808a85a236bc78178c573c mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=111411200065536000,111411200065536000
-body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=none
-body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 tenures.0: unapplied held covered-by=- deaths=none
+body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=none
+body 11192c9f280e89c54a0075acecd95f3463e0f733a4151cca4c11361621379b53 mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=none
 thing iVPkJsiEaGmviNGfCsaO: start=- roster=mqn2XinyK2_P_9afuw_6:admin
 thing mqn2XinyK2_P_9afuw_6: start=- roster=wUktf8JBT64Wjf6DQU60:admin
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
@@ -564,8 +564,8 @@ body e8239838437ed9dd002909541eaa291befc8a12401661ff1cf9326a24232635c iVPkJsiEaG
 body 5a4e96eb01278005ecb29dc63c5dfb8ef217a86df5808a85a236bc78178c573c mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=111411200065536000,111411200065536000
 body f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=111411200131072000,111411200131072000
 body f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=111411200131072000,111411200131072000
-body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=none
-body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 tenures.0: unapplied held covered-by=- deaths=none
+body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=none
+body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=none
 thing iVPkJsiEaGmviNGfCsaO: start=- roster=mqn2XinyK2_P_9afuw_6:admin
 thing mqn2XinyK2_P_9afuw_6: start=f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
@@ -594,8 +594,8 @@ body e8239838437ed9dd002909541eaa291befc8a12401661ff1cf9326a24232635c iVPkJsiEaG
 body 5a4e96eb01278005ecb29dc63c5dfb8ef217a86df5808a85a236bc78178c573c mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=111411200065536000,111411200065536000
 body f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=111411200131072000,111411200131072000
 body f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=111411200131072000,111411200131072000
-body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 roles.0: unapplied held covered-by=- deaths=none
-body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 tenures.0: unapplied held covered-by=- deaths=none
+body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 roles.0: applied held covered-by=- deaths=none
+body 7e415a7ded4b7f82ad1537a61abe69534a4f2380927cd60100ce372edf91b9b8 mqn2XinyK2_P_9afuw_6 tenures.0: applied held covered-by=- deaths=none
 thing iVPkJsiEaGmviNGfCsaO: start=- roster=mqn2XinyK2_P_9afuw_6:admin
 thing mqn2XinyK2_P_9afuw_6: start=f827696f342a7568e3047638071c1898839a53843f8edcf0c9e24001b1c2495b roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
 thing 7loH6i_G7GA9WPnGkkf7: start=- roster=VRE3qUZyYPOZgdY-Yc-K:write,wUktf8JBT64Wjf6DQU60:admin
