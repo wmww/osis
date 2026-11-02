@@ -1732,7 +1732,8 @@ impl SyncEngine {
 
     /// Re-registration (spec/sync.md §5): an admin holding the head's epochs and a newer
     /// established one uploads the actor's role commits the host lacks under the head's
-    /// keys, then registers a child step; the rest of the pass runs once it is registered.
+    /// keys, then registers a child step; the rest of the pass runs once it is registered, or
+    /// under the host's head while the step is refused for now. True while the step is in flight.
     fn reregister(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<bool> {
         let Some(c) = self.conns.get(&conn) else { return Ok(false) };
         let host = c.host;
@@ -1742,10 +1743,11 @@ impl SyncEngine {
         if !self.step_due(&g, &l, &keys) {
             return Ok(false);
         }
-        // a step refused for now: nothing else goes before it lands, and it goes again only
-        // after its back-off (spec/sync.md §5)
+        // a step refused for now goes again only after its back-off; meanwhile the pass runs
+        // under the host's head: what it uploads is wrapped under the newest read epoch, so a
+        // removed holder still opening that head gets nothing it can read (spec/sync.md §5)
         if retry > self.raw_now() {
-            return Ok(true);
+            return Ok(false);
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
