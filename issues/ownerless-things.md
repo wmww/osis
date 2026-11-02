@@ -14,3 +14,5 @@ Shape:
 - Recovery: with no admin left the thing is stuck (members keep reading and writing as granted). The lockout recovery (spec/permissions.md §3) needs an admin, so it applies while one is left.
 
 Open: whether `MAX_OWNER_DEPTH` and the chain certificate rules need wording for a chain ending at a non-key thing.
+
+Note for designs: things owned by an ownerless actor still compact their rosters. A roster snapshot of N needs an admin of N's owner actor or above (spec/permissions.md §6), and an edge admin of the ownerless owner qualifies. Only the ownerless thing's own roster never compacts. So "ownerless faction owning its chats" grows less than "ownerless chats"; the faction's admins then hold owner-chain class on every chat. Lockout recovery (§3) needs any admin able to demote the vandal, not an owner.
