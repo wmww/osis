@@ -39,3 +39,7 @@ iroh = ["driver", "osis-transport/iroh"]
 lan = ["driver", "osis-transport/lan"]
 # Tier-2 tests of peers through a self-hosted iroh-relay on localhost.
 relay = ["iroh", "osis-transport/relay"]
+
+[dev-dependencies]
+# Judgment vectors (tests/it/judgment.rs): the `.vec` format and the vectors directory.
+osis-vectors.workspace = true

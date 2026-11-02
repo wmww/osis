@@ -45,6 +45,8 @@ vector_files! {
     link_link => "link/link.vec",
     bundle_bundle => "bundle/bundle.vec",
     lan_announce => "lan/announce.vec",
+    judgment_models => "judgment/models.vec",
+    judgment_rules => "judgment/rules.vec",
 }
 
 // spec: none (core/test/vectors/README.md, "Manifest and freezing": every file listed, frozen bytes

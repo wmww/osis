@@ -236,6 +236,32 @@ impl Engine {
         out
     }
 
+    /// The epoch start of `thing` in its role timeline (spec/permissions.md §6; tests: judgment
+    /// vectors).
+    #[doc(hidden)]
+    pub fn epoch_start(&self, thing: &Tid) -> Option<CommitId> {
+        self.core.timelines.get(thing).and_then(|tl| tl.epoch_start(thing))
+    }
+
+    /// The drop set D of every held thing's timeline (spec/permissions.md §5.1): each dropped
+    /// write with the point of the demotion whose audit dropped it and, for an edge op, the
+    /// edge it writes (target, holder). Tests: judgment vectors.
+    #[doc(hidden)]
+    pub fn drop_set(&self) -> Vec<DropEntry> {
+        let mut out = BTreeMap::new();
+        for t in osis_perm::HeldSet::things(&self.core.ix.held) {
+            let Some(tl) = self.core.timelines.get(&t) else { continue };
+            for (w, p) in tl.dropped() {
+                let edge = match w {
+                    osis_perm::WriteId::Op(c, i) => tl.role_commit(c).and_then(|rc| rc.ops.get(*i as usize)).map(|o| (o.target, o.holder)),
+                    osis_perm::WriteId::Snapshot(_) => None,
+                };
+                out.insert(*w, (*p, edge));
+            }
+        }
+        out.into_iter().map(|(w, (p, e))| (w, p, e)).collect()
+    }
+
     /// Whether an edge write of commit `c` applies in `t`'s timeline (tests).
     #[doc(hidden)]
     pub fn edge_applied(&self, t: &Tid, c: &CommitId) -> bool {
@@ -391,6 +417,10 @@ pub struct CommitDigest {
     /// Received time, origin and view, as text.
     pub rest: String,
 }
+
+/// A write of the drop set D, the point of the demotion that dropped it, and for an edge op
+/// its edge (target, holder) (`Engine::drop_set`).
+pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, Option<(Tid, Tid)>);
 
 /// One `carried` group of `IndexDigest::carried`.
 #[doc(hidden)]

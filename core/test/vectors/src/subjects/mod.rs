@@ -11,6 +11,7 @@ pub mod commit;
 pub mod crdt;
 pub mod delete;
 pub mod inbox;
+pub mod judgment;
 pub mod kdf;
 pub mod lan;
 pub mod keys;
@@ -61,6 +62,7 @@ pub fn get(path: &str) -> Option<Subject> {
         "link/link.vec" => Subject { generate: Some(link::links), check: None },
         "lan/announce.vec" => Subject { generate: Some(lan::announce), check: None },
         "bundle/bundle.vec" => Subject { generate: Some(bundle::bundle), check: None },
+        "judgment/models.vec" | "judgment/rules.vec" => Subject { generate: None, check: Some(judgment::check) },
         "crdt/deltas.vec" => Subject { generate: Some(crdt::deltas), check: Some(crdt::check) },
         _ => return None,
     })

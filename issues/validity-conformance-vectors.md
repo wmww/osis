@@ -1,11 +1,10 @@
-# No conformance artifact for validity: a second implementation cannot be checked against the spec
-> Summary: spec/permissions.md §5-§6 and spec/commits.md §5 were tuned by thousands of harness-found order-dependence cases (notes/mvp-progress.md round 13), and the reference models (`core/test/crdt-model`, `core/test/roles-model`) are the real definition of several rules; the conformance vectors (`core/test/vectors`) cover bytes (CBOR, crypto, commits, blobs, steps) but no judgment: there is no "held set in, verdicts out" vector, so a compatible implementation (spec/overview.md's stated goal) has nothing to test its validity, cover, death-dating or un-merge logic against except reading osis's code.
+# Judgment vectors cover a first slice only
+> Summary: `core/test/vectors/judgment/` (format: its README; generated and replayed by osis-node `tests/it/judgment.rs`) holds the roles model's reference scenarios and one scenario per rule family; still missing: the order harness's other shrunk seeds and pinned histories, epoch starts (no roster-snapshot scenario yet), referenced blobs (pages, chunks: the generator asserts none), multi-label bundles, and a size problem (each bundle repeats the three identities' setup, about 30 KB of hex).
 > Tags: tests, permissions, retention, spec
 
-## Recommended fix
-A vector subject `judgment/` in `core/test/vectors` (same freeze policy as the byte vectors):
-- Input: a bundle file (spec/wire.md §12) holding the commits as a host would hold them, the receiving node's seed and the actors it holds, the arrival order, and the clock.
-- Expected: per delta its validity, per thing its roster and epoch start, the drop set D in found order, per body covered/uncovered and its death dates, and a digest of each aspect's canonical state and read.
-- Generation: `gen-vectors` replays the order harness's shrunk seeds and the models' pinned counterexamples (notes/testing.md lists them per fix), so every fixed bug becomes a vector; plus one hand-picked scenario per spec rule family (frontier coverage, re-grant, snapshot vouching, cover drop and uncover, keep-at-most finality, un-merge).
-- Freeze: provisional until the first stable release like the others; any change to a judgment vector is a spec change by definition and is logged as one.
-Run as a tier-1 test against the engine; a second implementation runs the same files.
+## Left
+- Replay more pinned histories as `Scenario`s: order harness seeds in `order::arrival_order_found_histories_spec_crdt_4_6` (1558, 1053, 1173, 93004, 12161, 12236, 61165, 583175, 15085, 2700027) and the other order.rs pins (7855, 1291, 1006, 1042, ...). Each is a few lines; mind file size.
+- Roster snapshots and epoch starts (every `start=` is `-` today), `until`, invites, ledgers: scenarios exist in roles-model `snapshot.rs`/`edges.rs` but need translating to engine steps (abstract ts and receipts).
+- crdt-model's pinned cases (`tests/props.proptest-regressions`) are join properties, not judgments: no vector.
+- Referenced blobs (pages, chunk trees, linked header lists) as bundle blob records without entries.
+- Size: share one setup across a file's histories (one bundle, several histories under it) or shrink the setup.
