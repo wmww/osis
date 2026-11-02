@@ -457,7 +457,8 @@ impl Osis {
                 if h.kind != Kind::Content {
                     return Err(Error::Invalid("only changes and reverts are reverted".into()));
                 }
-                if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
+                // of what the actor may not read, not asked: `revert_as` refuses it whichever
+                if h.aspects.iter().any(|a| a.ak.as_str() != "created.0" && self.acting.is_none_or(|x| e.readable_by(&x, &a.tid)) && !e.body_not_dropped(&c, &a.tid, &a.ak)) {
                     return Err(blocked(DropReason::Compacted));
                 }
             }
