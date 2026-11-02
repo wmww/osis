@@ -48,6 +48,10 @@ Fallback, no core change: **segments**. The app's chat is a chain of osis chats;
 
 Message about 0.5 KB on the wire, about 1.2 KB stored at every device for good; join about 35 KB; kick 2.7 KB per remaining member plus a few 60 B heads. Expired or purged: about 33 B residue, 300 B for a purged permanent delta's tombstone. Open is O(all commits): about 6 s at 10^6 messages, first sync about 15 min (extrapolated, e-review §6); re-adding a member rebuilds the year's aspect, about 70 s at 10^6. A hostile 10^7-message flood costs every member about 5 GB until purged by author.
 
+## Ownership open point
+
+Lodestar (coordinator on ostrich) confirms: recovery from a vandal writer needs only an admin able to demote, owned or not; an ownerless thing can own things. Roster snapshots of N need an admin of N's owner actor or above (permissions §6), so an ownerless chat's own roster never compacts, and role history grows with member churn. A chat owned by an ownerless faction can compact, but the faction's admins then outrank the chat's own admins. Undecided: a lone chat stays ownerless and accepts the growth, or gets a one-chat parent faction. Bring this to the owner with the Factions rollout.
+
 ## Rules leaned on
 
 Retention bounds and purge rights per edit are promised (requirements Deletion); a history read API is not. A writer's snapshot may misstate others' content in state; history reads bodies, so the chat is immune. Member forward secrecy is parked (design D, refuted by review4).
