@@ -236,6 +236,9 @@ pub struct GroupSync {
     /// Hosts that do not admit one of those labels (yet): state `Refused` when no other host
     /// has it open, else informational.
     pub not_admitted: Vec<HostAddr>,
+    /// This node left the group and keeps it until a host has its removal (spec/permissions.md
+    /// §3); stays set while no host takes it.
+    pub leaving: bool,
 }
 
 /// Sync status: hosts connected and each synced group (`groups`: groups with a label this
@@ -281,10 +284,11 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     for s in sync.label_status() {
         let state = label_state(&s);
         let last = s.last_sync.map(WallMs);
-        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new() });
+        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new(), leaving: false });
         g.state = g.state.max(state);
         g.last_sync = g.last_sync.max(last);
         g.labels.push(s.label);
+        g.leaving |= s.leaving;
         for a in s.not_admitted {
             let a = HostAddr(a);
             if !g.not_admitted.contains(&a) {
@@ -293,7 +297,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
         }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new() });
+        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false });
     }
     Status { connected: sync.connected(), groups }
 }

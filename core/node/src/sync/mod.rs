@@ -335,6 +335,9 @@ pub struct LabelStatus {
     pub refused: bool,
     /// Hosts whose last refusal in a row was "not admitted" (code 14), until it opens there.
     pub not_admitted: Vec<Address>,
+    /// This node left the group and keeps its secrets until its self-removal is placed
+    /// (`SyncEngine::leaving`).
+    pub leaving: bool,
     pub last_sync: Option<u64>,
     /// Replaced (an admin syncs it until it retires, `retire_replaced`).
     pub replaced: bool,
@@ -448,9 +451,9 @@ pub struct SyncEngine {
     /// Commits placed before any other upload (`Delivery::First`).
     pub(crate) first: BTreeSet<osis_base::CommitId>,
     /// Lost access may wait for this node's own self-removal to be placed (`drop_left`): set
-    /// at start and by a self-removal, with the (sync state version, engine generation) last
-    /// checked at; cleared once nothing lost waits.
-    pub(crate) left_check: Option<(u64, u64)>,
+    /// at start, by a self-removal and when the trigger leaves a loss to it; cleared once nothing
+    /// lost waits or may come to.
+    pub(crate) left: Option<deliver::LeftCheck>,
     /// Sessions of forgotten labels whose pushes the host is still to stop.
     pub(crate) unsubscribe: BTreeSet<(ConnId, LabelId)>,
     /// The synced labels as last computed (`labels()`).
@@ -555,7 +558,7 @@ impl SyncEngine {
             diagnostics: Vec::new(),
             outbox,
             local_inbox: Vec::new(),
-            left_check: Some((u64::MAX, u64::MAX)),
+            left: Some(deliver::LeftCheck::default()),
             first: BTreeSet::new(),
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
@@ -1072,7 +1075,8 @@ impl SyncEngine {
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         for (g, l) in self.labels() {
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), last_sync: None, replaced: l.replaced };
+            let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
@@ -1584,10 +1588,14 @@ impl SyncEngine {
         if let Some(x) = self.settle_at {
             at(x);
         }
+        let skew = self.now() as i64 - now as i64;
+        // a pending grant keeping a leaver's actor ages out (`drop_left`)
+        if let Some(x) = self.left.as_ref().and_then(|l| l.recheck_at()) {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
         if self.local_any {
             at(self.local_last.saturating_add(self.cfg.resync_ms));
         }
-        let skew = self.now() as i64 - now as i64;
         // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
         if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {
             at((x as i64).saturating_sub(skew).max(0) as u64);

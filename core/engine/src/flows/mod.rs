@@ -90,8 +90,9 @@ pub trait SyncState {
 pub struct Done {
     pub commits: Vec<CommitId>,
     pub deliveries: Vec<Delivery>,
-    /// A self-removal: drop the secrets this node lost (`Engine::drop_lost_secrets`) once the
-    /// commit is placed (node-sync's `carry_out` does).
+    /// A self-removal: drop the secrets this node lost once the commit is placed (node-sync's
+    /// `carry_out` arms that; the lost-access trigger leaves such losses, an app driving the
+    /// engine alone calls `Engine::drop_lost_secrets`).
     pub drop_lost: bool,
 }
 

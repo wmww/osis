@@ -452,3 +452,85 @@ fn self_removal_crash_still_drops_spec_permissions_3() {
         assert_eq!(net.read(b, t), None, "crash {crash}: the leaver keeps the group's content");
     }
 }
+
+// spec/permissions.md §3 (a self-removal drops once placed): a node leaving a group offline
+// that then applies a received role change on the group (the lost-access trigger runs) keeps
+// the group, and shows it leaving, while the host refuses its uploads; once the host takes the
+// removal, the admin learns it and the leaver drops the group.
+#[test]
+fn self_removal_kept_by_trigger_until_placed_spec_permissions_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "marker");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("marker")));
+    net.set_online(b, false);
+    let (bt, ct_) = (net.tid(b), net.tid(c));
+    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(b).demote(&g, &d).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    // the admin adds someone meanwhile: b applies a received role commit on g
+    set_edge(net.engine(a), g, ct_, Role::Read);
+    net.feed(a, Event::Local);
+    net.run();
+    net.restart_host_with(host, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(net.engine(b).roster(&g).contains_key(&ct_), "b applied the admin's commit");
+    assert!(net.engine(a).roster(&g).contains_key(&bt), "the host refused b's removal");
+    assert_eq!(net.read(b, t), Some(s("marker")), "b keeps the group until its removal is placed");
+    assert!(net.sync(b).label_status().iter().any(|l| l.group == g && l.leaving), "b shows the group leaving");
+    net.restart_host_with(host, osis_host::HostPolicy::default());
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(!net.engine(a).roster(&g).contains_key(&bt), "the removal reached the admin");
+    assert!(net.engine(b).epochs(&g).is_none_or(|e| e.read.held().next().is_none()), "the leaver keeps the group's secrets");
+    assert_eq!(net.read(b, t), None, "the leaver keeps the group's content");
+    assert!(net.sync(b).leaving().next().is_none());
+}
+
+// spec/permissions.md §3 (a self-removal drops once placed): leaving two groups, each drops
+// once its own removal is placed; one whose host refuses it holds back nothing else.
+#[test]
+fn self_removals_drop_per_group_spec_permissions_3() {
+    let mut net = Net::new();
+    let h1 = net.add_host();
+    let h2 = net.add_host();
+    let a = net.node(1, &[h1, h2]);
+    let b = net.node(2, &[h1, h2]);
+    let g1 = net.group(a, &[(b, Role::Write)], &[h1]);
+    let g2 = net.group(a, &[(b, Role::Write)], &[h2]);
+    let t1 = net.item(a, g1, g1, "one");
+    let t2 = net.item(a, g2, g2, "two");
+    net.run();
+    assert_eq!((net.read(b, t1), net.read(b, t2)), (Some(s("one")), Some(s("two"))));
+    net.set_online(b, false);
+    let bt = net.tid(b);
+    for g in [g1, g2] {
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(b).demote(&g, &d).unwrap();
+        let acts = net.sync(b).carry_out(done).unwrap();
+        net.actions(b, acts);
+    }
+    net.restart_host_with(h2, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(!net.engine(a).roster(&g1).contains_key(&bt) && net.engine(a).roster(&g2).contains_key(&bt));
+    assert_eq!(net.read(b, t1), None, "g1's removal is placed: dropped");
+    assert_eq!(net.read(b, t2), Some(s("two")), "g2's is refused: kept");
+    let status = net.sync(b).label_status();
+    assert!(status.iter().any(|l| l.group == g2 && l.leaving) && !status.iter().any(|l| l.group == g1 && l.leaving));
+}
