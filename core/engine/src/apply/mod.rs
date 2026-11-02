@@ -258,8 +258,9 @@ fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<
 /// arrival. An applied commit, unless only creation records of it are applied: it has nothing left
 /// to hold back.
 fn never_whole(core: &crate::engine::Core, h: &Header, id: &CommitId, blob: &CommitBlob, skip: &BTreeSet<(usize, usize)>) -> bool {
-    let opened = !skip.is_empty() && skip.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED));
-    (core.ix.commits.contains_key(id) && !opened) || (h.kind == Kind::Role && !blob.parts.is_empty())
+    // a part dropped since it applied may be out of `skip` (`takes_late`): that commit was shown
+    let opened = |m: &crate::engine::Meta| m.dropped.is_empty() && !skip.is_empty() && skip.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED));
+    core.ix.commits.get(id).is_some_and(|m| !opened(m)) || (h.kind == Kind::Role && !blob.parts.is_empty())
 }
 
 /// A missing delta and whether it holds the whole commit (`gating`).

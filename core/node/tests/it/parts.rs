@@ -572,6 +572,111 @@ fn bad_part_together_or_split_spec_commits_4() {
     assert_eq!(read(vec![blob.encode()]), read(vec![part(g), part(h)]));
 }
 
+// spec/commits.md §4: a part bad by itself beside its thing's other parts, one away. Its author stalls
+// only that commit: nothing of the thing's content shows, another commit on the thing does, a junk copy
+// of the bad slot changes nothing; when the last part comes, the good parts apply in every order, synced
+// or not, as from the whole blob.
+#[test]
+fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
+    use crate::common::*;
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    let mut lp = net(2, 66);
+    let g = new_thing(&mut lp, 0);
+    let setup = packages(&mut lp, 0);
+    lp.peers[0].clock.advance(10);
+    let e = &mut lp.peers[0].engine;
+    let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
+    let author = e.tid();
+    let ts = osis_base::Ts::make(e.now(), 0).unwrap();
+    let own = Source::node(author);
+    let delta = |text: &str, nonce: u8, at: u64| {
+        let mut w = Writer::new(ts, own.clone(), at);
+        let f = create(&mut w, &osis_crdt::AnyView, &s(text)).unwrap();
+        let r = w.range();
+        let mut cx = writer_ctx(Kind::Content, ts, author, r.lo, r.hi);
+        cx.own = own.clone();
+        (encode_delta(&Delta { nonce: [nonce; 16], fragment: f }, &cx, None).unwrap(), r.lo, r.hi)
+    };
+    let (one, two) = (delta("one", 7, 1000), delta("two", 8, 1000));
+    let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
+    cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
+    cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
+    let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
+    let id = blob.id();
+    lp.peers[0].clock.advance(10);
+    let mut m = Mutation::new();
+    m.set(g, &REG, &s("beside")).unwrap();
+    let beside = lp.peers[0].commit(m).unwrap().unwrap();
+    let beside = packages(&mut lp, 0).into_iter().find(|p| p.id == beside).unwrap();
+    let on = |key: &str| {
+        let mut b = blob.clone();
+        let h = b.header.clone();
+        b.parts.retain(|p| h.aspects[p.ai].ak.as_str() == key);
+        b.encode()
+    };
+    let (p_one, p_two, p_bad) = (on("t:one.0"), on("t:two.0"), on("t:bad.0"));
+    let read = |synced: bool, deliveries: &[&[u8]]| {
+        let mut lp2 = net(2, 66);
+        for pk in &setup {
+            lp2.deliver(1, pk).unwrap();
+        }
+        let e = &mut lp2.peers[1].engine;
+        if synced {
+            e.set_syncing(g, true).unwrap();
+        }
+        for b in deliveries {
+            let _ = e.ingest(b, Vec::new());
+        }
+        e.reexamine().unwrap();
+        (e.get(&g, &ak("t:one.0")).unwrap(), e.get(&g, &ak("t:two.0")).unwrap(), e.commit_ids().contains(&id), e.pending())
+    };
+    for synced in [false, true] {
+        let got = read(synced, &[&blob.encode()]);
+        assert_eq!((&got.0, &got.1, got.2), (&Some(s("one")), &Some(s("two")), true), "synced {synced}");
+        assert!(got.3.is_empty());
+        let parts = [&p_one[..], &p_two[..], &p_bad[..]];
+        for order in permutations(3) {
+            let seq: Vec<&[u8]> = order.iter().map(|i| parts[*i]).collect();
+            assert_eq!(read(synced, &seq), got, "synced {synced}, order {order:?}");
+            // the first two alone: the commit waits, nothing of it shows
+            let held = read(synced, &seq[..2]);
+            let bad_only_left = order[2] == 2;
+            if !bad_only_left {
+                assert_eq!((&held.0, &held.1, held.2), (&None, &None, false), "synced {synced}, held {:?}", &order[..2]);
+            }
+            assert_eq!(held.3, vec![(id, Reason::WaitDeltas)], "synced {synced}, held {:?}", &order[..2]);
+        }
+        // a junk copy of the bad slot: refused, the stored copy stays, and the rest comes
+        let mut lp2 = net(2, 66);
+        for pk in &setup {
+            lp2.deliver(1, pk).unwrap();
+        }
+        if synced {
+            lp2.peers[1].engine.set_syncing(g, true).unwrap();
+        }
+        let e = &mut lp2.peers[1].engine;
+        let r = e.ingest(&p_bad, Vec::new()).unwrap();
+        assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+        let mut junk = CommitBlob::decode(&p_bad).unwrap();
+        junk.parts[0].delta = osis_base::encode(&Value::List(vec![Value::Int(2)]));
+        assert!(e.ingest(&junk.encode(), Vec::new()).is_ok_and(|x| matches!(x, Ingested::Pending(..))) || e.pending().len() == 1);
+        assert!(e.take_redeliver().is_empty(), "the stored copy was checked: it kept nothing out");
+        // another commit on the thing shows
+        lp2.deliver(1, &beside).unwrap();
+        let e = &mut lp2.peers[1].engine;
+        assert_eq!(e.get(&g, &ak("t:reg.0")).unwrap(), Some(s("beside")));
+        e.ingest(&p_one, Vec::new()).unwrap();
+        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), None);
+        e.ingest(&p_two, Vec::new()).unwrap();
+        assert_eq!(e.get(&g, &ak("t:one.0")).unwrap(), Some(s("one")));
+        assert_eq!(e.get(&g, &ak("t:bad.0")).unwrap(), None);
+        assert!(e.pending().is_empty(), "{:?}", e.pending());
+    }
+}
+
 // Reviewer's differential: random histories with role commits granting across things, commits on
 // three things and hostile spans; every part split by aspect, in random orders. Each fixed sync set
 // and hidden set must read alike. With a sync set that changes during delivery, content may differ
