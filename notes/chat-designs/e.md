@@ -17,7 +17,7 @@ There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of it
 |---|---|---|---|
 | C: actor, group of itself, label; `chat:msgs:y2026.0` (one write per message; retention `author`, keep at least forever), `chat:reactions.0` (same), `chat:settings.0^`, `chat:hidden.0^`, `chat:next.0^`, read marker and typing (memory) | none (ownerless) | members: write; admins: admin | members; `^` aspects by admins |
 
-**Who sent this.** The header's `actor` is not verified by validity today (issues/header-actor-unverified.md). Rule: show a sender only if, just before the commit, its signing device could write as that actor and that actor could write on C; the history API returns this flag, computed from held chain certificates. If core makes a wrong actor invalid **[unbuilt]**, the rule goes. Either way nobody can speak as another, and a "Bob deleted" marker from someone else's device is hidden.
+**Who sent this.** The header's `actor` is checked by validity: a commit is invalid unless its signing device holds write on that actor at the commit's key (spec/permissions.md §5.2, Acting), so a valid commit's actor is its sender. Nobody can speak as another, and a "Bob deleted" marker from someone else's device is hidden.
 
 ## Common operations
 
@@ -54,7 +54,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md). Needed only for large factions, target 10,000 members (owner; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
+Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md). Needed only for large factions, target 10,000 members (owner; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
 
 ## Accepted by the owner
 

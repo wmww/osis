@@ -95,7 +95,7 @@ pub(crate) enum Step {
     /// untyped sequence op is refused).
     NestedItem { by: usize, other: usize, t: usize, k: u8, compact: bool, also: bool },
     /// A commit past the writer's rules (`Engine::commit_hostile`), `how` % 5: a content write on
-    /// `a`; one on each of `a` and `b`; one role commit setting another peer's edge on both; `by`
+    /// `a` (for odd `v` acting for `b`); one on each of `a` and `b`; one role commit setting another peer's edge on both; `by`
     /// raising its own edge on `a`; a roster snapshot of `a` holding what the author likes. The
     /// author is told of a thing it does not know first, so it may hold no chain to it.
     Forged { by: usize, a: usize, b: usize, how: u8, op: u8, k: u8, v: u8 },
@@ -699,7 +699,14 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(e.to_value()) }).unwrap();
                 };
                 match how % 5 {
-                    0 => write_op(&mut m, &mut lp.peers[by].engine, a, op, k, v, true),
+                    // half of them acting for thing `b` (spec/permissions.md §5.2, Acting): valid
+                    // only while `by` holds write on it
+                    0 => {
+                        write_op(&mut m, &mut lp.peers[by].engine, a, op, k, v, true);
+                        if v % 2 == 1 {
+                            m.act_as(b);
+                        }
+                    }
                     1 => {
                         write_op(&mut m, &mut lp.peers[by].engine, a, op, k, v, true);
                         write_op(&mut m, &mut lp.peers[by].engine, b, op / 2, k, v, true);

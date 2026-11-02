@@ -295,6 +295,12 @@ pub(crate) fn check_role_with(core: &Core, node: Tid, records: Records<'_>, tid:
     if role >= Some(need) && (ak == CREATED.ak() || core.skip_writer_rules || within_depth(core, records, tid)) { Ok(()) } else { Err(Error::Permission { tid: *tid }) }
 }
 
+/// May `node` act for `actor` at `ts`: it is the actor or holds write on it? A receiver judges a
+/// commit invalid otherwise (`validity::acts_for`, spec/permissions.md §5.2).
+pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &Tid, ts: Ts) -> Result<()> {
+    if node == *actor || role_with(core, node, records, actor, ts) >= Some(Role::Write) { Ok(()) } else { Err(Error::Permission { tid: *actor }) }
+}
+
 /// Whether `tid`'s owner chain, through the records not held as durable, reaches a key actor
 /// within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
@@ -611,6 +617,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         false if role_commit => Kind::Role,
         false => Kind::Content,
     };
+    // edge writes are judged without the actor, so a role commit acts for its signer
+    // (spec/wire.md §4)
+    if kind != Kind::Content && m.actor.is_some_and(|a| a != node) {
+        return Err(Error::Misuse("a role commit acts for its signer only"));
+    }
     if let Some(u) = m.undoes {
         return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, &m.undo_keep, m.confined).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
@@ -627,6 +638,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
+    if !m.unchecked {
+        check_acts(tx.core, node, &|t| plan.creates.get(t), &plan.actor, ts)?;
+    }
     let mut next_ctr = 1u64;
     let mut deltas = Vec::new();
     let published = super::secrets::published_keys(tx, &plan.creates, m.aspects.keys().map(|k| k.0))?;

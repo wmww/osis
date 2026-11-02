@@ -49,7 +49,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
 
 ## 4. Sender identity
 
-**REFUTED as written.**
+**REFUTED as written.** Since fixed in core: a commit is invalid unless its signing node holds write on its header actor at the commit's key (spec/permissions.md §5.2, Acting); the bullets below describe the state before.
 
 - `actor` is not verified. Validity uses `h.author` only (core/engine/src/apply/validity.rs:722-723). Wire §11.2 says receivers "reject none for its header's actor", and notes/client-port.md line 57 calls it attribution. The evidence's commits §4 citation is about the thing's chain, not the actor's (apply/mod.rs:489).
 - So member M's node can post with `actor = Q`. It is valid everywhere and reads as sent by Q, and only Q or an admin can purge it. The same goes for reactions and read markers.

@@ -114,6 +114,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         }
         super::atomic::forget_snapshot(core, &a.tid, &a.ak, id);
     }
+    if v.actor != v.author {
+        core.ix.by_actor.remove(&(v.actor, v.author), id);
+    }
     for b in &v.chunks {
         core.ix.by_chunk.remove(b, id);
     }

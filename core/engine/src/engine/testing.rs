@@ -181,6 +181,7 @@ impl Engine {
         }
         let tables = [
             ("by_thing", format!("{:?}", *ix.by_thing)),
+            ("by_actor", format!("{:?}", *ix.by_actor)),
             ("by_aspect", format!("{:?}", *ix.by_aspect)),
             ("invalid", format!("{:?}", *ix.invalid)),
             ("ranges", format!("{:?}", *ix.ranges)),

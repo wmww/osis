@@ -269,7 +269,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **l** History read API (E): the held bodies of an aspect with author, time, received time, validity and the sender flag, paged by time, memory commits included, and a change event per commit.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
 - **o** Partial and newest-first fetch of a label (issues/partial-history-fetch.md).
-- **p** Verified actor: a commit is invalid unless its author could write as its `actor` (issues/header-actor-unverified.md); until then E uses the display rule of footnote 39.
+- **p** Verified actor: a commit is invalid unless its author could write as its `actor` (built: spec/permissions.md §5.2, Acting).
 - **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (factions past a few thousand members).
 - **s** Default-off sync: a device holding a faction's secret does not sync its children's labels until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
 - **q** Purge modes not nested: author-only (admins cannot purge) becomes a setting beside `admin` and `nobody` (issues/purge-rights-not-nested.md).
@@ -314,7 +314,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
 37. D as written: the chain seed's box is in the recording, sealed to a key the device keeps, so a thief rebuilds every hour key (review4).
 38. E: default yes; author-only purge (admins cannot delete) is a chat setting once purge modes are unnested (core q, unbuilt).
-39. E: the header's actor is unverified today; the app shows a sender only if its signing device could write as that actor and the actor could write on the chat just before the commit (from held chain certificates); core p removes the rule.
+39. E: the header's actor is checked by validity (spec/permissions.md §5.2: the signing device holds write on the actor at the commit's key), so a valid commit's actor is its sender; that the actor itself could write on the chat is the ordinary validity of the device's write only when its path runs through the actor.
 40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 2.5x10^5 messages.
 41. The removal and the top faction's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each host; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top faction (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md fixed.

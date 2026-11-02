@@ -421,6 +421,10 @@ indexes! {
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
+    /// Held commits per (header actor, author), where those differ: re-judging
+    /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
+    /// actors this node acts for (`Core::acting`).
+    pub by_actor: JSetMap<(Tid, Tid), CommitId>,
     /// The commits whose header lists each chunk blob (`View::chunks`).
     pub by_chunk: JSetMap<osis_base::BlobId, CommitId>,
     /// Held undo commits per commit they undo (`undo::in_effect`).
@@ -684,6 +688,19 @@ impl Core {
     pub fn aspects_of(&self, t: &Tid) -> impl Iterator<Item = (&(Tid, Ak), &std::collections::BTreeSet<(Ts, CommitId)>)> {
         let t = *t;
         self.ix.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
+    }
+
+    /// The held commits acting for `actor` by another author (a range of `by_actor`).
+    pub fn acting_for(&self, actor: &Tid) -> impl Iterator<Item = CommitId> + '_ {
+        let a = *actor;
+        self.ix.by_actor.range((a, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == a).flat_map(|(_, s)| s.iter().copied())
+    }
+
+    /// The actors this node has acted for in a held commit: its chain certificates for them go
+    /// under every label it places in (spec/permissions.md §4). O(`by_actor` keys).
+    pub fn acting(&self) -> impl Iterator<Item = Tid> + '_ {
+        let me = self.id.tid();
+        self.ix.by_actor.keys().filter(move |(_, au)| *au == me).map(|(a, _)| *a)
     }
 
     /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):

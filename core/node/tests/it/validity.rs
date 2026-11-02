@@ -477,6 +477,74 @@ fn foreign_actor_claim_refused_spec_wire_4() {
     assert!(lp.peers[1].engine.commit(m).is_err(), "a write claiming an actor the node does not act for was signed");
 }
 
+/// Bob's (peer 1) key signs a commit-form commit setting `d`'s register to `v`, naming `actor`
+/// as the actor it acts for, past the writer's rules.
+fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    let b = lp.peers[1].engine.tid();
+    let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+    let own = Source::commit(osis_base::CommitId([0; 32]));
+    let mut w = Writer::new(ts, own.clone(), 1);
+    let f = create(&mut w, &AnyView, &s(v)).unwrap();
+    let r = w.range();
+    let mut cx = writer_ctx(Kind::Content, ts, b, r.lo, r.hi);
+    cx.own = own;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
+    aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, actor, Form::Commit);
+    cb.aspects.push(aw);
+    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+}
+
+// spec/permissions.md §5.2 (acting for an actor): Bob, a writer of D, signs a write naming
+// Carol as its actor though he holds no write on her. Receivers judge it invalid, so it can
+// never read as Carol's; the same write naming Bob himself is valid.
+#[test]
+fn forged_actor_invalid_spec_perm_5_2() {
+    let (mut lp, d, b, c) = setup(46);
+    lp.advance(1_000);
+    let forged = forge_acting(&mut lp, d, c, "as carol");
+    lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+    assert!(lp.peers[0].engine.pending().is_empty());
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")), "a write acting for an actor its author cannot act for applied");
+    lp.advance(1_000);
+    let own = forge_acting(&mut lp, d, b, "as bob");
+    lp.peers[0].engine.ingest(&own, Vec::new()).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("as bob")));
+}
+
+// spec/permissions.md §5.2 (acting for an actor), spec/commits.md §4 (order independence):
+// Dave (3), with no right on D, grants Bob write on himself; Bob writes D acting for Dave.
+// Alice gets the write before the grant (invalid: Bob cannot act for Dave as far as she knows)
+// and judges it valid once the grant arrives, though nothing about D changed.
+#[test]
+fn acting_valid_once_grant_arrives_spec_perm_5_2() {
+    let mut lp = net(4, 47);
+    lp.sync_all().unwrap();
+    let d = new_thing(&mut lp, 0);
+    let (b, dave) = (lp.peers[1].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, d, b, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    set_edge(&mut lp.peers[3].engine, dave, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 3, 1);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("for dave")).unwrap();
+    // Dave's node has no write secret to derive an author-class delete key from
+    m.retention(d, &REG, osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() }).unwrap();
+    m.act_as(dave);
+    let id = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
+    lp.deliver(0, &pk).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    sync(&mut lp, 3, 0);
+    assert_eq!(lp.peers[0].engine.get(&d, &ak("t:reg.0")).unwrap(), Some(s("for dave")));
+}
+
 /// A role commit signed by peer `by`'s key writing `v` to `ak` on `t`, built by hand past
 /// the writer-side rules; its counters start at `lo`.
 fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64) -> Vec<u8> {

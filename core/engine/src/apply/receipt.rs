@@ -168,7 +168,8 @@ impl Engine {
     /// per aspect the scope puts in question and per demoted node, that node's commits this
     /// node received by `as_of` (held ones at their meta's receipt time, those verified by
     /// header alone at the record's), memory commits never, and held ones whose part there is
-    /// covered here (`covered_here`) left out. This node's own receipts only; `as_of` earlier
+    /// covered here (`covered_here`) left out; and, where it falls below write, its held
+    /// commits acting for that thing. This node's own receipts only; `as_of` earlier
     /// than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
@@ -208,6 +209,14 @@ impl Engine {
                     if !covered_here(tx, &c, &t, &ak, as_of)? {
                         f.commits.insert(c);
                     }
+                }
+            }
+            // a fall below write on M puts in question the node's commits acting for M
+            // (`validity::acts_for`), whatever they write
+            for (node, things) in &scope.content {
+                for t in things {
+                    let acting = tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten();
+                    f.commits.extend(acting.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| !m.view.memory && m.received.0 <= as_of.0)));
                 }
             }
             Ok(f)

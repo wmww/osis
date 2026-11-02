@@ -755,13 +755,13 @@ impl Engine {
     }
 
     /// Whether part `ai` of ephemeral commit `h` is valid here (spec/permissions.md §5.2): judged
-    /// as its author's snapshot delta at its `ts`, by commit ID. Its key's lifetime marker is its
-    /// commit's class (spec/commits.md §2): `*` in a relay-only commit, else `~` (so no core
-    /// aspect but `placed.0~`).
+    /// as its author's snapshot delta at its `ts`, by commit ID, its author acting for its actor
+    /// (`acts_for`). Its key's lifetime marker is its commit's class (spec/commits.md §2): `*` in
+    /// a relay-only commit, else `~` (so no core aspect but `placed.0~`).
     fn eph_part_valid(&self, h: &Header, id: &CommitId, ai: usize, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
         let Some(a) = h.aspects.get(ai) else { return false };
         let class = if h.ephemeral == Some(EphClass::Relay) { Lifetime::Signal } else { Lifetime::Ephemeral };
-        if a.ak.lifetime() != class {
+        if a.ak.lifetime() != class || !crate::apply::validity::acts_for(&self.core, h, id) {
             return false;
         }
         self.eph_write_valid(&a.tid, a.ak.as_str(), h.author, h.ts, id, carried)

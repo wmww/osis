@@ -657,6 +657,25 @@ pub(crate) fn part_valid(core: &Core, h: &Header, id: &CommitId, ai: usize) -> b
     Judge::new(core).part(h, id, ai)
 }
 
+/// Whether the author of commit `id` could act for its header's actor (spec/permissions.md
+/// §5.2): it is the actor, or its write on the actor at the commit's key is valid as a delta on
+/// the actor needing write would be (same timeline, demotions and frontiers). A commit failing
+/// this is invalid whole. Role commits and roster snapshots name their author (bad input
+/// otherwise, spec/wire.md §4), so the timeline never depends on this.
+///
+/// Invariant (arrival-order independence): a function of the actor's timeline alone, so it
+/// changes only when that timeline does; `rejudge_once` re-judges the commits acting for a
+/// thing whose timeline changed (`by_actor`).
+pub(crate) fn acts_for(core: &Core, h: &Header, id: &CommitId) -> bool {
+    h.author == h.actor || acts_on(core.timelines.get(&h.actor), h, id)
+}
+
+fn acts_on(tl: Option<&osis_perm::Timeline>, h: &Header, id: &CommitId) -> bool {
+    let Some(tl) = tl else { return false };
+    let point = Point { ts: h.ts, node: h.author, commit: *id };
+    tl.delta_valid(point, &h.actor, Role::Write) == Validity::Valid
+}
+
 /// `part_valid` over many parts: what is per thing (owner depth, timeline) looked up once per
 /// run of parts on one thing.
 pub(crate) struct Judge<'a> {
@@ -665,11 +684,13 @@ pub(crate) struct Judge<'a> {
     /// On the last thing: per (author, required role), from where its deltas are valid
     /// whatever else (`Timeline::valid_from`).
     from: BTreeMap<(Tid, Role), Option<Option<Point>>>,
+    /// Per (author, actor), from where the author acts for the actor whatever the commit.
+    acts: BTreeMap<(Tid, Tid), Option<Option<Point>>>,
 }
 
 impl<'a> Judge<'a> {
     pub(crate) fn new(core: &'a Core) -> Judge<'a> {
-        Judge { core, last: None, from: BTreeMap::new() }
+        Judge { core, last: None, from: BTreeMap::new(), acts: BTreeMap::new() }
     }
 
     /// (too deep, timeline) of `t`.
@@ -685,9 +706,23 @@ impl<'a> Judge<'a> {
         }
     }
 
+    /// `acts_for`, its tenure bound found once per (author, actor).
+    fn acts(&mut self, h: &Header, id: &CommitId) -> bool {
+        if h.author == h.actor {
+            return true;
+        }
+        let tl = self.core.timelines.get(&h.actor);
+        let from = *self.acts.entry((h.author, h.actor)).or_insert_with(|| tl.and_then(|tl| tl.valid_from(&h.author, &h.actor, Role::Write)));
+        let point = Point { ts: h.ts, node: h.author, commit: *id };
+        if from.is_some_and(|b| b.is_none_or(|b| b <= point)) {
+            return true;
+        }
+        acts_on(tl, h, id)
+    }
+
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
-        if core.ix.void.contains(id) {
+        if core.ix.void.contains(id) || !self.acts(h, id) {
             return false;
         }
         let Some(a) = h.aspects.get(ai) else { return false };
@@ -1160,17 +1195,21 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 one(id, m, true);
             }
         } else {
+            // re-judged whole: those named, and those acting for a thing whose timeline changed
+            // (`acts_for`)
+            let mut whole = explicit.clone();
+            whole.extend(things.iter().flat_map(|t| core.acting_for(t)));
             // things in order: a commit is met first under the first re-judged thing it writes
             let mut met: BTreeSet<CommitId> = BTreeSet::new();
             for t in &things {
                 for id in core.ix.by_thing.get(t).into_iter().flatten() {
                     let Some(m) = core.ix.commits.get(id) else { continue };
-                    if !explicit.contains(id) && met.insert(*id) {
+                    if !whole.contains(id) && met.insert(*id) {
                         one(id, m, false);
                     }
                 }
             }
-            for id in &explicit {
+            for id in whole.iter() {
                 if let Some(m) = core.ix.commits.get(id) {
                     one(id, m, true);
                 }

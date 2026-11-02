@@ -233,6 +233,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     for d in &deltas {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
     }
+    crate::engine::write::check_acts(tx.core, tx.core.id.tid(), &|_| None, &actor, ts)?;
     if confined {
         crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }

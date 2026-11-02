@@ -76,7 +76,7 @@ fn content() -> CommitBlob {
 
 fn role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, ACTOR, Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
     let edge = |m: u8| Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), Value::Int(1))].into_iter().collect());
     let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x41), 2));
     a.deltas.push(delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x42), 3));
@@ -255,7 +255,7 @@ fn more_accepted() -> Vec<Record> {
     out.push(record("purge request; created.0 kept forever", "spec/wire.md §4; spec/commits.md §5", &built(b)));
     // role commit with a frontier
     let at = ts(1_700_000_006_000);
-    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, ACTOR, Form::Commit);
+    let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);

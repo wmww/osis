@@ -271,6 +271,10 @@ impl Engine {
         if m.confined {
             self.check_confined(&m, &actor)?;
         }
+        if !m.unchecked {
+            let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
+            crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t), &actor, ts)?;
+        }
         let mut eph_ops: Vec<EphOp> = Vec::new();
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
         for ((tid, ak), a) in std::mem::take(&mut m.aspects) {

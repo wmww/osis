@@ -23,8 +23,8 @@ impl PurgeBy {
 
 impl Timeline {
     /// §8: may `requester` purge a delta of `thing` with retention `by` at `at`? `actor` is the
-    /// actor directly above the delta's author node: the actor its commit acted for (header
-    /// field 2; an import's delta: its origin commit's). `admin`: the thing's current admins;
+    /// actor its commit acted for (header field 2, checked by validity; an import's delta: its
+    /// origin commit's, as its importer states it). `admin`: the thing's current admins;
     /// `author`: also any node acting for `actor` (write on it) while `actor` holds write on
     /// the thing; `writer`: also any current writer.
     pub fn may_purge(&self, requester: &Tid, thing: &Tid, by: PurgeBy, actor: &Tid, at: At) -> bool {
