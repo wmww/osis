@@ -131,6 +131,12 @@ impl MemoryBackend {
         let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, syncs: 0 };
         MemoryBackend { data: Arc::new(Mutex::new(data)), faults: self.faults.clone() }
     }
+    /// Drops every value and blob (a removed database file).
+    pub fn erase(&self) {
+        let mut d = self.lock();
+        d.kv.clear();
+        d.blobs.clear();
+    }
     /// The live key-value pairs.
     pub fn dump(&self) -> Vec<KeyValue> {
         self.lock().kv.iter().map(|(k, v)| (k.clone(), v.clone())).collect()

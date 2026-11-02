@@ -127,11 +127,40 @@ pub trait Shared: Send + Sync + 'static {
     /// Runs `f` on the engine; returns its actions. `None`: the engine is gone (the driver stops).
     fn with(&self, f: &mut dyn FnMut(&mut SyncEngine) -> Vec<Action>) -> Option<Vec<Action>>;
     /// Opens the store the node's host keeps, its own beside the node's (once per start of
-    /// hosting; closed when it stops). In memory unless the holder says otherwise.
+    /// hosting; closed, then erased, when it stops). In memory unless the holder says otherwise.
     fn host_store(&self) -> Result<osis_store::Store, String> {
         let (b, r) = (Box::new(osis_store::MemoryBackend::new()), Box::new(osis_store::MemoryRoot::new()));
         osis_store::Store::create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
+    /// Erases the host store (its key root first: that crypto-shreds it), never while it is
+    /// open; the next `host_store` is empty.
+    fn erase_host_store(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The local record of the host store naming the host key it belongs to.
+const HOST_KEY_RECORD: &[u8] = b"host key";
+
+/// Opens the host store for host key `key`: one kept for another key (hosting stopped and
+/// started again while no driver ran, or before it carried out the stop) is erased first.
+fn open_host_store(shared: &dyn Shared, key: &[u8; 32]) -> Result<osis_store::Store, String> {
+    let e = |e: osis_store::Error| e.to_string();
+    let mut s = shared.host_store()?;
+    let mut rng = osis_crypto::OsRng;
+    let kept = s.transaction(&mut rng).and_then(|mut t| t.get_local(HOST_KEY_RECORD)).map_err(e)?;
+    if kept.as_deref() == Some(key.as_slice()) {
+        return Ok(s);
+    }
+    if kept.is_some() {
+        drop(s);
+        shared.erase_host_store()?;
+        s = shared.host_store()?;
+    }
+    let mut t = s.transaction(&mut rng).map_err(e)?;
+    t.put_local(HOST_KEY_RECORD, key, osis_store::Shred::No).map_err(e)?;
+    t.commit().map_err(e)?;
+    Ok(s)
 }
 
 /// The host task while the node hosts.
@@ -643,7 +672,15 @@ impl<T: Transport, H: Shared> Driver<T, H> {
         let Some(cfg) = want else {
             if let Some(h) = self.host.take() {
                 let _ = h.ctl.send(host::Control::Shutdown).await;
-                let _ = h.task.await;
+                // the hub, and with it the host store, closes here
+                drop(h.task.await);
+            }
+            // hosting stopped (not the driver): the host store goes with the host secret
+            if self.read(|s| s.host_key().is_none()) == Some(true) {
+                let shared = &self.shared;
+                if let Err(e) = blocking(|| shared.erase_host_store()) {
+                    (self.log)(&format!("erasing the host store: {e}"));
+                }
             }
             return;
         };
@@ -670,9 +707,11 @@ impl<T: Transport, H: Shared> Driver<T, H> {
                 hub.store_mut().set_policy(cfg.policy.clone());
                 hub
             }
-            _ => {
+            old => {
+                // an old key's hub closes its store before it is opened again
+                drop(old);
                 let shared = &self.shared;
-                let opened = blocking(|| shared.host_store().and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
+                let opened = blocking(|| open_host_store(shared, &cfg.key).and_then(|s| osis_host::HostStore::open(s, self.clock.clone(), cfg.policy.clone(), Box::new(osis_crypto::OsRng)).map_err(|e| e.to_string())));
                 match opened {
                     Ok(store) => osis_host::Hub::new(store, cfg.key, Box::new(osis_crypto::OsRng)),
                     Err(e) => return self.host_status(HostStatus::Failed(format!("host store: {e}"))),
@@ -799,6 +838,9 @@ pub async fn run_shared<T: Transport, H: Shared>(shared: H, transport: T, listen
         s.host_restart();
         Vec::new()
     });
+    // a host store left by a stop no driver carried out (not hosting: erased)
+    d.host_want = Some(None);
+    d.host_update().await;
     d.feed(Event::Tick);
     let mut lan_tick = tokio::time::interval(LAN_CHECK);
     while !d.gone {

@@ -309,3 +309,94 @@ fn own_random(seed: u64) {
         assert_eq!(got, want, "seed {seed}: ops {ops:#?}");
     }
 }
+
+/// Waits (up to 30 s) for `f` to hold.
+fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !f() {
+        assert!(std::time::Instant::now() < end, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// The labels in the host store at `dir` (the database closed).
+fn host_store_labels(dir: &std::path::Path) -> Vec<LabelId> {
+    let b = osis_store::RedbBackend::open(&dir.join("host.redb")).unwrap();
+    let r = osis_store::FileRoot::new(dir.join("host.root"));
+    let s = osis_store::Store::open(Box::new(b), Box::new(r), osis_store::StoreConfig::default()).unwrap();
+    let clock: std::sync::Arc<dyn osis::Clock> = std::sync::Arc::new(osis_base::SystemClock);
+    let h = osis_host::HostStore::open(s, clock, osis_host::HostPolicy::default(), Box::new(osis_crypto::OsRng)).unwrap();
+    h.labels_after(None, 1000).unwrap()
+}
+
+// spec/data-model.md §9 (`host.0^` absent: it does not host; stopping erases the host store),
+// spec/requirements.md Deletion: stopping hosting erases the host store (`host.redb`,
+// `host.root`) once the host closes it, on a running driver or at the next driver start when
+// it stopped while none ran; a start under a new host key after a stop no driver carried out
+// serves nothing of the old store.
+#[test]
+fn stop_hosting_erases_host_store_spec_data_model_9() {
+    let dir = std::env::temp_dir().join(format!("osis-host-erase-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let net = osis_transport::Net::new(41);
+    // the app's runtime: `close` returns once the driver, and with it the host, ended
+    let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+    let at = |i: u64, run: bool| {
+        let mut c = osis::Config::at(osis::StoreAt::Dir(dir.clone()));
+        c.seed = Some(i);
+        c.peers = false;
+        if run {
+            c.runtime = osis::Runtime::Tokio(rt.handle().clone());
+            c.transport = Some(osis::Transport::InProcess(net.endpoint(&format!("e{i}"))));
+        }
+        c
+    };
+    let files = || dir.join("host.redb").exists() || dir.join("host.root").exists();
+    let hosting = || Some(Hosting { listen: vec!["mem://e".into()], admit: Admit::Open, ..Default::default() });
+    let listening = |db: &Osis| wait_for("listening", || db.host_address().unwrap().is_some());
+
+    // hosting, with the home label registered there
+    let db = Osis::create(at(1, true)).unwrap().0;
+    db.set_hosting(hosting()).unwrap();
+    listening(&db);
+    db.add_host(&db.host_address().unwrap().unwrap()).unwrap();
+    common::block_on(db.wait_synced(osis::SyncScope::All, std::time::Duration::from_secs(30))).unwrap();
+    let home = home_label(&db);
+    db.close().unwrap();
+    assert_eq!(host_store_labels(&dir), vec![home]);
+
+    // stopped and started again with no driver running: the new key's host starts empty
+    let db = Osis::open(at(2, false)).unwrap();
+    let old = db.host_key();
+    db.set_hosting(None).unwrap();
+    db.set_hosting(hosting()).unwrap();
+    assert_ne!(db.host_key(), old);
+    db.close().unwrap();
+    let db = Osis::open(at(3, true)).unwrap();
+    listening(&db);
+    db.close().unwrap();
+    assert_eq!(host_store_labels(&dir), Vec::new());
+
+    // stopped on a running driver: the files go
+    let db = Osis::open(at(4, true)).unwrap();
+    listening(&db);
+    assert!(files());
+    db.set_hosting(None).unwrap();
+    wait_for("the host store erased", || !files());
+    db.close().unwrap();
+
+    // stopped with no driver running: the next driver start erases
+    let db = Osis::open(at(5, true)).unwrap();
+    db.set_hosting(hosting()).unwrap();
+    listening(&db);
+    db.close().unwrap();
+    assert!(files());
+    let db = Osis::open(at(6, false)).unwrap();
+    db.set_hosting(None).unwrap();
+    db.close().unwrap();
+    assert!(files());
+    let db = Osis::open(at(7, true)).unwrap();
+    wait_for("the host store erased", || !files());
+    db.close().unwrap();
+    let _ = std::fs::remove_dir_all(&dir);
+}

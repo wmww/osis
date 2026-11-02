@@ -294,6 +294,24 @@ impl Shared for OsisShared {
         };
         osis_store::Store::open_or_create(b, r, osis_store::StoreConfig::default(), &mut osis_crypto::OsRng).map_err(|e| e.to_string())
     }
+
+    fn erase_host_store(&self) -> std::result::Result<(), String> {
+        use osis_store::RootStorage as _;
+        match &self.1 {
+            crate::StoreAt::Memory(m) => {
+                m.host_root.clone().erase().map_err(|e| e.to_string())?;
+                m.host.erase();
+            }
+            crate::StoreAt::Dir(p) => {
+                osis_store::FileRoot::new(p.join("host.root")).erase().map_err(|e| e.to_string())?;
+                match std::fs::remove_file(p.join("host.redb")) {
+                    Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.to_string()),
+                    _ => {}
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 /// Where a waiting call's result lands.
