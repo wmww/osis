@@ -10,16 +10,6 @@ use roles_model::{edges, joint, snapshot, Rng};
 use osis_base::{CommitId, Role, Tid};
 use osis_perm::{At, Edge, Timeline, WriteId};
 
-fn role(r: roles_model::Role) -> Option<Role> {
-    match r {
-        roles_model::Role::None => None,
-        roles_model::Role::Read => Some(Role::Read),
-        roles_model::Role::Write => Some(Role::Write),
-        roles_model::Role::Admin => Some(Role::Admin),
-    }
-}
-
-
 /// A joint-model history as a world: node i is the i-th smallest key-actor tid, genesis edges
 /// are writes by the key actor at the top of the target's chain at t=0.
 struct JointWorld {
@@ -46,7 +36,7 @@ fn joint_world(h: &joint::JHist) -> JointWorld {
     let mut g = 0;
     for (m, row) in h.genesis.iter().enumerate() {
         for (x, &r) in row.iter().enumerate() {
-            if let Some(r) = role(r) {
+            if let Some(r) = model_role(r) {
                 g += 1;
                 let recv: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
                 w.commit_id(gen_id(g), top[x], 0, &[(actors[x], ent(m), Some(Edge::new(r)))], &recv);
@@ -58,7 +48,7 @@ fn joint_world(h: &joint::JHist) -> JointWorld {
         let id = cid(jw.id);
         ids.push(id);
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
-        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), role(jw.role).map(Edge::new))], &recv);
+        w.commit_id(id, nodes[jw.author], jw.t as u64, &[(actors[jw.target], ent(jw.holder), model_role(jw.role).map(Edge::new))], &recv);
     }
     JointWorld { w, nodes, actors, ids }
 }
@@ -75,7 +65,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
     };
     for n in 0..h.nodes {
         for x in 0..h.owners.len() {
-            let (m, p) = (role(o.roles[n][x]), tl.role(&jw.nodes[n], &jw.actors[x], At::END));
+            let (m, p) = (model_role(o.roles[n][x]), tl.role(&jw.nodes[n], &jw.actors[x], At::END));
             if m != p {
                 return Some(format!("role of node {n} on actor {x}: model {m:?} perm {p:?}"));
             }
@@ -89,7 +79,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
             }
             let holder = if m < h.nodes { jw.nodes[m] } else { jw.actors[m - h.nodes] };
             let pe = tl.roster(&jw.actors[x], At::END).get(&holder).map(|e| e.role);
-            if role(o.edges[m][x]) != pe {
+            if model_role(o.edges[m][x]) != pe {
                 return Some(format!("edge {m} on {x}: model {:?} perm {pe:?}", o.edges[m][x]));
             }
         }
@@ -221,15 +211,6 @@ struct EdgesWorld {
     ids: Vec<CommitId>,
 }
 
-fn medge(e: Option<edges::Edge>) -> Option<Edge> {
-    e.map(|e| Edge {
-        role: role(e.role).unwrap_or(Role::Read),
-        until: (e.until != edges::NEVER).then_some(osis_base::WallMs(e.until as u64)),
-        invite: role(e.invite),
-        since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1),
-    })
-}
-
 fn edges_world(h: &edges::EHist) -> EdgesWorld {
     let mut w = World::new();
     let nodes = w.nodes(h.n());
@@ -237,7 +218,7 @@ fn edges_world(h: &edges::EHist) -> EdgesWorld {
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
     for (x, e) in h.genesis.iter().enumerate().skip(1) {
         if e.is_some() {
-            w.commit_id(gen_id(x), nodes[0], 0, &[(t, nodes[x], medge(*e))], &all0);
+            w.commit_id(gen_id(x), nodes[0], 0, &[(t, nodes[x], model_edge(*e))], &all0);
         }
     }
     let mut ids = Vec::new();
@@ -245,7 +226,7 @@ fn edges_world(h: &edges::EHist) -> EdgesWorld {
         let id = cid(ew.id);
         ids.push(id);
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, tn)| (*tn, h.recv[i][n] as u64)).collect();
-        let ops: Vec<(Tid, Tid, Option<Edge>)> = ew.ops.iter().map(|&(x, e)| (t, nodes[x], medge(e))).collect();
+        let ops: Vec<(Tid, Tid, Option<Edge>)> = ew.ops.iter().map(|&(x, e)| (t, nodes[x], model_edge(e))).collect();
         w.commit_id(id, nodes[ew.author], ew.t as u64, &ops, &recv);
     }
     EdgesWorld { w, nodes, t, ids }
@@ -262,7 +243,7 @@ fn edges_diff(h: &edges::EHist) -> Option<String> {
     let tl = Timeline::evaluate(&ew.w.held());
     for x in 1..h.n() {
         let (mr, mi) = o.auth(x);
-        let m = (role(mr), role(mi));
+        let m = (model_role(mr), model_role(mi));
         let p = auth_of(&tl, &ew, x);
         if m != p {
             return Some(format!("auth of {x}: model {m:?} perm {p:?}"));
@@ -324,7 +305,7 @@ fn snap_diff(h: &snapshot::SHist) -> Option<String> {
     for (name, thing, out) in [("P", sw.p, &o.p), ("G", sw.g, &o.g)] {
         let roster = tl.roster(&thing, At::END);
         for x in 1..h.n() {
-            let (m, p) = (role(out.roles[x]), roster.get(&sw.nodes[x]).map(|e| e.role));
+            let (m, p) = (model_role(out.roles[x]), roster.get(&sw.nodes[x]).map(|e| e.role));
             if m != p {
                 return Some(format!("{name} edge of {x}: model {m:?} perm {p:?}"));
             }

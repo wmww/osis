@@ -45,5 +45,4 @@ impl Timeline {
         let r = self.role(node, actor, at);
         [Role::Read, Role::Write, Role::Admin].into_iter().filter(|x| r >= Some(Role::Write) && Some(*x) <= r).collect()
     }
-
 }

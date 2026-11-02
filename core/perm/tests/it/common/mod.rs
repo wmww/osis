@@ -344,7 +344,7 @@ pub fn dropped_commits(tl: &osis_perm::Timeline) -> BTreeSet<CommitId> {
     tl.dropped().keys().map(WriteId::commit).collect()
 }
 
-fn model_role(r: roles_model::Role) -> Option<Role> {
+pub fn model_role(r: roles_model::Role) -> Option<Role> {
     match r {
         roles_model::Role::None => None,
         roles_model::Role::Read => Some(Role::Read),
@@ -386,25 +386,27 @@ pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>,
     (w, nodes, actors)
 }
 
+/// An edges-model edge value (some marked tied: carried, never an authority).
+pub fn model_edge(e: Option<roles_model::edges::Edge>) -> Option<Edge> {
+    use roles_model::edges::NEVER;
+    e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
+}
+
 /// An edges-model history as a world: node 0 owns the one target.
 pub fn edges_world(h: &roles_model::edges::EHist, salt: u8) -> (World, Vec<Tid>, Tid) {
-    use roles_model::edges::{Edge as MEdge, NEVER};
     let mut w = World::new();
     w.next = 1000 + u32::from(salt) * 100_000;
     let nodes = w.nodes_salted(h.n(), salt);
     let t = w.thing(nodes[0]);
-    let me = |e: Option<MEdge>| {
-        e.map(|e| Edge { role: model_role(e.role).unwrap_or(Role::Read), until: (e.until != NEVER).then_some(WallMs(e.until as u64)), invite: model_role(e.invite), since: None, tied: crate::common::tie_if((e.until ^ e.role as u32 ^ e.invite as u32) & 1 == 1) })
-    };
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
     for (x, e) in h.genesis.iter().enumerate().skip(1) {
         if e.is_some() {
-            w.set(nodes[0], t, nodes[x], me(*e), 0, &all0);
+            w.set(nodes[0], t, nodes[x], model_edge(*e), 0, &all0);
         }
     }
     for (i, ew) in h.writes.iter().enumerate() {
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, tn)| (*tn, h.recv[i][n] as u64)).collect();
-        let ops: Vec<(Tid, Tid, Option<Edge>)> = ew.ops.iter().map(|&(x, e)| (t, nodes[x], me(e))).collect();
+        let ops: Vec<(Tid, Tid, Option<Edge>)> = ew.ops.iter().map(|&(x, e)| (t, nodes[x], model_edge(e))).collect();
         let mut id = cid(ew.id);
         id.0[30] = salt;
         w.commit_id(id, nodes[ew.author], ew.t as u64, &ops, &recv);

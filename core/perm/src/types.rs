@@ -124,6 +124,12 @@ impl Frontier {
             _ => false,
         }
     }
+
+    /// Its sizes (tids, counters, commit IDs): how a walk's input compares and tags it (its
+    /// content is fixed by the record holding it, `HeldSet`).
+    pub(crate) fn shape(&self) -> (usize, usize, usize) {
+        (self.writes.len(), self.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum(), self.commits.len())
+    }
 }
 
 /// One `roles.0` edge write of a role commit: the edge of `holder` on `target`, `None`
@@ -164,10 +170,9 @@ impl RoleCommit {
 
 /// Frontiers as the walk's input compares them: by their sizes (`RoleCommit::same_input`).
 fn same_frontier(a: &Option<Arc<Frontier>>, b: &Option<Arc<Frontier>>) -> bool {
-    let shape = |f: &Frontier| (f.writes.len(), f.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum::<usize>(), f.commits.len());
     match (a, b) {
         (None, None) => true,
-        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || shape(a) == shape(b),
+        (Some(a), Some(b)) => Arc::ptr_eq(a, b) || a.shape() == b.shape(),
         _ => false,
     }
 }
@@ -227,7 +232,7 @@ impl WriteId {
 pub const ROLES: &str = "roles.0";
 
 /// Sets `k` to `v` in `m` (`None`: removes it); the value before.
-pub(crate) fn put<K: Ord, V>(m: &mut std::collections::BTreeMap<K, V>, k: K, v: Option<V>) -> Option<V> {
+pub(crate) fn put<K: Ord, V>(m: &mut BTreeMap<K, V>, k: K, v: Option<V>) -> Option<V> {
     match v {
         Some(v) => m.insert(k, v),
         None => m.remove(&k),
@@ -235,7 +240,7 @@ pub(crate) fn put<K: Ord, V>(m: &mut std::collections::BTreeMap<K, V>, k: K, v: 
 }
 
 /// Pops the last element of `m[k]`, removing the entry once empty.
-pub(crate) fn pop<K: Ord, V>(m: &mut std::collections::BTreeMap<K, Vec<V>>, k: &K) {
+pub(crate) fn pop<K: Ord, V>(m: &mut BTreeMap<K, Vec<V>>, k: &K) {
     if let Some(v) = m.get_mut(k) {
         v.pop();
         if v.is_empty() {
@@ -245,7 +250,7 @@ pub(crate) fn pop<K: Ord, V>(m: &mut std::collections::BTreeMap<K, Vec<V>>, k: &
 }
 
 /// The earlier of two optional expiries.
-pub(crate) fn earliest(a: Option<osis_base::WallMs>, b: Option<osis_base::WallMs>) -> Option<osis_base::WallMs> {
+pub(crate) fn earliest(a: Option<WallMs>, b: Option<WallMs>) -> Option<WallMs> {
     match (a, b) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -253,6 +258,6 @@ pub(crate) fn earliest(a: Option<osis_base::WallMs>, b: Option<osis_base::WallMs
 }
 
 /// Puts `k` in `s` or takes it out (`on`); whether it was in.
-pub(crate) fn mark<K: Ord>(s: &mut std::collections::BTreeSet<K>, k: K, on: bool) -> bool {
+pub(crate) fn mark<K: Ord>(s: &mut BTreeSet<K>, k: K, on: bool) -> bool {
     if on { !s.insert(k) } else { s.remove(&k) }
 }
