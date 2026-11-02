@@ -167,10 +167,10 @@ fn storage_cap() {
     assert_eq!(e.store.put(&l, put(&blob(3), true, None)).unwrap(), Code::OK);
 }
 
-// spec/sync.md §5: rate limits per label on deletes, wrap replacements (also per entry) and deposits (code 4); a new window resets them
+// spec/sync.md §5: rate limits per label on deletes and deposits (code 4); a new window resets them
 #[test]
 fn rate_limits() {
-    let mut e = env(HostPolicy { deletes: 2, replacements: 3, entry_replacements: 2, deposits: 1, ..HostPolicy::default() });
+    let mut e = env(HostPolicy { deletes: 2, deposits: 1, ..HostPolicy::default() });
     let l = e.f.label;
     for n in 0..5 {
         e.store.put(&l, put(&blob(n), true, None)).unwrap();
@@ -178,22 +178,59 @@ fn rate_limits() {
     assert_eq!(e.store.delete(&l, &id(0), T0).unwrap(), Code::OK);
     assert_eq!(e.store.schedule_delete(&l, &id(1), T0 + 100).unwrap(), Code::OK);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::RATE_LIMITED);
-    let replace = |s: &mut HostStore, n: u8, w: u8| {
-        let b = blob(n);
-        let mut p = put(&b, true, None);
-        p.wrap = [w; WRAP_LEN];
-        s.put(&l, p).unwrap()
-    };
-    assert_eq!(replace(&mut e.store, 3, 1), Code::OK);
-    assert_eq!(replace(&mut e.store, 3, 2), Code::OK);
-    assert_eq!(replace(&mut e.store, 3, 3), Code::RATE_LIMITED);
-    assert_eq!(replace(&mut e.store, 4, 1), Code::OK);
-    assert_eq!(replace(&mut e.store, 4, 2), Code::RATE_LIMITED);
     assert_eq!(e.store.put(&l, put(&blob(20), false, None)).unwrap(), Code::OK);
     assert_eq!(e.store.put(&l, put(&blob(21), false, None)).unwrap(), Code::RATE_LIMITED);
     e.clock.advance(60_000);
     assert_eq!(e.store.delete(&l, &id(2), T0).unwrap(), Code::OK);
-    assert_eq!(replace(&mut e.store, 3, 3), Code::OK);
+}
+
+// spec/sync.md §5, randomized differential of both stores against the rule: a stamped entry's wrap
+// and stamp never change while it lives; a deposit changes nothing held; a stamped upload takes a
+// deposited entry, once; anything that changes nothing logs nothing.
+#[test]
+fn stamped_entry_never_changes_randomized() {
+    for seed in 0..32u64 {
+        let mut e = env(HostPolicy::unlimited());
+        let mut mem = osis_proto::MemoryLabelStore::new([1; 32]);
+        let l = e.f.label;
+        mem.push_step(&l, e.f.genesis.clone(), Some(e.f.genesis_claims.clone())).unwrap();
+        // the model: blob -> (wrap, stamp)
+        let mut model: std::collections::BTreeMap<u8, ([u8; WRAP_LEN], Option<Signature>)> = Default::default();
+        let mut d = (seed + 1).wrapping_mul(0x9e37_79b9_7f4a_7c15);
+        let mut pick = |n: u64| {
+            d ^= d << 13;
+            d ^= d >> 7;
+            d ^= d << 17;
+            d % n
+        };
+        for _ in 0..200 {
+            let n = pick(6) as u8 + 1;
+            let b = blob(n);
+            let w = pick(3) as u8;
+            let stamped = pick(2) == 0;
+            let mut p = put(&b, stamped, None);
+            p.wrap = [w; WRAP_LEN];
+            p.stamp = stamped.then_some(Signature([w; 64]));
+            let heads = (e.store.log_head(&l).unwrap().1, mem.log_head(&l).unwrap().1);
+            assert_eq!(e.store.put(&l, p).unwrap(), Code::OK);
+            assert_eq!(mem.put(&l, p).unwrap(), Code::OK);
+            let want = match model.get(&n) {
+                Some((_, Some(_))) => None,
+                Some((_, None)) if !stamped => None,
+                _ => Some((p.wrap, p.stamp)),
+            };
+            let changed = want.is_some();
+            if let Some(x) = want {
+                model.insert(n, x);
+            }
+            let (ms, mm) = (e.store.entry(&l, &id(n)).unwrap().unwrap(), mem.entry(&l, &id(n)).unwrap().unwrap());
+            assert_eq!((ms.wrap, ms.stamp), model[&n], "seed {seed}");
+            assert_eq!((mm.wrap, mm.stamp), model[&n], "seed {seed}");
+            let after = (e.store.log_head(&l).unwrap().1, mem.log_head(&l).unwrap().1);
+            assert_eq!(after.0 > heads.0, changed, "seed {seed}");
+            assert_eq!(after.1 > heads.1, changed, "seed {seed}");
+        }
+    }
 }
 
 // spec/sync.md §5: timed deletes (earliest wins) execute at their time with a tombstone and a log event; expiry removes outright, no tombstone, no event; tombstones last TOMBSTONE_LIFETIME

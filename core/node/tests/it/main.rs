@@ -46,4 +46,5 @@ mod timed_dead;
 mod validity;
 mod waits;
 mod walks;
+mod wrap_poison;
 mod write;

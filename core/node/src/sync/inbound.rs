@@ -183,17 +183,7 @@ impl SyncEngine {
                             self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
-                            // another wrap only if it opens to the blob key this node knows
-                            let known = self.state.blobs.get(&blob_id).map(|r| r.key.clone());
-                            let ok = match known {
-                                None => true,
-                                Some(k) => {
-                                    let g = self.group_of(&l);
-                                    let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-                                    osis_label::unwrap_any(secrets.iter(), &blob_id, &wrap).is_some_and(|(_, x)| x.expose() == k.expose())
-                                }
-                            };
-                            if ok {
+                            if self.take_wrap(host, l, blob_id, &mut e, &wrap, stamp.is_some()) {
                                 e.wrap = wrap;
                                 if stamp.is_some() {
                                     e.stamp = stamp;
@@ -267,6 +257,43 @@ impl SyncEngine {
             self.bump_pass(s, l)?;
         }
         Ok(())
+    }
+
+    /// Whether another wrap `wrap` a source gave for held entry `e` replaces its wrap. Invariant
+    /// (spec/sync.md §5): no wrap from anyone, a writer included, replaces one that opens to the
+    /// blob's key, and a body stays readable through a host whose wrap is useless: a node knowing
+    /// the key takes only a wrap opening to it and counts the host giving any other as lacking
+    /// the entry (`State::holds_at`), so a writer uploads a fresh encryption there. Knowing
+    /// no key, it prefers what opens; a wrap that opened to a wrong key (`Kind::Bad`) gives way.
+    fn take_wrap(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool) -> bool {
+        if e.wrap == *wrap {
+            return true;
+        }
+        let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+        let new = osis_label::unwrap_any(secrets.iter(), &b, wrap).map(|(_, k)| k);
+        if let Some(k) = self.state.blobs.get(&b).map(|r| r.key.clone()) {
+            let opens = new.is_some_and(|x| x.expose() == k.expose());
+            // a deposited one goes when a writer promotes it (with this wrap, if this node does)
+            if let Some(s) = host.filter(|_| stamped && !opens) {
+                self.state.set_gone(s, l, b);
+            }
+            return opens;
+        }
+        let opened = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap).is_some();
+        let bad = e.kind == Kind::Bad;
+        let take = e.shredded() || (new.is_some() && (!opened || bad)) || (new.is_none() && !opened && stamped && e.stamp.is_none());
+        if take && new.is_some() && !e.shredded() {
+            // the wrap it replaces is useless at the hosts that gave it
+            for s in self.state.hosts_of(&l, &b) {
+                if Some(s) != host {
+                    self.state.set_gone(s, l, b);
+                }
+            }
+        }
+        if take && bad {
+            e.kind = Kind::Unknown;
+        }
+        take
     }
 
     /// New entries no writer vouched for that neither opened nor unwrap under a held read secret

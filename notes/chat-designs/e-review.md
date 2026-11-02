@@ -19,7 +19,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
   - The label delete key and level 1 come from C's admin secret, which is admin only.
   - A non-admin has no other route. One exception: a former admin who is still a member keeps old admin secrets and holds the head's sync key, so it can level-1 delete bodies from before its demotion. Honest nodes then do not re-upload for `TOMBSTONE_LIFETIME` (sync §6, no live write), so new devices miss those bodies for 30 days. Narrow.
 - **Own retention: CONFIRMED.** A member can only misuse retention on its own messages.
-- **New, not E-specific: wrap poisoning. Read, not run.** Any writer can re-upload a held blob ID with a garbage wrap and a valid stamp, and the host replaces the wrap (sync §5).
+- **New, not E-specific: wrap poisoning (since reproduced and fixed: notes/sync.md, stamped entries never change). Read, not run.** Any writer can re-upload a held blob ID with a garbage wrap and a valid stamp, and the host replaces the wrap (sync §5).
   - A node that knows the key ignores it (core/node/src/sync/inbound.rs:185-195).
   - A fresh device takes it (`known` is None), cannot unwrap, and does not fetch (inbound.rs:262).
   - Holders do not repair it, because the host still lists the entry. I found no repair path.

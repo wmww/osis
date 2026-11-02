@@ -233,8 +233,10 @@ pub struct State {
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
     pub certs: BTreeSet<(LabelId, CommitId)>,
     pub beats: BTreeMap<LabelId, u64>,
-    /// Uploads a host refused as tombstoned, by when (corrected wall ms): forgotten after
-    /// `TOMBSTONE_LIFETIME`, when the host's tombstone is gone too.
+    /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
+    /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
+    /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
+    /// when the host's tombstone is gone too and a fresh encryption long placed.
     pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes a host took (spec/sync.md §5), until the entry leaves that host.
@@ -781,6 +783,16 @@ impl State {
     /// Whether any host holds the entry.
     pub fn present_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
         self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
+    }
+
+    /// Whether the host holds the entry under a wrap of use (`gone`).
+    pub fn holds_at(&self, s: &HostKey, l: &LabelId, b: &BlobId) -> bool {
+        self.is_present(s, l, b) && !self.is_gone_at(s, l, b)
+    }
+
+    /// The hosts holding the entry.
+    pub fn hosts_of(&self, l: &LabelId, b: &BlobId) -> Vec<HostKey> {
+        self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).map(|(_, _, s)| *s).collect()
     }
 
     /// Entry IDs known present at a host for a label.
