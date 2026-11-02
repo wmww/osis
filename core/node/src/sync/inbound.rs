@@ -936,9 +936,14 @@ impl SyncEngine {
     }
 
     /// Range reconciliation done: presence follows it; fetch what we lack, then a cursor-less
-    /// metadata Sync for a fresh cursor.
+    /// metadata Sync for a fresh cursor. After a trimmed log (code 15) an entry known present
+    /// there and absent now was deleted there, as by a Deleted record (`absent_at`); after
+    /// another log (a wiped host) it is only not present.
     pub(crate) fn reconciled(&mut self, conn: ConnId, l: LabelId, need: Vec<BlobId>, have: Vec<BlobId>, out: &mut Vec<super::Action>) -> Result<()> {
-        let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        let Some((host, trimmed)) = self.conns.get_mut(&conn).map(|c| (c.host, c.req.trimmed.remove(&l))) else { return Ok(()) };
+        // a reconciliation after a start keeps the cursor: the Sync from it that follows settles
+        // the durable entries (Deleted records, or code 10 or 15 and a reconciliation again)
+        let lane = self.eph.reconciling.contains_key(&(conn, l));
         // held ephemeral entries the reconciled set listed: the peer lacks those in `have` (they
         // go up), holds the rest; one kept since and not seen there (from another host) goes up
         // too
@@ -960,7 +965,11 @@ impl SyncEngine {
             self.eph_upload_on(conn, l, &up, out)?;
         }
         for b in have {
-            self.state.set_present(host, l, b, false);
+            if trimmed && self.state.is_present(&host, &l, &b) {
+                self.absent_at(Some(host), l, b)?;
+            } else if !lane {
+                self.state.set_present(host, l, b, false);
+            }
         }
         // the host holds them now: undelivered before or not, asked again (like an announce)
         if let Some(c) = self.conns.get_mut(&conn) {

@@ -309,6 +309,9 @@ pub(crate) struct Requests {
     /// Registrations refused for now in a row per label (the back-off doubles per refusal),
     /// with the last refusal's code (status shows a label not admitted, code 14).
     pub refusals: BTreeMap<LabelId, (u32, Code)>,
+    /// Labels whose cursor the host's log was trimmed past (code 15), until their
+    /// reconciliation answers (`reconciled`: what it lacks of the present entries was deleted).
+    pub trimmed: BTreeSet<LabelId>,
 }
 
 impl Requests {
@@ -1371,8 +1374,13 @@ impl SyncEngine {
                 self.synced(conn, label, out)?;
                 self.eph_synced(conn, label, out)?
             }
-            E::NeedReconcile { label } => {
-                let s = self.conns.get(&conn).map(|c| c.host);
+            E::NeedReconcile { label, trimmed } => {
+                let s = self.conns.get_mut(&conn).map(|c| {
+                    if trimmed {
+                        c.req.trimmed.insert(label);
+                    }
+                    c.host
+                });
                 if let Some(s) = s {
                     self.state.set_cursor(s, label, None);
                     // a lane reconciliation running lists the present entries too and syncs from

@@ -162,6 +162,69 @@ fn reconciliation_fallback_spec_sync_6() {
     assert_eq!(net.read(b, t), Some(s("v39")));
 }
 
+/// Reader B holds v0 of a keep-at-most-1-h aspect; offline, A replaces it 5 times and the host
+/// deletes the replaced bodies and trims its log (`log_keep` 16) past B's cursor; `wipe`: the
+/// host then loses everything (a new log ID) and A registers and uploads again. B back online:
+/// whether it still knows v0's entry, and whether its entries are the host's.
+fn stale_entry_after_fallback(wipe: bool) -> (bool, bool) {
+    let mut net = Net::new();
+    let host = net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "t");
+    let gone = |net: &mut Net, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &GONE, &s(v)).unwrap();
+        net.engine(a).commit(m).unwrap().unwrap()
+    };
+    let v0 = gone(&mut net, "v0");
+    net.run();
+    let ak = Ak::new("t:gone.0").unwrap();
+    assert_eq!(net.engine(b).get(&t, &ak).unwrap(), Some(s("v0")));
+    let l = net.label(a);
+    net.set_online(b, false);
+    for i in 1..=5 {
+        gone(&mut net, &format!("v{i}"));
+        net.run();
+        net.advance(60_000);
+    }
+    net.advance(2 * 3_600_000 + 60_000);
+    net.run();
+    if wipe {
+        net.set_online(a, false);
+        net.wipe_host(host);
+        net.set_online(a, true);
+        net.run();
+        net.advance(120_000);
+        net.run();
+    }
+    net.set_online(b, true);
+    net.run();
+    net.advance(2 * 3_600_000);
+    net.run();
+    assert_eq!(net.engine(b).get(&t, &ak).unwrap(), Some(s("v5")));
+    let known: BTreeSet<_> = net.sync(b).entries(&l).into_iter().map(|(id, _)| id).collect();
+    let kept = net.sync(b).entries(&l).into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == v0));
+    let at_host: BTreeSet<_> = net.host_ids(host, &l).into_iter().collect();
+    (kept, known == at_host)
+}
+
+// spec/sync.md §6, spec/wire.md §11.2 (code 15): a cursor the host's log was trimmed past
+// reconciles, and an entry known present there and absent now was deleted there: gone from
+// the reader's sync state as a Deleted record would take it.
+#[test]
+fn trimmed_log_reconcile_deletes_absent_entries_spec_sync_6() {
+    assert_eq!(stale_entry_after_fallback(false), (false, true));
+}
+
+// spec/sync.md §6, spec/wire.md §11.2 (code 10): a cursor of another log (a wiped host)
+// reconciles presence only: what the reader knew stays known, nothing taken as deleted.
+#[test]
+fn other_log_reconcile_keeps_entries_spec_sync_6() {
+    assert!(stale_entry_after_fallback(true).0);
+}
+
 // spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it
 // placed goes once it holds no part of the commit any more (nothing left to place again).
 #[test]

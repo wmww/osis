@@ -61,6 +61,8 @@ impl Code {
     pub const STORAGE_CAP: Code = Code(12);
     pub const UNKNOWN_LABEL: Code = Code(13);
     pub const NOT_ADMITTED: Code = Code(14);
+    /// A Sync cursor of the peer's log that the log was trimmed past.
+    pub const LOG_TRIMMED: Code = Code(15);
 }
 
 /// `entry := [blob, wrap, stamp] | [blob, wrap, stamp, [replace+]]`.
