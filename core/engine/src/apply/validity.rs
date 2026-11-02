@@ -766,27 +766,32 @@ pub(crate) fn broken_by(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Op
 
 /// Whether a missing delta counts as held for breaking its thing's required retention
 /// (spec/commits.md §4): it breaks a held `required.0^` delta ordered before its key, whatever
-/// that delta's validity. The broken delta may be gone without a right, so its commit's other
-/// deltas must not wait for it.
+/// that delta's validity, signed by a possible admin (`Held::ever_admins`). The broken delta may
+/// be gone without a right, so its commit's other deltas must not wait for it; a writer's setting
+/// says nothing of a delta a host hides.
 ///
-/// Invariant (arrival-order independence): this reads no validity, so a setting falling or rising
-/// changes nothing here, and held settings only grow but for one that goes without a right, whose
-/// author never held admin: a commit it let apply stays applied, and only its other parts came
-/// sooner. An applied commit's missing delta joins on arrival as if it had come with the rest.
+/// Invariant (arrival-order independence): this reads no validity, so a setting or a grant falling
+/// or rising changes nothing here. Possible admins only grow and a setting by one never goes
+/// (`never_could_set`), so what this let apply it goes on letting apply. A valid setting's author is
+/// a possible admin (`Judge::settings` checks), so no good part waits for good behind one.
 pub(crate) fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
     if !under_required(h, &a.ak) {
         return false;
     }
     let at = Point { ts: h.ts, node: h.author, commit: *id };
-    core.ix.required.get(&a.tid).into_iter().flatten().take_while(|x| x.0 < at).any(|(_, rules)| ct::required_for(rules, a.ak.as_str()).is_some_and(|q| !meets(q, h, a)))
+    let mut broken = core.ix.required.get(&a.tid).into_iter().flatten().take_while(|x| x.0 < at).filter(|(_, rules)| ct::required_for(rules, a.ak.as_str()).is_some_and(|q| !meets(q, h, a))).peekable();
+    broken.peek().is_some() && {
+        let admins = core.ix.held.ever_admins(&a.tid);
+        broken.any(|(p, _)| admins.contains(&p.node))
+    }
 }
 
-/// Whether `required.0^` part `a` of a commit with header `h` is by a node that never held admin
-/// on the thing, nor the actor it acts for: it binds nothing and costs every node a body, so it
-/// goes without a right (spec/permissions.md §8). A setting by one who held it, fallen, stays:
-/// it may stand again.
+/// Whether `required.0^` part `a` of a commit with header `h` is signed by one not a possible admin
+/// of the thing: it binds nothing and costs every node a body, so it goes without a right
+/// (spec/permissions.md §8). A delta is judged by its author's standing, so the actor it names
+/// saves nothing. A setting by a possible admin stays, fallen or not: it may stand again.
 pub(crate) fn never_could_set(core: &Core, h: &Header, a: &osis_commit::AspectEntry) -> bool {
-    a.ak.as_str() == osis_commit::retention::REQUIRED && core.timelines.get(&a.tid).is_none_or(|tl| tl.first_held(&h.author, &a.tid, Role::Admin).is_none() && tl.first_held(&h.actor, &a.tid, Role::Admin).is_none())
+    a.ak.as_str() == osis_commit::retention::REQUIRED && !core.ix.held.ever_admins(&a.tid).contains(&h.author)
 }
 
 /// Whether a delta carries exactly the retention and expiry `q` requires.
@@ -853,6 +858,7 @@ impl<'a> Judge<'a> {
             let Some(m) = core.ix.commits.get(&x.0.commit) else { continue };
             let ai = m.header.aspects.iter().position(|a| a.tid == *t && a.ak.as_str() == osis_commit::retention::REQUIRED);
             if ai.is_some_and(|ai| self.part(&m.header, &x.0.commit, ai)) {
+                debug_assert!(core.ix.held.ever_admins(t).contains(&x.0.node), "a valid setting's author is a possible admin");
                 valid.push(x.clone());
             }
         }
