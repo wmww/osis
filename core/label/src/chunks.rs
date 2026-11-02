@@ -835,7 +835,9 @@ mod tests {
 
     // spec/sync.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
     // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
-    // not exactly the new delta's; author-chain commitments need not match.
+    // not exactly the new delta's; author-chain commitments need not match, but one needs a
+    // level-2 key in the new delta: else that author could delete a blob the delta's retention
+    // gives it no right over (`nobody` or `admin` reusing an author's chunk).
     #[test]
     fn reencryption_rule() {
         let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), blind: [4; 16] };
@@ -845,7 +847,7 @@ mod tests {
             (fr(Some(100), vec![(1, 1), (2, 2), (3, 3)]), true),
             (fr(Some(50), vec![(1, 1), (2, 2), (3, 3)]), true),
             (fr(Some(100), vec![(1, 1), (2, 9), (3, 3)]), true),
-            (fr(Some(100), vec![(1, 1), (3, 3)]), true),
+            (fr(Some(100), vec![(1, 1), (3, 3)]), false),
             (fr(Some(101), vec![(1, 1), (2, 2), (3, 3)]), false),
             (fr(None, vec![(1, 1), (2, 2), (3, 3)]), false),
             (fr(Some(100), vec![(1, 1), (2, 2), (3, 4)]), false),
@@ -864,6 +866,17 @@ mod tests {
                 assert_eq!(p.expiry(), f2.expiry, "case {i}");
             }
         }
+        // author-only chunks: another author's reuse keeps them, a delta with no level 2 does not
+        for (keys, keep) in [(vec![(2, 9)], true), (vec![], false), (vec![(1, 1)], false)] {
+            let mut store = MemoryBlobs::default();
+            let (root, _, _) = rewrite(&mut store, &fr(None, vec![(2, 2)]), 1, &d, None);
+            let (root2, _, _) = rewrite(&mut store, &fr(None, keys.clone()), 2, &d, Some(root));
+            assert_eq!(root2 == root, keep, "{keys:?}");
+        }
+        // a chunk no author can delete needs no level 2 to stay
+        let mut store = MemoryBlobs::default();
+        let (root, _, _) = rewrite(&mut store, &fr(None, vec![]), 1, &d, None);
+        assert_eq!(rewrite(&mut store, &fr(None, vec![(2, 2)]), 2, &d, Some(root)).0, root);
         let mut store = MemoryBlobs::default();
         let (root, n, _) = rewrite(&mut store, &fr(None, vec![(3, 3)]), 1, &d, None);
         let (_, written, _) = rewrite(&mut store, &fr(Some(5), vec![(3, 3)]), 2, &d, Some(root));

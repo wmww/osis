@@ -166,6 +166,8 @@ fn validation_rules_spec_data_model_3() {
         ("aspect x:a.0: int; aspect x:a.0: int;", "duplicate aspect"),
         ("aspect x:a.0: int [frob];", "unknown attribute"),
         ("aspect x:a.0: int [by: everyone];", "expected nobody"),
+        ("aspect x:a.0: int [by: author, keep_at_most: 1d];", "needs by: writer"),
+        ("aspect x:a.0: int [by: author_or_admin, keep_at_most: 1d];", "needs by: writer"),
         ("type x<T> = struct { 0 a: T = 1 };", "cannot type a default"),
         ("aspect x:a.0~: int [by: admin];", "durable aspects only"),
         ("aspect x:a.0*: int [expires: 5s];", "no value to expire"),
@@ -223,4 +225,17 @@ proptest::proptest! {
             let _ = parse("g.osis", &src);
         }
     }
+}
+
+// spec/commits.md §5, spec/wire.md §1: every purge class has its syntax and code; the meta form
+// round trips them; the default is `author_or_admin`.
+#[test]
+fn purge_classes_spec_commits_5() {
+    for by in PurgeBy::ALL {
+        let src = format!("version 1; aspect x:a.0: int [by: {}];", by.name());
+        let s = parse("t.osis", &src).unwrap();
+        assert_eq!(s.aspects["x:a.0"].retention.by, by);
+        assert_eq!(PurgeBy::from_id(by as u64), Some(by));
+    }
+    assert_eq!(parse("t.osis", "version 1; aspect x:a.0: int;").unwrap().aspects["x:a.0"].retention.by, PurgeBy::AuthorOrAdmin);
 }

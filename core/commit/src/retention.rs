@@ -39,7 +39,7 @@ pub(crate) fn check_retention(r: &Retention) -> Result<(), Error> {
 }
 
 /// Retention of a write: the fixed one, else the commit's override, else the schema's default
-/// for the AK, else the untyped default (`author`, no bounds). An override that disagrees with a
+/// for the AK, else the untyped default (`author_or_admin`, no bounds). An override that disagrees with a
 /// fixed retention is refused.
 pub fn write_retention(ak: &str, defaults: Option<&AspectDefaults>, set: Option<Retention>) -> Result<Retention, Error> {
     let r = match (fixed_retention(ak), set) {
@@ -168,8 +168,10 @@ pub(crate) fn delete_levels(r: &Retention, kind: Kind) -> &'static [u8] {
     match r.by {
         PurgeBy::Nobody => &[],
         PurgeBy::Admin => &[DELETE_ADMIN],
-        PurgeBy::Author if import => &[DELETE_ADMIN],
-        PurgeBy::Author => &[DELETE_ADMIN, DELETE_AUTHOR],
+        PurgeBy::Author if import => &[],
+        PurgeBy::Author => &[DELETE_AUTHOR],
+        PurgeBy::AuthorOrAdmin if import => &[DELETE_ADMIN],
+        PurgeBy::AuthorOrAdmin => &[DELETE_ADMIN, DELETE_AUTHOR],
         PurgeBy::Writer if import => &[DELETE_ADMIN, DELETE_WRITER],
         PurgeBy::Writer => &[DELETE_ADMIN, DELETE_AUTHOR, DELETE_WRITER],
     }

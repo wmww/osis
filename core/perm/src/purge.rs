@@ -1,42 +1,19 @@
 //! Purge rights (spec/permissions.md §8) and who may rotate (§3).
 
 use crate::timeline::{At, Timeline};
-use osis_base::{Role, Tid};
-
-/// Who may purge a delta (spec/commits.md §5; wire codes spec/wire.md §1).
-#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
-pub enum PurgeBy {
-    Nobody,
-    Admin,
-    Author,
-    Writer,
-}
-
-impl PurgeBy {
-    pub fn from_code(c: u64) -> Option<PurgeBy> {
-        [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::Author, PurgeBy::Writer].get(usize::try_from(c).ok()?).copied()
-    }
-    pub fn code(self) -> u64 {
-        self as u64
-    }
-}
+use osis_base::{PurgeBy, Role, Tid};
 
 impl Timeline {
     /// §8: may `requester` purge a delta of `thing` with retention `by` at `at`? `actor` is the
-    /// actor its commit acted for (header field 2, checked by validity; an import's delta: its
-    /// origin commit's, as its importer states it). `admin`: the thing's current admins;
-    /// `author`: also any node acting for `actor` (write on it) while `actor` holds write on
-    /// the thing; `writer`: also any current writer.
+    /// actor its commit acted for (`Header::purge_actor`: header field 2, checked by validity; an
+    /// import's delta: its origin commit's, as its importer states it). Each member of the set
+    /// `by` names gives the right alone: the thing's current admins; any node acting for `actor`
+    /// (write on it) while `actor` holds write on the thing; any current writer.
     pub fn may_purge(&self, requester: &Tid, thing: &Tid, by: PurgeBy, actor: &Tid, at: At) -> bool {
         let role = self.role(requester, thing, at);
-        let admin = role == Some(Role::Admin);
-        let via_author = || self.role(requester, actor, at) >= Some(Role::Write) && self.role(actor, thing, at) >= Some(Role::Write);
-        match by {
-            PurgeBy::Nobody => false,
-            PurgeBy::Admin => admin,
-            PurgeBy::Author => admin || via_author(),
-            PurgeBy::Writer => admin || role >= Some(Role::Write) || via_author(),
-        }
+        (by.admin() && role == Some(Role::Admin))
+            || (by.writer() && role >= Some(Role::Write))
+            || (by.author() && self.role(requester, actor, at) >= Some(Role::Write) && self.role(actor, thing, at) >= Some(Role::Write))
     }
 
     /// §3: the roles of `actor` that `node` may rotate and re-seal at `at`: write or above

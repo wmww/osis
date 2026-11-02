@@ -272,7 +272,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **p** Verified actor: a commit is invalid unless its author could write as its `actor` (built: spec/permissions.md §5.2, Acting).
 - **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (factions past a few thousand members).
 - **s** Default-off sync: a device holding a faction's secret does not sync its children's labels until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
-- **q** Purge modes not nested: author-only (admins cannot purge) becomes a setting beside `admin` and `nobody` (issues/purge-rights-not-nested.md).
+- **q** Purge sets: `author` (admins cannot purge) is a setting beside `admin` and `nobody` (spec/commits.md §5).
 
 ## Footnotes
 

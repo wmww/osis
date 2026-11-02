@@ -25,7 +25,7 @@ pub use graph::{Class, Edges, Owner, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
 pub use incremental::{Changed, SaveDone, Saves, Timelines};
 pub use moves::{MoveIndex, RESOLUTION_HOPS};
-pub use purge::PurgeBy;
+pub use osis_base::PurgeBy;
 pub use roster::RosterState;
 pub use scope::DemotionScope;
 pub use timeline::{At, Timeline};

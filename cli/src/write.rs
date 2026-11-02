@@ -87,7 +87,7 @@ pub fn retention(s: &str, mut r: Retention) -> anyhow::Result<Retention> {
             Ok(())
         };
         match k {
-            "by" => r.by = PurgeBy::ALL.into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("by: one of nobody, admin, author, writer (got {v:?})")))?,
+            "by" => r.by = PurgeBy::ALL.into_iter().find(|p| p.name() == v).ok_or_else(|| usage(format!("by: one of nobody, admin, author, author_or_admin, writer (got {v:?})")))?,
             "at_least" => b(&mut r.at_least, false)?,
             "at_least_abs" => b(&mut r.at_least, true)?,
             "at_most" => b(&mut r.at_most, false)?,

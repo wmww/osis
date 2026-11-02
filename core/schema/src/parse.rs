@@ -234,10 +234,10 @@ impl<'a> Parser<'a> {
                 match name.as_str() {
                     "by" => {
                         let at = self.here();
-                        let c = self.ident("nobody, admin, author or writer")?;
+                        let c = self.ident("nobody, admin, author, author_or_admin or writer")?;
                         def.retention.by = match PurgeBy::ALL.into_iter().find(|p| p.name() == c) {
                             Some(p) => p,
-                            None => return self.err_at(at, "expected nobody, admin, author or writer"),
+                            None => return self.err_at(at, "expected nobody, admin, author, author_or_admin or writer"),
                         };
                     }
                     "keep_at_least" => def.retention.at_least = self.bound()?,

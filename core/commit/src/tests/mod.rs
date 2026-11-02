@@ -37,7 +37,7 @@ pub(crate) fn sample_header() -> Header {
             ak: Ak::new("app:title.0").unwrap(),
             lo: 1,
             hi: 2,
-            retention: Retention { by: PurgeBy::Author, at_least: Bound { abs: None, rel: Some(5) }, at_most: Bound::default() },
+            retention: Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: Some(5) }, at_most: Bound::default() },
             expires: Some(2_000_000),
             keys: vec![0, 1],
             hashes: vec![[9; 32]],

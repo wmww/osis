@@ -323,6 +323,15 @@ pub(crate) fn aspect_key(t: &Tid, a: &Ak) -> Vec<u8> {
 }
 
 impl Header {
+    /// The actor holding the author right over this commit's deltas (spec/permissions.md §7,
+    /// §8): the actor it acted for; an import's: its first origin commit's.
+    pub fn purge_actor(&self) -> Tid {
+        match self.kind {
+            Kind::Import => self.origins.first().map_or(self.actor, |o| o.actor),
+            _ => self.actor,
+        }
+    }
+
     /// The list's (or frontier's) value as it would sit inline; `None` for an absent frontier.
     pub fn list_value(&self, f: ListField) -> Option<Value> {
         Some(match f {

@@ -387,6 +387,47 @@ impl fmt::Debug for Link {
     }
 }
 
+/// Who may purge a delta (spec/commits.md §5; wire codes spec/wire.md §1). Named sets, not a
+/// scale: `Author` excludes admins, `Admin` the author.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
+pub enum PurgeBy {
+    Nobody = 0,
+    Admin = 1,
+    #[default]
+    AuthorOrAdmin = 2,
+    Writer = 3,
+    Author = 4,
+}
+
+impl PurgeBy {
+    pub const ALL: [PurgeBy; 5] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::AuthorOrAdmin, PurgeBy::Writer, PurgeBy::Author];
+    pub fn name(self) -> &'static str {
+        match self {
+            PurgeBy::Nobody => "nobody",
+            PurgeBy::Admin => "admin",
+            PurgeBy::AuthorOrAdmin => "author_or_admin",
+            PurgeBy::Writer => "writer",
+            PurgeBy::Author => "author",
+        }
+    }
+    pub fn from_id(id: u64) -> Option<PurgeBy> {
+        PurgeBy::ALL.into_iter().find(|p| *p as u64 == id)
+    }
+    /// The set holds the thing's admins.
+    pub fn admin(self) -> bool {
+        matches!(self, PurgeBy::Admin | PurgeBy::AuthorOrAdmin | PurgeBy::Writer)
+    }
+    /// The set holds the author.
+    pub fn author(self) -> bool {
+        matches!(self, PurgeBy::Author | PurgeBy::AuthorOrAdmin | PurgeBy::Writer)
+    }
+    /// The set holds every writer.
+    pub fn writer(self) -> bool {
+        self == PurgeBy::Writer
+    }
+}
+
+
 /// A role, ordered read < write < admin.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub enum Role {

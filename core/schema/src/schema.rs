@@ -3,6 +3,7 @@
 
 use crate::types::{Case, EnumType, Field, StructType, Type, is_reserved_name};
 pub use osis_base::Lifetime;
+pub use osis_base::PurgeBy;
 use osis_base::{Ak, Value};
 use osis_crdt::Encoding;
 use std::borrow::Cow;
@@ -64,31 +65,6 @@ impl Flag {
     }
 }
 
-/// Purgeable-by class (spec/commits.md §5; wire uint per spec/wire.md §1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub enum PurgeBy {
-    Nobody = 0,
-    Admin = 1,
-    #[default]
-    Author = 2,
-    Writer = 3,
-}
-
-impl PurgeBy {
-    pub const ALL: [PurgeBy; 4] = [PurgeBy::Nobody, PurgeBy::Admin, PurgeBy::Author, PurgeBy::Writer];
-    pub fn name(self) -> &'static str {
-        match self {
-            PurgeBy::Nobody => "nobody",
-            PurgeBy::Admin => "admin",
-            PurgeBy::Author => "author",
-            PurgeBy::Writer => "writer",
-        }
-    }
-    pub fn from_id(id: u64) -> Option<PurgeBy> {
-        PurgeBy::ALL.into_iter().find(|p| *p as u64 == id)
-    }
-}
-
 /// A keep bound: absolute wall ms, a duration after the body is replaced, or both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Bound {
@@ -103,7 +79,7 @@ impl Bound {
 }
 
 /// Retention a writer puts into every delta (spec/commits.md §5). `Default` is the untyped
-/// default: `author`, no keep bounds.
+/// default: `author_or_admin`, no keep bounds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Hash)]
 pub struct Retention {
     pub by: PurgeBy,
