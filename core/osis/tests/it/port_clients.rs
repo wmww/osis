@@ -848,7 +848,7 @@ fn revert_lists_nothing_hidden() {
     assert!(x.n.get(x.g, ct::GROUP).unwrap().unwrap().items.contains(&d));
 }
 
-// notes/client-port.md §8 (remove_client): a removal cut short leaves the entry ended under any clock: no session, nothing revived by the clock or a secret rotation; retrying finishes it
+// spec/wire.md §11.2 (a session ends when its until passes), notes/client-port.md §8 (remove_client): a removal cut short leaves the entry ended under any clock: no session, nothing revived by the clock or a secret rotation; retrying finishes it
 #[test]
 fn half_removed_client_stays_ended() {
     let x = node();
