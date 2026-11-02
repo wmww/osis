@@ -792,6 +792,8 @@ aspect t:gonemap.0: map<string, string> [by: writer, keep_at_most: 0s];
 aspect t:shortmap.0: map<string, string> [by: writer, keep_at_most: 10m];
 aspect t:gonetext.0: text [by: writer, keep_at_most: 0s];
 aspect t:briefmap.0: map<string, string> [expires: 1h];
+aspect t:seq.0: text;
+aspect t:items.0: list<string>;
 "#,
 );
 
@@ -804,6 +806,8 @@ pub const GONEMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gone
 pub const SHORTMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:shortmap.0", &TEST);
 pub const GONETEXT: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:gonetext.0", &TEST);
 pub const BRIEFMAP: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:briefmap.0", &TEST);
+pub const SEQ: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:seq.0", &TEST);
+pub const ITEMS: osis_schema::Aspect<Value> = osis_schema::Aspect::new("t:items.0", &TEST);
 
 /// The signal parts fired among the events received so far: (thing, aspect, value, origin).
 pub fn fired(rx: &std::sync::mpsc::Receiver<osis_node::Event>) -> Vec<(Tid, String, Value, osis_node::Origin)> {

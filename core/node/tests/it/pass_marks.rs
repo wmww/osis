@@ -143,3 +143,35 @@ fn keep_at_most_removed_entry_no_live_write_spec_commits_5() {
     net.advance(600_000);
     assert_eq!(at_host(&mut net, a, host, &l, &b), 0, "the body without a live write was deleted at its bound");
 }
+
+// spec/sync.md §6: a `nobody` body with no keep bound is must-hold for good, but nothing is due for
+// it: passes do not judge it again.
+#[test]
+fn nobody_bodies_not_judged_again_spec_sync_6() {
+    use osis_schema::{PurgeBy, Retention};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    let tags = |i: u32| format!("v{i}");
+    for i in 0..20 {
+        let mut m = Mutation::new();
+        m.retention(t, &REG, Retention { by: PurgeBy::Nobody, ..Default::default() }).unwrap();
+        m.set(t, &REG, &s(&tags(i))).unwrap();
+        net.engine(a).commit(m).unwrap();
+        net.run();
+    }
+    net.advance(61_000);
+    net.run();
+    let s0 = net.sync(a).pass_stats();
+    net.advance(61_000);
+    let t2 = net.item(a, g, g, "other");
+    net.write(a, t2, "more");
+    net.run();
+    let s1 = net.sync(a).pass_stats();
+    assert!(s1.passes > s0.passes);
+    assert!(s1.bodies - s0.bodies < 15, "the kept bodies are not judged again: {s0:?} -> {s1:?}");
+}

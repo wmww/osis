@@ -662,3 +662,111 @@ pub fn coverer_revoked(seed: u64) -> Res<Report> {
     }
     sim.finish()
 }
+
+/// Snapshot rights end to end (spec/commits.md §5, spec/sync.md §6, §7, spec/permissions.md §8):
+/// the seed picks a purge set, a keep bound and a mix of compacters among an admin and two plain
+/// writers, under faults. A body stays at the host and reaches a device coming fresh unless a
+/// compacter holding the right over it wrote a snapshot after it; such a body leaves the host
+/// (another right holder that never held that snapshot, superseded early, may keep its copy).
+/// Everyone reads alike, the fresh device too, whichever bodies it got; the labels go quiet
+/// (`finish`: no upload and delete loop).
+pub fn snapshot_rights(seed: u64) -> Res<Report> {
+    use osis_proto::LabelStore;
+    use osis_schema::{Bound, PurgeBy, Retention};
+    let mut d = Dice::new(seed ^ 0x5a9);
+    let by = PurgeBy::from_id(d.below(5)).unwrap_or_default();
+    // 0: no bound; 1: keep at least; 2: keep at most under `writer` (dead bodies go whoever compacts)
+    let bound = match d.below(3) {
+        2 if by != PurgeBy::Writer => 0,
+        x => x,
+    };
+    let half_hour = Bound { rel: Some(1_800_000), abs: None };
+    let keep = Retention { by, at_least: if bound == 1 { half_hour } else { Bound::default() }, at_most: if bound == 2 { half_hour } else { Bound::default() } };
+    let mut sim = sim("snapshot_rights", seed, NetWeights::default());
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let w = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pw] = persons(&mut sim, [a, b, w], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pw, Role::Write)])?;
+    let t = sim.item(a, g)?;
+    sim.quiet(40)?;
+    let k = ak(&sim, &workload::REG)?;
+    // who holds the right over a body of `author` (node), for this set
+    let right = |n: usize, author: usize| (n == a && by.admin()) || by.writer() || (n == author && by.author());
+    // two rounds of overwrites, each followed by the seed's compacters
+    let mut written: Vec<(osis_base::CommitId, usize, bool)> = Vec::new();
+    for round in 0..2 {
+        for (i, (n, person)) in [(a, pa), (b, pb), (w, pw)].into_iter().cycle().take(6).enumerate() {
+            let mut m = Mutation::new();
+            // as the app writes: for the person, so any of its devices holds the author's right
+            m.act_as(person);
+            m.retention(t, &workload::REG, keep).map_err(|e| sim.fail(e.to_string()))?;
+            m.set(t, &workload::REG, &Value::Str(format!("v{round}.{i}"))).map_err(|e| sim.fail(e.to_string()))?;
+            if let Some(c) = sim.commit(n, m)? {
+                written.push((c, n, false));
+            }
+            sim.quiet(40)?;
+        }
+        for n in [a, b, w] {
+            if d.below(2) == 0 {
+                let acts = sim.sync(n)?.compact(&t, &k).map_err(|e| sim.fail(format!("node {n} compact: {e}")))?;
+                sim.actions(n, acts)?;
+                sim.quiet(40)?;
+                for x in written.iter_mut() {
+                    x.2 |= right(n, x.1);
+                }
+            }
+        }
+    }
+    // past `MAX_DRIFT`: right holders have dropped what they may
+    sim.advance(2 * 3_600_000)?;
+    sim.quiet(40)?;
+    sim.run_until_quiescent(60)?;
+    let fresh = sim.add_node(&[s], clock(&mut d))?;
+    sim.pair(b, fresh, pb)?;
+    sim.quiet(40)?;
+    sim.run(40)?;
+    // the author's other device compacts with its right; its frontier may stop short of a body
+    // (issues/atomic-wait-snapshot-gap.md), so what it may drop is not certain to go
+    let fresh_compacted = d.below(2) == 0;
+    if fresh_compacted {
+        let acts = sim.sync(fresh)?.compact(&t, &k).map_err(|e| sim.fail(format!("fresh compact: {e}")))?;
+        sim.actions(fresh, acts)?;
+        sim.quiet(40)?;
+    }
+    sim.run_until_quiescent(60)?;
+    let l = sim.sync(a)?.labels().into_iter().find(|x| x.0 == g).map(|x| x.1.id).ok_or_else(|| sim.fail("no label"))?;
+    let live: BTreeSet<osis_base::BlobId> = sim.hub(s).ok_or_else(|| sim.fail("no hub"))?.store().live_ids(&l).map_err(|e| sim.fail(e.to_string()))?.into_iter().collect();
+    let entries = sim.sync(a)?.entries(&l);
+    let at_host = |c: &osis_base::CommitId| entries.iter().any(|(id, x)| live.contains(id) && matches!(x, osis_node::sync::EntryKind::Commit { commit, .. } if commit == c));
+    for (c, author, gone) in &written {
+        // past its bound at a, by a margin for the others' clocks and deaths (random writes go on)
+        let e = sim.engine(a)?;
+        let (now, kept) = (e.now().0, e.body_keep(c, &t, &k));
+        let dead = bound == 2 && kept.map_err(|x| sim.fail(x.to_string()))?.at_most.is_some_and(|m| m + 600_000 <= now);
+        let gone = &(*gone || dead);
+        // under keep at least a compacter's snapshot may be superseded before the bound passes: the
+        // body then waits for the next snapshot with the right, so only what stays is certain
+        let may_go = *gone || bound == 2 || (fresh_compacted && right(b, *author));
+        if (*gone && bound != 1 && at_host(c)) || (!may_go && !at_host(c)) {
+            return Err(sim.fail(format!("{by:?} bound {bound}: body of node {author} at the host {}, should be gone {gone}", !*gone)));
+        }
+        for n in [a, b, w, fresh] {
+            let e = sim.engine(n)?;
+            let m = e.core.ix.commits.get(c);
+            let held = m.is_some_and(|m| m.view.aspects.iter().position(|x| x.tid == t && x.ak == k).is_some_and(|ai| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai)));
+            if !may_go && !held {
+                return Err(sim.fail(format!("{by:?} bound {bound}: kept body of node {author} not held at node {n}")));
+            }
+            if dead && held {
+                return Err(sim.fail(format!("{by:?}: body past keep at most held at node {n}")));
+            }
+        }
+    }
+    let reads: Vec<Option<Value>> = [a, b, w, fresh].into_iter().map(|n| sim.engine(n).map(|e| e.get_typed(&t, &workload::REG).ok().flatten())).collect::<Res<_>>()?;
+    if reads.windows(2).any(|x| x.first() != x.last()) {
+        return Err(sim.fail(format!("{by:?}: reads differ: {reads:?}")));
+    }
+    sim.finish()
+}
