@@ -37,6 +37,13 @@ impl Hlc {
 
     /// A fresh `ts` for a local commit, above every `ts` seen.
     pub fn next(&mut self) -> Ts {
+        let ts = self.peek();
+        self.last = ts;
+        ts
+    }
+
+    /// The `ts` `next` would give now.
+    pub fn peek(&self) -> Ts {
         let w = self.wall();
         let l = self.last;
         let ts = if w > l.wall_ms() {
@@ -47,9 +54,7 @@ impl Hlc {
             Ts::make(l.wall_ms().saturating_add(1), 0)
         };
         // Beyond 2^47 ms (year 6429) the clock stops advancing.
-        let ts = ts.unwrap_or(l);
-        self.last = ts;
-        ts
+        ts.unwrap_or(l)
     }
 
     /// A received commit's `ts` (not parked) advances the clock.

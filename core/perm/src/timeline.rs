@@ -140,6 +140,14 @@ impl Timeline {
         Timeline::from_outcome(input, out)
     }
 
+    /// This timeline's walk and inputs without its memos, to append to (`demotion_scope`).
+    pub(crate) fn copy(&self) -> Timeline {
+        let (input, items, walked) = (self.input.clone(), self.items.clone(), self.walked.clone());
+        let (dropped, epoch_starts, checkpoints) = (self.dropped.clone(), self.epoch_starts.clone(), self.checkpoints.clone());
+        let Timeline { passes, epoch_changed, reach, .. } = *self;
+        Timeline { input, items, walked, dropped, epoch_starts, passes, epoch_changed, reach, checkpoints, memo: Memo::default(), placed: 0 }
+    }
+
     pub(crate) fn from_outcome(input: Input, out: walk::Outcome) -> Timeline {
         Timeline::from_kept(input, out, None)
     }

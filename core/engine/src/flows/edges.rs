@@ -365,10 +365,19 @@ impl Engine {
     /// `holder` on `target` (spec/permissions.md §5.3): every thing the demoted authority gave
     /// write or role authority on.
     pub fn presync_scope(&self, target: &Tid, holder: &Tid, new: Option<&Edge>) -> BTreeSet<Tid> {
-        let ts = now_ts(&self.core);
         let Some(tl) = self.core.timelines.get(target) else { return BTreeSet::new() };
-        let scope = tl.demotion_scope(&self.tid(), holder, target, new.map(perm_edge), ts);
+        // as if every held write had been received
+        let ops = vec![osis_perm::EdgeOp { target: *target, holder: *holder, edge: new.map(perm_edge) }];
+        let scope = tl.demotion_scope(self.demotion_probe(self.tid(), ops, tl.all_held()));
         scope.roles.values().chain(scope.content.values()).flatten().copied().collect()
+    }
+
+    /// A demotion by `who` with edge writes `ops` and frontier `f`, as `Timeline::demotion_scope`
+    /// takes it: at the `ts` the next commit gets (after every held one); its ID is not known yet.
+    fn demotion_probe(&self, who: Tid, mut ops: Vec<osis_perm::EdgeOp>, f: osis_perm::Frontier) -> osis_perm::RoleCommit {
+        ops.sort_by_key(|o| (o.target, o.holder));
+        let id = CommitId([0xff; 32]);
+        osis_perm::RoleCommit { id, ts: self.core.hlc.peek(), author: who, actor: who, frontier: Some(std::sync::Arc::new(f)), ops }
     }
 
     /// Lowers or removes `d.holder`'s edge on `target` (spec/permissions.md §2, §3, §5): an
@@ -394,40 +403,34 @@ impl Engine {
     pub(crate) fn remove_signed(&mut self, signer: Option<Tid>, target: &Tid, d: &Demotion, others: &[Tid]) -> Result<Done> {
         let who = signer.unwrap_or(self.tid());
         let t = *target;
-        let ts = now_ts(&self.core);
         let as_of = match d.presync {
             PreSync::Backdated(w) => w,
             _ => self.now(),
         };
         let frontier = match self.core.timelines.get(&t) {
             Some(tl) => {
-                let mut scope = osis_perm::DemotionScope::default();
-                for (i, x) in std::iter::once(&d.holder).chain(others).enumerate() {
-                    let new = if i == 0 { d.new.as_ref().map(perm_edge) } else { None };
-                    let s = match tl.edges_at(None).get(x, &t) {
-                        Some(_) => tl.demotion_scope(&who, x, &t, new, ts),
-                        // an absent edge (a used single-use link): audit the holder's own writes
-                        // on the target as if it still held its role (spec/permissions.md §5.1)
-                        None => {
-                            let things: BTreeSet<Tid> = [t].into_iter().collect();
-                            osis_perm::DemotionScope { roles: [(*x, things.clone())].into_iter().collect(), content: [(*x, things)].into_iter().collect() }
-                        }
-                    };
-                    for (n, ts) in s.roles {
-                        scope.roles.entry(n).or_default().extend(ts);
-                    }
-                    for (n, ts) in s.content {
-                        scope.content.entry(n).or_default().extend(ts);
-                    }
-                }
                 // this node's own chain counts only as listed: its chain certificates for the
                 // target, by commit ID, those received by `as_of` (a backdated revoke lists none
                 // received after its cutoff; spec/permissions.md §5.1, §4)
                 let certs = tl.certificates(&who, &t);
-                let mut f = self.frontier(&scope, as_of)?;
                 let by_then = |c: &CommitId| self.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0);
-                f.commits.extend(certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| by_then(c)));
-                Some(osis_schema::Codec::to_value(&f))
+                let own: BTreeSet<CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| by_then(c)).collect();
+                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, d.new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
+                // what this node received on the aspects the demotion puts in question with
+                // that frontier (`Timeline::demotion_scope`), from what it puts in question
+                // with every held write received, until the scope stops growing
+                let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
+                loop {
+                    let mut f = self.frontier(&scope, as_of)?;
+                    f.commits.extend(own.iter().copied());
+                    let pf = osis_perm::Frontier { writes: f.writes.clone(), commits: f.commits.clone() };
+                    let probe = self.demotion_probe(who, ops.clone(), pf);
+                    let s = self.core.timelines.get(&t).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
+                    if scope.covers(&s) {
+                        break Some(osis_schema::Codec::to_value(&f));
+                    }
+                    scope.join(s);
+                }
             }
             None => None,
         };

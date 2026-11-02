@@ -1,14 +1,16 @@
-//! What a demotion's frontier must cover (spec/permissions.md §5.1, "Frontier"): for each node
-//! the change demotes, the things whose role-class and admin-only (`^`) aspects it puts in
-//! question (any fall) and the things whose every aspect it puts in question (a fall below write). The node
-//! fills the counters from its receipt record (§5.1: what it had received as of T).
+//! What a demotion's frontier must cover (spec/permissions.md §5.1, "Frontier"), read from the
+//! settled walk with the demotion: for each node it demotes, the things whose role-class and
+//! admin-only (`^`) aspects it puts in question (a fall below a role, and the things holding
+//! the edge writes its audit drops) and the things whose every aspect it puts in question (a
+//! fall below write). The node fills the counters from its receipt record (§5.1: what it had
+//! received as of T).
 
-use crate::graph::View;
 use crate::timeline::Timeline;
-use crate::types::Edge;
-use crate::walk::{join, restore_base};
-use osis_base::{Role, Tid, Ts};
+use crate::types::{Frontier, RoleCommit, WriteId};
+use crate::walk;
+use osis_base::{Role, Tid};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// The aspects a demotion puts in question, per demoted node.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
@@ -23,52 +25,83 @@ impl DemotionScope {
     pub fn is_empty(&self) -> bool {
         self.roles.is_empty() && self.content.is_empty()
     }
+
+    /// Whether this scope holds every aspect `o` names.
+    pub fn covers(&self, o: &DemotionScope) -> bool {
+        let sub = |a: &BTreeMap<Tid, BTreeSet<Tid>>, b: &BTreeMap<Tid, BTreeSet<Tid>>| b.iter().all(|(x, s)| a.get(x).is_some_and(|m| m.is_superset(s)));
+        sub(&self.roles, &o.roles) && sub(&self.content, &o.content)
+    }
+
+    /// Adds every aspect `o` names.
+    pub fn join(&mut self, o: DemotionScope) {
+        for (mine, theirs) in [(&mut self.roles, o.roles), (&mut self.content, o.content)] {
+            for (x, s) in theirs {
+                mine.entry(x).or_default().extend(s);
+            }
+        }
+    }
 }
 
 impl Timeline {
-    /// The scope of setting `holder`'s edge on `target` to `new` now (at `ts`, after every
-    /// held write), against the edge as restored (spec/permissions.md §5.1 step 4: values taken
-    /// by `until` or self-removal since the last explicit write on it, and each node's kept
-    /// standing): empty when it demotes nobody. `author` (the demoter) is never its own subject.
-    pub fn demotion_scope(&self, author: &Tid, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> DemotionScope {
-        let mut out = DemotionScope::default();
-        let now = self.edges_at(None);
-        let key = (*holder, *target);
-        let old = now.get(holder, target).copied().filter(|_| !self.walked.dead.contains(&key));
-        let base = restore_base(self.walked.prior.get(&key).copied(), old);
-        let kept = self.walked.prior_node.get(&key);
-        let restored = |x: &Tid| match (base, kept.and_then(|m| m.get(x))) {
-            (b, Some(m)) => Some(join(b, *m)),
-            (b, None) => b.map(|b| join(None, b)),
-        };
-        // the edge holder -> target changes neither who reaches the holder nor what the
-        // target reaches
-        let base_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, base.map(|b| join(None, b)));
-        let after_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, new);
-        let ns = base_v.reach_forward(target);
-        for x in base_v.reach_backward(holder) {
-            // Only nodes write; an actor's nodes are reached through it.
-            if x == *author || self.input.owners.owner_actor(&x).is_some() {
-                continue;
+    /// What role commit `r` (not held here; an explicit demotion with its frontier) puts in
+    /// question in the settled walk with it appended: per node, where its class falls at `r`
+    /// that thing and the targets of its applied writes attributed there (self-removals through
+    /// it), the targets of its edge writes `r`'s audit drops, and where it falls below a role
+    /// (`roles`); where it falls below write (`content`). Empty when `r` demotes nobody or does
+    /// not apply.
+    ///
+    /// The walk decides, not a standing computed beside it: `r`'s audit can drop a write that
+    /// held up another standing (a grant by the demoted node, its own self-grant), so what `r`
+    /// puts in question depends on its frontier. A demoter therefore builds its frontier from a
+    /// scope S and asks again until the answer for that frontier is inside S (`covers`; S only
+    /// grows, so this ends); then no write it received on an aspect `r` puts in question is
+    /// dropped: a dropped one would have its target in the answer, so in S, so its receipt
+    /// listed. Starting from the answer for `all_held` keeps the walk from re-walking the drops
+    /// of an empty frontier.
+    pub fn demotion_scope(&self, r: RoleCommit) -> DemotionScope {
+        let p = r.point();
+        let r = [Arc::new(r)];
+        let tl = match self.copy().append(&r, &[]) {
+            Ok(tl) => tl,
+            // a commit `append` does not place (`Input::can_append`): walk with it from scratch
+            Err(tl) => {
+                let mut input = tl.input;
+                input.append(&r);
+                let out = walk::run(&input);
+                Timeline::from_outcome(input, out)
             }
-            let before_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, restored(&x));
-            let (b, a) = (before_v.roles_from(&x), after_v.roles_from(&x));
-            for n in &ns {
-                let (sb, sa) = (before_v.standing(&x, &b, n), after_v.standing(&x, &a, n));
-                if sa.class < sb.class || sa.role < sb.role {
-                    out.roles.entry(x).or_default().insert(*n);
-                }
-                // x's self-removals through n (n's edges elsewhere) fall with its class on n
-                if sa.class < sb.class {
-                    let ids = self.walked.by_author_target.get(&(x, *n)).into_iter().flatten();
-                    let on = ids.filter_map(|w| self.walked.applied.get(w)).map(|a| a.target).filter(|t| t != n);
-                    out.roles.entry(x).or_default().extend(on);
-                }
-                if sb.role >= Some(Role::Write) && sa.role < Some(Role::Write) {
-                    out.content.entry(x).or_default().insert(*n);
+        };
+        let mut out = DemotionScope::default();
+        for ((x, n), ds) in &tl.walked.demotions {
+            for d in ds.iter().filter(|d| d.point == p) {
+                out.roles.entry(*x).or_default().insert(*n);
+                if d.below == Role::Write {
+                    out.content.entry(*x).or_default().insert(*n);
                 }
             }
         }
+        for ((x, n), fs) in &tl.walked.falls {
+            if fs.iter().any(|f| f.point == p) {
+                let ids = tl.walked.by_author_target.get(&(*x, *n)).into_iter().flatten();
+                let on = ids.filter_map(|w| tl.walked.applied.get(w)).map(|a| a.target);
+                out.roles.entry(*x).or_default().extend(on.chain([*n]));
+            }
+        }
+        for (w, _) in tl.dropped().iter().filter(|(_, at)| **at == p) {
+            let on = match w {
+                WriteId::Op(c, k) => tl.input.commits.get(c).and_then(|c| Some((c.author, c.ops.get(usize::try_from(*k).ok()?)?.target))),
+                WriteId::Snapshot(c) => tl.input.snaps.get(c).map(|s| (s.author, s.thing)),
+            };
+            if let Some((x, t)) = on {
+                out.roles.entry(x).or_default().insert(t);
+            }
+        }
         out
+    }
+
+    /// A frontier listing every edge write held here (`demotion_scope` as if the demoter had
+    /// received them all).
+    pub fn all_held(&self) -> Frontier {
+        Frontier { commits: self.input.commits.keys().chain(self.input.snaps.keys()).copied().collect(), ..Frontier::default() }
     }
 }

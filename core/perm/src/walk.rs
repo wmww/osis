@@ -77,6 +77,7 @@ pub struct Demotion {
 }
 
 /// Inputs gathered from the held set.
+#[derive(Clone)]
 pub(crate) struct Input {
     pub owners: Owners,
     pub commits: BTreeMap<CommitId, Arc<RoleCommit>>,
@@ -94,7 +95,7 @@ pub(crate) struct Input {
 }
 
 /// Edges at any time, both ways (`Input::ever`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Ever {
     pub targets: BTreeMap<Tid, BTreeSet<Tid>>,
     pub holders: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -359,7 +360,7 @@ pub(crate) struct Change {
 /// A walk's state and records (`Pass`): the final walk's are what queries read; the edge
 /// and write records, the undo log and the marks continue it past its last write
 /// (`Timeline::extend`).
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct Walked {
     pub initial: Edges,
     pub history: Vec<Change>,
@@ -1190,6 +1191,7 @@ struct Virtual {
     audit: Option<(Tid, Arc<Frontier>)>,
 }
 
+#[derive(Clone)]
 enum Item {
     Commit(Arc<RoleCommit>),
     Snap(Arc<RosterSnapshot>),
@@ -1961,12 +1963,14 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
 
 /// The items of a walk in order under epoch starts `epoch`, and the index of each commit
 /// and snapshot.
+#[derive(Clone)]
 pub(crate) struct Items {
     initial: Edges,
     list: Vec<Entry>,
 }
 
 /// An item of a walk at its point.
+#[derive(Clone)]
 struct Entry {
     point: Point,
     item: Item,
