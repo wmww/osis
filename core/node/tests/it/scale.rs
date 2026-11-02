@@ -1542,3 +1542,66 @@ fn snapshot_join_cost_spec_permissions_5_2() {
         }
     }
 }
+
+// spec/permissions.md §8: what a role change costs an aspect of N commits with R requests on it
+// (`retention::rejudge_purges`): a join, an honest demotion, a fall and a rise; named requests by an
+// admin, aspect-wide ones by a plain writer with no right. `OSIS_SCALE_N`, `OSIS_SCALE_R`.
+#[test]
+#[ignore = "tier 2"]
+fn purge_rejudge_cost() {
+    use crate::common::{edge, new_thing, set_edge};
+    use osis_base::{Ak, Role, Tid, Value};
+    use osis_commit::PurgeItem;
+    use osis_node::Mutation;
+    use osis_schema::{Aspect, StaticSchema};
+    static S: StaticSchema = StaticSchema::new("purgecost.osis", "version 1; aspect l:msgs.0: string [by: author_or_admin, keep_at_least: abs 9223372036854775807];\n");
+    const MSG: Aspect<Value> = Aspect::new("l:msgs.0", &S);
+    let var = |k: &str, d: usize| std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d);
+    let (n, r) = (var("OSIS_SCALE_N", 100_000), var("OSIS_SCALE_R", 10_000));
+    let k = Ak::new("l:msgs.0").unwrap();
+    for wide in [false, true] {
+        let mut lp = crate::common::net(5, 0x9a);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let (x, y): (Tid, Tid) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(if wide { Role::Write } else { Role::Admin })), None);
+        lp.sync_all().unwrap();
+        let t0 = Instant::now();
+        let mut ids = Vec::new();
+        for i in 0..n {
+            let mut m = Mutation::new();
+            m.set(t, &MSG, &Value::Str(format!("m{i}"))).unwrap();
+            ids.push(lp.peers[0].commit(m).unwrap().unwrap());
+        }
+        println!("wide {wide}: fill {n}: {:?}", t0.elapsed());
+        let join = |lp: &mut osis_node::local_peer::LocalPeer, what: &str, who: Tid, e: Option<Role>| {
+            let t1 = Instant::now();
+            set_edge(&mut lp.peers[0].engine, t, who, e.map(edge), None);
+            println!("wide {wide}: {what}: {:?}", t1.elapsed());
+        };
+        join(&mut lp, "join, no request", y, Some(Role::Write));
+        let t2 = Instant::now();
+        lp.advance(1);
+        let mut pks = Vec::new();
+        // delivering an aspect-wide request walks the aspect (`retention::on_apply`)
+        let r = if wide { r / 10 } else { r };
+        for i in 0..r {
+            let mut m = Mutation::new();
+            m.purge(if wide { PurgeItem::Aspect { tid: t, ak: k.clone() } } else { PurgeItem::Commit { commit: ids[i * n / r], tid: t, ak: k.clone() } });
+            m.set(t, &MSG, &Value::Str(format!("p{i}"))).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            pks.push(lp.peers[1].engine.package(&c).unwrap().unwrap());
+        }
+        println!("wide {wide}: sign {r}: {:?}", t2.elapsed());
+        let t3 = Instant::now();
+        for p in &pks {
+            lp.deliver(0, p).unwrap();
+        }
+        println!("wide {wide}: deliver {r}: {:?}", t3.elapsed());
+        let z = lp.peers[3].engine.tid();
+        join(&mut lp, "join", z, Some(Role::Write));
+        join(&mut lp, "fall (no frontier)", x, None);
+        join(&mut lp, "rise", x, Some(if wide { Role::Write } else { Role::Admin }));
+        join(&mut lp, "fall 2", x, None);
+    }
+}
