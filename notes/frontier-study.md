@@ -70,3 +70,9 @@ Prerequisite: session-sources step 2 (session form for durable content), since l
 2. Permanent deltas: a purged one leaves a header-only blob kept forever (about 300 B, design E's tombstone). Accept?
 3. Heads via predecessor links (one entry per aspect and device, a small header field, a chain walk) or the simpler per-(aspect, session) bounds (no header change, no walk, one entry per aspect and app launch that wrote)? Recommended: links.
 4. Sanction the deliberate omission in §5.1 (an admin repudiating received writes; the only recovery from a writer rotating to itself), or prefer a crypto-flow fix (rotate a fresh fork from held epochs, ignoring the hostile one), subtler and touching label-step registration?
+
+Owner answers (relayed by devbox):
+1. Listing a device's kept writes inside a finite window by ID: fine if necessary.
+2. Permanent tombstones: accepted ("if history is on, the cost of keeping history is expected").
+3. Links, not per-session bounds: "nothing should grow permanently by number of app launches/sessions". `prev` must add nothing per session beyond a header already kept per write. Same line applies to growth.md's "Sequence sessions" row: brought back to the owner.
+4. Open: being explained.
