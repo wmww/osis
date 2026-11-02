@@ -418,6 +418,7 @@ pub struct CommitDigest {
     pub rest: String,
 }
 
+#[doc(hidden)]
 /// A write of the drop set D, the point of the demotion that dropped it, and for an edge op
 /// its edge (target, holder) (`Engine::drop_set`).
 pub type DropEntry = (osis_perm::WriteId, osis_perm::Point, Option<(Tid, Tid)>);
