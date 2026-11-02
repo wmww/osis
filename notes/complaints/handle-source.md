@@ -6,3 +6,4 @@
 - notes/client-port.md §8 (a) names `core/osis/src/signal.rs`; there is no such file (signals are not an `osis` call yet).
 - `tools/icount` prints `INSTR unavailable` on this box (no perf events in the VM), so old-vs-new needed many interleaved CPU-time runs at load 25 (±20% per run).
 - Review: `write_ops` at 32 seeds missed a recorder that moves path ops ahead of other kinds (it dropped every call on a deleted thing, so no op ordering across kinds mattered); now keeps calls after a delete, 64 seeds.
+- Review gate took 371 s at load 15-20 (other gates running), vs about 90 s quoted in CLAUDE.md.
