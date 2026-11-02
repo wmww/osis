@@ -63,8 +63,9 @@ enum Seal {
     Free,
     /// Not at all: left out.
     Out,
-    /// Only at these keysets, per role of `m`: those of the applied valid `keys.0` commit the edge
-    /// writes of `m` on `a` name, whose `secrets.0` parts this node lacks.
+    /// Only at these keysets, per role of `m`: the read keyset of the applied valid `keys.0` commit
+    /// the edge writes of `m` on `a` name, whose `secrets.0` parts this node lacks (the edge names
+    /// the read box's commit only; the roles above are left out).
     Bound(BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>),
 }
 
@@ -79,9 +80,11 @@ fn seal_of(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<Seal> {
     })
 }
 
-/// The keysets per role that the `keys.0` commit of `m` with key `k` wrote, when this node holds
-/// it applied with that part valid and not missing (a dropped body: the role's keyset in `m`'s
-/// `keys.0` now, if it is the one the part wrote); else none.
+/// The read keyset the `keys.0` commit of `m` with key `k` wrote, when this node holds it applied
+/// with that part valid and not missing (a dropped body: `m`'s read keyset in `keys.0` now, if it
+/// is the one the part wrote); else none. Only read: the edge names the commit of the granter's
+/// read box, and its boxes of the roles above may name later keysets (a write rotation of `m`
+/// after a departure from write the granter knew), so the commit's older ones may open to it.
 fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &osis_schema::core_types::EdgeKey) -> Result<BTreeMap<Role, (osis_crypto::Epoch, osis_crypto::KemPublicKey)>> {
     let mut out = BTreeMap::new();
     let keys_ak = flows::ak("keys.0")?;
@@ -99,7 +102,7 @@ fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &osis_schema::core_types::EdgeKey)
     match dropped {
         Some(ds) => {
             let now = Core::keys_in(tx, m)?;
-            for (r, e) in ds {
+            for (r, e) in ds.into_iter().filter(|x| x.0 == Role::Read) {
                 if let Some(x) = now.as_ref().and_then(|k| osis_keys::aspects::keyset_of(k, r)).and_then(kem).filter(|x| x.0 == e) {
                     out.insert(r, x);
                 }
@@ -108,7 +111,9 @@ fn named_keysets(tx: &mut Tx<'_>, m: &Tid, k: &osis_schema::core_types::EdgeKey)
         None => {
             for d in crate::apply::held_parts(tx, &k.commit, ai)? {
                 for (r, ks) in crate::apply::keys::keys_write(d.fragment()).keysets {
-                    if let Some(x) = kem(&ks) {
+                    if r == Role::Read
+                        && let Some(x) = kem(&ks)
+                    {
                         out.insert(r, x);
                     }
                 }
