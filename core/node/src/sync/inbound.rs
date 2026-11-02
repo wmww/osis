@@ -964,12 +964,22 @@ impl SyncEngine {
             }
             self.eph_upload_on(conn, l, &up, out)?;
         }
+        let mut lost = BTreeSet::new();
         for b in have {
             if trimmed && self.state.is_present(&host, &l, &b) {
-                self.absent_at(Some(host), l, b)?;
+                // as a Deleted record: a chunk gone from every host is relinked (`log_events`)
+                let chunk = !self.state.blobs.contains_key(&b);
+                if self.absent_at(Some(host), l, b)? && chunk {
+                    lost.insert(b);
+                }
             } else if !lane {
                 self.state.set_present(host, l, b, false);
             }
+        }
+        if !lost.is_empty() && !self.group_of(&l).is_some_and(|g| self.is_replaced(&g, &l)) {
+            self.relink_pending.extend(lost);
+            self.relink_at = 0;
+            self.relink_lost()?;
         }
         // the host holds them now: undelivered before or not, asked again (like an announce)
         if let Some(c) = self.conns.get_mut(&conn) {
