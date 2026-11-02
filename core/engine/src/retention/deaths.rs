@@ -21,13 +21,13 @@ fn bounded_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option<usize> 
     held_part(core, c, tid, ak).filter(|ai| core.ix.commits.get(c).and_then(|m| m.header.aspects.get(*ai)).is_some_and(bounded))
 }
 
-/// Whether a held body of `(tid, ak)` has a relative bound. Cost: the aspect's commits (in
-/// memory), on every valid join (issues/long-aspect-cost.md).
+/// Whether a held body of `(tid, ak)` has a relative bound (debug builds: checked against a walk
+/// of the aspect's bodies).
 pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
-    if core.assume_unbounded {
-        return false;
-    }
-    core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| bounded_part(core, c, tid, ak).is_some())
+    let k = (*tid, ak.clone());
+    let any = core.ix.bounded_held.contains_key(&k);
+    debug_assert_eq!(any, core.ix.by_aspect.get(&k).into_iter().flatten().any(|(_, c)| bounded_part(core, c, tid, ak).is_some()), "bounded_held of {tid:?} {ak:?}");
+    any
 }
 
 /// Whether a snapshot with frontier `fr` and `Absorbed` `abs` on `tid` is known, from those
@@ -338,9 +338,10 @@ pub(crate) fn load_deaths_due(tx: &mut Tx<'_>) -> Result<()> {
 /// Deaths of `(tid, ak)` from scratch (`replay_all`), then its keep-at-most bounds again: after
 /// a validity flip, an un-merge, a rebuild.
 pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if any_bounded(tx.core, tid, ak) {
-        replay_all(tx, tid, ak)?;
+    if !any_bounded(tx.core, tid, ak) {
+        return Ok(());
     }
+    replay_all(tx, tid, ak)?;
     recheck_at_most(tx, tid, ak)
 }
 

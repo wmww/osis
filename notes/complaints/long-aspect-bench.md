@@ -3,3 +3,4 @@
 - redb without durable commits never reuses a freed page: the first fill grew 200 KB per message, 2 GiB at 10^4, before I looked. Bench fills now fsync every 50 commits.
 - A background run piped through `cut`/`grep`/`head` shows nothing until it ends, and a `timeout` killing it loses the buffered lines: log to a file.
 - `wt` worktree `target/` got a new release test binary mid-run; copying it to the scratch dir first let builds go on during hour-long runs.
+- Mutation checks by `git checkout <file>` after an edit also drop uncommitted work in that file: commit first (lost and redid an edit here).

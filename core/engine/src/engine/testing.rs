@@ -147,14 +147,6 @@ impl Engine {
         self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| self.body_valid(c, tid, ak) == Some(false)).map(|(ts, c)| (*c, *ts)).collect()
     }
 
-    /// Skips `retention::any_bounded`'s scan, answering no: only for a node holding no body with
-    /// a relative bound (`scale::long_aspect`: what remains without the scan,
-    /// issues/long-aspect-cost.md).
-    #[doc(hidden)]
-    pub fn assume_unbounded(&mut self, on: bool) {
-        self.core.assume_unbounded = on;
-    }
-
     /// The held bodies of `(tid, ak)`, oldest first (tests: nothing was dropped).
     #[doc(hidden)]
     pub fn held_bodies(&self, tid: &Tid, ak: &Ak) -> usize {
@@ -271,6 +263,7 @@ impl Engine {
             ("by_thing", format!("{:?}", *ix.by_thing)),
             ("by_actor", format!("{:?}", *ix.by_actor)),
             ("by_aspect", format!("{:?}", *ix.by_aspect)),
+            ("bounded_held", format!("{:?}", *ix.bounded_held)),
             ("invalid", format!("{:?}", *ix.invalid)),
             ("ranges", format!("{:?}", *ix.ranges)),
             ("rotation_role", format!("{:?}", *ix.rotation_role)),

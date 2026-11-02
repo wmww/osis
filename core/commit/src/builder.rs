@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{AspectEntry, ChunkEntry, DeleteKey, Form, Header, Kind, Links, ListField, Origin, PurgeItem, aspect_key, key_value, purge_value};
 use crate::project::check_fits;
 use crate::keys::{Prefix, Secrets, delete_keys};
-use crate::lists::{BlobSink, write_list};
+use crate::lists::{BlobSink, MAX_LIST_BYTES, write_list};
 use crate::Error;
 use osis_base::format::{CHUNK_THRESHOLD, DELETE_AUTHOR, FORMAT_VERSION, MAX_BLOB};
 use osis_base::{Ak, BlobId, CommitId, Tid, Ts, Value};
@@ -182,6 +182,10 @@ impl CommitBuilder {
             let bytes = osis_base::encode(&v);
             if bytes.len() <= CHUNK_THRESHOLD {
                 continue;
+            }
+            // no receiver would resolve it (`Header::resolve`)
+            if bytes.len() > MAX_LIST_BYTES {
+                return Err(Error::TooLarge("header list"));
             }
             let dedup = secrets.dedup(&self.actor).ok_or(Error::Build("dedup secret of the actor not supplied"))?;
             let mut written = Vec::new();

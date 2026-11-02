@@ -103,7 +103,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
 /// the mirror of `index_commit` and the rest of `apply_verified` for a memory commit.
 pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let core = &mut *tx.core;
-    let Some(m) = core.ix.commits.remove(id) else { return Ok(()) };
+    let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
     for a in &v.aspects {
         let k = (a.tid, a.ak.clone());

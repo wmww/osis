@@ -306,7 +306,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     let (body, _) = body_class(tx.core, &m.header, c, ai);
     let header = m.header.clone();
     let vouched = snapshot && m.valid_at(ai);
-    tx.core.ix.commits.insert(*c, m);
+    tx.core.put_meta(*c, m);
     crate::apply::note_gives(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
@@ -448,7 +448,7 @@ fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engi
     if let Some(blob) = tx.get_commit(c)? {
         tx.put_commit(c, &blob, &m, Shred::No, None)?;
     }
-    tx.core.ix.commits.insert(*c, m.clone());
+    tx.core.put_meta(*c, m.clone());
     Ok(Some(m))
 }
 
