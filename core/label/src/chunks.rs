@@ -835,9 +835,9 @@ mod tests {
 
     // spec/sync.md §1: the re-encryption rule: a reused blob keeps its encryption unless its
     // expiry is earlier than the new delta's or its commitments to the thing's delete keys are
-    // not exactly the new delta's; author-chain commitments need not match, but one needs a
-    // level-2 key in the new delta: else that author could delete a blob the delta's retention
-    // gives it no right over (`nobody` or `admin` reusing an author's chunk).
+    // not exactly the new delta's; author-chain commitments need not match beside an admin or
+    // writer key, but need the new delta's own key where it lists no level 2 or only level 2: else
+    // that author could delete a blob the delta's retention gives it no right over.
     #[test]
     fn reencryption_rule() {
         let fr = |expiry: Option<u64>, keys: Vec<(u8, u8)>| Framing { dedup: Secret32::from_bytes([7; 32]), expiry: expiry.map(WallMs), keys: keys.into_iter().map(|(l, b)| (l, dk(b))).collect(), blind: [4; 16] };
@@ -866,8 +866,9 @@ mod tests {
                 assert_eq!(p.expiry(), f2.expiry, "case {i}");
             }
         }
-        // author-only chunks: another author's reuse keeps them, a delta with no level 2 does not
-        for (keys, keep) in [(vec![(2, 9)], true), (vec![], false), (vec![(1, 1)], false)] {
+        // author-only chunks: the same author's reuse keeps them; another's, or a delta with no
+        // level 2, does not
+        for (keys, keep) in [(vec![(2, 2)], true), (vec![(2, 9)], false), (vec![], false), (vec![(1, 1)], false)] {
             let mut store = MemoryBlobs::default();
             let (root, _, _) = rewrite(&mut store, &fr(None, vec![(2, 2)]), 1, &d, None);
             let (root2, _, _) = rewrite(&mut store, &fr(None, keys.clone()), 2, &d, Some(root));

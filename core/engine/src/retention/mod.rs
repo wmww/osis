@@ -707,7 +707,9 @@ fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<
 }
 
 /// Does purge item `item` of commit `pc` (header `p`) name aspect `ai` of commit `c` (header
-/// `ch`), with its author holding the right at the request's time (spec/permissions.md §8)?
+/// `ch`), with its author holding the right at the request's time, and the actor it acts for too
+/// (spec/permissions.md §8)? The second holds a client to its own rights in any arrival order: its
+/// node's would reach a delta of the person it acts for that the node did not hold yet.
 fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &Header, c: &CommitId, ai: usize) -> bool {
     let Some(a) = ch.aspects.get(ai) else { return false };
     if is_role_class(a.ak.as_str()) || a.tid != *item.tid() || a.ak != *item.ak() {
@@ -721,7 +723,8 @@ fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &
         return false;
     }
     let point = Point { ts: p.ts, node: p.author, commit: *pc };
-    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, a.retention.by, &ch.purge_actor(), At::before(point)))
+    let (by, actor, at) = (a.retention.by, ch.purge_actor(), At::before(point));
+    core.timelines.get(&a.tid).is_some_and(|tl| tl.may_purge(&p.author, &a.tid, by, &actor, at) && (p.actor == p.author || tl.may_purge(&p.actor, &a.tid, by, &actor, at)))
 }
 
 fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {

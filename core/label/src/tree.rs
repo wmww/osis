@@ -32,8 +32,9 @@ impl Framing {
     /// it (spec/sync.md §1): its expiry is not earlier than this one's, and its commitments to
     /// the thing's delete keys (levels 1 and 3) are exactly this framing's under its salt and
     /// `blind`, the blind of the header that introduced it. An author-chain commitment need not
-    /// match, but needs a level-2 key here: else that author could delete a blob this delta's
-    /// retention gives it no right over.
+    /// match while this delta lists another level-2 key beside an admin or writer one; else (no
+    /// level-2 key, or author-only) only its own key's stays: that author could delete a blob this
+    /// delta's retention gives it no right over.
     pub fn keeps(&self, prefix: &Prefix, blind: &[u8; 16]) -> bool {
         let expiry_ok = match (prefix.expiry(), self.expiry) {
             (None, _) => true,
@@ -43,7 +44,9 @@ impl Framing {
         let salt = prefix.salt();
         let mine: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l != DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
         let theirs: BTreeSet<[u8; 33]> = prefix.commitments().iter().filter(|c| c[0] != DELETE_AUTHOR).copied().collect();
-        let author_ok = self.keys.iter().any(|(l, _)| *l == DELETE_AUTHOR) || !prefix.commitments().iter().any(|c| c[0] == DELETE_AUTHOR);
+        let author: Result<BTreeSet<[u8; 33]>, _> = self.keys.iter().filter(|(l, _)| *l == DELETE_AUTHOR).map(|(l, k)| commitment(*l, k, salt, blind)).collect();
+        let shared = self.keys.iter().any(|(l, _)| *l == DELETE_AUTHOR) && self.keys.iter().any(|(l, _)| *l != DELETE_AUTHOR);
+        let author_ok = shared || author.is_ok_and(|a| prefix.commitments().iter().filter(|c| c[0] == DELETE_AUTHOR).all(|c| a.contains(c)));
         expiry_ok && author_ok && mine.is_ok_and(|m| m == theirs)
     }
 }
