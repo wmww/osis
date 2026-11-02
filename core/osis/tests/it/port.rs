@@ -534,3 +534,25 @@ fn attached_policy_calls_are_unsupported() {
     drop(c);
     n.close().unwrap();
 }
+
+// notes/client-port.md §2 Writes: writes from several threads of one attached handle all apply: nonces leave the client in the order they were taken (on its I/O thread), so none reaches the node below a later one and reads "outcome unknown" without having run
+#[test]
+fn threads_writing_on_one_handle() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let c = attach(&sock);
+    let k = ak("note:n.0");
+    let t = n.write_with(|w| w.create(n.me())).unwrap();
+    let hs: Vec<_> = (0..8)
+        .map(|i| {
+            let (c, k) = (c.clone(), k.clone());
+            std::thread::spawn(move || (0..50).filter(|j| c.write_with(|w| w.at(t, k.clone()).set(&Value::Int(i * 1000 + j))).is_err()).count())
+        })
+        .collect();
+    let failed: usize = hs.into_iter().map(|h| h.join().unwrap()).sum();
+    assert_eq!(failed, 0);
+    drop(c);
+    n.close().unwrap();
+}
