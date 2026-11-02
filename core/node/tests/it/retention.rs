@@ -134,6 +134,108 @@ fn purge_sets_any_order_spec_perm_8() {
     }
 }
 
+// spec/permissions.md §8: rights hold in every arrival order: among the delta, the request and a
+// demotion the requester had not heard of. Dropped iff the set holds the requester at the
+// request's time. But a demotion arriving after both: the node judged by what it held, and a
+// dropped body stays dropped (issues/purge-before-demotion.md).
+#[test]
+fn purge_rights_any_arrival_order_spec_perm_8() {
+    use osis_schema::{PurgeBy, Retention};
+    for by in PurgeBy::ALL {
+        // requester: 0 the admin, 1 the author, 2 another writer; demoted: lost write before it asks
+        for (who, demoted) in [(0, false), (1, false), (2, false), (1, true), (2, true)] {
+            let want = match (who, demoted) {
+                (0, _) => by.admin(),
+                (1, false) => by.author(),
+                (2, false) => by.writer(),
+                _ => false,
+            };
+            const ORDERS: [[usize; 3]; 6] = [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]];
+            let mut lp = net(3 + ORDERS.len(), 0x51 + by as u64);
+            lp.sync_all().unwrap();
+            let t = new_thing(&mut lp, 0);
+            for i in [1, 2] {
+                let n = lp.peers[i].engine.tid();
+                set_edge(&mut lp.peers[0].engine, t, n, Some(edge(Role::Write)), None);
+            }
+            lp.sync_all().unwrap();
+            lp.advance(5);
+            let mut m = Mutation::new();
+            m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+            m.set(t, &REG, &s("v")).unwrap();
+            let c = lp.peers[1].commit(m).unwrap().unwrap();
+            sync(&mut lp, 1, 2);
+            sync(&mut lp, 1, 0);
+            lp.advance(5);
+            let base: std::collections::BTreeSet<_> = lp.packages(0).unwrap().iter().map(|p| p.id).collect();
+            let mut late = vec![lp.peers[1].engine.package(&c).unwrap().unwrap()];
+            if demoted {
+                let n = lp.peers[who].engine.tid();
+                let d = set_edge(&mut lp.peers[0].engine, t, n, Some(edge(Role::Read)), None);
+                late.push(lp.peers[0].engine.package(&d).unwrap().unwrap());
+                lp.advance(5);
+            }
+            let mut m = Mutation::new();
+            m.set(t, &REG, &s("later")).unwrap();
+            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+            let pc = lp.peers[who].commit(m).unwrap().unwrap();
+            late.push(lp.peers[who].engine.package(&pc).unwrap().unwrap());
+            let pks = lp.packages(0).unwrap();
+            for (k, order) in ORDERS.iter().enumerate() {
+                let r = 3 + k;
+                for p in pks.iter().filter(|p| base.contains(&p.id) && p.id != c) {
+                    let _ = lp.deliver(r, p);
+                }
+                for i in order.iter().filter(|i| **i < late.len()) {
+                    let _ = lp.deliver(r, &late[*i]);
+                }
+                let before = want || (demoted && order[2] == 1 && (if who == 1 { by.author() } else { by.writer() }));
+                assert_eq!(lp.peers[r].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), !before, "{by:?} by peer {who} demoted {demoted}, order {order:?}");
+            }
+        }
+    }
+}
+
+// spec/permissions.md §8: a purge acting for an actor drops only what that actor holds the right
+// to, also a delta its node holds later: of an `author` delta of node 1, node 0 (which has write on
+// node 1) acting for client C, an admin, drops nothing; acting for itself it drops it.
+#[test]
+fn purge_for_an_actor_reaches_no_unsynced_delta_spec_perm_8() {
+    use osis_schema::{PurgeBy, Retention};
+    for (confined, dropped) in [(true, false), (false, true)] {
+        let mut lp = net(2, 0x8a);
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let d1 = lp.peers[1].engine.tid();
+        let t = new_thing(&mut lp, 0);
+        let mut m = Mutation::new();
+        let client = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        set_edge(&mut lp.peers[0].engine, t, d1, Some(edge(Role::Write)), None);
+        set_edge(&mut lp.peers[0].engine, t, client, Some(edge(Role::Admin)), None);
+        set_edge(&mut lp.peers[1].engine, d1, me, Some(edge(Role::Write)), None);
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        // node 1 writes; node 0 has not heard of it when the request is made
+        let mut m = Mutation::new();
+        m.retention(t, &REG, Retention { by: PurgeBy::Author, ..Default::default() }).unwrap();
+        m.set(t, &REG, &s("node 1's")).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        if confined {
+            m.confine(client);
+        }
+        m.set(t, &REG, &s("later")).unwrap();
+        m.purge(PurgeItem::Aspect { tid: t, ak: ak("t:reg.0") });
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        for n in [0, 1] {
+            assert_eq!(lp.peers[n].engine.body_not_dropped(&c, &t, &ak("t:reg.0")), !dropped, "peer {n}, confined {confined}");
+        }
+    }
+}
+
 // spec/commits.md §5, spec/permissions.md §8: a purge request drops the named deltas its author
 // may purge, everywhere it applies, and later copies arrive value-less; a writer without the
 // right purges nothing.

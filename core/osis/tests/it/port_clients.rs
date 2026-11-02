@@ -235,39 +235,43 @@ fn writes_are_the_actors() {
     // placing what it may not read
     assert!(matches!(c.write_with(|w| w.place(x.out, x.g)), Err(Error::UnknownThing { .. })));
     assert!(matches!(c.write_with(|w| w.place(x.t, x.h)), Err(Error::UnknownThing { .. })), "a group it does not read");
-    // a purge needs admin, whatever the node may do
-    assert!(matches!(c.write_with(|w| w.at(x.t, name.clone()).purge()), Err(Error::Permission { .. })));
-    x.n.change_edge(x.g, a, Role::Admin, Default::default()).unwrap();
+    // a purge needs write, whatever the node may do: read was refused above; with write it names
+    // what the actor has no right to: its reset stands, the body stays (see the test below)
     c.write_with(|w| w.at(x.t, name.clone()).purge()).unwrap();
+    x.n.change_edge(x.g, a, Role::Admin, Default::default()).unwrap();
     // an aspect of the node needs the actor's rights too
     let node_thing = x.n.node();
     assert!(matches!(c.write_with(|w| w.at(node_thing, ct::CLIENTS).remove()), Err(Error::UnknownThing { .. })));
 }
 
-// spec/permissions.md §8, notes/client-port.md §3 (Acting as the actor): admin holds no right to
-// another actor's `author` delta, though the node's right would pass at receivers: a client admin
-// is refused naming one; it still purges its own and any other class
+// spec/permissions.md §8, notes/client-port.md §3 (Acting as the actor): a purge acting for a
+// client drops what its node and the client both have the right to: a client admin drops no
+// `author` delta of its person, though the node alone may; a write client drops its own
 #[test]
-fn client_admin_purges_no_foreign_author_delta_spec_perm_8() {
+fn client_purge_is_judged_by_the_actor_spec_perm_8() {
     let x = node();
     let name = ak("name.0");
     let (a, _, c) = x.client(Role::Admin);
     let only = osis::Retention { by: osis::schema::PurgeBy::Author, ..Default::default() };
+    let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == only.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
     x.n.write_with(|w| w.at(x.t, name.clone()).retention(only).set(&Value::Int(1))).unwrap();
-    assert!(matches!(c.write_with(|w| w.at(x.t, name.clone()).purge()), Err(Error::Permission { .. })), "the person's author-only delta");
-    assert_eq!(x.n.get(x.t, name.clone()).unwrap(), Some(Value::Int(1)));
-    // its own on another aspect, the other classes
+    c.write_with(|w| w.at(x.t, name.clone()).purge()).unwrap();
+    assert_eq!(held(&name), [true], "the person's author-only delta");
+    // a writer's own
+    let (_, _, w2) = x.client(Role::Write);
     let own = ak("t:own.0");
-    c.write_with(|w| w.at(x.t, own.clone()).retention(only).set(&Value::Int(2))).unwrap();
-    c.write_with(|w| w.at(x.t, own.clone()).purge()).unwrap();
-    assert_eq!(x.n.get(x.t, own.clone()).unwrap(), None);
+    w2.write_with(|w| w.at(x.t, own.clone()).retention(only).set(&Value::Int(2))).unwrap();
+    w2.write_with(|w| w.at(x.t, own.clone()).purge()).unwrap();
+    assert_eq!(held(&own), [false]);
+    // an admin, any admin class
     let other = ak("t:other.0");
     x.n.write_with(|w| w.at(x.t, other.clone()).set(&Value::Int(3))).unwrap();
     c.write_with(|w| w.at(x.t, other.clone()).purge()).unwrap();
-    assert_eq!(c.me(), a);
+    assert_eq!(x.n.get(x.t, other.clone()).unwrap(), None);
     // the person itself may
     x.n.write_with(|w| w.at(x.t, name.clone()).purge()).unwrap();
-    assert_eq!(x.n.get(x.t, name.clone()).unwrap(), None);
+    assert_eq!(held(&name), [false]);
+    assert_eq!(c.me(), a);
 }
 
 // spec/commits.md §7, notes/client-port.md §3 (Undo/redo/revert): undo picks the actor's own commits; a revert of someone else's needs the actor's write on all it touches; a revert of what it may not read is unknown

@@ -2592,3 +2592,42 @@ fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
     assert_eq!(newest_read(&lp, 2, d), Some(e1));
     assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
+
+// spec/permissions.md §5.1, §8: an admin demoter leaves out of its frontier only what it could drop:
+// a covered `author` or `nobody` delta of the demoted writer is listed and stays valid, an
+// `author_or_admin` one is left out.
+#[test]
+fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
+    use osis_schema::{PurgeBy, Retention};
+    let reg = ak("t:reg.0");
+    for (by, listed) in [(PurgeBy::Author, true), (PurgeBy::Nobody, true), (PurgeBy::AuthorOrAdmin, false)] {
+        let (mut lp, ps) = people(2, 0x7191);
+        let (pa, px) = (ps[0], ps[1]);
+        let t = thing_of(&mut lp, 0, pa);
+        lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Write)).unwrap();
+        spread(&mut lp);
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.retention(t, &REG, Retention { by, ..Default::default() }).unwrap();
+        m.set(t, &REG, &s("x's")).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        spread(&mut lp);
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("new")).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let snap = lp.peers[0].engine.snapshot(&t, &reg).unwrap().unwrap();
+        assert_eq!(lp.peers[0].engine.covered(&snap, &c, &t, &reg).unwrap(), Some(true));
+        lp.advance(osis_base::format::MAX_DRIFT_MS + 1_000);
+        let x = lp.peers[1].engine.tid();
+        let things = BTreeSet::from([t]);
+        let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
+        let now = lp.peers[0].engine.now();
+        let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+        assert_eq!(f.commits.contains(&c), listed, "{by:?}");
+        if listed {
+            lp.peers[0].engine.demote(&t, &Demotion { holder: px, new: None, presync: PreSync::Synced }).unwrap();
+            assert_eq!(lp.peers[0].engine.body_valid(&c, &t, &reg), Some(true), "{by:?}");
+        }
+    }
+}

@@ -11,8 +11,7 @@ use crate::ephemeral::{gains, Reverted};
 use crate::events::ChangeId;
 use crate::flows::Done;
 use crate::rotation;
-use osis_base::{Ak, CommitId, Role, Tid, Ts, Value};
-use osis_commit::PurgeItem;
+use osis_base::{Ak, Role, Tid, Ts, Value};
 use osis_crdt::Op;
 use osis_perm::At;
 use osis_schema::core_types::GROUP;
@@ -59,30 +58,10 @@ impl Engine {
         self.core.may_read(actor, t)
     }
 
-    /// Fails `Permission` when purge item `p` names a held delta this node may purge and `actor`
-    /// may not. A delta not held yet goes by this node's right at receivers: a narrow gap, since
-    /// the actor is an admin here and the delta's author is one this node acts for.
-    fn check_confined_purge(&self, p: &PurgeItem, actor: &Tid, ts: Ts) -> Result<()> {
-        let (t, ak) = (*p.tid(), p.ak().clone());
-        let Some(tl) = self.core.timelines.get(&t) else { return Ok(()) };
-        let (me, at) = (self.tid(), At::now(ts));
-        let held: Vec<CommitId> = self.core.durable_on(&(t, ak.clone())).collect();
-        for c in held.iter().filter(|c| !matches!(p, PurgeItem::Commit { commit, .. } if commit != *c)) {
-            let Some(h) = self.core.ix.commits.get(c).map(|m| &m.header) else { continue };
-            let Some(a) = h.aspects.iter().find(|a| a.tid == t && a.ak == ak) else { continue };
-            let author = h.purge_actor();
-            if tl.may_purge(&me, &t, a.retention.by, &author, at) && !tl.may_purge(actor, &t, a.retention.by, &author, at) {
-                return Err(Error::Permission { tid: t });
-            }
-        }
-        Ok(())
-    }
-
     /// Fails `Permission` unless `actor` itself may do all of a confined `m`: every aspect's write,
-    /// every creation (write on the owner), every thing it persists or frees. A purge names
-    /// history whose right (spec/permissions.md §8) is judged at receivers by this node's rights:
-    /// it needs admin, and no held delta it names may be one only this node has the right to
-    /// (an `author` delta of an actor this node acts for). `group.0` gains only what it may
+    /// every creation (write on the owner), every thing it persists or frees. A purge needs write:
+    /// what it drops receivers judge by this node's and the actor's rights together
+    /// (spec/permissions.md §8). `group.0` gains only what it may
     /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
     /// the answer would tell a hidden thing from an unknown one and its name would reach the
     /// group's readers (its data would not: spec/sync.md §3 entitlement judges the group's actor).
@@ -98,8 +77,7 @@ impl Engine {
             check_authority_with(&self.core, *actor, records, t, created, ts)?;
         }
         for p in &m.purge {
-            check_role_with(&self.core, *actor, records, p.tid(), p.ak().as_str(), Role::Admin, ts)?;
-            self.check_confined_purge(p, actor, ts)?;
+            check_role_with(&self.core, *actor, records, p.tid(), p.ak().as_str(), Role::Write, ts)?;
         }
         for ((_, ak), a) in &m.aspects {
             if ak.as_str() != GROUP.ak() {
