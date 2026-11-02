@@ -2395,7 +2395,7 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
 
 /// Peers 0 (admin, owner) and the people `ps`; `d` of person 0 with person 1 (the vandal) and
 /// person 2 writers; person 1's node rotates read and write of `d` boxing person 1 alone
-/// (issues/writer-rotates-to-itself.md), `times` times. Returns `d`, the epoch before and the
+/// (spec/permissions.md §3, Lockout recovery), `times` times. Returns `d`, the epoch before and the
 /// vandal's rotation commits.
 fn locked_out(lp: &mut LocalPeer, ps: &[Tid], times: usize) -> (Tid, osis_crypto::Epoch, Vec<CommitId>) {
     let d = thing_of(lp, 0, ps[0]);
@@ -2404,7 +2404,7 @@ fn locked_out(lp: &mut LocalPeer, ps: &[Tid], times: usize) -> (Tid, osis_crypto
     }
     spread(lp);
     let e0 = newest_read(lp, 0, d).unwrap();
-    let rv: Vec<CommitId> = (0..times).map(|_| lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap()).collect();
+    let rv: Vec<CommitId> = (0..times).map(|_| lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap()).collect();
     (d, e0, rv)
 }
 
@@ -2470,7 +2470,7 @@ fn concurrent_recoveries_fork_spec_perm_3() {
     lp.peers[0].engine.grant(&d, &ps[3], &edge_of(Role::Admin)).unwrap();
     spread(&mut lp);
     assert_eq!(newest_read(&lp, 3, d), Some(e0));
-    lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread_sealed(&mut lp);
     assert_eq!(newest_read(&lp, 3, d), None, "the second admin is locked out too");
     lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
@@ -2506,11 +2506,89 @@ fn repudiation_without_audit_refused_spec_perm_3() {
         lp.peers[0].engine.grant(&d, &p, &edge_of(Role::Write)).unwrap();
     }
     spread(&mut lp);
-    lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
     spread(&mut lp);
-    let before = lp.peers[0].engine.commit_ids().len();
+    let (before, epochs) = (lp.peers[0].engine.commit_ids().len(), lp.peers[0].engine.epochs(&d));
     let err = lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap_err();
     assert!(err.to_string().contains("repudiat"), "{err}");
     assert_eq!(lp.peers[0].engine.commit_ids().len(), before, "nothing written");
+    assert_eq!(lp.peers[0].engine.epochs(&d), epochs, "nor any rotation invalidated");
     assert!(lp.peers[0].engine.roster(&d).contains_key(&ps[1]), "the vandal stays");
+}
+
+// spec/permissions.md §3, spec/crypto.md §4 (sealing a holder actor): a team actor holding
+// read on `d` is locked out with the rest; the recovery's rotation seals it again from the
+// epoch before the vandal's, so the team's owner reads the new epoch through it.
+#[test]
+fn recovery_reseals_holder_actor_spec_perm_3() {
+    let (mut lp, ps) = people(4, 575);
+    let t = thing_of(&mut lp, 3, ps[3]);
+    lp.peers[3].engine.give_own_secrets(&t).unwrap();
+    spread(&mut lp);
+    let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
+    lp.peers[0].engine.grant(&d, &t, &edge_of(Role::Read)).unwrap();
+    spread(&mut lp);
+    assert_eq!(newest_read(&lp, 3, d), Some(e0), "the team's owner reads through it");
+    lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 3, d), None, "the team is locked out too");
+    lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let e1 = newest_read(&lp, 0, d).unwrap();
+    assert_eq!(e1.n(), e0.n() + 1);
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 3, d), Some(e1), "sealed to the team again");
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2, 3]));
+}
+
+// spec/permissions.md §3, §5.1; requirements Decentralization (validity a function of the
+// held set): a member that receives the recovery before the vandal's rotation, one that held
+// the rotation first and the admin end on the same current epochs.
+#[test]
+fn recovery_alike_in_either_order_spec_perm_3() {
+    let (mut lp, ps) = people(4, 576);
+    let (d, e0, _) = locked_out(&mut lp, &ps, 0);
+    let rv = lp.peers[1].engine.rotate_boxing_only(&[d], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    let pv = lp.peers[1].engine.package(&rv).unwrap().unwrap();
+    for i in [0, 2] {
+        lp.deliver(i, &pv).unwrap();
+    }
+    assert_eq!(newest_read(&lp, 2, d), None);
+    let done = lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let pd: Vec<_> = done.commits.iter().map(|c| lp.peers[0].engine.package(c).unwrap().unwrap()).collect();
+    for i in [2, 3] {
+        for p in &pd {
+            lp.deliver(i, p).unwrap();
+        }
+    }
+    lp.deliver(3, &pv).unwrap();
+    let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
+    assert_eq!(cur.len(), 1);
+    assert!(cur[0].n() == e0.n() + 1);
+    for i in [2, 3] {
+        assert_eq!(lp.peers[i].engine.epochs(&d).unwrap().read.current(), cur, "peer {i}");
+        assert_eq!(newest_read(&lp, i, d), Some(cur[0]), "peer {i} holds it");
+        assert_eq!(lp.peers[i].engine.body_valid(&rv, &d, &ak("secrets.0")), Some(false), "peer {i}");
+    }
+}
+
+// spec/permissions.md §3, §5.1: the vandal's lockout commit also rotates a thing of its own,
+// which the demotion leaves in place; only the part on `d` turns invalid, and the recovery
+// does not wait on the other.
+#[test]
+fn lockout_bundled_with_own_rotation_recovered_spec_perm_3() {
+    let (mut lp, ps) = people(3, 577);
+    let t = thing_of(&mut lp, 1, ps[1]);
+    lp.peers[1].engine.give_own_secrets(&t).unwrap();
+    let (d, e0, _) = locked_out(&mut lp, &ps, 0);
+    let rv = lp.peers[1].engine.rotate_boxing_only(&[d, t], &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
+    lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let e1 = newest_read(&lp, 0, d).unwrap();
+    assert_eq!(e1.n(), e0.n() + 1);
+    assert_eq!(lp.peers[0].engine.body_valid(&rv, &d, &ak("secrets.0")), Some(false));
+    assert_eq!(lp.peers[0].engine.body_valid(&rv, &t, &ak("secrets.0")), Some(true), "the vandal's own thing keeps it");
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 2, d), Some(e1));
+    assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
 }
