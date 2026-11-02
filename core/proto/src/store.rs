@@ -264,6 +264,9 @@ struct LabelState {
     children: BTreeMap<Option<StepId>, StepId>,
     entries: BTreeMap<BlobId, (EntryMeta, Option<u64>)>,
     tombstones: BTreeMap<BlobId, u64>,
+    /// Per durable entry removed: when the log up to the position it went at is dropped (its
+    /// removal plus `TOMBSTONE_LIFETIME`), and that position.
+    trims: Vec<(u64, u64)>,
     log: Vec<(u64, LogRecord)>,
     /// Records at or below this sequence number were dropped.
     horizon: u64,
@@ -341,11 +344,15 @@ impl MemoryLabelStore {
     fn remove_entry(&mut self, label: &LabelId, blob_id: &BlobId, now: u64) -> Result<(), StoreError> {
         let s = self.state_mut(label)?;
         let Some((m, _)) = s.entries.remove(blob_id) else { return Ok(()) };
-        if s.ephemeral.remove(blob_id) {
+        let ephemeral = s.ephemeral.remove(blob_id);
+        if ephemeral {
             s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
         }
         s.tombstones.insert(*blob_id, now);
-        s.append(LogRecord::Deleted(*blob_id));
+        let seq = s.append(LogRecord::Deleted(*blob_id));
+        if !ephemeral {
+            s.trims.push((now.saturating_add(TOMBSTONE_LIFETIME_MS), seq));
+        }
         self.unref(blob_id);
         Ok(())
     }
@@ -365,7 +372,8 @@ impl MemoryLabelStore {
         }
     }
 
-    /// Expires entries (no tombstone, no event), executes pending deletions, drops old tombstones.
+    /// Expires entries (no tombstone, no event), executes pending deletions, drops old tombstones
+    /// and the log up to removals that old (spec/sync.md §4).
     pub fn sweep(&mut self, now: u64) {
         let labels: Vec<LabelId> = self.labels.keys().copied().collect();
         for label in labels {
@@ -373,12 +381,19 @@ impl MemoryLabelStore {
             let expired: Vec<BlobId> = s.entries.iter().filter(|(_, (_, exp))| exp.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             let due: Vec<BlobId> = s.entries.iter().filter(|(_, (m, _))| m.pending_delete.is_some_and(|t| t <= now)).map(|(k, _)| *k).collect();
             s.tombstones.retain(|_, t| t.saturating_add(TOMBSTONE_LIFETIME_MS) > now);
+            let trim = s.trims.iter().filter(|(t, _)| *t <= now).map(|(_, seq)| *seq).max();
+            s.trims.retain(|(t, _)| *t > now);
             for id in &expired {
-                if let Some((m, _)) = s.entries.remove(id)
-                    && s.ephemeral.remove(id)
-                {
-                    s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
+                if let Some((m, _)) = s.entries.remove(id) {
+                    if s.ephemeral.remove(id) {
+                        s.ephemeral_bytes = s.ephemeral_bytes.saturating_sub(m.size);
+                    } else {
+                        s.trims.push((now.saturating_add(TOMBSTONE_LIFETIME_MS), s.next_seq));
+                    }
                 }
+            }
+            if let Some(seq) = trim {
+                self.truncate_log(&label, seq);
             }
             for id in &expired {
                 self.unref(id);

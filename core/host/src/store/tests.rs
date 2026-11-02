@@ -225,6 +225,49 @@ fn timed_deletes_expiry_tombstones() {
     assert_eq!(e.store.next_due().unwrap(), None);
 }
 
+// spec/sync.md §4, §6: the log records of removed entries (deleted or expired) go once the
+// removal is `TOMBSTONE_LIFETIME` old, the log up to it with them; a cursor below falls back to
+// reconciliation, one after it reads on. Overwrite churn leaves no log behind.
+#[test]
+fn log_trimmed_by_age() {
+    let mut e = env(HostPolicy::default());
+    let l = e.f.label;
+    let records = |e: &Env| e.store.scan_prefix(&key(b'G', &[&l.0]), usize::MAX).unwrap().len();
+    let base = records(&e);
+    // 40 overwrites: each upload replaces the last; one expiring entry
+    for n in 1..=40u8 {
+        let b = blob(n);
+        let prev = [id(n - 1)];
+        let p = Put { replaces: if n > 1 { &prev } else { &[] }, now: T0, ..put(&b, true, None) };
+        assert_eq!(e.store.put(&l, p).unwrap(), Code::OK);
+    }
+    e.store.put(&l, put(&blob(50), true, Some(T0 + 10))).unwrap();
+    let mid = e.store.log_head(&l).unwrap().1;
+    assert!(records(&e) >= base + 80, "adds and deletes logged");
+    e.store.sweep(T0 + 10, 1024).unwrap();
+    // a later write, after the removals
+    e.clock.set(WallMs(T0 + DAY_MS));
+    e.store.put(&l, put(&blob(60), true, None)).unwrap();
+    e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS - 1, 1024).unwrap();
+    assert!(e.store.log_after(&l, 0, 1).unwrap().is_some(), "kept for the tombstone lifetime");
+    // a budget of 10 rows (index and log) takes the trim over several sweeps, the horizon
+    // rising through partial trims
+    let (mut last, mut partial) = (0, false);
+    while e.store.sweep(T0 + TOMBSTONE_LIFETIME_MS + 10, 10).unwrap().more {
+        let horizon = e.store.meta(&l).unwrap().unwrap().horizon;
+        assert!(horizon >= last, "the horizon rises: {last} -> {horizon}");
+        partial |= horizon > 0 && horizon < mid;
+        last = horizon;
+    }
+    assert!(partial, "a trim cut short by the budget");
+    assert_eq!(e.store.log_after(&l, mid - 1, 1).unwrap(), None, "a cursor below the trim falls back");
+    let tail = e.store.log_after(&l, mid, 10).unwrap().unwrap();
+    assert_eq!(tail.iter().map(|r| r.1.clone()).collect::<Vec<_>>(), vec![LogRecord::Added(id(60))]);
+    assert_eq!(records(&e), 1, "only the record after the last removal is left");
+    assert_eq!(e.store.live_ids(&l).unwrap(), BTreeSet::from([id(40), id(60)]).into_iter().collect::<Vec<_>>());
+    assert_eq!(e.store.next_due().unwrap(), None);
+}
+
 // spec/sync.md §4: a claim set is kept until its step has been superseded for ROLE_KEEP
 #[test]
 fn claim_sets_dropped_after_role_keep() {
@@ -495,8 +538,11 @@ proptest! {
                     prop_assert_eq!(e.store.log_after(&l, at, 1).unwrap().is_some(), r.log_after(&l, at, 1).unwrap().is_some());
                 }
                 // the same records; a sweep executes due deletes by time, the reference by ID
-                let recs = |v: Vec<(u64, LogRecord)>| { let mut v: Vec<String> = v.into_iter().map(|r| format!("{:?}", r.1)).collect(); v.sort(); v };
-                prop_assert_eq!(recs(e.store.log_after(&l, 0, 1000).unwrap().unwrap()), recs(r.log_after(&l, 0, 1000).unwrap().unwrap()));
+                // (and the same log trimmed by age: a removal's records go `TOMBSTONE_LIFETIME` after it)
+                let recs = |v: Option<Vec<(u64, LogRecord)>>| v.map(|v| { let mut v: Vec<String> = v.into_iter().map(|r| format!("{:?}", r.1)).collect(); v.sort(); v });
+                for after in [0, head / 2] {
+                    prop_assert_eq!(recs(e.store.log_after(&l, after, 1000).unwrap()), recs(r.log_after(&l, after, 1000).unwrap()));
+                }
                 prop_assert_eq!(e.store.head(&l).unwrap(), r.head(&l).unwrap());
                 prop_assert_eq!(e.store.head_keys(&l).unwrap(), osis_proto::HeadKeys::of_path(&e.store.path(&l).unwrap()));
                 for s in [None, Some(e.f.genesis.id()), Some(e.f.child.id())] {
@@ -515,7 +561,9 @@ proptest! {
             for l in [e.f.label, g.label] {
                 let mut live = BTreeSet::new();
                 let mut head = None;
-                for (_, rec) in e.store.log_after(&l, 0, 10_000).unwrap().unwrap() {
+                // a log trimmed by age replays from its horizon only
+                let Some(recs) = e.store.log_after(&l, 0, 10_000).unwrap() else { continue };
+                for (_, rec) in recs {
                     match rec {
                         LogRecord::Added(b) => { live.insert(b); }
                         LogRecord::Deleted(b) => { live.remove(&b); }
