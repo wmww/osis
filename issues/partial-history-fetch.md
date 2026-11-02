@@ -1,0 +1,5 @@
+# Fetch recent history first, or only part of it
+> Summary: A new device downloads a label's whole log and every body, in log order, so a long chat opens slowly (about 15 min first sync at 10^6 messages, extrapolated) and recent messages are not guaranteed first. Owner: allow partial or newest-to-oldest fetch; a holder that cannot read old content (issues/history-less-grant.md) and one that chose not to fetch it may be the same state.
+> Tags: sync, node-sync, api, performance
+
+Questions: what a node needs before it can judge a recent message: role commits sit in the same log, and hosts must not learn which blobs are which, so how are they found first? Log listing cost when only IDs and wraps are fetched; reading the log from the newest end at a host; must-hold and upload duties of a node that has not fetched everything (spec/sync.md "partial node", §6); atomic apply; read and status semantics for a gap ("older messages not fetched" versus absent); a kept state for aspects whose readers use state rather than history.
