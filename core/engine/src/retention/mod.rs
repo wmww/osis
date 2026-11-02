@@ -202,6 +202,12 @@ pub(crate) fn held_part(core: &Core, c: &CommitId, tid: &Tid, ak: &Ak) -> Option
 }
 
 pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> {
+    // a memory delta leaves only whole (expiry, supersession, purge: `memory::vanish`) or
+    // covered, as on the old lane, which ignores keep bounds: dropped here its live writes would
+    // stay in the state while `memory::forget_if_spent` forgets its header and expiry timer
+    if tx.is_memory_commit(c) {
+        return Ok(());
+    }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai) else { return Ok(()) };
     let (body, holders) = body_class(tx.core, &m.header, c, ai);
@@ -529,6 +535,8 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
 fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
     if tx.is_memory_commit(c) {
         changed.extend(memory::vanish(tx, c, ai)?);
+        // what is left of it may be superseded whole now (spec/sync.md §9); its caller forgets it
+        changed.extend(memory::superseded_rest(tx, c)?);
         return Ok(());
     }
     if let Some(k) = make_valueless(tx, c, ai)? {
