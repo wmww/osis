@@ -485,3 +485,35 @@ fn attached_wait_synced_as_at_the_node() {
     m.close().unwrap();
     n.close().unwrap();
 }
+
+// spec/wire.md §11.1-§11.2 (max_reply, MAX_SUBS), notes/client-port.md §2: a Sub whose initial Reply exceeds max_reply is answered TooLarge and is not kept live at the node's worker either, so MAX_SUBS bounds the worker's subscriptions and a later change costs nothing for them
+#[test]
+fn too_large_sub_is_not_kept() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let k = ak("f:blob.0");
+    let small = osis_proto::client::SMALL_REPLY;
+    let t = n
+        .write_with(|w| {
+            let t = w.create(n.me())?;
+            w.at(t, k.clone()).set(&Value::Bytes(vec![7; small + 1000]))?;
+            Ok(t)
+        })
+        .unwrap();
+    let before = n.watches();
+    let mut r = Raw::unix(&sock);
+    r.auth([1; 16]).unwrap();
+    let filter = Value::List(vec![Value::uint(0), Value::Tid(t), Value::Str(k.as_str().into())]);
+    // fewer than MAX_SUBS suffice: each one kept would show in the worker's registrations
+    for tok in 1..=300u64 {
+        let rep = r.ask(Command::Sub { token: tok, max_reply: small as u64, filter: filter.clone() }, tok);
+        assert_eq!(rep, Ok(Outcome::too_large(small)), "sub {tok}");
+    }
+    // the protocol's call settles behind every Sub: none is held by the worker
+    assert!(matches!(r.call(1_000_000, 20, vec![]), Outcome::Ok { .. }));
+    assert_eq!(n.watches(), before);
+    drop(r);
+    n.close().unwrap();
+}

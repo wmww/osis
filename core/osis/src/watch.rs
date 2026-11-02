@@ -233,6 +233,11 @@ impl Dispatch {
         }
     }
 
+    /// Live registrations (`Internals::watches`).
+    pub fn registrations(&self) -> usize {
+        lock(&self.shared.registry).subs.len()
+    }
+
     /// Registers a callback for messages from sequence `since` on.
     pub fn register(&self, since: u64, filter: Filter, cb: Callback) -> Subscription {
         let mut r = lock(&self.shared.registry);
