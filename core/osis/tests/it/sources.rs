@@ -1351,3 +1351,38 @@ fn roster_and_diagnostic_watches_started_while_down_come_up() {
     assert!(rx.recv_timeout(SHORT).is_err(), "one roster, no second delivery");
     drop(x.host);
 }
+
+// spec/wire.md §9, spec/sync.md §3: a share into a second group sends an inbox blob about the thing,
+// which names no group's label: moving the first group away and home finds its label free.
+#[test]
+fn moving_home_after_a_share_into_a_second_group() {
+    let x = world();
+    // sorting after g: a thing's first group by tid was the one named
+    let h = loop {
+        let h = x.p.write_with(|w| {
+            let h = w.create(x.p.me())?;
+            w.make_group(h)?;
+            Ok(h)
+        }).unwrap();
+        if h > x.g {
+            break h;
+        }
+    };
+    x.p.sync(h, &[]).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    // the blob opened here before the group stops syncing
+    until("the share's inbox blob opened at P", || {
+        let _ = x.p.sync_now();
+        x.p.sync_engine(|e| {
+            let labels: Vec<_> = e.labels().into_iter().map(|(_, l)| l.id).collect();
+            labels.iter().any(|l| e.entries(l).iter().any(|(_, k)| matches!(k, osis::internals::node::sync::EntryKind::Inbox(Some(_)))))
+        })
+    });
+    x.attach_p();
+    x.to_remote();
+    block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
+    assert!(x.p.routes().is_empty());
+    drop(x.host);
+}

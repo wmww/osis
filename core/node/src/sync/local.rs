@@ -9,7 +9,7 @@ use crate::error::{Error, Result};
 use crate::labeling::seal_body;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, BlobId, CommitId, LabelId, Role, Tid, Ts};
-use osis_label::{Address, InboxPayload, InboxThing};
+use osis_label::{Address, InboxLabel, InboxPayload, InboxThing};
 use osis_perm::{At, PurgeBy};
 use osis_proto::Command;
 use osis_schema::core_types as ct;
@@ -280,13 +280,9 @@ impl SyncEngine {
         let mut things: Vec<InboxThing> = Vec::new();
         let tids: BTreeSet<Tid> = cut.header.aspects.iter().map(|a| a.tid).collect();
         for t in tids {
-            for gl in self.engine.group_labels(&t)? {
-                if !gl.replaced {
-                    let delete_keys = self.engine.own_delete_keys(&t)?;
-                    things.push(InboxThing { tid: t, label: gl.id, index: gl.index, hosts: gl.hosts, delete_keys });
-                    break;
-                }
-            }
+            let label = self.engine.group_labels(&t)?.into_iter().find(|gl| !gl.replaced).map(|gl| InboxLabel { id: gl.id, index: gl.index, hosts: gl.hosts });
+            let delete_keys = self.engine.own_delete_keys(&t)?;
+            things.push(InboxThing { tid: t, label, delete_keys });
         }
         let commit = osis_base::decode(&cut.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_MESSAGE })
             .map_err(|_| Error::Corrupt("commit blob"))?;

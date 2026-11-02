@@ -410,6 +410,10 @@ impl Osis {
     /// and this engine caught up (`wait_timeout`, else `Network` or `Unsynced`, syncing goes on and
     /// calling this again finishes the move), calls keep going to the node, so nothing reads this
     /// engine's old copy. Works with the node gone (what only it held arrives if it returns).
+    /// `Unsynced` here means a label of the group opens under no key at a host (`status`:
+    /// `Stranded`): the route stands, nothing is lost, and calling again helps once the label is
+    /// tried again (new secrets, a new connection, or every `resync_ms`); until a holder re-seals
+    /// this node, stay on the node.
     ///
     /// A thing also in a group that syncs here stays on this engine (local wins), and sees only what
     /// that group carries: writes made under this one alone do not reach it, its writes do not
