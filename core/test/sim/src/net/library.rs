@@ -14,6 +14,7 @@ use osis_node::Mutation;
 use osis_node::flows::{Demotion, LinkSpec, PreSync};
 use osis_node::sync::Event;
 use osis_schema::core_types as ct;
+use osis_schema::{Bound, PurgeBy, Retention};
 use std::collections::BTreeSet;
 
 const HOUR_MS: u64 = 3_600_000;
@@ -866,6 +867,100 @@ pub fn keep_at_most(seed: u64) -> Res<Report> {
         return Err(sim.fail("nothing was replaced"));
     }
     expired_absent(&mut sim, &replaced, &k)?;
+    sim.finish()
+}
+
+/// Lasting tombstones under churn (spec/commits.md §5, spec/sync.md §6): a writer's and an admin's
+/// permanent messages, some purged by their author or an admin, one aspect-wide request by a writer
+/// with no right over the rest, the host's data lost midway, and a device down through it all: it
+/// sees each purged message as a tombstone with a purge that had the right and every other as a
+/// body, and all that is left at the holders agrees.
+pub fn purge_tombstones(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x7b);
+    let mut sim = sim("purge_tombstones", seed, NetWeights { crash: 0, restart: 0, ..NetWeights::default() });
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let e = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pe] = persons(&mut sim, [a, b, e], [s, s, s])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pe, Role::Read)])?;
+    let t = sim.item(a, g)?;
+    sim.reconnect_all();
+    sim.quiet(40)?;
+    sim.node_down(e)?;
+    let k = super::scenarios::ak(&sim, &workload::NOTE)?;
+    let forever = Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: Some(osis_commit::FOREVER), rel: None }, at_most: Bound::default() };
+    let mut messages = Vec::new();
+    let mut purged = BTreeSet::new();
+    let mut said = 0u32;
+    for round in 0..12u32 {
+        said += 1;
+        let n = if d.pct(50) { a } else { b };
+        let mut m = Mutation::new();
+        m.retention(t, &workload::NOTE, forever).map_err(|x| sim.fail(x.to_string()))?;
+        m.set(t, &workload::NOTE, &Value::Str(format!("message {said}"))).map_err(|x| sim.fail(x.to_string()))?;
+        let c = sim.commit(n, m)?.ok_or_else(|| sim.fail("wrote nothing"))?;
+        messages.push((c, n));
+        sim.run(10)?;
+        if round == 6 {
+            sim.wipe_host(s)?;
+            sim.run(20)?;
+        }
+        if round == 9 {
+            sim.node_down(b)?;
+            sim.restart_node(b)?;
+            sim.reconnect_all();
+            sim.run(10)?;
+        }
+        if d.pct(40) {
+            sim.quiet(40)?;
+            let Some(&(c, author)) = messages.get(d.below(messages.len() as u64) as usize) else { continue };
+            said += 1;
+            // the author, or admin `a`, which holds the message by now
+            let by = if d.pct(50) { author } else { a };
+            let mut m = Mutation::new();
+            m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+            m.set(t, &workload::NOTE, &Value::Str(format!("message {said}"))).map_err(|x| sim.fail(x.to_string()))?;
+            if sim.commit(by, m)?.is_some() {
+                purged.insert(c);
+            }
+            sim.run(10)?;
+        }
+    }
+    // a writer's aspect-wide request: its own messages, none of the admin's
+    sim.quiet(40)?;
+    said += 1;
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Aspect { tid: t, ak: k.clone() });
+    m.set(t, &workload::NOTE, &Value::Str(format!("message {said}"))).map_err(|x| sim.fail(x.to_string()))?;
+    sim.commit(b, m)?;
+    purged.extend(messages.iter().filter(|x| x.1 == b).map(|x| x.0));
+    sim.run(20)?;
+    sim.quiet(40)?;
+    sim.restart_node(e)?;
+    sim.reconnect_all();
+    sim.run(30)?;
+    sim.run_until_quiescent(40)?;
+    let holders = sim.engine(a)?.purged_on(&t, &k).map_err(|x| sim.fail(x.to_string()))?;
+    for n in [a, b, e] {
+        let on = sim.engine(n)?.purged_on(&t, &k).map_err(|x| sim.fail(x.to_string()))?;
+        if on != holders {
+            return Err(sim.fail(format!("node {n} shows other purges: {on:?} against {holders:?}")));
+        }
+        for (c, author) in &messages {
+            let (held, applied) = {
+                let en = sim.engine(n)?;
+                (en.body_not_dropped(c, &t, &k), en.commit_ids().contains(c))
+            };
+            let tomb = purged.contains(c);
+            if tomb && held {
+                return Err(sim.fail(format!("node {n}: purged message {c:?} of node {author} still held")));
+            }
+            if !applied || (tomb && !on.contains_key(c)) {
+                return Err(sim.fail(format!("node {n}: message {c:?} (purged {tomb}) applied {applied}, shown {}", on.contains_key(c))));
+            }
+        }
+    }
     sim.finish()
 }
 

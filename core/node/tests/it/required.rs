@@ -393,6 +393,21 @@ fn broken_bodies_drop_without_right_spec_perm_8() {
     assert_eq!(read(&mut lp.peers[0], d, "t:old.0"), Some(s("old")), "the held body back too");
 }
 
+// spec/commits.md §5: a permanent delta dropped for breaking a required retention leaves no lasting
+// header: nothing purged it.
+#[test]
+fn a_broken_permanent_delta_is_no_tombstone_spec_commits_5() {
+    let (mut lp, d) = setup(329);
+    require(&mut lp, 2, d, &rules(&[("t:", Retention { by: PurgeBy::Admin, ..permanent() })]));
+    lp.sync_all().unwrap();
+    let bad = hostile(&mut lp, 1, d, "t:bad.0", Retention { by: PurgeBy::Writer, ..permanent() }, "bad");
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.header(&bad).unwrap().aspects.iter().any(|a| a.permanent()));
+    assert_eq!(lp.peers[0].engine.drop_broken(Some(&BTreeSet::from([bad]))).unwrap(), vec![bad]);
+    assert!(!lp.peers[0].engine.body_not_dropped(&bad, &d, &ak("t:bad.0")));
+    assert!(!lp.peers[0].engine.label_bodies_meta(&d).unwrap().iter().any(|b| b.commit == bad), "a lasting header of a broken delta");
+}
+
 // spec/sync.md §6, §7: a junk `nobody` body under a required retention leaves a member's node and
 // the host: no right holder exists for it, an admin deletes it by the label's delete key
 #[test]

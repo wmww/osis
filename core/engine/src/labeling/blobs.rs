@@ -223,11 +223,10 @@ impl Engine {
         }
         // nothing else of it here and a lasting header on the label's things: its header alone
         // (spec/commits.md §5, spec/sync.md §6)
-        if out.is_empty() && touches {
-            let core = &self.core;
-            let on = |t: &Tid| ctx.closure.contains(t) && core.may_read(&ctx.actor, &core.reader_of(t));
-            if crate::retention::lasting(core, &id, &on)
-                && let Some(blind) = core.ix.commits.get(&id).map(|m| m.header.blind)
+        if out.is_empty() && touches && (h.purges || h.aspects.iter().any(|a| a.permanent)) {
+            let on = |core: &crate::engine::Core, t: &Tid| ctx.closure.contains(t) && core.may_read(&ctx.actor, &core.reader_of(t));
+            if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
+                && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
                 out.push(Body { commit: id, reader: ctx.actor, parts: Vec::new(), expires: None, keys: Vec::new(), blind, plaintext: Vec::new(), role_commit: false });
             }

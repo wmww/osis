@@ -911,7 +911,7 @@ fn purge_allowed(core: &Core, p: &Header, pc: &CommitId, item: &PurgeItem, ch: &
         return false;
     }
     let names = match item {
-        PurgeItem::Commit { commit, .. } => commit == c,
+        PurgeItem::Commit { commit, .. } => commit == c && ch.ts < p.ts,
         PurgeItem::Aspect { .. } => ch.ts < p.ts,
     };
     if !names {
@@ -944,29 +944,25 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 }
 
 /// Whether held commit `id` keeps a blob under a label whose things `on` says, for good (spec/commits.md
-/// §5, a lasting header): a permanent delta of it on such a thing is purged, or its purge request
-/// names one its author may purge (`names_permanent`: a new device needs the request to count the
-/// missing delta as held).
-pub(crate) fn lasting(core: &Core, id: &CommitId, on: &dyn Fn(&Tid) -> bool) -> bool {
-    let Some(m) = core.ix.commits.get(id) else { return false };
-    m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && m.dropped.contains_key(&ai) && on(&a.tid)) || names_permanent(core, id, on)
-}
-
-/// Whether the purge request of `id` names a permanent delta on a thing `on` says that its author
-/// may purge. An aspect-wide item walks the aspect's views, decoding only what could count.
-fn names_permanent(core: &Core, id: &CommitId, on: &dyn Fn(&Tid) -> bool) -> bool {
-    let Some(p) = core.ix.commits.get(id).filter(|m| m.view.purges).map(|m| m.header.clone()) else { return false };
-    p.purge.iter().filter(|i| on(i.tid())).any(|item| {
-        let named: Vec<CommitId> = match item {
-            PurgeItem::Commit { commit, .. } => vec![*commit],
-            PurgeItem::Aspect { .. } => core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).into_iter().flatten().map(|x| x.1).collect(),
-        };
-        named.iter().any(|c| {
-            let Some(m) = core.ix.commits.get(c) else { return false };
-            let Some(ai) = m.aspect(item.tid(), item.ak()) else { return false };
-            m.view.aspects.get(ai).is_some_and(|a| a.permanent) && purge_allowed(core, &p, id, item, &m.header, c, ai)
-        })
-    })
+/// §5, a lasting header): a permanent delta of it on such a thing is dropped (a broken one is no
+/// tombstone: spec/permissions.md §8), or its purge request
+/// dropped one there (`purge_one` notes it: a new device needs the request to count the missing
+/// delta as held). Noted, not walked: a writer's aspect-wide request naming nothing it may purge
+/// would walk the aspect on every pass.
+pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
+    let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
+    if m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && m.dropped.get(&ai).is_some_and(|d| !d.broke) && on(tx.core, &a.tid)) {
+        return Ok(true);
+    }
+    if !m.view.purges {
+        return Ok(false);
+    }
+    for item in &m.header.purge {
+        if on(tx.core, item.tid()) && tx.txn.get_local(&records::named_permanent_key(id, item.tid()))?.is_some() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn purge_requests(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<CommitId>> {
@@ -1002,8 +998,11 @@ fn purge_one(tx: &mut Tx<'_>, pc: &CommitId, item: &PurgeItem, c: &CommitId, ai:
         return Ok(());
     }
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
-    // it may have become a lasting header (`lasting`): judged again whichever came first
-    tx.core.mark_changed(*pc);
+    // a lasting header from now on (`lasting`), whichever came first
+    if m.view.aspects.get(ai).is_some_and(|x| x.permanent) {
+        tx.txn.put_local(&records::named_permanent_key(pc, &a.tid), &[], Shred::No)?;
+        tx.core.mark_changed(*pc);
+    }
     expire(tx, c, ai, true, changed)?;
     // snapshots carrying the purged values (spec/commits.md §5)
     if let Some(o) = Owned::of(&m.header, c, ai) {
@@ -1167,25 +1166,34 @@ fn due_timers(tx: &mut Tx<'_>) -> Result<(Vec<Due>, u64)> {
 
 impl Engine {
     /// The held commits a held purge request drops a delta of on `(tid, ak)`, each with the earliest
-    /// such request by `(ts, ID)`: what the history read shows as purged (spec/commits.md §5).
+    /// such request by `(ts, ID)`: what the history read shows as purged (spec/commits.md §5). Costs a
+    /// walk of the aspect's views, then only its dropped deltas per request.
     pub fn purged_on(&mut self, tid: &Tid, ak: &Ak) -> Result<BTreeMap<CommitId, CommitId>> {
         let (t, a) = (*tid, ak.clone());
         let reqs = self.run(|tx| purge_requests(tx, &t, &a))?;
         let core = &self.core;
         let mut ps: Vec<(Ts, CommitId)> = reqs.into_iter().filter_map(|c| Some((core.ix.commits.get(&c)?.view.ts, c))).collect();
         ps.sort();
+        let dropped: BTreeSet<CommitId> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.dropped.contains_key(&ai)))).collect();
         let mut out = BTreeMap::new();
         for (_, pc) in ps {
+            if out.len() == dropped.len() {
+                break;
+            }
             let Some(p) = core.ix.commits.get(&pc).map(|m| m.header.clone()) else { continue };
             for item in p.purge.iter().filter(|i| i.tid() == tid && i.ak() == ak) {
-                let named: Vec<CommitId> = match item {
-                    PurgeItem::Commit { commit, .. } => vec![*commit],
-                    PurgeItem::Aspect { .. } => core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect(),
+                let one;
+                let named = match item {
+                    PurgeItem::Commit { commit, .. } => {
+                        one = BTreeSet::from([*commit]);
+                        one.intersection(&dropped).copied().collect::<Vec<_>>()
+                    }
+                    PurgeItem::Aspect { .. } => dropped.iter().copied().collect(),
                 };
                 for c in named {
                     let Some(m) = core.ix.commits.get(&c) else { continue };
                     let Some(ai) = m.aspect(tid, ak) else { continue };
-                    if !out.contains_key(&c) && m.dropped.contains_key(&ai) && purge_allowed(core, &p, &pc, item, &m.header, &c, ai) {
+                    if !out.contains_key(&c) && purge_allowed(core, &p, &pc, item, &m.header, &c, ai) {
                         out.insert(c, pc);
                     }
                 }
