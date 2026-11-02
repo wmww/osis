@@ -1,0 +1,5 @@
+# A commit's `actor` field is not verified
+> Summary: A header's `author` (the signing node) is verified; `actor`, the actor it acts for, is not: validity judges `author` only (`apply/validity.rs`), so a node can name any actor. Purge rights recheck the path (`perm/purge.rs`), so they are not fooled, but anything showing `actor` as who wrote a commit can be lied to. Decide: make a commit invalid unless its author could write as `actor`, or expose only a checked value.
+> Tags: security, spec, permissions, engine, api
+
+The field cannot simply go: it picks the level 2 delete key (spec/crypto.md §7) and the dedup secret of linked lists (spec/wire.md §3). Users of it: `CommitEntry`, `Change` and events in the API, `osis commits` in the CLI, thin clients' attribution (notes/client-port.md §3), chat sender display (notes/chat-designs/e-review.md). Check before choosing validity: order independence through the role timeline, a demoted author's later commits, imports (origin's actor), wire §11.2's line that receivers reject none for its actor, and that a wrong actor already leaves its author's right unusable.
