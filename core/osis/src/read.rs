@@ -23,6 +23,8 @@ pub struct Edge {
     /// Tied to the placement of the thing in this holder, a group (`Osis::share_into`): removed
     /// once the placement is gone (spec/permissions.md §2).
     pub tied: bool,
+    /// The holder's devices keep a read-only copy when this edge ends (spec/permissions.md §3).
+    pub keep: bool,
 }
 
 /// A thing's time (`Osis::created`, `Osis::changed`): the commit, its author and when.
@@ -231,7 +233,7 @@ impl Reader<'_> {
         if self.hidden(self.resolve(thing)) {
             return Roster::new();
         }
-        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some() })).collect()
+        self.e.roster(&self.resolve(thing)).into_iter().map(|(m, e)| (self.resolve(m), Edge { role: e.role, until: e.until, invite: e.invite, tied: e.tied.is_some(), keep: e.keep })).collect()
     }
 
     /// This node's effective role on `tid` now (`None`: no access); the acting actor's when

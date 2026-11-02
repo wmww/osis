@@ -30,7 +30,8 @@ impl Engine {
         role_with(&self.core, *actor, records, t, self.acting_ts())
     }
 
-    /// Whether a client of this node, `actor`, reads `t` here now: `entitled`, and this node's copy is current.
+    /// Whether a client of this node, `actor`, reads `t` here now: `entitled` and this node's copy
+    /// is current, or a kept copy it reads (`copy_readable_by`).
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         // in a group read at another node or still catching up on its way home, or held only
         // through groups that stopped syncing here: stale here, and this node would serve it to a
@@ -46,7 +47,7 @@ impl Engine {
                 return false;
             }
         }
-        self.entitled(actor, t)
+        self.entitled(actor, t) || self.copy_readable_by(actor, t)
     }
 
     /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its owner

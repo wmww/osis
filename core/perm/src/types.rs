@@ -39,6 +39,9 @@ pub struct Edge {
     /// (spec/crypto.md §4); carried by every later write of the edge and by roster snapshots,
     /// never an authority.
     pub keyset: Option<Point>,
+    /// What the holder's nodes do with their copy when this is the edge's last value before it
+    /// ends (spec/permissions.md §3): carried, never an authority.
+    pub keep: bool,
 }
 
 /// The `group.0` element a tied edge names (spec/permissions.md §2): its creation stamp (`ts`,
@@ -60,7 +63,7 @@ pub enum TieSource {
 
 impl Edge {
     pub fn new(role: Role) -> Edge {
-        Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }
+        Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }
     }
     /// Alive at `ts`; `None` is the end of time, where every edge with an `until` is gone.
     pub fn alive_at(&self, ts: Option<Ts>) -> bool {

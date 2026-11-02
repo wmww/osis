@@ -162,6 +162,7 @@ fn run_edges(samples: u64, seed: u64) {
         let t = w.thing(nodes[0]);
         let me = |e: Option<edges::Edge>| {
             e.map(|e| Edge {
+                keep: false,
                 role: match e.role {
                     roles_model::Role::Admin => Admin,
                     roles_model::Role::Write => Write,

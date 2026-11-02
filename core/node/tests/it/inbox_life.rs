@@ -47,7 +47,7 @@ fn alice_and_bob_at(extra: Vec<osis_label::Address>) -> (Net, usize, usize, usiz
 }
 
 fn grant(net: &mut Net, a: usize, g: Tid, to: Tid) {
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let done = net.engine(a).grant(&g, &to, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -292,7 +292,7 @@ fn grant_undelivered(net: &mut Net, a: usize, b: usize, host: usize, home: &Labe
     use osis_node::flows::Delivery;
     net.set_online(b, false);
     let before = net.host_ids(host, home);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -360,7 +360,7 @@ fn holds(net: &mut Net, n: usize, c: &osis_base::CommitId) -> bool {
 /// Alice's grant on `g` to `bob`; the grant commit.
 fn grant_commit(net: &mut Net, a: usize, g: Tid, bob: Tid) -> osis_base::CommitId {
     use osis_node::flows::Delivery;
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).expect("an inbox delivery");
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -719,7 +719,7 @@ fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
     let t = persisted_item(&mut net, a, g);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let names = |on: Tid, net: &mut Net| {
         let done = net.engine(a).grant(&on, &bob, &edge).unwrap();
@@ -737,7 +737,7 @@ fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
 #[test]
 fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob_at(Vec::new());
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = *done.commits.iter().find(|i| net_is_role(&mut net, a, i, &g)).unwrap();
     let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();

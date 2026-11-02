@@ -1,0 +1,690 @@
+//! A thin client and its node's kept copy (spec/permissions.md §3, Keep; notes/client-port.md §3): a
+//! chat of Alice's, Bob's node serving Bob's app as a thin client over the client port, Bob kicked.
+
+use crate::common::{ak, block_on};
+use osis::{ClientSecret, CommitQuery, Config, Demotion, EdgeOpts, Error, HostAddr, Lower, MemStore, Osis, Role, Runtime, Scope, StoreAt, SyncScope, Tid, Transport, Value, WaitForSync};
+use std::time::{Duration, Instant};
+
+const W: Duration = Duration::from_secs(20);
+
+fn until(what: &str, mut f: impl FnMut() -> bool) {
+    let end = Instant::now() + W;
+    while !f() {
+        assert!(Instant::now() < end, "not reached: {what}");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+fn text() -> osis::Ak {
+    ak("msg:text.0")
+}
+
+fn file() -> osis::Ak {
+    ak("msg:file.0")
+}
+
+fn big() -> Vec<u8> {
+    (0..3_000_000u32).map(|i| (i % 251) as u8).collect()
+}
+
+fn s(x: &str) -> Value {
+    Value::Str(x.into())
+}
+
+fn on(net: &osis_transport::Net, ep: &str, store: &MemStore, hosts: Vec<HostAddr>) -> Config {
+    let mut c = Config::at(StoreAt::Memory(store.clone()));
+    c.runtime = Runtime::Own;
+    c.transport = Some(Transport::InProcess(net.endpoint(ep)));
+    c.hosts = hosts;
+    c.wait_timeout = W;
+    c.peers = false;
+    c
+}
+
+/// Alice's chat `g` holding message `m`; Bob's node `b`, on the chat with `edge`, has `m`.
+struct Chat {
+    net: osis_transport::Net,
+    _host: Osis,
+    addr: HostAddr,
+    a: Osis,
+    b: Osis,
+    b_store: MemStore,
+    nc: HostAddr,
+    urls: Vec<String>,
+    bob: Tid,
+    g: Tid,
+    m: Tid,
+}
+
+fn chat(edge: EdgeOpts, role: Role) -> Chat {
+    let net = osis_transport::Net::new(5);
+    let host = Osis::create(on(&net, "s", &MemStore::new(), vec![])).unwrap().0;
+    host.set_hosting(Some(osis::Hosting { listen: vec!["mem://s".into()], admit: osis::Admit::Open, ..Default::default() })).unwrap();
+    until("host address", || host.host_address().unwrap().is_some());
+    let addr = host.host_address().unwrap().unwrap();
+    let a = Osis::create(on(&net, "a", &MemStore::new(), vec![addr.clone()])).unwrap().0;
+    let b_store = MemStore::new();
+    let b = Osis::create(on(&net, "b", &b_store, vec![addr.clone()])).unwrap().0;
+    let card = b.contact_card().unwrap();
+    block_on(b.wait_synced(SyncScope::All, W)).unwrap();
+    let bob = block_on(a.import_contact(&card)).unwrap();
+    let g = a
+        .write_with(|w| {
+            let g = w.create(a.me())?;
+            w.place(g, a.home())?;
+            w.make_group(g)?;
+            Ok(g)
+        })
+        .unwrap();
+    a.sync(g, &[]).unwrap();
+    block_on(a.wait_synced(SyncScope::All, W)).unwrap();
+    block_on(b.wait_synced(SyncScope::All, W)).unwrap();
+    let m = a
+        .write_with(|w| {
+            let m = w.create(g)?;
+            w.place(m, g)?;
+            w.at(m, text()).set(&s("hello"))?;
+            w.at(m, file()).set(&Value::Bytes(big()))?;
+            Ok(m)
+        })
+        .unwrap();
+    a.grant(g, bob, role, edge).unwrap();
+    let nudge = Nudge::default();
+    until("Bob has the message", || {
+        nudge.at(&b);
+        for r in b.invite_requests().unwrap_or_default() {
+            let _ = b.accept_invite(r);
+        }
+        b.get(m, text()).ok().flatten() == Some(s("hello"))
+    });
+    let urls = vec!["mem://b-clients".to_string()];
+    let nc = b.client_listen(&urls).unwrap().remove(0);
+    Chat { net, _host: host, addr, a, b, b_store, nc, urls, bob, g, m }
+}
+
+/// A push that raced a subscription waits for the next pass: asks for one now and then, not at
+/// every look, as each restarts the pass.
+#[derive(Default)]
+struct Nudge(std::cell::Cell<u32>);
+
+impl Nudge {
+    fn at(&self, db: &Osis) {
+        self.0.set(self.0.get() + 1);
+        if self.0.get().is_multiple_of(400) {
+            let _ = db.sync_now();
+        }
+    }
+}
+
+static NAMES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn attach(net: &osis_transport::Net, nc: &HostAddr, secret: &ClientSecret) -> Osis {
+    let mut c = Config::memory();
+    let n = NAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    c.transport = Some(Transport::InProcess(net.endpoint(&format!("c{n}"))));
+    c.wait_timeout = W;
+    Osis::attach_client(nc, secret, c).unwrap()
+}
+
+impl Chat {
+    fn attach(&self, secret: &ClientSecret) -> Osis {
+        attach(&self.net, &self.nc, secret)
+    }
+
+    /// A client of Bob's node with `role` on Bob's person: Bob's app.
+    fn app(&self, role: Role) -> (Tid, ClientSecret, Osis) {
+        let (actor, secret) = self.b.add_client(None).unwrap();
+        self.b.grant(self.bob, actor, role, Default::default()).unwrap();
+        let c = self.attach(&secret);
+        (actor, secret, c)
+    }
+
+    /// Another client of Bob's node: it holds a role on nothing here.
+    fn stranger(&self) -> (Tid, Osis) {
+        let (actor, secret) = self.b.add_client(None).unwrap();
+        let c = self.attach(&secret);
+        (actor, c)
+    }
+
+    /// Alice kicks `who`, the removal saying `keep` if it says, and Bob's node hears.
+    fn kick(&self, who: Tid, keep: Option<bool>) {
+        let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep };
+        block_on(self.a.demote(self.g, who, Lower::Remove, d)).unwrap();
+        let nudge = Nudge::default();
+        until("Bob's node hears", || {
+            nudge.at(&self.b);
+            self.b.role_on(self.g).is_none() && self.b.engine_settled(self.g)
+        });
+    }
+
+    /// Alice writes on: an edit of `m` and a new message.
+    fn write_on(&self) -> Tid {
+        let n = self
+            .a
+            .write_with(|w| {
+                w.at(self.m, text()).set(&s("edited"))?;
+                let n = w.create(self.g)?;
+                w.place(n, self.g)?;
+                w.at(n, text()).set(&s("after the kick"))?;
+                Ok(n)
+            })
+            .unwrap();
+        block_on(self.a.wait_synced(SyncScope::Group(self.g), W)).unwrap();
+        n
+    }
+}
+
+trait Settled {
+    /// No drop left to run for `g`: kept, or no longer read.
+    fn engine_settled(&self, g: Tid) -> bool;
+}
+
+impl Settled for Osis {
+    fn engine_settled(&self, g: Tid) -> bool {
+        self.kept_copies().unwrap().contains(&g) || self.get(g, ak("group.0")).ok().flatten().is_none()
+    }
+}
+
+fn read_big(c: &Osis, t: Tid) -> bool {
+    use std::io::Read as _;
+    let mut got = Vec::new();
+    let Ok(Some(mut r)) = c.at(t, file()).stream() else { return false };
+    r.read_to_end(&mut got).unwrap();
+    got == big()
+}
+
+fn hidden(c: &Osis, t: Tid) -> bool {
+    !c.knows(t) && matches!(c.get(t, text()), Err(Error::UnknownThing { .. }) | Ok(None))
+}
+
+fn refused(c: &Osis, t: Tid) -> bool {
+    let r = c.write_with(|w| w.at(t, text()).set(&s("no")));
+    matches!(r, Err(Error::Permission { .. }) | Err(Error::UnknownThing { .. }))
+}
+
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: the chat: Bob's app reads messages, Bob is kicked with keep, the app still reads and watches them frozen, after a restart of the node too, cannot write or undo, sees no new message; another client of the node reads nothing of it; with erase nothing stays
+#[test]
+fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
+    for keep in [true, false] {
+        let x = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+        let (_, secret, app) = x.app(Role::Write);
+        let (_, other) = x.stranger();
+        assert_eq!(app.get(x.m, text()).unwrap(), Some(s("hello")));
+        // its own message, before the kick: what the copy holds, and what undo would touch
+        app.write_with(|w| w.at(x.m, ak("msg:seen.0")).set(&s("by the app"))).unwrap();
+        let watch = app.at(x.m, text()).watch().unwrap();
+        assert_eq!(watch.current().unwrap(), Some(s("hello")));
+        assert!(hidden(&other, x.m) && hidden(&other, x.g));
+        block_on(x.b.wait_synced(SyncScope::Group(x.g), W)).unwrap();
+
+        x.kick(x.bob, Some(keep));
+        let new = x.write_on();
+        let _ = x.b.sync_now();
+        std::thread::sleep(Duration::from_millis(200));
+        app.settle();
+
+        assert_eq!(x.b.kept_copies().unwrap().contains(&x.g), keep);
+        if keep {
+            assert_eq!(app.get(x.m, text()).unwrap(), Some(s("hello")), "frozen");
+            assert_eq!(app.get(x.m, ak("msg:seen.0")).unwrap(), Some(s("by the app")));
+            assert!(app.groups_of(x.m).item_of.contains(&x.g));
+            assert!(read_big(&app, x.m), "a large value, by pages");
+            assert!(!app.commits(&CommitQuery::new().scope(Scope::Thing(x.m))).unwrap().is_empty());
+            assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
+            assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");
+            assert_eq!(app.kept_copies().unwrap(), vec![x.g]);
+            assert_eq!(app.role_on(x.m), None, "no role: this is how an app tells");
+            assert!(refused(&app, x.m), "read-only");
+            assert!(app.write_with(|w| { let n = w.create(x.g)?; w.place(n, x.g) }).is_err(), "no new message");
+            assert!(matches!(app.undo(&Scope::Thing(x.m)), Err(Error::Permission { .. })), "undo writes nothing");
+            assert_eq!(app.get(x.m, ak("msg:seen.0")).unwrap(), Some(s("by the app")));
+            assert!(hidden(&app, new), "not seen");
+            assert!(matches!(app.drop_kept(x.g), Err(Error::Unsupported(_))), "the owner's call");
+        } else {
+            assert!(hidden(&app, x.m) && hidden(&app, x.g));
+            assert_eq!(watch.current().ok().flatten(), None);
+            assert!(app.kept_copies().unwrap().is_empty());
+        }
+        assert!(hidden(&other, x.m) && hidden(&other, x.g), "another client of the node");
+        // exactly as a tid nobody knows, on every row (no existence oracle)
+        let ghost = Tid::from_bytes([9; 15]);
+        let unknown = crate::port_clients::answers(&other, ghost).replace(&format!("{ghost:?}"), "T");
+        for t in [x.m, x.g, new] {
+            assert_eq!(crate::port_clients::answers(&other, t).replace(&format!("{t:?}"), "T"), unknown);
+        }
+        assert!(other.kept_copies().unwrap().is_empty());
+        let Chat { b, b_store, net, addr, urls, m, g, nc, .. } = x;
+        b.close().unwrap();
+        until("down", || !app.status().unwrap().remotes[0].connected);
+        let b2 = Osis::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
+        assert_eq!(b2.client_listen(&urls).unwrap().remove(0), nc);
+        until("reconnected", || app.status().unwrap().remotes[0].connected);
+        if keep {
+            assert_eq!(app.get(m, text()).unwrap(), Some(s("hello")), "after a restart");
+            assert!(read_big(&app, m));
+            until("the watch came back", || watch.current().ok().flatten() == Some(s("hello")));
+            assert!(refused(&app, m));
+            assert!(hidden(&app, new));
+            // a new connection of the same client, after the restart
+            let again = attach(&net, &nc, &secret);
+            assert_eq!(again.get(m, text()).unwrap(), Some(s("hello")));
+            // the owner drops it: gone for the app too
+            b2.drop_kept(g).unwrap();
+            assert!(hidden(&app, m));
+            assert!(app.kept_copies().unwrap().is_empty());
+        } else {
+            assert!(hidden(&app, m));
+        }
+        b2.close().unwrap();
+    }
+}
+
+// ---- the rule's two directions, on the simulated world: a handle acting as the client's actor is
+// what the port worker runs each row on
+
+use osis::internals::Internals as _;
+use osis_sim::world::World;
+
+fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    let (b, _) = w.person(2, &[host]);
+    w.run();
+    let card = b.contact_card().unwrap();
+    w.run();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let g = sim_group(&a);
+    let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
+    a.grant(g, bob, Role::Write, EdgeOpts { keep, invite: Some(Role::Read), ..Default::default() }).unwrap();
+    w.run();
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
+    (a, b, bob, g, m)
+}
+
+fn sim_group(a: &Osis) -> Tid {
+    let g = a.write_with(|x| { let g = x.create(a.me())?; x.place(g, a.home())?; x.make_group(g)?; Ok(g) }).unwrap();
+    a.sync(g, &[]).unwrap();
+    g
+}
+
+fn sim_kick(w: &mut World, a: &Osis, g: Tid, who: Tid, keep: Option<bool>) {
+    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep };
+    w.until(a.demote(g, who, Lower::Remove, d), 1000, 10).unwrap();
+    w.run();
+}
+
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client reads the copy while it holds a role on what the copy hangs on: its role ended before the kick or after it, it reads nothing; granted one after the kick (the person's new app), it reads; a client with a role on another thing of the person reads nothing
+#[test]
+fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let mk = |role: Option<Role>| {
+        let (actor, _) = b.add_client(None).unwrap();
+        if let Some(r) = role {
+            b.grant(bob, actor, r, Default::default()).unwrap();
+        }
+        actor
+    };
+    let (reader, leaves_after, left_before, none) = (mk(Some(Role::Read)), mk(Some(Role::Write)), mk(Some(Role::Read)), mk(None));
+    let elsewhere = mk(None);
+    let side = b.write_with(|x| { let t = x.create(bob)?; x.at(t, text()).set(&s("side"))?; Ok(t) }).unwrap();
+    b.grant(side, elsewhere, Role::Admin, Default::default()).unwrap();
+    let skip = || Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    w.run();
+    for c in [reader, leaves_after, left_before] {
+        assert_eq!(b.acting_as(c).get(m, text()).unwrap(), Some(s("hello")));
+    }
+    w.until(b.demote(bob, left_before, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    sim_kick(&mut w, &a, g, bob, None);
+    assert_eq!(b.kept_copies().unwrap(), vec![g]);
+    let reads = |c: Tid| b.acting_as(c).get(m, text()).ok().flatten() == Some(s("hello"));
+    assert!(reads(reader) && reads(leaves_after));
+    assert!(!reads(left_before) && !reads(none) && !reads(elsewhere));
+    for c in [left_before, none, elsewhere] {
+        assert!(!b.acting_as(c).knows(m) && !b.acting_as(c).knows(g), "exactly as an unknown thing");
+        assert!(b.acting_as(c).kept_copies().unwrap().is_empty());
+    }
+    assert_eq!(b.acting_as(reader).kept_copies().unwrap(), vec![g]);
+    // a reader of the holder writes nothing, whatever its role on the holder
+    assert!(refused(&b.acting_as(leaves_after), m));
+    w.until(b.demote(bob, leaves_after, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    assert!(!reads(leaves_after));
+    let new = mk(Some(Role::Read));
+    w.run();
+    assert!(reads(new), "the person's new app");
+}
+
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: a client on the chat by an edge of its own keeps through that edge: its copy hangs on the client's actor, so it reads, and the person's other clients that hold no role on it do not; its own edge erasing while its person's keeps, it does not read: the edge it lost said so, though the node keeps for the person
+#[test]
+fn a_client_with_its_own_edge_spec_permissions_3() {
+    for (own, person, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
+        let mut w = World::new();
+        // the invite's edge keeps, so the client's invite grant does; the person's is said at the kick
+        let (a, b, bob, g, m) = sim(&mut w, Some(true));
+        let (c, _) = b.add_client(None).unwrap();
+        let (other, _) = b.add_client(None).unwrap();
+        b.grant(g, c, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+        w.run();
+        assert_eq!(a.roster(g).get(&c).map(|e| e.keep), Some(true));
+        assert_eq!(b.acting_as(c).get(m, text()).unwrap(), Some(s("hello")));
+        assert!(!b.acting_as(other).knows(m));
+        sim_kick(&mut w, &a, g, c, own);
+        sim_kick(&mut w, &a, g, bob, person);
+        assert_eq!(b.acting_as(c).get(m, text()).ok().flatten() == Some(s("hello")), reads, "own {own:?} person {person:?}");
+        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "the node keeps by either");
+        assert!(!b.acting_as(other).knows(m));
+        assert!(refused(&b.acting_as(c), m));
+    }
+}
+
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: a chat read through a faction Bob stays in, the faction kicked from it: the copy is the person's, so his app reads it; a client that is only a member of the faction, from before the kick or after it, reads the faction and nothing of the chat
+#[test]
+fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, f, in_f) = sim(&mut w, Some(true));
+    let chat = sim_group(&a);
+    let m = a.write_with(|x| { let m = x.create(chat)?; x.place(m, chat)?; x.at(m, text()).set(&s("in the chat"))?; Ok(m) }).unwrap();
+    a.grant(chat, f, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    let (app, _) = b.add_client(None).unwrap();
+    let (before, _) = b.add_client(None).unwrap();
+    b.grant(bob, app, Role::Read, Default::default()).unwrap();
+    b.grant(f, before, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(b.acting_as(before).get(m, text()).unwrap(), Some(s("in the chat")), "live, through the faction");
+    sim_kick(&mut w, &a, chat, f, None);
+    assert_eq!(b.kept_copies().unwrap(), vec![chat]);
+    assert!(b.role_on(f).is_some());
+    let (after, _) = b.add_client(None).unwrap();
+    b.grant(f, after, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("in the chat")));
+    assert_eq!(b.acting_as(app).kept_copies().unwrap(), vec![chat]);
+    for c in [before, after] {
+        let c = b.acting_as(c);
+        assert_eq!(c.get(in_f, text()).unwrap(), Some(s("hello")), "the faction itself");
+        assert!(!c.knows(m) && !c.knows(chat));
+        assert!(c.kept_copies().unwrap().is_empty());
+    }
+}
+
+// spec/wire.md §11.2, notes/client-port.md §3: an app watching a copy, its role on the person ended: it reads nothing from then on, and its watch gets nothing more and lapses at the next change
+#[test]
+fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
+    let x = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+    let (actor, _, app) = x.app(Role::Read);
+    let watch = app.at(x.m, text()).watch().unwrap();
+    assert_eq!(watch.current().unwrap(), Some(s("hello")));
+    x.kick(x.bob, None);
+    assert_eq!(watch.current().unwrap(), Some(s("hello")));
+    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    block_on(x.b.demote(x.bob, actor, Lower::Remove, d)).unwrap();
+    until("hidden", || hidden(&app, x.m));
+    assert!(app.kept_copies().unwrap().is_empty());
+    assert_eq!(watch.current().unwrap(), Some(s("hello")), "what it had read: nothing more comes");
+    x.b.drop_kept(x.g).unwrap();
+    app.settle();
+    assert!(watch.current().is_err(), "it lapses at the next change, not telling what changed");
+}
+
+// spec/permissions.md §3 (Keep), notes/client-port.md §3: through a holder that is itself kept: a chat read through a faction group, Bob kicked from the group: the app reads both, the chain ending at the person; a client on neither reads neither
+#[test]
+fn a_client_reads_through_a_kept_holder_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, f, _) = sim(&mut w, Some(true));
+    let chat = sim_group(&a);
+    let m = a.write_with(|x| { let m = x.create(chat)?; x.place(m, chat)?; x.at(m, text()).set(&s("in the chat"))?; Ok(m) }).unwrap();
+    a.grant(chat, f, Role::Read, Default::default()).unwrap();
+    let (app, _) = b.add_client(None).unwrap();
+    let (other, _) = b.add_client(None).unwrap();
+    b.grant(bob, app, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("in the chat")));
+    sim_kick(&mut w, &a, f, bob, None);
+    let kept = b.kept_copies().unwrap();
+    assert!(kept.contains(&f) && kept.contains(&chat), "{kept:?}");
+    assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("in the chat")));
+    assert!(!b.acting_as(other).knows(m) && !b.acting_as(other).knows(f));
+    b.drop_kept(f).unwrap();
+    assert!(!b.acting_as(app).knows(m), "what hung on it goes");
+}
+
+// spec/permissions.md §1 (ownerless things), §3 (Keep): a chat with no owner keeps alike: Bob kicked, the copy stands, his app reads it, another client does not
+#[test]
+fn an_ownerless_chat_keeps_spec_permissions_3() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    let (b, _) = w.person(2, &[host]);
+    w.run();
+    let card = b.contact_card().unwrap();
+    w.run();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let g = a.create_ownerless(a.me()).unwrap();
+    a.write_with(|x| { x.place(g, a.home())?; x.make_group(g) }).unwrap();
+    a.sync(g, &[]).unwrap();
+    let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
+    a.grant(g, bob, Role::Write, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    w.run();
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
+    let (app, _) = b.add_client(None).unwrap();
+    let (other, _) = b.add_client(None).unwrap();
+    b.grant(bob, app, Role::Read, Default::default()).unwrap();
+    w.run();
+    sim_kick(&mut w, &a, g, bob, None);
+    assert_eq!(b.kept_copies().unwrap(), vec![g]);
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
+    assert_eq!(b.acting_as(app).get(m, text()).unwrap(), Some(s("hello")));
+    assert!(!b.acting_as(other).knows(m) && !b.acting_as(other).knows(g));
+    assert!(refused(&b, m));
+}
+
+// spec/permissions.md §3 (Keep): a commit the node takes for what else it carries: content on a copy stays out, its purge of a copy's aspect applies (nothing promises it does not), and the thing beside it moves on
+#[test]
+fn a_commit_beside_a_copy_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let live = sim_group(&a);
+    let u = a.write_with(|x| { let u = x.create(live)?; x.place(u, live)?; x.at(u, text()).set(&s("live"))?; Ok(u) }).unwrap();
+    a.grant(live, bob, Role::Read, Default::default()).unwrap();
+    let second = ak("t:second.0");
+    a.write_with(|x| x.at(m, second.clone()).set(&s("second"))).unwrap();
+    w.run();
+    assert_eq!(b.get(u, text()).unwrap(), Some(s("live")));
+    sim_kick(&mut w, &a, g, bob, None);
+    assert_eq!(b.kept_copies().unwrap(), vec![g]);
+    a.write_with(|x| {
+        x.at(u, text()).set(&s("live 2"))?;
+        x.at(m, text()).set(&s("edited"))?;
+        x.at(m, second.clone()).purge()
+    }).unwrap();
+    w.run();
+    assert_eq!(b.get(u, text()).unwrap(), Some(s("live 2")));
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "frozen");
+    assert_eq!(b.get(m, second).unwrap(), None);
+    assert_eq!(b.kept_copies().unwrap(), vec![g]);
+}
+
+// spec/permissions.md §3 (Keep; uploads and serves nothing of it): what Bob's node holds of a copy goes nowhere: placed in a group of his, shared, it does not reach that group's reader; his own write on it, unsent at the kick, stays out at Alice's
+#[test]
+fn a_copy_goes_nowhere_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (c, _) = w.person(3, &[0]);
+    w.run();
+    let card = c.contact_card().unwrap();
+    w.run();
+    let carol = w.until(b.import_contact(&card), 1000, 10).unwrap();
+    let own = sim_group(&b);
+    b.grant(own, carol, Role::Read, Default::default()).unwrap();
+    let live = sim_group(&a);
+    let u = a.write_with(|x| { let u = x.create(live)?; x.place(u, live)?; x.at(u, text()).set(&s("live"))?; Ok(u) }).unwrap();
+    a.grant(live, bob, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(b.get(u, text()).unwrap(), Some(s("live")));
+    w.set_online(&b, false);
+    b.write_with(|x| {
+        x.at(u, text()).set(&s("by bob"))?;
+        x.at(m, text()).set(&s("by bob, unsent"))
+    }).unwrap();
+    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    w.until(a.demote(g, bob, Lower::Remove, d), 1000, 10).unwrap();
+    w.run();
+    w.set_online(&b, true);
+    w.run();
+    w.advance(3_600_000);
+    w.run();
+    assert_eq!(b.kept_copies().unwrap(), vec![g]);
+    assert_eq!(a.get(m, text()).unwrap(), Some(s("hello")));
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "past the kick's frontier: validity follows what the node holds");
+    b.write_with(|x| x.place(m, own)).unwrap();
+    let item = b.write_with(|x| { let i = x.create(own)?; x.place(i, own)?; x.at(i, text()).set(&s("in own"))?; Ok(i) }).unwrap();
+    w.run();
+    assert_eq!(c.get(item, text()).unwrap(), Some(s("in own")));
+    assert!(c.get(m, text()).ok().flatten().is_none(), "its name at most");
+}
+
+fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    let (b, _) = w.person(2, &[host]);
+    w.run();
+    let card = b.contact_card().unwrap();
+    w.run();
+    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let g = sim_group(&a);
+    let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
+    let (hour, t0) = (3_600_000, w.now());
+    a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + hour)), keep, ..Default::default() }).unwrap();
+    w.run();
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
+    (w, a, b, bob, g, m, t0, hour)
+}
+
+// spec/permissions.md §3 (lost access; Keep): a holder offline past its `until`, with a renewal made meanwhile and a write unsent: nothing goes on the time alone, erase or keep; back online the renewal arrives, the write goes up, and it reads and writes on
+#[test]
+fn an_until_passing_offline_loses_nothing_spec_permissions_3() {
+    for keep in [None, Some(true)] {
+        let (mut w, a, b, bob, g, m, t0, hour) = timed(keep);
+        w.set_online(&b, false);
+        let own = b.write_with(|x| { let n = x.create(g)?; x.place(n, g)?; x.at(n, text()).set(&s("unsent"))?; Ok(n) }).unwrap();
+        w.advance(1000);
+        a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), keep, ..Default::default() }).unwrap();
+        w.run();
+        w.advance(2 * hour);
+        w.run();
+        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
+        assert_eq!(b.get(own, text()).unwrap(), Some(s("unsent")), "{keep:?}");
+        assert!(b.kept_copies().unwrap().is_empty(), "{keep:?}");
+        w.set_online(&b, true);
+        w.advance(60_000);
+        w.run();
+        assert_eq!(b.role_on(g), Some(Role::Write), "{keep:?}");
+        assert_eq!(a.get(own, text()).unwrap(), Some(s("unsent")), "{keep:?}");
+        b.write_with(|x| x.at(m, text()).set(&s("after"))).unwrap();
+        w.run();
+        assert_eq!(a.get(m, text()).unwrap(), Some(s("after")), "{keep:?}");
+    }
+}
+
+// spec/permissions.md §3 (lost access; Keep): no renewal: back online it finds the label closed to it (Alice rotated), so its write stays out, and then the edge's word holds: erased or kept
+#[test]
+fn an_until_ended_offline_goes_when_heard_out_spec_permissions_3() {
+    for keep in [None, Some(true)] {
+        let (mut w, a, b, _, g, m, _, hour) = timed(keep);
+        w.set_online(&b, false);
+        let own = b.write_with(|x| { let n = x.create(g)?; x.place(n, g)?; x.at(n, text()).set(&s("unsent"))?; Ok(n) }).unwrap();
+        w.advance(2 * hour);
+        w.run();
+        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
+        w.set_online(&b, true);
+        w.advance(60_000);
+        w.run();
+        assert_eq!(a.get(own, text()).unwrap(), None, "{keep:?}");
+        assert_eq!(b.kept_copies().unwrap().contains(&g), keep.is_some(), "{keep:?}");
+        assert_eq!(b.get(m, text()).unwrap().is_some(), keep.is_some(), "{keep:?}");
+    }
+}
+
+// spec/permissions.md §3 (Keep), notes/node.md (lost access): a holder online past its `until`, the renewal made only later: it erased, and is re-sealed through the stranded heartbeat: it returns, not at once
+#[test]
+fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_3() {
+    let (mut w, a, b, bob, g, m, t0, hour) = timed(None);
+    w.advance(2 * hour);
+    w.run();
+    assert_eq!(b.get(m, text()).unwrap(), None, "erased: its edge said so, and it heard no more");
+    a.grant(g, bob, Role::Read, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
+    a.write_with(|x| x.at(m, text()).set(&s("during"))).unwrap();
+    w.run();
+    let mut hours = 2;
+    while b.get(m, text()).unwrap().is_none() {
+        hours += 1;
+        assert!(hours < 200, "never came back");
+        w.advance(hour);
+        w.run();
+    }
+    assert_eq!(b.get(m, text()).unwrap(), Some(s("during")));
+}
+
+// spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no ephemeral thing of the chat
+#[test]
+fn ephemeral_data_and_a_copy_spec_permissions_3() {
+    let mut w = World::new();
+    let (a, b, bob, g, m) = sim(&mut w, Some(true));
+    let (app, _) = b.add_client(None).unwrap();
+    b.grant(bob, app, Role::Read, Default::default()).unwrap();
+    let e = ak("t:e.0~");
+    a.write_with(|x| x.at(m, e.clone()).set(&s("before"))).unwrap();
+    let thing = a.write_with(|x| { let t = x.create(g)?; x.place(t, g)?; x.at(t, e.clone()).set(&s("before"))?; Ok(t) }).unwrap();
+    w.run();
+    assert_eq!(b.get(thing, e.clone()).unwrap(), Some(s("before")));
+    sim_kick(&mut w, &a, g, bob, None);
+    a.write_with(|x| x.at(m, e.clone()).set(&s("after"))).unwrap();
+    a.write_with(|x| x.at(thing, e.clone()).set(&s("after"))).unwrap();
+    w.run();
+    let c = b.acting_as(app);
+    assert_eq!(b.get(m, e.clone()).unwrap(), Some(s("before")));
+    assert_eq!(b.get(thing, e.clone()).unwrap(), Some(s("before")));
+    assert!(!c.knows(thing));
+    for db in [&b, &c] {
+        assert!(matches!(db.write_with(|x| x.at(m, e.clone()).set(&s("no"))), Err(Error::Permission { .. })));
+        assert!(db.write_with(|x| x.at(thing, e.clone()).set(&s("no"))).is_err());
+    }
+    w.run();
+    assert_eq!(a.get(m, e.clone()).unwrap(), Some(s("after")));
+    assert_eq!(a.get(thing, e).unwrap(), Some(s("after")));
+}
+
+// spec/permissions.md §3 (Keep): a chat read through a faction Bob stays in: the kick of the faction from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the faction's new items arrive
+#[test]
+fn a_copy_beside_a_live_holder_spec_permissions_3() {
+    let x0 = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+    let (h, a, b) = (x0.g, &x0.a, &x0.b);
+    let xg = a.write_with(|w| { let g = w.create(a.me())?; w.place(g, a.home())?; w.make_group(g)?; Ok(g) }).unwrap();
+    a.sync(xg, &[]).unwrap();
+    a.grant(xg, h, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    let t = a.write_with(|w| { let t = w.create(xg)?; w.place(t, h)?; w.at(t, text()).set(&s("before"))?; Ok(t) }).unwrap();
+    let nudge = Nudge::default();
+    until("Bob has t", || { nudge.at(b); b.get(t, text()).ok().flatten() == Some(s("before")) });
+    let d = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    block_on(a.demote(xg, h, Lower::Remove, d)).unwrap();
+    let nudge = Nudge::default();
+    until("kept", || { nudge.at(b); b.kept_copies().unwrap().contains(&xg) });
+    assert!(b.role_on(h).is_some() && b.role_on(xg).is_none());
+    a.write_with(|w| w.at(t, text()).set(&s("after"))).unwrap();
+    let u = a.write_with(|w| { let u = w.create(h)?; w.place(u, h)?; w.at(u, text()).set(&s("live"))?; Ok(u) }).unwrap();
+    let nudge = Nudge::default();
+    until("live", || { nudge.at(b); b.get(u, text()).ok().flatten() == Some(s("live")) });
+    assert_eq!(b.get(t, text()).unwrap(), Some(s("before")));
+    block_on(b.wait_synced(SyncScope::Group(h), W)).unwrap();
+    let Chat { b, b_store, net, addr, .. } = x0;
+    b.close().unwrap();
+    let b2 = Osis::open(on(&net, "b", &b_store, vec![addr.clone()])).unwrap();
+    block_on(b2.wait_synced(SyncScope::Group(h), W)).unwrap();
+    assert_eq!(b2.get(t, text()).unwrap(), Some(s("before")));
+    assert_eq!(b2.get(u, text()).unwrap(), Some(s("live")));
+    assert!(b2.kept_copies().unwrap().contains(&xg));
+    b2.close().unwrap();
+}

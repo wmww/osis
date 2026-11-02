@@ -2228,7 +2228,7 @@ fn random_churn_run(seed: u64) {
     let w = window(&mut net, nodes[0], g, "w");
     net.run();
     let tids: Vec<Tid> = nodes.iter().map(|n| net.tid(*n)).collect();
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let mut demoted: BTreeSet<usize> = BTreeSet::new();
     // nodes once demoted: a demoted author's view of its own writes differs from the others'
     // (issues/eph-demoted-own-writes.md), so only the others' reads are compared
@@ -2471,7 +2471,7 @@ fn promoted_after_hosts_restart_reaches_hosts_spec_sync_6() {
     }
     net.advance(15_000);
     let tb = net.tid(b);
-    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = |role| osis_schema::core_types::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let demote = osis_node::flows::Demotion { holder: tb, new: Some(edge(Role::Read)), presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(a).demote(&g, &demote).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -3860,7 +3860,7 @@ fn demoted_writer_entry_stops_spec_sync_5() {
     net.run();
     note(&mut net, b, w, "b", "1");
     let bt = net.tid(b);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
     let d = osis_node::flows::Demotion { holder: bt, new: Some(edge), presync: osis_node::flows::PreSync::Synced };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();

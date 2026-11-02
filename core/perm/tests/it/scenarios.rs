@@ -595,3 +595,75 @@ fn ownerless_has_no_owner_chain() {
     assert_eq!(tl.epoch_start(&d), Some(s_d));
     assert_eq!(role(&tl, n[2], d), Some(Write));
 }
+
+fn keeping(role: Role) -> Option<Edge> {
+    edge(role).map(|e| Edge { keep: true, ..e })
+}
+
+// spec/permissions.md §3, Keep: an ended edge's last applied value decides: a later write's over
+// an earlier one's, an expired value's, never a write that did not apply; a live edge has none.
+#[test]
+fn ended_gives_the_last_applied_value_spec_permissions_3() {
+    let (mut w, n, g) = group();
+    let z = w.nodes_salted(4, 77);
+    let at = ts(100);
+    // kept through a removal
+    w.set(n[0], g, z[0], keeping(Read), 2, &[]);
+    w.set(n[0], g, z[0], None, 3, &[]);
+    // a later value wins
+    w.set(n[0], g, z[1], keeping(Read), 2, &[]);
+    w.set(n[0], g, z[1], edge(Read), 3, &[]);
+    w.set(n[0], g, z[1], None, 4, &[]);
+    // written expired, no removal after it
+    w.set(n[0], g, z[2], edge(Read), 2, &[]);
+    w.set(n[0], g, z[2], Some(Edge { until: Some(osis_base::WallMs(3)), keep: true, ..Edge::new(Read) }), 3, &[]);
+    // no authority: z[3] is nobody here, its write on z[1]'s neighbour does not apply
+    w.set(z[3], g, n[4], keeping(Write), 5, &[]);
+    w.set(n[0], g, n[4], None, 6, &[]);
+    let tl = eval(&w);
+    let ended = tl.ended(&g, at);
+    assert!(ended.get(&z[0]).unwrap().0.keep);
+    assert!(!ended.get(&z[1]).unwrap().0.keep);
+    assert!(ended.get(&z[2]).unwrap().0.keep);
+    assert!(!ended.get(&n[4]).unwrap().0.keep, "a write that did not apply");
+    assert!(!ended.contains_key(&n[1]), "alive");
+}
+
+// spec/permissions.md §2: raising its own edge's `keep` is no self-removal: not applied, unless the
+// author has authority on the target; lowering it is.
+#[test]
+fn self_removal_does_not_raise_keep_spec_permissions_2() {
+    let (mut w, n, g) = group();
+    // n[4] holds write, no authority
+    w.set(n[4], g, n[4], keeping(Read), 5, &[]);
+    assert!(!eval(&w).roster(&g, At::END).get(&n[4]).unwrap().keep, "not applied");
+    // an admin may
+    w.set(n[1], g, n[1], keeping(Admin), 6, &[]);
+    assert!(eval(&w).roster(&g, At::END).get(&n[1]).unwrap().keep);
+    // the same holder lowering it, with an earlier keep given by an admin
+    w.set(n[0], g, n[4], keeping(Write), 7, &[]);
+    w.set(n[4], g, n[4], edge(Read), 8, &[]);
+    let r = eval(&w).roster(&g, At::END);
+    assert!(!r.get(&n[4]).unwrap().keep);
+    assert_eq!(r.get(&n[4]).unwrap().role, Read);
+}
+
+// spec/permissions.md §2: an invite grant applies with `keep` only through an edge giving the invite
+// that has it, in any order: a non-admin cannot make a copy stay.
+#[test]
+fn invite_grant_keep_needs_an_edge_with_it_spec_permissions_2() {
+    for (keeps, salt) in [(false, 78), (true, 79)] {
+        let (mut w, n, g) = group();
+        let z = w.nodes_salted(2, salt);
+        let invite = Edge { invite: Some(Read), keep: keeps, ..Edge::new(Read) };
+        w.set(n[0], g, z[0], Some(invite), 2, &[]);
+        w.set(z[0], g, z[1], keeping(Read), 3, &[]);
+        let tl = eval(&w);
+        assert_eq!(tl.roster(&g, At::END).contains_key(&z[1]), keeps, "a grant saying keep through {keeps}");
+        // and without saying it, always
+        w.set(z[0], g, n[4], None, 4, &[]);
+        let z2 = w.nodes_salted(1, salt + 100);
+        w.set(z[0], g, z2[0], edge(Read), 5, &[]);
+        assert!(eval(&w).roster(&g, At::END).contains_key(&z2[0]));
+    }
+}

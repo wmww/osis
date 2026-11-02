@@ -1992,3 +1992,25 @@ fn creation_fast_equals_general_large() {
     let appended: usize = sharded(1024, 0x5eed_0a02, creation_histories).into_iter().sum();
     eprintln!("appended {appended}");
 }
+
+// spec/permissions.md §3, Keep: a saved walk restores each ended edge's last value, `keep` included.
+#[test]
+fn saved_walk_keeps_keep_spec_permissions_3() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let g = w.thing(n[0]);
+    let keeping = edge(osis_base::Role::Read).map(|e| osis_perm::Edge { keep: true, ..e });
+    w.set(n[0], g, n[1], keeping, 1, &[]);
+    w.set(n[0], g, n[1], None, 2, &[]);
+    let held = w.held();
+    let mut inc = Timelines::new();
+    let all: BTreeSet<Tid> = held.things().into_iter().collect();
+    inc.update_touched_cached(&held, &all, &mut |_| None, SALT);
+    let mut disk = Disk::new();
+    store(&mut disk, inc.to_save(SALT, 1, true));
+    assert!(!disk.is_empty());
+    let back = reopen(&held, &disk, SALT);
+    assert!(back.restored() > 0, "restored, not walked");
+    let ended = back.get(&g).unwrap().ended(&g, ts(100));
+    assert!(ended.get(&n[1]).unwrap().0.keep);
+}

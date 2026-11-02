@@ -499,7 +499,7 @@ fn expired_link_at_no_host_finalized_spec_permissions_9() {
         let t = net.group(a, &[], &[]);
         net.run();
         let until = WallMs(net.now() + 3_600_000);
-        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), hosts: hosts.clone(), peers: Vec::new(), single_use: false };
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), hosts: hosts.clone(), peers: Vec::new(), single_use: false, keep: false };
         let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);

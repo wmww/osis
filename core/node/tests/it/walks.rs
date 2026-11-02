@@ -334,7 +334,7 @@ fn new_things_between_opens_still_restore() {
 /// records: validity, perm's timelines and the states of `things` all equal what it had; the
 /// open decodes no header (`LazyHeader`; perm's adaptation reads the views and `node/edges`
 /// rows, a role commit's frontier among the view).
-fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
+pub(crate) fn open_equals_rebuild(e: &mut Engine, things: &[Tid], at: &str) {
     open_equals_rebuild_decoding(e, things, 0, at);
 }
 

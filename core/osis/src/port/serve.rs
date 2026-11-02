@@ -521,6 +521,11 @@ impl Worker {
             method::REMOVE_CLIENT => b(db.remove_client(a.tid()?)?),
             method::ROTATE_CLIENT_SECRET => Value::bytes(db.rotate_client_secret(a.tid()?)?.expose()),
             method::ROTATE_CLIENT_KEY => Value::List(db.rotate_client_key()?.iter().map(|h| Value::Str(h.to_string())).collect()),
+            method::KEPT => Value::List(db.kept_copies()?.into_iter().map(Value::Tid).collect()),
+            method::DROP_KEPT => {
+                db.drop_kept(a.tid()?)?;
+                Value::List(vec![])
+            }
             method::HOSTS => Value::List(db.hosts().iter().map(|h| Value::Str(h.to_string())).collect()),
             method::SYNC_NOW => {
                 db.sync_now()?;
@@ -560,7 +565,7 @@ impl Worker {
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
                 let until = a.opt_wall()?;
-                let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
+                let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()?, keep: a.bool()? };
                 Value::Str(db.make_link(t, r, o)?.to_string())
             }
             _ => return Err(unsupported(&format!("method {m}"))),

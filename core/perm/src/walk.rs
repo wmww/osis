@@ -1261,7 +1261,7 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
 fn join(a: Option<Edge>, b: Edge) -> Edge {
     match a {
         None => Edge { until: None, since: None, ..b },
-        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, since: None, tied: b.tied, keyset: b.keyset },
+        Some(a) => Edge { role: a.role.max(b.role), invite: a.invite.max(b.invite), until: None, since: None, tied: b.tied, keyset: b.keyset, keep: b.keep },
     }
 }
 
@@ -1921,7 +1921,9 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
     // when that is the only authority one has (no owner-chain or edge-admin authority on
     // the target); otherwise the write is an explicit demotion by its class there.
     let authority_on_target = matches!(st.class, Class::Chain | Class::Edge);
-    if lowers(new.as_ref(), old) && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
+    // a holder's own wish does not raise `keep` (§2)
+    let raises_keep = new.is_some_and(|n| n.keep) && !old.is_some_and(|o| o.keep);
+    if lowers(new.as_ref(), old) && !raises_keep && (m == a || (best.get(&m) == Some(&Role::Admin) && !authority_on_target)) {
         // Attributed to the author's class on the holder it is admin of, or on the target
         // for its own edge (a single-use redemption's: like its grant), §5.1 step 3.
         let class = if m == a { st.class } else { view.standing(&a, best, &m).class };
@@ -1931,7 +1933,8 @@ pub(crate) fn judge(view: &View<'_>, old: Option<&Edge>, c: &RoleCommit, k: usiz
         Class::Chain | Class::Edge => Some(Attr::By(st.class)),
         Class::Invite(l) => {
             let free = old.is_none_or(|o| !o.alive_at(Some(c.ts)));
-            let ok = new.is_some_and(|e| e.role <= l) && free;
+            // `keep` only through an edge that has it: an invite says no more than it was given (§2)
+            let ok = new.is_some_and(|e| e.role <= l && (!e.keep || view.invite_keeps(best, &t))) && free;
             ok.then_some(Attr::By(Class::Invite(l)))
         }
         Class::None => None,

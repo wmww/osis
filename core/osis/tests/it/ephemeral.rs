@@ -784,7 +784,7 @@ fn placement_not_persisted_without_write_on_group_spec_permissions_1() {
         })
         .unwrap();
     assert!(group_of(&bob, g).items.contains(&t));
-    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false }), 1000, 10).unwrap();
+    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 10).unwrap();
     w.run();
     assert_eq!(bob.role_on(g), Some(Role::Read));
     let (tx, rx) = channel();

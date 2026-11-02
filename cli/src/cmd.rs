@@ -28,8 +28,8 @@ pub fn role_text(r: Role) -> &'static str {
     }
 }
 
-fn edge_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<EdgeOpts> {
-    Ok(EdgeOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
+fn edge_opts(until: &Option<String>, invite: &Option<String>, keep: Option<bool>) -> anyhow::Result<EdgeOpts> {
+    Ok(EdgeOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()?, keep })
 }
 
 fn parse_role(s: &str) -> anyhow::Result<Role> {
@@ -149,7 +149,7 @@ fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
         Some(o) => return Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
     };
     let backdate = opt_ts(&d.backdate)?;
-    Ok(Demotion { sync, backdate, repudiate: d.repudiate })
+    Ok(Demotion { sync, backdate, repudiate: d.repudiate, keep: d.keep })
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
@@ -473,14 +473,14 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let r = db.role_on(ctx.tid(&t)?);
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
-        Cmd::Grant { t, holder, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
-        Cmd::Edge { t, holder, role, until, invite } => {
+        Cmd::Grant { t, holder, role, until, invite, keep } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite, keep.then_some(true))?)?),
+        Cmd::Edge { t, holder, role, until, invite, keep } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
                 Some(r) => parse_role(&r)?,
                 None => db.roster(t).get(&m).map(|e| e.role).ok_or_else(|| exit(3, "no such edge"))?,
             };
-            Ok(db.change_edge(t, m, role, edge_opts(&until, &invite)?)?)
+            Ok(db.change_edge(t, m, role, edge_opts(&until, &invite, keep)?)?)
         }
         Cmd::Demote { t, holder, role, d } => {
             let to = if role == "remove" { Lower::Remove } else { Lower::To(parse_role(&role)?) };
@@ -488,6 +488,13 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             wait(ctx, db.demote(t, m, to, d))
         }
         Cmd::Leave { t } => Ok(db.leave(ctx.tid(&t)?)?),
+        Cmd::Kept { drop: Some(a) } => Ok(db.drop_kept(ctx.tid(&a)?)?),
+        Cmd::Kept { drop: None } => {
+            for a in db.kept_copies()? {
+                println!("{}", a.to_uri());
+            }
+            Ok(())
+        }
         Cmd::ShareInto { t, g, role, subgroup, place_anyway } => {
             let s = db.share_into(ctx.tid(&t)?, ctx.tid(&g)?, parse_role(&role)?, osis::ShareOpts { subgroup, place_anyway })?;
             ctx.emit(&[share_text(s)], J::str(share_text(s)))
@@ -499,8 +506,8 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let j = J::Arr(r.iter().map(|x| J::obj([("group", J::tid(x.group)), ("placed", J::Bool(x.placed)), ("share", J::str(share_text(x.share)))])).collect());
             ctx.emit(&lines, j)
         }
-        Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
-            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
+        Cmd::Link(LinkCmd::Make { t, role, until, single_use, keep }) => {
+            let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, keep, direct: false })?;
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
         }
         Cmd::Link(LinkCmd::Redeem { link }) => {
@@ -977,7 +984,7 @@ fn roster_lines(r: &osis::Roster, raw: bool) -> Vec<String> {
     r.iter()
         .map(|(m, e)| {
             let until = e.until.map_or("-".into(), |u| ts_text(raw, u.0));
-            format!("{} {} {} {}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.tied { " tied" } else { "" })
+            format!("{} {} {} {}{}{}", m.to_uri(), role_text(e.role), until, e.invite.map_or("-", role_text), if e.tied { " tied" } else { "" }, if e.keep { " keep" } else { "" })
         })
         .collect()
 }

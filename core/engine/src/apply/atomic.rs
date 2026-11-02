@@ -711,6 +711,9 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     // self-removals drop what they lost once placed (node-sync `drop_left`)
     if origin != Origin::Local {
         crate::rotation::mark_lost_due(tx, rosters.iter().copied())?;
+        // a rotation from before the removal, arriving after it, must not give a kept copy a secret
+        let copies: Vec<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0" && tx.core.ix.kept.contains_key(&a.tid)).map(|a| a.tid).collect();
+        crate::rotation::mark_lost_due(tx, copies)?;
     }
     // a memory commit is ephemeral state to watchers and nothing to node-sync
     if h.ephemeral.is_some() {

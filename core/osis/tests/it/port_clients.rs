@@ -134,7 +134,7 @@ impl Node {
 
 /// Everything a client can ask about a tid, errors with the tid taken out: a thing its actor may
 /// not read must answer this exactly as a tid nobody knows.
-fn answers(c: &Osis, t: Tid) -> String {
+pub(crate) fn answers(c: &Osis, t: Tid) -> String {
     let k = ak("name.0");
     let e = |r: osis::Result<String>| r.unwrap_or_else(|e| format!("{e:?}").replace(&format!("{t:?}"), "T"));
     let mut out = vec![
@@ -179,7 +179,7 @@ fn reads_are_exactly_the_actors() {
     assert!(x.n.groups_of(x.t).item_of.contains(&x.h));
     // what it may not read: the person, its node, a link, another group
     let link_target = x.u;
-    let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
+    let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true, keep: false }).unwrap();
     let k = x.n.links(link_target)[0].id;
     let home = x.n.get(x.n.me(), ct::GROUP).unwrap().unwrap();
     let seed = home.items.iter().copied().find(|i| x.n.aspects(*i).unwrap().iter().any(|a| a.as_str() == "link:seed.0")).unwrap();
@@ -301,7 +301,7 @@ fn undo_and_revert_are_the_actors() {
     // Read only: a revert it may not write
     x.n.write_with(|w| w.at(x.t, a.clone()).set(&Value::Int(5))).unwrap();
     let mine = x.n.commits(&q(x.t)).unwrap()[0].commit.id;
-    block_on(x.n.demote(x.g, ca, Lower::To(Role::Read), Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false })).unwrap();
+    block_on(x.n.demote(x.g, ca, Lower::To(Role::Read), Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
     assert!(matches!(c.revert(mine), Err(Error::Permission { .. })));
     assert_eq!(x.n.get(x.t, a).unwrap(), Some(Value::Int(5)));
 }
@@ -394,7 +394,7 @@ fn remove_client_revokes() {
     // demoted elsewhere: the entry stays, its actor reads nothing
     let (b, _, d) = x.client(Role::Read);
     assert!(d.knows(x.t));
-    block_on(x.n.demote(x.g, b, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false })).unwrap();
+    block_on(x.n.demote(x.g, b, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
     assert!(!d.knows(x.t));
     assert!(x.n.clients().unwrap().iter().any(|e| e.actor == b));
 }
@@ -521,7 +521,7 @@ fn watches_and_rows() {
     assert_eq!(drx.recv_timeout(Duration::from_secs(20)).unwrap(), "shown");
     assert!(drx.try_recv().is_err());
     let subs = x.n.watches();
-    block_on(x.n.demote(x.g, a, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false })).unwrap();
+    block_on(x.n.demote(x.g, a, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).unwrap();
     x.n.write_with(|w| w.at(x.t, name.clone()).set(&Value::Int(2))).unwrap();
     c.settle();
     assert!(!matches!(w.current(), Ok(Some(Value::Int(2)))), "{:?}", w.current());
@@ -1066,7 +1066,7 @@ fn walk(seed: u64) {
     let items = osis_schema::Path(vec![osis_schema::Step::Field(0)]);
     let (mut a, mut s) = x.n.add_client(None).unwrap();
     let mut c = x.attach(&s).unwrap();
-    let skip = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false };
+    let skip = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
     let mut value = 100i64;
     let mut last: [Value; 4] = std::array::from_fn(|_| Value::Str("x".into()));
     for step in 0..40 {
