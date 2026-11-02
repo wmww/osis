@@ -381,3 +381,68 @@ fn pending_part_dropped_at_expiry_spec_commits_5() {
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the pending copy");
     assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|(x, a, _, _)| *x == t && a.as_str() == "t:brief.0"), "flagged suspect");
 }
+
+// spec/commits.md §4 (a commit no part of which is held waits whole for its things, synced or
+// not): peer 1 gets peer 0's expiring write on a thing whose creation record it lacks, past T.
+// The part goes (counts as never received, §5) and the commit, left with no part, pends on the
+// record whether peer 1 syncs the thing or not (it applied header-only where the thing was not
+// synced: order seeds 1007, 1046); the record come, it applies.
+#[test]
+fn partless_commit_pends_on_its_thing_spec_commits_4() {
+    for syncing in [false, true] {
+        let mut lp = net2(81);
+        lp.sync_all().unwrap();
+        let t = new_thing(&mut lp, 0);
+        let mut m = Mutation::new();
+        m.set(t, &BRIEF, &s("brief")).unwrap();
+        m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == c).unwrap();
+        lp.peers[1].engine.set_syncing(t, syncing).unwrap();
+        lp.advance(120_000);
+        assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::UnknownCreated(x)) if x == t), "syncing {syncing}");
+        assert!(!lp.peers[1].engine.commit_ids().contains(&c), "syncing {syncing}: applied header-only");
+        assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == ak("t:brief.0")), "flagged");
+        lp.sync(0, 1).unwrap();
+        assert!(lp.peers[1].engine.commit_ids().contains(&c) && lp.peers[1].engine.pending().iter().all(|x| x.0 != c), "syncing {syncing}: applied once the record came");
+    }
+}
+
+// spec/permissions.md §4 (a suspect flag names the bodies it is about): peer 1 drops peer 0's
+// expiring write W at T while it pends on its thing's record, and flags the aspect. Peer 2, a
+// writer that never received W, writes the aspect and snapshots it after T: joined at peer 1
+// with the record, the snapshot lists nothing of W, so the flag stays (peer 1 still lacks W's
+// value-less write; clearing on any later-stamped snapshot hid that: order seed 4108). A copy
+// of W arriving late (joined and stripped, spec/crdt.md §4.7) is the body back: the flag goes.
+#[test]
+fn suspect_flag_outlives_a_snapshot_listing_nothing_of_it_spec_permissions_4() {
+    let mut lp = net(3, 83);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let two = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, two, Some(edge(osis_base::Role::Write)), None);
+    lp.sync(0, 2).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &BRIEF, &s("brief")).unwrap();
+    m.expires(t, &BRIEF, osis_base::WallMs(lp.peers[0].engine.now().0 + 60_000)).unwrap();
+    let w = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = lp.packages(0).unwrap().into_iter().find(|p| p.id == w).unwrap();
+    assert!(matches!(lp.deliver(1, &pk).unwrap(), osis_node::Ingested::Pending(..)));
+    lp.advance(120_000);
+    lp.peers[1].engine.tick().unwrap();
+    let brief = ak("t:brief.0");
+    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == brief);
+    assert!(flagged(&mut lp), "flagged at T");
+    set(&mut lp, 2, t, &BRIEF, "two");
+    lp.peers[2].clock.advance(1);
+    let s2 = lp.peers[2].engine.snapshot(&t, &brief).unwrap().expect("a snapshot");
+    lp.sync(2, 1).unwrap();
+    assert!(lp.peers[1].engine.commit_ids().contains(&s2) && lp.peers[1].engine.commit_ids().contains(&w), "the record came: the snapshot and the part-less commit applied");
+    assert!(flagged(&mut lp), "a snapshot listing nothing of W clears nothing");
+    lp.sync(0, 1).unwrap();
+    assert!(!flagged(&mut lp), "W's late copy is the body back");
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[1].engine.state_digest(&t, &brief).unwrap(), lp.peers[0].engine.state_digest(&t, &brief).unwrap());
+}
+
+

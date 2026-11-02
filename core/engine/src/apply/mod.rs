@@ -636,12 +636,10 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             let ais = parts.ais();
             crate::retention::reopen_late(tx, id, &ais)?;
             atomic::join_late(tx, id, &merged, parts)?;
-            // a body back and held (dropped for its keep bounds, uncovered): what the aspect
-            // lacked for it is back
+            // a body back and judged again (dropped for its keep bounds, uncovered, gone at its
+            // expiry while pending): whatever the aspect lacked for it is in, held or not
             for ai in ais {
-                if tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai))
-                    && let Some(a) = merged.header.aspects.get(ai)
-                {
+                if let Some(a) = merged.header.aspects.get(ai) {
                     crate::retention::suspect::body_back(tx, id, ai, &a.tid, &a.ak)?;
                 }
             }
