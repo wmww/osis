@@ -184,3 +184,6 @@ Item 193 code: deleted in step 2, except `Form::Node`/`Source::Node` arms (step 
 - Step 3 (compact before an explicit demotion): left to the coordinator, who chose **no** for now: nothing blinks out, and frontiers stay bounded by compaction cadence. Revisit if demotion frontiers measure large.
 - atomic-wait-carrierless-drop (built): count a carrierless-dropped dead part as held, accepted ("fine").
 - Owner earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.
+
+## Frontier study
+notes/frontier-study.md: rule 7 becomes "lists every received commit of X in scope that is not droppable now" (covered by a snapshot received by T, past keep-at-least, purgeable), which fixes issues/frontier-clobbers-history.md and dissolves both step-2 carry-overs (role commits follow the same rule; a commit with a part this node does not hold is listed). Per-session hash chains are rejected there (unwalkable across labels and forgotten headers). Step 3 shrinks only the uncovered part past keep-at-least; still no. The caps (`MAX_LIST_BYTES` on frontiers, `MAX_LINKED_FRONTIERS`) must give way to a paged frontier judged by lookup.
