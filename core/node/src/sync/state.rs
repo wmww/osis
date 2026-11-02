@@ -250,9 +250,9 @@ pub struct State {
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
     /// Bodies (commit and delta set) whose entry (not a certificate copy) left a label by a
-    /// delete, by when (`remove_entry`): such a body is not placed there again while its live
-    /// writes are carried
-    /// (spec/sync.md §6). In memory, from `tombs` at load where the blob's record is known;
+    /// delete, by when (`remove_entry`): such a body (or one it is a purge rewrite of,
+    /// `body_deleted`) is not placed there again while its live writes are carried (spec/sync.md
+    /// §6). In memory, from `tombs` at load where the blob's record is known;
     /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
     /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
@@ -654,6 +654,13 @@ impl State {
         self.touch(l, b);
         self.feed.added(l, b);
         self.version += 1;
+    }
+
+    /// Whether a body of commit `c` sharing a delta with `parts` (sorted) left `l` by a delete
+    /// (`deleted`): bodies of one commit hold disjoint delta sets, so this is that body or a
+    /// purge rewrite of it.
+    pub fn body_deleted(&self, l: LabelId, c: CommitId, parts: &[(usize, usize)]) -> bool {
+        self.deleted.range((l, c, Vec::new())..).take_while(|((x, y, _), _)| *x == l && *y == c).any(|((_, _, p), _)| p.iter().any(|d| parts.binary_search(d).is_ok()))
     }
 
     /// Forgets an entry, tombstoned (`tombs`).
