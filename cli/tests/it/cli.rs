@@ -607,8 +607,11 @@ fn serve_survives_a_bad_socket_dir() {
     std::fs::create_dir_all(xdg.join("osis")).unwrap();
     std::fs::set_permissions(xdg.join("osis"), std::fs::Permissions::from_mode(0o755)).unwrap();
     let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_osis")).env("XDG_RUNTIME_DIR", &xdg).args(["-s", ds, "serve"]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped()).spawn().unwrap();
+    // read on a thread: a serve that never warns runs on and keeps stderr open
     let err = std::io::BufReader::new(c.stderr.take().unwrap());
-    let warned = err.lines().map_while(Result::ok).any(|l| l.contains("serving without a client socket"));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || tx.send(err.lines().map_while(Result::ok).any(|l| l.contains("serving without a client socket"))));
+    let warned = rx.recv_timeout(std::time::Duration::from_secs(60)).unwrap_or(false);
     let running = c.try_wait().unwrap().is_none();
     let _ = c.kill();
     let _ = c.wait();
