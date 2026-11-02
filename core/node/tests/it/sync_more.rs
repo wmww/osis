@@ -1473,7 +1473,8 @@ fn departed_reader_connected_across_new_step_spec_sync_5() {
 // thing before the thing's creation record; T passes while it pends, so c drops the part and
 // flags the aspect. Writer b holds the write's value-less residue (it applied it before T), so
 // its digest differs from the one c's heartbeat reports: b re-snapshots the aspect, c joins
-// the snapshot, its flag clears and both hold the same state.
+// the snapshot and both hold the same state; c's flag stays (a pending-expiry flag is never
+// dormant), and b finds the same state at c's next report.
 #[test]
 fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     let mut net = Net::new();
@@ -1505,7 +1506,9 @@ fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     }
     let diags = net.diagnostics(b);
     assert!(diags.iter().any(|d| d.contains("Repair") && d.contains("re-snapshotted")), "{diags:?}");
+    // c's next report, its flag still up
+    assert!(diags.iter().any(|d| d.contains("Repair") && d.contains("same state here")), "{diags:?}");
     assert_eq!(net.engine(b).state_digest(&t, &reg).unwrap(), net.engine(c).state_digest(&t, &reg).unwrap(), "repaired");
-    assert!(net.engine(c).suspects().unwrap().is_empty(), "the flag cleared");
+    assert!(net.engine(c).suspects().unwrap().iter().any(|x| x.0 == t && x.1 == reg), "the flag stays");
     assert_eq!(net.read(c, t), net.read(b, t));
 }

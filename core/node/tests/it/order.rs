@@ -1044,7 +1044,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
     let (theirs, inv) = facts_of(&o.facts);
     let mut flipped: BTreeSet<(String, String)> = theirs.keys().filter(|k| mine.get(*k).is_some_and(|m| flip(&theirs, &mine, &inv, k) && m.held != theirs[*k].held)).map(|k| (k.1.clone(), k.2.clone())).collect();
     // a part held pending at its expiry counts as never received here (spec/commits.md §5)
-    flipped.extend(expired_pending(&mut p.engine, true));
+    flipped.extend(expired_pending(&mut p.engine));
     let e = &mut p.engine;
     let mut ids = e.commit_ids();
     ids.sort();
@@ -1124,8 +1124,6 @@ struct Judged {
     /// Aspects (as `facts_text` prints them) the node flags suspect for a part it held pending
     /// at its expiry (counts as never received, spec/commits.md §5): not compared.
     expired_pending: BTreeSet<(String, String)>,
-    /// The same with the flags a held valid snapshot settled: compared by read alone.
-    expired_dormant: BTreeSet<(String, String)>,
 }
 
 impl Judged {
@@ -1157,12 +1155,9 @@ fn plain_state(state: &str) -> String {
 }
 
 /// The aspects (as `facts_text` prints them) node `e` flags suspect for a part it held pending
-/// at its expiry; `dormant`: the flags a held valid snapshot listing the part settled too (its
-/// value-less copies repaired the read, but it may place them otherwise than the part's body:
-/// a nested write copied into its entry's key-erased record, spec/crdt.md §4.7).
-fn expired_pending(e: &mut osis_node::Engine, dormant: bool) -> BTreeSet<(String, String)> {
-    let flags = if dormant { e.suspects_dormant() } else { e.suspects() };
-    flags.unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
+/// at its expiry (never dormant, `retention::suspect`).
+fn expired_pending(e: &mut osis_node::Engine) -> BTreeSet<(String, String)> {
+    e.suspects().unwrap().into_iter().filter(|x| x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0).map(|(t, a, _, _)| (format!("{t:?}"), a.as_str().to_string())).collect()
 }
 
 /// What a node holding `packs` judges and reads now, as text, by part: reads and states of every
@@ -1189,8 +1184,8 @@ fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
     let scratch = e.perm_digest(true);
     let facts = facts_text(e);
     let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)];
-    let (expired_pending, expired_dormant) = (expired_pending(e, false), expired_pending(e, true));
-    Judged { index: None, parts, expired_pending, expired_dormant }
+    let expired_pending = expired_pending(e);
+    Judged { index: None, parts, expired_pending }
 }
 
 /// The persisted index as a day after `played.now` (every keep-at-most bound past: which bodies
@@ -1322,11 +1317,10 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
     // §5; owner: nodes may read differently when a part expired before a node could apply it):
     // what such an aspect reads, its states, its bodies and the index lines of its commits (that
     // part is dropped at a node that applied it, missing at one that did not) may differ,
-    // repaired by a writer's snapshot (spec/sync.md §7). Once a held valid snapshot repaired it
-    // (`expired_dormant`) the reads must agree. Nothing else: whether a commit is applied or
-    // pending, and every other aspect and commit, must agree.
-    let reads_apart: BTreeSet<(String, String)> = want.expired_pending.union(&got.expired_pending).cloned().collect();
-    let expired: BTreeSet<(String, String)> = want.expired_dormant.union(&got.expired_dormant).cloned().collect();
+    // repaired by a writer's snapshot (spec/sync.md §7), which the node cannot tell (its flag
+    // stays). Nothing else: whether a commit is applied or pending, and every other aspect and
+    // commit, must agree.
+    let expired: BTreeSet<(String, String)> = want.expired_pending.union(&got.expired_pending).cloned().collect();
     let ((mut wf, _), (mut gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
     let all: BTreeSet<BodyKey> = wf.keys().chain(gf.keys()).cloned().collect();
     wf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
@@ -1376,9 +1370,8 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
                 let dropped = |dot: &String, facts: &Facts| facts.iter().any(|(b, f)| b.1 == k.0 && b.2 == k.1 && f.at_most && !f.held && f.owns_dot(dot));
                 *name == "states" && xs == ys && xd.iter().filter(|d| !yd.contains(d)).all(|d| dropped(d, &gf)) && yd.iter().filter(|d| !xd.contains(d)).all(|d| dropped(d, &wf)) && flips(&k.0, &k.1)
             };
-            let apart = if *name == "reads" { &reads_apart } else { &expired };
             for k in a.keys().chain(b.keys()) {
-                if a.get(k) != b.get(k) && !stamps_only(k) && !apart.contains(k) {
+                if a.get(k) != b.get(k) && !stamps_only(k) && !expired.contains(k) {
                     return Some(format!("{name} on {k:?}:\n  want {:?}\n  got  {:?}", a.get(k), b.get(k)));
                 }
             }
@@ -1577,7 +1570,9 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
 }
 
 /// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
-/// each order's reads as they change after every ingest, and both nodes' judged parts.
+/// each order's reads as they change after every ingest, and both nodes' judged parts. Every
+/// failing check prints, the shrink's too: use it on a pinned history or with
+/// `OSIS_ORDER_SHRINK=0`.
 fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want: &Judged, got: &Judged) {
     if std::env::var("OSIS_ORDER_DUMP").is_err() {
         return;
@@ -1618,7 +1613,7 @@ fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want:
         });
     }
     for (name, j) in [("want", want), ("got", got)] {
-        let _ = writeln!(out, "--- {name} expired_pending {:?} expired_dormant {:?}", j.expired_pending, j.expired_dormant);
+        let _ = writeln!(out, "--- {name} expired_pending {:?}", j.expired_pending);
         for (part, text) in &j.parts {
             let _ = writeln!(out, "--- {name} {part}\n{text}");
         }
@@ -2734,9 +2729,9 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     cases.push((731018, h.into_iter().map(|s| if matches!(s, Forged { .. } | Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 990031 (spec/crdt.md §4.7, spec/commits.md §5): an expiring write into
     // another's map entry, pending at its expiry at one node, and a snapshot listing it (the
-    // flag dormant): the snapshot holds its value-less copies in the entry's key-erased record
+    // flag stays): the snapshot holds its value-less copies in the entry's key-erased record
     // (its writer held the creation value-less), the node that applied the part keeps them in
-    // the keyed record too. Reads agree; the states and bodies are excused (`expired_dormant`)
+    // the keyed record too. Reads agree here; seed 5288 below is one where they do not
     let h = vec![Write { by: 2, t: 5, op: 28, k: 0, v: 5 }, Leave { by: 2, t: 3 }, Sync { from: 2, to: 0 }, Typed { by: 2, t: 1, op: 28, k: 0, v: 7 }, Advance { who: None, ms: 7048894 }, Compact { by: 0, t: 1, op: 3 }];
     cases.push((990031, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // seed 83009: as 40093 below (fails without `retention::never_received` in `regiven`)
@@ -2759,7 +2754,9 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // applied at once in one order, dropped as never received where it waited. A's snapshot
     // after T lists it but carries nothing of it (A lacks C's snapshot, so its un-merge took the
     // entry whole), so the flag went dormant though the reads differed (k1 absent vs its old
-    // fields): a listing snapshot settles a pending-expiry flag only if it carries a write of it
+    // fields): a pending-expiry flag is never dormant (with a second put in the same commit, A's
+    // snapshot carried the part's write value-less in a key-erased record, and the reads still
+    // differed)
     let h = vec![Nested { by: 1, other: 2, t: 1, k: 1, text: false, compact: true, also: true }, NewTop { by: 1 }, Typed { by: 2, t: 3, op: 8, k: 2, v: 4 }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: true, also: false }, Roster { by: 0, t: 3 }, Demote { by: 2, t: 4, holder: 2, at: 4, to_read: false }, Typed { by: 2, t: 4, op: 28, k: 1, v: 9 }, Edge { by: 2, t: 1, holder: 1, role: None }, Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: true, also: true }, Sync { from: 1, to: 0 }, Advance { who: None, ms: 6831206 }, Compact { by: 1, t: 4, op: 4 }, Compact { by: 0, t: 7, op: 4 }];
     cases.push((5288, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
     // in parallel: the slowest test of the module otherwise
@@ -3440,5 +3437,4 @@ fn suspect_shows_again_when_settling_snapshot_turns_invalid_seed_4208() {
     let flagged = p.engine.suspects().unwrap();
     assert!(flagged.iter().any(|x| x.0 == g && x.1 == ak("t:reg.0") && x.3 & osis_node::retention::suspect::Why::PendingExpiry as u8 != 0), "{flagged:?}");
 }
-
 
