@@ -17,7 +17,7 @@
 //! role to go stale; a call that passed `session` just before a revocation is ordered before it.
 
 use super::codec::{self as c, Args, outcome_err, u};
-use super::{MAX_SCHEMA_BYTES, MAX_WAITS, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
+use super::{HISTORY_DIRTY_BYTES, HISTORY_SEND, MAX_SCHEMA_BYTES, MAX_WAITS, SIGNAL_BYTES, STREAM_CHUNK, WRITE_NONCES, filter, method};
 use osis_node::sync::MAX_CONNS_PER_CLIENT;
 use crate::error::{Error, Result};
 use crate::handle::{Inner, Osis, WeakOsis};
@@ -26,7 +26,7 @@ use osis_base::{Ak, Tid, Value};
 use osis_node::sync::{Action, ConnId, Event, Tier};
 use osis_proto::msg::Id;
 use osis_proto::{Code, Message, Outcome, Payload};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::io::{Read, Seek, SeekFrom};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -150,16 +150,34 @@ struct Pending {
     aks: BTreeMap<Ak, crate::watch::Source>,
     /// Fired signals and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
+    /// History subscription: the commits whose entries changed (`HISTORY_DIRTY_BYTES` each).
+    history: BTreeSet<osis_node::ChangeId>,
     /// A delivery did not fit `SIGNAL_BYTES`: the subscription ends.
     lapsed: bool,
 }
 
 impl Pending {
+    /// Commit `id`'s entry changed. Past the connection's budget the subscription lapses: the client
+    /// reads its pages again.
+    fn note_history(&mut self, id: osis_node::ChangeId, held: &AtomicUsize) {
+        if self.history.contains(&id) {
+            return;
+        }
+        if held.load(Ordering::Acquire).saturating_add(HISTORY_DIRTY_BYTES) > SIGNAL_BYTES {
+            self.lapsed = true;
+        } else {
+            held.fetch_add(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
+            self.history.insert(id);
+        }
+    }
+
     /// Forgets all of it, giving its queued bytes back to the connection's `held`.
     fn clear(&mut self, held: &AtomicUsize) {
         for (_, n) in self.queue.drain(..) {
             held.fetch_sub(n, Ordering::AcqRel);
         }
+        held.fetch_sub(self.history.len() * HISTORY_DIRTY_BYTES, Ordering::AcqRel);
+        self.history.clear();
         self.dirty = false;
         self.aks.clear();
     }
@@ -169,6 +187,7 @@ enum Kind {
     Aspect(Tid, Ak),
     Thing(Tid),
     Roster(Tid),
+    History(Tid, Ak),
     Status,
     Diagnostics,
     /// One `wait_synced` at this node, until its outcome went.
@@ -179,7 +198,7 @@ impl Kind {
     /// The thing it watches.
     fn thing(&self) -> Option<Tid> {
         match self {
-            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t) => Some(*t),
+            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t) | Kind::History(t, _) => Some(*t),
             _ => None,
         }
     }
@@ -481,6 +500,15 @@ impl Worker {
                 let ch = c::change(a.next()?)?;
                 return self.once(db, conn, nonce, || Ok(c::committed_v(&db.revert(ch)?)));
             }
+            method::HISTORY => {
+                let (tid, ak, from) = (a.tid()?, a.ak()?, c::from(a.next()?)?);
+                let (limit, bytes) = (a.uint()?, a.uint()?);
+                // the Owner's handle routes: this engine's copy would be stale
+                if !db.is_local(tid) {
+                    return Err(unsupported("a history of a group this node reads at another node"));
+                }
+                c::hist_page_v(&db.history_here(tid, &ak, from, usize::try_from(limit).unwrap_or(usize::MAX), usize::try_from(bytes).unwrap_or(usize::MAX))?)
+            }
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
                 let (file, src) = (a.text()?, a.text()?);
@@ -609,6 +637,10 @@ impl Worker {
                 let t = thing(a.tid()?)?;
                 (Kind::Roster(t), Filter::Roster(t))
             }
+            filter::HISTORY => {
+                let (t, ak) = (thing(a.tid()?)?, a.ak()?);
+                (Kind::History(t, ak.clone()), Filter::History(t, ak))
+            }
             filter::STATUS => (Kind::Status, Filter::Status),
             filter::DIAGNOSTICS => (Kind::Diagnostics, Filter::Diagnostics),
             _ => return Err(c::bad("filter")),
@@ -619,6 +651,7 @@ impl Worker {
         let p = pending.clone();
         // a fired signal or diagnostic waits within the connection's byte budget, else the
         // subscription lapses
+        let held2 = held.clone();
         let queue = move |g: &mut Pending, v: Value| {
             let n = osis_base::cbor::encode(&v).len();
             if held.load(Ordering::Acquire).saturating_add(n) > SIGNAL_BYTES {
@@ -639,6 +672,7 @@ impl Worker {
                 }
                 // a fired signal carries a fifth item: delivered even when equal to the last
                 Delivery::Fired { tid, ak, source, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
+                Delivery::History { id, .. } => lock(&p).note_history(id, &held2),
                 Delivery::Roster | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
                 Delivery::Moved => lock(&p).lapsed = true,
@@ -736,6 +770,14 @@ impl Worker {
                     cn.held.fetch_sub(n, Ordering::AcqRel);
                 }
             }
+            if let Kind::History(..) = s.kind {
+                for _ in 0..sent.saturating_sub(queued) {
+                    if g.history.pop_first().is_some() {
+                        cn.held.fetch_sub(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
+                    }
+                }
+                left |= !g.history.is_empty();
+            }
             if sent == out.len() {
                 g.dirty = false;
                 g.aks.clear();
@@ -774,6 +816,12 @@ fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::
             for (ak, src) in &g.aks {
                 let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(src)]);
                 out.push((v, Some(*src)));
+            }
+        }
+        Kind::History(t, ak) => {
+            for id in g.history.iter().take(HISTORY_SEND) {
+                let Ok(e) = db.history_entry_here(*t, ak, id) else { continue };
+                out.push((Value::List(vec![c::change_v(id), c::opt(e.as_ref(), c::hist_entry_v)]), None));
             }
         }
         Kind::Roster(t) if g.dirty => out.push((c::roster_v(&db.roster(*t)), None)),

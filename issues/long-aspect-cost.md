@@ -17,3 +17,5 @@ In order of damage:
 7. **Store writes per message grow**: 70 / 115 / 170 KB per batch at 10^4 / 10^5 / 10^6 (about 35 key-tree nodes of 10 KB each); store size stays 1.2-2 KB per message. A disk-wear problem (a 200 B message writes 800 times its size).
 8. **Bulk upload**: one writer uploading N offline writes runs 30 engine transactions per message: 4.3 / 6.6 ms per message at 10^4 / 10^5. Only after long offline writing.
 9. **Host cap**: `cap_entries` 2^20 per label stops a chat at about 10^6 messages unless the host raises it. Not measured past it.
+
+Purge by author: about 1.4 ms per delta dropped at 10^6, all in one store transaction under the engine lock, so moderating the hostile 10^7-message flood of notes/chat-designs/e.md would stall the node for hours. Chunking would need the request's effect spread over transactions: not built. A history watch delivers one entry read per commit, so a fall of 3*10^5 deltas is that many callbacks on the dispatcher (the engine lock is taken per read).

@@ -166,6 +166,13 @@ pub struct CommitEntry {
 fn kind_of(h: &osis_commit::Header) -> CommitKind {
     match h.kind {
         Kind::Content if h.undoes.is_some() => CommitKind::Revert,
+        k => kind_of_commit(k),
+    }
+}
+
+/// What a commit of kind `k` is, a revert aside (an undo is a content commit).
+pub(crate) fn kind_of_commit(k: Kind) -> CommitKind {
+    match k {
         Kind::Content => CommitKind::Change,
         Kind::Role => CommitKind::Role,
         Kind::ContentSnapshot | Kind::RoleSnapshot | Kind::RosterSnapshot => CommitKind::Snapshot,

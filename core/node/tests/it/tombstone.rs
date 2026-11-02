@@ -117,6 +117,32 @@ fn new_device_sees_a_purged_permanent_delta_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5, spec/wire.md §4: the same for a request by author carrying no write on the
+// aspect, only `purge.0`: a new device applies each purged delta, reads the entry as a tombstone in
+// the history, and the writer's other message stays.
+#[test]
+fn new_device_sees_a_purge_by_author_spec_commits_5() {
+    use osis_node::engine::history::{HistoryFrom, RowBody};
+    let Chat { mut net, a, b, n, t, .. } = chat();
+    let c = msg(&mut net, b, t, "SECRET", permanent());
+    let other = msg(&mut net, a, t, "kept", permanent());
+    net.run();
+    let author = net.tid(b);
+    let mut m = Mutation::new();
+    let now = net.engine(a).now();
+    m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
+    m.purge(PurgeItem::Author { tid: t, ak: k(), actor: author });
+    let p = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.set_online(n, true);
+    net.run();
+    sees_tombstone(&mut net, n, t, c, p, author);
+    let (rows, _) = net.engine(n).history(&t, &k(), HistoryFrom::Oldest, 9, usize::MAX).unwrap();
+    let of = |x: CommitId| rows.iter().find(|r| r.id == osis_node::ChangeId::Commit(x)).unwrap();
+    assert_eq!((of(c).actor, of(c).body.clone()), (author, RowBody::Purged(p)));
+    assert_eq!(of(other).body, RowBody::Held(Some(s("kept"))));
+}
+
 // spec/commits.md §5: lost at the host, a holder uploads the header-only blob again, as any
 // must-hold body; a new device fetches it from there.
 #[test]

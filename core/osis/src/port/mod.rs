@@ -97,18 +97,21 @@ pub(crate) mod method {
     pub const KEPT: u64 = 40;
     /// `[actor]` -> `[]`
     pub const DROP_KEPT: u64 = 41;
+    /// `[tid, ak, from, limit, max bytes]` -> `[[entry*], more, complete]`
+    pub const HISTORY: u64 = 42;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
     /// node's authority and take no actor (they would be a confused deputy).
     pub fn for_client(m: u64) -> bool {
-        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT)
+        matches!(m, WHOAMI | GET | ASPECTS | KNOWS | GROUPS_OF | ROSTER | ROLE_ON | OWNER_OF | CREATED | CHANGED | SAME_THING | WRITE | COMMITS | UNDO | REDO | REVERT | STATUS | LEN | STREAM_READ | SETTLE | NOW | KEPT | HISTORY)
     }
 }
 
 /// Subscription filters (`Sub.filter`): `[0, tid, ak]` aspect, `[1, tid]` thing, `[2, tid]`
 /// roster, `[3]` status, `[4]` diagnostics, `[5, sync scope, timeout ms]` one `wait_synced`
-/// at the node: the Reply and at most one Notify carry `Opt(result)`, the result once known.
+/// at the node: the Reply and at most one Notify carry `Opt(result)`, the result once known;
+/// `[6, tid, ak]` an aspect's history: each Notify `[change, Opt(entry)]`, the entry read when sent.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
     pub const THING: u64 = 1;
@@ -116,6 +119,7 @@ pub(crate) mod filter {
     pub const STATUS: u64 = 3;
     pub const DIAGNOSTICS: u64 = 4;
     pub const SYNCED: u64 = 5;
+    pub const HISTORY: u64 = 6;
 }
 
 /// Write outcomes a node remembers per (tier identity, session) for retries under the same
@@ -135,6 +139,13 @@ pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
 /// after every change, O(labels)). Resource bound: 0 forbids waiting through the port, infinity
 /// (`MAX_SUBS`) multiplies the per-change cost of the lock the sync driver needs. Past it `Invalid`.
 pub const MAX_WAITS: usize = 16;
+/// What one commit waiting in a history subscription counts against `SIGNAL_BYTES`: its ID in a set
+/// (a fall of an aspect behind a slow client lapses, and the client reads again).
+pub const HISTORY_DIRTY_BYTES: usize = 64;
+/// History entries read per send. Performance switch: each is read when sent, and a send may fit
+/// few of those waiting, so reading them all would be quadratic; 0 sends nothing, infinity reads
+/// everything waiting per send.
+pub const HISTORY_SEND: usize = 64;
 /// Bytes of a `stream_read` page. Performance switch: 0 moves nothing, infinity is one page
 /// bounded by `REPLY_BUDGET`.
 pub const STREAM_CHUNK: usize = 1 << 20;

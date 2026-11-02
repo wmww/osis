@@ -57,6 +57,8 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `aspects T` / `delete T` | `aspects` / `Write::delete` | now |
 | `ls G` / `backlinks T` | query / backlinks | 2nd (no API yet) |
 | `watch T [AK]` | `at().on_change` / `watch_thing` | now |
+| `history T AK [--oldest] [--before POS] [--after POS] [--max N]` (a line: `TS/COMMIT` place, time, actor, node, kind, validity, body; `--json` adds `more`, `complete`) | `AspectRef::history` | now |
+| `purge T AK [--commit C \| --author A]` | `AspectWrite::purge`, `purge_commit`, `purge_author` | now |
 | `commits [SCOPE] [--actor A] [--kind K] [--reverts C] [--reverted-by C] [--in-effect B] [--since/--until TS] [--after C] [--max N] [--next undo\|redo]` / `undo` / `redo` / `revert C` | `commits` / `undo` / `redo` / `revert` | now |
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` (lines `item`/`subgroup`/`within` TAB group) | now |
 | `roster T [--watch]` / `role T` / `via T HOLDER` | `roster`, `watch_roster` / `role_on` / `holder_path` | now |

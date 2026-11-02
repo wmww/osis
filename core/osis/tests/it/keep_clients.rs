@@ -230,6 +230,18 @@ fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
             assert!(app.groups_of(x.m).item_of.contains(&x.g));
             assert!(read_big(&app, x.m), "a large value, by pages");
             assert!(!app.commits(&CommitQuery::new().scope(Scope::Thing(x.m))).unwrap().is_empty());
+            // notes/api.md History: its history reads as well, read-only
+            let page = app.at(x.m, text()).history(osis::HistoryFrom::Newest, 5).unwrap();
+            assert_eq!(page.entries.len(), 1);
+            assert_eq!(page.entries[0].body, osis::HistoryBody::Held(Some(s("hello"))));
+            assert!(page.complete, "a copy waits for nothing");
+            assert_eq!(page, x.b.at(x.m, text()).history(osis::HistoryFrom::Newest, 5).unwrap());
+            // a large value's link never shows: its bytes, or too large for a reply
+            let big_page = app.at(x.m, file()).history(osis::HistoryFrom::Newest, 5).unwrap();
+            assert_eq!(big_page.entries[0].body, osis::HistoryBody::Held(Some(Value::Bytes(big()))));
+            let mut w = app.write();
+            w.at(x.m, text()).purge_commit(page.entries[0].commit.id).unwrap();
+            assert!(w.commit().is_err(), "a copy takes no purge");
             assert!(!app.status().unwrap().groups.contains_key(&x.g), "nothing syncs it");
             assert_eq!(watch.current().unwrap(), Some(s("hello")), "the watch goes on");
             assert_eq!(app.kept_copies().unwrap(), vec![x.g]);

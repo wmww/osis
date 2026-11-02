@@ -5,6 +5,7 @@
 
 use osis_base::{Ak, CommitId, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, VecDeque};
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, Sender, channel};
 
 /// Where an applied commit came from.
@@ -74,6 +75,10 @@ pub enum Event {
     /// the batch's commit when it had a durable half (one change, one `ts`); for a remote change,
     /// the ephemeral commit that carried it.
     Ephemeral { id: ChangeId, origin: Origin, author: Tid, actor: Tid, ts: Ts, received: WallMs, changed: Vec<(Tid, Ak)>, signals: Vec<(Tid, Ak, osis_base::Value)> },
+    /// What these commits' entries in these aspects' histories read changed: new, turned valid or
+    /// invalid, body arrived, dropped, purged, or gone (`Engine::history_entry`). One per
+    /// transaction; only once a history watch was asked for (`Engine::watch_history`).
+    History(Arc<Vec<(Tid, Ak, ChangeId)>>),
     /// Sync status changed (node-sync fills it).
     SyncStatus { label: osis_base::LabelId, detail: String },
     Diagnostic(Diagnostic),

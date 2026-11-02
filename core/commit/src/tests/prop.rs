@@ -53,7 +53,8 @@ prop_compose! {
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
                 Some(c) => PurgeItem::Commit { commit: CommitId(c), tid, ak: Ak::new("p.0").unwrap() },
-                None => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
+                None if tid.as_bytes()[0] % 2 == 0 => PurgeItem::Aspect { tid, ak: Ak::new("p.0").unwrap() },
+                None => PurgeItem::Author { tid, ak: Ak::new("p.0").unwrap(), actor: tid },
             }).collect(),
             undoes: undoes.map(CommitId), blind,
             keys: keys.into_iter().map(|(level, b)| dkey(level, b)).collect(),

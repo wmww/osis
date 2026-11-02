@@ -53,7 +53,7 @@ Retention := [by, at_least, at_most]
 Bound     := {? 0: abs, ? 1: rel}
 DeleteKey := [level, pk]
 Chunk     := [blob_id, [ki*]]
-PurgeItem := [commit_id, tid, ak] | [tid, ak]
+PurgeItem := [commit_id, tid, ak] | [tid, ak] | [tid, ak, actor]
 Origin    := [commit_id, author, actor, ts]
 CommitBlobPlaintext := [Header, signature, [Part*]]
 Part      := [ai, di, delta, [creation*]]
@@ -65,7 +65,7 @@ Header fields by position:
 4. `ts` (spec/crdt.md §2.2). 5. `form`: 0 node form, 1 commit form, or `[2, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
 7. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
-8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`.
+8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §8: the actor its header names; an import's: its first origin's). The second place tells the three-item forms apart: a tid, or an AK's text.
 9. `undoes`: `Opt(commit_id)`.
 10. `blind`: 16 random bytes (spec/crypto.md §7).
 11. `keys`: `[DeleteKey*]` sorted by canonical bytes, distinct: the delete keys of the commit's deltas (spec/crypto.md §7), `pk` a valid Ed25519 key (§1, spec/crypto.md §1), at most one at level 2 (the author chain); a key no aspect lists is bad input.

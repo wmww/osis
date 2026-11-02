@@ -9,6 +9,7 @@ pub(crate) mod blobs;
 pub(crate) mod clock;
 pub(crate) mod groups;
 pub(crate) mod held;
+pub mod history;
 pub(crate) mod index;
 pub(crate) mod journal;
 pub(crate) mod pages;
@@ -569,6 +570,10 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Someone may listen to history changes (`Engine::watch_history`).
+    pub(crate) history_watched: bool,
+    /// What `Core::history_named` noted in the running transaction.
+    history_named: BTreeSet<(Tid, Ak, crate::events::ChangeId)>,
     /// Commits to deliver again (`Engine::take_redeliver`). Not journaled: naming one a rollback undid
     /// costs a look.
     pub(crate) redeliver: BTreeSet<CommitId>,
@@ -896,6 +901,8 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            history_watched: false,
+            history_named: BTreeSet::new(),
             redeliver: BTreeSet::new(),
             forge_bad: BTreeSet::new(),
             forged: None,
@@ -932,6 +939,43 @@ impl Core {
 
     pub fn now(&self) -> WallMs {
         self.hlc.wall()
+    }
+
+    /// Queues `changes` as a history event, if anyone may listen.
+    pub(crate) fn history_touched(&mut self, changes: Vec<(Tid, Ak, crate::events::ChangeId)>) {
+        if self.history_watched && !changes.is_empty() {
+            self.events.queue(crate::events::Event::History(Arc::new(changes)));
+        }
+    }
+
+    /// Commit `c`'s entry on `(tid, ak)` reads otherwise, by a change its meta does not show (its
+    /// part gone already, now purged): told at the end of the transaction, with `history_changes`.
+    pub(crate) fn history_named(&mut self, tid: Tid, ak: Ak, c: CommitId) {
+        if self.history_watched {
+            self.history_named.insert((tid, ak, crate::events::ChangeId::Commit(c)));
+        }
+    }
+
+    /// At the end of a transaction: the commits it changed whose entry in an aspect's history reads
+    /// otherwise now (`Engine::history`), per aspect, from the journal: O(commits changed), in one
+    /// place, whichever path changed them. Nothing without a history watch: a fall of an aspect
+    /// would hold every commit of it here.
+    fn history_changes(&mut self) {
+        if !self.history_watched {
+            return;
+        }
+        let state = |m: &Meta, ai: usize| (m.valid_at(ai), m.dropped.contains_key(&ai), m.missing.contains(&ai));
+        let mut out = std::mem::take(&mut self.history_named);
+        for (id, old) in self.ix.commits.before() {
+            let new = self.ix.commits.get(id);
+            let Some(m) = new.or(old) else { continue };
+            for (ai, a) in m.view.aspects.iter().enumerate() {
+                if old.map(|m| state(m, ai)) != new.map(|m| state(m, ai)) {
+                    out.insert((a.tid, a.ak.clone(), crate::events::ChangeId::Commit(*id)));
+                }
+            }
+        }
+        self.history_touched(out.into_iter().collect());
     }
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
@@ -1691,6 +1735,9 @@ impl Engine {
                 if r.is_ok() && !tx.core.defer_deaths && !tx.core.ix.deaths_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
                 }
+                if r.is_ok() {
+                    tx.core.history_changes();
+                }
                 // every validity change was judged before the index is persisted
                 debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
                 let persisted = {
@@ -1721,6 +1768,7 @@ impl Engine {
             Err(e) => {
                 self.core.walks_done = None;
                 self.core.events.discard();
+                self.core.history_named.clear();
                 self.core.rollback();
                 self.core.stale_all = stale_all;
                 self.core.memory_tx = false;
@@ -1737,6 +1785,7 @@ impl Engine {
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);
+        fresh.history_watched = self.core.history_watched;
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);

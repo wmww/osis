@@ -7,6 +7,7 @@
 //! persists) and its ephemeral half (applied after; nothing applies if the commit fails).
 //! Restart forgets everything here.
 
+mod history;
 mod log;
 mod place;
 mod remote;
@@ -519,7 +520,9 @@ impl Engine {
             }
         };
         let cap = self.cfg.ephemeral_history;
+        let entries: Vec<(Tid, Ak, ChangeId)> = logged.iter().map(|a| (a.tid, a.ak.clone(), id)).collect();
         self.eph.log.push(id, reverts, actor, ts, now, logged, making, cap);
+        self.memory_touched(entries);
         if !(changed.is_empty() && signals.is_empty()) {
             self.core.events.queue(Event::Ephemeral { id, origin: Origin::Local, author: node, actor, ts, received: now, changed, signals });
             self.core.events.flush();
@@ -621,6 +624,11 @@ impl Engine {
                 a.expired.extend(ranges);
                 changed.insert((tid, ak));
             }
+        }
+        // own batches gone with them read as gone
+        if self.core.history_watched {
+            let gone: Vec<(Tid, Ak, ChangeId)> = self.eph.log.entries.iter().flat_map(|e| e.aspects.iter().filter(|a| changed.contains(&(a.tid, a.ak.clone())) && self.own_expired(&a.tid, &a.ak, &a.delta)).map(|a| (a.tid, a.ak.clone(), e.id))).collect();
+            self.memory_touched(gone);
         }
         self.tick_remote(now, &mut changed);
         if !changed.is_empty() {

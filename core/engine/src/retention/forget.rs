@@ -205,12 +205,14 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
         for p in [records::ASPECTS, records::RECEIPT, records::VALUELESS, records::PURGES, records::SUSPECT] {
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
-        let prefix = records::aspect_key(records::RESIDUE, t, ak);
         let mut residues = Vec::new();
-        tx.scan(&prefix, |k, _| {
-            residues.push([prefix.as_slice(), k].concat());
-            Ok(())
-        })?;
+        for p in [records::RESIDUE, records::PURGES_NAMED] {
+            let prefix = records::aspect_key(p, t, ak);
+            tx.scan(&prefix, |k, _| {
+                residues.push([prefix.as_slice(), k].concat());
+                Ok(())
+            })?;
+        }
         for k in residues {
             tx.txn.remove_local(&k, Shred::Yes)?;
         }

@@ -3,3 +3,5 @@
 > Tags: sync, node-sync, api, performance
 
 Questions: what a node needs before it can judge a recent message: role commits sit in the same log, and hosts must not learn which blobs are which, so how are they found first? Log listing cost when only IDs and wraps are fetched; reading the log from the newest end at a host; must-hold and upload duties of a node that has not fetched everything (spec/sync.md "partial node", §6); atomic apply; read and status semantics for a gap ("older messages not fetched" versus absent); a kept state for aspects whose readers use state rather than history.
+
+The read's seam is built: `HistoryPage.complete` and `HistoryBody::NotFetched` (notes/api.md History); a partial node must set the first false and read its gap as the second.

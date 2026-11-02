@@ -188,7 +188,7 @@ fn wall(v: &Value) -> Result<WallMs> {
     v.as_uint().map(WallMs).ok_or_else(|| bad("time"))
 }
 
-fn commit_id(v: Value) -> Result<CommitId> {
+pub(crate) fn commit_id(v: Value) -> Result<CommitId> {
     Args::of(vec![v]).bytes()?.try_into().map(CommitId).map_err(|_| bad("commit id"))
 }
 
@@ -476,6 +476,75 @@ pub(crate) fn query(v: Value) -> Result<CommitQuery> {
     };
     a.end()?;
     Ok(q)
+}
+
+pub(crate) fn from_v(f: &crate::HistoryFrom) -> Value {
+    use crate::HistoryFrom as F;
+    let at = |p: &crate::HistoryPos| vec![ts_v(p.ts), change_v(&p.id)];
+    Value::List(match f {
+        F::Newest => vec![u(0)],
+        F::Oldest => vec![u(1)],
+        F::Before(p) => [vec![u(2)], at(p)].concat(),
+        F::After(p) => [vec![u(3)], at(p)].concat(),
+    })
+}
+
+pub(crate) fn from(v: Value) -> Result<crate::HistoryFrom> {
+    use crate::{HistoryFrom as F, HistoryPos};
+    let mut a = Args::new(v)?;
+    let f = match a.uint()? {
+        0 => F::Newest,
+        1 => F::Oldest,
+        k @ (2 | 3) => {
+            let p = HistoryPos { ts: ts(&a.next()?)?, id: change(a.next()?)? };
+            if k == 2 { F::Before(p) } else { F::After(p) }
+        }
+        _ => return Err(bad("history start")),
+    };
+    a.end()?;
+    Ok(f)
+}
+
+pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
+    use crate::HistoryBody as B;
+    let body = match &e.body {
+        B::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
+        B::TooLarge { limit } => vec![u(1), u(*limit as u64)],
+        B::Purged { by } => vec![u(2), change_v(by)],
+        B::Dropped => vec![u(3)],
+        B::NotFetched => vec![u(4)],
+    };
+    Value::List(vec![info_v(&e.commit), ckind_v(&e.kind), Value::Bool(e.valid), Value::List(body)])
+}
+
+pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
+    use crate::HistoryBody as B;
+    let mut a = Args::new(v)?;
+    let (commit, kind, valid) = (info(a.next()?)?, ckind(&a.next()?)?, a.bool()?);
+    let mut b = Args::new(a.next()?)?;
+    a.end()?;
+    let body = match b.uint()? {
+        0 => B::Held(b.opt()?),
+        1 => B::TooLarge { limit: usize::try_from(b.uint()?).unwrap_or(usize::MAX) },
+        2 => B::Purged { by: change(b.next()?)? },
+        3 => B::Dropped,
+        4 => B::NotFetched,
+        _ => return Err(bad("history body")),
+    };
+    b.end()?;
+    Ok(crate::HistoryEntry { commit, kind, valid, body })
+}
+
+pub(crate) fn hist_page_v(p: &crate::HistoryPage<Value>) -> Value {
+    Value::List(vec![Value::List(p.entries.iter().map(hist_entry_v).collect()), Value::Bool(p.more), Value::Bool(p.complete)])
+}
+
+pub(crate) fn hist_page(v: Value) -> Result<crate::HistoryPage<Value>> {
+    let mut a = Args::new(v)?;
+    let entries = a.list()?.into_iter().map(hist_entry).collect::<Result<_>>()?;
+    let (more, complete) = (a.bool()?, a.bool()?);
+    a.end()?;
+    Ok(crate::HistoryPage { entries, more, complete })
 }
 
 pub(crate) fn entry_v(e: &CommitEntry) -> Value {

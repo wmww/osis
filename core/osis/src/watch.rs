@@ -72,6 +72,8 @@ pub(crate) enum Filter {
     Aspect(Tid, Ak),
     Thing(Tid),
     Roster(Tid),
+    /// Per commit: an aspect's history (`AspectRef::on_history`).
+    History(Tid, Ak),
     Diagnostics,
     Status,
     /// A subscription at an attached node, by its token (`port::client`), and the thing it is on.
@@ -100,6 +102,8 @@ pub(crate) enum Delivery {
     /// state.
     Fired { tid: Tid, ak: Ak, source: Source, value: Value },
     Roster,
+    /// This commit's entry in the history of the filter's aspect of `tid` reads otherwise.
+    History { tid: Tid, id: ChangeId },
     Diagnostic(Diagnostic),
     Status(crate::share::Status),
     Port(PortEvent),
@@ -245,7 +249,7 @@ impl Dispatch {
             .subs
             .values()
             .filter_map(|s| match &s.filter {
-                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) => Some((s.id, false, *t)),
+                Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) | Filter::History(t, _) => Some((s.id, false, *t)),
                 Filter::Port(token, Some(t)) => Some((*token, true, *t)),
                 _ => None,
             })
@@ -361,6 +365,18 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
                 if hit {
                     out.push((s.clone(), Pre::Ready(Delivery::Fired { tid: *t, ak: ak.clone(), source, value: value.clone() })));
                 }
+            }
+        }
+        return out;
+    }
+    if let Msg::Event(Event::History(changes)) = m {
+        let mut out = Vec::new();
+        for s in &live {
+            let Filter::History(ft, fak) = &s.filter else { continue };
+            let rt = db.read_local(|r| r.resolve(*ft));
+            for (t, ak, id) in changes.iter().filter(|(t, ak, _)| (t == ft || *t == rt) && ak == fak) {
+                debug_assert_eq!(ak, fak);
+                out.push((s.clone(), Pre::Ready(Delivery::History { tid: *t, id: *id })));
             }
         }
         return out;

@@ -83,6 +83,9 @@ pub(crate) enum Step {
     /// `by` purges `t`'s register, with a write there: one of `of`'s last commits by name, or (no
     /// such commit) the whole aspect.
     Purge { by: usize, t: usize, of: usize, back: u8, v: u8 },
+    /// `by` purges `t`'s register by author: `of`'s deltas (spec/permissions.md §8), as the API does:
+    /// no write on the register, a `purge.0` one.
+    PurgeAuthor { by: usize, t: usize, of: usize },
     /// Every commit `from` holds to `to`.
     Sync { from: usize, to: usize },
     /// One of `from`'s last commits to `to`.
@@ -355,6 +358,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Message { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Message { by, t, v }),
         Purge { by, t, of, back, v } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
+        PurgeAuthor { by, t, of } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
         Undo { by, back } => {
             // one of the author's last content commits
             let content: Vec<usize> = own[by].iter().enumerate().filter(|(_, id)| lp.peers[by].engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content)).map(|(i, _)| i).collect();
@@ -715,6 +719,15 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     None => osis_commit::PurgeItem::Aspect { tid: t, ak: k },
                 });
                 m.set(t, &REG, &s(&format!("p{v}"))).unwrap();
+                no = why(&lp.peers[by].commit(m));
+                Some(by)
+            }
+            Step::PurgeAuthor { by, t, of } => {
+                let (t, actor) = (th(t), lp.peers[of].engine.tid());
+                let mut m = Mutation::new();
+                let now = lp.peers[by].engine.now();
+                m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
+                m.purge(osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor });
                 no = why(&lp.peers[by].commit(m));
                 Some(by)
             }
@@ -1846,6 +1859,8 @@ struct Seen {
     fallen: u64,
     /// Permanent deltas the reference node shows purged, over the held sets.
     tombstones: u64,
+    /// Deltas the reference node shows purged by a request by author, over the held sets.
+    by_author: u64,
 }
 
 impl Seen {
@@ -1857,6 +1872,7 @@ impl Seen {
         self.broken += o.broken;
         self.fallen += o.fallen;
         self.tombstones += o.tombstones;
+        self.by_author += o.by_author;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -1879,6 +1895,7 @@ impl Seen {
         if seeds < 20 {
             return;
         }
+        assert!(!self.tally.kinds.contains_key("PurgeAuthor") || self.by_author > 0, "order::{name}: no delta purged by author: {self:?}");
         // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
         assert!(!self.tally.kinds.contains_key("Purge") || self.tombstones > 0, "order::{name}: no permanent delta purged: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
@@ -1965,6 +1982,12 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         for t in &played.things {
             for c in p.engine.purged_on(t, &ak("t:reg.0")).unwrap().into_keys() {
                 seen.tombstones += u64::from(p.engine.header(&c).is_some_and(|h| h.aspects.iter().any(|a| a.tid == *t && a.ak.as_str() == "t:reg.0" && a.permanent())));
+            }
+            let (rows, _) = p.engine.history(t, &ak("t:reg.0"), osis_node::engine::history::HistoryFrom::Oldest, usize::MAX - 1, usize::MAX).unwrap();
+            for r in &rows {
+                if let osis_node::engine::history::RowBody::Purged(by) = &r.body {
+                    seen.by_author += u64::from(p.engine.header(by).is_some_and(|h| h.purge.iter().any(|i| matches!(i, osis_commit::PurgeItem::Author { .. }))));
+                }
             }
         }
         for l in now.part("pending").lines() {
@@ -2526,6 +2549,40 @@ fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
         }
     }
     out
+}
+
+/// Short histories for purges by author, on what a chat does: permanent messages by three writers,
+/// demotions, grants, compactions, sync, the owner's purges (its right cannot fall:
+/// issues/purge-before-demotion.md). Not `history`'s mix: a whole-aspect or by-author request with
+/// keep-at-most bodies or commits split over parts still differs (issues/wide-purge-order.md).
+fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut out = Vec::new();
+    while out.len() < len {
+        let (by, t, v) = (rng.below(3) as usize, rng.below(4) as usize, rng.below(10) as u8);
+        out.push(match rng.below(12) {
+            0..=4 => Step::Aim(Box::new(Step::Message { by, t, v })),
+            5 | 6 => Step::Aim(Box::new(Step::PurgeAuthor { by: 0, t, of: by })),
+            7 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: by, at: rng.below(4) as u8, to_read: rng.below(2) == 0 })),
+            8 => Step::Aim(Box::new(Step::Edge { by: 0, t, holder: by, role: Some(Role::Write) })),
+            9 => Step::Advance { who: None, ms: 1 + rng.below(2_000) },
+            _ => Step::Sync { from: by, to: (by + 1 + rng.below(2) as usize) % 3 },
+        });
+    }
+    out
+}
+
+// spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
+// whichever deltas and demotions come after them.
+#[test]
+fn arrival_order_purge_author_small_spec_perm_8() {
+    run("arrival_order_purge_author_small_spec_perm_8", 0..6, 24, SMALL, purge_author_history);
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_purge_author_large_spec_perm_8() {
+    run("arrival_order_purge_author_large_spec_perm_8", 4000..4100, 50, LARGE, purge_author_history);
 }
 
 // spec/commits.md §5 (purge, lasting headers), spec/permissions.md §8: arrival order decides nothing

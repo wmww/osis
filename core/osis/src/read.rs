@@ -161,6 +161,11 @@ impl Reader<'_> {
         materialize(self.e, tid, v, self.limit)
     }
 
+    /// `v` with its links replaced, up to `limit` bytes.
+    pub(crate) fn materialized(&mut self, tid: &Tid, v: Value, limit: usize) -> Result<Value> {
+        materialize(self.e, tid, v, limit)
+    }
+
     /// The whole value of an aspect, untyped, materialized up to the bound.
     pub fn value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, v) = self.raw(tid, ak)?;
@@ -456,6 +461,10 @@ impl Osis {
             // the route was decided before this lock: a move since ends it at once
             let on = match &filter {
                 Filter::Aspect(t, _) | Filter::Thing(t) | Filter::Roster(t) => Some(*t),
+                Filter::History(t, _) => {
+                    l.engine().watch_history();
+                    Some(*t)
+                }
                 _ => None,
             };
             let gone = on.is_some_and(|t| actor.is_none() && !self.local_in(l, t));
@@ -548,9 +557,9 @@ impl Osis {
 
 /// An aspect of a thing: reads, path reads, watches.
 pub struct AspectRef<'d, K> {
-    db: &'d Osis,
-    tid: Tid,
-    key: K,
+    pub(crate) db: &'d Osis,
+    pub(crate) tid: Tid,
+    pub(crate) key: K,
 }
 
 impl<'d, K: AspectKey> AspectRef<'d, K> {

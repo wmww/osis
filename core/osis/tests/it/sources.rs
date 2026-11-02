@@ -1198,6 +1198,7 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     });
     let r = rx.recv_timeout(W).expect("the worker waits on the remote");
     assert!(matches!(r, Err(Error::Unsupported(_))), "{r:?}");
+    assert!(matches!(o2.at(t, title()).history(osis::HistoryFrom::Newest, 1), Err(Error::Unsupported(_))), "a history too: this node's copy is stale");
     let (tx, rx) = channel();
     std::thread::spawn(move || {
         tx.send((o2.get(mine, title()), o2.status().map(|s| s.remotes.len()))).unwrap();

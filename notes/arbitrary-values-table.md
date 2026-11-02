@@ -118,6 +118,9 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
 | `MAX_SCHEMA_BYTES` 1 MiB per node (osis `port`, distinct sources; registrations are process-wide and kept) | R (`TooLarge`) | no typed set through the port / Owner clients fill memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
+| `HISTORY_PAGE` 256 (osis `history`, entries of a page) | R (a page ends early, `more`) | reads nothing / a whole aspect in one call under `eng` |
+| `HISTORY_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a history subscription against `SIGNAL_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
+| `HISTORY_SEND` 64 (osis `port`, entries read per send) | P | nothing sent / every waiting entry read per send, most not fitting |
 | `MAX_BATCH_OPS` 1024 per `write` (osis `port`, the method table) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |
 | unix `MAX_PATH` 107 bytes (osis-transport `unix`) | O (`sun_path`, the OS's) | |
 | unix `ACCEPT_RETRY` 100 ms (osis-transport `unix`, wait after an accept error) | M (a client waits up to this long once the cause, e.g. EMFILE, is gone) | spins on a lasting error / the listener ends at the first one |

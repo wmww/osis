@@ -47,6 +47,10 @@ pub(crate) enum WriteOp {
     Retention { tid: Tid, key: u32, r: Retention },
     /// Purges the aspect's history (after its removal, recorded before).
     Purge { tid: Tid, key: u32 },
+    /// Purges one commit's deltas on the aspect.
+    PurgeCommit { tid: Tid, key: u32, commit: osis_base::CommitId },
+    /// Purges an author's deltas on the aspect.
+    PurgeAuthor { tid: Tid, key: u32, actor: Tid },
     /// Removes the thing's aspects and the placements this node may remove, as held at commit.
     Delete(Tid),
 }
@@ -57,7 +61,7 @@ impl WriteOp {
         match self {
             WriteOp::Create(_) => None,
             WriteOp::MakeGroup(t) | WriteOp::Delete(t) | WriteOp::Group { g: t, .. } => Some(*t),
-            WriteOp::Path { tid, .. } | WriteOp::Expires { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } => Some(*tid),
+            WriteOp::Path { tid, .. } | WriteOp::Expires { tid, .. } | WriteOp::Retention { tid, .. } | WriteOp::Purge { tid, .. } | WriteOp::PurgeCommit { tid, .. } | WriteOp::PurgeAuthor { tid, .. } => Some(*tid),
         }
     }
 }
@@ -375,6 +379,8 @@ impl<'d> Write<'d> {
                     WriteOp::Retention { tid, key, r } => vec![u(5), t(*tid), u(u64::from(*key)), retention_v(r)],
                     WriteOp::Purge { tid, key } => vec![u(6), t(*tid), u(u64::from(*key))],
                     WriteOp::Delete(x) => vec![u(7), t(*x)],
+                    WriteOp::PurgeCommit { tid, key, commit } => vec![u(8), t(*tid), u(u64::from(*key)), Value::bytes(&commit.0)],
+                    WriteOp::PurgeAuthor { tid, key, actor } => vec![u(9), t(*tid), u(u64::from(*key)), t(*actor)],
                 }))
             })
             .collect::<Result<Vec<Value>>>()?;
@@ -417,6 +423,14 @@ impl<'d> Write<'d> {
                 }
                 WriteOp::Purge { tid, key: k } => {
                     b.m.purge(PurgeItem::Aspect { tid, ak: key(k)?.ak.clone() });
+                }
+                WriteOp::PurgeCommit { tid, key: k, commit } => {
+                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    b.m.purge(PurgeItem::Commit { commit, tid, ak: key(k)?.ak.clone() });
+                }
+                WriteOp::PurgeAuthor { tid, key: k, actor } => {
+                    b.m.op(tid, &osis_schema::core_types::PURGE, PathOp { path: Vec::new(), op: Op::Replace(r.e.now().to_value()) })?;
+                    b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::Delete(t) => {
                     for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
@@ -508,6 +522,8 @@ impl Osis {
                 5 => WriteOp::Retention { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, r: retention(o.next()?)? },
                 6 => WriteOp::Purge { tid: w.resolve(o.tid()?), key: key(o.uint()?)? },
                 7 => WriteOp::Delete(w.known(o.tid()?)?),
+                8 => WriteOp::PurgeCommit { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, commit: crate::port::codec::commit_id(o.next()?)? },
+                9 => WriteOp::PurgeAuthor { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, actor: o.tid()? },
                 _ => return Err(bad("op kind")),
             };
             o.end()?;
@@ -681,6 +697,33 @@ impl<'w, 'd, K: AspectKey> AspectWrite<'w, 'd, K> {
         self.remove()?;
         let key = self.ok()?;
         self.push(WriteOp::Purge { tid: self.tid, key });
+        Ok(())
+    }
+
+    /// Drops this commit's delta on the aspect wherever the author may purge it (spec/commits.md §5,
+    /// spec/permissions.md §8): delete for everyone. Its entry stays in the history as purged. If
+    /// its write is the aspect's live one the read goes with it: `set` in the same batch to keep
+    /// a value. Carries a `purge.0` write, so `Permission` without write on the thing (no purgeable-by
+    /// class gives the right without it); whose right decides is judged per delta, as for every purge.
+    pub fn purge_commit(&mut self, id: ChangeId) -> Result<()> {
+        if !self.key.lifetime().is_durable() {
+            return Err(Error::Invalid("purge applies to durable aspects only".into()));
+        }
+        let ChangeId::Commit(commit) = id else { return Err(Error::Invalid("an ephemeral batch has no delta to purge".into())) };
+        let key = self.ok()?;
+        self.push(WriteOp::PurgeCommit { tid: self.tid, key, commit });
+        Ok(())
+    }
+
+    /// Drops every delta on the aspect by `actor` stamped before this commit, those arriving later
+    /// too, each only where the author may purge it: under `author` or `nobody` retention an admin's
+    /// request drops nothing. As `purge_commit` otherwise; what `actor` writes later stays.
+    pub fn purge_author(&mut self, actor: Tid) -> Result<()> {
+        if !self.key.lifetime().is_durable() {
+            return Err(Error::Invalid("purge applies to durable aspects only".into()));
+        }
+        let key = self.ok()?;
+        self.push(WriteOp::PurgeAuthor { tid: self.tid, key, actor });
         Ok(())
     }
 

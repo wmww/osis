@@ -664,3 +664,30 @@ fn ownerless_plan_cli() {
     s.ok(&["set", &t, "name.0", "\"chat\""]);
     assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);
 }
+
+// notes/cli.md Command table `history`, `purge`: pages by place, a tombstone in its line, purge by
+// commit and by author.
+#[test]
+fn history_and_purge_commands_plan_cli() {
+    let s = S::mem();
+    let t = s.ok(&["create", "--owner", "me", "--in", "home", "note:m.0", "\"one\""]).line().to_string();
+    s.ok(&["set", &t, "note:m.0", "\"two\""]);
+    let lines = s.ok(&["history", &t, "note:m.0"]).out;
+    let rows: Vec<&str> = lines.lines().collect();
+    assert_eq!(rows.len(), 2, "{lines}");
+    assert!(rows[0].contains("two") && rows[1].contains("one"), "{lines}");
+    let pos = rows[0].split(' ').next().unwrap();
+    let older = s.ok(&["history", &t, "note:m.0", "--before", pos]).out;
+    assert_eq!(older, format!("{}\n", rows[1]));
+    assert!(s.ok(&["history", &t, "note:m.0", "--oldest", "--max", "1"]).out.contains("one"));
+    let j = s.ok(&["--json", "history", &t, "note:m.0", "--max", "1"]).out;
+    assert!(j.contains("\"more\":true") || j.contains("\"more\": true"), "{j}");
+    let one = rows[1].split(' ').next().unwrap().split('/').nth(1).unwrap();
+    s.ok(&["purge", &t, "note:m.0", "--commit", one]);
+    let lines = s.ok(&["history", &t, "note:m.0"]).out;
+    assert!(lines.lines().any(|l| l.contains(one) && l.contains("purged=")), "{lines}");
+    let me = rows[0].split(' ').nth(2).unwrap();
+    s.ok(&["purge", &t, "note:m.0", "--author", me]);
+    assert!(s.ok(&["history", &t, "note:m.0"]).out.lines().all(|l| l.contains("purged=")));
+    assert_eq!(s.code(&["history", &t, "note:m.0", "--before", "nonsense"]), 2);
+}

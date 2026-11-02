@@ -1,0 +1,213 @@
+//! An aspect's history (notes/api.md History): the bodies this node holds, each with its verified
+//! author, time and validity, paged by time from either end, and a change event per commit. Unlike
+//! a read of the state, a superseded body reads as it was written; what is not here reads as what
+//! it is, never as nothing.
+
+use crate::commits::CommitKind;
+use crate::error::{Error, Result};
+use crate::handle::Osis;
+use crate::read::{AspectRef, Reader, ak_of, lenient};
+use crate::sources::Source;
+use crate::watch::{CommitInfo, Delivery, Filter, Subscription};
+use osis_base::{Ak, Tid, Value};
+use osis_node::ChangeId;
+use osis_node::engine::history::{HistoryRow, RowBody};
+use osis_schema::AspectKey;
+
+pub use osis_node::engine::history::{HistoryFrom, HistoryPos};
+
+/// Entries of a page at most. Resource bound against a caller asking for everything at once under
+/// the engine lock: past it a page ends early and says `more`. 0 would read nothing, infinity a
+/// whole aspect in one call.
+pub const HISTORY_PAGE: usize = 256;
+
+/// What is here of an entry's body.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HistoryBody<T> {
+    /// Its value (`None`: the write holds no whole value of the key's type, a removal or a path
+    /// write, or it does not read as that type: a `Mismatch` diagnostic).
+    Held(Option<T>),
+    /// Held, and above the materialization bound.
+    TooLarge { limit: usize },
+    /// A purge request dropped it, for everyone honest: the entry is its tombstone.
+    Purged { by: ChangeId },
+    /// Gone for another reason: expiry, a keep bound, compaction.
+    Dropped,
+    /// Not on this node (yet): its header came and its body did not. Not an absence.
+    NotFetched,
+}
+
+/// One commit's delta on an aspect, attributed by its signed header: `commit.actor` is verified
+/// exactly when `valid` (spec/permissions.md §5.2, Acting).
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryEntry<T> {
+    pub commit: CommitInfo,
+    pub kind: CommitKind,
+    /// Valid here, now: it may change (the watch says when).
+    pub valid: bool,
+    pub body: HistoryBody<T>,
+}
+
+impl<T> HistoryEntry<T> {
+    /// This entry's place, for `HistoryFrom::Before` and `After`.
+    pub fn pos(&self) -> HistoryPos {
+        HistoryPos { ts: self.commit.ts, id: self.commit.id }
+    }
+}
+
+/// A page of history, in the direction it was asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HistoryPage<T> {
+    pub entries: Vec<HistoryEntry<T>>,
+    /// More entries lie that way here.
+    pub more: bool,
+    /// Every label carrying the thing finished a pass here, so past the last entry there is nothing
+    /// this node knows of. `false`: entries may yet arrive anywhere in the history, older ones
+    /// too (offline, syncing): not fetched, not absent.
+    pub complete: bool,
+}
+
+/// What an `on_history` callback hears.
+#[derive(Clone, Debug, PartialEq)]
+pub enum HistoryEvent<T> {
+    /// This commit's entry reads otherwise now: new (late ones too), turned valid or invalid, body
+    /// arrived, purged, dropped. `None`: it has no entry any more (a memory commit gone).
+    Commit { id: ChangeId, entry: Option<HistoryEntry<T>> },
+    /// Events may have been missed: a connection to the node dropped or came back, or an entry
+    /// did not fit. Read the pages shown again; the subscription goes on.
+    Reread,
+    /// The subscription is over (its source moved, or the node ended it): subscribe again.
+    Ended(Error),
+}
+
+/// `row` as an API entry (`limit`: the bound its links materialize under). A link whose value
+/// cannot be read here reads as not fetched, a store failure aside.
+fn entry_of(r: &mut Reader<'_>, tid: &Tid, row: HistoryRow, limit: usize) -> Result<HistoryEntry<Value>> {
+    let body = match row.body {
+        RowBody::Held(None) => HistoryBody::Held(None),
+        RowBody::Held(Some(v)) => match r.materialized(tid, v, limit) {
+            Ok(v) => HistoryBody::Held(Some(v)),
+            Err(Error::TooLarge { .. }) => HistoryBody::TooLarge { limit },
+            Err(e @ Error::Storage(_)) => return Err(e),
+            Err(_) => HistoryBody::NotFetched,
+        },
+        RowBody::TooLarge => HistoryBody::TooLarge { limit },
+        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::Commit(by) },
+        RowBody::Dropped => HistoryBody::Dropped,
+        RowBody::NotFetched => HistoryBody::NotFetched,
+    };
+    let kind = row.kind.map_or(CommitKind::Ephemeral, crate::commits::kind_of_commit);
+    Ok(HistoryEntry { commit: CommitInfo { id: row.id, actor: row.actor, node: row.node, ts: row.ts, received: row.received }, kind, valid: row.valid, body })
+}
+
+/// `e` through the key's type.
+pub(crate) fn typed<K: AspectKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: HistoryEntry<Value>) -> HistoryEntry<K::T> {
+    let body = match e.body {
+        HistoryBody::Held(v) => HistoryBody::Held(v.and_then(|v| lenient(tid, ak, key.decode(&v), |d| db.engine(|e| e.report(d))))),
+        HistoryBody::TooLarge { limit } => HistoryBody::TooLarge { limit },
+        HistoryBody::Purged { by } => HistoryBody::Purged { by },
+        HistoryBody::Dropped => HistoryBody::Dropped,
+        HistoryBody::NotFetched => HistoryBody::NotFetched,
+    };
+    HistoryEntry { commit: e.commit, kind: e.kind, valid: e.valid, body }
+}
+
+impl Osis {
+    /// A page at this engine, at most `budget` bytes of bodies; what a thing the actor may not read
+    /// gets is what an unknown tid gets.
+    pub(crate) fn history_here(&self, tid: Tid, ak: &Ak, from: HistoryFrom, limit: usize, budget: usize) -> Result<HistoryPage<Value>> {
+        let (mat, actor) = (self.inner.limit, self.acting);
+        let budget = budget.min(mat);
+        let cut = limit > HISTORY_PAGE;
+        let limit = limit.min(HISTORY_PAGE);
+        self.locked(|l| {
+            let mut r = Reader { e: l.engine(), limit: mat, actor };
+            let t = r.resolve(tid);
+            if r.hidden(t) {
+                return Ok(HistoryPage { entries: Vec::new(), more: false, complete: true });
+            }
+            let (rows, mut more) = r.e.history(&t, ak, from, limit, budget)?;
+            more |= cut && rows.len() == limit;
+            let (n, mut used) = (rows.len(), 0usize);
+            let mut entries = Vec::with_capacity(n);
+            // links count once materialized: a page fits what a reply carries
+            for (i, row) in rows.into_iter().enumerate() {
+                let e = entry_of(&mut r, &t, row, budget)?;
+                if let HistoryBody::Held(Some(v)) = &e.body {
+                    used = used.saturating_add(osis_base::cbor::encode(v).len());
+                }
+                entries.push(e);
+                if used > budget {
+                    more |= i + 1 < n;
+                    break;
+                }
+            }
+            let complete = crate::share::fetched(l, t);
+            Ok(HistoryPage { entries, more, complete })
+        })
+    }
+
+    /// The entry of `id` at this engine; what a callback or a Notify reads.
+    pub(crate) fn history_entry_here(&self, tid: Tid, ak: &Ak, id: &ChangeId) -> Result<Option<HistoryEntry<Value>>> {
+        let (mat, actor) = (self.inner.limit, self.acting);
+        self.locked(|l| {
+            let mut r = Reader { e: l.engine(), limit: mat, actor };
+            let t = r.resolve(tid);
+            if r.hidden(t) {
+                return Ok(None);
+            }
+            let Some(row) = r.e.history_entry(&t, ak, id, mat)? else { return Ok(None) };
+            entry_of(&mut r, &t, row, mat).map(Some)
+        })
+    }
+}
+
+impl<K: AspectKey> AspectRef<'_, K> {
+    /// A page of the aspect's history here: at most `limit` entries (`HISTORY_PAGE` at most) from
+    /// `from`, in its direction, fewer past the materialization bound. No walk: a page costs its
+    /// entries. Follows moves. An unknown thing, or one the caller may not read, has none.
+    pub fn history(&self, from: HistoryFrom, limit: usize) -> Result<HistoryPage<K::T>> {
+        let ak = ak_of(&self.key)?;
+        let page = match self.db.route(self.tid) {
+            Source::Remote(r) => self.db.remote_history(&r, self.tid, &ak, from, limit)?,
+            Source::Local => self.db.history_here(self.tid, &ak, from, limit, usize::MAX)?,
+        };
+        let entries = page.entries.into_iter().map(|e| typed(self.db, self.tid, &ak, &self.key, e)).collect();
+        Ok(HistoryPage { entries, more: page.more, complete: page.complete })
+    }
+}
+
+impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
+    /// Calls `f` for each commit whose entry in the aspect's history reads otherwise, one call per
+    /// commit, with the entry as it reads then: no recompute of the aspect, no re-read of a page.
+    /// Subscribe first, then read pages: nothing after the subscription is missed, and an event
+    /// repeating what a page showed is harmless. Follows moves.
+    pub fn on_history(&self, mut f: impl FnMut(&Osis, HistoryEvent<K::T>) + Send + 'static) -> Result<Subscription> {
+        let ak = ak_of(&self.key)?;
+        let key = self.key.clone();
+        let tid = self.tid;
+        let ak2 = ak.clone();
+        let typed_event = move |db: &Osis, ev: HistoryEvent<Value>| match ev {
+            HistoryEvent::Commit { id, entry } => HistoryEvent::Commit { id, entry: entry.map(|e| typed(db, tid, &ak2, &key, e)) },
+            HistoryEvent::Reread => HistoryEvent::Reread,
+            HistoryEvent::Ended(e) => HistoryEvent::Ended(e),
+        };
+        let mut deliver = move |db: &Osis, ev: HistoryEvent<Value>| f(db, typed_event(db, ev));
+        if let Source::Remote(r) = self.db.route(self.tid) {
+            return self.db.remote_on_history(&r, self.tid, ak, Box::new(deliver));
+        }
+        let t = self.db.read_local(|r| r.resolve(self.tid));
+        // the dispatcher's handle acts for no one: read as this one does
+        let acting = self.db.acting;
+        Ok(self.db.subscribe(Filter::History(t, ak.clone()), false, move |_| {
+            Box::new(move |db, d| match d {
+                Delivery::History { tid, id } => match acting.map_or_else(|| db.history_entry_here(tid, &ak, &id), |a| db.act_as(a).history_entry_here(tid, &ak, &id)) {
+                    Ok(entry) => deliver(db, HistoryEvent::Commit { id, entry }),
+                    Err(e) => deliver(db, HistoryEvent::Ended(e)),
+                },
+                Delivery::Moved => deliver(db, HistoryEvent::Ended(crate::sources::moved())),
+                _ => {}
+            })
+        }))
+    }
+}
