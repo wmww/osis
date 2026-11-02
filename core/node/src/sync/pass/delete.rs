@@ -322,7 +322,7 @@ impl SyncEngine {
             if x == *c || !self.engine.header(&x).is_some_and(|n| n.ts > h.ts) {
                 return false;
             }
-            let ids: Vec<BlobId> = self.state.entries_of(l, &x).filter(|(id, _)| host.is_none_or(|s| self.state.is_present(s, l, id))).map(|(id, _)| id).collect();
+            let ids: Vec<BlobId> = self.state.entries_of(l, &x).filter(|(id, _)| host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
             ids.into_iter().any(|id| self.genuine(&id))
         })
     }
@@ -605,7 +605,7 @@ impl SyncEngine {
             _ => carrier.into_iter().chain(snaps.get(&(*t, a.clone())).cloned().unwrap_or_default()).collect(),
         };
         for s in candidates {
-            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| host.is_none_or(|host| self.state.is_present(host, l, &b))) {
+            if s == *body || !self.state.entries_of(l, &s).any(|(b, _)| host.is_none_or(|host| self.state.holds_at(host, l, &b))) {
                 continue;
             }
             let covers = self.engine.covered(&s, body, t, a)? == Some(true);

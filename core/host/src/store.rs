@@ -6,7 +6,7 @@
 //!
 //! Deletion (spec/requirements.md, Deletion): every row removal shreds (`Shred::Yes`), so a
 //! deleted entry's wrap is unrecoverable once its transaction commits, even on a node that also
-//! reads the label; overwrites do not shred (a rewrap wraps the same blob key, and the entry's
+//! reads the label; overwrites do not shred (a promotion wraps the same blob key, and the entry's
 //! removal later shreds every earlier version on its path). Blob ciphertexts sit in the store's
 //! blob area, deleted for space only: without a wrap they open nowhere.
 //!

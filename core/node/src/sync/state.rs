@@ -236,7 +236,7 @@ pub struct State {
     /// Blob IDs of no use at a host, by when (corrected wall ms): uploads it refused as
     /// tombstoned, and entries it holds under a wrap not opening to the blob's key (a stamped
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
-    /// when the host's tombstone is gone too and a fresh encryption long placed.
+    /// when the host's tombstone is gone too; not while the host still holds the entry.
     pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes a host took (spec/sync.md §5), until the entry leaves that host.
@@ -705,7 +705,7 @@ impl State {
     /// Forgets tombstones, and hosts' tombstoned answers, past their lifetime.
     pub fn expire_tombs(&mut self, now: u64) {
         let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
-        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|(_, t)| t.saturating_add(lifetime) <= now).map(|(k, _)| *k).collect();
+        let old: Vec<(HostKey, LabelId, BlobId)> = self.gone.iter().filter(|((s, l, b), t)| t.saturating_add(lifetime) <= now && !self.is_present(s, l, b)).map(|(k, _)| *k).collect();
         for (s, l, b) in old {
             self.gone.remove(&(s, l, b));
             self.gone_by.remove(&(l, b, s));
@@ -783,6 +783,11 @@ impl State {
     /// Whether any host holds the entry.
     pub fn present_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
         self.present_by.range((*l, *b, [0; 32])..=(*l, *b, [0xff; 32])).next().is_some()
+    }
+
+    /// Whether some host holds the entry under a wrap of use.
+    pub fn held_anywhere(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.hosts_of(l, b).iter().any(|s| !self.is_gone_at(s, l, b))
     }
 
     /// Whether the host holds the entry under a wrap of use (`gone`).
@@ -1427,6 +1432,25 @@ mod tests {
         })
         .unwrap();
         n
+    }
+
+    // spec/sync.md §5: an entry a host holds under a useless wrap places nothing, and stays
+    // useless past `TOMBSTONE_LIFETIME` while the host holds it.
+    #[test]
+    fn useless_entry_held_nowhere_spec_sync_5() {
+        let (h1, h2, l, b) = ([7u8; 32], [8u8; 32], LabelId([1; 16]), BlobId([2; 32]));
+        let mut s = State { now: 1_000, ..State::default() };
+        s.set_present(h1, l, b, true);
+        assert!(s.held_anywhere(&l, &b));
+        s.set_gone(h1, l, b);
+        assert!(s.present_anywhere(&l, &b) && !s.held_anywhere(&l, &b));
+        s.set_present(h2, l, b, true);
+        assert!(s.held_anywhere(&l, &b));
+        s.expire_tombs(1_000 + osis_base::format::TOMBSTONE_LIFETIME_MS);
+        assert!(s.is_gone_at(&h1, &l, &b), "still held there");
+        s.set_present(h1, l, b, false);
+        s.expire_tombs(1_000 + osis_base::format::TOMBSTONE_LIFETIME_MS);
+        assert!(!s.is_gone_at(&h1, &l, &b));
     }
 
     // spec/sync.md §5, §7 (growth, notes/growth.md): a host's tombstoned answer is forgotten

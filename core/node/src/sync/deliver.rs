@@ -354,7 +354,7 @@ impl SyncEngine {
         let mut held: BTreeSet<(usize, usize)> = BTreeSet::new();
         for (id, e) in self.state.entries_of(l, c) {
             if let super::state::Kind::Commit { parts: p, .. } = &e.kind
-                && (!present || self.state.present_anywhere(l, &id))
+                && (!present || self.state.held_anywhere(l, &id))
             {
                 held.extend(p.iter().copied());
             }
