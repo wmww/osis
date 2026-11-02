@@ -396,7 +396,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // the thing's required retention fills what the writer did not, and refuses what breaks it
     // (spec/commits.md §5); a hostile test writer writes what it is told
-    if plan.kind == Kind::Content && !core.skip_writer_rules && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && ak.lifetime() == osis_schema::Lifetime::Durable && let Some(q) = crate::apply::validity::required_now(core, tid, ak, plan.signer, plan.ts) {
+    if plan.kind == Kind::Content && !core.skip_writer_rules && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, plan.signer, plan.ts) {
         let want = q.expires_at(plan.ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
         if r.is_some_and(|x| x != q.retention()) || e.is_some_and(|x| Some(x) != want) {
             return Err(Error::Misuse("a retention or expiry other than the thing requires"));
@@ -678,6 +678,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             }
             if am.ops.len() > 1 {
                 return Err(Error::Misuse("required.0^ is written whole"));
+            }
+            if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| !osis_schema::core_types::required_fits(&r)))) {
+                return Err(Error::Misuse("required.0^ over its bounds"));
             }
         }
         let framing = match kind {

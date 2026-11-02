@@ -34,6 +34,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `MAX_HEARTBEAT_SUSPECTS` | 32 |
 | `RESOLUTION_HOPS` | 8 (spec/permissions.md §7) |
 | `MAX_OWNER_DEPTH` | 64 owner links from a thing to the top of its owner chain, a key actor or an ownerless thing (spec/permissions.md §1) |
+| `MAX_REQUIRED_ENTRIES` | 64 entries of one `required.0^` delta (spec/commits.md §5) |
 | `MAX_LINKED_FRONTIERS` | 64 MiB (67 108 864 bytes): canonical bytes of the distinct linked tenure frontiers of one roster snapshot (spec/permissions.md §6) |
 
 Host policy (recommended): `TOMBSTONE_LIFETIME` 30 days; deposit budget spec/sync.md §5. Node-to-node protocol limits (version 1, not format constants): §11.

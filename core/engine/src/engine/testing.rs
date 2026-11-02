@@ -251,19 +251,21 @@ impl Engine {
         [ms().filter(|m| !m.dropped.is_empty()).count(), ms().filter(|m| m.valid.contains(&false)).count(), self.core.ix.dropped_snapshots.values().map(|v| v.len()).sum()]
     }
 
-    /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
-    /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
-    #[doc(hidden)]
     /// How many held commits' parts break their thing's required retention.
+    #[doc(hidden)]
     pub fn broken_parts(&self) -> usize {
         self.core.ix.commits.iter().map(|(id, m)| (0..m.header.aspects.len()).filter(|ai| crate::apply::validity::broken_by(&self.core, &m.header, id, *ai).is_some()).count()).sum()
     }
 
     /// How many held `required.0^` parts are invalid.
+    #[doc(hidden)]
     pub fn fallen_required(&self) -> usize {
         self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::REQUIRED && !m.valid_at(*ai)).count()).sum()
     }
 
+    /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
+    /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
+    #[doc(hidden)]
     pub fn index_digest(&self) -> IndexDigest {
         let ix = &self.core.ix;
         let commits = ix.commits.iter().map(|(id, m)| {

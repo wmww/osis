@@ -298,6 +298,16 @@ fn drop_part_how(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool, broke: b
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
     m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, broke, keysets, names });
+    // a setting not held binds nothing (`validity::never_could_set`)
+    if a.ak.as_str() == osis_commit::retention::REQUIRED {
+        let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
+        settings.retain(|x| x.0.commit != *c);
+        if settings.is_empty() {
+            tx.core.ix.required.remove(&a.tid);
+        } else {
+            tx.core.ix.required.insert(a.tid, settings);
+        }
+    }
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
@@ -1246,10 +1256,11 @@ impl Engine {
         })
     }
 
-    /// Drops the held deltas that break their thing's required retention and that this node
-    /// received no earlier than the `required.0^` delta they break, so a backdated change
-    /// takes no body it already held (spec/permissions.md §8): those of `only`, else all.
-    /// Returns their commits.
+    /// Drops what goes without a right (spec/permissions.md §8): the held deltas that break their
+    /// thing's required retention and that this node received after the `required.0^`
+    /// delta they break, so a backdated change takes no body it already held, and `required.0^`
+    /// deltas by a node that never could set one: those of `only`, else all. Returns their
+    /// commits.
     pub fn drop_broken(&mut self, only: Option<&BTreeSet<CommitId>>) -> Result<Vec<CommitId>> {
         let core = &self.core;
         if core.ix.required.is_empty() {
@@ -1262,11 +1273,10 @@ impl Engine {
         let mut due: Vec<(CommitId, usize)> = Vec::new();
         for c in &candidates {
             let Some(m) = core.ix.commits.get(c) else { continue };
-            for ai in 0..m.header.aspects.len() {
-                if m.holds(ai)
-                    && !m.valid_at(ai)
-                    && crate::apply::validity::broken_by(core, &m.header, c, ai).is_some_and(|p| core.ix.commits.get(&p.commit).is_some_and(|s| s.received <= m.received))
-                {
+            // no header decoded for a commit all valid
+            for ai in (0..m.valid.len()).filter(|ai| !m.valid_at(*ai) && m.holds(*ai)) {
+                let Some(a) = m.header.aspects.get(ai) else { continue };
+                if crate::apply::validity::never_could_set(core, &m.header, a) || crate::apply::validity::broken_by(core, &m.header, c, ai).is_some_and(|p| core.ix.commits.get(&p.commit).is_some_and(|s| s.received < m.received)) {
                     due.push((*c, ai));
                 }
             }
@@ -1379,8 +1389,8 @@ impl Engine {
         if ak.as_str() == "roles.0" || ak.as_str() == "tenures.0" {
             return Err(Error::Misuse("roles.0 and tenures.0 are compacted by roster snapshots"));
         }
-        if ak.as_str() == "created.0" || ak.as_str() == osis_commit::retention::REQUIRED {
-            return Err(Error::Misuse("kept forever, never compacted"));
+        if ak.as_str() == "created.0" {
+            return Err(Error::Misuse("created.0 is kept forever, never compacted"));
         }
         // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
         // held

@@ -276,6 +276,17 @@ impl Required {
 /// `required.0^`: by AK prefix.
 pub type RequiredRules = BTreeMap<String, Required>;
 
+/// What `required.0^` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
+/// type or is over the bounds.
+pub fn required_rules(v: &Value) -> RequiredRules {
+    RequiredRules::from_value(v).ok().filter(required_fits).unwrap_or_default()
+}
+
+/// Whether `rules` is within the bounds of one `required.0^` delta.
+pub fn required_fits(rules: &RequiredRules) -> bool {
+    rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES && rules.keys().all(|p| p.len() <= osis_base::format::MAX_AK_BYTES)
+}
+
 /// The entry of `rules` governing `ak`: its longest prefix.
 pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Required> {
     (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.get(p)))

@@ -122,8 +122,9 @@ pub(crate) enum Step {
     HostileRoster { by: usize, t: usize, keep: Vec<(usize, Role)> },
     /// A register write on `t`, unchecked.
     HostileWrite { by: usize, t: usize, v: u8 },
-    /// An admin's `required.0^` on `t` (spec/commits.md §5): by `rule`, nothing, `op`'s aspect
-    /// as `keep_of(op)`, every `t:` aspect as the default, or every aspect as `keep_of(op)`.
+    /// A `required.0^` on `t` (spec/commits.md §5): by `rule % 4`, nothing, `op`'s aspect as
+    /// `keep_of(op)`, every `t:` aspect as the default, or every aspect as `keep_of(op)`; `rule & 4`:
+    /// past the writer's check, so a non-admin's when not aimed.
     Require { by: usize, t: usize, op: u8, rule: u8 },
     /// `op`'s write with `nobody` retention (or the default, `fits`) past the writer's check: it
     /// breaks most rules `Require` sets.
@@ -871,13 +872,16 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     // no keep at most on every aspect: issues/at-most-map-snapshot-drop.md
                     _ => one("", if keep.at_most.is_none() { keep } else { Retention::default() }),
                 };
-                let mut m = Mutation::new();
-                m.set(th(t), &osis_schema::core_types::REQUIRED, &rules).unwrap();
-                // a second part in another body class, so the setting may arrive late
-                if rule % 2 == 1 {
-                    m.set(th(t), &REG, &s("beside")).unwrap();
-                }
-                no = why(&lp.peers[by].commit(m));
+                let m = {
+                    let mut m = Mutation::new();
+                    m.set(th(t), &osis_schema::core_types::REQUIRED, &rules).unwrap();
+                    // a second part in another body class, so the setting may arrive late
+                    if rule % 2 == 1 {
+                        m.set(th(t), &REG, &s("beside")).unwrap();
+                    }
+                    m
+                };
+                no = why(&if rule & 4 != 0 { lp.peers[by].engine.commit_hostile(m) } else { lp.peers[by].commit(m) });
                 Some(by)
             }
             Step::Breaking { by, t, op, v, fits } => {
@@ -885,6 +889,12 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 let mut m = Mutation::new();
                 write_op(&mut m, &mut lp.peers[by].engine, th(t), op, 0, v, true);
                 m.retention(th(t), &a, if fits { Retention::default() } else { Retention { by: PurgeBy::Nobody, ..Retention::default() } }).unwrap();
+                // a commit with a second part, its retention its own, in the same class when `v` says
+                if v % 2 == 1 && a != aspect_of(0) {
+                    let o = aspect_of(0);
+                    write_op(&mut m, &mut lp.peers[by].engine, th(t), 0, 1, v, true);
+                    m.retention(th(t), &o, if v % 4 == 1 { Retention { by: PurgeBy::Nobody, ..Retention::default() } } else { Retention::default() }).unwrap();
+                }
                 no = why(&lp.peers[by].engine.commit_hostile(m));
                 Some(by)
             }
@@ -2077,7 +2087,8 @@ fn required_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps.push(Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(2) as u8, to_read: false })));
     while steps.len() < len {
         let by = rng.below(3) as usize;
-        steps.push(match rng.below(10) {
+        steps.push(match rng.below(11) {
+            10 => Step::Require { by: 1, t: 0, op, rule: 4 + rng.below(4) as u8 },
             0..=3 => Step::Aim(Box::new(Step::Breaking { by, t: 0, op, v: rng.below(10) as u8, fits: rng.below(3) == 0 })),
             4 | 5 => Step::Aim(Box::new(Step::Require { by: rng.pick(&[0, 2]), t: 0, op, rule: rng.below(4) as u8 })),
             6 => Step::Aim(Box::new(Step::Demote { by: 0, t: 0, holder: 2, at: rng.below(4) as u8, to_read: false })),
@@ -2349,6 +2360,105 @@ fn arrival_order_alike_small_spec_permissions_5_2() {
 #[test]
 fn arrival_order_required_spec_commits_5() {
     run("arrival_order_required_spec_commits_5", 0..4, 12, EXHAUST_SMALL, required_history);
+}
+
+/// Every arrival order, a node dropping what `drop_broken` lets it after each commit (its clock
+/// moving, so a body may arrive before or after the setting it breaks) and then receiving every
+/// body again: reads as a node that dropped nothing (spec/permissions.md §8: only the body held
+/// differs, and only until a holder uploads it). The reads are compared twice: after the bodies
+/// come again and after dropping again.
+fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
+    caught(|| {
+        let played = play(seed, steps);
+        let mut seen = Seen { tally: played.tally.clone(), ..Seen::default() };
+        let mut rng = Rng(seed ^ 0x0de5_ab1e | 1);
+        let n = played.packs.len();
+        let held: Vec<usize> = (0..n).collect();
+        let tick = |p: &mut Peer| {
+            let now = p.engine.now();
+            p.clock.set(WallMs(now.0 + 1));
+        };
+        let view = |j: Judged| -> String { j.parts.iter().filter(|(k, _)| matches!(*k, "reads" | "states" | "rosters" | "pending" | "timelines")).map(|(k, v)| format!("== {k}\n{v}\n")).collect() };
+        let orders = orders(&played, &held, cfg, &mut rng);
+        seen.orders += orders.len();
+        let mut r = deliver_with(&played, &orders[0], None, &mut |p| tick(p));
+        for pk in &played.packs {
+            let _ = r.engine.ingest(&pk.bytes, pk.blobs.clone());
+            tick(&mut r);
+        }
+        seen.broken += r.engine.broken_parts() as u64;
+        seen.fallen += r.engine.fallen_required() as u64;
+        let want = view(judged_now(&mut r, &played.things));
+        for order in &orders {
+            let mut p = deliver_with(&played, order, None, &mut |p| {
+                tick(p);
+                p.engine.drop_broken(None).unwrap();
+            });
+            for pk in &played.packs {
+                let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+                tick(&mut p);
+            }
+            let cmp = |a: &str, b: &str, what: &str| -> Result<(), String> {
+                match a.lines().zip(b.lines()).find(|(x, y)| x != y) {
+                    Some((x, y)) => Err(format!("order {order:?}, {what}:\n  want {x}\n  got  {y}")),
+                    None if a.lines().count() != b.lines().count() => Err(format!("order {order:?}, {what}: {} lines vs {}", a.lines().count(), b.lines().count())),
+                    None => Ok(()),
+                }
+            };
+            cmp(&want, &view(judged_now(&mut p, &played.things)), "bodies again")?;
+            p.engine.drop_broken(None).unwrap();
+            cmp(&want, &view(judged_now(&mut p, &played.things)), "dropped again")?;
+            // what is dropped reopens and rebuilds as made
+            let now = p.engine.index_digest();
+            p.engine.reload().unwrap();
+            if let Some(f) = now.diff(&p.engine.index_digest()).first() {
+                return Err(format!("order {order:?}: reopen differs at {f:?}"));
+            }
+            p.engine.rebuild_index().unwrap();
+            if let Some(f) = now.diff(&p.engine.index_digest()).into_iter().find(|f| matches!(f, IndexField::Table(t) if *t == "required")) {
+                return Err(format!("order {order:?}: rebuild differs at {f:?}: {:?} vs {:?}", now.show(&f), p.engine.index_digest().show(&f)));
+            }
+        }
+        Ok(seen)
+    })
+}
+
+fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: fn(u64, usize, Cfg) -> Vec<Step>) {
+    let range = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", seeds);
+    let seeds: Vec<u64> = match osis_base::testenv::u64_var("OSIS_ORDER_SEED") {
+        Some(o) => vec![o],
+        None => range.range.clone().collect(),
+    };
+    let results = par_map(&seeds, threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), |seed| {
+        let steps = generate(seed, len, cfg);
+        (seed, steps.clone(), drops_alike(seed, &steps, cfg))
+    });
+    let mut seen = Seen::default();
+    let mut fails = Vec::new();
+    for (seed, steps, r) in results {
+        match r {
+            Ok(s) => seen.add(&s),
+            Err(e) => fails.push(format!("seed {seed}: h = vec!{steps:?}\n{e}")),
+        }
+    }
+    osis_base::testenv::visible(true, &format!("order::{name}: {} seeds from {}, {} orders, {} broken, {} fallen, {} failing", seeds.len(), seeds.first().copied().unwrap_or(0), seen.orders, seen.broken, seen.fallen, fails.len()));
+    assert!(fails.is_empty(), "{}", fails.join("\n\n"));
+    assert!(seen.broken > 0, "no delta broke a required retention");
+}
+
+// spec/permissions.md §8: what a node may drop without a right changes nothing it reads once the
+// body is held again, whichever arrived first.
+#[test]
+fn required_drops_read_alike_spec_perm_8() {
+    run_drops("required_drops_read_alike_spec_perm_8", 0..4, 12, EXHAUST_SMALL, required_history);
+}
+
+// The same over the general histories.
+#[test]
+#[ignore = "tier 2"]
+fn required_drops_read_alike_large_spec_perm_8() {
+    run_drops("required_drops_read_alike_large_spec_perm_8", 0..200, 12, EXHAUST_SMALL, required_history);
+    run_drops("required_drops_read_alike_large_spec_perm_8 (general)", 0..200, 30, LARGE, history);
 }
 
 // The same at size: long histories, random orders.
