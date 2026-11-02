@@ -1400,6 +1400,43 @@ mod tests {
         assert!(s.sent_inbox.is_empty());
     }
 
+    // spec/commits.md §4 (copies): what a relay's copies make the engine store stays out of the sync
+    // records: a commit ID's first byte does not make a sync record of them (a failed load, a host
+    // secret read from a peer's bytes).
+    #[test]
+    fn unsettled_copies_are_no_sync_records_spec_commits_4() {
+        use osis_base::Tid;
+        let mut lp = crate::local_peer::LocalPeer::new(1, 963, osis_base::WallMs(1_700_000_000_000)).unwrap();
+        let me = lp.peers[0].engine.tid();
+        let mut m = crate::Mutation::new();
+        let t: Tid = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        let reg = osis_base::Ak::new("t:reg.0").unwrap();
+        let mut found = BTreeSet::new();
+        for i in 0..20_000u32 {
+            if found.len() == 2 {
+                break;
+            }
+            let mut m = crate::Mutation::new();
+            m.set(t, &reg, &osis_base::Value::Int(i64::from(i))).unwrap();
+            let id = lp.peers[0].commit(m).unwrap().unwrap();
+            let first = id.0[0];
+            if !matches!(first, b'e' | b'z') || !found.insert(first) {
+                continue;
+            }
+            let bytes = lp.peers[0].engine.package(&id).unwrap().unwrap().bytes;
+            let mut forged = osis_commit::CommitBlob::decode(&bytes).unwrap();
+            forged.signature = osis_crypto::Signature::from_slice(&[first; 64]).unwrap();
+            let mut p = crate::local_peer::Peer::new(964, osis_base::WallMs(1_700_000_000_000)).unwrap();
+            p.engine.ingest(&bytes, Vec::new()).unwrap();
+            p.engine.ingest(&forged.encode(), Vec::new()).unwrap();
+            assert!(p.engine.has_unsettled_copies(&id).unwrap());
+            let s = State::load(&mut p.engine).unwrap();
+            assert!(s.host_secret.is_none());
+        }
+        assert_eq!(found.len(), 2);
+    }
+
     // spec: none (local store format): a queued deposit record that does not decode fails the
     // load with a named error, never a panic or a silent drop.
     #[test]

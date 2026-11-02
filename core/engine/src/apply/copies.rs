@@ -25,10 +25,11 @@ use osis_crypto::{Signature, VerifyingKey, dedup_secret};
 use osis_store::Shred;
 use std::collections::BTreeMap;
 
-/// Resource bound against a hostile relay: bytes of unsettled copies kept per commit. Room for a true
-/// copy of the largest blob beside as much junk. 0: first copy wins until it can be checked, then a
-/// true one must come again (safe, as a flood past this is). Infinity: a relay fills the disk with
-/// copies of one signed header.
+/// Resource bound against a hostile relay: bytes of unsettled copies kept per commit, the size of one
+/// row rewritten per copy. It does not bound the disk: a fresh header costs a sender no more than a
+/// copy (notes/growth.md). Room for a true copy of the largest blob beside as much junk. 0: first copy
+/// wins until it can be checked, then a true one must come again (safe, as a flood past this is).
+/// Infinity: a row without end, each copy costing all of it.
 const MAX_COPIES_BYTES: usize = 2 * osis_base::format::MAX_BLOB;
 
 /// The unsettled copies of a pending commit, beside the first ones in its pending blob.
@@ -101,32 +102,34 @@ fn record_of(tx: &Tx<'_>, h: &Header, carried: &BTreeMap<Tid, CreationRecord>, t
 pub(super) fn merge(tx: &mut Tx<'_>, id: &CommitId, mut old: CommitBlob, new: CommitBlob) -> Result<(CommitBlob, bool)> {
     let mut spare = read(tx, id)?;
     let keeps = old.header.ephemeral.is_none();
-    let mut refused = false;
-    let room = |s: &Spare, n: usize| s.bytes().saturating_add(n) <= MAX_COPIES_BYTES;
-    if new.signature != old.signature && keeps && !spare.signatures.contains(&new.signature) {
-        if room(&spare, 64) {
-            spare.signatures.push(new.signature);
-        } else {
-            refused = true;
-        }
-    }
+    let sig = (new.signature != old.signature && keeps && !spare.signatures.contains(&new.signature)).then_some(new.signature);
+    spare.signatures.extend(sig);
     for p in new.parts {
         match old.parts.binary_search_by_key(&(p.ai, p.di), |x| (x.ai, x.di)) {
             Err(i) => old.parts.insert(i, p),
             Ok(i) if old.parts.get(i).is_some_and(|x| x.delta == p.delta) => {}
             Ok(_) if !keeps || spare.parts.iter().any(|x| (x.ai, x.di, &x.delta) == (p.ai, p.di, &p.delta)) => {}
-            Ok(_) if room(&spare, p.delta.len() + 16) => spare.parts.push(p),
-            Ok(_) => refused = true,
+            Ok(_) => spare.parts.push(p),
         }
+    }
+    if spare.is_empty() {
+        return Ok((old, false));
+    }
+    // first what can be checked, new copies and held: only the rest takes room
+    settle(tx, id, &mut old, &mut spare)?;
+    // the newest go first, and what was held fits by itself: nothing held is given up
+    let mut refused = false;
+    if spare.bytes() > MAX_COPIES_BYTES && sig.is_some() && spare.signatures.last() == sig.as_ref() {
+        spare.signatures.pop();
+        refused = true;
+    }
+    while spare.bytes() > MAX_COPIES_BYTES && spare.parts.pop().is_some() {
+        refused = true;
     }
     if refused {
         let now = tx.now();
         tx.core.events.diagnostic(Diagnostic { kind: DiagnosticKind::BadInput, tids: Vec::new(), commit: Some(*id), peer: None, detail: "too many unsettled copies: this one refused".into() }, now);
     }
-    if spare.is_empty() {
-        return Ok((old, false));
-    }
-    settle(tx, id, &mut old, &mut spare)?;
     store(tx, id, &spare)?;
     Ok((old, !spare.is_empty()))
 }

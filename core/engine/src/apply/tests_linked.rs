@@ -395,7 +395,7 @@ fn part_of(pk: &crate::local_peer::Package, ak: &str) -> Vec<u8> {
 
 // spec/commits.md §4, spec/permissions.md §6: a roster snapshot's parts on a thing not synced, the
 // `tenures.0` part's linked frontier away. In every order, through a restart too, one state and one
-// roster: the snapshot out of the walk, as at a node syncing the thing where it waits whole. When
+// roster: the snapshot out of the walk, also at a node syncing the thing, where the part waits alone too. When
 // the blobs come it is in the walk in each, and a snapshot may be written again.
 #[test]
 fn linked_frontier_part_order_spec_commits_4() {
@@ -416,7 +416,7 @@ fn linked_frontier_part_order_spec_commits_4() {
     let before = lp.peers[1].engine.roster(&t);
     let final_roster = lp.peers[0].engine.roster(&t);
     let (roles, tenures, whole) = (part_of(&pk, "roles.0"), part_of(&pk, "tenures.0"), pk.bytes.clone());
-    // a node syncing the thing: whole, whichever part first
+    // a node syncing the thing, whichever part first
     lp.peers[4].engine.set_syncing(t, true).unwrap();
     lp.peers[5].engine.set_syncing(t, true).unwrap();
     let orders: [(usize, Vec<&Vec<u8>>); 5] = [(1, vec![&roles, &tenures]), (2, vec![&tenures, &roles]), (3, vec![&whole]), (4, vec![&roles, &tenures]), (5, vec![&tenures, &roles])];
@@ -432,11 +432,8 @@ fn linked_frontier_part_order_spec_commits_4() {
     let read = |lp: &mut LocalPeer, i: usize| (lp.peers[i].engine.commit_ids().contains(&s), lp.peers[i].engine.get(&t, &osis_base::Ak::new("roles.0").unwrap()).unwrap(), lp.peers[i].engine.get(&t, &osis_base::Ak::new("tenures.0").unwrap()).unwrap());
     let unsynced = read(&mut lp, 1);
     assert!(unsynced.0, "the rest of it applies");
-    for i in [2, 3] {
+    for i in [2, 3, 4, 5] {
         assert_eq!(read(&mut lp, i), unsynced, "{i}");
-    }
-    for i in [4, 5] {
-        assert!(!read(&mut lp, i).0, "{i}: waits whole");
     }
     assert!(lp.peers[1].engine.roster_snapshot(&t, None).is_err(), "no snapshot from an unknown ledger");
     // through a restart it stays out
