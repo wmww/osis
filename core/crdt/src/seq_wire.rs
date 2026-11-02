@@ -394,6 +394,10 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
         match (content, s.text) {
             (Value::List(v), _) if v.is_empty() => {}
             (Value::Str(cs), true) => {
+                // a text char is the creation's payload (an undelete's rides its `FlagW`)
+                if segs.is_empty() {
+                    return Err(Error::Malformed("text content without a creation"));
+                }
                 let deleted: u64 = fws.iter().filter(|f| f.2.1).map(|f| f.1 - f.0 + 1).sum();
                 let want = usize::try_from(n - deleted).map_err(|_| Error::Malformed("run length"))?;
                 match cs.chars().count().cmp(&want) {

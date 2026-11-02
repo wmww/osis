@@ -12,8 +12,8 @@ use crate::subjects::case;
 use crate::{hex, unhex, xof};
 use osis_base::{Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{
-    Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, Snapshot, Source, View, Writer, decode_delta, decode_snapshot,
-    encode_delta, encode_snapshot,
+    Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, Snapshot, Source, Undone, View, Writer, decode_delta, decode_snapshot,
+    encode_delta, encode_snapshot, undo,
 };
 use std::borrow::Cow;
 use std::collections::BTreeMap;
@@ -175,7 +175,13 @@ pub fn deltas() -> VecFile {
     let a2 = node(1, 11, r1.hi);
     let (del, r2) = write(&st, &a2, text, vec![root(Op::Delete { at: 1, len: 3 })]);
     cases.push(writer_case("text delete: one flag range at the delta stamp", "spec/crdt.md §2.3, §3.2, §5.7", &a2, r2, del.clone()));
-    st.join(del);
+    st.join(del.clone());
+    // undoing the delete: an undelete, its chars in the `FlagW` string
+    let a4 = node(1, 12, r2.hi);
+    let mut wu = Writer::new(a4.ts, a4.own.clone(), a4.lo);
+    let undone = Undone { delta: &del, source: &a2.own, range: r2, restored: &|_| false };
+    let und = undo(&mut wu, &undone, &st, &typed, &text).unwrap().unwrap();
+    cases.push(writer_case("text undelete: the chars ride the flag write", "spec/crdt.md §3.2, §5.7", &a4, wu.range(), und));
     let b1 = node(2, 12, 1);
     let (ins, rb) = write(&st, &b1, text, vec![root(Op::Insert { at: 1, items: vec![s("xy")] })]);
     cases.push(writer_case("text insert anchored at another writer's element", "spec/crdt.md §3.2, §5.7", &b1, rb, ins.clone()));
@@ -244,6 +250,13 @@ pub fn deltas() -> VecFile {
     cases.push(reject_case("set element value written by another source", "spec/crdt.md §3.3, §5.5", &sw, None, snapshot_bytes(vec![n1(), n3], vec![c3], foreign_value), "element-source"));
     let bare = l(vec![i(3), i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![])]);
     cases.push(reject_case("bare-anchor run in a writer's delta", "spec/crdt.md §3.3, §5.7", &w, wr(3, 6), delta_bytes(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![bare])])), "bare-anchor"));
+    let text_runs = |run: Value| delta_bytes(vec![], vec![], l(vec![i(9), l(vec![]), l(vec![]), l(vec![run])]));
+    let chars_only = l(vec![i(3), i(2), l(vec![]), s("ab"), l(vec![]), l(vec![])]);
+    cases.push(reject_case("text chars without a creation", "spec/crdt.md §3.2, §3.3, §5.7", &w, wr(3, 6), text_runs(chars_only), "content-creation"));
+    let del_chars = l(vec![i(3), i(1), l(vec![]), l(vec![]), l(vec![]), l(vec![l(vec![i(0), i(0), i(0), Value::Bool(true), s("a")])])]);
+    cases.push(reject_case("chars on a delete's flag write", "spec/crdt.md §3.2, §3.3", &w, wr(3, 6), text_runs(del_chars), "flag-chars"));
+    let short = l(vec![i(3), i(2), l(vec![]), l(vec![]), l(vec![]), l(vec![l(vec![i(0), i(1), i(0), Value::Bool(false), s("a")])])]);
+    cases.push(reject_case("undelete chars short of the range", "spec/crdt.md §3.2, §3.3", &w, wr(3, 6), text_runs(short), "flag-chars"));
 
     VecFile { header: generated_header("crdt", SPEC), cases }
 }
