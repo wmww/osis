@@ -1667,6 +1667,9 @@ impl SyncEngine {
         if let Some(x) = self.engine.next_ephemeral_timer() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
+        if let Some(x) = self.engine.next_wait_due() {
+            at((x as i64).saturating_sub(skew).max(0) as u64);
+        }
         if let Ok(Some(x)) = self.engine.next_link_expiry() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }

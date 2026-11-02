@@ -120,6 +120,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `walks::open_equals_rebuild_random_secrets_compactions_large` | osis-node | `OSIS_WALKS_SECRETS_*` (0..200) | 16 seeds 3.4 s at load 40 |
 | `walks::open_equals_rebuild_random_histories_forged_large` | osis-node | `OSIS_WALKS_FORGED_*` (0..200) | 16 seeds 2.2 s at load 40 |
 | `walks::open_equals_rebuild_random_histories_moves_large` | osis-node | `OSIS_WALKS_MOVES_*` (0..100), `OSIS_WALKS_MOVES_DOUBLES=0` without hostile second imports | 16 seeds 2.2 s at load 40 |
+| `waits::gap_snapshots_converge_large_spec_crdt_8` | osis-node | `OSIS_ORDER_*` (1000..1300; expiring runs too) | 1000 seeds 33 s |
 | `retention::deaths_never_early_random_large` | osis-node | `OSIS_STRAYS_*` (0..200) | 16 seeds 0.4 s at load 40 |
 | `retention::undo_never_outlives_expiry_random_large` | osis-node | `OSIS_UNDOEXP_*` (0..200) | 16 seeds 0.7 s at load 40 |
 | `ephemeral::random_window_{converges,inflight,one_capped_host}_large`, `random_churn_converges_large` | osis-node | `OSIS_EPH_*` (0..200) | see Tiers |

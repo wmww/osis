@@ -66,6 +66,8 @@ pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
+        // a delta wait on the aspect reads it (`at_most_bound`), its part here or not
+        core.waits.wake(&a.tid, &a.ak);
         if a.ak.as_str() == "label.0" {
             core.ix.labeled.insert(a.tid);
         }

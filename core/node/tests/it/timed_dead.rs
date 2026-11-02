@@ -172,3 +172,170 @@ fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
     net.advance(61_000);
     assert_eq!(net.read(late, t), Some(s("v1")), "a holder offline throughout");
 }
+
+/// Commits `c1` = {`GONE` (`r`): "v1", `REG`: "k"} and `c2` = {`GONE` (`r2`): "v2"} on a new item
+/// by a node at a host; the time passes (`after`); c1's `GONE` body leaves the host, then a reader
+/// syncing the item comes online: c1 applies there, with its `REG` part.
+fn reader_applies_after_carrierless_delete(seed: u64, r: Option<osis_schema::Retention>, r2: Option<osis_schema::Retention>, after: u64) {
+    use osis_base::Role;
+    let (gone, reg) = (osis_base::Ak::new("t:gone.0").unwrap(), osis_base::Ak::new("t:reg.0").unwrap());
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(seed, &[host]);
+    let b = net.node(seed + 1, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    assert!(net.engine(b).core.ix.syncing.contains(&t), "a commit waits only where its thing is synced");
+    // back only after the delete, so it never sees the body
+    net.set_online(b, false);
+    let l = net.label(a);
+    let mut m = Mutation::new();
+    if let Some(r) = r {
+        m.retention(t, &GONE, r).unwrap();
+    }
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(t, &REG, &s("k")).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 2, "two bodies: two retention classes");
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    if let Some(r) = r2 {
+        m.retention(t, &GONE, r).unwrap();
+    }
+    m.set(t, &GONE, &s("v2")).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.advance(after);
+    let now = net.now();
+    net.hosts[host].hub.tick(now);
+    net.run();
+    assert_eq!(at_host(&mut net, a, host, &l, &c1).len(), 1, "c1's GONE body left the host");
+    let snapshots = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot))).count();
+    assert_eq!(snapshots, 0, "with no carrier");
+    net.set_online(b, true);
+    net.run();
+    let resync = net.sync(b).config().resync_ms;
+    net.advance(resync);
+    assert!(net.engine(b).pending().is_empty(), "{:?}", net.engine(b).pending());
+    assert_eq!(net.engine(b).get(&t, &reg).unwrap(), Some(s("k")), "as at the writer");
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v2")));
+    assert_eq!(net.engine(b).state(&t, &reg).unwrap(), net.engine(a).state(&t, &reg).unwrap());
+    assert_eq!(net.engine(b).state(&t, &gone).unwrap(), net.engine(a).state(&t, &gone).unwrap());
+}
+
+fn most(abs: Option<u64>, rel: Option<u64>) -> Option<osis_schema::Retention> {
+    use osis_schema::{Bound, PurgeBy, Retention};
+    Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs, rel } })
+}
+
+// spec/commits.md §4 (a delta past its keep-at-most bound counts as held), §5 (a body with no live
+// write needs no carrier), driving the real deletion: at most 0, deleted with the kill's sync.
+#[test]
+fn reader_after_delete_at_most_zero_spec_commits_4() {
+    let r = most(None, Some(0));
+    reader_applies_after_carrierless_delete(0x7d10, r, r, 0);
+}
+
+// The same with D after replaced: a timed delete, carried out by the host at its bound.
+#[test]
+fn reader_after_timed_delete_spec_commits_4() {
+    let r = most(None, Some(600_000));
+    reader_applies_after_carrierless_delete(0x7d20, r, r, 600_000 + 1_000);
+}
+
+// spec/commits.md §4: a pending commit whose missing part's bound comes wakes its node at the
+// bound, nothing else happening (no resync, no timer of its own).
+#[test]
+fn wait_wakes_node_at_bound_spec_commits_4() {
+    use osis_base::Role;
+    const D: u64 = 5_000;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(0x7d40, &[host]);
+    let b = net.node(0x7d41, &[host]);
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    assert!(net.sync(b).config().resync_ms > D);
+    net.set_online(a, false);
+    let r = most(None, Some(D)).unwrap();
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, r).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(t, &REG, &s("k")).unwrap();
+    let c1 = net.engine(a).commit(m).unwrap().unwrap();
+    net.advance(1);
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, r).unwrap();
+    m.set(t, &GONE, &s("v2")).unwrap();
+    let c2 = net.engine(a).commit(m).unwrap().unwrap();
+    let pk = net.engine(a).package(&c1).unwrap().unwrap();
+    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let h = blob.header.clone();
+    blob.parts.retain(|p| h.aspects[p.ai].ak.as_str() == "t:reg.0");
+    net.engine(b).ingest(&blob.encode(), pk.blobs).unwrap();
+    let pk = net.engine(a).package(&c2).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    assert_eq!(net.engine(b).pending().len(), 1);
+    let bound = net.now() + D;
+    net.feed(b, osis_node::sync::Event::Tick);
+    assert!(net.nodes[b].wake.is_some_and(|at| at <= bound), "{:?} vs {bound}", net.nodes[b].wake);
+    net.advance(D);
+    assert!(net.engine(b).pending().is_empty(), "{:?}", net.engine(b).pending());
+}
+
+/// A new item a writer and a reader both sync: (net, writer, reader, item).
+fn writer_and_reader(seed: u64) -> (Net, usize, usize, osis_base::Tid) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(seed, &[host]);
+    let b = net.node(seed + 1, &[host]);
+    let g = net.group(a, &[(b, osis_base::Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    (net, a, b, t)
+}
+
+/// Runs a resync, then `t`'s `GONE` as the reader `b` reads it is the writer's `v1`.
+fn reader_got_v1(net: &mut Net, a: usize, b: usize, t: osis_base::Tid) {
+    let gone = osis_base::Ak::new("t:gone.0").unwrap();
+    let resync = net.sync(a).config().resync_ms;
+    net.advance(resync);
+    net.run();
+    assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")));
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("v1")), "a live write reaches the reader");
+}
+
+// spec/commits.md §5 (a body with live writes leaves a label only with a carrier): an absolute
+// keep at most already past at the write. Dropping the body in the writing transaction lost the
+// write for everyone else: it had never been uploaded and no carrier was written.
+#[test]
+fn absolute_bound_past_at_write_reaches_reader_spec_commits_5() {
+    let (mut net, a, b, t) = writer_and_reader(0x9a10);
+    let now = net.now();
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(Some(now - 1), None).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    reader_got_v1(&mut net, a, b, t);
+}
+
+// The same with T passing while the writer is offline, before it ever uploaded the body.
+#[test]
+fn absolute_bound_passing_offline_reaches_reader_spec_commits_5() {
+    let (mut net, a, b, t) = writer_and_reader(0x9a20);
+    net.set_online(a, false);
+    let now = net.now();
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(Some(now + 10_000), None).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.advance(20_000);
+    net.engine(a).tick().unwrap();
+    net.set_online(a, true);
+    net.run();
+    reader_got_v1(&mut net, a, b, t);
+}

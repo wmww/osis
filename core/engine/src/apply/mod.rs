@@ -160,12 +160,14 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> R
 
 /// Whether a missing delta of commit `id` makes it wait (atomic apply, spec/commits.md §4).
 fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl Iterator<Item = (usize, usize)>) -> Result<bool> {
+    let now = tx.now().0;
     for (ai, _) in missing {
-        // expired, purged or dropped deltas count as held (dropped: a held snapshot of any
-        // validity lists it as included, spec/commits.md §4)
+        // expired, purged, past keep at most or dropped deltas count as held (dropped: a held
+        // snapshot of any validity lists it as included, spec/commits.md §4)
         if let Some(a) = h.aspects.get(ai)
             && tx.core.ix.syncing.contains(&a.tid)
-            && !a.expires.is_some_and(|t| t <= tx.now().0)
+            && !a.expires.is_some_and(|t| t <= now)
+            && !at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now)
             && !crate::retention::known_purged(tx, h, id, ai)?
             && !receipt::listed(tx.core, h, id, ai)
         {
@@ -173,6 +175,31 @@ fn waits_for_deltas(tx: &mut Tx<'_>, h: &Header, id: &CommitId, missing: impl It
         }
     }
     Ok(false)
+}
+
+/// From when missing delta `a` of commit `id` counts as held for its keep at most
+/// (spec/commits.md §4): `None` while nothing here shows it could have left.
+///
+/// A body with no live write goes from hosts with no carrier (§5), and without its body a node
+/// cannot tell whether a write is live: the header gives counters and a hash, not positions. What
+/// it can tell is the condition such a delete needs: a superseder, which is a commit on the aspect
+/// stamped no earlier than this one, and the bound counted from it. An absolute bound passing
+/// alone shows nothing: a body with a live write leaves only with a carrier (`receipt::listed`).
+/// The last write on an aspect stays as its own body or a carrier unless it expired or was purged,
+/// so a killer stamped later stays to be seen; those cases and a killer stamped earlier wait for
+/// the aspect's next commit (issues/atomic-wait-no-later-commit.md). A live delta still on its
+/// way waits unless such a commit exists and its bound passed; a bound passing here earlier than
+/// at its holders (an unrelated later commit, this node's clock) only applies the rest sooner.
+///
+/// Invariant (arrival-order independence): this decides when a commit's held parts join, never
+/// what they join to. Every input only grows (commits held, any validity, so no flip can take it
+/// back; the clock going back unapplies nothing), an applied commit's missing delta joins on
+/// arrival as if it had come with the rest (join commutes; retention judges it then), and one
+/// that never comes held only writes every holder's state supersedes or a carrier holds.
+pub(super) fn at_most_bound(core: &crate::engine::Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<u64> {
+    let held = core.ix.by_aspect.get(&(a.tid, a.ak.clone()))?;
+    let later = held.range((h.ts, CommitId([0; 32]))..).find(|x| x.1 != *id)?.0.wall_ms().0;
+    osis_commit::retention::body_keep(h, &a.retention, Some(later), Some(later), false).at_most
 }
 
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no

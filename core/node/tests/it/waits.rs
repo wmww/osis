@@ -6,7 +6,9 @@ use crate::common;
 use common::*;
 use osis_commit::CommitBlob;
 use osis_base::{Tid, Value, WallMs};
+use osis_node::local_peer::LocalPeer;
 use osis_node::{Ingested, Mutation, Reason};
+use osis_schema::{Bound, PurgeBy, Retention};
 
 fn only(bytes: &[u8], h: &osis_commit::Header, keep: impl Fn(Tid, &str) -> bool) -> Vec<u8> {
     let mut b = CommitBlob::decode(bytes).unwrap();
@@ -92,4 +94,545 @@ fn junk_pending_waits_bounded_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.pending().len(), 1000);
     let bytes = lp.peers[1].engine.waits_bytes();
     assert!(bytes <= 1000 * 512, "{bytes} B kept for 1000 junk commits");
+}
+
+/// A thing of peer 0 known to peer 1, which syncs it; the commits `writes` makes on it, one per
+/// entry, the wall clock moving 10 ms between them, with peer 1 given none of them.
+fn carrierless(seed: u64, writes: Vec<Mutate>) -> (LocalPeer, Tid, Vec<osis_node::local_peer::Package>) {
+    let mut lp = net(2, seed);
+    let t = new_thing(&mut lp, 0);
+    sync(&mut lp, 0, 1);
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    let mut out = Vec::new();
+    for w in writes {
+        lp.advance(10);
+        let mut m = Mutation::new();
+        w(&mut m, t);
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        out.push(packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap());
+    }
+    (lp, t, out)
+}
+
+type Mutate = Box<dyn Fn(&mut Mutation, Tid)>;
+
+/// A commit writing `GONE` (under retention `r`, when given) and, when `reg`, `REG`.
+fn mixed(gone: &'static str, reg: Option<&'static str>, r: Option<Retention>) -> Mutate {
+    Box::new(move |m, t| {
+        if let Some(r) = r {
+            m.retention(t, &GONE, r).unwrap();
+        }
+        m.set(t, &GONE, &s(gone)).unwrap();
+        if let Some(v) = reg {
+            m.set(t, &REG, &s(v)).unwrap();
+        }
+    })
+}
+
+fn at_most(rel: Option<u64>, abs: Option<u64>) -> Option<Retention> {
+    Some(Retention { by: PurgeBy::Writer, at_least: Bound::default(), at_most: Bound { abs, rel } })
+}
+
+fn reg_only(p: &osis_node::local_peer::Package) -> Vec<u8> {
+    let b = CommitBlob::decode(&p.bytes).unwrap();
+    let h = b.header.clone();
+    only(&p.bytes, &h, |_, a| a == "t:reg.0")
+}
+
+// spec/commits.md §4 (a delta past its keep-at-most bound counts as held): c1's
+// `k` projection and c2 at a node syncing t, c1's at-most-0 body deleted at hosts with no
+// carrier: c1 applies; the body, should a copy still come, joins as a late part and drops on
+// arrival, ending as a node that got c1 whole.
+#[test]
+fn part_past_at_most_counts_as_held_spec_commits_4() {
+    let (mut lp, t, c) = carrierless(0x7c01, vec![mixed("x", Some("1"), None), mixed("y", None, None)]);
+    let gone = ak("t:gone.0");
+    let e = |lp: &mut LocalPeer| lp.peers[1].engine.pending();
+    let r = lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
+    lp.deliver(1, &c[1]).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(e(&mut lp).is_empty(), "{:?}", e(&mut lp));
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
+    assert_eq!(lp.peers[1].engine.get(&t, &gone).unwrap(), Some(s("y")));
+    // the late copy: as at the writer
+    lp.deliver(1, &c[0]).unwrap();
+    assert!(!lp.peers[1].engine.body_not_dropped(&c[0].id, &t, &gone), "dropped on arrival");
+    assert_eq!(lp.peers[1].engine.state(&t, &gone).unwrap(), lp.peers[0].engine.state(&t, &gone).unwrap());
+    assert_eq!(lp.peers[1].engine.state(&t, &ak("t:reg.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:reg.0")).unwrap());
+}
+
+// spec/commits.md §4: with no later commit on the aspect nothing shows the delta could have left
+// (its write is live, or dead by a commit not here yet): it waits at any clock, also under at
+// most 0. So a keep at most alone never releases a live part still on its way.
+#[test]
+fn live_part_keeps_waiting_spec_commits_4() {
+    let (mut lp, t, c) = carrierless(0x7c02, vec![mixed("x", Some("1"), at_most(Some(0), None))]);
+    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+    lp.peers[1].clock.advance(30 * 24 * 3_600_000);
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)]);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    // the part arrives: applied whole
+    lp.deliver(1, &c[0]).unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:gone.0")).unwrap(), Some(s("x")));
+}
+
+// spec/commits.md §4, §5 (D after replaced): the bound counts from the earliest later commit
+// held, on this node's clock: before it the part waits, past it the commit applies (a tick is
+// enough: the wait wakes at the bound). A clock behind the writer's only waits longer.
+#[test]
+fn part_waits_for_relative_bound_spec_commits_4() {
+    const D: u64 = 600_000;
+    let (mut lp, t, c) = carrierless(0x7c03, vec![mixed("x", Some("1"), at_most(Some(D), None)), mixed("y", None, at_most(Some(D), None))]);
+    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+    lp.deliver(1, &c[1]).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "before the bound");
+    let bound = lp.peers[1].engine.header(&c[1].id).unwrap().ts.wall_ms().0 + D;
+    lp.peers[1].clock.set(WallMs(bound - 1));
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "just before the bound");
+    lp.peers[1].clock.set(WallMs(bound));
+    lp.peers[1].engine.tick().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty(), "at the bound");
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
+    // a clock going back unapplies nothing
+    lp.peers[1].clock.set(WallMs(bound - 1));
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
+}
+
+// spec/commits.md §4, §5 (an absolute keep at most): T passing alone shows nothing, the part is
+// live or its killer is yet to come, and a live body leaves only with a carrier. With a later commit
+// on the aspect it counts from T on this node's clock. A copy arriving later joins, as at the writer.
+#[test]
+fn part_past_absolute_bound_spec_commits_4() {
+    let t_abs = T0.0 + 3_600_000;
+    let (mut lp, t, c) = carrierless(0x7c04, vec![mixed("x", Some("1"), at_most(None, Some(t_abs))), mixed("y", None, None)]);
+    let gone = ak("t:gone.0");
+    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+    lp.peers[1].clock.set(WallMs(t_abs + 1));
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "past T, nothing later here");
+    lp.peers[1].clock.set(WallMs(T0.0 + 1_000));
+    lp.deliver(1, &c[1]).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)], "a later commit, its clock before T");
+    lp.peers[1].clock.set(WallMs(t_abs));
+    lp.peers[1].engine.tick().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("1")));
+    lp.deliver(1, &c[0]).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &gone).unwrap(), Some(s("y")));
+    assert_eq!(lp.peers[1].engine.state(&t, &gone).unwrap(), lp.peers[0].engine.state(&t, &gone).unwrap());
+    assert_eq!(lp.peers[1].engine.state(&t, &ak("t:reg.0")).unwrap(), lp.peers[0].engine.state(&t, &ak("t:reg.0")).unwrap());
+}
+
+// spec/commits.md §4, §5: the rule loosens atomic wait for a commit's own author only as far as
+// writing the parts apart would: a commit whose author may not write gains nothing (its part stays
+// invalid), and a later commit of any validity counts (validity may differ between nodes; a drop
+// is final). Fixed retention has no keep at most, on the wire or off: a role-class part cannot use it.
+#[test]
+fn forged_at_most_class_gives_no_rights_spec_commits_4() {
+    let mut lp = net(3, 0x7c05);
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[2].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    sync(&mut lp, 2, 1);
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    // peer 1 knows of peer 2's removal, peer 2 does not: it writes a part it withholds under at
+    // most 0 with a part on `REG`, then a later write on `GONE`, both invalid at peer 1
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, w, None, None);
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    mixed("forged", Some("forged"), at_most(Some(0), None))(&mut m, t);
+    let forged = lp.peers[2].commit(m).unwrap().unwrap();
+    let pk = packages(&mut lp, 2).into_iter().find(|p| p.id == forged).unwrap();
+    lp.advance(10);
+    let mut m = Mutation::new();
+    mixed("later", None, None)(&mut m, t);
+    let later = lp.peers[2].commit(m).unwrap().unwrap();
+    let pl = packages(&mut lp, 2).into_iter().find(|p| p.id == later).unwrap();
+    lp.peers[1].engine.ingest(&reg_only(&pk), Vec::new()).unwrap();
+    lp.deliver(1, &pl).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "the part stays invalid");
+    assert_eq!(e.get(&t, &ak("t:gone.0")).unwrap(), None, "so does the later write");
+    assert!(osis_commit::retention::fixed_retention("roles.0").is_some_and(|r| r.at_most.abs.is_none() && r.at_most.rel.is_none()));
+}
+
+// spec/commits.md §4; `apply/waits.rs`: a later commit whose part on the aspect is not held (its
+// own part counts as held, expired) writes no receipt there, and still wakes the wait (the debug
+// check would panic on the stale answer).
+#[test]
+fn later_commit_without_part_wakes_wait_spec_commits_4() {
+    let t_exp = T0.0 + 60_000;
+    let expiring: Mutate = Box::new(move |m, t| {
+        m.set(t, &GONE, &s("y")).unwrap();
+        m.expires(t, &GONE, WallMs(t_exp)).unwrap();
+        m.set(t, &REG, &s("2")).unwrap();
+    });
+    let (mut lp, t, c) = carrierless(0x7c07, vec![mixed("x", Some("1"), at_most(Some(0), None)), expiring]);
+    lp.peers[1].clock.set(WallMs(t_exp + 1));
+    lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert_eq!(lp.peers[1].engine.pending(), vec![(c[0].id, Reason::WaitDeltas)]);
+    lp.peers[1].engine.ingest(&reg_only(&c[1]), Vec::new()).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    assert!(lp.peers[1].engine.pending().is_empty(), "{:?}", lp.peers[1].engine.pending());
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("2")));
+}
+
+// spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4: a
+// node that applied a commit without a live part and then snapshots the aspect claims nothing
+// of that part, so its snapshot does not cover the body and the body still joins when it comes.
+#[test]
+fn snapshot_after_release_leaves_part_to_join_spec_crdt_8() {
+    let map = ak("t:gonemap.0");
+    let put = |k: &'static str, reg: Option<&'static str>| -> Mutate {
+        Box::new(move |m, t| {
+            let map = ak("t:gonemap.0");
+            m.retention(t, &map, at_most(Some(0), None).unwrap()).unwrap();
+            m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
+            if let Some(v) = reg {
+                m.set(t, &REG, &s(v)).unwrap();
+            }
+        })
+    };
+    let (mut lp, t, c) = carrierless(0x7c08, vec![put("a", Some("1")), put("b", None)]);
+    let w = lp.peers[1].engine.tid();
+    let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
+    lp.deliver(1, &pg).unwrap();
+    let b = CommitBlob::decode(&c[0].bytes).unwrap();
+    let h = b.header.clone();
+    lp.peers[1].engine.ingest(&only(&c[0].bytes, &h, |_, a| a == "t:reg.0"), Vec::new()).unwrap();
+    lp.deliver(1, &c[1]).unwrap();
+    lp.peers[1].engine.reexamine().unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert!(e.pending().is_empty(), "released by c2: {:?}", e.pending());
+    let snap = e.snapshot(&t, &map).unwrap().unwrap();
+    assert_eq!(e.covered(&snap, &c[0].id, &t, &map).unwrap(), Some(false), "the snapshot lacks the part's write");
+    assert_eq!(e.covered(&snap, &c[1].id, &t, &map).unwrap(), Some(false), "the frontier stops at the gap, as for a commit still pending");
+    lp.deliver(1, &c[0]).unwrap();
+    let want = lp.peers[0].engine.get(&t, &map).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &map).unwrap(), want, "the part joined");
+}
+
+/// As node-sync's `drop_covered` for a right holder past keep at least (the bodies here are
+/// `by: writer` with no keep at least): every body of `(t, a)` snapshot `s` covers. How many.
+fn drop_covered_by(e: &mut osis_node::Engine, s: &osis_base::CommitId, t: &Tid, a: &osis_base::Ak) -> usize {
+    let held: Vec<osis_base::CommitId> = e.core.ix.by_aspect.get(&(*t, a.clone())).into_iter().flatten().map(|x| x.1).collect();
+    let mut n = 0;
+    for c in held {
+        if c != *s && e.body_not_dropped(&c, t, a) && e.covered(s, &c, t, a).unwrap() == Some(true) {
+            e.drop_body(&c, t, a).unwrap();
+            n += 1;
+        }
+    }
+    n
+}
+
+/// Gives peer `to` of `lp` write on `t` and every commit of peer 0.
+fn writer(lp: &mut LocalPeer, t: Tid, to: usize) {
+    let w = lp.peers[to].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    sync(lp, 0, to);
+}
+
+/// Two writers' history under keep at most and expiry on `t` (each commit also writing `t:reg.0`
+/// sometimes, so it is two bodies), then two more writers: `w` given all of it, `g` given it in
+/// another order with some of those bodies held back, both snapshotting and dropping what their
+/// snapshots cover on the way, then each given the other's snapshots and `g` the bodies held back.
+/// Whatever the frontiers stopped at, `g` ends as `w` reads and states, nothing pending.
+fn gap_snapshot_check(seed: u64, len: u64, expiring: bool) -> Result<(), String> {
+    let mut rng = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut below = move |n: u64| {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        rng % n
+    };
+    let mut lp = net(4, seed);
+    let t = new_thing(&mut lp, 0);
+    for (from, to) in [(0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3), (3, 2), (2, 1), (3, 1)] {
+        sync(&mut lp, from, to);
+    }
+    for i in 1..4 {
+        writer(&mut lp, t, i);
+    }
+    for (from, to) in [(1, 0), (2, 0), (3, 0), (1, 2), (1, 3), (2, 3), (3, 2), (2, 1), (3, 1)] {
+        sync(&mut lp, from, to);
+    }
+    let (g, w) = (2, 3);
+    lp.peers[g].engine.set_syncing(t, true).unwrap();
+    lp.peers[w].engine.set_syncing(t, true).unwrap();
+    let aspects = [ak("t:gone.0"), ak("t:gonemap.0"), ak("t:shortmap.0")];
+    let mut packs = Vec::new();
+    for _ in 0..len {
+        let by = below(2) as usize;
+        lp.peers[by].clock.advance(1 + below(50));
+        let (a, mut key, val) = (below(3) as usize, format!("k{}", below(3)), format!("v{}", below(1 << 20)));
+        // on a key of its own: another's write under its entry is issues/expired-entry-key-kept.md
+        let expires = expiring && a > 0 && below(3) == 0;
+        if expires {
+            key = val.clone();
+        }
+        let mut m = Mutation::new();
+        let op = if a == 0 || expires || below(4) > 0 { osis_crdt::PathOp { path: if a == 0 { vec![] } else { vec![osis_crdt::PathSeg::Key(s(&key))] }, op: osis_crdt::Op::Set(s(&val)) } } else { osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s(&key)) } };
+        m.retention(t, &aspects[a], at_most(Some(if a == 2 { 600_000 } else { 0 }), None).unwrap()).unwrap();
+        m.op(t, &aspects[a], op).unwrap();
+        if expires {
+            let now = lp.peers[by].engine.now().0;
+            m.expires(t, &aspects[a], WallMs(now + 3_600_000)).unwrap();
+        }
+        if below(2) == 0 {
+            m.set(t, &REG, &s(&val)).unwrap();
+        }
+        if let Ok(Some(id)) = lp.peers[by].commit(m) {
+            packs.push(packages(&mut lp, by).into_iter().find(|p| p.id == id).unwrap());
+        }
+        if below(4) == 0 {
+            sync(&mut lp, by, 1 - by);
+        }
+    }
+    let mut order: Vec<usize> = (0..packs.len()).collect();
+    let shuffle = |o: &mut Vec<usize>, below: &mut dyn FnMut(u64) -> u64| {
+        for x in (1..o.len()).rev() {
+            o.swap(x, below(x as u64 + 1) as usize);
+        }
+    };
+    let mut sent = [Vec::new(), Vec::new()];
+    // half the runs without `w`'s snapshots, which would give `g` what it lost
+    let w_snapshots = below(2) == 0;
+    // past every write of the history: a bound counted from a later commit has passed (under D
+    // of 10 min not yet)
+    for p in [g, w] {
+        lp.peers[p].clock.advance(len * 60);
+    }
+    // half the runs in the order written: a frontier reaches a part only past all before it
+    let written = below(2) == 0;
+    for (who, peer) in [g, w].into_iter().enumerate() {
+        if !written {
+            shuffle(&mut order, &mut below);
+        }
+        for &i in &order {
+            let pk = &packs[i];
+            let b = CommitBlob::decode(&pk.bytes).unwrap();
+            let bytes = if who == 0 && b.parts.len() > 1 && below(2) == 0 { only(&pk.bytes, &b.header, |_, a| a == "t:reg.0") } else { pk.bytes.clone() };
+            let _ = lp.peers[peer].engine.ingest(&bytes, pk.blobs.clone());
+            let _ = lp.peers[peer].engine.reexamine();
+            if (who == 0 || w_snapshots) && below(4) == 0 {
+                let a = &aspects[1 + below(2) as usize];
+                if let Ok(Some(id)) = lp.peers[peer].engine.snapshot(&t, a) {
+                    sent[who].push((a.clone(), id, packages(&mut lp, peer).into_iter().find(|p| p.id == id).unwrap()));
+                    drop_covered_by(&mut lp.peers[peer].engine, &id, &t, a);
+                }
+            }
+        }
+    }
+    for (who, peer) in [g, w].into_iter().enumerate() {
+        for (a, id, pk) in &sent[1 - who] {
+            let _ = lp.peers[peer].engine.ingest(&pk.bytes, pk.blobs.clone());
+            if below(2) == 0 {
+                drop_covered_by(&mut lp.peers[peer].engine, id, &t, a);
+            }
+        }
+    }
+    shuffle(&mut order, &mut below);
+    for &i in &order {
+        let _ = lp.peers[g].engine.ingest(&packs[i].bytes, packs[i].blobs.clone());
+    }
+    let _ = lp.peers[g].engine.reexamine();
+    for at in [0, 2 * 3_600_000] {
+        for p in [g, w] {
+            if at > 0 {
+                lp.peers[p].clock.advance(at);
+            }
+            lp.peers[p].engine.tick().unwrap();
+            let pending = lp.peers[p].engine.pending();
+            if !pending.is_empty() {
+                return Err(format!("peer {p} pends {pending:?}"));
+            }
+        }
+        for a in aspects.iter().chain([&ak("t:reg.0")]) {
+            let (x, y) = (lp.peers[g].engine.get(&t, a).unwrap(), lp.peers[w].engine.get(&t, a).unwrap());
+            if x != y {
+                return Err(format!("{a:?} reads differ, {at} ms on: {x:?} vs {y:?}"));
+            }
+            let (x, y) = (lp.peers[g].engine.state(&t, a).unwrap(), lp.peers[w].engine.state(&t, a).unwrap());
+            if x != y {
+                return Err(format!("{a:?} states differ, {at} ms on: {x:?}\nvs {y:?}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn gap_snapshot_run(name: &str, seeds: std::ops::Range<u64>, len: u64) {
+    let seeds: Vec<u64> = seeds.collect();
+    let run = |seed: u64| osis_base::testenv::caught(|| [false, true].into_iter().try_for_each(|x| gap_snapshot_check(seed, len, x))).map_err(|e| format!("seed {seed} ({name}): {e}"));
+    let fails: Vec<String> = osis_base::testenv::par_map(&seeds, osis_base::testenv::threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1), run).into_iter().filter_map(Result::err).collect();
+    assert!(fails.is_empty(), "{} failing:\n{}", fails.len(), fails.join("\n\n"));
+}
+
+// spec/crdt.md §8 (a frontier reaches only writes the fragment reflects), spec/commits.md §4 (a
+// part counted as held joins on arrival, or never): `gap_snapshot_check`.
+#[test]
+fn gap_snapshots_converge_spec_crdt_8() {
+    gap_snapshot_run("gap_snapshots_converge_spec_crdt_8", 0..12, 14);
+}
+
+// The same over more histories, longer.
+#[test]
+#[ignore = "tier 2"]
+fn gap_snapshots_converge_large_spec_crdt_8() {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_ORDER_START", "OSIS_ORDER_SEEDS", 1000..1300);
+    gap_snapshot_run("gap_snapshots_converge_large_spec_crdt_8", seeds.range, 30);
+}
+
+// issues/atomic-wait-no-later-commit.md: a write killed by a commit stamped before it (nested in
+// an entry a slower clock's commit removed) leaves its body at no live write with nothing on the
+// aspect as late, so a node that never gets the body waits until the aspect's next write.
+#[test]
+fn dead_part_with_earlier_killer_waits_for_next_write_spec_commits_4() {
+    let map = ak("t:map.0");
+    let r = at_most(Some(0), None).unwrap();
+    let mut lp = net(3, 0x7e06);
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(item("x", 1)) }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    for (from, to) in [(0, 1), (0, 2), (1, 2)] {
+        sync(&mut lp, from, to);
+    }
+    lp.peers[2].engine.set_syncing(t, true).unwrap();
+    lp.peers[1].clock.advance(60_000);
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k")), osis_crdt::PathSeg::Field(1)], op: osis_crdt::Op::Set(Value::Int(9)) }).unwrap();
+    m.set(t, &REG, &s("b")).unwrap();
+    let c1 = lp.peers[1].commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.op(t, &map, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Remove(s("k")) }).unwrap();
+    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    let p1 = packages(&mut lp, 1).into_iter().find(|p| p.id == c1).unwrap();
+    let p2 = packages(&mut lp, 0).into_iter().find(|p| p.id == c2).unwrap();
+    assert!(lp.peers[0].engine.header(&c2).unwrap().ts < lp.peers[1].engine.header(&c1).unwrap().ts);
+    lp.deliver(0, &p1).unwrap();
+    assert!(!lp.peers[0].engine.body_not_dropped(&c1, &t, &map), "dead at the holder, so gone with no carrier");
+    lp.peers[2].engine.ingest(&reg_only(&p1), Vec::new()).unwrap();
+    lp.peers[2].engine.ingest(&p2.bytes, p2.blobs.clone()).unwrap();
+    lp.peers[2].clock.advance(30 * 24 * 3_600_000);
+    lp.peers[2].engine.tick().unwrap();
+    assert_eq!(lp.peers[2].engine.pending(), vec![(c1, Reason::WaitDeltas)]);
+    lp.peers[0].clock.advance(120_000);
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("j"))], op: osis_crdt::Op::Set(item("y", 2)) }).unwrap();
+    let c3 = lp.peers[0].commit(m).unwrap().unwrap();
+    let p3 = packages(&mut lp, 0).into_iter().find(|p| p.id == c3).unwrap();
+    lp.peers[2].engine.ingest(&p3.bytes, p3.blobs.clone()).unwrap();
+    lp.peers[2].engine.reexamine().unwrap();
+    assert!(lp.peers[2].engine.pending().is_empty(), "{:?}", lp.peers[2].engine.pending());
+}
+
+// spec/commits.md §5, spec/crdt.md §8 (a delta with an expiry is never covered): a snapshot lists
+// a live expiring part this node never received, carrying none of its value, as a holder's does:
+// the part stays to join when it comes, before its T.
+#[test]
+fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
+    let far = T0.0 + 3_600_000;
+    let put = move |k: &'static str, reg: bool, exp: bool| -> Mutate {
+        Box::new(move |m, t| {
+            let map = ak("t:gonemap.0");
+            m.retention(t, &map, at_most(Some(0), None).unwrap()).unwrap();
+            if exp {
+                m.expires(t, &map, WallMs(far)).unwrap();
+            }
+            m.op(t, &map, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s(k))], op: osis_crdt::Op::Set(s("v")) }).unwrap();
+            if reg {
+                m.set(t, &REG, &s("1")).unwrap();
+            }
+        })
+    };
+    for holders in [true, false] {
+        let map = ak("t:gonemap.0");
+        let (mut lp, t, c) = carrierless(0x7e01, vec![put("a", true, true), put("b", false, false)]);
+        let w = lp.peers[1].engine.tid();
+        let grant = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(osis_base::Role::Write)), None);
+        let pg = packages(&mut lp, 0).into_iter().find(|p| p.id == grant).unwrap();
+        lp.deliver(1, &pg).unwrap();
+        let held = holders.then(|| {
+            let id = lp.peers[0].engine.snapshot(&t, &map).unwrap().unwrap();
+            packages(&mut lp, 0).into_iter().find(|p| p.id == id).unwrap()
+        });
+        lp.peers[1].engine.ingest(&reg_only(&c[0]), Vec::new()).unwrap();
+        lp.deliver(1, &c[1]).unwrap();
+        if let Some(p) = &held {
+            lp.deliver(1, p).unwrap();
+        }
+        lp.peers[1].engine.reexamine().unwrap();
+        assert!(lp.peers[1].engine.pending().is_empty());
+        let e = &mut lp.peers[1].engine;
+        let snap = match &held {
+            Some(p) => p.id,
+            None => e.snapshot(&t, &map).unwrap().unwrap(),
+        };
+        assert_eq!(e.covered(&snap, &c[0].id, &t, &map).unwrap(), Some(false), "holder's: {holders}");
+        drop_covered_by(e, &snap, &t, &map);
+        lp.deliver(1, &c[0]).unwrap();
+        assert_eq!(lp.peers[1].engine.get(&t, &map).unwrap(), lp.peers[0].engine.get(&t, &map).unwrap(), "holder's: {holders}");
+    }
+}
+
+// issues/expired-entry-key-kept.md: arrival order decides whether a map entry an expiring delta
+// created stays readable past T under another writer's later write of the same key.
+#[test]
+#[ignore = "issues/expired-entry-key-kept.md"]
+fn expired_entry_key_alike_repro_spec_crdt_4_7() {
+    let map = ak("t:gonemap.0");
+    let r = at_most(Some(0), None).unwrap();
+    let mut lp = net(4, 0x7e09);
+    let t = new_thing(&mut lp, 0);
+    for i in 1..4 {
+        writer(&mut lp, t, i);
+    }
+    for (a, b) in [(0, 1), (1, 0), (0, 2), (0, 3), (1, 2), (1, 3)] {
+        sync(&mut lp, a, b);
+    }
+    let put = |v: &str| osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s(v)) };
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.expires(t, &map, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &map, put("a")).unwrap();
+    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    let p1 = packages(&mut lp, 0).into_iter().find(|p| p.id == c1).unwrap();
+    lp.deliver(1, &p1).unwrap();
+    let mut m = Mutation::new();
+    m.retention(t, &map, r).unwrap();
+    m.op(t, &map, put("b")).unwrap();
+    let c2 = lp.peers[1].commit(m).unwrap().unwrap();
+    let p2 = packages(&mut lp, 1).into_iter().find(|p| p.id == c2).unwrap();
+    lp.deliver(2, &p1).unwrap();
+    lp.deliver(2, &p2).unwrap();
+    lp.deliver(3, &p2).unwrap();
+    lp.deliver(3, &p1).unwrap();
+    for p in [2, 3] {
+        lp.peers[p].clock.advance(2 * 3_600_000);
+        lp.peers[p].engine.tick().unwrap();
+    }
+    assert_eq!(lp.peers[2].engine.get(&t, &map).unwrap(), lp.peers[3].engine.get(&t, &map).unwrap());
 }

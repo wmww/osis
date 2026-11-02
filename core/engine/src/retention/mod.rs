@@ -939,6 +939,12 @@ impl Engine {
         })
     }
 
+    /// When the next pending commit's missing delta counts as held by the clock (corrected wall
+    /// ms): a tick then applies it.
+    pub fn next_wait_due(&self) -> Option<u64> {
+        self.core.waits.next_due()
+    }
+
     /// Drops a body (compaction between the bounds, executed by node-sync): aspect `ak` of
     /// commit `c`.
     pub fn drop_body(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -1080,7 +1086,9 @@ impl Engine {
             if !expiring.is_empty() {
                 st.strip(&|d| expiring.iter().any(|o| o.owns(d)));
             }
-            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai)));
+            // a part still missing gives this state nothing (applied without it, spec/commits.md
+            // §4): an expiring one's writes would go value-less here anyway
+            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))));
             // frontiers cover only counters whose writes this state reflects: applied, valid
             let mut frontiers = Frontiers::default();
             let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
@@ -1232,9 +1240,11 @@ fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> R
             return Ok(Some(false));
         }
     }
-    // a body this node holds no delta of joins nothing: covered
+    // a body this node holds no delta of joins nothing: covered, unless still to come with an
+    // expiry: a snapshot carries none of its values (spec/crdt.md §8), so it must still join
     if !held {
-        return Ok(Some(true));
+        let awaited = m.missing.contains(&cai) && m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some());
+        return Ok(Some(!awaited));
     }
     // joining the body changes the snapshot's canonical bytes, judged on its part at the
     // body's positions (the rest is left as it is)
