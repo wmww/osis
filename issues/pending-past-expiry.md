@@ -14,3 +14,5 @@ Review view: A's divergence is the one the system already has. Hosts delete the 
 
 ## Decision (round 13)
 Owner: "if C is good go with C", balancing simplicity, deleting data when required and convergence; coordinator chose **C**: a part held pending at its expiry drops its values at T like any held body (requirement: no copy past T), and its non-value writes are kept as a checked residue wherever the thing's record is known, so convergence holds for every wait but a part waiting on its thing's creation record (`UnknownCreated`), the one accepted divergence (rare: the creation arrives after the content and after T). Simpler than D (no wire change), keeps deletion strict. Build it.
+
+notes/convergence-study.md proposes revisiting: option A plus a self-reported "suspect aspect" flag in the heartbeat, repaired by a writer's ordinary compaction snapshot, instead of C's checked-residue path (owner call).
