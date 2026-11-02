@@ -545,87 +545,6 @@ fn a_copy_goes_nowhere_spec_permissions_3() {
     assert!(c.get(m, text()).ok().flatten().is_none(), "its name at most");
 }
 
-fn timed(keep: Option<bool>) -> (World, Osis, Osis, Tid, Tid, Tid, u64, u64) {
-    let mut w = World::new();
-    let host = w.add_host();
-    let (a, _) = w.person(1, &[host]);
-    let (b, _) = w.person(2, &[host]);
-    w.run();
-    let card = b.contact_card().unwrap();
-    w.run();
-    let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
-    let g = sim_group(&a);
-    let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
-    let (hour, t0) = (3_600_000, w.now());
-    a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + hour)), keep, ..Default::default() }).unwrap();
-    w.run();
-    assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
-    (w, a, b, bob, g, m, t0, hour)
-}
-
-// spec/permissions.md §3 (lost access; Keep): a holder offline past its `until`, with a renewal made meanwhile and a write unsent: nothing goes on the time alone, erase or keep; back online the renewal arrives, the write goes up, and it reads and writes on
-#[test]
-fn an_until_passing_offline_loses_nothing_spec_permissions_3() {
-    for keep in [None, Some(true)] {
-        let (mut w, a, b, bob, g, m, t0, hour) = timed(keep);
-        w.set_online(&b, false);
-        let own = b.write_with(|x| { let n = x.create(g)?; x.place(n, g)?; x.at(n, text()).set(&s("unsent"))?; Ok(n) }).unwrap();
-        w.advance(1000);
-        a.grant(g, bob, Role::Write, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), keep, ..Default::default() }).unwrap();
-        w.run();
-        w.advance(2 * hour);
-        w.run();
-        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
-        assert_eq!(b.get(own, text()).unwrap(), Some(s("unsent")), "{keep:?}");
-        assert!(b.kept_copies().unwrap().is_empty(), "{keep:?}");
-        w.set_online(&b, true);
-        w.advance(60_000);
-        w.run();
-        assert_eq!(b.role_on(g), Some(Role::Write), "{keep:?}");
-        assert_eq!(a.get(own, text()).unwrap(), Some(s("unsent")), "{keep:?}");
-        b.write_with(|x| x.at(m, text()).set(&s("after"))).unwrap();
-        w.run();
-        assert_eq!(a.get(m, text()).unwrap(), Some(s("after")), "{keep:?}");
-    }
-}
-
-// spec/permissions.md §3 (lost access; Keep): no renewal: back online it finds the label closed to it (Alice rotated), so its write stays out, and then the edge's word holds: erased or kept
-#[test]
-fn an_until_ended_offline_goes_when_heard_out_spec_permissions_3() {
-    for keep in [None, Some(true)] {
-        let (mut w, a, b, _, g, m, _, hour) = timed(keep);
-        w.set_online(&b, false);
-        let own = b.write_with(|x| { let n = x.create(g)?; x.place(n, g)?; x.at(n, text()).set(&s("unsent"))?; Ok(n) }).unwrap();
-        w.advance(2 * hour);
-        w.run();
-        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
-        w.set_online(&b, true);
-        w.advance(60_000);
-        w.run();
-        assert_eq!(a.get(own, text()).unwrap(), None, "{keep:?}");
-        assert_eq!(b.kept_copies().unwrap().contains(&g), keep.is_some(), "{keep:?}");
-        assert_eq!(b.get(m, text()).unwrap().is_some(), keep.is_some(), "{keep:?}");
-    }
-}
-
-// spec/permissions.md §3 (lost access; Keep): a host gone for good does not hold an `until` off forever: past `ROLE_KEEP` the node goes by the time alone
-#[test]
-fn an_until_ended_out_of_reach_goes_past_role_keep_spec_permissions_3() {
-    for keep in [None, Some(true)] {
-        let (mut w, _a, b, _, g, m, _, hour) = timed(keep);
-        w.set_online(&b, false);
-        let keep_ms = osis_base::format::ROLE_KEEP_MS;
-        w.advance(keep_ms - hour);
-        w.run();
-        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
-        assert!(b.kept_copies().unwrap().is_empty(), "{keep:?}");
-        w.advance(2 * hour + 1000);
-        w.run();
-        assert_eq!(b.kept_copies().unwrap().contains(&g), keep.is_some(), "{keep:?}");
-        assert_eq!(b.get(m, text()).unwrap().is_some(), keep.is_some(), "{keep:?}");
-    }
-}
-
 // spec/permissions.md §3 (Keep; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
 #[test]
 fn a_client_places_no_copy_spec_permissions_3() {
@@ -637,26 +556,6 @@ fn a_client_places_no_copy_spec_permissions_3() {
     until("the app reads the copy", || app.get(c.m, text()).ok().flatten().is_some());
     until("the app writes its group", || app.write_with(|w| { let n = w.create(own)?; w.place(n, own) }).is_ok());
     assert!(matches!(app.write_with(|w| w.place(c.m, own)), Err(Error::Permission { .. })));
-}
-
-// spec/permissions.md §3 (Keep), notes/node.md (lost access): a holder online past its `until`, the renewal made only later: it erased, and is re-sealed through the stranded heartbeat: it returns, not at once
-#[test]
-fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_3() {
-    let (mut w, a, b, bob, g, m, t0, hour) = timed(None);
-    w.advance(2 * hour);
-    w.run();
-    assert_eq!(b.get(m, text()).unwrap(), None, "erased: its edge said so, and it heard no more");
-    a.grant(g, bob, Role::Read, EdgeOpts { until: Some(osis::WallMs(t0 + 1000 * hour)), ..Default::default() }).unwrap();
-    a.write_with(|x| x.at(m, text()).set(&s("during"))).unwrap();
-    w.run();
-    let mut hours = 2;
-    while b.get(m, text()).unwrap().is_none() {
-        hours += 1;
-        assert!(hours < 200, "never came back");
-        w.advance(hour);
-        w.run();
-    }
-    assert_eq!(b.get(m, text()).unwrap(), Some(s("during")));
 }
 
 // spec/permissions.md §3 (Keep; ephemeral aspects are not part of a copy, and hold until restart as on any lost thing: issues/ephemeral-data.md): an ephemeral write reaches no copy, and neither the node nor its client writes one; a client reads no ephemeral thing of the chat
