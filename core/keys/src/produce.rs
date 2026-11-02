@@ -269,12 +269,12 @@ pub fn box_holder(
 
 /// Puts `names` into each box `w` writes to holder actor `holder` (spec/crypto.md §4: a grant's
 /// names for the actor it boxes), sealed under the boxed epoch's secret (`held`, the actor's).
-pub fn with_names(actor: &Tid, holder: &Tid, w: &mut SecretsWrite, names: &Names, held: &ActorEpochs) -> Result<(), Error> {
+pub fn with_names(actor: &Tid, holder: &Tid, w: &mut SecretsWrite, names: &Names, held: &ActorEpochs, rng: &mut dyn CryptoRngCore) -> Result<(), Error> {
     let v = names.to_value();
     for (k, b) in w.boxes.iter_mut().filter(|(k, _)| k.holder == *holder) {
         let e = from_schema(&k.epoch)?;
         let s = held.role(k.role).secret(&e).ok_or(Error::NoSecret(k.role))?;
-        let sealed = Some(seal_box_names(s, actor, holder, k.role, &e, &v)?);
+        let sealed = Some(seal_box_names(s, actor, holder, k.role, &e, &v, rng)?);
         match b {
             SecretBox::Sealed(x) => x.names = sealed,
             SecretBox::Symmetric(x) => x.names = sealed,

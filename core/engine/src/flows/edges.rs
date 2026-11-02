@@ -166,7 +166,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
             let mut w = box_holder(&target, &epochs, &secrets, &rcpt, &roles, &mut *tx.rng)?.ok_or(Error::Misuse("the holder's keyset is unknown"))?;
             if matches!(rcpt.keys, osis_keys::HolderKeys::Actor { .. }) {
                 let n = rotation::grant_names(tx.core, &rcpt, &roles);
-                osis_keys::with_names(&target, &holder, &mut w, &n, &epochs)?;
+                osis_keys::with_names(&target, &holder, &mut w, &n, &epochs, &mut *tx.rng)?;
                 names = Some(n);
             }
             w
