@@ -208,6 +208,13 @@ impl Mutation {
         self
     }
 
+    /// Tests: marks the commit a roster snapshot, whatever roster its writes hold.
+    #[doc(hidden)]
+    pub fn roster_for_tests(&mut self) -> &mut Self {
+        self.roster = true;
+        self
+    }
+
     pub fn is_empty(&self) -> bool {
         self.creates.is_empty() && self.aspects.is_empty() && self.purge.is_empty() && self.undoes.is_none() && self.free.is_empty()
     }

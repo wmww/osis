@@ -2,7 +2,8 @@
 //! the order harness (`order::play`), carried in a bundle as one label's host holds them, judged
 //! by a fresh node in a given arrival order; the expected verdicts are what this engine judges.
 //! `judgment_vectors_*` replays every committed case through a fresh engine and compares, and
-//! checks the files equal a fresh generation; `judgment_vectors_write` (ignored) rewrites them.
+//! checks the files equal a fresh generation; `judgment_vectors_write` (ignored) rewrites them;
+//! `judgment_vectors_can_fail` (ignored) checks a changed verdict or order fails each case.
 
 use crate::order::{Played, Step, play};
 use osis_base::{CommitId, Role, Tid, WallMs};
@@ -28,13 +29,15 @@ fn s32(b: u8) -> Secret32 {
     Secret32::from_bytes([b; 32])
 }
 
-/// One arrival step: ingest bundle entry i, advance the clock by ms and run timers, or drop
-/// every aspect of entry i's body as covered (node-sync's compaction drop).
+/// One arrival step: receive bundle entry i (a body it opens, else a referenced blob), advance
+/// the clock by ms and run timers, drop every aspect of entry i's body as covered (node-sync's
+/// compaction drop), or start syncing a thing.
 #[derive(Clone, Copy, Debug)]
 enum Tok {
     In(usize),
     Wait(u64),
     Drop(usize),
+    Sync(Tid),
 }
 
 fn render_order(o: &[Tok]) -> String {
@@ -42,42 +45,93 @@ fn render_order(o: &[Tok]) -> String {
         Tok::In(i) => i.to_string(),
         Tok::Wait(ms) => format!("+{ms}"),
         Tok::Drop(i) => format!("d{i}"),
+        Tok::Sync(t) => format!("s{t}"),
     }).collect::<Vec<_>>().join(",")
 }
 
 fn parse_order(s: &str) -> Vec<Tok> {
-    s.split(',').map(|t| match (t.strip_prefix('+'), t.strip_prefix('d')) {
-        (Some(ms), _) => Tok::Wait(ms.parse().unwrap()),
-        (_, Some(i)) => Tok::Drop(i.parse().unwrap()),
+    s.split(',').map(|t| match (t.strip_prefix('+'), t.strip_prefix('d'), t.strip_prefix('s')) {
+        (Some(ms), ..) => Tok::Wait(ms.parse().unwrap()),
+        (_, Some(i), _) => Tok::Drop(i.parse().unwrap()),
+        (_, _, Some(x)) => Tok::Sync(x.parse().unwrap()),
         _ => Tok::In(t.parse().unwrap()),
     }).collect()
 }
 
-/// A played history as one label's bundle: the genesis path (group secrets read `0a`, write
-/// `0b`, admin `09`, deposit seed `0c`), then per commit its bodies (`osis_commit::project`, one
-/// reader) sealed and stamped, each blob before its entry. Also each entry's commit index and the
-/// length of the setup's prefix (the path and the setup's commits).
-fn bundle(played: &Played) -> (Vec<u8>, Vec<usize>, usize) {
-    let (r, w, a) = (s32(0x0a), s32(0x0b), s32(0x09));
-    let label = genesis_label(&a, 0);
-    let keys = StepKeys::derive(&r, &w, &a, 0, &s32(0x0c), &label);
+/// One label of a bundle: its genesis path record, stamp key and read secret.
+struct Lab {
+    path: Record,
+    id: osis_base::LabelId,
+    read: Secret32,
+    stamp: osis_crypto::SigningSecret,
+}
+
+/// A label's genesis path from group secrets all but the deposit seed named `base`: read
+/// `base`, write `base + 1`, admin `base - 1`, deposit seed `base + 2`.
+fn label(base: u8, rng: &mut SeededRng) -> Lab {
+    let (r, w, a) = (s32(base), s32(base + 1), s32(base - 1));
+    let id = genesis_label(&a, 0);
+    let keys = StepKeys::derive(&r, &w, &a, 0, &s32(base + 2), &id);
     let delete = label_role_key(LabelRole::Delete, &a, 0);
+    let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([base - 3; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), rng).unwrap();
+    Lab { id: step.label, path: Record::Path { label: step.label, steps: vec![(step, Some(claims))] }, read: r, stamp: label_role_key(LabelRole::Write, &w, 0) }
+}
+
+/// What `bundle` lays out: the bytes, each entry's commit index, the entries that are referenced
+/// blobs and the length of the setup's prefix.
+struct Laid {
+    bytes: Vec<u8>,
+    of: Vec<usize>,
+    refs: BTreeSet<usize>,
+    setup: usize,
+}
+
+/// A played history as a bundle as the hosts hold it: the genesis path of the first label (group
+/// secrets read `0a`, write `0b`, admin `09`, deposit seed `0c`), then per commit the blobs it
+/// references, each under a filler wrap (left out where the case needs no bytes of them: the
+/// chunks of `t:blob.0`, which nothing waits for, and a demotion's linked frontier), and its
+/// bodies (`osis_commit::project`, one per label
+/// and class) sealed and stamped, each blob before its entry. With `second`, every thing but G
+/// is under a second label (read `1a`, write `1b`, admin `19`, deposit seed `1c`), its path
+/// before its first entry.
+fn bundle(played: &Played, second: bool) -> Laid {
     let mut rng = SeededRng::from_u64(0x0b0d1e);
-    let (step, claims) = register(Parent::Genesis(&delete), keys, &[], (&Tid::from_bytes([0x07; 15]), Epoch::new(0, [0; 32]).unwrap(), &r), &mut rng).unwrap();
-    let stamp_key = label_role_key(LabelRole::Write, &w, 0);
-    let mut recs = vec![Record::Path { label: step.label, steps: vec![(step.clone(), Some(claims))] }];
+    let first = label(0x0a, &mut rng);
+    let mut recs = vec![first.path.clone()];
     let mut of = Vec::new();
+    let mut refs = BTreeSet::new();
+    let mut seen = BTreeSet::new();
+    let mut other: Option<Lab> = None;
     let mut setup = 1;
     for (ci, pk) in played.packs.iter().enumerate() {
-        assert!(pk.blobs.is_empty(), "a referenced blob: not in this format yet");
         let cb = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-        for p in osis_commit::project(&cb, |_| ()).unwrap() {
+        // bare headers name no list by link in these histories: the aspects are at hand
+        let under = |ai: usize| second && cb.header.aspects[ai].tid != played.things[0] && played.things.contains(&cb.header.aspects[ai].tid);
+        for p in osis_commit::project(&cb, under).unwrap() {
+            if p.readers && other.is_none() {
+                let l = label(0x1a, &mut rng);
+                recs.push(l.path.clone());
+                other = Some(l);
+            }
+            let lab = if p.readers { other.as_ref().unwrap() } else { &first };
+            if !cb.header.aspects.iter().any(|a| a.ak.as_str() == "t:blob.0") && cb.header.links.frontier.is_none() {
+                for (id, b) in &pk.blobs {
+                    if seen.insert(*id) {
+                        let wrap = osis_crypto::filler_wrap(&mut rng);
+                        let stamp = sign_stamp(&lab.stamp, &lab.id, id, &wrap);
+                        recs.push(Record::Blob(b.clone()));
+                        recs.push(Record::Entry { label: lab.id, blob: *id, wrap, stamp: Some(stamp) });
+                        refs.insert(of.len());
+                        of.push(ci);
+                    }
+                }
+            }
             let body = Body { commit: pk.id, reader: Tid::from_bytes([0; 15]), parts: p.parts, expires: p.expires, keys: p.keys, blind: cb.header.blind, plaintext: p.plaintext, role_commit: cb.header.kind.is_role() };
             let sealed = seal_body(&body, &mut rng).unwrap();
-            let wrap = osis_crypto::wrap(&r, &sealed.id, &sealed.key).unwrap();
-            let stamp = sign_stamp(&stamp_key, &step.label, &sealed.id, &wrap);
+            let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key).unwrap();
+            let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap);
             recs.push(Record::Blob(sealed.blob));
-            recs.push(Record::Entry { label: step.label, blob: sealed.id, wrap, stamp: Some(stamp) });
+            recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });
             of.push(ci);
         }
         if ci < played.base {
@@ -93,7 +147,7 @@ fn bundle(played: &Played) -> (Vec<u8>, Vec<usize>, usize) {
     };
     let (full, setup) = (write(&recs), write(&recs[..setup]));
     assert!(full.starts_with(&setup), "a bundle is its records' frames in order");
-    (full, of, setup.len())
+    Laid { bytes: full, of, refs, setup: setup.len() }
 }
 
 /// Reads a bundle as an importer does (paths and stamps verified): its entries in order, each
@@ -133,33 +187,39 @@ fn hash_hex(b: &[u8]) -> String {
 fn state_bytes(f: &osis_crdt::Fragment) -> Vec<u8> {
     let snap = osis_crdt::Snapshot { nonce: [0; 16], fragment: f.clone(), frontiers: Default::default(), absorbed: Default::default() };
     let cx = osis_crdt::DeltaCtx { ts: osis_base::Ts::default(), own: osis_crdt::Source::commit(CommitId([0; 32])), range: osis_crdt::CounterRange::EMPTY, kind: osis_crdt::DeltaKind::Snapshot };
-    osis_crdt::encode_snapshot(&snap, &cx, None).unwrap()
+    osis_crdt::encode_snapshot(&snap, &cx, Some(&mut osis_crdt::Unpaged)).unwrap()
 }
 
 /// Delivers `order` of the bundle's entries to a fresh node at `now`; what it judges, as the
 /// expected fields of a case (README.md, `judgment/`).
-fn replay(bytes: &[u8], read: &Secret32, now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
+fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(String, String)> {
     let ents = entries(bytes);
     let mut p = Peer::new(FRESH, now).unwrap();
     let mut ids = BTreeSet::new();
+    // a filler wrap opens under no read secret (spec/crypto.md §5)
     let open = |i: usize| {
         let (id, wrap, blob) = &ents[i];
-        let (_, key) = osis_label::unwrap_any([read], id, wrap).unwrap();
-        open_commit(blob, &key).unwrap()
+        osis_label::unwrap_any(reads, id, wrap).map(|(_, key)| open_commit(blob, &key).unwrap())
     };
     for t in order {
         match *t {
-            Tok::In(i) => {
-                let (pt, cb) = open(i);
-                ids.insert(cb.id());
-                let _ = p.engine.ingest(&pt, Vec::new());
-            }
+            Tok::In(i) => match open(i) {
+                Some((pt, cb)) => {
+                    ids.insert(cb.id());
+                    let _ = p.engine.ingest(&pt, Vec::new());
+                }
+                None => {
+                    p.engine.put_blobs(vec![(ents[i].0, ents[i].2.clone())]).unwrap();
+                    p.engine.reexamine().unwrap();
+                }
+            },
+            Tok::Sync(t) => p.engine.set_syncing(t, true).unwrap(),
             Tok::Wait(ms) => {
                 p.clock.advance(ms);
                 p.engine.tick().unwrap();
             }
             Tok::Drop(i) => {
-                let (_, cb) = open(i);
+                let (_, cb) = open(i).unwrap();
                 for part in &cb.parts {
                     let a = &cb.header.aspects[part.ai];
                     p.engine.drop_body(&cb.id(), &a.tid, &a.ak).unwrap();
@@ -184,7 +244,13 @@ fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, 
         for (ai, a) in h.aspects.iter().enumerate() {
             things.insert(a.tid);
             aspects.insert((a.tid, a.ak.clone()));
-            let valid = if e.body_valid(c, &a.tid, &a.ak).unwrap() { "valid" } else { "invalid" };
+            // an edge write has no content verdict: it applies in the walk or not (§5.1)
+            let valid = match a.ak.as_str() {
+                "roles.0" | "tenures.0" if e.edge_write_applied(&a.tid, c) => "applied",
+                "roles.0" | "tenures.0" => "unapplied",
+                _ if e.body_valid(c, &a.tid, &a.ak).unwrap() => "valid",
+                _ => "invalid",
+            };
             let status = if d.missing.contains(&ai) {
                 "missing"
             } else if d.dropped.contains(&ai) {
@@ -249,8 +315,9 @@ fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, 
     out
 }
 
-/// Named arrival orders from the history and each entry's commit index.
-type OrdersFn = fn(&Played, &[usize]) -> Vec<(&'static str, Vec<Tok>)>;
+/// Named arrival orders from the history, each entry's commit index and the entries that are
+/// referenced blobs.
+type OrdersFn = fn(&Played, &[usize], &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)>;
 
 /// A history and the arrival orders it is judged in.
 struct Scenario {
@@ -258,34 +325,44 @@ struct Scenario {
     spec: &'static str,
     source: &'static str,
     steps: Vec<Step>,
-    /// Orders by entry, given the history and each entry's commit index; `None`: as made, and
-    /// the setup first with the rest reversed.
+    /// Orders by entry (`OrdersFn`); `None`: as made, and the setup first with the rest reversed.
     orders: Option<OrdersFn>,
 }
 
-fn default_orders(played: &Played, of: &[usize]) -> Vec<(&'static str, Vec<Tok>)> {
+fn default_orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
     let made: Vec<Tok> = (0..of.len()).map(Tok::In).collect();
     let k = of.iter().position(|c| *c >= played.base).unwrap_or(of.len());
     let rev = (0..k).chain((k..of.len()).rev()).map(Tok::In).collect();
     vec![("as made", made), ("reversed", rev)]
 }
 
-fn generate(spec: &str, scenarios: Vec<Scenario>) -> VecFile {
+fn read_secrets(second: bool) -> Vec<Secret32> {
+    let mut r = vec![s32(0x0a)];
+    if second {
+        r.push(s32(0x1a));
+    }
+    r
+}
+
+/// `second`: every thing but G under a second label (`bundle`).
+fn generate(spec: &str, scenarios: Vec<Scenario>, second: bool) -> VecFile {
     let mut setup: Option<Vec<u8>> = None;
     let mut cases = Vec::new();
-    let now_of = |p: &Played| p.now.0.to_string();
+    let reads = read_secrets(second);
+    let reads_hex = reads.iter().map(|x| osis_base::hex::encode(x.expose())).collect::<Vec<_>>().join(",");
     for sc in scenarios {
         let played = play(SEED, &sc.steps);
-        let (bytes, of, n) = bundle(&played);
-        assert_eq!(setup.get_or_insert_with(|| bytes[..n].to_vec())[..], bytes[..n], "{}: one setup per file", sc.name);
-        let orders = sc.orders.unwrap_or(default_orders)(&played, &of);
+        let laid = bundle(&played, second);
+        let n = laid.setup;
+        assert_eq!(setup.get_or_insert_with(|| laid.bytes[..n].to_vec())[..], laid.bytes[..n], "{}: one setup per file", sc.name);
+        let orders = sc.orders.unwrap_or(default_orders)(&played, &laid.of, &laid.refs);
         let first = format!("{}, {}", sc.name, orders[0].0);
         for (i, (oname, order)) in orders.into_iter().enumerate() {
             let name = format!("{}, {oname}", sc.name);
-            let mut r = Rec::new().with("case", &name).with("spec", sc.spec).with("source", sc.source).with("read-secret", osis_base::hex::encode(&[0x0a; 32])).with("now", now_of(&played));
-            r = if i == 0 { r.with("bundle", osis_base::hex::encode(&bytes[n..])) } else { r.with("bundle", format!("as in {first}")) };
+            let mut r = Rec::new().with("case", &name).with("spec", sc.spec).with("source", sc.source).with("read-secret", &reads_hex).with("now", played.now.0.to_string());
+            r = if i == 0 { r.with("bundle", osis_base::hex::encode(&laid.bytes[n..])) } else { r.with("bundle", format!("as in {first}")) };
             r = r.with("order", render_order(&order));
-            for (k, v) in replay(&bytes, &s32(0x0a), played.now, &order) {
+            for (k, v) in replay(&laid.bytes, &reads, played.now, &order) {
                 r = r.with(&k, v);
             }
             cases.push(r);
@@ -304,8 +381,10 @@ fn generate(spec: &str, scenarios: Vec<Scenario>) -> VecFile {
 
 fn files() -> Vec<(&'static str, String)> {
     vec![
-        ("judgment/models.vec", generate("spec/permissions.md §5-§6", models()).render()),
-        ("judgment/rules.vec", generate("spec/permissions.md §2, §5-§6, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(starts()).chain(found()).collect()).render()),
+        ("judgment/models.vec", generate("spec/permissions.md §5-§6", models(), false).render()),
+        ("judgment/rules.vec", generate("spec/permissions.md §2, §5-§6, spec/commits.md §5, spec/crdt.md §4", rules().into_iter().chain(starts()).chain(chains()).chain(invites()).chain(remerges()).chain(found()).collect(), false).render()),
+        ("judgment/labels.vec", generate("spec/commits.md §4, spec/sync.md §3, spec/wire.md §12", labels(), true).render()),
+        ("judgment/blobs.vec", generate("spec/commits.md §4, spec/crdt.md §8, spec/permissions.md §5.1, §6", blobs(), false).render()),
     ]
 }
 
@@ -394,7 +473,7 @@ fn rules() -> Vec<Scenario> {
             spec: "spec/permissions.md §5.2, spec/commits.md §5",
             source: "hand-picked: W by 1, S by 2 covers it, the node drops W as covered, 2 is demoted before S (S invalid: W counts as never received), W arrives again",
             steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 2 }, tick.clone(), Compact { by: 2, t: 0, op: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false }],
-            orders: Some(|played, of| {
+            orders: Some(|played, of, _| {
                 let (k, base) = (of.iter().position(|c| *c >= played.base).unwrap(), played.base);
                 // the setup, W, S, W dropped as covered, the demotion; then W again
                 let (w, s, d) = (k, k + 1, k + 2);
@@ -429,14 +508,27 @@ fn edge_commit(played: &Played, i: usize) -> bool {
 /// As made, and a late joiner's order: the setup without its edge writes, the roster snapshot,
 /// then every later commit but the edge writes, newest first (only the snapshot tells it who
 /// held what before it).
-fn late_joiner(played: &Played, of: &[usize]) -> Vec<(&'static str, Vec<Tok>)> {
+fn late_joiner(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
     let made = (0..of.len()).map(Tok::In).collect();
     let kind = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.kind;
-    let snap: Vec<usize> = (0..of.len()).filter(|e| kind(of[*e]) == osis_commit::Kind::RosterSnapshot).collect();
-    assert_eq!(snap.len(), 1, "one roster snapshot");
+    // the newest roster snapshot alone
+    let last = (0..played.packs.len()).rev().find(|c| kind(*c) == osis_commit::Kind::RosterSnapshot).expect("a roster snapshot");
+    let snap: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
     let setup = (0..of.len()).filter(|e| of[*e] < played.base && !edge_commit(played, of[*e]));
     let rest = (0..of.len()).rev().filter(|e| of[*e] >= played.base && !edge_commit(played, of[*e]));
     vec![("as made", made), ("late joiner", setup.chain(snap).chain(rest).map(Tok::In).collect())]
+}
+
+/// `late_joiner`, and one that also holds the edge writes after the snapshot (its setup and
+/// everything else as there).
+fn late_joiner_after(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+    let mut o = late_joiner(played, of, refs);
+    let kind = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.kind;
+    let last = (0..played.packs.len()).rev().find(|c| kind(*c) == osis_commit::Kind::RosterSnapshot).unwrap();
+    let after = (0..of.len()).filter(|e| of[*e] > last && edge_commit(played, of[*e])).map(Tok::In);
+    let order = o[1].1.iter().copied().chain(after).collect();
+    o.push(("late joiner with the edge writes after the start", order));
+    o
 }
 
 /// One hand-picked scenario per rule of epoch starts (roster snapshots), `until` and invite
@@ -478,6 +570,264 @@ fn starts() -> Vec<Scenario> {
             source: "hand-picked: 0 removes 2 and grants 1 write with invite write; 1 grants 2 write by invite (applies); 2 writes (valid)",
             steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(Role::Write), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Write, until: None, invite: None, flow: true }, Sync { from: 1, to: 2 }, tick.clone(), Write { by: 2, t: 0, op: 0, k: 0, v: 1 }],
             orders: None,
+        },
+    ]
+}
+
+/// Epoch starts beyond one snapshot (spec/permissions.md §6): the ledger carried forward, audits
+/// after a start, a start that withdraws itself.
+fn chains() -> Vec<Scenario> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    vec![
+        // §6: the previous start's ledger is carried forward whole
+        Scenario {
+            name: "second start carries the ledger forward",
+            spec: "spec/permissions.md §6",
+            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 removes 1 with its frontier, snapshots the roster (S1), writes, snapshots again (S2); the late joiner holds S2 alone of the edge history: its ledger entry from S1 keeps W1 valid, W2 invalid",
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) }, tick.clone(), Roster { by: 0, t: 0 }],
+            orders: Some(late_joiner),
+        },
+        // §6: a demotion of X after S audits X's writes before S too
+        Scenario {
+            name: "demotion after the start audits writes before it",
+            spec: "spec/permissions.md §5.2, §6",
+            source: "hand-picked: W1 by 1 reaches 0, W2 does not; 0 snapshots the roster (1 still writes), then removes 1 with its frontier: W1 valid, W2 invalid, also for a late joiner holding the start and the removal; without the removal both valid",
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 0, k: 0, v: 2 }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }],
+            orders: Some(late_joiner_after),
+        },
+        // §5.1, §6: a self-removal audits nothing and its ledger tenure has no frontier; the next
+        // explicit write on the edge audits against the edge as restored, the writes before the
+        // start included
+        Scenario {
+            name: "explicit removal after a start audits a tenure ended without a frontier",
+            spec: "spec/permissions.md §5.1, §6",
+            source: "hand-picked: W by 1, unseen by 0; 1 removes its own edge (audits nothing); 0 snapshots the roster (W valid: 1 held write, ledger tenure without a frontier); 0 writes a removal of the absent edge, frontier empty: it audits, W invalid; a late joiner without the grant holds no entry the removal's reset names (§2): unapplied, W valid",
+            steps: vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 1, role: None, invite: None }, Send { from: 1, to: 0, back: 0 }, tick.clone(), Roster { by: 0, t: 0 }, tick.clone(), Removal { by: 0, t: 0, holder: 1 }],
+            orders: Some(late_joiner_after),
+        },
+        // §6 rounds: B (owned by A) holds admin on A, 2 holds admin on B, so 2 has owner-chain
+        // authority on B through B's own edge; its snapshot leaving itself out applies only
+        // while it is not B's start
+        Scenario {
+            name: "start withdrawing its own authority is excluded",
+            spec: "spec/permissions.md §6",
+            source: "core/perm roster::self_withdrawing_start_excluded: 0 owns A, B owned by A holds admin on A, 2 holds admin on B; 2 snapshots B without itself: the rounds do not settle, the snapshot is excluded, B has no start and 2 stays admin",
+            steps: vec![NewTop { by: 0 }, New { by: 0, parent: 1, write: false }, EdgeTo { by: 0, t: 1, holder: 2, role: Role::Admin }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write)] }],
+            orders: None,
+        },
+        // as above, an older snapshot keeping 2: that one is the start
+        Scenario {
+            name: "excluded start falls back to the older snapshot",
+            spec: "spec/permissions.md §6",
+            source: "core/perm roster::self_withdrawing_start_excluded: as above, with an older snapshot by 2 keeping itself and 1: the newest is excluded, the older is B's start",
+            steps: vec![NewTop { by: 0 }, New { by: 0, parent: 1, write: false }, EdgeTo { by: 0, t: 1, holder: 2, role: Role::Admin }, Edge { by: 0, t: 2, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write), (2, Role::Admin)] }, tick.clone(), HostileRoster { by: 2, t: 2, keep: vec![(1, Role::Write)] }],
+            orders: None,
+        },
+    ]
+}
+
+/// Invite grants the inviter's invite does not cover (spec/permissions.md §2, §5.1): bare edge
+/// writes, which the writer's checks refuse, except where the inviter did not know yet. In each,
+/// 0 removed 2 and gave 1 write with an invite first.
+fn invites() -> Vec<Scenario> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    let start = |invite: Role| vec![Edge { by: 0, t: 0, holder: 2, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Write, until: None, invite: Some(invite), flow: false }, Sync { from: 0, to: 1 }, tick.clone()];
+    let then = |base: Vec<Step>, more: Vec<Step>| base.into_iter().chain(more).collect::<Vec<_>>();
+    let w2 = HostileWrite { by: 2, t: 0, v: 1 };
+    vec![
+        Scenario {
+            name: "invite grant with a role above the invite",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 1 (invite read) grants 2 write: not applied, 2's write invalid",
+            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite grant with an invite above the invite",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 1 (invite read) grants 2 read with invite write: not applied",
+            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), invite: Some(Role::Write) }]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite grant within the invite, control",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 1 (invite read) grants 2 read: applied, with no boxes (the edge is judged on its own); 2's write invalid (read)",
+            steps: then(start(Role::Read), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Read), invite: None }, Sync { from: 1, to: 2 }, tick.clone(), w2.clone()]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite grant over a current edge",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 2 holds read; 1 (invite write) writes 2's edge to write: an invite adds edges only, not applied",
+            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite grant over an expired edge",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 2's read edge ended by `until`; 1 (invite write) grants 2 write: an expired edge counts as none, applied",
+            steps: then(start(Role::Write), vec![Grant { by: 0, t: 0, holder: 2, role: Role::Read, until: Some(500), invite: None, flow: false }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite holder removes another edge",
+            spec: "spec/permissions.md §2, §5.1",
+            source: "hand-built: 2 holds read; 1 (invite write) removes 2's edge: invite holders change no other edge, not applied",
+            steps: then(start(Role::Write), vec![Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Hostile { by: 1, t: 0, holder: 2, role: None, invite: None }]),
+            orders: None,
+        },
+        // §5.1 step 4: an invite level is a class; losing it audits the grants made through it
+        Scenario {
+            name: "invite grant unseen by the invite's removal",
+            spec: "spec/permissions.md §5.1, §9",
+            source: "hand-picked: 1 (invite write) grants 2 write, unseen by 0; 0 removes 1 with its frontier: the grant goes to D",
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            orders: None,
+        },
+        Scenario {
+            name: "invite grant seen by the invite's removal",
+            spec: "spec/permissions.md §5.1, §9",
+            source: "hand-picked: 1 (invite write) grants 2 write and 0 receives it; 0 removes 1 with its frontier: the grant stands",
+            steps: then(start(Role::Write), vec![Hostile { by: 1, t: 0, holder: 2, role: Some(Role::Write), invite: None }, Sync { from: 1, to: 0 }, tick.clone(), Demote { by: 0, t: 0, holder: 1, at: 9, to_read: false }]),
+            orders: None,
+        },
+        // §2: an over-invite grant's `secrets.0` gets no exemption
+        Scenario {
+            name: "invite grant through the flow after the invite went",
+            spec: "spec/permissions.md §2, §5.1, §5.2",
+            source: "hand-picked: 1 holds read with invite read; 0 rewrites it to read without invite, unseen by 1, which grants 2 read through the flow: the edge is not applied and its `secrets.0` delta, no longer exempt, needs write: invalid",
+            steps: vec![Edge { by: 0, t: 0, holder: 2, role: None }, Edge { by: 0, t: 0, holder: 1, role: None }, Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, invite: Some(Role::Read), flow: true }, Sync { from: 0, to: 1 }, tick.clone(), Grant { by: 0, t: 0, holder: 1, role: Role::Read, until: None, invite: None, flow: false }, tick.clone(), Grant { by: 1, t: 0, holder: 2, role: Role::Read, until: None, invite: None, flow: true }],
+            orders: None,
+        },
+    ]
+}
+
+/// A write given back (spec/permissions.md §5.2, spec/crdt.md §4.6): 1 puts an entry, 2 (sent it
+/// alone) writes inside it and compacts, 0 holds 2's commits, writes inside it too and compacts;
+/// 0 lowers 2 to read, so 2's delta and snapshot give nothing. A node without 1's commit then holds the
+/// entry's creation through nothing, until 0's valid snapshot or 1's commit gives it back.
+fn remerges() -> Vec<Scenario> {
+    use Step::*;
+    fn orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+        // 1's put, 2's write, 2's snapshot, 0's write, 0's snapshot, 0's demotion of 2
+        let at = |c: usize| of.iter().position(|x| *x == played.base + c).unwrap();
+        let setup: Vec<Tok> = (0..at(0)).map(Tok::In).collect();
+        let list = |cs: &[usize]| setup.iter().copied().chain(cs.iter().map(|c| Tok::In(at(*c)))).collect();
+        vec![
+            ("as made", list(&[0, 1, 2, 3, 4, 5])),
+            ("without what gives it back", list(&[1, 2, 3, 5])),
+            ("given back by a valid snapshot", list(&[1, 2, 3, 5, 4])),
+            ("given back by the creating commit", list(&[1, 2, 3, 5, 0])),
+        ]
+    }
+    vec![Scenario {
+        name: "re-merge of an entry's creation",
+        spec: "spec/permissions.md §5.2, spec/crdt.md §4.6",
+        source: "order harness seeds 12161, 1006 (order.rs), simplified by hand",
+        steps: vec![NestedTyped { by: 1, other: 2, t: 0, k: 2 }, Sync { from: 2, to: 0 }, TypedField { by: 0, t: 0, k: 2, v: 3 }, Compact { by: 0, t: 0, op: 3 }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }],
+        orders: Some(orders),
+    }]
+}
+
+/// One history over two labels (`bundle`'s `second`): one commit, a part under each. H's owner
+/// is 0, so only H's own edge gives 1 a role on it.
+fn labels() -> Vec<Scenario> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    /// The entries before the last commit (its parts span both labels, `two`) that come after
+    /// the setup, and the setup.
+    fn entries(played: &Played, of: &[usize]) -> (Vec<usize>, Vec<Tok>, Vec<usize>) {
+        let b = played.base;
+        let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == played.packs.len() - 1).collect();
+        assert_eq!(two.len(), 2, "a part under each label");
+        let k = of.iter().position(|x| *x == b).unwrap();
+        ((k..two[0]).collect(), (0..k).map(Tok::In).collect(), two)
+    }
+    fn orders(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+        let (c, setup, two) = entries(played, of);
+        let h = Tok::Sync(played.things[1]);
+        let list = |pre: &[Tok], post: &[usize]| setup.iter().copied().chain(pre.iter().copied()).chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
+        vec![("both labels", list(&[], &two)), ("one label, the other's thing not synced", list(&[], &two[..1])), ("one label, the other's thing synced", list(&[h], &two[..1])), ("both labels, synced", list(&[h], &two))]
+    }
+    vec![
+        Scenario {
+            name: "content commit over two labels",
+            spec: "spec/commits.md §4, spec/sync.md §3",
+            source: "hand-built: 1 writes both G (it holds write) and H (it holds read) in one commit: each delta judged alone; atomic apply waits for a part only under a thing the node syncs",
+            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
+            orders: Some(orders),
+        },
+        Scenario {
+            name: "role commit over two labels",
+            spec: "spec/commits.md §4, spec/permissions.md §5.1",
+            source: "hand-built: 0 grants 1 read on both G and H in one role commit: a role commit never waits for its other deltas",
+            steps: vec![NewTop { by: 0 }, tick.clone(), TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Read }],
+            orders: Some(orders),
+        },
+    ]
+}
+
+/// Referenced blobs: as made, and the setup first with the rest reversed (blobs after what names
+/// them) and without the blobs.
+fn refs_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+    let mut o = default_orders(played, of, refs);
+    o.push(("without its blobs", (0..of.len()).filter(|e| !refs.contains(e)).map(Tok::In).collect()));
+    o
+}
+
+/// A late joiner's order for `LinkedDemote` then `Roster`: the setup without its edge writes, the
+/// other commits and the roster snapshot, without its frontier's blobs, with them last and first.
+fn linked_orders(played: &Played, of: &[usize], refs: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+    let setup: Vec<Tok> = (0..of.len()).filter(|e| of[*e] < played.base && !edge_commit(played, of[*e])).map(Tok::In).collect();
+    let body_of = |c: usize| (0..of.len()).find(|e| of[*e] == c && !refs.contains(e)).unwrap();
+    let last = played.packs.len() - 1;
+    let write: Vec<Tok> = (played.base..last - 1).map(|c| Tok::In(body_of(c))).collect();
+    let snapshot = [Tok::In(body_of(last))];
+    let blobs: Vec<Tok> = refs.iter().map(|e| Tok::In(*e)).collect();
+    let cat = |xs: &[&[Tok]]| xs.concat();
+    vec![
+        ("without the frontier's blobs", cat(&[&setup, &write, &snapshot])),
+        ("the frontier's blobs last", cat(&[&setup, &write, &snapshot, &blobs])),
+        ("the frontier's blobs first", cat(&[&setup, &blobs, &write, &snapshot])),
+    ]
+}
+
+/// Commits that reference blobs: a paged delta, a large atomic value, a linked frontier.
+fn blobs() -> Vec<Scenario> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    vec![
+        Scenario {
+            name: "paged delta",
+            spec: "spec/commits.md §4, spec/crdt.md §8",
+            source: "hand-picked: 1 writes a map above PAGE_TARGET: the commit waits for its pages, then applies",
+            steps: vec![Paged { by: 1, t: 0 }],
+            orders: Some(refs_orders),
+        },
+        Scenario {
+            name: "large atomic value",
+            spec: "spec/commits.md §4, spec/data-model.md §6",
+            source: "hand-picked: 1 writes a value above CHUNK_THRESHOLD; the bundle leaves out its chunks, which nothing waits for: the commit applies",
+            steps: vec![Large { by: 1, t: 0 }],
+            orders: None,
+        },
+        // the demotion's own blobs are left out of the bundle: it only waits here
+        Scenario {
+            name: "demotion with a linked frontier, its blobs not held",
+            spec: "spec/commits.md §4, spec/wire.md §4",
+            source: "hand-picked: 0 removes 1 with a frontier above CHUNK_THRESHOLD: the commit waits for the blobs, 1 stays",
+            steps: vec![LinkedDemote { by: 0, t: 0, holder: 1 }],
+            orders: None,
+        },
+        Scenario {
+            name: "ledger with a linked frontier",
+            spec: "spec/commits.md §4, spec/permissions.md §5.1, §6",
+            source: "hand-picked: W by 1 reaches 0, W' does not; 0 removes 1 with a frontier above CHUNK_THRESHOLD and snapshots the roster; a late joiner's snapshot waits for the frontier's blobs, then the ledger keeps W valid, W' invalid",
+            steps: vec![Write { by: 1, t: 0, op: 1, k: 0, v: 1 }, Sync { from: 1, to: 0 }, tick.clone(), Write { by: 1, t: 0, op: 1, k: 0, v: 2 }, tick.clone(), LinkedDemote { by: 0, t: 0, holder: 1 }, tick.clone(), Roster { by: 0, t: 0 }],
+            orders: Some(linked_orders),
         },
     ]
 }
@@ -542,6 +892,11 @@ fn found() -> Vec<Scenario> {
 
 /// Replays every case of a committed file (its inputs only) and compares the expected fields.
 fn replay_file(path: &str, text: &str) -> Result<usize, String> {
+    replay_cases(path, text, None)
+}
+
+/// `replay_file` of the case named `only`, or all of them.
+fn replay_cases(path: &str, text: &str, only: Option<&str>) -> Result<usize, String> {
     let f = VecFile::parse(text).map_err(|e| format!("{path}: {e}"))?;
     let setup = osis_base::hex::decode(f.header.req("setup")?).ok_or_else(|| format!("{path}: bad setup hex"))?;
     // the header's expected lines: part of every case's judgment
@@ -555,10 +910,16 @@ fn replay_file(path: &str, text: &str) -> Result<usize, String> {
             None => [&setup[..], &osis_base::hex::decode(b).ok_or_else(|| format!("{name}: bad bundle hex"))?].concat(),
         };
         bundles.insert(name.to_string(), bytes.clone());
-        let read = osis_base::hex::decode(c.req("read-secret")?).ok_or("bad read-secret")?;
-        let read = Secret32::from_bytes(read.try_into().map_err(|_| "read-secret length")?);
+        if only.is_some_and(|x| x != name) {
+            continue;
+        }
+        let mut reads = Vec::new();
+        for x in c.req("read-secret")?.split(',') {
+            let b = osis_base::hex::decode(x).ok_or("bad read-secret")?;
+            reads.push(Secret32::from_bytes(b.try_into().map_err(|_| "read-secret length")?));
+        }
         let now = WallMs(c.req("now")?.parse().map_err(|_| "bad now")?);
-        let mut got = replay(&bytes, &read, now, &parse_order(c.req("order")?));
+        let mut got = replay(&bytes, &reads, now, &parse_order(c.req("order")?));
         if let Some(f) = shared.iter().find(|f| !got.contains(f)) {
             return Err(format!("{path}, case `{name}`: judged no `{}: {}` (a header line)", f.0, f.1));
         }
@@ -582,6 +943,50 @@ fn judgment_vectors_spec_permissions_5_2() {
         let n = replay_file(path, &text).unwrap_or_else(|e| panic!("{e}"));
         assert!(n > 0, "{path}: no cases");
         assert!(fresh == text, "{path}: differs from a fresh generation; rewrite with `cargo test -p osis-node --test it -- --ignored judgment_vectors_write` if the change is meant (a spec change)");
+    }
+}
+
+// spec/requirements.md Decentralization, spec/commits.md §4: issues/chainless-part-order.md. One
+// held set, its parts in two orders: the G part first applies the commit and its H part waits;
+// the H part first holds the commit pending whole, G's write unapplied.
+#[test]
+#[ignore]
+fn repro_chainless_part_order_spec_commits_4() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
+    let laid = bundle(&played, true);
+    let (edge, last) = (played.base + 1, played.packs.len() - 1);
+    let rest: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] != edge && laid.of[*e] != last).collect();
+    let two: Vec<usize> = (0..laid.of.len()).filter(|e| laid.of[*e] == last).collect();
+    let judge = |parts: &[usize]| replay(&laid.bytes, &read_secrets(true), played.now, &rest.iter().chain(parts).map(|e| Tok::In(*e)).collect::<Vec<_>>());
+    assert_eq!(judge(&two), judge(&[two[1], two[0]]));
+}
+
+// spec: none (a check of the judgment vectors): in every case, flipping its first own verdict and
+// dropping the last step of its order each make the replay report that case.
+#[test]
+#[ignore]
+fn judgment_vectors_can_fail() {
+    for (path, text) in files() {
+        let f = VecFile::parse(&text).unwrap();
+        for c in f.live() {
+            let name = c.req("case").unwrap();
+            let in_case = |key: &str, new: &str| -> String {
+                let at = text.find(&format!("case: {name}\n")).unwrap();
+                let line = text[at..].find(&format!("\n{key}: ")).unwrap() + at + 1;
+                let end = text[line..].find('\n').unwrap() + line;
+                format!("{}{key}: {new}{}", &text[..line], &text[end..])
+            };
+            let own = c.fields.iter().find(|(k, _)| !INPUTS.contains(&k.as_str())).unwrap_or_else(|| panic!("{name}: no own line"));
+            let flip = if own.1.contains("unapplied") { own.1.replace("unapplied", "applied") } else if own.1.contains("invalid") { own.1.replace("invalid", "valid") } else { format!("{} x", own.1) };
+            let e = replay_cases(path, &in_case(&own.0, &flip), Some(name)).expect_err(&format!("{name}: a changed verdict passes"));
+            assert!(e.contains(name), "{e}");
+            let order = c.req("order").unwrap();
+            let shorter = &order[..order.rfind(',').unwrap()];
+            let e = replay_cases(path, &in_case("order", shorter), Some(name)).expect_err(&format!("{name}: a shorter order passes"));
+            assert!(e.contains(name), "{e}");
+        }
     }
 }
 

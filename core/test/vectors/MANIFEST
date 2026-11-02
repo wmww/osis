@@ -29,3 +29,5 @@ lan/announce.vec provisional
 crdt/deltas.vec provisional
 judgment/models.vec provisional
 judgment/rules.vec provisional
+judgment/labels.vec provisional
+judgment/blobs.vec provisional

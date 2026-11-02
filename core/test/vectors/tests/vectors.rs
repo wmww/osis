@@ -47,6 +47,8 @@ vector_files! {
     lan_announce => "lan/announce.vec",
     judgment_models => "judgment/models.vec",
     judgment_rules => "judgment/rules.vec",
+    judgment_labels => "judgment/labels.vec",
+    judgment_blobs => "judgment/blobs.vec",
 }
 
 // spec: none (core/test/vectors/README.md, "Manifest and freezing": every file listed, frozen bytes
