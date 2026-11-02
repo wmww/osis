@@ -138,7 +138,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | osis `DEFAULT_WAIT` 60 s, `PRESYNC_WAIT` 30 s, cli `DEFAULT_WAIT` 30 s | M (the caller gets an error) | |
 | osis `DEFAULT_IDLE_COMMIT` 2 s | M (a crash loses at most that much typing) | |
 | osis `REFRESH_DIVISOR` 2: `KeepAlive` rewrites every half of its key's default expiry | M (past the other half's slack a holder sees the value blink off until the rewrite arrives) | 1: it blinks at every refresh / a write per moment; at 2 a holder holds about three writes per kept value |
-| osis `STOP_WAIT` 5 s | M (the database is already durable) | |
+| osis `STOP_WAIT` 5 s | M (the database is already durable) | `close` on `Runtime::Own` waits up to twice this for the runtime to stop; 0: it returns while the host may still hold its store / a stuck task hangs `close` |
 | osis `OFFER_LIFETIME_MS` 10 min | M | |
 
 ### Test oracles (`core/test/`)
