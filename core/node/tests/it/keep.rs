@@ -24,10 +24,9 @@ fn remove(holder: Tid) -> Demotion {
     Demotion { holder, new: None, presync: PreSync::Synced }
 }
 
-/// Removes `holder`, the write saying `keep` whatever its edge says: written expired.
+/// Removes `holder`, the write saying `keep` whatever its edge says: `until` 0.
 fn remove_saying(lp: &mut LocalPeer, target: Tid, holder: Tid, keep: bool) -> osis_node::flows::Done {
-    let now = lp.peers[0].engine.now();
-    let new = ct::Edge { until: Some(now), keep, ..edge_of(Role::Read) };
+    let new = ct::Edge { until: Some(osis_base::WallMs(0)), keep, ..edge_of(Role::Read) };
     let d = Demotion { holder, new: Some(new), presync: PreSync::Synced };
     lp.peers[0].engine.demote(&target, &d).unwrap()
 }
@@ -323,7 +322,7 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
         x.lp.peers[0].engine.grant(&d, &carol, &edge_of(Role::Admin)).unwrap();
         spread(&mut x.lp);
         let keep = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
-        let new = ct::Edge { until: Some(x.lp.peers[2].engine.now()), ..edge_of(Role::Read) };
+        let new = ct::Edge { until: Some(osis_base::WallMs(0)), ..edge_of(Role::Read) };
         let erase = *x.lp.peers[2].engine.demote(&d, &Demotion { holder: pb, new: Some(new), presync: PreSync::Synced }).unwrap().commits.last().unwrap();
         if keep_first {
             send(&mut x.lp, 0, 1, &[keep]);
@@ -464,8 +463,8 @@ fn any_path_keeps_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
 }
 
-// spec/permissions.md §3, Keep: an `until` passing is a loss the node acts on by itself, with no role
-// commit behind it and through a restart, keeping or erasing as the edge says.
+// spec/permissions.md §3, Keep: an `until` passing, no role commit behind it: the node acts when it
+// next judges (here the manual drop; a restart changes nothing), keeping or erasing as the edge says.
 #[test]
 fn until_ending_spec_perm_3() {
     for (edge, seed) in [(keeping(Role::Read), 9350), (edge_of(Role::Read), 9355)] {
@@ -473,12 +472,10 @@ fn until_ending_spec_perm_3() {
         let at = osis_base::WallMs(T0.0 + 3_600_000);
         let mut x = setup(seed, ct::Edge { until: Some(at), ..edge });
         x.lp.peers[1].engine.drop_lost_due().unwrap();
-        assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at.0));
         reopen(&mut x.lp, 1, seed + 2).unwrap();
         x.lp.peers[1].clock.set(at);
-        assert!(x.lp.peers[1].engine.lost_due());
-        assert!(!x.lp.peers[1].engine.lost_received(), "by the time alone: node-sync hears its labels out first");
-        x.lp.peers[1].engine.drop_lost_due().unwrap();
+        assert!(!x.lp.peers[1].engine.lost_due(), "nothing by the time alone");
+        x.lp.peers[1].engine.drop_lost_secrets().unwrap();
         if keep {
             assert_kept(&mut x);
         } else {
@@ -487,34 +484,25 @@ fn until_ending_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3 (lost access): a role commit received on a thing whose edge to this node only expired says nothing of that edge: the loss waits as an `until` passing does (a renewal may follow it); a removal received acts at once.
+// spec/permissions.md §2, §3 Keep: a removal saying its own `keep` holds at once at a node whose clock
+// is far behind the remover's, in the bound a commit applies within (`MAX_DRIFT`): no timer.
 #[test]
-fn a_commit_beside_an_expired_edge_waits_spec_perm_3() {
-    use osis_node::rotation::LostScope;
-    let at = osis_base::WallMs(T0.0 + 3_600_000);
-    let mut x = setup(9370, ct::Edge { until: Some(at), ..edge_of(Role::Read) });
-    x.lp.peers[1].engine.drop_lost_due().unwrap();
-    x.lp.peers[1].clock.set(osis_base::WallMs(at.0 + 1));
-    x.lp.peers[0].clock.set(osis_base::WallMs(at.0 + 1));
-    let pa = x.lp.peers[0].engine.owner(&x.d).unwrap();
-    let other = thing_of(&mut x.lp, 0, pa);
-    x.lp.peers[0].engine.grant(&x.d, &other, &edge_of(Role::Read)).unwrap();
-    spread(&mut x.lp);
-    assert!(x.lp.peers[1].engine.lost_received());
-    let d = x.d;
-    assert!(x.lp.peers[1].engine.forget_lost(LostScope::Received).unwrap().actors.is_empty());
-    assert!(!x.lp.peers[1].engine.lost_received());
-    assert!(x.lp.peers[1].engine.lost_due(), "due by the time alone");
-    assert_eq!(read(&mut x.lp, d), Some(s(&big(D_MARK))));
-    x.lp.peers[1].engine.drop_lost_due().unwrap();
-    assert_erased(&mut x);
-    // a removal with no `until` in it: at once
-    let mut x = setup(9375, edge_of(Role::Read));
-    let (d, pb) = (x.d, x.pb);
-    x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
-    spread(&mut x.lp);
-    assert!(!x.lp.peers[1].engine.forget_lost(LostScope::Received).unwrap().actors.is_empty());
-    assert_erased(&mut x);
+fn a_removal_saying_keep_ignores_the_clock_spec_perm_3() {
+    for (edge, say, seed) in [(edge_of(Role::Read), true, 9380), (keeping(Role::Read), false, 9385)] {
+        let mut x = setup(seed, edge);
+        let behind = T0.0 + 10_000;
+        x.lp.peers[0].clock.set(osis_base::WallMs(behind + osis_base::format::MAX_DRIFT_MS - 1_000));
+        x.lp.peers[1].clock.set(osis_base::WallMs(behind));
+        let (d, pb) = (x.d, x.pb);
+        remove_saying(&mut x.lp, d, pb, say);
+        spread(&mut x.lp);
+        x.lp.peers[1].engine.drop_lost_due().unwrap();
+        if say {
+            assert_kept(&mut x);
+        } else {
+            assert_erased(&mut x);
+        }
+    }
 }
 
 // spec/permissions.md §3, Keep: a holder leaving keeps as its edge says: not its own choice.
@@ -738,7 +726,7 @@ fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) 
             (0, _) => lp.peers[0].engine.grant(&t, &h, &ct::Edge { keep, ..edge_of(role) }).ok(),
             (1, true) => lp.peers[0].engine.demote(&t, &remove(h)).ok(),
             (_, true) => {
-                let new = ct::Edge { until: Some(lp.peers[0].engine.now()), keep, ..edge_of(role) };
+                let new = ct::Edge { until: Some(osis_base::WallMs(0)), keep, ..edge_of(role) };
                 lp.peers[0].engine.demote(&t, &Demotion { holder: h, new: Some(new), presync: PreSync::Synced }).ok()
             }
             _ => None,

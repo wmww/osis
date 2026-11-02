@@ -50,7 +50,7 @@ fn rotates_before_wrapping_after_until_spec_crypto_4() {
     let n1 = net.engine(a).epochs(&g).unwrap().read.newest().unwrap().n();
     assert!(n1 > n0, "rotated before wrapping: {n0} -> {n1}");
     assert_eq!(net.read(b, t), Some(s("after")));
-    assert_eq!(net.read(c, t), None, "the departed reader gets nothing new, and its edge said erase");
+    assert_eq!(net.read(c, t), Some(s("before")), "the departed reader gets nothing new");
 }
 
 // spec/commits.md §5 (purge drops every copy): after a purge applied, a reader holds neither

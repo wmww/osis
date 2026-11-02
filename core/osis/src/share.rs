@@ -746,8 +746,8 @@ impl Osis {
                 let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
                 Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None, keep: d.keep.unwrap_or(cur.keep) })
             }
-            // the override in the write that ends the edge: written expired, a removal all the same
-            Lower::Remove => self.roster(t).get(&m).copied().filter(|cur| d.keep.is_some_and(|k| k != cur.keep)).map(|cur| ct::Edge { role: cur.role, until: Some(self.now()), invite: None, since: None, tied: None, keyset: None, keep: !cur.keep }),
+            // the override in the write that ends the edge: `until` 0, gone at every node's clock
+            Lower::Remove => self.roster(t).get(&m).copied().filter(|cur| d.keep.is_some_and(|k| k != cur.keep)).map(|cur| ct::Edge { role: cur.role, until: Some(WallMs(0)), invite: None, since: None, tied: None, keyset: None, keep: !cur.keep }),
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
         let presync = self.presync(things, d).await?;
