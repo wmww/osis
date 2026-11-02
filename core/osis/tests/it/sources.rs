@@ -1066,10 +1066,10 @@ fn a_sharing_flow_overtaken_by_a_move_fails() {
         x.p.engine(|e| e.knows(&other))
     });
     let (p, g, addr) = (x.p.clone(), x.g, x.nc.to_string());
-    // the grant's own step, past the `persist` before it
+    // the grant's own step, past `route_write` and the `persist` before it
     let calls = std::sync::atomic::AtomicUsize::new(0);
     x.p.after_route(Box::new(move || {
-        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 2 {
             p.set_route(g, Some(addr.clone()));
             let _ = p.sync_policy(g, osis::GroupPolicy { receipts_only: true, ..Default::default() });
         }
@@ -1686,5 +1686,60 @@ fn split_shows_through_the_port_and_after_a_restart() {
     until("the attachment came up", || p.get(x.t, title()).ok().flatten() == Some(s("first")));
     p.close().unwrap();
     let _ = std::fs::remove_dir_all(&d);
+    drop(x.host);
+}
+
+// spec/sync.md §10, the invariant of core/osis/src/sources.rs: a move landing between a write's route and its split check: the check sees the route, so a write that would miss H's other holders is refused, not sent where the route it never saw leads
+#[test]
+fn a_split_made_after_the_route_refuses_the_write() {
+    let x = world();
+    let h = second_group(&x);
+    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    x.attach_p();
+    let (p, g, addr) = (x.p.clone(), x.g, x.nc.to_string());
+    x.p.after_route(Box::new(move || {
+        p.set_route(g, Some(addr.clone()));
+        let _ = p.sync_policy(g, osis::GroupPolicy { receipts_only: true, ..Default::default() });
+    }));
+    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("late")));
+    x.p.after_route(Box::new(|| {}));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("first")), "nothing written");
+    drop(x.host);
+}
+
+// spec/sync.md §3, §10, notes/client-port.md §6, §8: an ephemeral placement counts like a durable one: a client of this node reads no local copy of a thing placed ephemerally in a routed group; such a thing also carried by a group syncing here is split, in `status` and for an undo over the routed group
+#[test]
+fn an_ephemeral_placement_in_a_routed_group_counts() {
+    let x = world();
+    let h = second_group(&x);
+    let draft = ak("app:draft.0~");
+    let (a, _) = x.p.add_client(None).unwrap();
+    x.p.grant(x.g, a, Role::Read, Default::default()).unwrap();
+    let thing = |owner: Tid, also: Option<Tid>| {
+        x.p.write_with(|w| {
+            let e = w.create(owner)?;
+            w.at(e, draft.clone()).set(&s("here"))?;
+            w.place(e, x.g)?;
+            if let Some(h) = also {
+                w.place(e, h)?;
+            }
+            Ok(e)
+        }).unwrap()
+    };
+    let (e, both) = (thing(x.g, None), thing(h, Some(h)));
+    assert!(x.p.engine(|d| d.readable_by(&a, &e)));
+    assert!(x.p.engine(|d| !d.durable_groups_of(&e).contains(&x.g) && d.groups_of(&e).contains(&x.g)), "placed ephemerally");
+    x.attach_p();
+    x.to_remote();
+    assert!(x.p.engine(|d| d.groups_of(&e).contains(&x.g)), "still placed here");
+    assert!(!x.p.engine(|d| d.readable_by(&a, &e)), "this node's copy is stale");
+    let split = x.p.status().unwrap().split;
+    assert!(split.contains(&both) && !split.contains(&e), "{split:?}");
+    let r = x.p.write_with(|w| w.at(both, draft.clone()).set(&s("again")));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    let r = x.p.undo(&osis::Scope::Group(x.g));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
     drop(x.host);
 }

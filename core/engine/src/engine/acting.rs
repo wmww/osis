@@ -30,14 +30,14 @@ impl Engine {
         role_with(&self.core, *actor, records, t, self.acting_ts())
     }
 
-    /// Whether `actor` may read `t` now: the permission model's entitlement (spec/sync.md §3); a
-    /// thing ephemeral here by its owner chain. False for what this node does not know.
+    /// Whether a client of this node, `actor`, reads `t` here now: `entitled`, and this node's copy is current.
     pub fn readable_by(&self, actor: &Tid, t: &Tid) -> bool {
         // in a group read at another node or still catching up on its way home, or held only
         // through groups that stopped syncing here: stale here, and this node would serve it to a
         // client as if current (notes/client-port.md §6)
         if !self.core.receipts_only.is_empty() || !self.core.routed_away.is_empty() {
-            let gs = self.durable_groups_of(t);
+            // `placed.0~` too: as the owner's calls route (`Osis::route`)
+            let gs = self.groups_of(t);
             if self.core.routed_away.contains(t) || gs.iter().any(|g| self.core.routed_away.contains(g)) {
                 return false;
             }
@@ -46,6 +46,12 @@ impl Engine {
                 return false;
             }
         }
+        self.entitled(actor, t)
+    }
+
+    /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its owner
+    /// chain. False for what this node does not know.
+    pub fn entitled(&self, actor: &Tid, t: &Tid) -> bool {
         if self.ephemeral_thing(t).is_some() {
             return self.actor_role(actor, t) >= Some(Role::Read);
         }

@@ -301,6 +301,22 @@ impl Engine {
         out
     }
 
+    /// What `g` holds, transitively, through `group.0` and `placed.0~`: `groups_of` the other way.
+    pub fn closure_placed(&self, g: &Tid) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        let mut stack = vec![*g];
+        while let Some(x) = stack.pop() {
+            if !out.insert(x) {
+                continue;
+            }
+            stack.extend(self.closure(&x).iter().copied());
+            if let Some((items, subs)) = self.eph.defs.get(&x) {
+                stack.extend(items.iter().chain(subs).copied());
+            }
+        }
+        out
+    }
+
     /// The groups whose `group.0` or `placed.0~` lists the thing directly: (as an item, as a
     /// subgroup). From the in-memory group index, rebuilt from the definitions at open.
     pub fn listed_in(&self, tid: &Tid) -> (BTreeSet<Tid>, BTreeSet<Tid>) {

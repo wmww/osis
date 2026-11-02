@@ -1116,3 +1116,21 @@ fn a_refused_grant_makes_no_label() {
     assert!(matches!(r, Err(osis::Error::Invalid(_))), "{r:?}");
     assert!(!alice.status().unwrap().groups.contains_key(&t));
 }
+
+// spec/sync.md §2: a crash between a grant's edge and its label leaves the edge alone: the call was never acknowledged, the holder reads nothing, and the same grant again makes the label and reaches him
+#[test]
+fn a_grant_again_makes_the_label_a_crash_left_out() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let t = plain(&alice, "for bob");
+    // the first half of `Osis::grant`, its result dropped as a crash would
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    alice.engine(|e| e.grant(&t, &ids[0], &edge).map(drop)).unwrap();
+    w.run();
+    assert_eq!(x(&others[0], t), None);
+    assert!(!alice.status().unwrap().groups.contains_key(&t));
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    assert!(alice.status().unwrap().groups.contains_key(&t));
+    w.run();
+    assert_eq!(x(&others[0], t), Some(s("for bob")));
+}

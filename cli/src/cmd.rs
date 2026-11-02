@@ -558,7 +558,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         Cmd::Status { watch: true } => {
             let (tx, rx) = mpsc::channel::<String>();
             let _sub = db.watch_status(move |_, st| {
-                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).collect::<Vec<_>>().join(", ");
+                let l = st.groups.iter().map(|(g, x)| format!("{} {:?}", g.to_uri(), x.state)).chain(st.split.iter().map(|t| format!("{} split", t.to_uri()))).collect::<Vec<_>>().join(", ");
                 let _ = tx.send(format!("connected {} {l}", st.connected));
             });
             let timeout = ctx.timeout_or(None)?;
@@ -994,22 +994,19 @@ fn roster(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
 
 fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let s = ctx.db.status()?;
-    let raw = ctx.g.raw;
-    let mut lines = s
-        .groups
-        .iter()
-        .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") }))
-        .collect::<Vec<_>>();
+    let lines = status_lines(&s, ctx.g.raw);
+    ctx.emit(&lines, status_json(&s))
+}
+
+fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
+    let groups = s.groups.iter().map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") }));
     // writes on these are refused until a group moves (Osis::group_source)
-    lines.extend(s.split.iter().map(|t| format!("{} split: writes refused", t.to_uri())));
-    let j = J::Arr(
-        s.groups
-            .iter()
-            .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect()))]))
-            .chain(s.split.iter().map(|t| J::obj([("split", J::tid(*t))])))
-            .collect(),
-    );
-    ctx.emit(&lines, j)
+    groups.chain(s.split.iter().map(|t| format!("{} split: writes refused", t.to_uri()))).collect()
+}
+
+fn status_json(s: &osis::Status) -> J {
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect()))]));
+    J::obj([("groups", J::Arr(groups.collect())), ("split", J::Arr(s.split.iter().map(|t| J::tid(*t)).collect()))])
 }
 
 /// One diagnostic as `diag` prints it (text or a JSON line).
@@ -1385,6 +1382,16 @@ fn schema_reg(sel: &StoreSel, file: &std::path::Path, add: bool) -> anyhow::Resu
 
 #[cfg(test)]
 mod tests {
+    // notes/cli.md Command table: `status` shows split things apart from groups, in both forms.
+    #[test]
+    fn status_lists_split_things_apart_notes_cli() {
+        let t = osis::Tid::from_bytes([7; 15]);
+        let mut s = osis::Status::default();
+        s.split.insert(t);
+        assert_eq!(super::status_lines(&s, true), vec![format!("{} split: writes refused", t.to_uri())]);
+        assert_eq!(super::status_json(&s).text(), format!("{{\"groups\":[],\"split\":[\"{}\"]}}", t.to_uri()));
+    }
+
     // notes/cli.md Design: `edit`'s temp file is new (`create_new`), randomly named, owner-only.
     #[test]
     fn edit_file_is_new_and_private_notes_cli() {
