@@ -65,7 +65,7 @@ fn samples() -> Vec<(&'static str, &'static str, Value)> {
         ("was", "was.0", WAS.encode(&tid(26))),
         ("node", "node.0", NODE.encode(&NodeInfo { software: "osis 0.1.0".into() })),
         ("reach", "reach.0", REACH.encode(&Reach { dialable: [27; 32], relays: vec!["https://relay.example".into()], lan_secret: [28; 32] })),
-        ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false })),
+        ("seen", "seen.0", SEEN.encode(&Seen { ts: WallMs(1_700_000_000_000), stranded: false, suspect: Default::default() })),
         ("group", "group.0", GROUP.encode(&Group { items: BTreeSet::from([tid(29)]), subgroups: BTreeSet::from([tid(30)]) })),
         ("name", "name.0", NAME.encode(&"Trip".to_string())),
         ("body", "body.0", BODY.encode(&"# Plan\n".to_string())),

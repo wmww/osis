@@ -304,7 +304,7 @@ impl SyncEngine {
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
                 self.certificates(&g, l, false, &authors)?;
                 let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
-                self.heartbeat(&g, l, keys, tight)?;
+                self.heartbeat(&g, l, keys, tight, &ctx.closure)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside holders and their chains' keysets only: they
                 // tell the label's rotators what keeps its epoch uncovered and what to seal to
@@ -330,6 +330,7 @@ impl SyncEngine {
             self.retire_at(host, &g, l)?;
         }
         self.reseal(&g, w)?;
+        self.repair_suspects(w)?;
         w.leave(left);
         Ok(())
     }
@@ -621,7 +622,7 @@ impl SyncEngine {
         self.inbox_copies(&g, l)?;
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
         self.certificates(&g, l, false, &authors)?;
-        self.heartbeat(&g, l, keys, false)?;
+        self.heartbeat(&g, l, keys, false, &ctx.closure)?;
         if let Some(wk) = &keys.write {
             self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
         }
@@ -646,6 +647,7 @@ impl SyncEngine {
         self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         // a node serving the label alone decides here: nobody runs a pass at a host for it
         self.reseal(&g, w)?;
+        self.repair_suspects(w)?;
         w.leave(left);
         Ok(())
     }
@@ -865,6 +867,46 @@ impl SyncEngine {
         }
         let a = self.engine.core.secret_actor(g).unwrap_or(*g);
         !self.engine.keys_write_pending(&a).unwrap_or(true)
+    }
+
+    /// Repair (spec/sync.md §7): for each aspect another node's newest heartbeat under the label
+    /// reports suspect (`Work::beats`), of a thing in the label this node may write, whose
+    /// state digest here differs from the reported one: a snapshot of it from this node's whole
+    /// state, an ordinary compaction snapshot (it joins with the others', never resurrects
+    /// expired or purged values). Once per reported entry (heartbeat commit, aspect): each node
+    /// beats at most once per `HEARTBEAT_MIN_INTERVAL` per label. Every entry acted on is a
+    /// diagnostic, so silent repairs hide nothing.
+    fn repair_suspects(&mut self, w: &Work) -> Result<()> {
+        let beats: Vec<(Tid, CommitId)> = w.beats.iter().filter_map(|(n, s)| s.iter().next_back().map(|(_, c)| (*n, *c))).collect();
+        let seen_ak = Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?;
+        for (node, c) in beats {
+            let Some(v) = self.engine.part_value(&c, &node, &seen_ak)? else { continue };
+            let Ok(seen) = <ct::Seen as osis_schema::Codec>::from_value(&v) else { continue };
+            for s in seen.suspect {
+                let Ok(ak) = Ak::new(&s.ak) else { continue };
+                if !w.closure.contains(&s.thing) || ct::is_role_class(ak.as_str()) || ak.as_str() == "created.0" || !self.repaired.insert((c, s.thing, ak.clone())) {
+                    continue;
+                }
+                if self.engine.role_on(&s.thing) < Some(Role::Write) {
+                    continue;
+                }
+                let mine = self.engine.state_digest(&s.thing, &ak)?;
+                if mine.is_none() || mine == Some(s.digest) {
+                    self.repair_diag(node, s.thing, None, format!("suspect {} {} reported by {node}: same state here", s.thing, s.ak));
+                    continue;
+                }
+                match self.engine.snapshot(&s.thing, &ak) {
+                    Ok(snap) => self.repair_diag(node, s.thing, snap, format!("suspect {} {} reported by {node}: re-snapshotted", s.thing, s.ak)),
+                    Err(e) => self.diag(format!("repair of {} {}: {e}", s.thing, s.ak)),
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn repair_diag(&mut self, node: Tid, thing: Tid, commit: Option<CommitId>, detail: String) {
+        let now = self.engine.now();
+        self.engine.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::Repair, tids: vec![node, thing], commit, peer: Some(node), detail }, now);
     }
 
     /// Re-seals decided at the end of a complete pass of the actor's labels (spec/permissions.md
@@ -1660,7 +1702,7 @@ impl SyncEngine {
 
     /// A heartbeat under `l` at most once per `HEARTBEAT_MIN_INTERVAL` (spec/permissions.md §4),
     /// skipped by deposit when the budget is tight.
-    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, tight: bool) -> Result<()> {
+    fn heartbeat(&mut self, g: &Tid, l: LabelId, keys: &HeadKeys, tight: bool, closure: &BTreeSet<Tid>) -> Result<()> {
         if !self.cfg.heartbeats {
             return Ok(());
         }
@@ -1671,7 +1713,8 @@ impl SyncEngine {
         if !keys.is_writer() && tight {
             return Ok(());
         }
-        let Some(c) = self.heartbeat_commit(false)? else { return Ok(()) };
+        let suspect = self.suspects_under(closure)?;
+        let Some(c) = self.heartbeat_commit(false, suspect)? else { return Ok(()) };
         let ais = BTreeSet::from([0usize]);
         for b in self.engine.partial_bodies(&c, &ais)? {
             self.place(g, l, &b, true)?;
@@ -1680,15 +1723,35 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A `seen.0` commit on this node (spec/permissions.md §4): reused within the interval.
-    pub(crate) fn heartbeat_commit(&mut self, stranded: bool) -> Result<Option<CommitId>> {
+    /// The aspects of things in a label's `closure` this node flags suspect, with their keyed
+    /// state digests (spec/permissions.md §4): the most recently flagged first, at most
+    /// `MAX_HEARTBEAT_SUSPECTS`; an aspect with no digest here (no state, no creation record)
+    /// waits until it has one. Only the label's things: its readers learn nothing of others.
+    fn suspects_under(&mut self, closure: &BTreeSet<Tid>) -> Result<BTreeSet<ct::Suspect>> {
+        let mut flagged: Vec<(Tid, Ak, u64, u8)> = self.engine.suspects()?.into_iter().filter(|x| closure.contains(&x.0)).collect();
+        flagged.sort_by_key(|x| std::cmp::Reverse(x.2));
+        let mut out = BTreeSet::new();
+        for (tid, ak, _, _) in flagged {
+            if out.len() >= osis_base::format::MAX_HEARTBEAT_SUSPECTS {
+                break;
+            }
+            if let Some(digest) = self.engine.state_digest(&tid, &ak)? {
+                out.insert(ct::Suspect { thing: tid, ak: ak.as_str().to_string(), digest });
+            }
+        }
+        Ok(out)
+    }
+
+    /// A `seen.0` commit on this node reporting `suspect` (spec/permissions.md §4): reused
+    /// within the interval while it reports the same.
+    pub(crate) fn heartbeat_commit(&mut self, stranded: bool, suspect: BTreeSet<ct::Suspect>) -> Result<Option<CommitId>> {
         let me = self.engine.tid();
         let now = self.now();
         if !stranded
             && let Some(c) = self.engine.core.ix.by_aspect.get(&(me, Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?)).and_then(|s| s.iter().next_back()).map(|x| x.1)
             && let Some(h) = self.engine.header(&c)
             && h.ts.wall_ms().0.saturating_add(HEARTBEAT_MIN_INTERVAL_MS) > now
-            && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded)
+            && self.engine.get_typed(&me, &ct::SEEN).ok().flatten().is_some_and(|s| !s.stranded && s.suspect == suspect)
         {
             return Ok(Some(c));
         }
@@ -1697,7 +1760,7 @@ impl SyncEngine {
         let life = self.cfg.heartbeat_lifetime_ms.clamp(osis_base::format::HEARTBEAT_MIN_LIFETIME_MS, osis_base::format::HEARTBEAT_MAX_LIFETIME_MS);
         let mut m = crate::Mutation::new();
         // whole: a field left to an earlier heartbeat would go when that one expires (spec/crdt.md §9)
-        m.replace(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded })?;
+        m.replace(me, &ct::SEEN, &ct::Seen { ts: WallMs(ts), stranded, suspect })?;
         m.expires(me, &ct::SEEN, WallMs(ts.saturating_add(life)))?;
         self.engine.commit(m)
     }
@@ -1719,7 +1782,7 @@ impl SyncEngine {
             return Ok(());
         }
         let Some(secret) = self.engine.stranded_secret(&g) else { return Ok(()) };
-        let Some(c) = self.heartbeat_commit(true)? else { return Ok(()) };
+        let Some(c) = self.heartbeat_commit(true, BTreeSet::new())? else { return Ok(()) };
         for b in self.engine.partial_bodies(&c, &BTreeSet::from([0usize]))? {
             let s = seal_body(&b, &mut *self.rng)?;
             let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;

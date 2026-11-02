@@ -41,7 +41,7 @@
 - **Inbox blob** (spec/sync.md §3) = clear prefix || sealed box of the Padmé-padded payload to the recipient actor's read-role KEM key, AD = (recipient tid, the text `"inbox"`, clear prefix); payload = a role commit (header and deltas) about the recipient, plus the label IDs and host addresses of the things it names (spec/wire.md §9). Its prefix expiry is a delivery lifetime (`INBOX_LIFETIME`, 90 days), not a commit expiry; it has no blob key and its entry's wrap is filler.
 
 ## 6. Hashes and links
-- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, chunk or page bytes)`, for a tree node `kdf("link tree", dedup secret, le64(level) || for each child in order: content hash || le64(len))`, `len` the plaintext length under the child (spec/wire.md §6).
+- Keyed content hashes: delta hash `kdf("delta", dedup secret, delta bytes)`; link content hash `kdf("link", dedup secret, chunk or page bytes)`, for a tree node `kdf("link tree", dedup secret, le64(level) || for each child in order: content hash || le64(len))`, `len` the plaintext length under the child (spec/wire.md §6). A heartbeat's state digest is `kdf("state", dedup secret, ak || 0x00 || state bytes)` cut to 16 bytes (spec/permissions.md §4).
 - Unkeyed BLAKE3: tids, commit IDs, blob IDs.
 - **Link**: (link content hash 32, blob ID 32, suite byte || blob key 33).
 

@@ -363,11 +363,11 @@ fn expired_late_part_unrecoverable_spec_crdt_4_7() {
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the late part");
 }
 
-// issues/pending-past-expiry.md: a commit held pending (its thing's creation not held) past its
-// expiry keeps its values on disk
+// spec/commits.md §5 (no copy past T): a commit held pending (its thing's creation not held) past
+// its expiry drops the expiring part from its stored copy at T, which then counts as never
+// received; the aspect is flagged suspect (spec/permissions.md §4)
 #[test]
-#[ignore]
-fn repro_expired_while_pending_values_kept() {
+fn pending_part_dropped_at_expiry_spec_commits_5() {
     let mut lp = net2(79);
     let t = new_thing(&mut lp, 0);
     let marker = "PENDEXP-MARK-5b1c";
@@ -379,4 +379,5 @@ fn repro_expired_while_pending_values_kept() {
     lp.peers[1].engine.tick().unwrap();
     filler(&mut lp, 1, 6);
     assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "expired content recovered from the pending copy");
+    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|(x, a, _, _)| *x == t && a.as_str() == "t:brief.0"), "flagged suspect");
 }

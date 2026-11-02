@@ -91,6 +91,9 @@ pub const HEARTBEAT_MIN_LIFETIME_MS: u64 = DAY_MS;
 pub const HEARTBEAT_MAX_LIFETIME_MS: u64 = 14 * DAY_MS;
 /// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.
 pub const HEARTBEAT_MIN_INTERVAL_MS: u64 = 6 * HOUR_MS;
+/// Most suspect aspects one heartbeat reports (spec/wire.md §2, spec/permissions.md §4); the
+/// rest wait for those to clear. fixed.
+pub const MAX_HEARTBEAT_SUSPECTS: usize = 32;
 /// Most import resolution hops (spec/wire.md §2, spec/permissions.md §7). fixed.
 pub const RESOLUTION_HOPS: usize = 8;
 /// Most owner links from a thing up to its key actor (spec/wire.md §2, spec/permissions.md

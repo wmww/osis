@@ -49,6 +49,7 @@ The probe for the M rows: 400 overwrites of one register by one node, compacted 
 | Thin clients: `clients.0^` entry (about 50 B, tombstone kept as for any map entry), the client actor's creation record, `keys.0`, `secrets.0` and about 2.6 KB of boxes per grant (notes/permissions.md) | Both | Per client ever added and per grant; the entry and grants go at `remove_client`, the records and their history stay as for any actor (E) | Inherent | none |
 | Undo buffers | Node | Capped at `UNDO_DEPTH` = 16 per aspect | Bounded | none |
 | Death records (DEATH rows) | Node | Live with their body | Bounded | none |
+| Suspect flags `q/` and heartbeat suspect lists (spec/permissions.md §4) | Node; host (in heartbeats) | Per suspect aspect: a 9 B flag row until a valid snapshot stamped after it or the body's return; per heartbeat about 60 B per entry (tid, AK, 16 B digest), at most `MAX_HEARTBEAT_SUSPECTS` = 32. No per-aspect digest is stored: digests are computed when a heartbeat is written or read (C). The label-level `held`/`state` set-hashes of the convergence study (16 B per aspect stored) are not built | Bounded (cap; flags clear on repair or the next compaction) | none |
 
 ## Closable without other trade-offs (ready to brief)
 - Rows 1, 4-6 and expiring headers close together with issues/session-sources.md, which carries the residuals it accepts.

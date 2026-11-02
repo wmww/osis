@@ -123,6 +123,10 @@ pub enum DiagnosticKind {
     /// A local storage condition: a store file or directory readable by others whose mode
     /// could not be tightened (the `osis` file store).
     Storage,
+    /// A heartbeat reported an aspect suspect (spec/permissions.md §4): this node re-snapshotted
+    /// it, or holds the same state (`tids`: the reporting node, the thing; `commit`: the
+    /// snapshot written).
+    Repair,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

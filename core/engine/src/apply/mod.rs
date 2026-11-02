@@ -524,6 +524,12 @@ fn ingest_class(tx: &mut Tx<'_>, mut blob: CommitBlob, origin: Origin) -> Result
             Ok(Ingested::Applied(id))
         }
         Exam::Pending(r, others) => {
+            // parts past their expiry count as never received: examined again without them
+            let (h, n) = (blob.header.clone(), blob.parts.len());
+            crate::retention::pending_expiry(tx, &id, &mut blob, &h)?;
+            if blob.parts.len() != n {
+                return ingest_class(tx, blob, origin);
+            }
             pend(tx, &id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, &id)?;
             let now = tx.now().0;
@@ -551,6 +557,12 @@ fn pend(tx: &mut Tx<'_>, id: &CommitId, kind: PendingKind, bytes: &[u8], reason:
 fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) -> Result<()> {
     let mut rest = applied.clone();
     rest.parts = w.parts;
+    // a part past its expiry counts as never received (`retention::pending_expiry`)
+    let h = rest.header.clone();
+    crate::retention::pending_expiry(tx, id, &mut rest, &h)?;
+    if rest.parts.is_empty() {
+        return Ok(());
+    }
     let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
     pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
     // judged on the waiting parts: a `secrets.0` one among them stays out, so that `reexamine` comes
@@ -617,8 +629,17 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
         Exam::Ready(mut parts) => {
             let waiting = parts.waiting.take();
             let was_pending = unpend(tx, id)?;
+            let again: Vec<usize> = parts.ais().into_iter().filter(|ai| tx.core.ix.commits.get(id).is_some_and(|m| m.dropped.contains_key(ai))).collect();
             crate::retention::reopen_late(tx, id, &parts.ais())?;
             atomic::join_late(tx, id, &merged, parts)?;
+            // a dropped body back and held: what the aspect lacked for it is back
+            for ai in again {
+                if tx.core.ix.commits.get(id).is_some_and(|m| m.holds(ai))
+                    && let Some(a) = merged.header.aspects.get(ai)
+                {
+                    crate::retention::suspect::clear(tx, &a.tid, &a.ak)?;
+                }
+            }
             match waiting {
                 Some(w) => pend_aside(tx, id, &merged, w)?,
                 None if was_pending => keys::forget_unchecked(tx, id)?,
@@ -627,6 +648,11 @@ fn late_parts(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<In
             Ok(Ingested::Applied(*id))
         }
         Exam::Pending(r, others) => {
+            let n = blob.parts.len();
+            crate::retention::pending_expiry(tx, id, &mut blob, &merged.header)?;
+            if blob.parts.len() != n {
+                return late_parts(tx, id, blob);
+            }
             pend(tx, id, PendingKind::Pending, &blob.encode(), r.clone())?;
             keys::read_pending_boxes(tx, &blob, id)?;
             note_record_wait(tx, id, &merged, &r, &others);

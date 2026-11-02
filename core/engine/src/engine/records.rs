@@ -36,6 +36,8 @@ pub const VOID: &[u8] = b"o/";
 pub const OWN_KEYS: &[u8] = b"g/";
 /// Aspects whose deaths wait for a recompute (`retention::settle_deaths`): `e/` + aspect key.
 pub const DEATHS_DUE: &[u8] = b"e/";
+/// Suspect aspects (`retention::suspect`): `q/` + aspect key, le64 corrected wall ms flagged.
+pub const SUSPECT: &[u8] = b"q/";
 /// The local schema of each app AK (`Core::schemas`): `d/` + AK, the schema's canonical form.
 pub const SCHEMAS: &[u8] = b"d/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.

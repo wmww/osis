@@ -703,6 +703,7 @@ fn after_store(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak
         crate::retention::note_deaths(tx, tid, ak, deaths)?;
         if *snap {
             crate::retention::note_copies(tx, id, tid, ak)?;
+            crate::retention::suspect::settled_by(tx, id, tid, ak)?;
         }
     }
     Ok(())
@@ -1152,8 +1153,8 @@ pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned
 /// state stays the join of what is held, whatever the order the expiry, that write and its
 /// revocation came in. Held: a body dropped as covered gives its residue from its coverers'
 /// copies (`retention::make_valueless`) while one carries it (`retention::uncover` drops it); a part missing at expiry or purge gives none and joins
-/// when a late copy comes (`retention::takes_late`). Known gap (a keep-at-most drop before
-/// the delta went value-less): issues/valueless-gaps.md.
+/// when a late copy comes (`retention::takes_late`), as does one dropped for its keep bounds
+/// before it went value-less (it counts as never received, spec/commits.md §5).
 fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
     let mut rows = Vec::new();
     tx.scan(&records::aspect_key(records::RESIDUE, tid, ak), |k, v| {

@@ -5,7 +5,7 @@
 
 use super::{Core, Engine, records};
 use crate::error::{Error, Result};
-use osis_base::{Ak, Role, Tid, Value};
+use osis_base::{Ak, CommitId, Role, Tid, Value};
 use osis_crdt::Fragment;
 use osis_perm::{At, Edge, MoveIndex};
 use osis_schema::AspectKey;
@@ -109,6 +109,20 @@ impl Engine {
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(self.resolved(&tid, &ak, v))
+    }
+
+    /// What held commit `c`'s own part on `(tid, ak)` reads, alone (not the aspect's joined
+    /// state): `None` when not held. A heartbeat is read per commit (spec/permissions.md §4).
+    pub fn part_value(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        let Some(ai) = self.core.ix.commits.get(&c).and_then(|m| m.aspect(&tid, &ak).filter(|ai| m.holds(*ai))) else { return Ok(None) };
+        self.run(|tx| {
+            let mut st: Option<Fragment> = None;
+            for f in crate::apply::held_fragments(tx, &c, ai)? {
+                st.get_or_insert_default().join(f);
+            }
+            Ok(st.as_ref().and_then(Fragment::read))
+        })
     }
 
     /// The durable side of `(tid, ak)` alone, as `get` reads it (tests: what durable commits
