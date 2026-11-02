@@ -533,6 +533,9 @@ fn aged_out_grant(seed: u64, restart: bool) {
     let rcpt = read_recipient(&x.lp.peers[1].engine);
     let bytes = forge_pending_grant(&mut x.lp.peers[0].engine, rcpt, x.d, seed);
     assert!(matches!(x.lp.peers[1].engine.ingest(&bytes, Vec::new()).unwrap(), osis_node::Ingested::Pending(..)));
+    let ts = crate::common::grant_ts(&bytes);
+    x.lp.peers[1].clock.set(ts);
+    x.lp.peers[1].engine.freeze_pending();
     let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
     assert!(!lost.contains(&x.d) && !lost.contains(&x.f), "{lost:?}");
     assert!(!x.lp.peers[1].engine.lost_due());
@@ -540,7 +543,11 @@ fn aged_out_grant(seed: u64, restart: bool) {
     let now = x.lp.peers[1].engine.now().0;
     assert!(at > now && at <= now + osis_node::rotation::PENDING_GRANT_WAIT_MS, "{at} {now}");
     if restart {
+        // past the drift bound again while opening examines it
+        x.lp.peers[1].clock.set(osis_base::WallMs(ts.0 - 2 * osis_base::format::MAX_DRIFT_MS));
         reopen(&mut x.lp, 1, seed).unwrap();
+        x.lp.peers[1].clock.set(ts);
+        x.lp.peers[1].engine.freeze_pending();
         assert_eq!(x.lp.peers[1].engine.next_lost_due(), Some(at));
     }
     x.lp.peers[1].clock.advance(at - now);
@@ -548,7 +555,7 @@ fn aged_out_grant(seed: u64, restart: bool) {
     let lost = x.lp.peers[1].engine.drop_lost_due().unwrap();
     assert!(lost.contains(&x.d) && lost.contains(&x.f) && !lost.contains(&x.e), "{lost:?}");
     assert!(!x.lp.peers[1].engine.lost_due() && x.lp.peers[1].engine.next_lost_due().is_none());
-    assert_eq!(x.lp.peers[1].engine.pending().len(), 1, "the grant itself stays pending");
+    assert!(x.lp.peers[1].engine.pending().is_empty(), "the grant boxed no newer epoch: its only part went with the secrets");
     assert_forgotten(&mut x);
 }
 

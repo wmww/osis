@@ -21,6 +21,14 @@ impl Engine {
         r
     }
 
+    /// Stops `reexamine` here, so what pends stays pending whatever else happens. For what a
+    /// pending commit does to the rest of the node: the only wait a role commit's one part has
+    /// once its author and thing are known is the clock's (spec/commits.md §4).
+    #[doc(hidden)]
+    pub fn freeze_pending(&mut self) {
+        self.core.frozen_pending = true;
+    }
+
     /// Every key the store's current tree yields: what an attacker holding the device starts
     /// from. Shredding tests.
     #[doc(hidden)]

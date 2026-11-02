@@ -539,6 +539,8 @@ pub struct Core {
     pub written: Vec<(Tid, Ak)>,
     /// Tests: let local commits break the writer-side role rules (to test receivers).
     pub skip_writer_rules: bool,
+    /// Tests: `Engine::freeze_pending`.
+    pub frozen_pending: bool,
     /// Labeled groups whose labels have not passed completely since the sync layer started
     /// (`Engine::set_counters_unsure`); `None` without one. See `Core::counters_sure`.
     pub counters_unsure: Option<BTreeSet<Tid>>,
@@ -831,6 +833,7 @@ impl Core {
             events: Events::default(),
             written: Vec::new(),
             skip_writer_rules: false,
+            frozen_pending: false,
             counters_unsure: None,
             header_fault: Arc::default(),
             #[cfg(test)]
@@ -1632,6 +1635,7 @@ impl Engine {
         fresh.events = std::mem::take(&mut self.core.events);
         fresh.key_actors = std::mem::take(&mut self.core.key_actors);
         fresh.skip_writer_rules = self.core.skip_writer_rules;
+        fresh.frozen_pending = self.core.frozen_pending;
         fresh.counters_unsure = self.core.counters_unsure.take();
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;

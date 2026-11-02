@@ -736,11 +736,18 @@ fn lost_access_wakes_when_pending_grant_ages_out_spec_permissions_3() {
         let rcpt = crate::common::read_recipient(net.engine(b));
         let bytes = crate::common::forge_pending_grant(net.engine(a), rcpt, g, 3);
         assert!(matches!(net.engine(b).ingest(&bytes, Vec::new()).unwrap(), osis_node::Ingested::Pending(..)));
+        let ts = crate::common::grant_ts(&bytes);
+        net.clock.set(ts);
+        net.engine(b).freeze_pending();
         let now = net.now();
         let mut acts = net.sync(b).handle(Event::Local);
         assert_eq!(net.read(b, t), Some(s("marker")), "kept while the grant may apply");
         if restart {
+            // past the drift bound again while opening examines it
+            net.clock.set(osis_base::WallMs(ts.0 - 2 * osis_base::format::MAX_DRIFT_MS));
             net.restart(b, 9);
+            net.clock.set(ts);
+            net.engine(b).freeze_pending();
             acts = net.sync(b).handle(Event::Local);
         }
         let at = acts.iter().find_map(|x| if let osis_node::sync::Action::Wake { at } = x { Some(*at) } else { None }).expect("a wake");

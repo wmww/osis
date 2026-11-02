@@ -230,7 +230,7 @@ fn replay(bytes: &[u8], reads: &[Secret32], now: WallMs, order: &[Tok]) -> Vec<(
     observe(&mut p.engine, &ids)
 }
 
-fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, String)> {
+pub(crate) fn observe(e: &mut osis_node::Engine, ids: &BTreeSet<CommitId>) -> Vec<(String, String)> {
     let hex = |c: &CommitId| osis_base::hex::encode(&c.0);
     let dig = e.index_digest();
     let mut held: Vec<(osis_base::Ts, CommitId)> = ids.iter().filter_map(|c| e.header(c).map(|h| (h.ts, *c))).collect();
@@ -751,6 +751,29 @@ fn labels() -> Vec<Scenario> {
         let list = |pre: &[Tok], post: &[usize]| setup.iter().copied().chain(pre.iter().copied()).chain(c.iter().chain(post).map(|e| Tok::In(*e))).collect();
         vec![("both labels", list(&[], &two)), ("one label, the other's thing not synced", list(&[], &two[..1])), ("one label, the other's thing synced", list(&[h], &two[..1])), ("both labels, synced", list(&[h], &two))]
     }
+    /// The two parts in both orders, H synced or not, and the withheld edge last.
+    fn chainless(played: &Played, of: &[usize], _: &BTreeSet<usize>) -> Vec<(&'static str, Vec<Tok>)> {
+        let (edge, last) = (played.base + 1, played.packs.len() - 1);
+        let rest: Vec<usize> = (0..of.len()).filter(|e| of[*e] != edge && of[*e] != last).collect();
+        let two: Vec<usize> = (0..of.len()).filter(|e| of[*e] == last).collect();
+        assert_eq!(two.len(), 2, "a part under each label");
+        let edges: Vec<usize> = (0..of.len()).filter(|e| of[*e] == edge).collect();
+        let h = Tok::Sync(played.things[1]);
+        let list = |pre: &[Tok], post: &[usize]| pre.iter().copied().chain(rest.iter().chain(post).map(|e| Tok::In(*e))).collect::<Vec<Tok>>();
+        let (gh, hg) = ([two[0], two[1]], [two[1], two[0]]);
+        let early = |parts: &[usize]| std::iter::once(h).chain(parts.iter().chain(&rest).map(|e| Tok::In(*e))).collect::<Vec<Tok>>();
+        let (gh_e, hg_e): (Vec<usize>, Vec<usize>) = (gh.iter().chain(&edges).copied().collect(), hg.iter().chain(&edges).copied().collect());
+        vec![
+            ("G first", list(&[], &gh)),
+            ("H first", list(&[], &hg)),
+            // the parts before the rest: with H synced the commit waits whatever part is here, so
+            // the last step must be one that shows (`judgment_vectors_can_fail`)
+            ("H synced, G first", early(&gh)),
+            ("H synced, H first", early(&hg)),
+            ("G first, the edge last", list(&[], &gh_e)),
+            ("H first, the edge last", list(&[], &hg_e)),
+        ]
+    }
     vec![
         Scenario {
             name: "content commit over two labels",
@@ -765,6 +788,20 @@ fn labels() -> Vec<Scenario> {
             source: "hand-built: 0 grants 1 read on both G and H in one role commit: a role commit never waits for its other deltas",
             steps: vec![NewTop { by: 0 }, tick.clone(), TwoEdges { by: 0, a: 0, b: 1, holder: 1, role: Role::Read }],
             orders: Some(orders),
+        },
+        Scenario {
+            name: "content commit, its author's chain to H away",
+            spec: "spec/commits.md §4, spec/requirements.md Decentralization",
+            source: "hand-built: 1 writes both G and H, the edge giving it a path to H withheld: H's part waits alone in either order; syncing H the commit waits whole in either order; the edge arriving ends as in order",
+            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick.clone(), Two { by: 1, a: 0, b: 1, v: 1 }],
+            orders: Some(chainless),
+        },
+        Scenario {
+            name: "role commit, its author's chain to H away",
+            spec: "spec/commits.md §4, spec/requirements.md Decentralization",
+            source: "hand-built: 2 (admin on G) sets 1's edge on G and H, the edge giving it a path to H withheld: G's roster changes in either order, H synced or not",
+            steps: vec![NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick.clone(), TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }],
+            orders: Some(chainless),
         },
     ]
 }
@@ -950,12 +987,10 @@ fn judgment_vectors_spec_permissions_5_2() {
     }
 }
 
-// spec/requirements.md Decentralization, spec/commits.md §4: issues/chainless-part-order.md. One
-// held set, its parts in two orders: the G part first applies the commit and its H part waits;
-// the H part first holds the commit pending whole, G's write unapplied.
+// spec/requirements.md Decentralization, spec/commits.md §4: one held set, its parts in two
+// orders: the H part, its chain away, waits alone either way and G's write stands.
 #[test]
-#[ignore]
-fn repro_chainless_part_order_spec_commits_4() {
+fn chainless_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 1, role: Some(Role::Read) }, Sync { from: 0, to: 1 }, tick, Two { by: 1, a: 0, b: 1, v: 1 }]);
@@ -968,11 +1003,9 @@ fn repro_chainless_part_order_spec_commits_4() {
 }
 
 // spec/requirements.md Decentralization, spec/commits.md §4: the same with a role commit: 2 (admin
-// on G, a read edge on H not delivered) sets 1's edge on G and H. The G part first changes G's
-// roster, the H part first does not.
+// on G, a read edge on H not delivered) sets 1's edge on G and H; either order changes G's roster.
 #[test]
-#[ignore]
-fn repro_chainless_role_part_order_spec_commits_4() {
+fn chainless_role_part_order_spec_commits_4() {
     use Step::*;
     let tick = Advance { who: None, ms: 1000 };
     let played = play(SEED, &[NewTop { by: 0 }, tick.clone(), Edge { by: 0, t: 1, holder: 2, role: Some(Role::Read) }, Sync { from: 0, to: 2 }, tick, TwoEdges { by: 2, a: 0, b: 1, holder: 1, role: Role::Read }]);

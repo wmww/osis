@@ -7,3 +7,5 @@ Repro: reader in the group, offline. Writer writes c1 = {`t:gone.0` under anothe
 Fix sketch: treat an unknown thing under a synced label as synced (commit examined against the label it came under), or hold a label's first batch until the closure is walked. Either way the wait then costs a first sync its re-examination (notes/node.md, Re-examination).
 
 Tests that want the wait must `set_syncing` before delivering (`order::carrierless_*` do; the rest of the `order::` harness's fresh nodes never sync, so its late-part modes never exercise the wait).
+
+Parts waiting alone (spec/commits.md §4) did not fix this and widen it slightly: at a first sync, before the closure walk, an honest commit on two things whose second record is not held now shows its first part in either arrival order, where before one order held it whole. It heals when the record comes. The fix sketch stands: once an unknown thing under a synced label counts as synced, that commit waits whole again.

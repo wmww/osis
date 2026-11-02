@@ -30,9 +30,9 @@ use std::fmt::Write as _;
 const HOUR: u64 = 3_600_000;
 
 #[derive(Clone)]
-struct Rng(u64);
+pub(crate) struct Rng(pub(crate) u64);
 impl Rng {
-    fn below(&mut self, n: u64) -> u64 {
+    pub(crate) fn below(&mut self, n: u64) -> u64 {
         self.0 ^= self.0 << 13;
         self.0 ^= self.0 >> 7;
         self.0 ^= self.0 << 17;
@@ -116,6 +116,8 @@ pub(crate) enum Step {
     HostileWrite { by: usize, t: usize, v: u8 },
     /// One content commit of a register write on each of things `a` and `b`, unchecked.
     Two { by: usize, a: usize, b: usize, v: u8 },
+    /// `Two` on three things.
+    Three { by: usize, a: usize, b: usize, c: usize, v: u8 },
     /// One role commit setting `holder`'s edge on both things `a` and `b`, unchecked.
     TwoEdges { by: usize, a: usize, b: usize, holder: usize, role: Role },
     /// `by` puts `item("v1", 1)` at key `k` of `t:map.0`, sends that commit to `other` alone,
@@ -783,6 +785,14 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 lp.peers[by].engine.commit_hostile(m).unwrap().expect("two writes");
                 Some(by)
             }
+            Step::Three { by, a, b, c, v } => {
+                let mut m = Mutation::new();
+                for x in [th(a), th(b), th(c)] {
+                    m.set(x, &REG, &s(&format!("v{v}"))).unwrap();
+                }
+                lp.peers[by].engine.commit_hostile(m).unwrap().expect("three writes");
+                Some(by)
+            }
             Step::TwoEdges { by, a, b, holder, role } => {
                 let mut m = Mutation::new();
                 for x in [th(a), th(b)] {
@@ -1412,13 +1422,6 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
     let mut late = Vec::new();
     let mut plan = played.sync.plan(order);
     let mut done = 0;
-    // issues/chainless-part-order.md (known, open): where this held set leaves a commit on several
-    // things without a chain or creation record, one thing's part first holds it pending whole
-    // and the other's first applies it; those are not split until that is fixed. Remove with the fix
-    let skip_chainless_part_order: BTreeSet<CommitId> = match (&rng, played.spans.is_empty()) {
-        (Some(_), false) => deliver(played, order).engine.pending().into_iter().filter(|(_, r)| matches!(r, osis_node::Reason::MissingChain(_) | osis_node::Reason::UnknownCreated(_))).map(|x| x.0).collect(),
-        _ => BTreeSet::new(),
-    };
     for &i in order {
         plan.upto(&mut p, done);
         done += 1;
@@ -1428,7 +1431,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
             Some(rng) => {
                 let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                if ais.len() > 1 && !(played.spans.contains(&i) && skip_chainless_part_order.contains(&pk.id)) {
+                if ais.len() > 1 {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     late.push(i);
@@ -2006,11 +2009,10 @@ fn repro_expired_residue_order_spec_crdt_4_7() {
     assert_eq!(state(rest.to_vec()), state(rest.iter().rev().copied().collect()));
 }
 
-// issues/chainless-part-order.md: not only hostile, not only chains: one commit on G and H, at a
-// node lacking H's creation record. The G part first applies it, the H part first holds it pending.
+// spec/commits.md §4: not only hostile, not only chains: one commit on G and H, at a node lacking
+// H's creation record. Whichever part comes first, H's waits alone and G's applies.
 #[test]
-#[ignore]
-fn repro_chainless_part_creation_missing_spec_commits_4() {
+fn chainless_part_creation_missing_spec_commits_4() {
     use Step::*;
     let h = vec![New { by: 0, parent: 0, write: true }, Two { by: 0, a: 0, b: 1, v: 7 }];
     let played = play(1054, &h);
