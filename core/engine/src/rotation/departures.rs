@@ -175,7 +175,8 @@ fn thing_names(core: &Core, a: &Tid, out: &mut BTreeSet<Name>) {
 /// (spec/crypto.md §4, boxing a holder actor): the names carried by every box to `m` at a current
 /// epoch of `a`, and by the boxes to `m` of every applied commit putting `m`'s edge on `a` whose
 /// `secrets.0` body it holds (so a rotation that removed the grant's boxes, leaving `m` out,
-/// does not drop what they carried), met here. Names it cannot open (it lacks the boxed epochs'
+/// does not drop what they carried), met here; such a commit whose `secrets.0` part on `a` is
+/// missing (held only as a projection) counts as not met, a dropped one as held. Names it cannot open (it lacks the boxed epochs'
 /// secrets, or they are malformed) count as not met. Invariant: a departure inside `m` the
 /// granter knew, and so kept from its box to `m` by `keys.0` validity or the box judgement, is
 /// held here before this node boxes `m` while it holds that grant, so the box judgement here
@@ -196,7 +197,12 @@ pub(crate) fn grant_names_held(tx: &mut Tx<'_>, a: &Tid, m: &Tid) -> Result<bool
         .collect();
     let grants: Vec<osis_base::CommitId> = tx.core.timelines.get(a).map(|tl| edge_writes(tl, a).filter(|(_, op)| op.holder == *m && op.edge.is_some()).map(|(mc, _)| mc.id).collect()).unwrap_or_default();
     for c in grants {
-        let Some(ai) = tx.core.ix.commits.get(&c).and_then(|x| x.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "secrets.0")) else { continue };
+        let Some((ai, missing)) = tx.core.ix.commits.get(&c).and_then(|x| x.header.aspects.iter().position(|x| x.tid == *a && x.ak.as_str() == "secrets.0").map(|ai| (ai, x.missing.contains(&ai)))) else { continue };
+        // held only as a projection (its `roles.0` part without its boxes): what it carried is
+        // unknown here
+        if missing {
+            return Ok(false);
+        }
         for d in crate::apply::held_parts(tx, &c, ai)? {
             if let osis_commit::Decoded::Delta(d) = d {
                 groups.push(to_m(crate::apply::keys::secrets_write(&d.fragment)));
