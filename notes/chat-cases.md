@@ -217,14 +217,14 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
-- **c** Keep-after-removal: whether a removed holder keeps what it held is a property of the removal or the actor, not the node (issues/keep-after-removal.md); the chat default is the owner's to confirm; never for device removal.
+- **c** Keep-after-removal: whether a removed holder keeps what it held is a property of the removal or the actor, not the node (issues/keep-after-removal.md); chat default: keep (owner); erase for device removal.
 - **e** Sender card in invite requests (owner: yes).
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.
 - **h** Wake relay for background notifications (owner: does not block).
 - **i** Content key chain (D only): a boxed seed with no history box, re-seeded in every read rotation; an hourly hash-chain key in the clear prefix; content blobs wrapped under it; devices erase hour keys after two hours and keep blob keys of retained bodies; content older than the window is may-hold; a re-wrapped transfer bundle for new devices. Assumed in every D cell. Refuted by review4: the seed's box is in the recording and opens under keys the device keeps, so a thief rebuilds every hour key; only "newcomers cannot read older content" survives.
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker hosts can link or trial decryption.
-- **k** Purge by author: a purge item naming (aspect, author) so an admin erases a removed member's deltas in one item, `nobody` ones included (issues/purge-by-author.md).
+- **k** Purge by author: a purge item naming (aspect, author) so an admin erases a removed member's deltas in one item, within each delta's own purge rights; never overrides author-only or `nobody` (owner; issues/purge-by-author.md).
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **l** History read API (E): the held bodies of an aspect with author, time, received time, validity and the sender flag, paged by time, memory commits included, and a change event per commit.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
@@ -259,7 +259,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 23. D: the window is the current and previous hour (`MAX_DRIFT`); below it in-flight uploads become unreadable.
 24. D: a forward hash chain; cut off at the next membership change, or by an optional periodic re-seed (1.2 KB per member each).
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
-26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden but stored until purged by author (core k).
+26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden and stored for good, unless a thing-level required retention refuses it (issues/purge-by-author.md).
 27. E: an edit is a new message plus a purge of the old one.
 28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices (frontier study, unbuilt); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
