@@ -170,4 +170,12 @@ What step B above lists, on B1's mechanism: `Engine::write`'s ephemeral half as 
 - **Coalescing by snapshot misses the high-rate case.** Snapshots carry no expiring write, so a burst of cursor or presence moves is not coalesced by one (only `drop_superseded` thins it, and never sequences or bags), and each coalescing snapshot costs the aspect's whole state per round trip, where the old lane joined only the unsent own deltas. Simpler: build one memory commit from the unsent writes (delay the commit, not a snapshot).
 - **Memory receipts grow.** `receipt::record` keeps a `commits` entry (about 60 B) per memory snapshot and a bucket per minute per session source, kept after the commit is forgotten until the thing is freed; nothing reads them (demotion frontiers list no memory commit). B2 records none for memory commits (`memory_commit_session_form_spec_commits_3` asserts one today).
 - **Cost.** `drop_covered` runs on every memory apply over every held body of the aspect times every valid snapshot, and `covered` decodes both before its cheap frontier check; check the frontier first when B2 makes this the live path.
+
+**Coordinator decisions for B2:**
+1. An author keeps its own memory bodies until one of its own snapshots covers them. That is the old own-cover rule, and that copy is what the reconcile re-uploads. Others drop as covered at once. Losses after a compactor's demotion then stop at the bodies of the demoted author's own writes.
+2. Expiring memory writes count under a source of their own, so an expired range leaves no gap in the plain writes' frontier. Check it against session-25 (session-sources steps 2+5, traced tables) when B2 starts.
+3. Coalescing builds one memory commit from the unsent own writes (delay the commit), not a snapshot.
+4. No memory receipts. Re-check after session-25: item 219 already removed counter receipts.
+5. `covered` checks the frontier before decoding.
+B2 starts after session-25 merges: both touch session form, frontiers and Core retention.
 - Review tests: `ephemeral::memory_random_snapshots_demotion_redelivered_alike_spec_permissions_5_2` (demotion mid-history, every blob re-delivered to every node, its author too: reads and held sets alike; 400 seeds in review, also 480 without demotions; without the author re-delivery a node that dropped its own commit under a cover that fell reads differently, which is B2's lane job), `ephemeral::memory_snapshot_turned_valid_covers_spec_sync_9` (the rise path's `drop_covered`, which no test reached).
