@@ -255,3 +255,63 @@ fn client_role_over_loopback() {
     assert!(evs.is_empty());
     assert_eq!(s.subs(), 0);
 }
+
+// spec/sync.md §6, spec/wire.md §11.2: client-port requests handed out keep their allowance counted across inputs until answered: Auths pipelined one per input and never answered close the session past MAX_UNANSWERED, after at most that many bytes' worth were handed out
+#[test]
+fn unanswered_auths_close_the_session() {
+    let (mut s, mut st) = serving(true);
+    let mut handed = 0usize;
+    let mut closed = false;
+    for id in 1..=20_000u32 {
+        let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id, client_pk: None, session: [0; 16], sig: None })));
+        handed += requests(&out).len();
+        if out.contains(&ServingOutput::Close) {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed, "never closed after {handed} Auths");
+    assert!(handed <= osis_proto::client::MAX_UNANSWERED / SMALL_REPLY, "{handed} handed out");
+}
+
+// spec/sync.md §6: Calls pipelined one per input: a client within WINDOW never reaches the bound, one past it is closed; answering frees the allowance
+#[test]
+fn unanswered_calls_past_the_window_close() {
+    let (mut s, mut st) = serving(true);
+    s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Auth { id: 1, client_pk: None, session: [0; 16], sig: None })));
+    s.handle(T0, &mut st, ServingInput::Reply { id: 1, reply: Ok(ok(0, Value::Bytes(vec![0; 16]))) });
+    let call = |id| Message::Call { id, max_reply: SMALL_REPLY as u64, method: 0, args: vec![] };
+    let per = frame(&call(1_000_000)).len() + SMALL_REPLY;
+    let within = osis_proto::client::WINDOW / per;
+    assert!(within >= 2);
+    // answered ones free their allowance: a client within the window goes on without end
+    for round in 0..4u32 {
+        let base = 10 + round * 100_000;
+        for id in base..base + within as u32 {
+            let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call(id))));
+            assert_eq!(requests(&out).len(), 1, "within the window");
+        }
+        for id in base..base + within as u32 {
+            s.handle(T0, &mut st, ServingInput::Reply { id, reply: Ok(ok(0, Value::Int(0))) });
+        }
+    }
+    let mut closed = false;
+    for id in 0..1000u32 {
+        let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call(1_000_000 + id))));
+        if out.contains(&ServingOutput::Close) {
+            closed = true;
+            break;
+        }
+    }
+    assert!(closed);
+    assert!(s.is_closed());
+}
+
+// spec/wire.md §11.2: an Unsub before an answered Auth is Error 1 and never handed out
+#[test]
+fn unsub_before_auth_is_refused() {
+    let (mut s, mut st) = serving(true);
+    let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&Message::Unsub { id: 3, sub: 7 })));
+    assert_eq!(sent(&out), vec![Message::Error { id: 3, code: Code::REFUSED }]);
+    assert!(requests(&out).is_empty());
+}
