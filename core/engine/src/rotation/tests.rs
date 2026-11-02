@@ -3003,7 +3003,7 @@ fn lost_grant_part_binding_ends_spec_crypto_4() {
 // `lost_grant_part_binding_ends_spec_crypto_4`, but before G rotates, a second edge write of N
 // on A naming a keyset nobody holds (an invite holder's grant whose deposit never lands) reaches
 // X and stands: X, bound to it, leaves N out; G's free rotation frees X as before, and so does
-// G removing and re-granting N (no earlier sealer: the grant is free).
+// G removing and re-granting N (G holds the grant's boxes: its re-grant is free).
 #[test]
 fn conflicting_grant_keyset_recovers_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
