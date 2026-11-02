@@ -860,8 +860,7 @@ impl SyncEngine {
             Event::WantRoom { conn } => self.serve(conn, osis_proto::ServingInput::WantRoom, out)?,
             Event::End { conn } => {
                 if self.served.contains_key(&conn) {
-                    self.end_served(conn, out);
-                    out.push(Action::Close { conn });
+                    self.close_served(conn, out);
                 }
             }
             Event::Bytes { conn, bytes } => {

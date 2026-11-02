@@ -144,15 +144,25 @@ impl Port {
 /// What a subscription callback leaves for the worker (shared with the dispatcher).
 #[derive(Default)]
 struct Pending {
-    /// The value (aspect sub), roster or status changed since the last Notify: with the source
-    /// of the newest change.
-    dirty: Option<crate::watch::Source>,
-    /// Thing subscription: aspects changed, with their newest source.
+    /// The roster or status changed since the last Notify.
+    dirty: bool,
+    /// Aspect or thing subscription: aspects changed, with their newest source.
     aks: BTreeMap<Ak, crate::watch::Source>,
     /// Fired signals and diagnostics, never coalesced, each with its bytes.
     queue: VecDeque<(Value, usize)>,
     /// A delivery did not fit `SIGNAL_BYTES`: the subscription ends.
     lapsed: bool,
+}
+
+impl Pending {
+    /// Forgets all of it, giving its queued bytes back to the connection's `held`.
+    fn clear(&mut self, held: &AtomicUsize) {
+        for (_, n) in self.queue.drain(..) {
+            held.fetch_sub(n, Ordering::AcqRel);
+        }
+        self.dirty = false;
+        self.aks.clear();
+    }
 }
 
 enum Kind {
@@ -163,6 +173,16 @@ enum Kind {
     Diagnostics,
     /// One `wait_synced` at this node, until its outcome went.
     Synced(Option<crate::net::Pending<Result<()>>>),
+}
+
+impl Kind {
+    /// The thing it watches.
+    fn thing(&self) -> Option<Tid> {
+        match self {
+            Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t) => Some(*t),
+            _ => None,
+        }
+    }
 }
 
 struct PortSub {
@@ -177,7 +197,7 @@ struct PortSub {
 
 struct Conn {
     tier: Tier,
-    session: Option<[u8; 16]>,
+    session: [u8; 16],
     subs: BTreeMap<Id, PortSub>,
     /// Bytes of queued signals and diagnostics over all its subscriptions.
     held: Arc<AtomicUsize>,
@@ -195,7 +215,7 @@ type Identity = Option<Tid>;
 /// when it was last used (least recently used sessions go first).
 #[derive(Default)]
 struct Nonces {
-    done: BTreeMap<u64, Outcome>,
+    done: BTreeMap<u64, Result<Value>>,
     top: u64,
     used: u64,
     /// This entry was born from a resend: the session's earlier state is gone, so no resent nonce
@@ -218,6 +238,12 @@ struct Worker {
 
 fn unsupported(what: &str) -> Error {
     Error::Unsupported(format!("{what} through the client port"))
+}
+
+/// Polls a `wait_synced`, its waker queueing `Job::Woke`.
+fn poll_wait(tx: &Sender<Job>, conn: ConnId, id: Id, p: &mut crate::net::Pending<Result<()>>) -> std::task::Poll<Result<()>> {
+    let waker = std::task::Waker::from(Arc::new(Wake { tx: tx.clone(), conn, id }));
+    std::pin::Pin::new(p).poll(&mut std::task::Context::from_waker(&waker))
 }
 
 impl Worker {
@@ -261,11 +287,9 @@ impl Worker {
     /// Polls a `wait_synced` subscription's outcome; once known, it is queued as the
     /// subscription's one Notify.
     fn woke(&mut self, db: &Osis, conn: ConnId, id: Id) {
-        let tx = self.tx.clone();
         let Some(s) = self.conns.get_mut(&conn).and_then(|c| c.subs.get_mut(&id)) else { return };
         let Kind::Synced(Some(p)) = &mut s.kind else { return };
-        let waker = std::task::Waker::from(Arc::new(Wake { tx, conn, id }));
-        let std::task::Poll::Ready(r) = std::pin::Pin::new(p).poll(&mut std::task::Context::from_waker(&waker)) else { return };
+        let std::task::Poll::Ready(r) = poll_wait(&self.tx, conn, id, p) else { return };
         s.kind = Kind::Synced(None);
         lock(&s.pending).queue.push_back((Value::List(vec![c::done_v(&r)]), 0));
         self.want_room(db, conn);
@@ -309,12 +333,8 @@ impl Worker {
     fn request(&mut self, db: &Osis, conn: ConnId, tier: Tier, msg: Message) {
         match msg {
             Message::Auth { id, session, .. } => {
-                // the sync engine sends up only an Owner's Auth and a client's it matched
-                if tier == Tier::Keyed {
-                    return self.reply(db, conn, id, Err(Code::REFUSED));
-                }
-                let c = self.conns.entry(conn).or_insert_with(|| Conn { tier, session: None, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new() });
-                c.session = Some(session);
+                let new = || Conn { tier, session, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new() };
+                self.conns.entry(conn).and_modify(|c| c.session = session).or_insert_with(new);
                 if self.session(db, conn).is_none() {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
                 }
@@ -361,39 +381,44 @@ impl Worker {
         }
     }
 
+    /// The write outcomes of a session, kept: at most as many sessions per identity as its
+    /// connection cap, the least recently used going. Whether they are new, too.
+    fn nonces_of(&mut self, db: &Osis, key: (Identity, [u8; 16])) -> (&mut Nonces, bool) {
+        let fresh = !self.nonces.contains_key(&key);
+        if fresh {
+            let cap = match key.0 {
+                Some(_) => MAX_CONNS_PER_CLIENT,
+                None => db.locked(|l| l.sync.config().max_clients),
+            };
+            let mine = || self.nonces.iter().filter(|((w, _), _)| *w == key.0);
+            if mine().count() >= cap
+                && let Some(old) = mine().min_by_key(|(_, n)| n.used).map(|(k, _)| *k)
+            {
+                self.nonces.remove(&old);
+            }
+        }
+        self.tick += 1;
+        let n = self.nonces.entry(key).or_default();
+        n.used = self.tick;
+        (n, fresh)
+    }
+
     /// The outcome of a write under `nonce` of this connection's session: a remembered one
     /// again, `OutcomeUnknown` for one at or below the highest seen and no longer remembered, else
     /// `run`'s, remembered.
     ///
     /// A nonce marked as sent again (`NONCE_RESENT`) in a session whose state this node lost is
     /// unknown too, each of them: the state may have been evicted after the first send ran.
-    fn once(&mut self, conn: ConnId, nonce: u64, run: impl FnOnce() -> Result<Value>) -> Result<Value> {
+    fn once(&mut self, db: &Osis, conn: ConnId, nonce: u64, run: impl FnOnce() -> Result<Value>) -> Result<Value> {
         let resent = nonce & super::client::NONCE_RESENT != 0;
         let nonce = nonce & !super::client::NONCE_RESENT;
-        let Some((who, session)) = self.conns.get(&conn).and_then(|c| Some((if let Tier::Client(a) = c.tier { Some(a) } else { None }, c.session?))) else { return Err(Error::Invalid("no session".into())) };
-        self.tick += 1;
-        let tick = self.tick;
-        // at most as many sessions per identity as its connection cap: the least recently used
-        // goes
-        let key = (who, session);
-        let cap = match who {
-            Some(_) => MAX_CONNS_PER_CLIENT.max(1),
-            None => self.db.hold().map_or(64, |db| db.locked(|l| l.sync.config().max_clients)).max(1),
-        };
-        if !self.nonces.contains_key(&key) && self.nonces.keys().filter(|(w, _)| *w == who).count() >= cap
-            && let Some(old) = self.nonces.iter().filter(|((w, _), _)| *w == who).min_by_key(|(_, n)| n.used).map(|(k, _)| *k)
-        {
-            self.nonces.remove(&old);
-        }
-        let fresh = !self.nonces.contains_key(&key);
-        let n = self.nonces.entry(key).or_default();
-        n.used = tick;
+        let Some(c) = self.conns.get(&conn) else { return Err(Error::Invalid("no session".into())) };
+        let who = if let Tier::Client(a) = c.tier { Some(a) } else { None };
+        let session = c.session;
+        let (n, fresh) = self.nonces_of(db, (who, session));
         n.lost |= fresh && resent;
-        if let Some(o) = n.done.get(&nonce) {
-            return match o.clone() {
-                Outcome::Ok { value, .. } => Ok(value),
-                Outcome::Err { code, detail } => Err(c::error_of(code, detail)),
-            };
+        if let Some(r) = n.done.get(&nonce) {
+            return r.clone();
         }
         if nonce == 0 || nonce <= n.top {
             return Err(Error::OutcomeUnknown);
@@ -404,9 +429,7 @@ impl Worker {
         }
         n.lost = false;
         let r = run();
-        let o = c::outcome(r.clone());
-        let n = self.nonces.entry(key).or_default();
-        n.done.insert(nonce, o);
+        n.done.insert(nonce, r.clone());
         while n.done.len() > WRITE_NONCES {
             n.done.pop_first();
         }
@@ -436,18 +459,18 @@ impl Worker {
             method::WRITE => {
                 let nonce = a.uint()?;
                 let rest = a.rest();
-                return self.once(conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::committed_v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::opt(db.replay(rest)?, |x| c::committed_v(&x))));
             }
             method::COMMITS => Value::List(db.commits(&c::query(a.next()?)?)?.iter().map(c::entry_v).collect()),
             method::UNDO | method::REDO => {
                 let nonce = a.uint()?;
                 let scope = c::scope(a.next()?)?;
-                return self.once(conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::committed_v(&x))));
+                return self.once(db, conn, nonce, || Ok(c::opt(if m == method::UNDO { db.undo(&scope)? } else { db.redo(&scope)? }, |x| c::committed_v(&x))));
             }
             method::REVERT => {
                 let nonce = a.uint()?;
                 let ch = c::change(a.next()?)?;
-                return self.once(conn, nonce, || Ok(c::committed_v(&db.revert(ch)?)));
+                return self.once(db, conn, nonce, || Ok(c::committed_v(&db.revert(ch)?)));
             }
             method::STATUS => c::status_v(&db.status()?),
             method::REGISTER_SCHEMA => {
@@ -481,7 +504,7 @@ impl Worker {
             }
             method::NOW => u(db.now().0),
             method::ADD_CLIENT => {
-                let until = a.opt()?.map(|w| w.as_uint().map(osis_base::WallMs).ok_or_else(|| c::bad("time"))).transpose()?;
+                let until = a.opt_wall()?;
                 let (actor, secret) = db.add_client(until)?;
                 Value::List(vec![Value::Tid(actor), Value::bytes(secret.expose())])
             }
@@ -527,7 +550,7 @@ impl Worker {
             method::LINKS => c::links_v(&db.links(a.tid()?)),
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
-                let until = a.opt()?.map(|w| w.as_uint().map(osis_base::WallMs).ok_or_else(|| c::bad("time"))).transpose()?;
+                let until = a.opt_wall()?;
                 let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
                 Value::Str(db.make_link(t, r, o)?.to_string())
             }
@@ -543,7 +566,14 @@ impl Worker {
         let held = c.held.clone();
         let acting = db.acting;
         let mut a = Args::new(f)?;
-        let kind = match a.uint()? {
+        // the Owner's handle routes; this subscription would watch this engine's stale copy
+        let thing = |t: Tid| {
+            if !db.is_local(t) {
+                return Err(unsupported("a watch of a group this node reads at another node"));
+            }
+            Ok(db.read_local(|r| r.resolve(t)))
+        };
+        let (kind, filter) = match a.uint()? {
             filter::SYNCED if acting.is_some() => return Err(unsupported("wait_synced for a thin client")),
             filter::SYNCED => {
                 let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
@@ -553,28 +583,30 @@ impl Worker {
                 }
                 return Ok(self.sub_synced(db, conn, id, max_reply, scope, ms));
             }
-            filter::ASPECT => Kind::Aspect(a.tid()?, a.ak()?),
-            filter::THING => Kind::Thing(a.tid()?),
-            filter::ROSTER => Kind::Roster(a.tid()?),
-            filter::STATUS => Kind::Status,
-            filter::DIAGNOSTICS => Kind::Diagnostics,
+            filter::ASPECT => {
+                let (t, ak) = (thing(a.tid()?)?, a.ak()?);
+                (Kind::Aspect(t, ak.clone()), Filter::Aspect(t, ak))
+            }
+            filter::THING => {
+                let t = thing(a.tid()?)?;
+                (Kind::Thing(t), Filter::Thing(t))
+            }
+            filter::ROSTER => {
+                let t = thing(a.tid()?)?;
+                (Kind::Roster(t), Filter::Roster(t))
+            }
+            filter::STATUS => (Kind::Status, Filter::Status),
+            filter::DIAGNOSTICS => (Kind::Diagnostics, Filter::Diagnostics),
             _ => return Err(c::bad("filter")),
         };
         a.end()?;
-        // the Owner's handle routes; this subscription would watch this engine's stale copy
-        if let (None, Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t)) = (acting, &kind)
-            && !db.is_local(*t)
-        {
-            return Err(unsupported("a watch of a group this node reads at another node"));
-        }
         let pending: Arc<Mutex<Pending>> = Arc::default();
         let tx = self.tx.clone();
         let p = pending.clone();
         // a fired signal or diagnostic waits within the connection's byte budget, else the
         // subscription lapses
-        let queue = move |v: Value| {
+        let queue = move |g: &mut Pending, v: Value| {
             let n = osis_base::cbor::encode(&v).len();
-            let mut g = lock(&p);
             if held.load(Ordering::Acquire).saturating_add(n) > SIGNAL_BYTES {
                 g.lapsed = true;
             } else {
@@ -582,73 +614,39 @@ impl Worker {
                 g.queue.push_back((v, n));
             }
         };
-        let p = pending.clone();
-        let mark = move |ak: Option<Ak>, s: crate::watch::Source| {
-            let mut g = lock(&p);
-            match ak {
-                Some(ak) => {
-                    g.aks.insert(ak, s);
-                }
-                None => g.dirty = Some(s),
-            }
-        };
-        let moved = pending.clone();
         let cb: crate::watch::Callback = Box::new(move |db, d| {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
                 Delivery::Fired { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
-                Delivery::Aspect { ak, source, .. } => mark(Some(ak), source),
+                Delivery::Aspect { ak, source, .. } => {
+                    lock(&p).aks.insert(ak, source);
+                }
                 // a fired signal carries a fifth item: delivered even when equal to the last
-                Delivery::Fired { tid, ak, source, value } => queue(Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
-                Delivery::Roster | Delivery::Status(_) => mark(None, crate::watch::Source::Initial),
+                Delivery::Fired { tid, ak, source, value } => queue(&mut lock(&p), Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
+                Delivery::Roster | Delivery::Status(_) => lock(&p).dirty = true,
                 // this node's own source for it moved: the client's subscription ends
-                Delivery::Moved => lock(&moved).lapsed = true,
-                Delivery::Diagnostic(x) => queue(c::diag_v(&x)),
-                Delivery::Initial => return,
+                Delivery::Moved => lock(&p).lapsed = true,
+                Delivery::Diagnostic(x) => queue(&mut lock(&p), c::diag_v(&x)),
                 _ => return,
             }
             let _ = tx.send(Job::Dirty(conn));
         });
-        let limit = db.inner.limit;
         let mut initial = Value::List(vec![]);
-        let (filter, tid) = match &kind {
-            Kind::Aspect(t, ak) => {
-                let t = db.read_local(|r| r.resolve(*t));
-                (Filter::Aspect(t, ak.clone()), Some(t))
-            }
-            Kind::Thing(t) | Kind::Roster(t) => {
-                let t = db.read_local(|r| r.resolve(*t));
-                (if matches!(kind, Kind::Thing(_)) { Filter::Thing(t) } else { Filter::Roster(t) }, Some(t))
-            }
-            Kind::Status => (Filter::Status, None),
-            Kind::Diagnostics => (Filter::Diagnostics, None),
-            Kind::Synced(_) => return Err(c::bad("filter")),
-        };
         let sub = db.subscribe(filter, false, |r| {
-            initial = match &kind {
-                Kind::Aspect(_, ak) => c::read_v(&r.value(tid.unwrap_or(db.me()), ak)),
-                Kind::Thing(_) => {
-                    let t = tid.unwrap_or(db.me());
-                    Value::List(r.aspects(t).unwrap_or_default().iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(t, ak))])).collect())
-                }
-                Kind::Roster(_) => c::roster_v(&r.roster(tid.unwrap_or(db.me()))),
-                Kind::Status | Kind::Diagnostics | Kind::Synced(_) => Value::List(vec![]),
-            };
-            let _ = limit;
+            match &kind {
+                Kind::Aspect(t, ak) => initial = c::read_v(&r.value(*t, ak)),
+                Kind::Thing(t) => initial = Value::List(r.aspects(*t).unwrap_or_default().iter().map(|ak| Value::List(vec![c::ak_v(ak), c::read_v(&r.value(*t, ak))])).collect()),
+                Kind::Roster(t) => initial = c::roster_v(&r.roster(*t)),
+                _ => {}
+            }
             cb
         });
         if let Kind::Status = kind {
             initial = c::status_v(&db.status()?);
         }
-        let seen = tid.is_none_or(|t| db.read_local(|r| !r.hidden(t)));
-        let kind = match kind {
-            Kind::Aspect(_, ak) => Kind::Aspect(tid.unwrap_or(db.me()), ak),
-            Kind::Thing(_) => Kind::Thing(tid.unwrap_or(db.me())),
-            Kind::Roster(_) => Kind::Roster(tid.unwrap_or(db.me())),
-            k => k,
-        };
+        let seen = kind.thing().is_none_or(|t| db.read_local(|r| !r.hidden(t)));
         if let Some(c) = self.conns.get_mut(&conn) {
             c.subs.insert(id, PortSub { max_reply, kind, pending, _sub: Some(sub), seen });
         }
@@ -660,9 +658,7 @@ impl Worker {
     /// this worker; the Reply carries the outcome when it is known at once, else the one Notify.
     fn sub_synced(&mut self, db: &Osis, conn: ConnId, id: Id, max_reply: usize, scope: crate::share::SyncScope, ms: u64) -> Value {
         let mut p = db.wait_synced_pending(scope, std::time::Duration::from_millis(ms));
-        let waker = std::task::Waker::from(Arc::new(Wake { tx: self.tx.clone(), conn, id }));
-        let now = std::pin::Pin::new(&mut p).poll(&mut std::task::Context::from_waker(&waker));
-        let (kind, initial) = match now {
+        let (kind, initial) = match poll_wait(&self.tx, conn, id, &mut p) {
             std::task::Poll::Ready(r) => (Kind::Synced(None), c::opt(Some(r), |r| c::done_v(&r))),
             std::task::Poll::Pending => (Kind::Synced(Some(p)), Value::List(vec![])),
         };
@@ -689,66 +685,23 @@ impl Worker {
             }
             // what its actor may read now (the module's invariant): a thing it could read and no
             // longer can ends the subscription; nothing of one it cannot read is sent
-            if let (Some(_), Kind::Aspect(t, _) | Kind::Thing(t) | Kind::Roster(t)) = (db.acting, &s.kind) {
-                if db.read_local(|r| r.hidden(*t)) {
+            if let (Some(_), Some(t)) = (db.acting, s.kind.thing()) {
+                if db.read_local(|r| r.hidden(t)) {
                     if s.seen {
                         notes.push((*id, Payload::Lapsed));
                         gone.push(*id);
                     } else {
-                        for (_, n) in g.queue.drain(..) {
-                            cn.held.fetch_sub(n, Ordering::AcqRel);
-                        }
-                        g.dirty = None;
-                        g.aks.clear();
+                        g.clear(&cn.held);
                     }
                     continue;
                 }
                 s.seen = true;
             }
-            // what this subscription would send now, oldest first
-            let mut out: Vec<(Value, usize, Option<crate::watch::Source>)> = Vec::new();
-            for (v, n) in &g.queue {
-                out.push((v.clone(), *n, None));
-            }
-            let nq = out.len();
-            match &s.kind {
-                Kind::Aspect(t, ak) => {
-                    // the callback marks by aspect (as for a thing subscription)
-                    if let Some(src) = g.aks.get(ak).copied().or(g.dirty) {
-                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(&src)]);
-                        out.push((v, 0, Some(src)));
-                    }
-                }
-                Kind::Thing(t) => {
-                    for (ak, src) in &g.aks {
-                        let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(src)]);
-                        out.push((v, 0, Some(*src)));
-                    }
-                }
-                Kind::Roster(t) if g.dirty.is_some() => out.push((c::roster_v(&db.roster(*t)), 0, None)),
-                Kind::Status if g.dirty.is_some() => {
-                    if let Ok(st) = db.status() {
-                        out.push((c::status_v(&st), 0, None));
-                    }
-                }
-                _ => {}
-            }
+            let out = due(db, &s.kind, &g);
+            let queued = g.queue.len();
             let mut sent = 0;
-            for (v, _, src) in &out {
-                let mut p = Payload::Delivery { value: v.clone() };
-                let size_of = |p: &Payload| Message::Notify { sub: *id, payload: p.clone() }.encode().len();
-                let mut size = size_of(&p);
-                if size > s.max_reply {
-                    // above the subscription's bound: what changed, read by path or stream
-                    p = Payload::TooLarge { source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
-                    size = size_of(&p);
-                }
-                if size > s.max_reply {
-                    // not even that fits: the subscription ends here as proto would end it
-                    // (`Lapsed`), so it is never live at one side only
-                    p = Payload::Lapsed;
-                    size = size_of(&p);
-                }
+            for (v, src) in &out {
+                let (p, size) = fit(*id, s.max_reply, v, src);
                 let lapse = p == Payload::Lapsed;
                 if used.saturating_add(size) > budget && !notes.is_empty() {
                     left = true;
@@ -763,17 +716,16 @@ impl Worker {
                 }
             }
             // drop what went
-            let q_sent = sent.min(nq);
-            for _ in 0..q_sent {
+            for _ in 0..sent.min(queued) {
                 if let Some((_, n)) = g.queue.pop_front() {
                     cn.held.fetch_sub(n, Ordering::AcqRel);
                 }
             }
             if sent == out.len() {
-                g.dirty = None;
+                g.dirty = false;
                 g.aks.clear();
-            } else if sent > nq && matches!(s.kind, Kind::Thing(_)) {
-                let done: Vec<Ak> = g.aks.keys().take(sent - nq).cloned().collect();
+            } else if sent > queued {
+                let done: Vec<Ak> = g.aks.keys().take(sent - queued).cloned().collect();
                 for ak in done {
                     g.aks.remove(&ak);
                 }
@@ -785,8 +737,7 @@ impl Worker {
         for id in gone {
             // what it still held is freed with it
             if let Some(s) = cn.subs.remove(&id) {
-                let freed: usize = lock(&s.pending).queue.iter().map(|(_, n)| *n).sum();
-                cn.held.fetch_sub(freed, Ordering::AcqRel);
+                lock(&s.pending).clear(&cn.held);
             }
         }
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
@@ -800,4 +751,45 @@ impl Worker {
             self.reply(db, conn, id, Ok(Outcome::Ok { value: Value::List(vec![]) }));
         }
     }
+}
+
+/// What a subscription would send now, oldest first: queued deliveries, then what changed
+/// (a value, with its source when it has one), read now.
+fn due(db: &Osis, kind: &Kind, g: &Pending) -> Vec<(Value, Option<crate::watch::Source>)> {
+    let mut out: Vec<_> = g.queue.iter().map(|(v, _)| (v.clone(), None)).collect();
+    match kind {
+        Kind::Aspect(t, _) | Kind::Thing(t) => {
+            for (ak, src) in &g.aks {
+                let v = Value::List(vec![Value::Tid(*t), c::ak_v(ak), c::read_v(&db.read_local(|r| r.value(*t, ak))), c::source_v(src)]);
+                out.push((v, Some(*src)));
+            }
+        }
+        Kind::Roster(t) if g.dirty => out.push((c::roster_v(&db.roster(*t)), None)),
+        Kind::Status if g.dirty => {
+            if let Ok(st) = db.status() {
+                out.push((c::status_v(&st), None));
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+/// A delivery as the Notify payload that fits `max_reply`, with its message's size.
+fn fit(id: Id, max_reply: usize, v: &Value, src: &Option<crate::watch::Source>) -> (Payload, usize) {
+    let size_of = |p: &Payload| Message::Notify { sub: id, payload: p.clone() }.encode().len();
+    let p = Payload::Delivery { value: v.clone() };
+    let size = size_of(&p);
+    if size <= max_reply {
+        return (p, size);
+    }
+    // above the subscription's bound: what changed, read by path or stream
+    let p = Payload::TooLarge { source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
+    let size = size_of(&p);
+    if size <= max_reply {
+        return (p, size);
+    }
+    // not even that fits: the subscription ends here as proto would end it (`Lapsed`), so it is
+    // never live at one side only
+    (Payload::Lapsed, size_of(&Payload::Lapsed))
 }

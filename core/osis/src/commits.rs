@@ -389,7 +389,7 @@ impl Osis {
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Committed>> {
         if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
-            let v = self.remote_once(&r, crate::port::method::UNDO, crate::port::codec::scope_value(scope))?;
+            let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
         self.step(scope, false)
@@ -399,7 +399,7 @@ impl Osis {
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Committed>> {
         if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
-            let v = self.remote_once(&r, crate::port::method::REDO, crate::port::codec::scope_value(scope))?;
+            let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
         self.step(scope, true)
@@ -411,7 +411,7 @@ impl Osis {
     /// restart) is `Invalid`.
     pub fn revert(&self, id: ChangeId) -> Result<Committed> {
         if let crate::sources::Source::Remote(r) = self.route_change(id)? {
-            return crate::port::codec::committed(self.remote_once(&r, crate::port::method::REVERT, crate::port::codec::change_v(&id))?);
+            return crate::port::codec::committed(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::change_v(&id)])?);
         }
         let _g = lock(&self.inner.undo);
         self.revert_one(id)

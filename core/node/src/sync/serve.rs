@@ -187,6 +187,13 @@ struct ClientBinding {
     until: Option<u64>,
 }
 
+impl ClientBinding {
+    /// Entry `e` still stands for this session at `now`: the same secret, not past its `until`.
+    fn holds(&self, e: &ct::Client, now: u64) -> bool {
+        Secret32::from_bytes(e.secret_hash) == Secret32::from_bytes(self.hash) && e.until.is_none_or(|u| u.0 > now)
+    }
+}
+
 /// Bytes peers uploaded or deposited here, per entry: (peer key, bytes), with running sums per
 /// peer key and in all (stale charges pruned at ticks and when a budget is reached).
 #[derive(Default)]
@@ -532,10 +539,7 @@ impl SyncEngine {
         if self.served.values().filter(|s| s.tier == tier && s.public == public).count() >= cap {
             let idle = self.served.iter().filter(|(_, s)| s.tier == tier && s.public == public && s.conn.none_opened()).min_by_key(|(c, s)| (s.since, **c)).map(|(c, _)| *c);
             match idle {
-                Some(old) => {
-                    self.end_served(old, &mut out);
-                    out.push(Action::Close { conn: old });
-                }
+                Some(old) => self.close_served(old, &mut out),
                 None => {
                     out.push(Action::Close { conn });
                     return (conn, out);
@@ -822,7 +826,7 @@ impl SyncEngine {
         let now = self.now();
         let (super::Tier::Client(actor), Some(b)) = self.served.get(&conn).map(|s| (s.tier, s.client))? else { return None };
         let e = self.client_entries().remove(&actor)?;
-        (Secret32::from_bytes(e.secret_hash) == Secret32::from_bytes(b.hash) && e.until.is_none_or(|u| u.0 > now)).then_some(actor)
+        b.holds(&e, now).then_some(actor)
     }
 
     /// After a `clients.0^` change: sessions of a client removed, rotated or past its `until` end;
@@ -837,13 +841,12 @@ impl SyncEngine {
         for (c, s) in self.served.iter_mut() {
             let (super::Tier::Client(actor), Some(b)) = (s.tier, s.client.as_mut()) else { continue };
             match entries.get(&actor) {
-                Some(e) if Secret32::from_bytes(e.secret_hash) == Secret32::from_bytes(b.hash) && e.until.is_none_or(|u| u.0 > now) => b.until = e.until.map(|u| u.0),
+                Some(e) if b.holds(e, now) => b.until = e.until.map(|u| u.0),
                 _ => stale.push(*c),
             }
         }
         for c in stale {
-            self.end_served(c, out);
-            out.push(Action::Close { conn: c });
+            self.close_served(c, out);
         }
     }
 
@@ -869,8 +872,7 @@ impl SyncEngine {
             .map(|(c, _)| *c)
             .collect();
         for c in stale {
-            self.end_served(c, out);
-            out.push(Action::Close { conn: c });
+            self.close_served(c, out);
         }
     }
 
@@ -879,6 +881,12 @@ impl SyncEngine {
         if self.served.remove(&conn).is_some_and(|s| s.ported) {
             out.push(Action::Ended { conn });
         }
+    }
+
+    /// Ends served session `conn` from this side.
+    pub(crate) fn close_served(&mut self, conn: ConnId, out: &mut Vec<Action>) {
+        self.end_served(conn, out);
+        out.push(Action::Close { conn });
     }
 
     /// Pushes grown logs to subscribed peer sessions.
@@ -910,14 +918,23 @@ impl SyncEngine {
     pub(crate) fn serve_timers(&mut self, out: &mut Vec<Action>) {
         let now = self.raw_now();
         let (idle, open) = (self.cfg.serve_idle_ms, self.cfg.serve_open_ms);
-        // an authenticated client is exempt from the idle bound while its connection is up
-        // (notes/client-port.md §3)
-        // a thin client's `until` passed: no other change is needed to end it
         let corrected = self.now();
-        let stale: Vec<ConnId> = self.served.iter().filter(|(_, s)| !s.conn.authed() && s.last.saturating_add(idle) <= now || s.conn.none_opened() && s.since.saturating_add(open) <= now || s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected))).map(|(c, _)| *c).collect();
+        let stale: Vec<ConnId> = self
+            .served
+            .iter()
+            .filter(|(_, s)| {
+                // an authenticated client is exempt from the idle bound while its connection is up
+                // (notes/client-port.md §3)
+                let idled = !s.conn.authed() && s.last.saturating_add(idle) <= now;
+                let opened_nothing = s.conn.none_opened() && s.since.saturating_add(open) <= now;
+                // a thin client's `until` passed: no other change is needed to end it
+                let ended = s.client.is_some_and(|b| b.until.is_some_and(|u| u <= corrected));
+                idled || opened_nothing || ended
+            })
+            .map(|(c, _)| *c)
+            .collect();
         for c in stale {
-            self.end_served(c, out);
-            out.push(Action::Close { conn: c });
+            self.close_served(c, out);
         }
         let wall = self.state.now;
         self.state.feed.expire(wall);

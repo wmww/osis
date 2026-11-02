@@ -57,7 +57,7 @@ impl Osis {
     /// secret, shown only here. An `until` not in the future is `Invalid`. Grants decide what the
     /// client reaches (it starts with none).
     pub fn add_client(&self, until: Option<WallMs>) -> Result<(Tid, ClientSecret)> {
-        if self.attached() {
+        if self.is_attached() {
             let v = self.rcall(method::ADD_CLIENT, vec![crate::port::codec::opt(until, |w| Value::uint(w.0))])?;
             let mut a = crate::port::codec::Args::new(v)?;
             return Ok((a.tid()?, secret_of(a.next()?)?));
@@ -83,7 +83,7 @@ impl Osis {
 
     /// This node's thin clients (`clients.0^`).
     pub fn clients(&self) -> Result<Vec<Client>> {
-        if self.attached() {
+        if self.is_attached() {
             let v = self.rcall(method::CLIENTS, vec![])?;
             return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|c| {
                 let mut a = crate::port::codec::Args::new(c)?;
@@ -105,7 +105,7 @@ impl Osis {
     /// does a grant on a thing this node reads at another node (`Unsupported`, the sessions ended,
     /// the entry staying: move its group home and call this again).
     pub fn remove_client(&self, actor: Tid) -> Result<bool> {
-        if self.attached() {
+        if self.is_attached() {
             let v = self.rcall(method::REMOVE_CLIENT, vec![Value::Tid(actor)])?;
             return crate::port::codec::Args::of(vec![v]).bool();
         }
@@ -128,7 +128,7 @@ impl Osis {
     /// A new bearer secret for a client: the old hash is gone, with its live connections; the
     /// actor and its grants stay. `Invalid` when there is no entry.
     pub fn rotate_client_secret(&self, actor: Tid) -> Result<ClientSecret> {
-        if self.attached() {
+        if self.is_attached() {
             return secret_of(self.rcall(method::ROTATE_CLIENT_SECRET, vec![Value::Tid(actor)])?);
         }
         let node = self.node();

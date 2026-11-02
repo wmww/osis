@@ -27,7 +27,6 @@
 
 use crate::error::{Error, Result};
 use crate::handle::{Locked, Osis};
-use crate::net::Pending;
 use crate::port::client::Remote;
 use crate::port::method;
 use crate::share::{HostAddr, Status, SyncScope};
@@ -90,9 +89,25 @@ pub(crate) fn moved() -> Error {
     Error::Network("the group's source moved: watch it again".into())
 }
 
-/// The group labels syncing here: a live label, not held for receipts only.
+/// Whether the group has a live label here.
+fn labeled(l: &mut Locked, g: &Tid) -> bool {
+    l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
+}
+
+/// The group syncs here: a live label, not held for receipts only.
 fn syncs_here(l: &mut Locked, g: &Tid) -> bool {
-    !l.sync.receipts_only().contains(g) && l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
+    !l.sync.receipts_only().contains(g) && labeled(l, g)
+}
+
+/// The things change `id` touched, when this engine holds it.
+fn touched_by(e: &Engine, id: ChangeId) -> Option<Vec<Tid>> {
+    match id {
+        ChangeId::Commit(c) => e.header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
+        ChangeId::Ephemeral(_) => {
+            let hit: Vec<Tid> = e.ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
+            (!hit.is_empty()).then_some(hit)
+        }
+    }
 }
 
 /// S of the module comment.
@@ -142,14 +157,8 @@ fn ask(first: &Arc<Remote>, rs: &[Arc<Remote>], tid: Tid) -> Arc<Remote> {
 }
 
 impl Osis {
-    /// Whether this handle has no store of its own.
-    #[inline]
-    pub(crate) fn attached(&self) -> bool {
-        self.inner.thin.get().is_some()
-    }
-
     fn decide(&self, tid: Tid) -> Decided {
-        let thin = self.attached();
+        let thin = self.is_attached();
         let mut g = crate::watch::lock(&self.inner.eng);
         decide_in(&mut g, thin, tid)
     }
@@ -164,7 +173,7 @@ impl Osis {
 
     /// Whether this thread may wait on another node for something that can do without it: not a
     /// port worker, nor the dispatcher, which runs every callback of this process.
-    fn may_wait(&self) -> bool {
+    pub(crate) fn may_wait(&self) -> bool {
         !crate::port::serve::on_worker() && !self.inner.dispatch.shared.on_dispatcher()
     }
 
@@ -173,7 +182,13 @@ impl Osis {
     /// actor there, and it reads only what this engine syncs (`Engine::readable_by`).
     #[inline]
     fn routed(&self) -> bool {
-        self.acting.is_none() && self.inner.routing.load(Ordering::Acquire)
+        self.acting.is_none() && self.routing()
+    }
+
+    /// Any attachment or route exists.
+    #[inline]
+    pub(crate) fn routing(&self) -> bool {
+        self.inner.routing.load(Ordering::Acquire)
     }
 
     /// The source of calls on `tid`, a thing or a group (the module's invariant).
@@ -197,7 +212,7 @@ impl Osis {
 
     /// `is_local` under the lock.
     pub(crate) fn local_in(&self, l: &mut Locked, t: Tid) -> bool {
-        !self.routed() || matches!(decide_in(l, self.attached(), t), Decided::Local)
+        !self.routed() || matches!(decide_in(l, self.is_attached(), t), Decided::Local)
     }
 
     /// The one source of calls on all of `things`; `Invalid` when they resolve to two. None: as
@@ -238,21 +253,8 @@ impl Osis {
         if !self.routed() {
             return Ok(Source::Local);
         }
-        let thin = self.attached();
-        let (known, remotes) = self.locked(|l| {
-            let known: Option<Vec<Tid>> = if thin {
-                None
-            } else {
-                match id {
-                    ChangeId::Commit(c) => l.engine().header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()),
-                    ChangeId::Ephemeral(_) => {
-                        let hit: Vec<Tid> = l.engine().ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect();
-                        (!hit.is_empty()).then_some(hit)
-                    }
-                }
-            };
-            (known, l.remotes.clone())
-        });
+        let thin = self.is_attached();
+        let (known, remotes) = self.locked(|l| (if thin { None } else { touched_by(l.engine(), id) }, l.remotes.clone()));
         match (known, remotes.as_slice()) {
             (Some(ts), _) => self.route_all(&ts),
             (None, []) => Ok(Source::Local),
@@ -263,10 +265,10 @@ impl Osis {
 
     /// Under the commit's lock: every thing of a local write is still this engine's.
     pub(crate) fn guard_local(&self, l: &mut Locked, things: &[Tid]) -> Result<()> {
-        if !self.inner.routing.load(Ordering::Acquire) {
+        if !self.routing() {
             return Ok(());
         }
-        let thin = self.attached();
+        let thin = self.is_attached();
         for t in things {
             if !matches!(decide_in(l, thin, *t), Decided::Local) {
                 // a client of this node, or a write that lost a race with a move: nothing written
@@ -289,7 +291,7 @@ impl Osis {
 
     /// A test's way into the gap between a route and its lock (`Internals::after_route`).
     pub(crate) fn after_route(&self) {
-        if self.inner.routing.load(Ordering::Acquire)
+        if self.routing()
             && let Some(f) = crate::watch::lock(&self.inner.port.after_route).as_ref()
         {
             f();
@@ -298,13 +300,10 @@ impl Osis {
 
     /// `guard_local` for a revert: what the change touched.
     pub(crate) fn guard_change(&self, l: &mut Locked, id: ChangeId) -> Result<()> {
-        if !self.inner.routing.load(Ordering::Acquire) {
+        if !self.routing() {
             return Ok(());
         }
-        let things: Vec<Tid> = match id {
-            ChangeId::Commit(c) => l.engine().header(&c).map(|h| h.aspects.iter().map(|a| a.tid).collect()).unwrap_or_default(),
-            ChangeId::Ephemeral(_) => l.engine().ephemeral_log().iter().filter(|x| x.id == id).flat_map(|x| x.aspects.iter().map(|(t, _)| *t)).collect(),
-        };
+        let things = touched_by(l.engine(), id).unwrap_or_default();
         self.guard_local(l, &things)
     }
 
@@ -312,7 +311,7 @@ impl Osis {
     /// node with whether it is up, the groups a connected one reports where this node does not
     /// sync them. A disconnected node takes nothing away and adds no group.
     pub(crate) fn merged_status(&self, mut local: Status) -> Result<Status> {
-        if !self.inner.routing.load(Ordering::Acquire) {
+        if !self.routing() {
             return Ok(local);
         }
         let (remotes, routes) = self.locked(|l| {
@@ -324,11 +323,11 @@ impl Osis {
             }
             (all, l.routes.clone())
         });
-        if self.attached() {
+        if self.is_attached() {
             local = Status::default();
         }
         for r in remotes {
-            local.remotes.push(crate::sources::RemoteStatus { address: r.addr.clone(), connected: r.connected() });
+            local.remotes.push(RemoteStatus { address: r.addr.clone(), connected: r.connected() });
             if !self.may_wait() {
                 continue;
             }
@@ -350,10 +349,10 @@ impl Osis {
     /// that is the caller's error on a process with no store, nothing on a node's own handle,
     /// whose schema stays local for what it reads.
     pub(crate) fn mirror_schema(&self, file: &str, src: &str) -> Result<()> {
-        if !self.inner.routing.load(Ordering::Acquire) || crate::port::serve::on_worker() {
+        if !self.routing() || crate::port::serve::on_worker() {
             return Ok(());
         }
-        let thin = self.attached();
+        let thin = self.is_attached();
         for r in self.locked(|l| l.remotes.clone()) {
             match r.call(method::REGISTER_SCHEMA, vec![Value::Str(file.into()), Value::Str(src.into())]) {
                 Err(e) if thin => return Err(e),
@@ -368,7 +367,7 @@ impl Osis {
     /// Ends the watch of every subscription whose source this table change changed: `change` runs
     /// between looking at each before and after, all under this one lock.
     fn moving<R>(&self, l: &mut Locked, change: impl FnOnce(&mut Locked) -> Result<R>) -> Result<R> {
-        let thin = self.attached();
+        let thin = self.is_attached();
         let key = |d: Decided| match d {
             Decided::Local => "local".to_string(),
             Decided::Remote(r) => r.addr.clone(),
@@ -457,14 +456,13 @@ impl Osis {
             if syncs_here(l, &g) && crate::share::synced_now(l, g) != Some(Ok(())) {
                 return Err(Error::Unsynced { groups: vec![g] });
             }
-            let db = self;
-            db.moving(l, |l| {
+            self.moving(l, |l| {
                 l.routes.insert(g, text.clone());
                 save_routes(l)?;
-                db.inner.routing.store(true, Ordering::Release);
+                self.inner.routing.store(true, Ordering::Release);
                 if held && !l.sync.receipts_only().contains(&g) {
                     let acts = l.sync.set_receipts_only(g, true);
-                    db.inner.apply(acts);
+                    self.inner.apply(acts);
                 }
                 Ok(())
             })
@@ -473,13 +471,12 @@ impl Osis {
 
     async fn source_local(&self, group: Tid) -> Result<()> {
         let g = self.read_local(|r| r.resolve(group));
-        let (held, role, stopped, labeled, route) = self.locked(|l| {
+        let (held, role, stopped, has_label, route) = self.locked(|l| {
             let held = l.engine().knows(&g);
             let limit = self.inner.limit;
             let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(g);
             let stopped = l.sync.receipts_only().contains(&g);
-            let labeled = l.sync.engine_mut().labels_of(&g).iter().any(|x| !x.replaced);
-            (held, role, stopped, labeled, l.routes.get(&g).cloned())
+            (held, role, stopped, labeled(l, &g), l.routes.get(&g).cloned())
         });
         if route.is_none() && !stopped {
             return Ok(());
@@ -487,7 +484,7 @@ impl Osis {
         if !held || role.is_none() {
             return Err(Error::Invalid("this node does not hold the group: its keys are not here".into()));
         }
-        if !labeled {
+        if !has_label {
             // its first label here: needs admin, as `sync`
             self.sync_here(g, &[], true)?;
         }
@@ -499,8 +496,7 @@ impl Osis {
         if let Some(r) = route.as_ref().map(|a| self.locked(|l| remote_named(l, a))) {
             self.node_uploaded(&r, g)?;
         }
-        let wait: Pending<Result<()>> = self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout);
-        wait.await?;
+        self.wait_synced_pending(SyncScope::Group(g), self.inner.wait_timeout).await?;
         self.locked(|l| {
             self.moving(l, |l| {
                 l.routes.remove(&g);

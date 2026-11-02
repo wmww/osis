@@ -614,7 +614,7 @@ impl Osis {
     pub fn settle(&self) {
         // attached nodes' deliveries so far reach the queue first (not from a callback: the reply
         // would wait for this very dispatcher)
-        if self.inner.routing.load(std::sync::atomic::Ordering::Acquire) && !self.inner.dispatch.shared.on_dispatcher() && !crate::port::serve::on_worker() {
+        if self.routing() && self.may_wait() {
             self.remote_settle();
         }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));

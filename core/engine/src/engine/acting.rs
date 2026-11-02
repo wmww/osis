@@ -80,13 +80,8 @@ impl Engine {
                     Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items,
                     _ => &[],
                 };
-                let mut bad = None;
-                added.iter().for_each(|v| each_tid(v, &mut |t| {
-                    if !m.creates.contains_key(t) && !self.readable_by(actor, t) {
-                        bad = Some(*t);
-                    }
-                }));
-                if let Some(t) = bad {
+                let hidden = |t: &Tid| !m.creates.contains_key(t) && !self.readable_by(actor, t);
+                if let Some(t) = added.iter().find_map(|v| find_tid(v, &hidden)) {
                     return Err(Error::UnknownThing(t));
                 }
             }
@@ -159,17 +154,14 @@ pub(crate) fn check_undo(tx: &mut Tx<'_>, actor: Tid, deltas: &[Resolved], ts: T
     Ok(())
 }
 
-/// Calls `f` with every tid inside `v`.
-fn each_tid(v: &Value, f: &mut dyn FnMut(&Tid)) {
+/// The first tid inside `v` that `f` holds of.
+fn find_tid(v: &Value, f: &dyn Fn(&Tid) -> bool) -> Option<Tid> {
     match v {
-        Value::Tid(t) => f(t),
-        Value::List(l) => l.iter().for_each(|x| each_tid(x, f)),
-        Value::Set(s) => s.iter().for_each(|x| each_tid(x, f)),
-        Value::Map(m) => m.iter().for_each(|(k, x)| {
-            each_tid(k, f);
-            each_tid(x, f);
-        }),
-        Value::Enum(_, Some(p)) => each_tid(p, f),
-        _ => {}
+        Value::Tid(t) => f(t).then_some(*t),
+        Value::List(l) => l.iter().find_map(|x| find_tid(x, f)),
+        Value::Set(s) => s.iter().find_map(|x| find_tid(x, f)),
+        Value::Map(m) => m.iter().find_map(|(k, x)| find_tid(k, f).or_else(|| find_tid(x, f))),
+        Value::Enum(_, Some(p)) => find_tid(p, f),
+        _ => None,
     }
 }
