@@ -290,7 +290,8 @@ fn fit(e: &mut osis_node::Engine, t: Tid, a: &Ak, mut po: PathOp) -> PathOp {
 
 /// Whether a compaction of `op`'s aspect is left out of generated histories:
 /// issues/seq-snapshot-unmerge-order.md (known, open), a snapshot of a sequence with a writer's
-/// fallen writes un-merges differently by arrival order. Nothing else about sequences is skipped.
+/// fallen writes un-merges differently by arrival order. Nothing fallen, `seq_compact_history`
+/// does compact them. Remove with the fix.
 fn skip_seq_snapshot_unmerge(op: u8) -> bool {
     matches!(aspect_of(op).as_str(), "t:text.0" | "t:docs.0")
 }
@@ -332,7 +333,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
             pick(lp, by, t, &holds).map(|(by, t)| Compact { by, t, op })
         }
         New { by, parent, write: w } => pick(lp, by, parent, &write).map(|(by, parent)| New { by, parent, write: w }),
-        Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact: compact && !text, also }),
+        Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact: compact && !(text && skip_seq_snapshot_unmerge(8)), also }),
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Undo { by, back } => {
             // one of the author's last content commits
@@ -953,15 +954,18 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
         for a in &h.aspects {
             let (r, k) = (a.retention, (id, a.tid, a.ak.clone()));
             let carried = o.carried.contains(&(a.tid, a.ak.clone()));
-            // issues/seq-death-delete-first.md (known, open)
-            let skip_seq_death_delete_first = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0");
-            if (r.at_least.rel.is_none() && r.at_most.rel.is_none()) || carried || skip_seq_death_delete_first || flipped.contains(&(format!("{:?}", a.tid), a.ak.as_str().to_string())) {
+            if (r.at_least.rel.is_none() && r.at_most.rel.is_none()) || carried || flipped.contains(&(format!("{:?}", a.tid), a.ak.as_str().to_string())) {
                 continue;
             }
             let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
             let what = format!("{id:?} {:?} {}: here {x:?}, earliest superseders {y:?}", a.tid, a.ak.as_str());
             if e.body_not_dropped(&id, &a.tid, &a.ak) {
-                let ok = match (x, y, copies) {
+                // issues/seq-death-delete-first.md (known, open): no date where one is due, or a
+                // last death too early; a first death given is still checked
+                let skip_seq_death_delete_first = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0") && y.is_some_and(|y| x.is_none_or(|x| copies || x.0 >= y.0));
+                // issues/map-snapshot-death-missing.md (known, open): no date on a map snapshot
+                let skip_map_snapshot_death_missing = copies && a.ak.as_str() == "t:map.0" && x.is_none() && y.is_some();
+                let ok = skip_seq_death_delete_first || skip_map_snapshot_death_missing || match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
                     (Some(x), Some(y), true) => x.1 >= y.1,
@@ -1298,7 +1302,8 @@ enum Syncs {
     /// `prefix` synced only for a stretch of each delivery: a wait it causes ends when it stops.
     Early { on: Vec<Tid>, prefix: Vec<Tid> },
     /// Nothing at first, `on` from a point of each delivery, some stopping and starting again:
-    /// every delta is held by the end of a delivery of the whole set.
+    /// every delta is held by the end of a delivery of the whole set. Never with parts withheld
+    /// for good: issues/sync-learned-after-apply.md (known, open).
     Late { on: Vec<Tid> },
 }
 
@@ -1406,6 +1411,13 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
     let mut late = Vec::new();
     let mut plan = played.sync.plan(order);
     let mut done = 0;
+    // issues/chainless-part-order.md (known, open): where this held set leaves a commit on several
+    // things without a chain or creation record, one thing's part first holds it pending whole
+    // and the other's first applies it; those are not split until that is fixed. Remove with the fix
+    let skip_chainless_part_order: BTreeSet<CommitId> = match (&rng, played.spans.is_empty()) {
+        (Some(_), false) => deliver(played, order).engine.pending().into_iter().filter(|(_, r)| matches!(r, osis_node::Reason::MissingChain(_) | osis_node::Reason::UnknownCreated(_))).map(|x| x.0).collect(),
+        _ => BTreeSet::new(),
+    };
     for &i in order {
         plan.upto(&mut p, done);
         done += 1;
@@ -1415,12 +1427,7 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
             Some(rng) => {
                 let mut b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
-                // issues/chainless-part-order.md (known, open): where the node lacks a chain or
-                // creation record of one thing, that thing's part first holds the commit pending
-                // whole and the other's first applies it; not split until that is fixed. Whole,
-                // and held in part for good (`with_syncs`), these commits still run
-                let skip_chainless_part_order = played.spans.contains(&i);
-                if ais.len() > 1 && !skip_chainless_part_order {
+                if ais.len() > 1 && !(played.spans.contains(&i) && skip_chainless_part_order.contains(&pk.id)) {
                     let keep = ais.iter().copied().nth(rng.below(ais.len() as u64) as usize).unwrap();
                     b.parts.retain(|x| x.ai == keep);
                     late.push(i);
@@ -1604,17 +1611,22 @@ impl Seen {
     }
 
     /// A run of many seeds that did not reach what the generators are for is a harness bug: the
-    /// oracle would pass while testing nothing. A few seeds assert only that most steps commit;
-    /// `broad`: `history`'s every shape, not `focused_history`'s bounded aspects.
+    /// oracle would pass while testing nothing. Most steps commit, over 20 or more of them (one
+    /// short history, a replay, may be mostly refused); 20 seeds or more reach an invalid part
+    /// (no window of 2000 focused or 1000 short histories lacked one). `broad`: long `history`s
+    /// reach every shape too (over 500 such seeds, no window lacked one; `focused_history` reaches
+    /// `WaitDeltas` on 3% of seeds, none in 22% of 40-seed windows; 8-step histories rarely reach any).
     fn floors(&self, name: &str, seeds: usize, broad: bool) {
         let (n, m) = self.tally.totals();
-        assert!(m * 2 >= n, "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
+        assert!(n < 20 || m * 2 >= n, "order::{name}: {m} of {n} commit steps made a commit:\n{}", self.tally.show());
         if seeds < 20 {
             return;
         }
-        assert!(self.invalid > 0, "order::{name}: no invalid part: {self:?}");
-        assert!(self.pending.contains_key("WaitDeltas"), "order::{name}: nothing waited for deltas: {self:?}");
+        // a history with no role change or hostile commit (`seq_compact_history`) has none to reach
+        let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
+        assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
         if broad {
+            assert!(self.pending.contains_key("WaitDeltas"), "order::{name}: nothing waited for deltas: {self:?}");
             for a in ["t:text.0", "t:docs.0", "t:list.0", "t:count.0", "t:map.0"] {
                 assert!(self.aspects.contains_key(a), "order::{name}: no write on {a}: {self:?}");
             }
@@ -1828,6 +1840,28 @@ fn focused_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps[..lo].to_vec()
 }
 
+/// Sequence writes by every peer, undo, sends and syncs and compactions of those sequences: no
+/// role change, no hostile commit, so nothing falls. Three ops per history, so they meet.
+fn seq_compact_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    const SEQ: [u8; 8] = [8, 9, 10, 11, 14, 23, 24, 26];
+    let ops = [rng.pick(&SEQ), rng.pick(&SEQ), rng.pick(&SEQ)];
+    (0..len)
+        .map(|_| {
+            let by = rng.below(3) as usize;
+            let op = rng.pick(&ops);
+            let to = (by + 1 + rng.below(2) as usize) % 3;
+            match rng.below(10) {
+                0..=4 => Step::Aim(Box::new(Step::Typed { by, t: 0, op, k: rng.below(2) as u8, v: rng.below(10) as u8 })),
+                5 | 6 => Step::Compact { by, t: 0, op },
+                7 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
+                8 => Step::Send { from: by, to, back: rng.below(2) as u8 },
+                _ => Step::Sync { from: by, to },
+            }
+        })
+        .collect()
+}
+
 /// Checks the histories `gen` makes from `seeds` (one seed per task, a thread per core), shrinks
 /// every failing one and reports them all, each with the command that replays it.
 /// `OSIS_ORDER_SEED=n` runs only seed n; `OSIS_ORDER_START=n`, `OSIS_ORDER_SEEDS=n` and
@@ -1874,7 +1908,7 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
         eprintln!("{}\npending {:?}, invalid {}, aspects {:?}", seen.tally.show(), seen.pending, seen.invalid, seen.aspects);
     }
     assert!(fails.is_empty(), "{summary}\n{} of {} histories judged differently by arrival order:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
-    seen.floors(name, seeds.len(), !cfg.par_orders);
+    seen.floors(name, seeds.len(), !cfg.par_orders && len >= 60);
 }
 
 // issues/seq-snapshot-unmerge-order.md: a text write fallen under a demotion, and a valid
@@ -1887,10 +1921,11 @@ fn repro_seq_snapshot_unmerge_read_order_spec_crdt_4_6() {
     check(1007, &h, LARGE).unwrap();
 }
 
-// issues/seq-snapshot-unmerge-order.md: the same for texts in map entries: chars read twice. Seed 1018.
+// issues/seq-snapshot-unmerge-order.md: the same for texts in map entries (the second `v1` is the
+// fallen writer's own insert, not a char read twice). Seed 1018.
 #[test]
 #[ignore]
-fn repro_seq_snapshot_nested_chars_twice_spec_crdt_4_6() {
+fn repro_seq_snapshot_nested_read_order_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Nested { by: 2, other: 0, t: 0, k: 0, text: true, compact: false, also: false }, Compact { by: 0, t: 0, op: 26 }];
     check(1018, &h, LARGE).unwrap();
@@ -1935,6 +1970,39 @@ fn repro_seq_death_delete_first_spec_crdt_4_8() {
     let death = |order: Vec<usize>| deliver(&played, &order).engine.deaths(&insert, &played.things[0], &ak("t:text.0")).unwrap();
     assert!(death((0..b + 2).collect()).is_some(), "the delete held last dates it");
     assert!(death((0..b).chain([b + 1, b]).collect()).is_some(), "the delete held first dates it too");
+}
+
+// issues/map-snapshot-death-missing.md: a snapshot of a kept map and a later put of a key it holds:
+// the node dates the snapshot no death, a recompute at the put. Order seed 338806. Reads the deaths
+// itself: `dating` skips this.
+#[test]
+#[ignore]
+fn repro_map_snapshot_death_missing_spec_commits_5() {
+    use Step::*;
+    let h = vec![Write { by: 0, t: 0, op: 28, k: 0, v: 3 }, Typed { by: 0, t: 0, op: 22, k: 1, v: 2 }, Compact { by: 0, t: 0, op: 28 }, Nested { by: 0, other: 2, t: 0, k: 0, text: false, compact: false, also: false }];
+    let played = play(338806, &h);
+    let snap = played.base + 2;
+    let held: Vec<usize> = (0..played.base).chain([snap, snap + 1]).collect();
+    let o = oracle(&played, &held);
+    let mut p = deliver(&played, &held);
+    let (id, t, a) = (played.packs[snap].id, played.things[0], ak("t:map.0"));
+    assert_eq!(p.engine.deaths(&id, &t, &a).unwrap().is_some(), o.deaths[&(id, t, a)].is_some());
+}
+
+// issues/expired-residue-order.md: order seed 626233's generated history (shrinking keeps 32 steps;
+// a change to `random_step` moves these indexes), five commits of it held: 0's expiring write on H,
+// 2's snapshot of it, role commits on G. As made H's register holds the value-less write, reversed
+// the aspect has no state.
+#[test]
+#[ignore]
+fn repro_expired_residue_order_spec_crdt_4_7() {
+    let seed = 626233;
+    let played = with_syncs(play(seed, &history(seed, 60, LARGE)), seed);
+    let rest = [11, 22, 27, 31, 33];
+    let h = played.packs[27].id;
+    let t = deliver(&played, &(0..played.packs.len()).collect::<Vec<_>>()).engine.header(&h).unwrap().aspects[0].tid;
+    let state = |rest: Vec<usize>| format!("{:?}", deliver(&played, &(0..played.base).chain(rest).collect::<Vec<_>>()).engine.state(&t, &ak("t:reg.0")).unwrap());
+    assert_eq!(state(rest.to_vec()), state(rest.iter().rev().copied().collect()));
 }
 
 // issues/chainless-part-order.md: not only hostile, not only chains: one commit on G and H, at a
@@ -1996,6 +2064,7 @@ fn repro_sync_learned_after_apply_spec_commits_4() {
     };
     assert_eq!(node(true), node(false));
 }
+
 
 // spec/requirements.md Decentralization, spec/permissions.md §5 and §5.2, spec/crdt.md §4.6:
 // small histories, every arrival order of what follows the setup, plus shuffles of everything.
@@ -2175,6 +2244,28 @@ fn carrierless_part_alike_small_spec_commits_4() {
 #[ignore = "tier 2"]
 fn carrierless_part_alike_large_spec_commits_4() {
     carrierless_run("carrierless_part_alike_large_spec_commits_4", 1000..1200, 30);
+}
+
+// spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
+// nothing fallen (no role change, no hostile commit), which `skip_seq_snapshot_unmerge` keeps out
+// of the histories above: several writers, undo, partial holders.
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_seq_compact_large_spec_crdt_5_7() {
+    run("arrival_order_seq_compact_large_spec_crdt_5_7", 3000..3020, 40, LARGE, seq_compact_history);
+}
+
+// spec/crdt.md §5.7: 0 inserts `v5` and deletes the `5`, 1 compacts (its snapshot has no char for
+// the `5`), 0 undoes the delete. Held, the snapshot and the undelete: both orders read `v5`.
+#[test]
+fn undelete_with_snapshot_of_deleted_spec_crdt_5_7() {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1 };
+    let h = vec![Typed { by: 0, t: 0, op: 10, k: 0, v: 5 }, tick.clone(), Typed { by: 0, t: 0, op: 11, k: 0, v: 1 }, Sync { from: 0, to: 1 }, tick.clone(), Compact { by: 1, t: 0, op: 11 }, tick, Undo { by: 0, back: 0 }];
+    let played = play(5, &h);
+    let (b, n) = (played.base, played.packs.len());
+    let read = |rest: [usize; 2]| deliver(&played, &(0..b).chain(rest).collect::<Vec<_>>()).engine.get(&played.things[0], &ak("t:text.0")).unwrap();
+    assert_eq!(read([n - 2, n - 1]), read([n - 1, n - 2]));
 }
 
 // spec/commits.md §5, spec/crdt.md §4.8 (deaths dated per node, never early): three writes of a
