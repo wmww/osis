@@ -210,7 +210,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         let judge: OnceCell<(BTreeMap<CommitId, Vec<CommitId>>, bool)> = OnceCell::new();
         let restored = |s: &Stamp| {
             let (undoers, clear) = judge.get_or_init(|| chain_judge(core, &a.tid, &a.ak, (h.ts, target)));
-            *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.ix.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.header.undoes.is_some() && in_effect(&c, undoers))
+            *clear && core.commit_of(&a.tid, &a.ak, &s.dot).and_then(|c| core.ix.commits.get(&c).map(|m| (c, m))).is_some_and(|(c, m)| m.view.undoes.is_some() && in_effect(&c, undoers))
         };
         let undone = Undone { delta: &d.fragment, source: &source, range: CounterRange { lo: a.lo, hi: a.hi }, restored: &restored };
         let expiry = |d: &Dot| core.write_expiry(&a.tid, &a.ak, d).flatten();
@@ -336,7 +336,7 @@ fn chain_judge(core: &crate::engine::Core, tid: &Tid, ak: &Ak, after: (Ts, Commi
         todo.extend(us.iter().copied());
         undoers.insert(c, us);
     }
-    let clear = held.iter().filter(|x| **x > after).all(|(_, id)| core.ix.commits.get(id).is_some_and(|m| m.header.undoes.is_some()) || !in_effect(id, &undoers));
+    let clear = held.iter().filter(|x| **x > after).all(|(_, id)| core.ix.commits.get(id).is_some_and(|m| m.view.undoes.is_some()) || !in_effect(id, &undoers));
     (undoers, clear)
 }
 
