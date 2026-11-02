@@ -245,8 +245,8 @@ fn mutual_replication_settles() {
     w.run(a, Command::Upload { label: l.id, entries: (0..10).map(|n| l.entry(blob(n))).collect() });
     let heads = |w: &World| [s1, s2].map(|h| LabelStore::log_head(w.hubs[h].store(), &l.id).unwrap().1);
     let settled = heads(&w);
-    // genesis, 11 adds, at most one wrap replacement each side
-    assert!(settled.iter().all(|h| *h <= 13), "{settled:?}");
+    // genesis and 11 adds: the side holding one wrap keeps it
+    assert!(settled.iter().all(|h| *h == 12), "{settled:?}");
     assert_eq!(live(&w, s1, &l), live(&w, s2, &l));
     w.run(a, Command::Upload { label: l.id, entries: vec![l.entry(blob(50))] });
     let after = heads(&w);

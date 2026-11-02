@@ -370,3 +370,338 @@ fn hostile_wraps_hide_nothing_randomized_spec_sync_5() {
     }
     assert!(failed.is_empty(), "{failed:?}");
 }
+
+// spec/sync.md §5, §6: an entry a host holds under a stamp of a superseded write key counts as
+// lacking too: the hostile writer poisons a host and is removed before the author is back, so
+// the author hears the useless wrap under the new head. It still places a copy there.
+#[test]
+fn poison_stamped_before_a_rotation_still_repaired_spec_sync_5() {
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let (h1, r) = (hosts[0], hosts[1]);
+    let d = net.node(11, &hosts);
+    let a = net.node(12, &hosts);
+    let h = net.node(13, &hosts);
+    let f = net.node(14, &hosts);
+    let g = net.group(d, &[(a, Role::Write), (h, Role::Write), (f, Role::Read)], &hosts);
+    net.run();
+    net.set_online(d, false);
+    let l = net.label(a);
+    let mut fx = Fx { net, hosts, a, h, f, g, l };
+    fx.net.blocked.insert((f, h1));
+    fx.net.blocked.insert((f, r));
+    fx.net.restart(f, 20);
+    let (t, _) = race(&mut fx, r, false, WRITER);
+    let mut net = fx.net;
+    net.set_online(a, false);
+    // the admin, back at the poisoned host alone, removes the hostile writer and steps the label
+    net.blocked.insert((d, h1));
+    net.set_online(d, true);
+    net.restart(d, 21);
+    net.run();
+    let steps = net.host_path(r, &l).len();
+    let (ta, tf, th) = (net.tid(a), net.tid(f), net.tid(h));
+    let e = net.engine(d);
+    let me = e.tid();
+    let rs = recipients_of(e, &[(me, Role::Admin), (ta, Role::Write), (tf, Role::Read)]);
+    remove_holder(e, g, th, &rs, 9);
+    net.feed(d, osis_node::sync::Event::Local);
+    net.run();
+    net.advance(60_000);
+    assert!(net.host_path(r, &l).len() > steps, "stepped");
+    net.set_online(d, false);
+    // the author comes back
+    net.blocked.insert((a, h1));
+    net.blocked.remove(&(a, r));
+    net.set_online(a, true);
+    net.restart(a, 22);
+    net.run();
+    net.advance(600_000);
+    net.blocked.remove(&(f, r));
+    net.restart(f, 23);
+    net.run();
+    net.advance(600_000);
+    assert_eq!(net.read(f, t), Some(s("message")));
+}
+
+/// `n`, connected to `host`, hears `id` there under `wrap` as a host announces it without its bytes.
+fn announce(net: &mut Net, n: usize, host: usize, l: &LabelId, id: BlobId, wrap: [u8; WRAP_LEN], stamp: osis_crypto::Signature) {
+    let conn = net.conn_to(n, host).unwrap();
+    let (log_id, seq) = net.hosts[host].hub.store().log_head(l).unwrap();
+    let m = Message::Push { label: *l, events: vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: Some(stamp) }], cursor: osis_proto::Cursor { log_id, seq } };
+    net.feed(n, osis_node::sync::Event::Bytes { conn, bytes: encode_frame(&m.encode()) });
+}
+
+// spec/sync.md §5, §6: writer `m`, its bytes on their way, holds the good wrap and hears the useless
+// one: nothing opens to compare yet. Holding the key, it places a copy there.
+#[test]
+fn useless_wrap_heard_before_the_bytes_counts_spec_sync_5() {
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let (h1, r) = (hosts[0], hosts[1]);
+    let a = net.node(31, &hosts);
+    let h = net.node(32, &hosts);
+    let f = net.node(33, &hosts);
+    let m = net.node(34, &hosts);
+    let g = net.group(a, &[(h, Role::Write), (f, Role::Read), (m, Role::Write)], &hosts);
+    net.run();
+    let l = net.label(a);
+    net.set_online(m, false);
+    net.blocked.insert((f, h1));
+    net.blocked.insert((f, r));
+    net.restart(f, 34);
+    let mut fx = Fx { net, hosts, a, h, f, g, l };
+    let (t, ids) = race(&mut fx, r, false, WRITER);
+    let mut net = fx.net;
+    net.set_online(a, false);
+    net.hide_blobs.insert(m, ids.iter().copied().collect());
+    net.set_online(m, true);
+    net.restart(m, 35);
+    net.run();
+    net.hide_blobs.remove(&m);
+    for id in &ids {
+        let (good, bad) = (net.hosts[h1].hub.store().entry(&l, id).unwrap().unwrap(), net.hosts[r].hub.store().entry(&l, id).unwrap().unwrap());
+        announce(&mut net, m, h1, &l, *id, good.wrap, good.stamp.unwrap());
+        announce(&mut net, m, r, &l, *id, bad.wrap, bad.stamp.unwrap());
+    }
+    net.settle(200_000);
+    net.advance(600_000);
+    assert_eq!(net.read(m, t), Some(s("message")));
+    net.blocked.remove(&(f, r));
+    net.restart(f, 37);
+    net.run();
+    net.advance(600_000);
+    assert_eq!(net.read(f, t), Some(s("message")));
+}
+
+// spec/sync.md §6, §7: a useless entry counts as lacking for as long as the host holds it: the
+// author's copy got there, it left before deleting, and back past `TOMBSTONE_LIFETIME` it must
+// not delete the copy as the higher duplicate of the useless entry.
+#[test]
+fn useless_mark_outlives_the_tombstone_lifetime_spec_sync_6() {
+    let mut higher = 0;
+    for seed in 1..17u64 {
+        let mut fx = fixture(2, seed + 100);
+        let r = fx.hosts[1];
+        let (t, ids) = race(&mut fx, r, false, WRITER);
+        let a = fx.a;
+        let before = fx.net.host_ids(r, &fx.l);
+        fx.net.blocked.remove(&(a, r));
+        fx.net.restart(a, 41);
+        let mut fresh = Vec::new();
+        for _ in 0..1000 {
+            fx.net.feed(a, osis_node::sync::Event::Local);
+            fx.net.round();
+            fresh = fx.net.host_ids(r, &fx.l).into_iter().filter(|b| !before.contains(b)).collect();
+            if fresh.len() >= ids.len() {
+                break;
+            }
+        }
+        assert!(fresh.len() >= ids.len(), "seed {seed}");
+        higher += fresh.iter().filter(|b| ids.iter().any(|x| x < *b)).count();
+        assert!(ids.iter().all(|x| fx.net.host_ids(r, &fx.l).contains(x)), "seed {seed}: not deleted yet");
+        // away from every host, its clock running
+        let (h1, h2) = (fx.hosts[0], fx.hosts[1]);
+        for x in [h1, h2] {
+            fx.net.blocked.insert((a, x));
+            fx.net.drop_link(a, x);
+        }
+        fx.net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS + 3_600_000);
+        for x in [h1, h2] {
+            fx.net.blocked.remove(&(a, x));
+        }
+        fx.net.restart(a, 42);
+        fx.net.run();
+        fx.net.advance(600_000);
+        connect(&mut fx, &[r], 33);
+        assert_eq!(fx.net.read(fx.f, t), Some(s("message")), "seed {seed}");
+    }
+    assert!(higher > 0, "some copy above the useless ID");
+}
+
+// spec/sync.md §6: a superset whose entry at a host is useless holds nothing there: a readable
+// projection beside it is no strict subset. Writer `b`, which never heard of the purge behind the
+// projection, keeps it.
+#[test]
+fn useless_superset_does_not_cost_a_projection_spec_sync_6() {
+    let gone = osis_base::Ak::new(osis_schema::AspectKey::ak(&GONE)).unwrap();
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let r = hosts[1];
+    let a = net.node(61, &hosts);
+    let b = net.node(62, &hosts);
+    let h = net.node(63, &hosts);
+    let g = net.group(a, &[(b, Role::Write), (h, Role::Write)], &hosts);
+    let t = net.item(a, g, g, "x");
+    let t2 = net.item(a, g, g, "y");
+    net.run();
+    let l = net.label(a);
+    // `b` holds the key, its copies never get anywhere
+    net.lose_uploads.insert(b);
+    net.drop_link(a, r);
+    net.blocked.insert((a, r));
+    let mut m = osis_node::Mutation::new();
+    m.set(t, &GONE, &s("secret")).unwrap();
+    m.set(t2, &GONE, &s("kept")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let p: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect();
+    assert_eq!(p.len(), 1);
+    assert!(net.sync(b).entry_meta(&l, &p[0]).is_some());
+    assert!(net.engine(b).get(&t, &gone).unwrap().is_some());
+    hostile_put(&mut net, h, r, (g, &l), p[0], [0x13; WRAP_LEN], WRITER);
+    net.set_online(h, false);
+    net.set_online(b, false);
+    // `a` purges one delta: its projection `q` goes up, at `r` too, and `a` leaves before deleting
+    let mut m = osis_node::Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: c, tid: t, ak: gone.clone() });
+    m.remove_aspect(t, &GONE).unwrap();
+    let pc = net.engine(a).commit(m).unwrap().unwrap();
+    net.feed(a, osis_node::sync::Event::Local);
+    net.settle(200_000);
+    let mine = |net: &mut Net, c| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|(id, _)| id).collect() };
+    let hide = mine(&mut net, pc);
+    assert!(!hide.is_empty());
+    net.hide_blobs.insert(b, hide.into_iter().collect());
+    let q: Vec<BlobId> = mine(&mut net, c).into_iter().filter(|id| !p.contains(id)).collect();
+    assert_eq!(q.len(), 1, "the projection placed");
+    net.blocked.remove(&(a, r));
+    net.restart(a, 64);
+    for _ in 0..1000 {
+        net.feed(a, osis_node::sync::Event::Local);
+        net.round();
+        if net.host_ids(r, &l).contains(&q[0]) {
+            break;
+        }
+    }
+    let at = net.host_ids(r, &l);
+    assert!(at.contains(&q[0]) && at.contains(&p[0]), "both at r");
+    net.set_online(a, false);
+    // `b` is back, never hearing of the purge
+    net.set_online(b, true);
+    net.restart(b, 65);
+    net.run();
+    for _ in 0..3 {
+        net.advance(60_000);
+    }
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), Some(s("secret")), "b has not applied the purge");
+    assert!(net.host_ids(r, &l).contains(&q[0]), "the readable projection stays");
+}
+
+// spec/sync.md §7: a snapshot whose entry at a host is useless carries nothing there: the compactor,
+// its copy of the snapshot not arriving, keeps the live write's body at that host.
+#[test]
+fn useless_snapshot_carries_nothing_spec_sync_7() {
+    let mut fx = fixture(2, 8);
+    let (h1, r, g, a, h) = (fx.hosts[0], fx.hosts[1], fx.g, fx.a, fx.h);
+    let t = fx.net.item(a, g, g, "v1");
+    fx.net.write(a, t, "v2");
+    fx.net.write(a, t, "v3");
+    fx.net.run();
+    let l = fx.l;
+    let body = fx.net.host_ids(r, &l);
+    fx.net.blocked.insert((a, r));
+    fx.net.drop_link(a, r);
+    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&REG)).unwrap();
+    let acts = fx.net.sync(a).compact(&t, &ak).unwrap();
+    fx.net.actions(a, acts);
+    fx.net.run();
+    fx.net.run();
+    let at1 = fx.net.host_ids(h1, &l);
+    assert!(body.iter().any(|b| !at1.contains(b)), "compacted at h1");
+    // the snapshot, poisoned at r before its author gets there
+    for id in at1 {
+        if !body.contains(&id) {
+            hostile_put(&mut fx.net, h, r, (g, &l), id, [0x13; WRAP_LEN], WRITER);
+        }
+    }
+    fx.net.set_online(h, false);
+    fx.net.lose_uploads.insert(a);
+    reconnect(&mut fx, a, r, 41);
+    fx.net.advance(600_000);
+    connect(&mut fx, &[r], 33);
+    assert_eq!(fx.net.read(fx.f, t), Some(s("v3")));
+}
+
+// spec/sync.md §5, §6: a promoter counts a chain entry useless at a host as no entry there: a hostile
+// promotion of a new reader's `keys.0` deposit gets the writer's own certificate copy of it.
+#[test]
+fn useless_chain_entry_gets_a_copy_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(71, &[host]);
+    let h = net.node(72, &[host]);
+    let r = net.node(73, &[host]);
+    let g = net.group(a, &[(h, Role::Write), (r, Role::Read)], &[host]);
+    net.settle(200_000);
+    net.run();
+    let l = net.label(a);
+    let rt = net.tid(r);
+    let mut keys = None;
+    for (id, k) in net.sync(a).entries(&l) {
+        let EntryKind::Commit { commit, .. } = k else { continue };
+        let hd = net.engine(a).header(&commit).unwrap();
+        if hd.author == rt && hd.aspects.iter().any(|x| x.ak.as_str() == "keys.0") {
+            keys = Some((id, commit));
+        }
+    }
+    let (id, commit) = keys.expect("the reader's keys.0 deposit");
+    assert!(net.sync(a).entry_meta(&l, &id).unwrap().1.is_none(), "not promoted yet");
+    assert!(net.sync(h).entry_meta(&l, &id).is_some());
+    hostile_put(&mut net, h, host, (g, &l), id, [0x13; WRAP_LEN], WRITER);
+    net.set_online(h, false);
+    net.advance(600_000);
+    let copies: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect();
+    let at = net.host_ids(host, &l);
+    assert!(copies.iter().any(|b| at.contains(b)), "a readable copy of the chain's keys.0 at the host");
+}
+
+// spec/sync.md §5, §6: a certificate copy useless at a host places nothing there either: the
+// writer's copy of a chain commit, poisoned at the host it has not reached, gets another.
+#[test]
+fn useless_certificate_copy_gets_another_spec_sync_5() {
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let (h1, r) = (hosts[0], hosts[1]);
+    let a = net.node(81, &hosts);
+    let h = net.node(82, &hosts);
+    let n = net.node(83, &hosts);
+    let g = net.group(a, &[(h, Role::Write), (n, Role::Read)], &hosts);
+    net.settle(200_000);
+    net.run();
+    let l = net.label(a);
+    let nt = net.tid(n);
+    let mut keys = None;
+    for (id, k) in net.sync(a).entries(&l) {
+        let EntryKind::Commit { commit, .. } = k else { continue };
+        let hd = net.engine(a).header(&commit).unwrap();
+        if hd.author == nt && hd.aspects.iter().any(|x| x.ak.as_str() == "keys.0") {
+            keys = Some((id, commit));
+        }
+    }
+    let (id, commit) = keys.expect("the reader's keys.0 deposit");
+    // poisoned at both hosts: `a` places its own copy at h1, not reaching r
+    net.drop_link(a, r);
+    net.blocked.insert((a, r));
+    hostile_put(&mut net, h, h1, (g, &l), id, [0x13; WRAP_LEN], WRITER);
+    hostile_put(&mut net, h, r, (g, &l), id, [0x13; WRAP_LEN], WRITER);
+    net.advance(600_000);
+    let copies = |net: &mut Net| -> Vec<BlobId> { net.sync(a).entries(&l).into_iter().filter(|(b, k)| *b != id && matches!(k, EntryKind::Commit { commit: c, .. } if *c == commit)).map(|(b, _)| b).collect() };
+    let first = copies(&mut net);
+    assert!(!first.is_empty(), "a's copy");
+    let at1 = net.host_ids(h1, &l);
+    let z: Vec<BlobId> = first.iter().filter(|b| at1.contains(b)).copied().collect();
+    assert!(!z.is_empty(), "a's copy at h1");
+    for b in &z {
+        hostile_put(&mut net, h, r, (g, &l), *b, [0x13; WRAP_LEN], WRITER);
+    }
+    net.set_online(h, false);
+    net.blocked.remove(&(a, r));
+    net.restart(a, 84);
+    net.run();
+    net.advance(600_000);
+    let at = net.host_ids(r, &l);
+    let store = |net: &Net, b: &BlobId| net.hosts[r].hub.store().entry(&l, b).unwrap().unwrap().wrap;
+    let good = copies(&mut net).into_iter().filter(|b| at.contains(b) && store(&net, b) != [0x13; WRAP_LEN]).count();
+    assert!(good > 0, "a readable copy at r: {first:?}");
+}

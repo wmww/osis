@@ -170,6 +170,8 @@ impl SyncEngine {
                     if let Some(c) = conn.and_then(|c| self.conns.get_mut(&c)) {
                         c.req.missing.remove(&blob_id);
                     }
+                    // what the host's entry is: one stamped under a superseded key never changes either
+                    let held_stamped = stamp.is_some();
                     // a stamp counts only if it verifies under the head's write key (it is relayed);
                     // a bundle's stamps were checked against its path by the importer
                     let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
@@ -183,7 +185,7 @@ impl SyncEngine {
                             self.state.set_entry(l, blob_id, Entry { wrap, stamp, cert: false, kind: Kind::Unknown })
                         }
                         Some(mut e) if e.wrap != wrap || (stamp.is_some() && e.stamp != stamp) => {
-                            if self.take_wrap(host, l, blob_id, &mut e, &wrap, stamp.is_some()) {
+                            if self.take_wrap(host, l, blob_id, &mut e, &wrap, stamp.is_some(), held_stamped) {
                                 e.wrap = wrap;
                                 if stamp.is_some() {
                                     e.stamp = stamp;
@@ -265,7 +267,10 @@ impl SyncEngine {
     /// the key takes only a wrap opening to it and counts the host giving any other as lacking
     /// the entry (`State::holds_at`), so a writer uploads a fresh encryption there. Knowing
     /// no key, it prefers what opens; a wrap that opened to a wrong key (`Kind::Bad`) gives way.
-    fn take_wrap(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool) -> bool {
+    /// `stamped`: under the head's write key; `held_stamped`: the host holds it stamped under any
+    /// (a hostile host saying so loses only its own entry here).
+    #[allow(clippy::too_many_arguments)]
+    fn take_wrap(&mut self, host: Option<HostKey>, l: LabelId, b: BlobId, e: &mut Entry, wrap: &[u8; osis_crypto::WRAP_LEN], stamped: bool, held_stamped: bool) -> bool {
         if e.wrap == *wrap {
             return true;
         }
@@ -274,13 +279,17 @@ impl SyncEngine {
         if let Some(k) = self.state.blobs.get(&b).map(|r| r.key.clone()) {
             let opens = new.is_some_and(|x| x.expose() == k.expose());
             // a deposited one goes when a writer promotes it (with this wrap, if this node does)
-            if let Some(s) = host.filter(|_| stamped && !opens) {
+            if let Some(s) = host.filter(|_| held_stamped && !opens) {
                 self.state.set_gone(s, l, b);
             }
             return opens;
         }
         let opened = osis_label::unwrap_any(secrets.iter(), &b, &e.wrap).is_some();
         let bad = e.kind == Kind::Bad;
+        // its wrap opens, the bytes are on their way, and this host's never will: heard only now
+        if let Some(s) = host.filter(|_| held_stamped && opened && !bad && new.is_none()) {
+            self.state.set_gone(s, l, b);
+        }
         let take = e.shredded() || (new.is_some() && (!opened || bad)) || (new.is_none() && !opened && stamped && e.stamp.is_none());
         if take && new.is_some() && !e.shredded() {
             // the wrap it replaces is useless at the hosts that gave it

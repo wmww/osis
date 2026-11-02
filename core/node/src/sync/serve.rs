@@ -404,7 +404,7 @@ impl LabelStore for PeerStore<'_> {
                 removed.push((*label, b));
             }
         }
-        // a held entry costs nothing more (a new wrap or a stamp)
+        // a held entry costs nothing more (a stamp; which wrap stays: `take_wrap`)
         if !self.entries.contains_key(&(*label, put.blob_id)) {
             let size = put.blob.len() as u64;
             let key = charge_key(self.co_reader, label);
