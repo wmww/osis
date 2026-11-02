@@ -2245,6 +2245,7 @@ fn carrierless_part_alike_small_spec_commits_4() {
 #[ignore = "tier 2"]
 fn carrierless_part_alike_large_spec_commits_4() {
     carrierless_run("carrierless_part_alike_large_spec_commits_4", 1000..1200, 30);
+}
 
 /// A history for `new_device_alike`: a random one with, in its middle, writer 1's commits
 /// synced to the owner and compacted there, and at its end the owner's demotion of writer 1
