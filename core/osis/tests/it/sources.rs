@@ -975,7 +975,9 @@ fn differential(seed: u64) {
         let which = r.next(things.len() as u64) as usize;
         let (t, of) = &things[which];
         // the rule, for a thing known here
-        let is_remote = of.iter().any(|g| routed[ix(g)]) && !of.iter().any(|g| !routed[ix(g)] && !stopped[ix(g)]);
+        let is_remote = of.iter().any(|g| routed[ix(g)]);
+        // the groups other than the owner only place it: only the owner's label carries it
+        let split = is_remote && !routed[ix(&of[0])] && !stopped[ix(&of[0])];
         match r.next(10) {
             0 | 1 => {
                 let i = r.next(3) as usize;
@@ -999,6 +1001,7 @@ fn differential(seed: u64) {
                 let v = format!("v{step}");
                 let w = x.p.write_with(|w| w.at(*t, title()).set(&s(&v)));
                 match (is_remote, attached) {
+                    _ if split => assert!(matches!(w, Err(Error::Invalid(_))), "step {step}: {w:?}"),
                     (false, _) => {
                         w.unwrap();
                         local[which] = v;
@@ -1200,27 +1203,68 @@ fn a_silent_remote_holds_no_client_of_this_node() {
     drop(x.host);
 }
 
-// spec/sync.md §10, notes/client-port.md §1, §6: a differential of `group_source` with the host up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled route, no write is applied twice, a failed move changes no source
+// spec/sync.md §10, notes/client-port.md §1, §6: a differential of `group_source` with the host up: random real moves, drops and lost replies against a model holding every value a write may have left: a read never shows an older acknowledged value through a settled route, no write is applied twice, a failed move changes no source; a thing in a second group that carries it refuses writes while routed (no write acknowledged and silently never sent), and a thing placed in a second group while routed still reads there
 #[test]
 fn group_source_differential_against_a_model() {
+    let (mut refused, mut placed) = (0, 0);
     for seed in [11, 12, 13] {
-        moves_differential(seed);
+        let (r, p) = moves_differential(seed);
+        refused += r;
+        placed += p;
     }
+    assert!(refused > 0 && placed > 0, "the seeds reached neither: {refused} refused, {placed} placed while routed");
 }
 
-fn moves_differential(seed: u64) {
+/// One thing of the differential: the last acknowledged value and later ones of unknown outcome.
+struct Tracked {
+    t: Tid,
+    acked: String,
+    maybe: Vec<String>,
+    ok: usize,
+    unknown: usize,
+}
+
+fn tracked(t: Tid) -> Tracked {
+    Tracked { t, acked: "first".into(), maybe: Vec::new(), ok: 0, unknown: 0 }
+}
+
+/// Returns how many writes on the split thing were refused, and whether a thing was placed while routed.
+fn moves_differential(seed: u64) -> (usize, usize) {
     let x = world_waiting(Duration::from_millis(600));
+    // a second synced group H: `both` is carried by it too, `placed` is only placed there later
+    let h = x.n.write_with(|w| {
+        let h = w.create(x.n.me())?;
+        w.make_group(h)?;
+        Ok(h)
+    }).unwrap();
+    x.n.sync(h, &[]).unwrap();
+    let thing = || x.n.write_with(|w| {
+        let t = w.create(x.g)?;
+        w.place(t, x.g)?;
+        w.at(t, title()).set(&s("first"))?;
+        Ok(t)
+    }).unwrap();
+    let (both, placed) = (thing(), thing());
+    x.n.share_into(both, h, Role::Write, Default::default()).unwrap();
+    block_on(x.n.wait_synced(SyncScope::All, W)).unwrap();
+    until("P has them", || {
+        let _ = x.p.sync_now();
+        x.p.get(both, title()).ok().flatten() == Some(s("first")) && x.p.get(placed, title()).ok().flatten() == Some(s("first")) && x.p.engine(|e| e.groups_of(&both).contains(&h))
+    });
     x.attach_p();
     let mut r = Rng(seed);
-    // the last acknowledged value, and later ones of unknown outcome
-    let mut acked = "first".to_string();
-    let mut maybe: Vec<String> = Vec::new();
-    let (mut ok, mut unknown) = (0usize, 0usize);
+    // writes on `both` are only ever made here, and refused while routed
+    let mut both_acked = "first".to_string();
+    let mut things = [tracked(x.t), tracked(placed)];
     let count = count_key(&[&x.n, &x.p]);
     let mut remote = false;
     let mut cut = false;
+    let mut is_placed = false;
+    let mut refused = 0;
     for step in 0..60 {
-        match r.next(10) {
+        let which = r.next(2) as usize;
+        let m = &mut things[which];
+        match r.next(13) {
             0 | 1 if !cut => {
                 let to = if remote { GroupSource::Local } else { GroupSource::Remote(x.nc.clone()) };
                 match block_on(x.p.group_source(x.g, to)) {
@@ -1247,38 +1291,49 @@ fn moves_differential(seed: u64) {
             4..=6 => {
                 let v = format!("v{step}");
                 let write = x.p.write_with(|w| {
-                    w.at(x.t, count.clone()).inc(&1i64)?;
-                    w.at(x.t, title()).set(&s(&v))
+                    w.at(m.t, count.clone()).inc(&1i64)?;
+                    w.at(m.t, title()).set(&s(&v))
                 });
                 match write {
                     Ok(_) => {
-                        acked = v;
-                        maybe.clear();
-                        ok += 1;
+                        m.acked = v;
+                        m.maybe.clear();
+                        m.ok += 1;
                     }
                     Err(Error::Network(_)) => assert!(remote, "step {step}: Network from this engine"),
                     Err(Error::OutcomeUnknown) => {
-                        maybe.push(v);
-                        unknown += 1;
+                        m.maybe.push(v);
+                        m.unknown += 1;
                     }
                     Err(e) => panic!("step {step}: {e:?}"),
                 }
             }
-            _ => match x.p.get(x.t, title()) {
+            7 if !remote => {
+                let v = format!("b{step}");
+                x.p.write_with(|w| w.at(both, title()).set(&s(&v))).unwrap();
+                both_acked = v;
+            }
+            8 if !remote => assert_eq!(x.p.get(both, title()).unwrap(), Some(s(&both_acked)), "step {step} seed {seed}"),
+            // no edge: H does not carry it, so nothing is split, and a read stays where it was
+            9 if remote && !is_placed => {
+                x.p.write_with(|w| w.place(placed, h)).unwrap();
+                is_placed = true;
+            }
+            _ => match x.p.get(m.t, title()) {
                 Ok(Some(Value::Str(v))) => {
                     if remote {
                         // the node may not have pulled what this device uploaded before moving: wait
                         until("the node's copy caught up", || {
                             let _ = x.n.sync_now();
-                            let now = x.p.get(x.t, title()).unwrap();
-                            now == Some(s(&acked)) || maybe.iter().any(|m| now == Some(s(m)))
+                            let now = x.p.get(m.t, title()).unwrap();
+                            now == Some(s(&m.acked)) || m.maybe.iter().any(|y| now == Some(s(y)))
                         });
                     } else {
-                        assert!(v == acked || maybe.contains(&v), "step {step} seed {seed}: read {v}, acked {acked}, maybe {maybe:?}");
+                        assert!(v == m.acked || m.maybe.contains(&v), "step {step} seed {seed}: read {v}, acked {}, maybe {:?}", m.acked, m.maybe);
                     }
-                    if maybe.contains(&v) {
-                        acked = v;
-                        maybe.clear();
+                    if m.maybe.contains(&v) {
+                        m.acked = v;
+                        m.maybe.clear();
                     }
                 }
                 Ok(o) => panic!("step {step}: {o:?}"),
@@ -1286,21 +1341,181 @@ fn moves_differential(seed: u64) {
                 Err(e) => panic!("step {step}: {e:?}"),
             },
         }
+        // after every step, while routed: `both` refuses a write, which would miss H; both of the
+        // second-group things read at the node, never this engine's copy
+        if remote {
+            let v = format!("refused{step}");
+            let write = x.p.write_with(|w| w.at(both, title()).set(&s(&v)));
+            assert!(matches!(write, Err(Error::Invalid(_))), "step {step} seed {seed}: a write through the route misses H: {write:?}");
+            refused += 1;
+            assert!(x.p.status().unwrap().split.contains(&both), "step {step}");
+            assert!(!x.p.status().unwrap().split.contains(&placed), "step {step}: H does not carry it");
+            let read = x.p.get(both, title());
+            if cut {
+                assert!(matches!(read, Err(Error::Network(_))), "step {step} seed {seed}: this engine's copy answered: {read:?}");
+            } else {
+                let m = &things[1];
+                until("the node's copies caught up", || {
+                    let _ = x.n.sync_now();
+                    let at = |t| x.p.get(t, title()).ok().flatten();
+                    at(both) == Some(s(&both_acked)) && (at(placed) == Some(s(&m.acked)) || m.maybe.iter().any(|y| at(placed) == Some(s(y))))
+                });
+            }
+        }
     }
     if cut {
         x.net.heal("p", "n");
     }
     // exactly once: the count adds every write that applied, at either source
-    let applied = || match x.n.get(x.t, count.clone()).unwrap() {
-        Some(Value::Int(n)) => n as usize,
-        _ => 0,
-    };
-    until("every acknowledged write reached N", || {
+    for m in &things {
+        let applied = || match x.n.get(m.t, count.clone()).unwrap() {
+            Some(Value::Int(n)) => n as usize,
+            _ => 0,
+        };
+        until("every acknowledged write reached N", || {
+            let _ = x.p.sync_now();
+            let _ = x.n.sync_now();
+            applied() >= m.ok
+        });
+        assert!(applied() <= m.ok + m.unknown, "seed {seed}: a write applied twice: {} of {} + {}", applied(), m.ok, m.unknown);
+    }
+    // nothing acknowledged on `both` stayed on this device
+    until("every acknowledged write on `both` reached N", || {
         let _ = x.p.sync_now();
         let _ = x.n.sync_now();
-        applied() >= ok
+        x.n.get(both, title()).unwrap() == Some(s(&both_acked))
     });
-    assert!(applied() <= ok + unknown, "seed {seed}: a write applied twice: {} of {ok} + {unknown}", applied());
+    drop(x.host);
+    (refused, is_placed as usize)
+}
+
+/// A group of the person, synced on P.
+fn second_group(x: &World) -> Tid {
+    let h = x.p.write_with(|w| {
+        let h = w.create(x.p.me())?;
+        w.make_group(h)?;
+        Ok(h)
+    }).unwrap();
+    x.p.sync(h, &[]).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    h
+}
+
+/// A node W of another person syncing G only, with write from N; has `t` once this returns.
+fn third_node(x: &World) -> Osis {
+    let w_db = Osis::create(cfg_on(&x.net, "w", &MemStore::new(), vec![x.addr.clone()])).unwrap().0;
+    let card = w_db.contact_card().unwrap();
+    block_on(w_db.wait_synced(SyncScope::All, W)).unwrap();
+    let who = block_on(x.n.import_contact(&card)).unwrap();
+    x.n.grant(x.g, who, Role::Write, Default::default()).unwrap();
+    block_on(x.n.wait_synced(SyncScope::All, W)).unwrap();
+    until("W has t", || {
+        let _ = w_db.sync_now();
+        for i in w_db.invite_requests().unwrap() {
+            let _ = w_db.accept_invite(i);
+        }
+        w_db.get(x.t, title()).ok().flatten() == Some(s("first"))
+    });
+    w_db
+}
+
+// spec/sync.md §10, the invariant of core/osis/src/sources.rs: `t` in routed G and in H, which carries it and syncs here: reads go through the route and see what only G carries; a write is refused, not acknowledged and left missing G's or H's other holders; `status` lists it; home again it writes, and every holder gets it
+#[test]
+fn a_split_thing_reads_at_the_route_and_refuses_writes() {
+    let x = world();
+    let w_db = third_node(&x);
+    let h = second_group(&x);
+    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(h), W)).unwrap();
+    x.attach_p();
+    x.to_remote();
+    assert_eq!(x.p.status().unwrap().split.iter().copied().collect::<Vec<_>>(), vec![x.t]);
+    // what only G carries: W syncs G alone
+    w_db.write_with(|w| w.at(x.t, title()).set(&s("from w"))).unwrap();
+    block_on(w_db.wait_synced(SyncScope::All, W)).unwrap();
+    until("N has W's write", || {
+        let _ = x.n.sync_now();
+        x.n.get(x.t, title()).unwrap() == Some(s("from w"))
+    });
+    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("from w")), "the route answers");
+    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("from p")));
+    assert!(matches!(r, Err(Error::Invalid(_))), "{r:?}");
+    assert!(matches!(x.p.grant(x.t, x.actor, Role::Read, Default::default()), Err(Error::Invalid(_))));
+    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("from w")), "nothing written");
+    // other things of G are not split
+    x.p.write_with(|w| w.at(x.g, title()).set(&s("on g"))).unwrap();
+    assert_eq!(x.n.get(x.g, title()).unwrap(), Some(s("on g")));
+    // home: no split left, and the write reaches W through G
+    block_on(x.n.wait_synced(SyncScope::Group(x.g), W)).unwrap();
+    block_on(x.p.group_source(x.g, GroupSource::Local)).unwrap();
+    assert!(x.p.status().unwrap().split.is_empty());
+    x.p.write_with(|w| w.at(x.t, title()).set(&s("from p"))).unwrap();
+    block_on(x.p.wait_synced(SyncScope::Group(x.t), W)).unwrap();
+    until("W and N have it", || {
+        let _ = w_db.sync_now();
+        let _ = x.n.sync_now();
+        w_db.get(x.t, title()).unwrap() == Some(s("from p")) && x.n.get(x.t, title()).unwrap() == Some(s("from p"))
+    });
+    drop(x.host);
+}
+
+// spec/sync.md §10: a split can arrive from elsewhere, where nothing could refuse it: another holder of H shares routed `t` into H; reads stay where they were, the next write here says why it is refused, and `status` shows it
+#[test]
+fn a_split_arriving_from_another_node_refuses_the_next_write() {
+    let x = world();
+    let h = second_group(&x);
+    until("N has H", || {
+        let _ = x.n.sync_now();
+        x.n.knows(h) && x.n.status().unwrap().groups.contains_key(&h)
+    });
+    x.attach_p();
+    x.to_remote();
+    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    assert!(x.p.status().unwrap().split.is_empty());
+    x.n.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    block_on(x.n.wait_synced(SyncScope::Group(h), W)).unwrap();
+    until("P learnt it through H", || {
+        let _ = x.p.sync_now();
+        x.p.status().unwrap().split.contains(&x.t)
+    });
+    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("acked")));
+    let r = x.p.write_with(|w| w.at(x.t, title()).set(&s("again")));
+    let Err(Error::Invalid(why)) = r else { panic!("{r:?}") };
+    assert!(why.contains(&h.to_string()) && why.contains(&x.g.to_string()), "{why}");
+    drop(x.host);
+}
+
+// spec/sync.md §10: placing a routed thing in a group synced here changes no source: a write acknowledged through the route does not read as gone; with no edge H does not carry it, so writes go on
+#[test]
+fn placing_a_routed_thing_in_a_local_group_changes_nothing() {
+    let x = world();
+    let h = second_group(&x);
+    x.attach_p();
+    x.to_remote();
+    x.p.write_with(|w| w.at(x.t, title()).set(&s("acked"))).unwrap();
+    assert_eq!(x.p_local_copy(), Some(s("first")));
+    x.p.write_with(|w| w.place(x.t, h)).unwrap();
+    assert_eq!(x.p.get(x.t, title()).unwrap(), Some(s("acked")));
+    assert!(x.p.status().unwrap().split.is_empty());
+    x.p.write_with(|w| w.at(x.t, title()).set(&s("again"))).unwrap();
+    assert_eq!(x.n.get(x.t, title()).unwrap(), Some(s("again")));
+    // with a shared edge it would be split: refused, two sources
+    assert!(matches!(x.p.share_into(x.t, h, Role::Read, Default::default()), Err(Error::Invalid(_))));
+    drop(x.host);
+}
+
+// spec/sync.md §10, notes/client-port.md §8: a client of this node reads no copy of a routed thing, even one a local group still feeds
+#[test]
+fn a_client_of_this_node_reads_no_split_thing() {
+    let x = world();
+    let h = second_group(&x);
+    x.p.share_into(x.t, h, Role::Write, Default::default()).unwrap();
+    let (a, _) = x.p.add_client(None).unwrap();
+    x.p.grant(x.t, a, Role::Read, Default::default()).unwrap();
+    assert!(x.p.engine(|e| e.readable_by(&a, &x.t)));
+    x.attach_p();
+    x.to_remote();
+    assert!(!x.p.engine(|e| e.readable_by(&a, &x.t)));
     drop(x.host);
 }
 

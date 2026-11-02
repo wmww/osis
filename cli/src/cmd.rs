@@ -995,15 +995,18 @@ fn roster(ctx: &mut Ctx<'_>, t: &str) -> anyhow::Result<()> {
 fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
     let s = ctx.db.status()?;
     let raw = ctx.g.raw;
-    let lines = s
+    let mut lines = s
         .groups
         .iter()
         .map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") }))
         .collect::<Vec<_>>();
+    // writes on these are refused until a group moves (Osis::group_source)
+    lines.extend(s.split.iter().map(|t| format!("{} split: writes refused", t.to_uri())));
     let j = J::Arr(
         s.groups
             .iter()
             .map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect()))]))
+            .chain(s.split.iter().map(|t| J::obj([("split", J::tid(*t))])))
             .collect(),
     );
     ctx.emit(&lines, j)

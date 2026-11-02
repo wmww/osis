@@ -388,7 +388,7 @@ impl Osis {
     /// it. `None` when there is none, `NotUndoable` when it cannot be reverted (nothing older is
     /// undone instead).
     pub fn undo(&self, scope: &Scope) -> Result<Option<Committed>> {
-        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+        if let crate::sources::Source::Remote(r) = self.route_write_scope(scope)? {
             let v = r.call_once(crate::port::method::UNDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
@@ -398,7 +398,7 @@ impl Osis {
     /// Redoes this actor's newest undo in effect in `scope`, unless a new change of this actor
     /// came after it there: reverts the undo. `None` when there is none.
     pub fn redo(&self, scope: &Scope) -> Result<Option<Committed>> {
-        if let crate::sources::Source::Remote(r) = self.route_scope(Some(scope))? {
+        if let crate::sources::Source::Remote(r) = self.route_write_scope(scope)? {
             let v = r.call_once(crate::port::method::REDO, vec![crate::port::codec::scope_v(scope)])?;
             return crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::committed).transpose();
         }
@@ -410,7 +410,7 @@ impl Osis {
     /// as one). An ephemeral change without a log here (another node's, or from before a
     /// restart) is `Invalid`.
     pub fn revert(&self, id: ChangeId) -> Result<Committed> {
-        if let crate::sources::Source::Remote(r) = self.route_change(id)? {
+        if let crate::sources::Source::Remote(r) = self.route_write_change(id)? {
             return crate::port::codec::committed(r.call_once(crate::port::method::REVERT, vec![crate::port::codec::change_v(&id)])?);
         }
         let _g = lock(&self.inner.undo);

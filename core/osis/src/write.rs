@@ -307,7 +307,7 @@ impl<'d> Write<'d> {
     /// read before repeating it (crate::port::client).
     pub fn commit(self) -> Result<Option<Committed>> {
         let deciders = self.deciders();
-        if let Source::Remote(r) = self.db.route_all(&deciders)? {
+        if let Source::Remote(r) = self.db.route_write_all(&deciders)? {
             let db = self.db;
             if self.alive.is_some() {
                 return Err(Error::Unsupported("text sessions through a remote node".into()));

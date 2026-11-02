@@ -8,8 +8,7 @@
 //! at each decision. The rule (`decide_in`), for a thing `t` and S = `t` and the groups holding it
 //! here:
 //! 1. a process with no store: its attachments;
-//! 2. a routed group in S, unless a group in S that is not routed syncs here (local wins): the node
-//!    of the route, attached or not;
+//! 2. a routed group in S: the node of the route, attached or not, whatever else holds `t`;
 //! 3. `t` known here: this engine;
 //! 4. else the attachments, in order: the first that knows `t`, the first unreachable one stopping
 //!    the search (a later one must not answer for it); none: this engine, which says unknown.
@@ -21,6 +20,14 @@
 //! sync caught up, so a crash or failure between leaves "routed and synced", which reads remote:
 //! there is no moment when this engine's copy answers while behind. A remote copy can: a move away
 //! waits for this node's writes to reach a host, not for that node to pull them.
+//!
+//! **No write is acknowledged and silently never sent.** A write through a route goes out under what
+//! that node syncs, so a thing split between a route and a group that carries it here (`split_in`:
+//! that group syncs here, or routes to another node) refuses writes (`route_write`): its other
+//! holders would miss them with no sign. Reads stay on the route: this engine's copy, fed by the
+//! other group alone, never answers. A split cannot always be refused where it starts (a holder of
+//! the other group may place the thing there at any time), so it is a state with one rule, not a
+//! refused step: the next write says so, `Status::split` lists it, and moving either group ends it.
 //!
 //! The port worker (`port::serve`) serves every client of its node one call at a time, so it never
 //! waits on another node: an Owner's call that routes there fails `Unsupported`.
@@ -90,7 +97,7 @@ pub(crate) fn moved() -> Error {
 }
 
 /// Whether the group has a live label here.
-fn labeled(l: &mut Locked, g: &Tid) -> bool {
+pub(crate) fn labeled(l: &mut Locked, g: &Tid) -> bool {
     l.sync.engine_mut().labels_of(g).iter().any(|x| !x.replaced)
 }
 
@@ -126,12 +133,8 @@ fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
     if !thin {
         let t = l.sync.engine().resolve(&tid, &tid);
         let s = scope_of(l.sync.engine(), t);
-        if let Some(addr) = s.iter().find_map(|g| l.routes.get(g)).cloned() {
-            let others: Vec<Tid> = s.iter().filter(|g| !l.routes.contains_key(g)).copied().collect();
-            if !others.iter().any(|g| syncs_here(l, g)) {
-                return Decided::Remote(remote_named(l, &addr));
-            }
-            return Decided::Local;
+        if let Some(addr) = s.iter().find_map(|g| l.routes.get(g)) {
+            return Decided::Remote(remote_named(l, addr));
         }
         if l.sync.engine().knows(&t) {
             return Decided::Local;
@@ -142,6 +145,24 @@ fn decide_in(l: &mut Locked, thin: bool, tid: Tid) -> Decided {
         [r] => Decided::Remote(r.clone()),
         rs @ [r, ..] => Decided::Ask(r.clone(), rs.to_vec()),
     }
+}
+
+/// The module comment's split: `t` reads at a route, and a group that carries it (its actor may read
+/// `t`, spec/sync.md §3) goes elsewhere: it syncs here, or routes to another node. Returns (the
+/// routed group, that group). A plain placement carries nothing: no holder of it misses a write.
+fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
+    let t = l.sync.engine().resolve(&tid, &tid);
+    let s = scope_of(l.sync.engine(), t);
+    let (routed, addr) = s.iter().find_map(|g| l.routes.get(g).map(|a| (*g, a.clone())))?;
+    let other = s.into_iter().find(|g| {
+        let elsewhere = match l.routes.get(g) {
+            Some(a) => *a != addr,
+            None => syncs_here(l, g),
+        };
+        let e = l.sync.engine();
+        elsewhere && e.may_read(&e.group_actor(g), &t)
+    })?;
+    Some((routed, other))
 }
 
 /// The attachment that answers for a thing known here to none (rule 4).
@@ -203,6 +224,49 @@ impl Osis {
             Decided::Ask(first, _) if crate::port::serve::on_worker() => Source::Remote(self.reachable(first)),
             Decided::Ask(first, rs) => Source::Remote(ask(&first, &rs, tid)),
         }
+    }
+
+    /// `route` for a call that writes: `Invalid` on a split thing (the module's invariant).
+    pub(crate) fn route_write(&self, tid: Tid) -> Result<Source> {
+        self.check_split(&[tid])?;
+        Ok(self.route(tid))
+    }
+
+    /// `route_all` for a call that writes.
+    pub(crate) fn route_write_all(&self, things: &[Tid]) -> Result<Source> {
+        self.check_split(things)?;
+        self.route_all(things)
+    }
+
+    /// `route_scope` for a call that writes.
+    pub(crate) fn route_write_scope(&self, scope: &crate::commits::Scope) -> Result<Source> {
+        match scope {
+            crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t) => self.check_split(&[*t])?,
+            crate::commits::Scope::Aspects(a) => self.check_split(&a.iter().map(|(t, _)| *t).collect::<Vec<_>>())?,
+        }
+        self.route_scope(Some(scope))
+    }
+
+    /// `route_change` for a call that writes: what the change touched, when held here.
+    pub(crate) fn route_write_change(&self, id: ChangeId) -> Result<Source> {
+        if self.routed() && !self.is_attached() {
+            let touched = self.locked(|l| touched_by(l.engine(), id)).unwrap_or_default();
+            self.check_split(&touched)?;
+        }
+        self.route_change(id)
+    }
+
+    fn check_split(&self, things: &[Tid]) -> Result<()> {
+        if !self.routed() || self.is_attached() {
+            return Ok(());
+        }
+        let mut l = crate::watch::lock(&self.inner.eng);
+        for t in things {
+            if let Some((g, h)) = split_in(&mut l, *t) {
+                return Err(Error::Invalid(format!("{t} reads at another node through group {g} and is also in group {h}, whose other holders this write would miss: move {g} home, or {h} to the same node")));
+            }
+        }
+        Ok(())
     }
 
     /// Whether calls on `t` run on this engine, as far as the lock can say (no network).
@@ -314,18 +378,29 @@ impl Osis {
         if !self.routing() {
             return Ok(local);
         }
-        let (remotes, routes) = self.locked(|l| {
+        let thin = self.is_attached();
+        let (remotes, routes, split) = self.locked(|l| {
             let mut all = l.remotes.clone();
             for a in l.routes.values() {
                 if !all.iter().any(|r| r.addr == *a) {
                     all.push(Remote::absent(a));
                 }
             }
-            (all, l.routes.clone())
+            let mut split = BTreeSet::new();
+            if !thin {
+                let closures: Vec<_> = l.routes.keys().map(|g| l.sync.engine().closure(g)).collect();
+                for t in closures.iter().flat_map(|c| c.iter()) {
+                    if split_in(l, *t).is_some() {
+                        split.insert(*t);
+                    }
+                }
+            }
+            (all, l.routes.clone(), split)
         });
-        if self.is_attached() {
+        if thin {
             local = Status::default();
         }
+        local.split = split;
         for r in remotes {
             local.remotes.push(RemoteStatus { address: r.addr.clone(), connected: r.connected() });
             if !self.may_wait() {
@@ -414,9 +489,9 @@ impl Osis {
     /// tried again (new secrets, a new connection, or every `resync_ms`); until a holder re-seals
     /// this node, stay on the node.
     ///
-    /// A thing also in a group that syncs here stays on this engine (local wins), and sees only what
-    /// that group carries: writes made under this one alone do not reach it, its writes do not
-    /// reach this group's other holders until the group comes home (issues/cli-proxy.md Follows).
+    /// A thing also in a group that syncs here reads at the node like the rest of this one, and
+    /// refuses writes (`Invalid`, `Status::split`) until this group comes home or the other moves to
+    /// the same node: they would miss the other group's holders (the module's invariant).
     ///
     /// Every watch whose source this changes gets one last `Err(Network)` and ends: watch again.
     /// The route survives a restart (the `sources` record); a store-less process has none.
@@ -450,6 +525,7 @@ impl Osis {
         self.locked(|l| {
             let parents: Vec<Tid> = l.engine().groups_of(&g).into_iter().filter(|p| *p != g && !l.routes.contains_key(p)).collect();
             if parents.iter().any(|p| syncs_here(l, p)) {
+                // every write in it would be refused (the module's split)
                 return Err(Error::Invalid("this group stays synced here through a group holding it: move that one".into()));
             }
             // written since the wait: never strand it

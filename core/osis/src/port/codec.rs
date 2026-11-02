@@ -336,13 +336,13 @@ pub(crate) fn status_v(s: &Status) -> Value {
             ])
         })
         .collect();
-    Value::List(vec![u(s.connected as u64), Value::List(groups)])
+    Value::List(vec![u(s.connected as u64), Value::List(groups), Value::List(s.split.iter().map(|t| Value::Tid(*t)).collect())])
 }
 
 pub(crate) fn status(v: Value) -> Result<Status> {
     let mut a = Args::new(v)?;
     let connected = usize::try_from(a.uint()?).map_err(|_| bad("count"))?;
-    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new() };
+    let mut st = Status { connected, groups: Default::default(), remotes: Vec::new(), split: Default::default() };
     for g in a.list()? {
         let mut b = Args::new(g)?;
         let t = b.tid()?;
@@ -353,6 +353,9 @@ pub(crate) fn status(v: Value) -> Result<Status> {
         let leaving = b.bool()?;
         b.end()?;
         st.groups.insert(t, GroupSync { state, last_sync, labels, not_admitted, leaving });
+    }
+    for t in a.list()? {
+        st.split.insert(Args::of(vec![t]).tid()?);
     }
     a.end()?;
     Ok(st)

@@ -257,6 +257,9 @@ pub struct Status {
     pub groups: BTreeMap<Tid, GroupSync>,
     /// This process's attachments to other nodes, and the nodes its routes name.
     pub remotes: Vec<crate::sources::RemoteStatus>,
+    /// Things read at a route and also in a group that carries them elsewhere: writes on them are
+    /// refused until one of the groups moves (`Osis::group_source`).
+    pub split: BTreeSet<Tid>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -309,7 +312,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     for g in sync.receipts_only() {
         groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false });
     }
-    Status { connected: sync.connected(), groups, remotes: Vec::new() }
+    Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() }
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
@@ -396,11 +399,47 @@ impl Osis {
         self.guarded(tids, |e| persist_in(e, me, tids))
     }
 
+    /// Gives `t` a label of its own unless `holder` already reads a label that carries it
+    /// (spec/sync.md §2). The invariant: no grant is acknowledged and silently never reaches its
+    /// holder. Its secrets alone open nothing: a thing's blobs travel under the labels of the
+    /// groups holding it, opened under those groups' secrets. `None`: a link's K, which gets `t`'s
+    /// secrets alone, so only `t`'s own label will do. Not for this person or a client of this
+    /// node: this node serves those, and the thing stays as local as it was.
+    fn label_for_grant(&self, t: Tid, holder: Option<Tid>) -> Result<()> {
+        if let Some(h) = holder
+            && (h == self.me() || self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().contains_key(&h))
+        {
+            return Ok(());
+        }
+        let reached = self.locked(|l| {
+            if crate::sources::labeled(l, &t) {
+                return true;
+            }
+            let Some(h) = holder else { return false };
+            let gs = l.engine().groups_of(&t);
+            gs.iter().any(|g| {
+                let via = crate::sources::labeled(l, g);
+                let e = l.engine();
+                // a group granted its own item: the edge being written is what makes it carry it
+                via && (*g == h || (e.may_read(&h, g) && e.may_read(&e.group_actor(g), &t)))
+            })
+        });
+        if reached {
+            return Ok(());
+        }
+        // an invite edge alone grants but cannot make a label (`label.0` is an admin's):
+        // `Permission`, nothing written
+        self.sync_here(t, &[], false)
+    }
+
     /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
     /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
-    /// else `UnknownActor`. The grant reaches the holder's devices through its inbox.
+    /// else `UnknownActor`. The grant reaches the holder's devices through its inbox. A holder who
+    /// reads no label carrying the target gets one: the target's own, made now (spec/sync.md §2),
+    /// which needs admin (an invite edge alone: `Permission`). Grants one by one cost a label each:
+    /// share sets through a group.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
+        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
         }
         let (target, holder) = (self.resolved(target), self.resolved(holder));
@@ -408,11 +447,17 @@ impl Osis {
             return Err(Error::UnknownThing { tid: target });
         }
         self.persist(&[target])?;
-        let done = self.guarded(&[target], |e| {
-            // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
+        // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
+        let known = |e: &mut osis_node::Engine| -> Result<()> {
             if !e.knows(&holder) || (e.owner(&holder).is_none() && e.get_typed(&holder, &ct::KEYS)?.is_none()) {
                 return Err(Error::UnknownActor { tid: holder });
             }
+            Ok(())
+        };
+        self.guarded(&[target], known)?;
+        self.label_for_grant(target, Some(holder))?;
+        let done = self.guarded(&[target], |e| {
+            known(e)?;
             // an edge change keeps its tie; a new hand grant is untied
             let tied = e.roster(&target).get(&holder).and_then(|x| x.tied).map(flows::tied::tie_ct);
             e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
@@ -427,7 +472,7 @@ impl Osis {
     /// on `tid` (or an invite edge of at least `role`, and no edge of the group yet), else
     /// `Permission` before anything is written, unless `opts.place_anyway` (then `Excluded`).
     pub fn share_into(&self, tid: Tid, group: Tid, role: Role, opts: ShareOpts) -> Result<Share> {
-        if let crate::sources::Source::Remote(r) = self.route_all(&[tid, group])? {
+        if let crate::sources::Source::Remote(r) = self.route_write_all(&[tid, group])? {
             return crate::port::codec::share(r.call(crate::port::method::SHARE_INTO, vec![Value::Tid(tid), Value::Tid(group), crate::port::codec::role_v(role), Value::Bool(opts.subgroup), Value::Bool(opts.place_anyway)])?);
         }
         let (t, g) = (self.resolved(tid), self.resolved(group));
@@ -497,7 +542,7 @@ impl Osis {
     /// rotates). `Invalid` when this node is an admin of `target` (use `demote`), `Permission`
     /// when it is no admin of `group`; nothing is written when there is no such edge.
     pub fn remove_edge_of(&self, group: Tid, target: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route_all(&[group, target])? {
+        if let crate::sources::Source::Remote(r) = self.route_write_all(&[group, target])? {
             return r.call(crate::port::method::REMOVE_EDGE_OF, vec![Value::Tid(group), Value::Tid(target)]).map(drop);
         }
         let (g, t) = (self.resolved(group), self.resolved(target));
@@ -529,7 +574,7 @@ impl Osis {
 
     /// Changes `until`/`invite` of an edge or raises its role (a lower role: `demote`).
     pub fn change_edge(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
+        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::CHANGE_EDGE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
         }
         let (t, m) = (self.resolved(target), self.resolved(holder));
@@ -687,7 +732,7 @@ impl Osis {
 
     /// Removes this person's own edge on `target` (a self-removal; no pre-sync).
     pub fn leave(&self, target: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
+        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::LEAVE, vec![Value::Tid(target)]).map(drop);
         }
         let t = self.resolved(target);
@@ -700,7 +745,7 @@ impl Osis {
     /// on this database's hosts. Anyone holding the link can redeem it until `until` or
     /// `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
-        if let crate::sources::Source::Remote(r) = self.route(target) {
+        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
             return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
         }
@@ -714,6 +759,7 @@ impl Osis {
             return Err(Error::Invalid("a direct link needs this device reachable: a runtime with Config.peers on".into()));
         }
         self.persist(&[t])?;
+        self.label_for_grant(t, None)?;
         let (mut link, keep, done) = self.guarded(&[t], |e| e.create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts, peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin))?;
         // the seed thing in the home group: every device of this person holds it and may
         // finalize the link (spec/permissions.md §9)
@@ -1110,7 +1156,7 @@ impl Osis {
     /// Makes `group` synced through `hosts` (default: this database's): its own label
     /// (spec/sync.md §2); needs admin on the group. A no-op when it has one.
     pub fn sync(&self, group: Tid, hosts: &[HostAddr]) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route(group) {
+        if let crate::sources::Source::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::SYNC, vec![Value::Tid(group), Value::List(hosts.iter().map(|h| Value::Str(h.to_string())).collect())]).map(drop);
         }
         self.sync_here(group, hosts, false)
@@ -1159,7 +1205,7 @@ impl Osis {
     /// Stops syncing `group` under its own labels (marks them replaced without a successor;
     /// the group stays in other synced groups it is placed in).
     pub fn unsync(&self, group: Tid) -> Result<()> {
-        if let crate::sources::Source::Remote(r) = self.route(group) {
+        if let crate::sources::Source::Remote(r) = self.route_write(group)? {
             return r.call(crate::port::method::UNSYNC, vec![Value::Tid(group)]).map(drop);
         }
         let g = self.resolved(group);

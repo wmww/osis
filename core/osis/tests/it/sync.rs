@@ -998,3 +998,110 @@ fn restored_store_reuses_no_counter_spec_crdt_2_1() {
     assert_eq!((x(&c, t), x(&c, u), x(&c, v)), (Some(s("restored")), Some(s("restored, caught up")), None));
     assert!(!c.groups_of(v).item_of.contains(&c.home()), "the undone creation left the home group");
 }
+
+/// A thing of `db`'s person with `t:x.0` = `v`, placed nowhere.
+fn plain(db: &Osis, v: &str) -> Tid {
+    db.write_with(|w| {
+        let t = w.create(db.me())?;
+        w.at(t, ak("t:x.0")).set(&s(v))?;
+        Ok(t)
+    })
+    .unwrap()
+}
+
+// spec/sync.md §2, spec/permissions.md §3: a grant on a thing placed nowhere reaches its holder: the thing gets a label of its own on its first holder, which the inbox payload names; Bob reads it and his write comes back; no second label on a second grant
+#[test]
+fn a_grant_on_a_plain_item_reaches_the_holder() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let t = plain(&alice, "for bob");
+    alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(&others[0], t), Some(s("for bob")));
+    others[0].write_with(|o| o.at(t, ak("t:x.0")).set(&s("from bob"))).unwrap();
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("from bob")));
+    let label = alice.status().unwrap().groups[&t].labels.clone();
+    assert_eq!(label.len(), 1);
+    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(&others[1], t), Some(s("from bob")));
+    assert_eq!(alice.status().unwrap().groups[&t].labels, label);
+}
+
+// spec/sync.md §2: a holder who shares no label with an item in Alice's group gets it all the same; a holder who reads a label that carries it needs none of its own
+#[test]
+fn a_grant_makes_a_label_only_when_the_holder_reads_none_that_carries_it() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "in g");
+    w.run();
+    assert_eq!(x(&others[0], t), Some(s("in g")));
+    alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
+    assert!(!alice.status().unwrap().groups.contains_key(&t), "bob reads g, which carries it");
+    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
+    assert!(alice.status().unwrap().groups.contains_key(&t), "carol reads no label of it");
+    w.run();
+    assert_eq!(x(&others[1], t), Some(s("in g")));
+}
+
+// spec/sync.md §2, spec/permissions.md §9: a link to a thing placed nowhere resolves: redeem returns and the thing reads
+#[test]
+fn a_link_to_a_plain_item_resolves() {
+    let mut w = World::new();
+    let (alice, others, _) = people(&mut w, 1);
+    let t = plain(&alice, "linked");
+    let link = alice.make_link(t, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(others[0].redeem(&link), 2000, 10).unwrap(), t);
+    w.run();
+    assert_eq!(x(&others[0], t), Some(s("linked")));
+}
+
+// spec/sync.md §2: a thing owned by someone else: an admin by an edge makes the label for his own grant, on his hosts; an invite edge alone cannot (`label.0` is an admin's), and the call says so and writes nothing
+#[test]
+fn a_grant_on_someone_elses_item() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 3);
+    let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
+    let shared = |v: &str| {
+        let t = plain(&alice, v);
+        alice.share_into(t, g, Role::Read, Default::default()).unwrap();
+        t
+    };
+    let t = shared("alice's");
+    alice.grant(t, ids[0], Role::Admin, Default::default()).unwrap();
+    let u = shared("invite");
+    alice.grant(u, ids[1], Role::Read, osis::EdgeOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
+    assert!(!alice.status().unwrap().groups.contains_key(&t), "both read g");
+    let card = dan.contact_card().unwrap();
+    w.run();
+    let d = w.until(carol.import_contact(&card), 1000, 10).unwrap();
+    w.until(bob.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    let r = carol.grant(u, d, Role::Read, Default::default());
+    assert!(matches!(r, Err(osis::Error::Permission { tid, .. }) if tid == u), "{r:?}");
+    assert!(!carol.status().unwrap().groups.contains_key(&u));
+    assert!(!carol.roster(u).contains_key(&d));
+    bob.grant(t, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dan, t), Some(s("alice's")));
+}
+
+// spec/sync.md §2: a grant to a client of this node, or a refused grant, makes no label: the thing stays as local as it was
+#[test]
+fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
+    let mut w = World::new();
+    let (alice, _, _) = people(&mut w, 1);
+    let t = plain(&alice, "local");
+    let (a, _) = alice.add_client(None).unwrap();
+    alice.grant(t, a, Role::Read, Default::default()).unwrap();
+    assert!(!alice.status().unwrap().groups.contains_key(&t));
+    assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
+    assert!(!alice.status().unwrap().groups.contains_key(&t));
+}
