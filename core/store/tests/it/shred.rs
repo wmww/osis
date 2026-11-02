@@ -247,8 +247,11 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
         (osis_crypto::blob_id(&b), key, b)
     };
     let (wrapped, wkey, wb) = blob(b"WRAPPED-BLOB-MARK", &mut rng);
-    let (keyed, kkey, kb) = blob(b"KEYED-BLOB-MARK", &mut rng);
+    // the keyed blob holds the key of an inner one (as a large value's tree node holds chunk keys)
+    let (inner, ikey, ib) = blob(b"INNER-BLOB-MARK", &mut rng);
+    let (keyed, kkey, kb) = blob(&[b"KEYED-BLOB-MARK".as_slice(), ikey.expose()].concat(), &mut rng);
     let mut t = s.transaction(&mut rng).unwrap();
+    t.put_blob(&inner, ib).unwrap();
     t.put_blob(&wrapped, wb).unwrap();
     t.put_wrap(&LABEL, &wrapped, &osis_crypto::wrap(&secret, &wrapped, &wkey).unwrap()).unwrap();
     t.put_blob(&keyed, kb).unwrap();
@@ -260,16 +263,19 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     };
     assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![osis_store::Source::Blob { id: wrapped, wrapped: true }]);
     assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![osis_store::Source::Blob { id: keyed, wrapped: false }]);
+    assert_eq!(found(&mut s, b"INNER-BLOB-MARK"), vec![osis_store::Source::Blob { id: inner, wrapped: false }]);
     let mut t = s.transaction(&mut rng).unwrap();
     assert!(t.drop_wrap(&LABEL, &wrapped).unwrap());
     assert!(t.remove_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), Shred::Yes).unwrap());
     t.delete_blob(&wrapped);
     t.delete_blob(&keyed);
+    t.delete_blob(&inner);
     t.commit().unwrap();
     assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![], "a dropped wrap opened its blob");
     assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![], "a dropped key opened its blob");
+    assert_eq!(found(&mut s, b"INNER-BLOB-MARK"), vec![], "a key inside a dropped blob opened its blob");
     // the freed ciphertexts are still in the attacker's hands
-    assert_eq!(dev.backend.blob_history().iter().filter(|(_, b)| b.is_some()).count(), 2);
+    assert_eq!(dev.backend.blob_history().iter().filter(|(_, b)| b.is_some()).count(), 3);
 }
 
 // spec/requirements.md, Deletion: the attack reads what the store keeps in clear (pointer and
@@ -286,4 +292,41 @@ fn attack_reads_clear_rows_and_raw_blobs() {
     let all = osis_store::attack(&Evidence::of(s.forensic_keys().unwrap(), &dev.backend), None);
     assert!(all.iter().any(|r| r.from == osis_store::Source::RawBlob(BlobId([5; 32])) && contains(&r.plain, b"CLEAR-BLOB-MARK")));
     assert!(all.iter().any(|r| r.from == osis_store::Source::Row(b"r".to_vec())), "the clear pointer row");
+}
+
+// spec/requirements.md, Deletion (no confirmation of a guess): around a shredded drop of a small
+// entry, every slot's rewritten unit keeps its padded length or moves one Padmé class step
+// (notes/local-store.md, Row padding), so freed versions do not show the entry's length
+#[test]
+fn shredded_small_drop_keeps_unit_lengths_within_a_class_step() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(9);
+    let mut s = create(&dev, &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    for i in 0..100u32 {
+        t.put_local(format!("a{i:04}").as_bytes(), &[1; 40], Shred::No).unwrap();
+    }
+    t.put_local(b"m-victim", b"SMALL-SECRET", Shred::No).unwrap();
+    t.commit().unwrap();
+    let before = dev.backend.history().len();
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert!(t.remove_local(b"m-victim", Shred::Yes).unwrap());
+    t.commit().unwrap();
+    // unit rows `u slot ver`: the last version of each slot before the drop and the drop's
+    let units = |rows: &[(Vec<u8>, Vec<u8>)]| -> std::collections::BTreeMap<Vec<u8>, usize> {
+        let ct = |v: &Vec<u8>| v.len() - 24 - 16;
+        rows.iter().filter(|(k, _)| k.len() == 17 && k[0] == b'u').map(|(k, v)| (k[..9].to_vec(), ct(v))).collect()
+    };
+    let h = dev.backend.history();
+    let (old, new) = (units(&h[..before]), units(&h[before..]));
+    let mut compared = 0;
+    for (slot, n) in &new {
+        let Some(o) = old.get(slot) else { continue };
+        let (lo, hi) = ((*o).min(*n), (*o).max(*n));
+        assert!(lo == hi || osis_crypto::padme(lo + 1) == hi, "slot {slot:?}: {o} B then {n} B");
+        compared += 1;
+    }
+    assert!(compared > 0, "the drop rewrote a unit");
+    assert!(!recoverable(&mut s, &dev, b"SMALL-SECRET"));
 }

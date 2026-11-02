@@ -73,8 +73,8 @@ pub struct Recovered {
     pub plain: Vec<u8>,
 }
 
-/// Fewest distinct byte values a random 32-byte key has, but for a negligible chance (expected
-/// about 30); skips text and padding, which cannot be keys.
+/// Fewest distinct byte values a random 32-byte key has but for a chance of about 2^-55
+/// (expected about 30); skips text and padding, which cannot be keys.
 const KEY_MIN_DISTINCT: usize = 16;
 
 fn random_looking(w: &[u8]) -> bool {
@@ -189,20 +189,21 @@ pub fn attack(ev: &Evidence, ciphers: Option<&Ciphers>) -> Vec<Recovered> {
     while done < cands.len() {
         let batch = cands.get(done..).unwrap_or_default().to_vec();
         done = cands.len();
-        let mut found: Vec<(usize, Vec<u8>, bool)> = Vec::new();
-        for (i, (id, blob)) in blobs.iter().enumerate() {
-            if open_blobs.get(i) == Some(&true) {
-                continue;
-            }
+        // tens of thousands of candidates per blob: one thread per blob keeps a test's wall short
+        let try_blob = |i: usize| -> Option<(usize, Vec<u8>, bool)> {
+            let (id, blob) = blobs.get(i)?;
             if let Some(p) = batch.iter().find_map(|k| (c.open)(blob, k)) {
-                found.push((i, p, false));
-                continue;
+                return Some((i, p, false));
             }
             let wrapped = wraps.get(i).into_iter().flatten().find_map(|w| batch.iter().find_map(|s| (c.unwrap)(s, id, w)));
-            if let Some(p) = wrapped.and_then(|k| (c.open)(blob, &k)) {
-                found.push((i, p, true));
-            }
-        }
+            wrapped.and_then(|k| (c.open)(blob, &k)).map(|p| (i, p, true))
+        };
+        let try_blob = &try_blob;
+        let found: Vec<(usize, Vec<u8>, bool)> = std::thread::scope(|sc| {
+            let todo = (0..blobs.len()).filter(|i| open_blobs.get(*i) != Some(&true));
+            let hs: Vec<_> = todo.map(|i| sc.spawn(move || try_blob(i))).collect();
+            hs.into_iter().filter_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e))).collect()
+        });
         for (i, p, wrapped) in found {
             if let (Some(o), Some((id, _))) = (open_blobs.get_mut(i), blobs.get(i)) {
                 *o = true;
