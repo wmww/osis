@@ -67,8 +67,9 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
 }
 
 /// 1-3 leaves (things only their `created.0` names) under random held things, leaves included,
-/// and 0-2 things the history names whose `created.0` arrives late (§1: their owner links),
-/// each with the step from which its `created.0` is held (0: from the start).
+/// and 0-2 things the history names whose `created.0` arrives late (§1: their owner links, an
+/// ownerless thing's first admin edge), each with the step from which its `created.0` is held
+/// (0: from the start).
 fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
     let mut out = Vec::new();
     for _ in 0..1 + rng.below(3) {
@@ -76,7 +77,7 @@ fn add_leaves(w: &mut World, rng: &mut Rng, steps: usize) -> Vec<(Tid, usize)> {
         let t = w.thing(owners[rng.below(owners.len())]);
         out.push((t, rng.below(steps + 1)));
     }
-    let named: Vec<Tid> = w.created.iter().filter(|(t, r)| matches!(r, osis_base::CreationRecord::Thing { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
+    let named: Vec<Tid> = w.created.iter().filter(|(t, r)| !matches!(r, osis_base::CreationRecord::KeyActor { .. }) && !out.iter().any(|l| l.0 == **t)).map(|(t, _)| *t).collect();
     for _ in 0..rng.below(3) {
         if !named.is_empty() {
             out.push((named[rng.below(named.len())], rng.below(steps + 1)));

@@ -2709,6 +2709,19 @@ fn ownerless_chat_spec_perm_1() {
     }
     assert_eq!(lp.peers[0].engine.role_on(&o), None);
     assert_eq!(lp.peers[1].engine.role_on(&o), Some(Role::Admin));
+    // the record still names person 0: a commit carrying it again gives nothing back
+    let rec = lp.peers[0].engine.get(&o, &ak("created.0")).unwrap().and_then(|v| osis_base::CreationRecord::from_value(&v)).unwrap();
+    let mut m = Mutation::new();
+    m.act_as(ps[0]);
+    assert_eq!(m.create(rec.clone()), o);
+    m.set(o, &REG, &s("back")).unwrap();
+    assert!(lp.peers[0].commit(m).is_err());
+    let mut m = Mutation::new();
+    m.act_as(ps[0]);
+    m.create(rec);
+    m.set(o, &ak("t:reg.0~"), &s("back")).unwrap();
+    let r = lp.peers[0].engine.write(m);
+    assert!(r.is_err(), "{r:?}");
     // lockout recovery by the remaining admin
     let e0 = newest_read(&lp, 1, o).unwrap();
     lp.peers[2].engine.rotate_boxing_only(&[o], &[Role::Read, Role::Write], &[ps[2]]).unwrap().unwrap();
