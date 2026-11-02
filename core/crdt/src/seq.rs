@@ -100,8 +100,9 @@ impl PartialEq for Seq {
 impl Eq for Seq {}
 
 impl std::fmt::Debug for Seq {
+    /// Per element, as equality is: two equal sequences print alike, whatever their split.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Seq").field("text", &self.text).field("meta", &self.meta).field("elems", &self.elems).finish()
+        f.debug_struct("Seq").field("text", &self.text).field("meta", &self.meta).field("elems", &crate::seq_span::expand(self.elems.clone())).finish()
     }
 }
 
