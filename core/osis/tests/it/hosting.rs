@@ -35,8 +35,9 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 // spec/wire.md §11.2 (an unadmitted genesis step gets code 14), notes/sync.md Hosting, spec/requirements.md
 // Untrusted nodes: Alice hosts with `own` admission (its key known before it listens): her home label, once its hosts name her
 // host address, is admitted and served from her host store (her own copy placed there like
-// anyone's); Bob's is refused until she opens admission (his status `Refused` naming her host,
-// `wait_synced` of his home failing `Unsynced` at its deadline although his other host has it), then hosted blind (she holds none of
+// anyone's); Bob's is refused until she opens admission (his status names her host, his home
+// synced at his other host; Carol's, at her host only, `Refused` and failing `wait_synced` at
+// its deadline), then hosted blind (she holds none of
 // its keys) and served to Bob's restored device. Her host store holds no tid or AK of either
 // label in any row it ever wrote.
 #[test]
@@ -45,6 +46,7 @@ fn hosting_own_then_open_spec_sync_5() {
     let base = w.add_host();
     let (alice, _) = w.person(1, &[base]);
     let (bob, bob_card) = w.person(2, &[base]);
+    let (carol, _) = w.person(3, &[base]);
     w.run();
     assert_eq!(alice.host_address().unwrap(), None);
     assert_eq!(alice.host_key(), None);
@@ -60,6 +62,8 @@ fn hosting_own_then_open_spec_sync_5() {
     // own: Alice's home label names her host, Bob's too: only hers is admitted
     alice.add_host(&ha).unwrap();
     bob.add_host(&ha).unwrap();
+    carol.add_host(&ha).unwrap();
+    carol.remove_host(&w.addr(base).unwrap()).unwrap();
     let ta = item(&alice, alice.home(), "alice's");
     let tb = item(&bob, bob.home(), "bob's");
     w.run();
@@ -68,9 +72,12 @@ fn hosting_own_then_open_spec_sync_5() {
     assert!(hosted(&w, s).contains(&la), "own: admitted");
     assert!(!hosted(&w, s).contains(&lb), "own: another person's label refused");
     let st = bob.status().unwrap().groups[&bob.home()].clone();
-    assert_eq!((st.state, st.not_admitted), (osis::SyncState::Refused, vec![ha.clone()]), "not admitted, not full");
-    let r = w.until(bob.wait_synced(osis::SyncScope::Group(bob.home()), std::time::Duration::from_secs(5)), 1000, 10);
-    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [bob.home()]), "{r:?}");
+    assert_eq!((st.state, st.not_admitted), (osis::SyncState::Synced, vec![ha.clone()]), "not admitted, not full; synced at base");
+    w.until(bob.wait_synced(osis::SyncScope::Group(bob.home()), std::time::Duration::from_secs(5)), 1000, 10).unwrap();
+    let st = carol.status().unwrap().groups[&carol.home()].clone();
+    assert_eq!((st.state, st.not_admitted), (osis::SyncState::Refused, vec![ha.clone()]), "at no other host");
+    let r = w.until(carol.wait_synced(osis::SyncScope::Group(carol.home()), std::time::Duration::from_secs(5)), 1000, 10);
+    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.home()]), "{r:?}");
 
     // open: Bob's label is taken at his next registration
     alice.set_hosting(Some(Hosting { admit: Admit::Open, ..alice.hosting().unwrap() })).unwrap();
