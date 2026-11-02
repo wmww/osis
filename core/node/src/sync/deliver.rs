@@ -102,8 +102,9 @@ impl SyncEngine {
 
     /// Drops what this node lost read access to (`Engine::drop_lost_secrets`, spec/permissions.md
     /// §3) and its sync state about it: the engine forgets the records in its transaction, this
-    /// reloads them and drops the sessions and in-memory marks of the forgotten labels. Flows'
-    /// `drop_left` calls it once a self-removal is placed; an app calls it when told it was removed.
+    /// reloads them and drops the sessions and in-memory marks of the forgotten labels. All at
+    /// once, self-removals not yet placed included (`drop_left` drops those); an app calls it
+    /// when told it was removed.
     pub fn drop_lost(&mut self) -> Result<()> {
         self.forget_lost(LostScope::All).map(|_| ())
     }
