@@ -36,7 +36,7 @@ use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
 use journal::{JMap, JNested, JSet, JSetMap, Journaled};
-use osis_perm::Timelines;
+use osis_perm::{Point, Timelines};
 use osis_store::{AspectUnit, Backend, RootStorage, Shred, Store, StoreConfig, Transaction};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
@@ -106,6 +106,9 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
+    /// Dropped for breaking the thing's required retention (`retention::drop_broken`): it comes
+    /// back as missing when it turns valid.
+    pub broke: bool,
     /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
     /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
     /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in
@@ -477,6 +480,8 @@ indexes! {
     pub unresolved: JSet<CommitId>,
     /// Roles `secrets.0` and `keys.0` deltas need (by commit and aspect index).
     pub rotation_role: JMap<(CommitId, usize), osis_base::Role>,
+    /// What each held `required.0^` delta of a thing says, in key order (spec/commits.md §5).
+    pub required: JMap<Tid, Vec<(Point, Arc<osis_schema::core_types::RequiredRules>)>>,
     /// `secrets.0` parts of role commits that write beyond their grantees' boxes (an invite
     /// grant may carry only those, spec/permissions.md §2).
     pub grant_overreach: JSet<(CommitId, usize)>,

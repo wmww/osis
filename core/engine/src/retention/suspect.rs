@@ -124,7 +124,7 @@ pub(crate) fn keep_dropped(core: &Core, tid: &Tid, ak: &Ak) -> Vec<(CommitId, us
         .filter_map(|(_, c)| {
             let m = core.ix.commits.get(c)?;
             let ai = m.aspect(tid, ak)?;
-            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| !d.as_cover) && !super::valueless(core, c, ai)).then_some((*c, ai))
+            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| !d.as_cover && !d.broke) && !super::valueless(core, c, ai)).then_some((*c, ai))
         })
         .collect()
 }

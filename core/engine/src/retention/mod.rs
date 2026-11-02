@@ -248,6 +248,11 @@ pub(crate) fn drop_part(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<()> 
 
 /// `drop_part`; `cover`: dropped as covered (compaction, `Dropped::as_cover`).
 fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result<()> {
+    drop_part_how(tx, c, ai, cover, false)
+}
+
+/// `drop_part_as`; `broke`: for breaking the thing's required retention (`Dropped::broke`).
+fn drop_part_how(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool, broke: bool) -> Result<()> {
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(()) };
     let Some(a) = m.header.aspects.get(ai).cloned() else { return Ok(()) };
@@ -292,7 +297,7 @@ fn drop_part_as(tx: &mut Tx<'_>, c: &CommitId, ai: usize, cover: bool) -> Result
     if held.is_empty() {
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, keysets, names });
+    m.dropped.insert(ai, Dropped { covered_by, as_cover, live, gives, role, overreach, broke, keysets, names });
     // a part missing (again, `uncover`) and dropped is dropped, as an open reads it: received,
     // so snapshots' copies of its writes are carried writes no more
     if m.missing.remove(&ai) {
@@ -423,6 +428,25 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         }
     }
     Ok(owned)
+}
+
+/// The parts of `(tid, ak)` dropped for breaking the required retention that are valid now are
+/// missing again (spec/permissions.md §8): they give nothing until the body arrives again
+/// (node-sync fetches it, `Changed::undropped`; a holder uploads it, it is must-hold there).
+pub(crate) fn unbreak(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
+    let core = &*tx.core;
+    let back: Vec<(CommitId, usize)> = core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|(_, c)| {
+        let m = core.ix.commits.get(c)?;
+        let ai = m.aspect(tid, ak)?;
+        (m.valid_at(ai) && m.dropped.get(&ai).is_some_and(|d| d.broke)).then_some((*c, ai))
+    }).collect();
+    for (c, ai) in back {
+        reopen(tx, &c, ai)?;
+        if let Some(ch) = &mut tx.core.changed {
+            ch.undropped.insert(c);
+        }
+    }
+    Ok(())
 }
 
 /// Makes dropped part `ai` of `c` missing, as at a node that never received it: what its body
@@ -1222,6 +1246,43 @@ impl Engine {
         })
     }
 
+    /// Drops the held deltas that break their thing's required retention and that this node
+    /// received no earlier than the `required.0^` delta they break, so a backdated change
+    /// takes no body it already held (spec/permissions.md §8): those of `only`, else all.
+    /// Returns their commits.
+    pub fn drop_broken(&mut self, only: Option<&BTreeSet<CommitId>>) -> Result<Vec<CommitId>> {
+        let core = &self.core;
+        if core.ix.required.is_empty() {
+            return Ok(Vec::new());
+        }
+        let candidates: BTreeSet<CommitId> = match only {
+            Some(o) => o.clone(),
+            None => core.ix.required.keys().flat_map(|t| core.ix.by_thing.get(t).into_iter().flatten().copied()).collect(),
+        };
+        let mut due: Vec<(CommitId, usize)> = Vec::new();
+        for c in &candidates {
+            let Some(m) = core.ix.commits.get(c) else { continue };
+            for ai in 0..m.header.aspects.len() {
+                if m.holds(ai)
+                    && !m.valid_at(ai)
+                    && crate::apply::validity::broken_by(core, &m.header, c, ai).is_some_and(|p| core.ix.commits.get(&p.commit).is_some_and(|s| s.received <= m.received))
+                {
+                    due.push((*c, ai));
+                }
+            }
+        }
+        let out = due.iter().map(|x| x.0).collect::<BTreeSet<_>>().into_iter().collect();
+        if !due.is_empty() {
+            self.run(|tx| {
+                for (c, ai) in &due {
+                    drop_part_how(tx, c, *ai, false, true)?;
+                }
+                Ok(())
+            })?;
+        }
+        Ok(out)
+    }
+
     /// Keep bounds of a held body (wall ms): (keep at least, keep at most).
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
         self.settle_deaths()?;
@@ -1318,8 +1379,8 @@ impl Engine {
         if ak.as_str() == "roles.0" || ak.as_str() == "tenures.0" {
             return Err(Error::Misuse("roles.0 and tenures.0 are compacted by roster snapshots"));
         }
-        if ak.as_str() == "created.0" {
-            return Err(Error::Misuse("created.0 is kept forever, never compacted"));
+        if ak.as_str() == "created.0" || ak.as_str() == osis_commit::retention::REQUIRED {
+            return Err(Error::Misuse("kept forever, never compacted"));
         }
         // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
         // held

@@ -1,0 +1,511 @@
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
+//! A thing's required retention (spec/commits.md §5, spec/permissions.md §5.2, §8): judged at the
+//! delta's key on the role timeline, in any arrival order; what goes without a right.
+
+use crate::common;
+use crate::net;
+use common::*;
+use net::Net;
+use osis_base::{CommitId, PurgeBy, Role, Tid};
+use osis_commit::retention::fixed_retention;
+use osis_node::local_peer::{LocalPeer, Package, Peer};
+use osis_node::Mutation;
+use osis_schema::core_types::{self as ct, Required, RequiredRules};
+use osis_schema::{Bound, Codec, Retention};
+use osis_base::{Value, WallMs};
+use std::collections::BTreeSet;
+
+const FOREVER: Option<u64> = Some(osis_commit::FOREVER);
+fn permanent() -> Retention {
+    Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: FOREVER, rel: None }, at_most: Bound::default() }
+}
+fn junk() -> Retention {
+    Retention { by: PurgeBy::Nobody, ..Retention::default() }
+}
+const MSGS: &str = "t:msgs:y2026.0";
+
+/// Alice (0) owns D, Bob (1) writes, Carol (2) is an admin.
+fn setup(seed: u64) -> (LocalPeer, Tid) {
+    let mut lp = net(3, seed);
+    let mut m = Mutation::new();
+    let ids: Vec<Tid> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let d = lp.peers[0].engine.new_thing(&mut m, ids[0]);
+    m.set(d, &REG, &s("d")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, d, ids[2], Some(edge(Role::Admin)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    (lp, d)
+}
+
+fn rules(entries: &[(&str, Retention)]) -> RequiredRules {
+    entries.iter().map(|(p, r)| (p.to_string(), Required::new(*r, None))).collect()
+}
+
+fn require(lp: &mut LocalPeer, i: usize, d: Tid, r: &RequiredRules) -> CommitId {
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, r).unwrap();
+    let c = lp.peers[i].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    c
+}
+
+/// A write of `a` with retention `r`, its author's node not stopping it.
+fn hostile(lp: &mut LocalPeer, i: usize, d: Tid, a: &str, r: Retention, v: &str) -> CommitId {
+    let k = ak(a);
+    let mut m = Mutation::new();
+    m.set(d, &k, &s(v)).unwrap();
+    m.retention(d, &k, r).unwrap();
+    let c = lp.peers[i].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    c
+}
+
+fn read(p: &mut Peer, d: Tid, a: &str) -> Option<Value> {
+    p.engine.get(&d, &ak(a)).unwrap()
+}
+
+fn valid(p: &Peer, c: &CommitId, d: &Tid, a: &str) -> bool {
+    p.engine.body_valid(c, d, &ak(a)).unwrap()
+}
+
+/// Demotes `holder` to write on `d` with a frontier listing `listed`.
+fn demote_to_write(lp: &mut LocalPeer, d: Tid, holder: Tid, listed: &[CommitId]) -> CommitId {
+    let f = ct::Frontier { commits: listed.iter().copied().collect() };
+    let c = set_edge(&mut lp.peers[0].engine, d, holder, Some(edge(Role::Write)), Some(f.to_value()));
+    lp.advance(1_000);
+    c
+}
+
+fn pack(p: &mut Peer, c: &CommitId) -> Package {
+    p.engine.package(c).unwrap().unwrap()
+}
+
+/// A node holding only the setup, then `order`.
+fn fresh(lp: &mut LocalPeer, base: &[Package], order: &[&Package]) -> Peer {
+    let now = lp.peers[0].engine.now();
+    let mut p = Peer::new(977, now).unwrap();
+    for x in base.iter().chain(order.iter().copied()) {
+        p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
+    }
+    p
+}
+
+fn base_of(lp: &mut LocalPeer) -> Vec<Package> {
+    let ids: Vec<CommitId> = lp.peers[0].engine.commit_ids().into_iter().collect();
+    let mut with_ts: Vec<(osis_base::Ts, Package)> = ids.iter().map(|c| (lp.peers[0].engine.header(c).unwrap().ts, pack(&mut lp.peers[0], c))).collect();
+    with_ts.sort_by_key(|x| x.0);
+    with_ts.into_iter().map(|x| x.1).collect()
+}
+
+// spec/commits.md §5: a writer's node fills the required retention over the schema's or untyped
+// default, refuses another, and the longest prefix governs; a delta past that is invalid at
+// every node, its author's included, and the same write with the required retention or outside
+// the prefix applies
+#[test]
+fn delta_with_other_retention_invalid_spec_commits_5() {
+    let (mut lp, d) = setup(301);
+    require(&mut lp, 0, d, &rules(&[("t:msgs:", permanent()), ("t:msgs:free", Retention::default())]));
+    lp.sync_all().unwrap();
+    // filled
+    let mut m = Mutation::new();
+    m.set(d, &ak(MSGS), &s("filled")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    let h = lp.peers[1].engine.header(&c).unwrap();
+    assert_eq!(h.aspects.iter().find(|a| a.ak.as_str() == MSGS).unwrap().retention, permanent());
+    lp.advance(1_000);
+    // refused: another retention, an expiry
+    let mut m = Mutation::new();
+    m.set(d, &ak(MSGS), &s("refused")).unwrap();
+    m.retention(d, &ak(MSGS), junk()).unwrap();
+    assert!(lp.peers[1].commit(m).is_err());
+    let mut m = Mutation::new();
+    m.set(d, &ak(MSGS), &s("refused")).unwrap();
+    m.expires(d, &ak(MSGS), WallMs(lp.peers[1].engine.now().0 + 60_000)).unwrap();
+    assert!(lp.peers[1].commit(m).is_err());
+    lp.sync_all().unwrap();
+    // past the writer's check
+    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "bad");
+    // an expiry the rule does not name breaks it too
+    let k = ak(MSGS);
+    let mut m = Mutation::new();
+    m.set(d, &k, &s("expiring")).unwrap();
+    m.retention(d, &k, permanent()).unwrap();
+    m.expires(d, &k, WallMs(lp.peers[1].engine.now().0 + 3_600_000)).unwrap();
+    let exp = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    // longest prefix; outside every prefix
+    let free = hostile(&mut lp, 1, d, "t:msgs:free.0", Retention::default(), "free");
+    let other = hostile(&mut lp, 1, d, "t:other.0", junk(), "other");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let p = &mut lp.peers[i];
+        assert!(!valid(p, &bad, &d, MSGS), "{i}");
+        assert!(!valid(p, &exp, &d, MSGS), "{i}");
+        assert_eq!(read(p, d, MSGS), Some(s("filled")), "{i}");
+        assert_eq!(read(p, d, "t:msgs:free.0"), Some(s("free")), "{i}: {free:?}");
+        assert_eq!(read(p, d, "t:other.0"), Some(s("other")), "{i}: {other:?}");
+    }
+}
+
+// spec/commits.md §5: the empty prefix governs every aspect the rule can govern; compaction
+// snapshots, fixed-retention aspects and non-durable aspects answer to none
+#[test]
+fn exempt_deltas_spec_commits_5() {
+    let (mut lp, d) = setup(303);
+    let bob = lp.peers[1].engine.tid();
+    let a = ak("t:kept.0");
+    let mut m = Mutation::new();
+    m.set(d, &a, &s("before")).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    require(&mut lp, 0, d, &rules(&[("", permanent())]));
+    lp.sync_all().unwrap();
+    // a compaction snapshot is `writer` whatever is required
+    let snap = lp.peers[0].engine.compaction_snapshot(&d, &a).unwrap().unwrap();
+    lp.advance(1_000);
+    assert_eq!(lp.peers[0].engine.header(&snap).unwrap().aspects[0].retention.by, PurgeBy::Writer);
+    // role-class: a grant and its boxes
+    set_edge(&mut lp.peers[0].engine, d, bob, Some(edge(Role::Admin)), None);
+    lp.advance(1_000);
+    // created.0: a new thing owned by D carries it under D's rule? its own thing has no rule
+    let eph = ak("t:typing.0~");
+    let mut m = Mutation::new();
+    m.set(d, &eph, &s("typing")).unwrap();
+    lp.peers[0].engine.write(m).unwrap();
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let p = &mut lp.peers[i];
+        assert!(valid(p, &snap, &d, "t:kept.0"), "{i}: the snapshot");
+        assert_eq!(read(p, d, "t:kept.0"), Some(s("before")), "{i}");
+        assert_eq!(p.engine.roster(&d).get(&bob).map(|e| e.role), Some(Role::Admin), "{i}");
+    }
+    assert_eq!(read(&mut lp.peers[0], d, "t:typing.0~"), Some(s("typing")));
+    // role-class: `moved.0`, written by the move, is outside the rule
+    let mut m = Mutation::new();
+    m.set(d, &ct::MOVED, &bob).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    lp.sync_all().unwrap();
+    for i in 1..3 {
+        assert_eq!(read(&mut lp.peers[i], d, "moved.0"), Some(Value::Tid(bob)), "{i}");
+    }
+    // `created.0` of a thing whose owner's rule says otherwise: it has its own fixed retention
+    let mut m = Mutation::new();
+    let child = lp.peers[0].engine.new_thing(&mut m, d);
+    m.set(child, &REG, &s("child")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    assert_eq!(lp.peers[0].engine.body_valid(&c, &child, &ak("created.0")), Some(true));
+}
+
+// spec/commits.md §5: `required.0^` has `created.0`'s fixed retention, is never snapshotted,
+// imported or undone, and is written whole
+#[test]
+fn setting_itself_fixed_spec_commits_5() {
+    assert_eq!(fixed_retention("required.0^"), fixed_retention("created.0"));
+    let (mut lp, d) = setup(305);
+    let c = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    assert_eq!(Some(h.aspects.iter().find(|a| a.ak.as_str() == "required.0^").unwrap().retention), fixed_retention("created.0"));
+    let a = ak("required.0^");
+    assert!(lp.peers[0].engine.compaction_snapshot(&d, &a).is_err(), "never compacted");
+    // a partial write would say something else alone
+    let mut m = Mutation::new();
+    m.op(d, &ct::REQUIRED, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("t:x"))], op: osis_crdt::Op::Set(Required::new(permanent(), None).to_value()) }).unwrap();
+    assert!(lp.peers[0].commit(m).is_err(), "a partial write refused");
+    // `set` writes the whole value, so the delta alone reads it
+    let c2 = require(&mut lp, 0, d, &rules(&[("t:", permanent()), ("t:y", Retention::default())]));
+    let sets = lp.peers[0].engine.core.ix.required.get(&d).unwrap();
+    assert_eq!(sets.iter().find(|x| x.0.commit == c2).unwrap().1.len(), 2);
+    // an undo of it writes nothing on it
+    let mut m = Mutation::new();
+    m.undo(c2);
+    if let Ok(Some(u)) = lp.peers[0].commit(m) {
+        let h = lp.peers[0].engine.header(&u).unwrap();
+        assert!(h.aspects.iter().all(|a| a.ak.as_str() != "required.0^"));
+    }
+}
+
+// spec/permissions.md §5.2: a writer's `required.0^` is no setting: it binds nothing
+#[test]
+fn writers_setting_binds_nothing_spec_perm_5_2() {
+    let (mut lp, d) = setup(307);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    assert!(matches!(lp.peers[1].commit(m), Err(osis_node::Error::Permission { .. })));
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    hostile(&mut lp, 2, d, MSGS, junk(), "fine");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        assert_eq!(read(&mut lp.peers[i], d, MSGS), Some(s("fine")), "{i}");
+    }
+}
+
+// spec/permissions.md §5.2: a delta is judged by the setting in force at its key whichever
+// arrives first: a change arriving after the delta un-merges it; a write before the change (a
+// backdated one too) stands; a change after it re-judges nothing earlier
+#[test]
+fn judged_at_key_any_order_spec_perm_5_2() {
+    let (mut lp, d) = setup(311);
+    let base = base_of(&mut lp);
+    let before = hostile(&mut lp, 1, d, MSGS, junk(), "before");
+    // Alice's clock runs ahead, so a write Bob makes after her change is ordered before it: its
+    // key is what counts
+    let t = lp.peers[0].engine.now();
+    lp.peers[0].clock.set(WallMs(t.0 + 20_000));
+    let s1 = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let back = hostile(&mut lp, 1, d, "t:back.0", junk(), "back");
+    lp.advance(30_000);
+    let broke = hostile(&mut lp, 1, d, "t:after.0", junk(), "after");
+    let good = hostile(&mut lp, 1, d, "t:good.0", permanent(), "good");
+    let packs: Vec<Package> = [before, s1, back, broke, good].iter().map(|c| pack(&mut lp.peers[if *c == s1 { 0 } else { 1 }], c)).collect::<Vec<_>>();
+    let mut orders: Vec<Vec<usize>> = vec![vec![0, 1, 2, 3, 4], vec![4, 3, 2, 1, 0], vec![3, 0, 4, 1, 2], vec![2, 3, 1, 4, 0]];
+    orders.push(vec![1, 3, 0, 2, 4]);
+    let mut seen = BTreeSet::new();
+    for o in orders {
+        let order: Vec<&Package> = o.iter().map(|i| &packs[*i]).collect();
+        let mut p = fresh(&mut lp, &base, &order);
+        assert_eq!(read(&mut p, d, MSGS), Some(s("before")), "{o:?}");
+        assert_eq!(read(&mut p, d, "t:back.0"), Some(s("back")), "{o:?}");
+        assert_eq!(read(&mut p, d, "t:after.0"), None, "{o:?}");
+        assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")), "{o:?}");
+        seen.insert(valid(&p, &broke, &d, "t:after.0"));
+    }
+    assert_eq!(seen, BTreeSet::from([false]));
+}
+
+// A later change judges only later keys: raising to a stricter rule leaves earlier deltas; a
+// rule cleared frees later ones (spec/commits.md §5: immutable retention, nothing rewritten)
+#[test]
+fn change_judges_later_keys_only_spec_commits_5() {
+    let (mut lp, d) = setup(313);
+    require(&mut lp, 0, d, &rules(&[("t:", Retention::default())]));
+    let a = hostile(&mut lp, 1, d, "t:a.0", Retention::default(), "a");
+    let bad = hostile(&mut lp, 1, d, "t:bad.0", junk(), "bad");
+    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    let b = hostile(&mut lp, 1, d, "t:b.0", Retention::default(), "b");
+    require(&mut lp, 0, d, &RequiredRules::new());
+    let c = hostile(&mut lp, 1, d, "t:c.0", junk(), "c");
+    lp.sync_all().unwrap();
+    for i in 0..3 {
+        let p = &lp.peers[i];
+        assert!(valid(p, &a, &d, "t:a.0") && valid(p, &c, &d, "t:c.0"), "{i}");
+        assert!(!valid(p, &bad, &d, "t:bad.0") && !valid(p, &b, &d, "t:b.0"), "{i}");
+    }
+}
+
+// spec/permissions.md §5.1, §5.2: a demoted admin's change the frontier does not list falls, and
+// what it invalidated comes back, in either order; one the frontier lists stands
+#[test]
+fn demoted_admins_change_falls_unmerge_spec_perm_5_2() {
+    let (mut lp, d) = setup(317);
+    let carol = lp.peers[2].engine.tid();
+    let base = base_of(&mut lp);
+    // received by Alice: stands
+    let listed = require(&mut lp, 2, d, &rules(&[("t:listed", permanent())]));
+    sync(&mut lp, 2, 0);
+    // Alice has not received this one
+    let unseen = require(&mut lp, 2, d, &rules(&[("t:listed", permanent()), ("t:unseen", permanent())]));
+    let under_unseen = hostile(&mut lp, 1, d, "t:unseen.0", junk(), "kept");
+    let under_listed = hostile(&mut lp, 1, d, "t:listed.0", junk(), "gone?");
+    let demote = demote_to_write(&mut lp, d, carol, &[listed]);
+    // the newest valid setting is `listed` once `unseen` falls, so `t:listed` stays required
+    let packs: Vec<Package> = [listed, unseen, under_unseen, under_listed, demote].iter().map(|c| {
+        let from = if *c == listed || *c == unseen { 2 } else if *c == demote { 0 } else { 1 };
+        pack(&mut lp.peers[from], c)
+    }).collect();
+    for o in [vec![0usize, 1, 2, 3, 4], vec![4, 3, 2, 1, 0], vec![2, 3, 0, 4, 1], vec![1, 4, 0, 3, 2]] {
+        let order: Vec<&Package> = o.iter().map(|i| &packs[*i]).collect();
+        let mut p = fresh(&mut lp, &base, &order);
+        assert!(!valid(&p, &unseen, &d, "required.0^"), "{o:?}: the unlisted change falls");
+        assert!(valid(&p, &listed, &d, "required.0^"), "{o:?}: the listed one stands");
+        assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")), "{o:?}: back with the fallen rule");
+        assert_eq!(read(&mut p, d, "t:listed.0"), None, "{o:?}: still broken under the listed one");
+    }
+    // while the change stands the write is out: un-merge, then back on the demotion's arrival
+    let order = [&packs[1], &packs[0], &packs[2]];
+    let mut p = fresh(&mut lp, &base, &order);
+    assert_eq!(read(&mut p, d, "t:unseen.0"), None);
+    p.engine.ingest(&packs[4].bytes, packs[4].blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, "t:unseen.0"), Some(s("kept")));
+}
+
+// The whole judgment survives an open and a rebuild (`ix.required` persisted and re-derived)
+#[test]
+fn required_after_reopen_spec_commits_5() {
+    let (mut lp, d) = setup(319);
+    let c = require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "bad");
+    lp.sync_all().unwrap();
+    let want = format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d));
+    assert!(want.contains(&format!("{:?}", c)) || !want.is_empty());
+    lp.peers[2].restart(321).unwrap();
+    assert_eq!(format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d)), want);
+    assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
+    lp.peers[2].engine.rebuild_index().unwrap();
+    assert_eq!(format!("{:?}", lp.peers[2].engine.core.ix.required.get(&d)), want);
+    assert!(!valid(&lp.peers[2], &bad, &d, MSGS));
+}
+
+// spec/permissions.md §8: a delta received after the setting it breaks goes without a right; one
+// held before a (backdated) change stays, so the change takes nothing a node holds; when the
+// setting falls the dropped body is missing, as never received, and joins when it comes again
+#[test]
+fn broken_bodies_drop_without_right_spec_perm_8() {
+    let (mut lp, d) = setup(323);
+    let carol = lp.peers[2].engine.tid();
+    // Bob's clock runs ahead, so Carol's change, made after his write reached Alice and stamped
+    // below it, stands in for a backdated one: `old` breaks it, and Alice holds it already
+    let t = lp.peers[1].engine.now();
+    lp.peers[1].clock.set(WallMs(t.0 + 20_000));
+    let old = hostile(&mut lp, 1, d, "t:old.0", junk(), "old");
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    lp.sync_all().unwrap();
+    lp.advance(30_000);
+    assert!(!valid(&lp.peers[0], &old, &d, "t:old.0"), "invalid under the backdated setting");
+    assert_eq!(lp.peers[0].engine.drop_broken(None).unwrap(), Vec::<CommitId>::new(), "held before the setting: stays");
+    assert!(lp.peers[0].engine.body_not_dropped(&old, &d, &ak("t:old.0")));
+    // received after it: goes at a node with no right over it
+    let bad = hostile(&mut lp, 1, d, "t:bad.0", junk(), "bad");
+    lp.sync_all().unwrap();
+    // a valid delta never goes
+    let good = hostile(&mut lp, 1, d, "t:good.0", permanent(), "good");
+    lp.sync_all().unwrap();
+    assert!(lp.peers[0].engine.drop_broken(Some(&BTreeSet::from([good]))).unwrap().is_empty());
+    assert_eq!(lp.peers[0].engine.drop_broken(Some(&BTreeSet::from([bad]))).unwrap(), vec![bad]);
+    assert!(!lp.peers[0].engine.body_not_dropped(&bad, &d, &ak("t:bad.0")), "dropped, for breaking");
+    // the setting falls: valid, missing, nothing read; the body arrives again and joins
+    let pk = pack(&mut lp.peers[1], &bad);
+    let dem = demote_to_write(&mut lp, d, carol, &[]);
+    assert_eq!(lp.peers[0].engine.body_valid(&bad, &d, &ak("t:bad.0")), Some(true), "{dem:?}");
+    let digest = lp.peers[0].engine.index_digest();
+    let part = digest.commits.get(&bad).unwrap();
+    assert!(!part.missing.is_empty() && part.dropped.is_empty(), "missing, as never received: {:?} {:?}", part.missing, part.dropped);
+    assert_eq!(read(&mut lp.peers[0], d, "t:bad.0"), None);
+    lp.peers[0].engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    assert_eq!(read(&mut lp.peers[0], d, "t:bad.0"), Some(s("bad")));
+    assert_eq!(read(&mut lp.peers[0], d, "t:old.0"), Some(s("old")), "the held body back too");
+}
+
+// spec/sync.md §6, §7: a junk `nobody` body under a required retention leaves a member's node and
+// the host: no right holder exists for it, an admin deletes it by the label's delete key
+#[test]
+fn junk_leaves_nodes_and_host_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let t = net.item(a, g, g, "v1");
+    net.run();
+    let mut m = Mutation::new();
+    m.set(t, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(1_000);
+    // an ephemeral write carries no retention: it answers to no rule
+    net.eph_write(a, t, &ak("t:typing.0~"), s("typing"));
+    net.run();
+    assert_eq!(net.eph_read(b, t, "t:typing.0~"), Some(s("typing")));
+    let l = net.label(a);
+    let before = net.host_ids(host, &l).len();
+    let k = ak("t:junk.0");
+    let mut m = Mutation::new();
+    m.set(t, &k, &s("junk")).unwrap();
+    m.retention(t, &k, junk()).unwrap();
+    let c = net.engine(b).commit_hostile(m).unwrap().unwrap();
+    net.run();
+    net.advance(10_000);
+    net.run();
+    let k = ak("t:junk.0");
+    assert!(!net.engine(a).body_not_dropped(&c, &t, &k), "dropped at the admin's node");
+    assert!(!net.engine(b).body_not_dropped(&c, &t, &k), "dropped at the writer's own node");
+    assert_eq!(net.engine(a).get(&t, &ak("t:junk.0")).unwrap(), None);
+    assert_eq!(net.host_ids(host, &l).len(), before, "gone at the host");
+}
+
+// spec/permissions.md §5.2 (Acting): a setting by a node acting for another actor falls when its
+// author loses write on that actor, and every later delta on the thing is judged again, though
+// the thing's own timeline did not change
+#[test]
+fn setting_falls_through_acting_spec_perm_5_2() {
+    let (mut lp, d) = setup(331);
+    let (alice, carol) = (lp.peers[0].engine.tid(), lp.peers[2].engine.tid());
+    let mut m = Mutation::new();
+    let p = lp.peers[0].engine.new_thing(&mut m, alice);
+    m.set(p, &REG, &s("p")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    set_edge(&mut lp.peers[0].engine, p, carol, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.act_as(p);
+    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    let setting = lp.peers[2].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
+    lp.sync_all().unwrap();
+    assert!(!valid(&lp.peers[1], &bad, &d, MSGS), "broken while the setting stands");
+    // Alice has not listed it: Carol's standing on P goes, and the commit acting for P with it
+    set_edge(&mut lp.peers[0].engine, p, carol, None, Some(ct::Frontier::default().to_value()));
+    lp.sync_all().unwrap();
+    assert!(!valid(&lp.peers[1], &setting, &d, "required.0^"));
+    assert!(valid(&lp.peers[1], &bad, &d, MSGS), "back with the fallen setting");
+    assert_eq!(read(&mut lp.peers[1], d, MSGS), Some(s("junk")));
+}
+
+// spec/data-model.md §9: a move does not carry the setting: the copy's deltas answer to its own
+#[test]
+fn move_carries_no_setting_spec_perm_7() {
+    let (mut lp, d) = setup(337);
+    let alice = lp.peers[0].engine.tid();
+    let kept = hostile(&mut lp, 0, d, "t:m.0", Retention::default(), "kept");
+    require(&mut lp, 0, d, &rules(&[("t:", permanent())]));
+    lp.sync_all().unwrap();
+    let (m2, imports) = lp.peers[0].engine.move_thing(&d, alice).unwrap();
+    lp.advance(1_000);
+    assert!(!imports.is_empty(), "{kept:?}");
+    assert_eq!(read(&mut lp.peers[0], m2, "t:m.0"), Some(s("kept")));
+    assert_eq!(read(&mut lp.peers[0], m2, "required.0^"), None);
+    let free = hostile(&mut lp, 0, m2, "t:n.0", junk(), "free");
+    assert!(valid(&lp.peers[0], &free, &m2, "t:n.0"));
+}
+
+// spec/permissions.md §5.2: a `required.0^` delta arriving as a late part of a commit on two things
+// binds as one arriving whole: a part on another thing applied first, a part on this one later
+#[test]
+fn setting_as_late_part_spec_perm_5_2() {
+    let (mut lp, d) = setup(341);
+    let alice = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let other = lp.peers[0].engine.new_thing(&mut m, alice);
+    m.set(other, &REG, &s("other")).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let base = base_of(&mut lp);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    m.set(other, &REG, &s("beside")).unwrap();
+    let setting = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let whole = pack(&mut lp.peers[0], &setting);
+    let bad = hostile(&mut lp, 1, d, MSGS, junk(), "junk");
+    let broke = pack(&mut lp.peers[1], &bad);
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak.as_str() == "required.0^").unwrap();
+    part.parts.retain(|x| x.ai != ai);
+    let mut p = fresh(&mut lp, &base, &[]);
+    assert!(matches!(p.engine.ingest(&part.encode(), whole.blobs.clone()).unwrap(), osis_node::Ingested::Applied(_)), "applied without the part");
+    p.engine.ingest(&broke.bytes, broke.blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, MSGS), Some(s("junk")), "no setting held yet");
+    p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, MSGS), None, "bound once the part is held");
+    assert!(!valid(&p, &bad, &d, MSGS));
+}

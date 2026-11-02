@@ -120,7 +120,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     let own = h.form.own_source(h.author, *c);
     let mut deltas = Vec::new();
     for (ai, a) in h.aspects.iter().enumerate() {
-        if a.tid != *t || is_role_class(a.ak.as_str()) || a.ak.as_str() == "created.0" || a.expires.is_some() || !meta.valid_at(ai) || meta.dropped.contains_key(&ai) {
+        if a.tid != *t || osis_commit::retention::fixed_retention(a.ak.as_str()).is_some() || a.expires.is_some() || !meta.valid_at(ai) || meta.dropped.contains_key(&ai) {
             continue;
         }
         let carrier = carriers.get(&a.ak);

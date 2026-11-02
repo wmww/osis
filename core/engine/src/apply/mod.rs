@@ -1697,7 +1697,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }
-            if blob.header.kind.is_role() {
+            if blob.header.kind.is_role() || blob.header.aspects.iter().any(|a| a.ak.as_str() == osis_commit::retention::REQUIRED) {
                 bodies.push(blob);
             }
         }
@@ -1735,6 +1735,10 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             let b = blob;
             let parts = examine_stored(tx, &b, &id)?;
             validity::note_required(tx.core, &b.header, &id, &parts);
+            validity::note_required_rules(tx.core, &b.header, &id, &parts);
+            if !b.header.kind.is_role() {
+                continue;
+            }
             for (ai, _, d) in &parts {
                 if let (Some(a), Decoded::Delta(d)) = (b.header.aspects.get(*ai), d) {
                     match a.ak.as_str() {

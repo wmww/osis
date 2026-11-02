@@ -29,7 +29,7 @@ fn core_schema_parses_spec_data_model_9() {
     ] {
         assert!(aks.contains(&ak), "{ak}");
     }
-    assert_eq!(aks.len(), 21);
+    assert_eq!(aks.len(), 22);
     let holders = &s.aspects["roles.0"];
     assert_eq!(holders.retention.by, PurgeBy::Admin);
     assert_eq!(holders.retention.at_least.rel, Some(ROLE_KEEP_MS));

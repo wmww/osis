@@ -233,6 +233,54 @@ codec_struct! {
     #[derive(Clone, Debug, PartialEq, Eq)]
     pub struct Client { 0 secret_hash: [u8; 32], 1 until: Option<WallMs> }
 }
+impl Codec for osis_base::PurgeBy {
+    fn to_value(&self) -> Value {
+        rt::enum_value(*self as u64, None)
+    }
+    fn from_value(v: &Value) -> Result<osis_base::PurgeBy, PathError> {
+        match v {
+            Value::Enum(c, None) => usize::try_from(*c).ok().and_then(|c| [Self::Nobody, Self::Admin, Self::AuthorOrAdmin, Self::Writer, Self::Author].get(c).copied()).ok_or_else(|| rt::unknown_case(v)),
+            _ => Err(rt::unknown_case(v)),
+        }
+    }
+}
+codec_struct! {
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct RequiredBound { 0 abs: Option<u64>, 1 rel: Option<u64> }
+}
+codec_struct! {
+    /// One entry of `required.0^` (spec/commits.md §5): the retention and expiry a delta under
+    /// the entry's AK prefix must carry; `expires` as a duration from the write, none: no expiry.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    pub struct Required { 0 by: osis_base::PurgeBy, 1 at_least: RequiredBound, 2 at_most: RequiredBound, 3 expires: Option<u64> }
+}
+impl Required {
+    pub fn new(r: crate::Retention, expires: Option<u64>) -> Required {
+        let b = |x: crate::Bound| RequiredBound { abs: x.abs, rel: x.rel };
+        Required { by: r.by, at_least: b(r.at_least), at_most: b(r.at_most), expires }
+    }
+    pub fn retention(&self) -> crate::Retention {
+        let b = |x: RequiredBound| crate::Bound { abs: x.abs, rel: x.rel };
+        crate::Retention { by: self.by, at_least: b(self.at_least), at_most: b(self.at_most) }
+    }
+    /// The expiry a delta stamped at `wall` wall ms must carry (`None` when out of range: no
+    /// delta meets it).
+    pub fn expires_at(&self, wall: u64) -> Option<Option<u64>> {
+        match self.expires {
+            None => Some(None),
+            Some(d) => wall.checked_add(d).map(Some),
+        }
+    }
+}
+
+/// `required.0^`: by AK prefix.
+pub type RequiredRules = BTreeMap<String, Required>;
+
+/// The entry of `rules` governing `ak`: its longest prefix.
+pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Required> {
+    (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.get(p)))
+}
+
 codec_struct! {
     #[derive(Clone, Debug, Default, PartialEq, Eq)]
     pub struct Group { 0 items: BTreeSet<Tid>, 1 subgroups: BTreeSet<Tid> }
@@ -278,6 +326,8 @@ pub const SEEN: Aspect<Seen> = Aspect::new("seen.0", &CORE);
 pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
 /// `clients.0^`: by client actor.
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients.0^", &CORE);
+/// `required.0^`: whole-value writes; fixed retention (spec/commits.md §5).
+pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 /// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.
 pub const PLACED: Aspect<Group> = Aspect::new("placed.0~", &CORE);

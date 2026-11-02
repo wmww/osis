@@ -149,7 +149,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     for (ai, a) in h.aspects.iter().enumerate() {
         // a commit whose body was dropped cannot be undone (spec/commits.md §7); a thing it
         // created is deleted below instead
-        if m.dropped.contains_key(&ai) || !m.valid_at(ai) || a.ak.as_str() == "created.0" || made.contains(&a.tid) {
+        if m.dropped.contains_key(&ai) || !m.valid_at(ai) || a.ak.as_str() == "created.0" || a.ak.as_str() == osis_commit::retention::REQUIRED || made.contains(&a.tid) {
             continue;
         }
         let parts = crate::apply::held_parts(tx, &target, ai)?;
