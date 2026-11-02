@@ -537,6 +537,18 @@ fn stream_memory_child(arg: &str) {
     let node = crate::Source::node(osis_base::Tid::from_bytes([1; 15]));
     let snapshot = name == "snapshot";
     let cx = if snapshot { snap_cx() } else { DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: crate::CounterRange { lo: range[0], hi: range[1] }, kind: crate::DeltaKind::Writer } };
+    if let Some(old) = phase.strip_prefix("encode-").map(|x| x == "old") {
+        // the delta re-made, then encoded (the whole encoder or the streaming one)
+        let (d, cx) = big_map();
+        let delta = Delta { nonce: [0; 16], fragment: d };
+        let mut sink = Blobs::new(PageParams::FORMAT);
+        let _ = std::fs::write("/proc/self/clear_refs", "5");
+        let (start, t) = (rss_kib(), std::time::Instant::now());
+        let ok = if old { oracle::encode_delta(&delta, &cx, Some(&mut sink)) } else { crate::codec::encode_delta_in(&delta, &cx, Some(&mut sink)) };
+        assert_eq!(ok.unwrap(), read("delta"));
+        println!("MEM {phase} delta: peak {} KiB above start, {:?}", peak_kib().saturating_sub(start), t.elapsed());
+        return;
+    }
     let root = read(name);
     let src = Some(&mut pages as &mut dyn PageSource);
     let mut interner = Interner::new();
@@ -562,9 +574,20 @@ fn stream_memory_child(arg: &str) {
     println!("MEM {phase} {name}: peak {} KiB above start, {:?}; largest piece's approx_bytes {} KB", peak_kib().saturating_sub(start), t.elapsed(), piece_max / 1000);
 }
 
+/// A writer's delta creating a 10^5-key map, and its context.
+fn big_map() -> (Fragment, DeltaCtx) {
+    let node = crate::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let map = osis_base::Value::Map((0..100_000).map(|i| (osis_base::Value::Str(format!("key {i}")), osis_base::Value::Int(i))).collect());
+    let mut w = crate::Writer::new(crate::testutil::ts(1 << 20), node.clone(), 1);
+    let d = crate::create(&mut w, &crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), &map).unwrap();
+    (d, DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: w.range(), kind: crate::DeltaKind::Writer })
+}
+
 /// Memory per decode step of a 10^5-key map, as a writer's delta and as a snapshot (tier 2,
-/// run alone): the whole decode holds the whole map; the stream holds one page (`MEM` lines,
-/// with `--nocapture`).
+/// run alone): the whole decode holds the whole map; the stream holds one page; and of
+/// encoding the delta: the whole encoder (`codec::oracle`) holds every element's value and
+/// bytes and the collecting pass's tree, the streaming one a page (`MEM` lines, with
+/// `--nocapture`; peaks above the delta itself).
 #[test]
 #[ignore = "tier 2: memory, run alone"]
 fn stream_memory_big_map() {
@@ -573,11 +596,7 @@ fn stream_memory_big_map() {
     }
     let dir = std::env::temp_dir().join(format!("osis-stream-mem-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let node = crate::Source::node(osis_base::Tid::from_bytes([1; 15]));
-    let map = osis_base::Value::Map((0..100_000).map(|i| (osis_base::Value::Str(format!("key {i}")), osis_base::Value::Int(i))).collect());
-    let mut w = crate::Writer::new(crate::testutil::ts(1 << 20), node.clone(), 1);
-    let d = crate::create(&mut w, &crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), &map).unwrap();
-    let cx = DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: w.range(), kind: crate::DeltaKind::Writer };
+    let (d, cx) = big_map();
     let mut pages = Blobs::new(PageParams::FORMAT);
     let delta = encode_delta(&Delta { nonce: [0; 16], fragment: d.clone() }, &cx, Some(&mut pages)).unwrap();
     let snap = encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: d, frontiers: Frontiers::default() }, &snap_cx(), Some(&mut pages)).unwrap();
@@ -591,7 +610,8 @@ fn stream_memory_big_map() {
         std::fs::write(dir.join(format!("p{k}")), p).unwrap();
     }
     let mut peaks = std::collections::BTreeMap::new();
-    for (phase, name) in ["stream", "whole", "old"].into_iter().flat_map(|p| [(p, "delta"), (p, "snapshot")]) {
+    let steps = ["stream", "whole", "old"].into_iter().flat_map(|p| [(p, "delta"), (p, "snapshot")]);
+    for (phase, name) in steps.chain([("encode-new", "delta"), ("encode-old", "delta")]) {
         let out = std::process::Command::new(std::env::current_exe().unwrap())
             .args(["--ignored", "--exact", "tests_stream::stream_memory_big_map", "--nocapture"])
             .env("OSIS_STREAM_PHASE", format!("{phase}:{name}:{}", dir.display()))
@@ -609,6 +629,7 @@ fn stream_memory_big_map() {
     for name in ["delta", "snapshot"] {
         assert!(peaks[&("stream", name)] * 3 < peaks[&("whole", name)], "{peaks:?}");
     }
+    assert!(peaks[&("encode-new", "delta")] * 3 < peaks[&("encode-old", "delta")], "{peaks:?}");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

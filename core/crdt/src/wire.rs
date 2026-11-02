@@ -192,6 +192,9 @@ pub struct Enc<'p> {
     deferred: [Vec<Source>; 2],
     /// Check mode (`stream`): re-encoding a decoded delta against its own tables.
     pub(crate) check: Option<Box<Check>>,
+    /// The test oracle's whole paging (`codec::oracle`).
+    #[cfg(any(test, fuzzing))]
+    pub(crate) whole: bool,
 }
 
 /// One source appearance or a streamed position, in encoding order (`Check::log`).
@@ -344,6 +347,8 @@ impl<'p> Enc<'p> {
             defer: None,
             deferred: [Vec::new(), Vec::new()],
             check: None,
+            #[cfg(any(test, fuzzing))]
+            whole: false,
         }
     }
 

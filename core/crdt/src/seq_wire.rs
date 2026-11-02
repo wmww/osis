@@ -158,15 +158,21 @@ fn anchor(cx: &mut Enc, a: &Anchor) -> Value {
     }
 }
 
-/// The `[Run*]` array of `s` (before paging), runs in wire order.
-pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc) -> Result<Vec<Value>, Error> {
+/// The runs of `s` in wire order, into `p` as they close.
+pub(crate) fn encode_elems(s: &Seq, cx: &mut Enc, p: &mut crate::codec::Pager) -> Result<(), Error> {
     let mut out = Vec::new();
     let mut runs = Runs::new(s.text);
     for (k, e) in cx.sorted(s.elems()) {
         runs.push(k, e, cx, &mut out)?;
+        for v in out.drain(..) {
+            p.push(cx.sink(), v)?;
+        }
     }
     runs.close(cx, &mut out)?;
-    Ok(out)
+    for v in out {
+        p.push(cx.sink(), v)?;
+    }
+    Ok(())
 }
 
 /// One run of `parts`; `content`: its list content, encoded.

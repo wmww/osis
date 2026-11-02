@@ -11,7 +11,7 @@
 //! counter). Memory: the skeleton, one decoded page, its encoding, and trackers sized by the
 //! input (the tables, the leaf links, a writer's claimed counters).
 
-use crate::codec::{absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, link_groups, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
+use crate::codec::{Pager, absorbed_value, canonical, check_root, decode_entries, decode_elem_items, decode_fields, decode_fragment, derived_ok, encode_elem, encode_entry, encode_field, encode_fragment, fetch_page, links, nonce, prune_stable, root_tables, snapshot_tail, LIMITS};
 use crate::error::Error;
 use crate::fragment::{Bag, Eid, Encoding, Entry, Enum, Fragment, Map, Meta, Set, Struct};
 use crate::page::{PageParams, PageSource};
@@ -20,8 +20,8 @@ use crate::seq::Seq;
 use crate::seq_wire::Runs;
 use crate::stamp::{Dot, Interner, Stamp, max_opt};
 use crate::wire::{Dec, DeltaCtx, Enc, Ev, Frontiers, NONCE_LEN, Track, as_array};
-use osis_base::{CommitId, PageCutter, Tid, Value};
-use std::collections::{BTreeMap, VecDeque};
+use osis_base::{CommitId, Tid, Value};
+use std::collections::BTreeMap;
 
 /// A paged collection of the root left for streaming: its link list as written, its encoding,
 /// its fragment nesting.
@@ -203,8 +203,10 @@ fn prune_page(f: &Fragment, e: Option<&Stamp>, carry: &mut Vec<(Eid, Entry)>) ->
     }
 }
 
-/// Streams one paged position: every leaf page decoded, handed over and re-encoded; then the
-/// link structure the encoder would write over those leaves (spec/wire.md §6).
+/// Streams one paged position: every leaf page decoded, handed over and re-encoded; the
+/// re-encoding, its pages put to the check's `Replay` (which holds the input's pages: a page the
+/// encoder cuts differently is not there), must give the position's link list as written
+/// (spec/wire.md §6: paged, leaf order, link pages).
 fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Option<&Stamp>, each: &mut dyn FnMut(Raw) -> Result<(), Error>) -> Result<(), Error> {
     let params = dec.pages.as_ref().map_or(PageParams::FORMAT, |p| p.params());
     if osis_base::encode(&d.top).len() > params.target {
@@ -212,13 +214,13 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
     }
     let top = links(as_array(&d.top)?)?.unwrap_or_default();
     let mut out = Out::new(d.enc, params);
-    // per top link: a leaf (None) or a link page's links
-    let mut shape: Vec<Option<Vec<Value>>> = Vec::with_capacity(top.len());
-    let mut leaves: Vec<Value> = Vec::new();
     let mut carry = Vec::new();
     let mut leaf = |dec: &mut Dec, enc: &mut Enc, page: Value, bytes: Vec<u8>, l: osis_base::Link| -> Result<(), Error> {
-        leaves.push(Value::Link(l));
-        out.queue.push_back(bytes);
+        let fetched = std::mem::take(&mut dec.fetched);
+        if let Some(c) = enc.check.as_mut() {
+            c.replay.extend(vec![(bytes, l)]);
+            c.replay.extend(fetched);
+        }
         dec.depth = d.depth;
         let inner = decode_page(dec, &page, d.enc);
         dec.depth = 0;
@@ -237,14 +239,15 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
             _ => None,
         };
         let Some(inner) = inner else {
-            shape.push(None);
             leaf(dec, enc, page, bytes, *l)?;
             continue;
         };
         if inner.len() > params.fanout {
             return Err(Error::Malformed("link page above the fan-out"));
         }
-        shape.push(Some(inner.iter().map(|x| Value::Link(*x)).collect()));
+        if let Some(c) = enc.check.as_mut() {
+            c.replay.extend(vec![(bytes, *l)]);
+        }
         for l in &inner {
             let (page, bytes) = fetch_page(dec, l)?;
             if let Value::List(items) = &page
@@ -255,15 +258,7 @@ fn position(dec: &mut Dec, enc: &mut Enc, d: &Deferred, wrap: &WrapPath, e: Opti
             leaf(dec, enc, page, bytes, *l)?;
         }
     }
-    out.finish(enc)?;
-    let flat = osis_base::encode(&Value::List(leaves.clone())).len() <= params.target;
-    let ok = if flat {
-        shape.iter().all(Option::is_none)
-    } else {
-        let groups = link_groups(&leaves, params.fanout);
-        groups.len() == shape.len() && groups.iter().zip(&shape).all(|(g, s)| s.as_deref() == Some(*g))
-    };
-    if !ok {
+    if out.finish(enc)? != d.top {
         return Err(NOT_CANONICAL);
     }
     Ok(())
@@ -310,19 +305,11 @@ enum Last {
     Field(u64),
 }
 
-/// Re-encodes a streamed position element by element and cuts pages as the encoder does,
-/// comparing each with the input's next leaf page.
+/// Re-encodes a streamed position element by element (`Pager`), sequence runs carried across
+/// pages, checking that elements ascend across pages.
 struct Out {
-    params: PageParams,
     map: bool,
-    cutter: PageCutter,
-    items: Vec<Value>,
-    fields: Vec<(Value, Value)>,
-    /// Elements and their bytes in all (whether paging was due, §8).
-    count: usize,
-    size: usize,
-    /// Leaf pages decoded, not yet compared.
-    queue: VecDeque<Vec<u8>>,
+    pager: Pager,
     last: Option<Last>,
     runs: Option<Runs>,
 }
@@ -331,7 +318,7 @@ impl Out {
     fn new(e: Encoding, params: PageParams) -> Out {
         let runs = matches!(e, Encoding::List | Encoding::Text).then(|| Runs::new(e == Encoding::Text));
         let map = matches!(e, Encoding::Struct | Encoding::Enum);
-        Out { params, map, cutter: PageCutter::new(params.cut), items: Vec::new(), fields: Vec::new(), count: 0, size: 0, queue: VecDeque::new(), last: None, runs }
+        Out { map, pager: Pager::new(map, params), last: None, runs }
     }
 
     /// Elements must ascend across pages (within one, the re-encode sorts them): `next`, the
@@ -363,7 +350,7 @@ impl Out {
                 }
                 for (d, e) in &elems {
                     let v = encode_elem(enc, d, e)?;
-                    self.emit(v)?;
+                    self.emit(enc, v)?;
                 }
                 elems.last().map(|(d, _)| Last::Dot((*d).clone()))
             }
@@ -374,7 +361,7 @@ impl Out {
                 }
                 for (id, e) in &entries {
                     let v = encode_entry(enc, id, e)?;
-                    self.emit(v)?;
+                    self.emit(enc, v)?;
                 }
                 entries.last().map(|(id, _)| Last::Entry((*id).clone()))
             }
@@ -384,7 +371,7 @@ impl Out {
                 }
                 for (k, x) in fields {
                     let (k, v) = encode_field(enc, *k, x, Step::Field)?;
-                    self.emit_field(k, v)?;
+                    self.pager.push_field(enc.sink(), k, v).map_err(cut)?;
                 }
                 fields.keys().next_back().map(|k| Last::Field(*k))
             }
@@ -398,7 +385,7 @@ impl Out {
                 for (k, e) in &recs {
                     runs.push(k, e, enc, &mut out)?;
                     for v in out.drain(..) {
-                        self.emit(v)?;
+                        self.emit(enc, v)?;
                     }
                 }
                 self.runs = Some(runs);
@@ -413,51 +400,28 @@ impl Out {
         Ok(())
     }
 
-    fn emit(&mut self, v: Value) -> Result<(), Error> {
-        let b = osis_base::encode(&v);
-        self.count += 1;
-        self.size = self.size.saturating_add(b.len());
-        self.cutter.feed(&b);
-        self.items.push(v);
-        if self.cutter.end_element() { self.page() } else { Ok(()) }
+    fn emit(&mut self, enc: &mut Enc, v: Value) -> Result<(), Error> {
+        self.pager.push(enc.sink(), v).map_err(cut)
     }
 
-    fn emit_field(&mut self, k: Value, v: Value) -> Result<(), Error> {
-        let (a, b) = (osis_base::encode(&k), osis_base::encode(&v));
-        self.count += 1;
-        self.size = self.size.saturating_add(a.len() + b.len());
-        self.cutter.feed(&a);
-        self.cutter.feed(&b);
-        self.fields.push((k, v));
-        if self.cutter.end_element() { self.page() } else { Ok(()) }
-    }
-
-    /// Closes the page written so far; it must be the input's next leaf page.
-    fn page(&mut self) -> Result<(), Error> {
-        let whole = if self.map { Value::Map(std::mem::take(&mut self.fields).into_iter().collect()) } else { Value::List(std::mem::take(&mut self.items)) };
-        match self.queue.pop_front() {
-            Some(b) if b == osis_base::encode(&whole) => Ok(()),
-            _ => Err(NOT_CANONICAL),
-        }
-    }
-
-    fn finish(&mut self, enc: &mut Enc) -> Result<(), Error> {
+    /// The position as the encoder writes it.
+    fn finish(mut self, enc: &mut Enc) -> Result<Value, Error> {
         if let Some(mut runs) = self.runs.take() {
             let mut out = Vec::new();
             runs.close(enc, &mut out)?;
             for v in out {
-                self.emit(v)?;
+                self.emit(enc, v)?;
             }
         }
-        if !self.items.is_empty() || !self.fields.is_empty() {
-            self.page()?;
-        }
-        // paged iff the plain array is above the target (array and map heads alike)
-        let plain = crate::codec::array_head(self.count).saturating_add(self.size);
-        if !self.queue.is_empty() || plain <= self.params.target {
-            return Err(NOT_CANONICAL);
-        }
-        Ok(())
+        self.pager.finish(enc.sink()).map_err(cut)
+    }
+}
+
+/// A page the re-encode cuts that the input does not have (`Replay` has no such page).
+fn cut(e: Error) -> Error {
+    match e {
+        Error::Page(_) => NOT_CANONICAL,
+        e => e,
     }
 }
 
