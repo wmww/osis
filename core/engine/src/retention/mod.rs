@@ -26,6 +26,7 @@ mod deaths;
 #[cfg(test)]
 mod oracle;
 pub(crate) mod forget;
+pub(crate) mod memory;
 
 pub(crate) use deaths::{any_bounded, load_deaths_due, mark_deaths_due, mark_if_bounded, note_copies, note_deaths, rejudge_deaths, settle_due};
 
@@ -524,8 +525,12 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<(Ti
 }
 
 /// Holds delta `ai` of `c` value-less (`make_valueless`) and drops its body: at expiry, or
-/// purged.
+/// purged. A memory delta vanishes whole instead (`memory::vanish`).
 fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    if tx.is_memory_commit(c) {
+        changed.extend(memory::vanish(tx, c, ai)?);
+        return Ok(());
+    }
     if let Some(k) = make_valueless(tx, c, ai)? {
         changed.insert(k);
     }
@@ -726,6 +731,10 @@ pub(crate) fn on_apply(tx: &mut Tx<'_>, id: &CommitId, changed: &mut BTreeSet<(T
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, &(0..h.aspects.len()).collect(), &mut purged)?;
+    if h.ephemeral.is_some() {
+        let aspects = h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect();
+        changed.extend(memory::drop_superseded(tx, &aspects, Some(h.author), Some(id))?);
+    }
     for item in &h.purge {
         let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*item.tid(), item.ak().clone())).map(|s| s.iter().map(|x| x.1).collect()).unwrap_or_default();
         for c in held {
@@ -752,6 +761,10 @@ pub(crate) fn on_late(tx: &mut Tx<'_>, id: &CommitId, ais: &BTreeSet<usize>, cha
     let Some(h) = tx.core.ix.commits.get(id).map(|m| m.header.clone()) else { return Ok(()) };
     let mut purged = BTreeSet::new();
     on_parts(tx, id, &h, ais, &mut purged)?;
+    if h.ephemeral.is_some() {
+        let aspects = ais.iter().filter_map(|ai| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
+        changed.extend(memory::drop_superseded(tx, &aspects, Some(h.author), Some(id))?);
+    }
     for ai in ais.iter().copied() {
         if valueless(tx.core, id, ai) && tx.core.ix.commits.get(id).is_some_and(|m| !m.dropped.contains_key(&ai)) {
             expire(tx, id, ai, &mut purged)?;
@@ -857,6 +870,7 @@ impl Engine {
                         // judged again: liveness may have changed since the timer was set
                         _ => check_at_most(tx, &c, ai)?,
                     }
+                    memory::forget_if_spent(tx, &c)?;
                     for (t, a) in &ch {
                         tx.core.mark_aspect_changed(t, a);
                     }

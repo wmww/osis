@@ -1225,27 +1225,37 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     if rebuild {
         for (tid, ak) in &flipped {
-            let k = (*tid, ak.clone());
-            // a snapshot turned invalid gives nothing: what it gave goes (its writer no longer
-            // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
-            // and with it its vouching
-            let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
-            if rose.contains(&k) || !snaps.is_empty() {
-                let _s = crate::costs::span("rejudge: rebuild");
-                let mut gone: Vec<Owned> = Vec::new();
-                for s in &snaps {
-                    gone.extend(given_by(tx, tid, ak, s)?);
+            // a memory aspect's rebuild is memory work, whatever transaction re-judges it
+            let memory = tx.txn.is_memory_aspect(tid, ak);
+            tx.in_class(memory, |tx| {
+                let k = (*tid, ak.clone());
+                // a snapshot turned invalid gives nothing: what it gave goes (its writer no longer
+                // vouches for it, spec/permissions.md §5.2; other valid carriers give theirs back),
+                // and with it its vouching
+                let snaps: Vec<CommitId> = fell.get(&k).into_iter().flatten().filter(|(c, _)| tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction())).map(|x| x.0).collect();
+                if rose.contains(&k) || !snaps.is_empty() {
+                    let _s = crate::costs::span("rejudge: rebuild");
+                    let mut gone: Vec<Owned> = Vec::new();
+                    for s in &snaps {
+                        gone.extend(given_by(tx, tid, ak, s)?);
+                    }
+                    // parts dropped under its cover alone are missing again, their writes gone
+                    if !snaps.is_empty() {
+                        gone.extend(crate::retention::uncover(tx, tid, ak)?);
+                    }
+                    super::atomic::rebuild_without(tx, tid, ak, &gone)?;
+                } else {
+                    let _s = crate::costs::span("rejudge: unmerge");
+                    super::atomic::unmerge_fallen(tx, tid, ak, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
                 }
-                // parts dropped under its cover alone are missing again, their writes gone
-                if !snaps.is_empty() {
-                    gone.extend(crate::retention::uncover(tx, tid, ak)?);
-                }
-                super::atomic::rebuild_without(tx, tid, ak, &gone)?;
-            } else {
-                let _s = crate::costs::span("rejudge: unmerge");
-                super::atomic::unmerge_fallen(tx, tid, ak, fell.get(&k).map(Vec::as_slice).unwrap_or_default())?;
-            }
-            crate::retention::mark_deaths_due(tx, tid, ak)?;
+                crate::retention::mark_deaths_due(tx, tid, ak)
+            })?;
+        }
+        // memory parts turned valid may supersede held ones (spec/sync.md §9)
+        let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
+        if !memory.is_empty() {
+            let gone = tx.in_class(true, |tx| crate::retention::memory::drop_superseded(tx, &memory, None, None))?;
+            flipped.extend(gone);
         }
     }
     super::keys::rebuild_keysets(tx, &keyset_flips)?;

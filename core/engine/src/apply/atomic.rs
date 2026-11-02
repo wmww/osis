@@ -609,7 +609,8 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     for thing in rosters {
         tx.core.events.queue(Event::Roster { thing });
     }
-    Ok(())
+    // a memory commit expired or superseded on arrival is not kept
+    crate::retention::memory::forget_if_spent(tx, &id)
 }
 
 /// A delta invalid on arrival whose part is not held (it may never come, or come late), on
@@ -794,7 +795,8 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     if !flipped.is_empty() {
         tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
     }
-    Ok(())
+    // a memory commit whose late parts went at once (expired, superseded)
+    crate::retention::memory::forget_if_spent(tx, id)
 }
 
 /// The late parts of role commit `id` judged with the parts held before (a grant's `roles.0`
