@@ -534,3 +534,74 @@ fn self_removals_drop_per_group_spec_permissions_3() {
     let status = net.sync(b).label_status();
     assert!(status.iter().any(|l| l.group == g2 && l.leaving) && !status.iter().any(|l| l.group == g1 && l.leaving));
 }
+
+// spec/permissions.md §3 (a self-removal drops once placed): an actor S both left groups hold
+// (a subgroup of each) is read through either; leaving one keeps S, leaving both drops S only
+// once both removals are placed.
+#[test]
+fn self_removal_shared_subgroup_spec_permissions_3() {
+    let mut net = Net::new();
+    let h1 = net.add_host();
+    let h2 = net.add_host();
+    let a = net.node(1, &[h1, h2]);
+    let b = net.node(2, &[h1, h2]);
+    let g1 = net.group_seeded(a, &[(b, Role::Write)], vec![net.hosts[h1].address.clone()], 1);
+    let g2 = net.group_seeded(a, &[(b, Role::Write)], vec![net.hosts[h2].address.clone()], 2);
+    let at = net.tid(a);
+    // S: listed in both groups, each a reader of it, with secrets of its own
+    let sub = net.item(a, g1, at, "s");
+    let e = net.engine(a);
+    let mut items = e.get_typed(&g2, &ct::GROUP).unwrap().unwrap_or_default();
+    items.items.insert(sub);
+    let mut m = Mutation::new();
+    m.set(g2, &ct::GROUP, &items).unwrap();
+    e.commit(m).unwrap();
+    set_edge(e, sub, g1, Role::Read);
+    set_edge(e, sub, g2, Role::Read);
+    let rs = recipients_of(e, &[(at, Role::Admin), (g1, Role::Read), (g2, Role::Read)]);
+    rotation(e, sub, &rs, 3, false);
+    net.write(a, sub, "three");
+    let t1 = net.item(a, g1, g1, "one");
+    let t2 = net.item(a, g2, g2, "two");
+    let t3 = sub;
+    net.feed(a, Event::Local);
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert_eq!((net.read(b, t1), net.read(b, t2), net.read(b, t3)), (Some(s("one")), Some(s("two")), Some(s("three"))));
+    let bt = net.tid(b);
+    net.set_online(b, false);
+    let leave = |net: &mut Net, g| {
+        let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(b).demote(&g, &d).unwrap();
+        let acts = net.sync(b).carry_out(done).unwrap();
+        net.actions(b, acts);
+    };
+    leave(&mut net, g1);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(!net.engine(a).roster(&g1).contains_key(&bt));
+    assert_eq!((net.read(b, t1), net.read(b, t2), net.read(b, t3)), (None, Some(s("two")), Some(s("three"))), "S still read through g2");
+    net.set_online(b, false);
+    leave(&mut net, g2);
+    net.restart_host_with(h2, osis_host::HostPolicy { cap_entries: 0, ..osis_host::HostPolicy::default() });
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(net.engine(a).roster(&g2).contains_key(&bt), "h2 refused the removal");
+    assert_eq!((net.read(b, t2), net.read(b, t3)), (Some(s("two")), Some(s("three"))), "S waits for g2's removal");
+    net.restart_host_with(h2, osis_host::HostPolicy::default());
+    for _ in 0..3 {
+        net.run();
+        net.advance(66_000);
+    }
+    assert!(!net.engine(a).roster(&g2).contains_key(&bt));
+    assert_eq!((net.read(b, t2), net.read(b, t3)), (None, None), "both placed: all dropped");
+    assert!(net.sync(b).leaving().next().is_none());
+}
