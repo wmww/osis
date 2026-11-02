@@ -1,0 +1,2 @@
+- `cargo test --workspace --test it required::` prints a `test result` line per crate binary; a grep for `^test result` needs reading all of them (the node one is the only non-empty).
+- A rebase over another schema change conflicts in core/schema/tests/gen/core.rs and vectors/schema/core.vec at each commit regenerating them: take main's side, regenerate at the end (OSIS_REGEN_VECTORS=1 cargo test -p osis-schema --test it; cargo run -p osis-vectors --bin gen-vectors). My gate started in a rebase's conflict state because I chained it without reading the result.

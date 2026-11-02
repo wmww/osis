@@ -13,7 +13,7 @@ use osis_node::Mutation;
 use osis_schema::core_types::{self as ct, Required, RequiredRules};
 use osis_schema::{Bound, Codec, Retention};
 use osis_base::{Value, WallMs};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 const FOREVER: Option<u64> = Some(osis_commit::FOREVER);
 fn permanent() -> Retention {
@@ -843,4 +843,130 @@ fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
         set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), Some(ct::Frontier::default().to_value()));
         assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("abc")), "reopen {reopen}");
     }
+}
+
+// spec/commits.md §4: a setting signed by one not a possible admin counts nothing as held, so a
+// writer's setting plus a host hiding a part shows no commit part by part; nor does naming an
+// admin as actor save it. Both go without a right.
+#[test]
+fn writers_setting_splits_no_commit_spec_commits_4() {
+    let (mut lp, d) = setup(433);
+    let alice = lp.peers[0].engine.tid();
+    let base = base_of(&mut lp);
+    let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+    let plain = rules(&[("t:bad", permanent())]);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &plain).unwrap();
+    let s1 = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.act_as(alice);
+    m.set(d, &ct::REQUIRED, &plain).unwrap();
+    let s2 = lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(d, &bad, &s("bad")).unwrap();
+    m.set(d, &good, &s("good")).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let settings = [pack(&mut lp.peers[1], &s1), pack(&mut lp.peers[1], &s2)];
+    let whole = pack(&mut lp.peers[0], &c);
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak == bad).unwrap();
+    part.parts.retain(|x| x.ai != ai);
+    let part = part.encode();
+    let mut p = fresh(&mut lp, &base, &[]);
+    p.engine.set_syncing(d, true).unwrap();
+    for x in &settings {
+        p.engine.ingest(&x.bytes, x.blobs.clone()).unwrap();
+    }
+    p.engine.ingest(&part, whole.blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, "t:good.0"), None, "waits for what the host hides");
+    assert_eq!(p.engine.drop_broken(None).unwrap().into_iter().collect::<BTreeSet<_>>(), BTreeSet::from([s1, s2]));
+    assert!(p.engine.core.ix.required.get(&d).is_none());
+    p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+    assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")));
+    assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")));
+}
+
+// spec/commits.md §4, spec/permissions.md §8: a setting's signer whose grant falls is still a
+// possible admin. Which parts show is a function of what is held in every order, a late grant
+// included; a pass dropping what it may drops no setting that counts.
+#[test]
+fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
+    let (mut lp, d) = setup(437);
+    let (bob, carol) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let base = base_of(&mut lp);
+    let (bad, good) = (ak("t:bad.0"), ak("t:good.0"));
+    let g = set_edge(&mut lp.peers[2].engine, d, bob, Some(edge(Role::Admin)), None);
+    lp.advance(1_000);
+    lp.sync_all().unwrap();
+    let s1 = require(&mut lp, 1, d, &rules(&[("t:bad", permanent())]));
+    let mut m = Mutation::new();
+    m.set(d, &bad, &s("bad")).unwrap();
+    m.retention(d, &bad, junk()).unwrap();
+    m.set(d, &good, &s("good")).unwrap();
+    let c = lp.peers[0].engine.commit_hostile(m).unwrap().unwrap();
+    lp.advance(1_000);
+    let dem = demote_to_write(&mut lp, d, carol, &[]);
+    let (grant, setting, whole, demotion) = (pack(&mut lp.peers[2], &g), pack(&mut lp.peers[1], &s1), pack(&mut lp.peers[0], &c), pack(&mut lp.peers[0], &dem));
+    let mut part = osis_commit::CommitBlob::decode(&whole.bytes).unwrap();
+    let ai = part.header.aspects.iter().position(|a| a.ak == bad).unwrap();
+    part.parts.retain(|x| x.ai != ai);
+    let part = part.encode();
+    let items = [(grant.bytes.clone(), grant.blobs.clone()), (setting.bytes.clone(), setting.blobs.clone()), (part, whole.blobs.clone()), (demotion.bytes.clone(), demotion.blobs.clone())];
+    let mut orders = Vec::new();
+    for a in 0..4 {
+        for b in (0..4).filter(|b| *b != a) {
+            for x in (0..4).filter(|x| *x != a && *x != b) {
+                orders.push([a, b, x, 6 - a - b - x]);
+            }
+        }
+    }
+    assert_eq!(orders.len(), 24);
+    for passes in [false, true] {
+        for order in &orders {
+            // a pass before the grant is held may drop the setting: it binds nothing, this is about the rest
+            if passes && order.iter().position(|i| *i == 1) < order.iter().position(|i| *i == 0) {
+                continue;
+            }
+            let mut p = fresh(&mut lp, &base, &[]);
+            p.engine.set_syncing(d, true).unwrap();
+            for (n, i) in order.iter().enumerate() {
+                let (x, b) = &items[*i];
+                p.engine.ingest(x, b.clone()).unwrap();
+                if passes {
+                    p.engine.drop_broken(None).unwrap();
+                }
+                let done = &order[..=n];
+                let want = (done.contains(&0) && done.contains(&1) && done.contains(&2)).then(|| s("good"));
+                assert_eq!(read(&mut p, d, "t:good.0"), want, "{order:?} after {n}, passes {passes}");
+            }
+            assert_eq!(read(&mut p, d, "t:bad.0"), None, "{order:?}");
+            p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
+            assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")));
+            assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")), "the setting fell, {order:?}");
+        }
+    }
+}
+
+// spec/commits.md §5: a writer refuses an entry no write could meet
+#[test]
+fn unmeetable_entry_refused_spec_commits_5() {
+    let (mut lp, d) = setup(439);
+    let keep = Retention { by: PurgeBy::AuthorOrAdmin, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
+    let at_most: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]);
+    let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]);
+    let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]);
+    for r in [at_most, at_once, beyond] {
+        let mut m = Mutation::new();
+        m.set(d, &ct::REQUIRED, &r).unwrap();
+        assert!(lp.peers[0].commit(m).is_err(), "{r:?}");
+    }
+    let writer = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
+    let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]);
+    require(&mut lp, 0, d, &fine);
+    let mut m = Mutation::new();
+    m.set(d, &ak("t:x.0"), &s("x")).unwrap();
+    assert!(lp.peers[0].commit(m).unwrap().is_some());
 }
