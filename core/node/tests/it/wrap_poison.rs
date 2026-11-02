@@ -705,3 +705,97 @@ fn useless_certificate_copy_gets_another_spec_sync_5() {
     let good = copies(&mut net).into_iter().filter(|b| at.contains(b) && store(&net, b) != [0x13; WRAP_LEN]).count();
     assert!(good > 0, "a readable copy at r: {first:?}");
 }
+
+/// An honest wrap under an epoch the author does not hold yet: the other writer places the author's
+/// blob at the second host, under the new epoch, and the author comes back there alone. `lag`: the
+/// rotation has not reached that host, else it is in that host's log before the wrap. The blob's
+/// entries, the host's entries before the author is back and after all caught up, the reader's read.
+fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Option<osis_base::Value>) {
+    let mut net = Net::new();
+    let hosts = vec![net.add_host(), net.add_host()];
+    let (h1, h2) = (hosts[0], hosts[1]);
+    let d = net.node(21, &hosts);
+    let a = net.node(22, &hosts);
+    let w = net.node(23, &hosts);
+    let f = net.node(24, &hosts);
+    let x = net.node(25, &hosts);
+    let g = net.group(d, &[(a, Role::Write), (w, Role::Write), (f, Role::Read), (x, Role::Read)], &hosts);
+    net.run();
+    let l = net.label(a);
+    net.blocked.insert((a, h2));
+    net.drop_link(a, h2);
+    let t = net.item(a, g, g, "message");
+    net.run();
+    assert_eq!(net.read(w, t), Some(s("message")));
+    let ids = entries_of(&mut net, w, &l, t);
+    assert!(!ids.is_empty());
+    net.set_online(a, false);
+    if lag {
+        net.blocked.insert((d, h2));
+        net.drop_link(d, h2);
+    }
+    // the admin removes a reader: a read epoch the author lacks
+    let old = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
+    let (ta, tw, tf, tx) = (net.tid(a), net.tid(w), net.tid(f), net.tid(x));
+    let e = net.engine(d);
+    let me = e.tid();
+    let rs = recipients_of(e, &[(me, Role::Admin), (ta, Role::Write), (tw, Role::Write), (tf, Role::Read)]);
+    remove_holder(e, g, tx, &rs, 9);
+    net.feed(d, osis_node::sync::Event::Local);
+    net.settle(10_000);
+    let new = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
+    assert_ne!(old.expose(), new.expose(), "the writer holds the new epoch");
+    for id in &ids {
+        let at = stored_wrap(&net, h1, &l, id).unwrap();
+        let key = osis_crypto::unwrap(&old, id, &at).unwrap();
+        let wrap = osis_crypto::wrap(&new, id, &key).unwrap();
+        hostile_put(&mut net, w, h2, (g, &l), *id, wrap, WRITER);
+        assert_eq!(stored_wrap(&net, h2, &l, id), Some(wrap), "first at that host");
+    }
+    let before = net.host_ids(h2, &l);
+    if lag {
+        net.set_online(w, false);
+    }
+    net.blocked.insert((a, h1));
+    net.drop_link(a, h1);
+    net.blocked.remove(&(a, h2));
+    net.set_online(a, true);
+    net.restart(a, 26);
+    net.run();
+    let held = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    assert_eq!(held.expose() == new.expose(), !lag, "the author hears the rotation with that host's log");
+    // all catch up
+    net.blocked.remove(&(a, h1));
+    net.blocked.remove(&(d, h2));
+    net.set_online(w, true);
+    net.restart(a, 27);
+    net.restart(d, 28);
+    net.restart(f, 29);
+    net.run();
+    net.advance(600_000);
+    net.run();
+    let held = net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    assert_eq!(held.expose(), new.expose(), "the author caught up");
+    (ids, before, net.host_ids(h2, &l), net.read(f, t))
+}
+
+// spec/sync.md §5: an honest wrap under an epoch not held yet is doubted, not useless: heard with its
+// rotation (or any time before the node acts) the entry stays and no copy is made.
+#[test]
+fn other_epoch_wrap_heard_with_its_rotation_stays_spec_sync_5() {
+    let (ids, before, at, read) = other_epoch(false);
+    assert_eq!(read, Some(s("message")));
+    assert!(ids.iter().all(|id| at.contains(id)), "a good entry stays");
+    assert!(at.iter().all(|b| before.contains(b)), "no fresh copy");
+}
+
+// spec/sync.md §5: heard with no sign of the rotation, it cannot be told from garbage: the node puts
+// a fresh copy under the newest epoch it holds, which every holder of the new one reads, once per
+// entry (notes/sync.md).
+#[test]
+fn other_epoch_wrap_heard_before_its_rotation_costs_a_copy_spec_sync_5() {
+    let (ids, before, at, read) = other_epoch(true);
+    assert_eq!(read, Some(s("message")));
+    let fresh = at.iter().filter(|b| !before.contains(b)).count();
+    assert!(fresh <= ids.len() * 2, "bounded: {fresh}");
+}
