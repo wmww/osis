@@ -722,16 +722,19 @@ impl<'a> Judge<'a> {
 
     pub(crate) fn part(&mut self, h: &Header, id: &CommitId, ai: usize) -> bool {
         let core = self.core;
-        if core.ix.void.contains(id) || !self.acts(h, id) {
+        if core.ix.void.contains(id) {
             return false;
         }
         let Some(a) = h.aspects.get(ai) else { return false };
         let ak = a.ak.as_str();
-        // `created.0` hashes to its tid; edge writes are layer 1 (reads go through the timeline); a
-        // compaction snapshot is judged as its author's write (below), which vouches for every
-        // write it carries (spec/permissions.md §5.2)
+        // `created.0` hashes to its tid, whoever acts; edge writes are layer 1 (reads go through
+        // the timeline); a compaction snapshot is judged as its author's write (below), which
+        // vouches for every write it carries (spec/permissions.md §5.2)
         if ak == "created.0" {
             return true;
+        }
+        if !self.acts(h, id) {
+            return false;
         }
         // a thing more than `MAX_OWNER_DEPTH` owner links below its key actor: nothing written on
         // it applies (spec/permissions.md §1); judged per delta from creation records alone
