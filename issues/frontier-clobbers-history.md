@@ -8,4 +8,4 @@ Related limit to decide: the frontier is the demoter's own word, so a hostile ad
 
 Owner requirement: the cost of a kick, in general and not only for chat, must not scale with history size. So the fix cannot be a frontier that lists every surviving write.
 
-Study: notes/frontier-study.md recommends the candidate rule (leave out exactly what the demoter's compaction would drop now, one predicate shared with `drop_covered`), accepts the hostile-admin limit as out of scope, and shows the frontier caps then fail the 0/infinity test (paged lookup instead). It lists one ID per kept write, which breaks the owner requirement above; being redone.
+Study: notes/frontier-study.md: permanent deltas (keep forever, no keep-at-most, no expiry; headers never dropped, purge residues included) get one head per (aspect, device) with per-session predecessor links in the author's own headers; everything else lists IDs, leaving out exactly what the demoter's compaction would drop now. Kick cost: one entry per permanent aspect plus the compaction tail. Hostile-admin limit accepted as out of scope.
