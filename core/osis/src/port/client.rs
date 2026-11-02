@@ -83,7 +83,9 @@ type Sink = Box<dyn FnMut(PortEvent) + Send>;
 
 enum Cmd {
     Auth { session: [u8; 16], reply: CallReply },
-    Call { token: u64, max_reply: usize, method: u64, args: Vec<Value>, reply: CallReply },
+    /// `nonce`: a write's slot, its nonce taken on the I/O thread when first sent (0 until
+    /// then) and put first in `args`, so nonces go out in the order the node must see them.
+    Call { token: u64, max_reply: usize, method: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>, reply: CallReply },
     Sub { token: u64, filter: Value, sink: Sink },
     Unsub { token: u64 },
 }
@@ -95,7 +97,6 @@ pub(crate) struct Remote {
     pub epoch: [u8; 16],
     tx: mpsc::UnboundedSender<Cmd>,
     tokens: AtomicU64,
-    nonces: AtomicU64,
     /// The materialization bound of reads.
     limit: usize,
 }
@@ -121,28 +122,33 @@ impl Remote {
         self.tokens.fetch_add(1, Ordering::AcqRel)
     }
 
-    /// The next write nonce of this session.
-    pub fn nonce(&self) -> u64 {
-        self.nonces.fetch_add(1, Ordering::AcqRel)
+    /// One Call, waited for: its result value; a `TooLarge` reply under the small allowance is
+    /// asked again under the whole reply budget.
+    pub fn call(&self, m: u64, args: Vec<Value>) -> Result<Value> {
+        self.call_n(m, args, None)
     }
 
-    /// One Call, waited for: its result value; a `TooLarge` reply under the small allowance is
-    /// asked again under the whole reply budget (a write again under its nonce).
-    pub fn call(&self, m: u64, args: Vec<Value>) -> Result<Value> {
-        match self.call_with(m, args.clone(), SMALL_REPLY) {
-            Err(Error::TooLarge { limit }) if limit == SMALL_REPLY => self.call_with(m, args, REPLY_BUDGET.min(self.limit.saturating_add(SMALL_REPLY)).max(SMALL_REPLY)),
+    /// `call` of a write under a fresh nonce (the next of this session, taken when sent); a
+    /// `TooLarge` retry goes under the same nonce.
+    pub fn call_once(&self, m: u64, args: Vec<Value>) -> Result<Value> {
+        self.call_n(m, args, Some(Arc::new(AtomicU64::new(0))))
+    }
+
+    fn call_n(&self, m: u64, args: Vec<Value>, nonce: Option<Arc<AtomicU64>>) -> Result<Value> {
+        match self.call_with(m, args.clone(), SMALL_REPLY, nonce.clone()) {
+            Err(Error::TooLarge { limit }) if limit == SMALL_REPLY => self.call_with(m, args, REPLY_BUDGET.min(self.limit.saturating_add(SMALL_REPLY)).max(SMALL_REPLY), nonce),
             r => r,
         }
     }
 
     /// A Call whose reply may take `max_reply` bytes (a `stream_read` page).
     pub fn call_big(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
-        self.call_with(m, args, max_reply.clamp(SMALL_REPLY, REPLY_BUDGET))
+        self.call_with(m, args, max_reply.clamp(SMALL_REPLY, REPLY_BUDGET), None)
     }
 
-    fn call_with(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
+    fn call_with(&self, m: u64, args: Vec<Value>, max_reply: usize, nonce: Option<Arc<AtomicU64>>) -> Result<Value> {
         let (tx, rx) = std::sync::mpsc::channel();
-        self.tx.send(Cmd::Call { token: self.token(), max_reply, method: m, args, reply: tx }).map_err(|_| net("connection to the node closed"))?;
+        self.tx.send(Cmd::Call { token: self.token(), max_reply, method: m, args, nonce, reply: tx }).map_err(|_| net("connection to the node closed"))?;
         match crate::net::blocking(|| rx.recv()) {
             Ok(Ok(Outcome::Ok { value, .. })) => Ok(value),
             Ok(Ok(Outcome::Err { code, detail })) => Err(c::error_of(code, detail)),
@@ -165,9 +171,23 @@ struct Io {
     sinks: BTreeMap<u64, Sink>,
     timer: Option<u64>,
     taken: u64,
+    /// The next write nonce of this session (from 1).
+    nonce: u64,
 }
 
 impl Io {
+    /// Puts a write's nonce first in its args: the slot's, else the next of the session, kept
+    /// in the slot for a retry. Run as each command is sent, so nonces go out in order.
+    fn stamp(&mut self, slot: &AtomicU64, args: &mut Vec<Value>) {
+        let mut n = slot.load(Ordering::Acquire);
+        if n == 0 {
+            n = self.nonce;
+            self.nonce += 1;
+            slot.store(n, Ordering::Release);
+        }
+        args.insert(0, u(n));
+    }
+
     /// Carries out the session's outputs; `false` once it closed.
     fn outputs(&mut self, link: &osis_transport::link::LinkTx, out: Vec<ClientOutput>) -> bool {
         for o in out {
@@ -217,7 +237,10 @@ impl Io {
                 self.calls.insert(0, reply);
                 Command::Auth { token: 0, session }
             }
-            Cmd::Call { token, max_reply, method, args, reply } => {
+            Cmd::Call { token, max_reply, method, mut args, nonce, reply } => {
+                if let Some(slot) = nonce {
+                    self.stamp(&slot, &mut args);
+                }
                 self.calls.insert(token, reply);
                 Command::Call { token, max_reply: max_reply as u64, method, args }
             }
@@ -309,7 +332,7 @@ impl Osis {
             osis_crypto::OsRng.fill_bytes(&mut challenge);
             osis_crypto::OsRng.fill_bytes(&mut session);
         }
-        let io = Io { cs: ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge }), calls: BTreeMap::new(), sinks: BTreeMap::new(), timer: None, taken: 0 };
+        let io = Io { cs: ClientSession::new(ClientConfig { peer_static_key: addr.key, challenge }), calls: BTreeMap::new(), sinks: BTreeMap::new(), timer: None, taken: 0, nonce: 1 };
         let clock = db.inner.clock.clone();
         let (ready_tx, ready_rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
@@ -333,7 +356,7 @@ impl Osis {
             Ok(Err(Code::UNSUPPORTED)) => return Err(Error::Unsupported("node too old".into())),
             _ => return Err(net("no answer to Auth")),
         };
-        let r = Remote { who: Who { me: db.me(), node: db.node(), home: db.home() }, epoch, tx, tokens: AtomicU64::new(1), nonces: AtomicU64::new(1), limit };
+        let r = Remote { who: Who { me: db.me(), node: db.node(), home: db.home() }, epoch, tx, tokens: AtomicU64::new(1), limit };
         let w = r.call(method::WHOAMI, vec![])?;
         let mut a = c::Args::new(w)?;
         let who = Who { me: a.tid()?, node: a.tid()?, home: a.tid()? };
@@ -364,18 +387,15 @@ impl Osis {
 
     /// A write batch at the attached node, under a fresh nonce (a reply lost to a `TooLarge`
     /// retry is answered again from the node's memory).
-    pub(crate) fn remote_write(&self, mut wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
-        let r = self.rem();
-        wire.insert(0, u(r.nonce()));
-        let v = r.call(method::WRITE, wire).map_err(once_err)?;
+    pub(crate) fn remote_write(&self, wire: Vec<Value>) -> Result<Option<crate::write::Committed>> {
+        let v = self.rem().call_once(method::WRITE, wire).map_err(once_err)?;
         let o = c::Args::of(vec![v]).opt()?;
         o.map(c::committed).transpose()
     }
 
     /// A nonce'd undo/redo/revert at the attached node.
     pub(crate) fn remote_once(&self, m: u64, arg: Value) -> Result<Value> {
-        let r = self.rem();
-        r.call(m, vec![u(r.nonce()), arg]).map_err(once_err)
+        self.rem().call_once(m, vec![arg]).map_err(once_err)
     }
 
     /// Registers `cb` for a subscription at the attached node: its Reply (`PortEvent::Initial`)
