@@ -328,12 +328,16 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // only things whose deltas it holds or syncs gate the commit: a thing it neither holds a
     // delta of nor syncs (another's private thing in a mixed commit) is not applied here
     let held_ais: BTreeSet<usize> = blob.parts.iter().map(|p| p.ai).collect();
+    // a commit no part of which is held (a pending part went at its expiry,
+    // `retention::pending_expiry`; a header-only blob) waits whole for every thing of it, synced
+    // or not: whether it is recorded applied must not read what the node syncs when it comes
+    let whole = blob.parts.is_empty() && !never_whole;
     for (ai, a) in h.aspects.iter().enumerate() {
-        if !held_ais.contains(&ai) && !tx.core.ix.syncing.contains(&a.tid) {
+        if !whole && !held_ais.contains(&ai) && !tx.core.ix.syncing.contains(&a.tid) {
             continue;
         }
         let Some(wait) = thing_wait(tx.core, &h, a, &record, &chain_rec) else { continue };
-        if !alone(tx.core, &a.tid) {
+        if whole || !alone(tx.core, &a.tid) {
             return Ok(Exam::Pending(wait, Vec::new()));
         }
         aside.add(wait, blob.parts.iter().filter(|p| p.ai == ai).map(|p| (p.ai, p.di)));
