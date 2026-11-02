@@ -282,7 +282,8 @@ fn recorded(tx: &mut Tx<'_>, a: Tid, c: Option<osis_base::CommitId>, rot: &Rotat
     done.add(c);
     done.deliveries.extend(deliver_rotation(tx, a, c, to)?);
     if let Some(c) = c {
-        done.deliveries.push(Delivery::First { commits: placed_with(c, Some(rot)), under: above(tx.core, &a) });
+        let under = above(tx.core, &a);
+        done.deliveries.push(flows::owe(tx, Delivery::First { commits: placed_with(c, Some(rot)), under })?);
     }
     Ok(())
 }

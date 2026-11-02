@@ -85,11 +85,8 @@ impl Engine {
             return Err(Error::Misuse("the link expired"));
         }
         let grant = Edge { role: edge.role, until: None, invite: None, since: None, tied: None };
-        let mut done = self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))?;
-        if edge.role >= Role::Write {
-            done.deliveries.retain(|d| !matches!(d, Delivery::Deposit { .. }));
-        }
-        Ok(done)
+        // L signs with its own role, so `grant_in` deposits only below write
+        self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))
     }
 
     /// Finalizes a link (spec/permissions.md §9): a sharer device's plain removal of L from K,
@@ -230,7 +227,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // L's card under K's label: a redeemer holds only the seed, and verifiers of L's commits
     // need L's `created.0`
     if let Some(c) = lc {
-        done.deliveries.push(Delivery::Certificate { commits: vec![c], under: k });
+        done.deliveries.push(super::owe(tx, Delivery::Certificate { commits: vec![c], under: k })?);
     }
     // K on the target
     let target_edge = Edge { role: spec.role, until: None, invite: None, since: None, tied: None };

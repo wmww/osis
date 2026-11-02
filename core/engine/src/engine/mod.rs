@@ -604,11 +604,15 @@ pub struct Core {
 pub(crate) type Published = ((u64, u64, u64), BTreeMap<Tid, std::sync::Arc<BTreeSet<Tid>>>);
 
 /// Node-sync's records that engine transactions touch: an inbox delivery a flow's commit owes
-/// (`flows::edges`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
+/// (`flows::edges`), its other deliveries (`flows::owe`) and what forgetting drops (`retention::forget`). Implemented by node-sync.
 pub trait SyncRecords: Sync {
     /// Records the inbox delivery of `commit` to `holder` in the commit's own transaction, so
     /// a crash before node-sync carries it out loses none.
     fn note_unsent(&self, tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()>;
+    /// Records a flow's placement or direct send (`flows::owe`; not an inbox delivery) in the
+    /// transaction that made it owed, or (`owed` false) drops that record: node-sync carries
+    /// out what is recorded at start, so a crash before it carries `d` out loses nothing.
+    fn owe(&self, tx: &mut Tx<'_>, d: &crate::flows::Delivery, owed: bool) -> Result<()>;
     /// Removes the sync records of what is forgotten (`labels`, `things`, `commits`, `parts`)
     /// and returns the blobs among those dropped and `extra` that no kept record names.
     fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<osis_base::LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<osis_base::BlobId>) -> Result<BTreeSet<osis_base::BlobId>>;

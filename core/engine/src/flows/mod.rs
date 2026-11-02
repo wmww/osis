@@ -96,6 +96,26 @@ pub struct Done {
     pub drop_lost: bool,
 }
 
+/// Records `d` with node-sync in the running transaction, the one whose commit owes it
+/// (`SyncRecords::owe`), and returns it: every delivery but an inbox blob (recorded by
+/// `SyncRecords::note_unsent`) is made through here.
+pub(crate) fn owe(tx: &mut Tx<'_>, d: Delivery) -> Result<Delivery> {
+    if let Some(r) = tx.core.sync_records {
+        r.owe(tx, &d, true)?;
+    }
+    Ok(d)
+}
+
+/// Drops the records of `ds` (`owe`): a flow that replaces what an inner transaction owed.
+pub(crate) fn unowe(tx: &mut Tx<'_>, ds: &[Delivery]) -> Result<()> {
+    if let Some(r) = tx.core.sync_records {
+        for d in ds {
+            r.owe(tx, d, false)?;
+        }
+    }
+    Ok(())
+}
+
 impl Done {
     pub(crate) fn add(&mut self, c: Option<CommitId>) {
         self.commits.extend(c);

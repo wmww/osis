@@ -425,8 +425,8 @@ pub struct SyncEngine {
     pub(crate) relink_at: u64,
     /// Hosts where a replaced label is done with (`retire_at`).
     pub(crate) retired_at: BTreeSet<(HostKey, LabelId)>,
-    /// Certificate copies waiting for a rotation (group, commit, aspects).
-    pub(crate) deferred: Vec<(Tid, osis_base::CommitId, BTreeSet<usize>)>,
+    /// Certificate copies waiting for a rotation.
+    pub(crate) deferred: Vec<Deferred>,
     /// Commit blobs whose every delta was checked against its header hash (`true`) or found
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
     /// uploads or justify deleting another entry (`SyncEngine::genuine`).
@@ -529,6 +529,10 @@ pub struct SyncEngine {
     pub(crate) hosting: host::Hosting,
 }
 
+/// A certificate copy waiting for a rotation (`SyncEngine::deferred`): group, commit, aspects,
+/// and the owed delivery it carries out (its record stays until the copy is placed, `take_done`).
+pub(crate) type Deferred = (Tid, osis_base::CommitId, BTreeSet<usize>, Option<[u8; 32]>);
+
 impl SyncEngine {
     /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
     /// carry it; the correction goes to the engine).
@@ -625,6 +629,10 @@ impl SyncEngine {
             // the keys and ciphertexts of bodies the engine dropped before a crash cut this layer
             // off (its forget runs a step after the dropping transaction, spec/commits.md §5)
             s.forget_dropped(None)?;
+            // flows' deliveries a crash cut off before they were carried out
+            if let Err(e) = s.take_owed() {
+                s.diag(format!("owed deliveries: {e}"));
+            }
             Ok(s)
         })
     }

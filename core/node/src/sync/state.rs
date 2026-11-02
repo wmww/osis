@@ -2,11 +2,13 @@
 //! per `SyncEngine::handle`): label entries this node knows (wrap, stamp, what the blob is),
 //! presence per host, cursors and heads per (host, label), blob keys of commit blobs,
 //! certificates and heartbeats placed, blobs a host tombstoned, label hints from inbox blobs,
-//! inbox deliveries to re-send, stranded heartbeat times, direct commits for the app.
+//! inbox deliveries to re-send, stranded heartbeat times, direct commits for the app, flows'
+//! deliveries owed (`y/y`).
 
 use crate::engine::{Engine, Tx};
 use crate::engine::records::{Rd, Wr};
 use crate::error::{Error, Result};
+use crate::flows::Delivery;
 use osis_base::{BlobId, CommitId, LabelId, Tid};
 use osis_crypto::{Secret32, Signature, WRAP_LEN};
 use osis_label::{Address, Step};
@@ -53,6 +55,9 @@ const LINK_PEER: &[u8] = b"y/l";
 const DECLINED: &[u8] = b"y/m";
 /// Groups this node holds none of (receipts-only, `SyncEngine::set_receipts_only`).
 const RECEIPTS_ONLY: &[u8] = b"y/w";
+/// A flow's delivery (not an inbox blob) not carried out yet, by the hash of its encoding
+/// (`owe_tx`, `SyncEngine::take_done`).
+const OWED: &[u8] = b"y/y";
 
 /// A followed link's sharer node (spec/permissions.md §9): dialed at the link's `peer://`
 /// addresses for K's labels and the target's, nothing else.
@@ -275,6 +280,8 @@ pub struct State {
     pub declined: BTreeSet<CommitId>,
     /// Sharer nodes of followed links by K (`y/l`).
     pub link_peers: BTreeMap<Tid, LinkPeer>,
+    /// Flows' deliveries owed at load (`y/y`), by key (`owed_key`): taken at start.
+    pub owed: BTreeMap<[u8; 32], Delivery>,
     /// Bumped by every change of entries, presence or the outbox (`SyncEngine::placed` caches
     /// by it; in memory).
     pub version: u64,
@@ -477,6 +484,12 @@ impl State {
                 }
                 b"w" => {
                     s.receipts_only.insert(r.tid()?);
+                }
+                // one that does not decode is skipped, never a failed load
+                b"y" => {
+                    if let Ok(d) = decode_owed(&v) {
+                        s.owed.insert(r.arr()?, d);
+                    }
                 }
                 b"a" => {
                     s.contacts.insert(r.tid()?);
@@ -925,6 +938,12 @@ impl State {
         out
     }
 
+    /// Drops the record of an owed delivery carried out (`owed_key`).
+    pub fn settle_owed(&mut self, k: [u8; 32]) {
+        self.owed.remove(&k);
+        self.del(key(OWED, &[&k]));
+    }
+
     pub fn add_cert(&mut self, l: LabelId, c: CommitId) {
         if self.certs.insert((l, c)) {
             self.touched.insert((l, Touch::Commit(c)));
@@ -1162,6 +1181,70 @@ fn note_unsent_tx(tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Ti
     Ok(())
 }
 
+/// The encoding of a flow's delivery, `None` for an inbox blob (its record is `y/v`).
+fn encode_owed(d: &Delivery) -> Option<Vec<u8>> {
+    fn commits(w: Wr, cs: &[CommitId]) -> Wr {
+        cs.iter().fold(w.u32(cs.len() as u32), |w, c| w.raw(&c.0))
+    }
+    let w = match d {
+        Delivery::Inbox { .. } => return None,
+        Delivery::Direct { to, commits: cs } => commits(Wr::new().u8(1).raw(to.as_bytes()), cs),
+        Delivery::First { commits: cs, under } => under.iter().fold(commits(Wr::new().u8(2), cs).u32(under.len() as u32), |w, t| w.raw(t.as_bytes())),
+        Delivery::Certificate { commits: cs, under } => commits(Wr::new().u8(3), cs).raw(under.as_bytes()),
+        Delivery::Deposit { commit, under } => Wr::new().u8(4).raw(&commit.0).raw(under.as_bytes()),
+        Delivery::Removal { commit, under } => Wr::new().u8(5).raw(&commit.0).raw(under.as_bytes()),
+    };
+    Some(w.take())
+}
+
+fn decode_owed(v: &[u8]) -> Result<Delivery> {
+    fn commits(r: &mut Rd<'_>) -> Result<Vec<CommitId>> {
+        (0..r.u32()?).map(|_| Ok(CommitId(r.arr()?))).collect()
+    }
+    let mut r = Rd::new(v);
+    let d = match r.u8()? {
+        1 => {
+            let to = r.tid()?;
+            Delivery::Direct { to, commits: commits(&mut r)? }
+        }
+        2 => {
+            let cs = commits(&mut r)?;
+            let under = (0..r.u32()?).map(|_| r.tid()).collect::<Result<_>>()?;
+            Delivery::First { commits: cs, under }
+        }
+        3 => {
+            let cs = commits(&mut r)?;
+            Delivery::Certificate { commits: cs, under: r.tid()? }
+        }
+        4 => Delivery::Deposit { commit: CommitId(r.arr()?), under: r.tid()? },
+        5 => Delivery::Removal { commit: CommitId(r.arr()?), under: r.tid()? },
+        _ => return Err(Error::Corrupt("owed delivery")),
+    };
+    if !r.is_empty() {
+        return Err(Error::Corrupt("owed delivery"));
+    }
+    Ok(d)
+}
+
+/// The key of an owed delivery's record (`y/y`): the hash of its encoding, so the transaction
+/// that owes it and `SyncEngine::take_done` name the same record; `None` for an inbox blob.
+pub(crate) fn owed_key(d: &Delivery) -> Option<[u8; 32]> {
+    encode_owed(d).map(|v| osis_base::hash::hash(&v))
+}
+
+/// Records (`owed`) or drops a flow's delivery in the transaction that owes it
+/// (`SyncRecords::owe`).
+fn owe_tx(tx: &mut Tx<'_>, d: &Delivery, owed: bool) -> Result<()> {
+    let Some(v) = encode_owed(d) else { return Ok(()) };
+    let k = key(OWED, &[&osis_base::hash::hash(&v)]);
+    if owed {
+        tx.txn.put_local(&k, &v, Shred::No)?;
+    } else {
+        tx.txn.remove_local(&k, Shred::No)?;
+    }
+    Ok(())
+}
+
 fn decode_out(k: &[u8], v: &[u8]) -> Result<((HostKey, LabelId, BlobId), OutRec)> {
     let mut r = Rd::new(k);
     let key = (r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?));
@@ -1203,6 +1286,10 @@ pub(crate) struct Records;
 impl crate::engine::SyncRecords for Records {
     fn note_unsent(&self, tx: &mut Tx<'_>, holder: Tid, commit: CommitId, things: Vec<Tid>, edge_only: bool) -> Result<()> {
         note_unsent_tx(tx, holder, commit, things, edge_only)
+    }
+
+    fn owe(&self, tx: &mut Tx<'_>, d: &Delivery, owed: bool) -> Result<()> {
+        owe_tx(tx, d, owed)
     }
 
     fn forget(&self, tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet<Tid>, commits: &BTreeSet<CommitId>, parts: &BTreeMap<CommitId, BTreeSet<usize>>, extra: BTreeSet<BlobId>) -> Result<BTreeSet<BlobId>> {

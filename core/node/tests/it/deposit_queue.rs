@@ -413,3 +413,146 @@ fn lagging_admin_keeps_refreshed_deposit_key_spec_sync_5() {
     assert_eq!(path.len(), before + 1, "the refresh's step only");
     assert_eq!(path.last().unwrap().keys.deposit, new_pk);
 }
+
+/// K (label at s1) with holder b, a holder of T (label at s0), both node a's: (a, b, K, T).
+fn holder_group(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_base::Tid) {
+    let s0 = net.add_host();
+    let s1 = net.add_host();
+    let a = net.node(40, &[s0, s1]);
+    let b = net.node(41, &[s0, s1]);
+    let k = net.group(a, &[(b, Role::Write)], &[s1]);
+    let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let done = net.engine(a).grant(&t, &k, &edge).unwrap();
+    carry(net, a, done);
+    net.run();
+    (a, b, k, t)
+}
+
+/// Whether node `n`'s entry of `c` under `l` carrying its delta on aspect `ak` is at host `s`.
+fn copy_at(net: &mut Net, n: usize, s: usize, l: &osis_base::LabelId, c: &osis_base::CommitId, ak: &str) -> bool {
+    let at = net.host_ids(s, l);
+    let h = net.engine(n).header(c).unwrap();
+    let on = |ai: &usize| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == ak);
+    net.sync(n).entries(l).iter().any(|(id, k)| matches!(k, EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().any(|(ai, _)| on(ai))) && at.contains(id))
+}
+
+// spec/permissions.md §3 (a removal or lowering goes under the labels the removed party could
+// read), spec/crypto.md §4 (encrypting waits for the rotation): b2 lowered to read on K, the
+// commit placed first under T (b2 reads T through K); a crash before carrying it out, or while
+// that copy waits for T's rotation (b's removal from K just before), still places it once the
+// node restarts. T's rotation names only b's removal: nothing else places b2's lowering there.
+#[test]
+fn first_copy_survives_a_crash_spec_permissions_3() {
+    for crash in ["none", "before carry_out", "while it waits"] {
+        let mut net = Net::new();
+        let s0 = net.add_host();
+        let s1 = net.add_host();
+        let a = net.node(40, &[s0, s1]);
+        let b = net.node(41, &[s0, s1]);
+        let b2 = net.node(42, &[s0, s1]);
+        let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
+        let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+        let done = net.engine(a).grant(&t, &k, &read).unwrap();
+        carry(&mut net, a, done);
+        net.run();
+        let tl = net.engine(a).group_labels(&t).unwrap()[0].id;
+        // under T alone
+        net.set_online(a, false);
+        net.blocked.insert((a, s1));
+        if crash == "while it waits" {
+            let bt = net.tid(b);
+            let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+            let done = net.engine(a).demote(&k, &d).unwrap();
+            carry(&mut net, a, done);
+        }
+        let b2t = net.tid(b2);
+        let d = osis_node::flows::Demotion { holder: b2t, new: Some(read.clone()), presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(a).demote(&k, &d).unwrap();
+        assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::First { under, .. } if under.contains(&t))));
+        let c = *done.commits.last().unwrap();
+        if crash == "before carry_out" {
+            drop(done);
+        } else {
+            carry(&mut net, a, done);
+            assert_eq!(copies(&mut net, a, &tl, &c) == 0, crash == "while it waits", "{crash}: the copy waits only for T's rotation");
+        }
+        if crash != "none" {
+            net.restart(a, 77);
+        }
+        net.set_online(a, true);
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        // b2's new edge: K's new keyset goes under T anyway (a holder's keyset certificate)
+        assert!(copy_at(&mut net, a, s0, &tl, &c, "roles.0"), "{crash}: the lowering's copy under T");
+    }
+}
+
+// spec/permissions.md §2, §3 (a removal of an actor's edge goes under the labels holding the
+// actor): K removed from T, its copy under K's label; a crash before carrying it out still
+// places it once the node restarts.
+#[test]
+fn removal_copy_survives_a_crash_spec_permissions_3() {
+    for crash in [false, true] {
+        let mut net = Net::new();
+        let (a, _, k, t) = holder_group(&mut net);
+        let s1 = 1;
+        let kl = net.engine(a).group_labels(&k).unwrap()[0].id;
+        let d = osis_node::flows::Demotion { holder: k, new: None, presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(a).demote(&t, &d).unwrap();
+        assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Removal { under, .. } if *under == k)));
+        let c = *done.commits.last().unwrap();
+        if crash {
+            drop(done);
+            net.restart(a, 77);
+        } else {
+            carry(&mut net, a, done);
+        }
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        assert!(copy_at(&mut net, a, s1, &kl, &c, "roles.0"), "crash {crash}: the removal's copy under K");
+    }
+}
+
+// spec/permissions.md §9, §4 (verifiers of L's commits need its card): a crash before carrying
+// out a link's creation still places L's card under K's label once the node restarts.
+#[test]
+fn link_card_survives_a_crash_spec_permissions_9() {
+    use osis_node::Mutation;
+    for crash in [false, true] {
+        let mut net = Net::new();
+        let (s0, s1) = (net.add_host(), net.add_host());
+        let a = net.node(30, &[s0, s1]);
+        let home = vec![net.address(s0)];
+        let (pa, done) = net.engine(a).create_person(&home).unwrap();
+        carry(&mut net, a, done);
+        net.run();
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, pa.person);
+        m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
+        net.actions(a, acts);
+        net.run();
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
+        let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
+        let card = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Certificate { commits, under } = d { (*under == link.k).then(|| commits[0]) } else { None }).unwrap();
+        if crash {
+            drop(done);
+            net.restart(a, 77);
+        } else {
+            carry(&mut net, a, done);
+        }
+        for _ in 0..3 {
+            net.run();
+            net.advance(61_000);
+        }
+        assert!(copy_at(&mut net, a, s1, &link.k_label, &card, "created.0"), "crash {crash}: L's card under K");
+    }
+}

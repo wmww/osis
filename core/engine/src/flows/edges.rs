@@ -60,7 +60,7 @@ pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Ti
 pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts) -> Result<Vec<Delivery>> {
     if tx.core.is_key_actor(&holder) {
         let is_node = super::super::flows::is_node(tx, &holder)?;
-        return Ok(if is_node { vec![Delivery::Direct { to: holder, commits: vec![c] }] } else { Vec::new() });
+        return Ok(if is_node { vec![super::owe(tx, Delivery::Direct { to: holder, commits: vec![c] })?] } else { Vec::new() });
     }
     let Some((_, inbox)) = inbox_of(tx, &holder)? else { return Ok(Vec::new()) };
     // sealed to the holder's newest read keyset (its own, else the inbox actor's)
@@ -186,7 +186,7 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     if let Some(c) = c {
         done.deliveries.extend(deliver_to(tx, holder, c, &[target])?);
         if deposit {
-            done.deliveries.push(Delivery::Deposit { commit: c, under: target });
+            done.deliveries.push(super::owe(tx, Delivery::Deposit { commit: c, under: target })?);
         }
     }
     Ok(done)
@@ -314,7 +314,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         if let Err(i) = under.binary_search(&target) {
             under.insert(i, target);
         }
-        done.deliveries.push(Delivery::First { commits: rotation::placed_with(c, rot.as_ref()), under });
+        done.deliveries.push(super::owe(tx, Delivery::First { commits: rotation::placed_with(c, rot.as_ref()), under })?);
         // a removal of another actor G's edge (explicit, or a self-removal by an admin of G,
         // lowering too): it leaves G's closure bodies (G reads the target no more) and the target
         // may have left it already (an unplace), so it goes under the labels holding G, where
@@ -322,7 +322,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
         let first = (d.new.is_none() || selfr).then_some(holder);
         for x in first.into_iter().chain(gone.iter().map(|(x, _)| *x)) {
             if x != who && !tx.core.is_key_actor(&x) {
-                done.deliveries.push(Delivery::Removal { commit: c, under: x });
+                done.deliveries.push(super::owe(tx, Delivery::Removal { commit: c, under: x })?);
             }
         }
     }
@@ -446,7 +446,7 @@ impl Engine {
         self.note_delete_hints(id, &p.things)?;
         let mut done = Done::default();
         if self.core.ix.commits.contains_key(&id) {
-            done.deliveries.push(Delivery::Certificate { commits: vec![id], under: a });
+            done.deliveries.push(self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![id], under: a }))?);
         }
         Ok((p.things, done))
     }

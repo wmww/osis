@@ -86,8 +86,14 @@ impl Engine {
         // each commit once, in the order collected (the store's `ts` order first)
         let mut seen = BTreeSet::new();
         all.retain(|c| seen.insert(*c));
-        done.deliveries.retain(|d| !matches!(d, Delivery::Direct { to, .. } if *to == n));
-        done.deliveries.push(Delivery::Direct { to: n, commits: all });
+        // the grant's own direct send is replaced (crash-safe like the grant: `flows::owe`)
+        let (gone, kept): (Vec<Delivery>, Vec<Delivery>) = std::mem::take(&mut done.deliveries).into_iter().partition(|d| matches!(d, Delivery::Direct { to, .. } if *to == n));
+        done.deliveries = kept;
+        let d = self.run(|tx| {
+            super::unowe(tx, &gone)?;
+            super::owe(tx, Delivery::Direct { to: n, commits: all })
+        })?;
+        done.deliveries.push(d);
         Ok(done)
     }
 
@@ -98,7 +104,9 @@ impl Engine {
         if self.role_on(person) != Some(Role::Admin) {
             return Err(Error::Permission { tid: *person });
         }
-        Ok(Done { deliveries: vec![Delivery::Certificate { commits: vec![*grant], under: *person }], ..Done::default() })
+        let (g, p) = (*grant, *person);
+        let d = self.run(|tx| super::owe(tx, Delivery::Certificate { commits: vec![g], under: p }))?;
+        Ok(Done { deliveries: vec![d], ..Done::default() })
     }
 
     /// Recovery from a card on this (fresh) device (spec/permissions.md §9), once the home label

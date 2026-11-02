@@ -205,10 +205,14 @@ impl SyncEngine {
         }
         // certificate copies that waited for the rotation just run
         if read_ok {
-            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|(x, _, _)| *x == g);
+            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|x| x.0 == g);
             self.deferred = later;
-            for (x, c, ais) in now {
-                self.place_certificate_in(&x, &c, &ais)?;
+            let owed: BTreeSet<[u8; 32]> = now.iter().filter_map(|x| x.3).collect();
+            for (x, c, ais, k) in now {
+                self.place_certificate_in(&x, &c, &ais, k)?;
+            }
+            for k in owed {
+                self.settle_owed(k);
             }
         }
         // a complete pass and still no secret of the head's read epoch: stranded
@@ -1502,11 +1506,11 @@ impl SyncEngine {
                 for ak in ["created.0", "label.0"] {
                     let Some((x, xs)) = self.engine.aspect_commit(&t, ak) else { continue };
                     if !self.state.certs.contains(&(l, x)) && !self.held_whole(g, l, &x, &xs)? {
-                        self.place_certificate_in(g, &x, &xs)?;
+                        self.place_certificate_in(g, &x, &xs, None)?;
                     }
                 }
             }
-            self.place_certificate_in(g, &c, &ais)?;
+            self.place_certificate_in(g, &c, &ais, None)?;
         }
         Ok(())
     }

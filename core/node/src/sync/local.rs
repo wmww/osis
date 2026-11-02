@@ -155,15 +155,16 @@ impl SyncEngine {
     /// (spec/permissions.md §3, §4): a fresh encryption per label, uploaded or deposited at the
     /// label's next pass.
     pub fn place_certificate(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<Vec<Action>> {
-        self.place_certificate_in(g, c, aspects)?;
+        self.place_certificate_in(g, c, aspects, None)?;
         Ok(self.handle(super::Event::Local))
     }
 
     /// `place_certificate`. A copy of this node's own write under a label it does not write
     /// (its invite grant, self-removal, chain) is also queued as a deposit (`queue_deposit`),
     /// so it reaches the label even when this node loses the label before a host answers:
-    /// other nodes may hold parts of the commit from elsewhere and wait for the rest.
-    pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>) -> Result<()> {
+    /// other nodes may hold parts of the commit from elsewhere and wait for the rest. `owed`:
+    /// the flow's delivery it carries out (`take_done`), kept while the copy waits.
+    pub(crate) fn place_certificate_in(&mut self, g: &Tid, c: &CommitId, aspects: &BTreeSet<usize>, owed: Option<[u8; 32]>) -> Result<()> {
         let labels: Vec<(LabelId, Vec<Address>)> = self.engine.group_labels(g)?.into_iter().filter(|l| !l.replaced).map(|l| (l.id, l.hosts)).collect();
         if labels.is_empty() {
             return Ok(());
@@ -172,7 +173,7 @@ impl SyncEngine {
         // under an epoch that does not cover a known departure it waits for the next pass,
         // which rotates first
         if self.uncovered_now(g)?.contains(&Role::Read) {
-            self.deferred.push((*g, *c, aspects.clone()));
+            self.deferred.push((*g, *c, aspects.clone(), owed));
             return Ok(());
         }
         let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
