@@ -553,3 +553,45 @@ fn residue_classifies_sticky_and_genuine_spec_perm_5() {
     assert_eq!(tl.dropped().len(), 2);
     assert_eq!(residue(&tl).len(), 1);
 }
+
+// spec/permissions.md §1 (ownerless things), §6: O has no owner; its record names n0 as first
+// admin. n0 grants n1 admin; n1 removes n0. No node ever holds owner-chain class on O, so no
+// roster snapshot of O applies (n1's, or the removed first admin's), and n0's later grants and
+// re-grants through the record do nothing. On D, owned by O, n1 (admin of O) holds the owner
+// chain: its snapshot of D applies and is D's epoch start.
+#[test]
+fn ownerless_has_no_owner_chain() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let rec = osis_base::CreationRecord::Ownerless { admin: n[0], nonce: [9; 32] };
+    let o = rec.tid();
+    w.created.insert(o, rec);
+    let d = w.thing(o);
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 1)).collect();
+    w.set(n[0], o, n[1], edge(Admin), 1, &all);
+    let tl = eval(&w);
+    assert_eq!(role(&tl, n[0], o), Some(Admin), "the record's edge");
+    assert_eq!(edge_role(&tl, n[0], o), Some(Admin));
+    for x in &n[..2] {
+        assert_eq!(tl.class(x, &o, At::END), Class::Edge);
+        assert_eq!(tl.class(x, &d, At::END), Class::Chain, "admin of D's owner");
+    }
+    let all: Vec<(Tid, u64)> = n.iter().map(|x| (*x, 3)).collect();
+    w.set(n[1], o, n[0], None, 2, &all);
+    let s_o = w.snapshot(n[1], o, &[(n[1], Edge::new(Admin)), (n[2], Edge::new(Admin))], 4, &all);
+    let s_o0 = w.snapshot(n[0], o, &[(n[0], Edge::new(Admin))], 5, &all);
+    let g0 = w.set(n[0], o, n[2], edge(Write), 6, &all);
+    let r0 = w.set(n[0], o, n[0], edge(Admin), 7, &all);
+    let s_d = w.snapshot(n[1], d, &[(n[2], Edge::new(Write))], 8, &all);
+    let tl = eval(&w);
+    assert_eq!(role(&tl, n[0], o), None, "the first admin is removed like any");
+    assert_eq!(role(&tl, n[1], o), Some(Admin));
+    assert!(n.iter().all(|x| tl.class(x, &o, At::END) < Class::Chain));
+    assert!(!tl.is_applied(&WriteId::Snapshot(s_o)) && !tl.is_applied(&WriteId::Snapshot(s_o0)));
+    assert_eq!(tl.epoch_start(&o), None);
+    assert!(!tl.is_applied(&WriteId::Op(g0, 0)) && !tl.is_applied(&WriteId::Op(r0, 0)));
+    assert_eq!(role(&tl, n[2], o), None);
+    assert!(tl.is_applied(&WriteId::Snapshot(s_d)));
+    assert_eq!(tl.epoch_start(&d), Some(s_d));
+    assert_eq!(role(&tl, n[2], d), Some(Write));
+}

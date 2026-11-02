@@ -217,6 +217,10 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
                 w.tid(y);
             }
             Owner::Key => w.u8(1),
+            Owner::Ownerless(a) => {
+                w.u8(2);
+                w.tid(a);
+            }
         }
     }
     w.len(commits.len());

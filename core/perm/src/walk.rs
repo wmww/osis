@@ -187,6 +187,14 @@ impl Input {
             let e = first_write.entry((s.author, s.thing)).or_insert(s.point());
             *e = (*e).min(s.point());
         }
+        // an ownerless thing's first admin edge, there from the start (`items`)
+        for (m, t) in owners.genesis() {
+            if owners.owner_actor(&m).is_none() {
+                nodes.insert(m);
+            }
+            ever_admins.entry(t).or_default().insert(m);
+            ever.add(m, t, &Edge::new(Role::Admin));
+        }
         let mut input = Input { owners, commits: BTreeMap::new(), snaps, nodes, ever_admins, first_write, ever };
         input.append(&commits.into_values().collect::<Vec<_>>());
         input
@@ -2019,6 +2027,13 @@ pub(crate) fn items(input: &Input, epoch: &BTreeMap<Tid, CommitId>) -> Items {
             // just after the commit its key names (whose writes on the thing S ignores), so
             // that commit's writes on other things are judged as in the full history
             list.push(Entry { point: v.point, item: Item::Virtual(Box::new(v)) });
+        }
+    }
+    // an ownerless thing's first admin edge (spec/permissions.md §1); it has no epoch start
+    // (nobody holds owner-chain authority on it, §6), but one would replace it
+    for (m, t) in input.owners.genesis() {
+        if !epoch.contains_key(&t) {
+            initial.set(m, t, Some(Edge::new(Role::Admin)));
         }
     }
     for c in input.commits.values() {

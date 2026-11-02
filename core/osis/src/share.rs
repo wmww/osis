@@ -1189,6 +1189,26 @@ impl Osis {
         self.sync_here(group, hosts, false)
     }
 
+    /// Creates an ownerless thing (spec/permissions.md §1): no owner, so nobody holds
+    /// owner-chain authority on it; its admins are edges, all equal, starting with `admin`
+    /// (`me()`, or an actor this device is an admin of), fixed by its tid. It has secrets of its
+    /// own at once; give it a label with `sync` or place it like any thing. Its roster is never
+    /// compacted, and once no admin is left nobody can change it (members keep their roles).
+    /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
+    pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
+        self.local_only("create_ownerless")?;
+        let admin = self.resolved(admin);
+        let (t, done) = self.locked(|l| {
+            let e = l.engine();
+            if admin != e.tid() && e.get_typed(&admin, &ct::KEYS)?.is_none() {
+                return Err(Error::UnknownActor { tid: admin });
+            }
+            e.create_ownerless(&admin).map_err(needs_admin)
+        })?;
+        self.carry(done)?;
+        Ok(t)
+    }
+
     /// `sync` on this engine. `home`: `group_source` bringing it back, while its route still stands
     /// (calls keep going to the node until this engine caught up); else a move since the route was
     /// decided fails this, as any flow.

@@ -681,7 +681,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
     Ok(any)
 }
 
-/// Whether `t`'s owner chain is not known to end at a key actor within `MAX_OWNER_DEPTH`
+/// Whether `t`'s owner chain is not known to end at a key actor or an ownerless thing within `MAX_OWNER_DEPTH`
 /// owner links (spec/permissions.md §1): deeper, or a creation record on it is not held (unknown
 /// counts as invalid, so forgetting a record never makes a deep delta valid). O(`MAX_OWNER_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
@@ -689,7 +689,7 @@ pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
     for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
         match core.created(&cur) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-            Some(CreationRecord::KeyActor { .. }) => return false,
+            Some(CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. }) => return false,
             None => return true,
         }
     }

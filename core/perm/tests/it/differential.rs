@@ -22,27 +22,9 @@ struct JointWorld {
 fn joint_world(h: &joint::JHist) -> JointWorld {
     let mut w = World::new();
     let nodes = w.nodes(h.nodes);
-    let mut actors: Vec<Tid> = Vec::new();
-    let mut top: Vec<Tid> = Vec::new();
-    for o in &h.owners {
-        let (owner, tp) = match *o {
-            joint::Owner::Node(n) => (nodes[n], nodes[n]),
-            joint::Owner::Actor(y) => (actors[y], top[y]),
-        };
-        actors.push(w.thing(owner));
-        top.push(tp);
-    }
+    let (actors, top) = joint_actors(&mut w, h, &nodes);
+    joint_genesis(&mut w, h, &nodes, &actors, &top, Some(&gen_id));
     let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
-    let mut g = 0;
-    for (m, row) in h.genesis.iter().enumerate() {
-        for (x, &r) in row.iter().enumerate() {
-            if let Some(r) = model_role(r) {
-                g += 1;
-                let recv: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-                w.commit_id(gen_id(g), top[x], 0, &[(actors[x], ent(m), Some(Edge::new(r)))], &recv);
-            }
-        }
-    }
     let mut ids = Vec::new();
     for (i, jw) in h.writes.iter().enumerate() {
         let id = cid(jw.id);
@@ -59,10 +41,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
     let jw = joint_world(h);
     let o = joint::walk(h);
     let tl = Timeline::evaluate(&jw.w.held());
-    let owner_of = |x: usize| match h.owners[x] {
-        joint::Owner::Node(n) => n,
-        joint::Owner::Actor(y) => h.nodes + y,
-    };
+    let owner_of = |x: usize| h.owner(x);
     for n in 0..h.nodes {
         for x in 0..h.owners.len() {
             let (m, p) = (model_role(o.roles[n][x]), tl.role(&jw.nodes[n], &jw.actors[x], At::END));
@@ -74,7 +53,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
     let ents = h.nodes + h.owners.len();
     for m in 0..ents {
         for x in 0..h.owners.len() {
-            if m == owner_of(x) || m == h.nodes + x {
+            if owner_of(x) == Some(m) || m == h.nodes + x {
                 continue;
             }
             let holder = if m < h.nodes { jw.nodes[m] } else { jw.actors[m - h.nodes] };
@@ -85,7 +64,7 @@ fn joint_diff(h: &joint::JHist) -> Option<String> {
         }
     }
     for (i, jwr) in h.writes.iter().enumerate() {
-        if jwr.holder == owner_of(jwr.target) {
+        if owner_of(jwr.target) == Some(jwr.holder) {
             continue;
         }
         let id = WriteId::Op(jw.ids[i], 0);

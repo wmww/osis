@@ -651,3 +651,16 @@ fn serve_survives_a_bad_socket_dir() {
     let _ = std::fs::remove_dir_all(&d);
     let _ = std::fs::remove_dir_all(&xdg);
 }
+
+// notes/cli.md Command table `ownerless`, spec/permissions.md §1: an ownerless thing has no owner
+// and this person as first admin; a key actor or unknown actor as admin is refused.
+#[test]
+fn ownerless_plan_cli() {
+    let s = S::mem();
+    let t = s.ok(&["ownerless", "me"]).line().to_string();
+    assert_eq!(s.ok(&["role", &t]).line(), "admin");
+    assert!(s.ok(&["show", &t]).out.contains("owner\tnone"));
+    assert!(s.ok(&["roster", &t]).out.contains("admin"));
+    s.ok(&["set", &t, "name.0", "\"chat\""]);
+    assert_ne!(s.code(&["ownerless", &t[..t.len() - 1]]), 0);
+}

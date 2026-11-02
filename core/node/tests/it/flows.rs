@@ -2672,3 +2672,64 @@ fn frontier_lists_what_the_demoter_may_not_purge_spec_perm_5_1() {
         }
     }
 }
+
+// spec/permissions.md §1 (ownerless things), §3 (lockout recovery), §6; spec/wire.md §3: person 0
+// creates ownerless O (an ownerless chat) with itself as first admin and grants person 1 admin,
+// persons 2 and 3 write. Nobody owns O; its admins are equal: person 1 removes person 0. Writer 2
+// rotates O to itself; the remaining admin recovers. A thing O owns compacts its roster (O's
+// admin acts through its owner chain); O's own roster never does.
+#[test]
+fn ownerless_chat_spec_perm_1() {
+    let (mut lp, ps) = people(4, 581);
+    let (o, done) = lp.peers[0].engine.create_ownerless(&ps[0]).unwrap();
+    assert_eq!(done.commits.len(), 1);
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    let aks: BTreeSet<&str> = h.aspects.iter().map(|a| a.ak.as_str()).collect();
+    assert_eq!(aks, BTreeSet::from(["created.0", "secrets.0", "keys.0", "roles.0"]));
+    assert_eq!(lp.peers[0].engine.owner(&o), None);
+    assert_eq!(lp.peers[0].engine.role_on(&o), Some(Role::Admin));
+    assert!(newest_read(&lp, 0, o).is_some(), "secrets of its own at creation");
+    for (p, r) in [(ps[1], Role::Admin), (ps[2], Role::Write), (ps[3], Role::Write)] {
+        lp.peers[0].engine.grant(&o, &p, &edge_of(r)).unwrap();
+    }
+    spread(&mut lp);
+    for (i, r) in [Role::Admin, Role::Admin, Role::Write, Role::Write].into_iter().enumerate() {
+        assert_eq!(lp.peers[i].engine.role_on(&o), Some(r), "peer {i}");
+        assert_eq!(lp.peers[i].engine.roster(&o).get(&ps[0]).map(|e| e.role), Some(Role::Admin), "peer {i}: the record's edge");
+    }
+    // no owner chain: nobody may write a roster snapshot of O
+    for i in 0..2 {
+        assert!(matches!(lp.peers[i].engine.roster_snapshot(&o, None), Err(osis_node::Error::Permission { .. })), "peer {i}");
+    }
+    // equal admins: the first admin is removed like any
+    lp.peers[1].engine.demote(&o, &remove(ps[0])).unwrap();
+    spread(&mut lp);
+    for i in 0..4 {
+        assert!(!lp.peers[i].engine.roster(&o).contains_key(&ps[0]), "peer {i}");
+    }
+    assert_eq!(lp.peers[0].engine.role_on(&o), None);
+    assert_eq!(lp.peers[1].engine.role_on(&o), Some(Role::Admin));
+    // lockout recovery by the remaining admin
+    let e0 = newest_read(&lp, 1, o).unwrap();
+    lp.peers[2].engine.rotate_boxing_only(&[o], &[Role::Read, Role::Write], &[ps[2]]).unwrap().unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 1, o), None, "the admin is locked out");
+    lp.peers[1].engine.demote_repudiating(&o, &remove(ps[2])).unwrap();
+    let e1 = newest_read(&lp, 1, o).unwrap();
+    assert_eq!(e1.n(), e0.n() + 1, "rotated from the epoch before the vandal's");
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 3, o), Some(e1));
+    assert_eq!(lp.peers[2].engine.role_on(&o), None);
+    assert_eq!(sealed_write(&mut lp, 3, o, "member"), BTreeSet::from([1]));
+    // a thing O owns: O's admin compacts its roster
+    let t = thing_of(&mut lp, 1, o);
+    lp.peers[1].engine.grant(&t, &ps[3], &edge_of(Role::Write)).unwrap();
+    let done = lp.peers[1].engine.roster_snapshot(&t, None).unwrap();
+    let snap = *done.commits.last().unwrap();
+    spread(&mut lp);
+    for i in [1, 3] {
+        assert_eq!(lp.peers[i].engine.epoch_start(&t), Some(snap), "peer {i}");
+        assert_eq!(lp.peers[i].engine.epoch_start(&o), None, "peer {i}");
+    }
+    assert_eq!(lp.peers[3].engine.role_on(&t), Some(Role::Write));
+}

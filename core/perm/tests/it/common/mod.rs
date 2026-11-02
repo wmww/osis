@@ -353,30 +353,63 @@ pub fn model_role(r: roles_model::Role) -> Option<Role> {
     }
 }
 
-/// A joint-model history as a world (genesis: writes by the top key actor at t=0).
-pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>, Vec<Tid>) {
+/// A joint-model history's actors in `w` (nodes `nodes`): their tids and the key actor at the
+/// top of each one's owner chain (none below an ownerless actor). Genesis edges are writes by
+/// that key actor at t=0 (`genesis`, from `ids` when given); an ownerless actor's one genesis
+/// edge is its record's first admin (spec/permissions.md §1), the actor below it have none
+/// (`joint::random_hist`).
+pub fn joint_actors(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid]) -> (Vec<Tid>, Vec<Option<Tid>>) {
     use roles_model::joint::Owner;
-    let mut w = World::new();
-    w.next = 1000 + u32::from(salt) * 100_000;
-    let nodes = w.nodes_salted(h.nodes, salt);
-    let (mut actors, mut top): (Vec<Tid>, Vec<Tid>) = (Vec::new(), Vec::new());
-    for o in &h.owners {
-        let (owner, tp) = match *o {
-            Owner::Node(n) => (nodes[n], nodes[n]),
-            Owner::Actor(y) => (actors[y], top[y]),
+    let (mut actors, mut top): (Vec<Tid>, Vec<Option<Tid>>) = (Vec::new(), Vec::new());
+    for (x, o) in h.owners.iter().enumerate() {
+        let (t, tp) = match *o {
+            Owner::Node(n) => (w.thing(nodes[n]), Some(nodes[n])),
+            Owner::Actor(y) => (w.thing(actors[y]), top[y]),
+            Owner::None => {
+                let m = (0..h.genesis.len()).find(|m| h.genesis[*m][x] == roles_model::Role::Admin).expect("an ownerless actor's first admin");
+                let admin = if m < h.nodes { nodes[m] } else { actors[m - h.nodes] };
+                let mut nonce = [5u8; 32];
+                nonce[..8].copy_from_slice(&(w.created.len() as u64).to_be_bytes());
+                let rec = CreationRecord::Ownerless { admin, nonce };
+                let t = rec.tid();
+                w.created.insert(t, rec);
+                (t, None)
+            }
         };
-        actors.push(w.thing(owner));
+        actors.push(t);
         top.push(tp);
     }
+    (actors, top)
+}
+
+/// The genesis edges of `h` as writes by the top key actors at t=0 (`joint_actors`), commit IDs
+/// from `id` when given.
+pub fn joint_genesis(w: &mut World, h: &roles_model::joint::JHist, nodes: &[Tid], actors: &[Tid], top: &[Option<Tid>], id: Option<&dyn Fn(usize) -> CommitId>) {
     let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
     let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
+    let mut g = 0;
     for (m, row) in h.genesis.iter().enumerate() {
         for (x, &r) in row.iter().enumerate() {
-            if let Some(r) = model_role(r) {
-                w.set(top[x], actors[x], ent(m), Some(Edge::new(r)), 0, &all0);
+            let (Some(r), Some(tp)) = (model_role(r), top[x]) else { continue };
+            g += 1;
+            match id {
+                Some(f) => w.commit_id(f(g), tp, 0, &[(actors[x], ent(m), Some(Edge::new(r)))], &all0),
+                None => {
+                    w.set(tp, actors[x], ent(m), Some(Edge::new(r)), 0, &all0);
+                }
             }
         }
     }
+}
+
+/// A joint-model history as a world (genesis: writes by the top key actor at t=0).
+pub fn joint_world(h: &roles_model::joint::JHist, salt: u8) -> (World, Vec<Tid>, Vec<Tid>) {
+    let mut w = World::new();
+    w.next = 1000 + u32::from(salt) * 100_000;
+    let nodes = w.nodes_salted(h.nodes, salt);
+    let (actors, top) = joint_actors(&mut w, h, &nodes);
+    joint_genesis(&mut w, h, &nodes, &actors, &top, None);
+    let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
     for (i, jw) in h.writes.iter().enumerate() {
         let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
         let mut id = cid(jw.id);

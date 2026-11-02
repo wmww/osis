@@ -117,9 +117,9 @@ impl Engine {
                 while !out.contains(&cur) {
                     let Some(rec) = records(&cur) else { break };
                     out.insert(cur);
-                    match rec {
-                        osis_base::CreationRecord::Thing { owner, .. } => cur = *owner,
-                        osis_base::CreationRecord::KeyActor { .. } => break,
+                    match rec.owner() {
+                        Some(owner) => cur = owner,
+                        None => break,
                     }
                 }
             }

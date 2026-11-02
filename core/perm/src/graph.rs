@@ -14,6 +14,9 @@ pub enum Owner {
     Actor(Tid),
     /// A key actor: owns itself.
     Key,
+    /// An ownerless thing: no owner link; the record's first admin holds an admin edge on it
+    /// from the start (spec/permissions.md §1).
+    Ownerless(Tid),
 }
 
 /// Authority class of a node on a thing (spec/permissions.md §5.1 step 3), ordered: owner
@@ -69,6 +72,7 @@ impl Owners {
         let link = match rec {
             CreationRecord::Thing { owner, .. } => Owner::Actor(*owner),
             CreationRecord::KeyActor { .. } => Owner::Key,
+            CreationRecord::Ownerless { admin, .. } => Owner::Ownerless(*admin),
         };
         if let Owner::Actor(y) = link {
             self.owned.entry(y).or_default().push(t);
@@ -85,6 +89,13 @@ impl Owners {
     }
     pub fn is_key(&self, t: &Tid) -> bool {
         self.owner(t) == Some(Owner::Key)
+    }
+    /// The first admin edge of each ownerless thing: (holder, thing).
+    pub fn genesis(&self) -> impl Iterator<Item = (Tid, Tid)> + '_ {
+        self.owner.iter().filter_map(|(t, o)| match o {
+            Owner::Ownerless(a) if a != t => Some((*a, *t)),
+            _ => None,
+        })
     }
     pub fn owned(&self, t: &Tid) -> &[Tid] {
         self.owned.get(t).map_or(&[], |v| v.as_slice())

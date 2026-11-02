@@ -202,7 +202,12 @@ pub fn rotate(actor: &Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, held_secr
     for &r in roles {
         let re = held.role(r);
         let current = re.current();
-        let n = current.iter().map(Epoch::n).max().ok_or(Error::NoEpoch(r))?;
+        // no epoch at all: an ownerless thing's first (spec/crypto.md §3), n counted as 0
+        let n = match current.iter().map(Epoch::n).max() {
+            Some(n) => n,
+            None if re.epochs().next().is_none() => 0,
+            None => return Err(Error::NoEpoch(r)),
+        };
         let secret = Secret32::random(rng);
         let epoch = Epoch::derive(actor, r, n + 1, &secret)?;
         if r == Role::Read {

@@ -38,7 +38,7 @@ pub struct Held {
     commits: BTreeMap<Tid, Vec<Arc<RoleCommit>>>,
     snapshots: BTreeMap<Tid, Vec<Arc<RosterSnapshot>>>,
     created: BTreeMap<Tid, Rec>,
-    /// Holder -> things it is named on (edge writes, rosters, ledgers), with counts.
+    /// Holder -> things it is named on (edge writes, rosters, ledgers, an ownerless record), with counts.
     holders: BTreeMap<Tid, BTreeMap<Tid, usize>>,
     /// Thing -> holders named on it (the same pairs as `holders`).
     named: BTreeMap<Tid, BTreeSet<Tid>>,
@@ -136,6 +136,17 @@ impl Held {
         if class_only {
             // persisted: the same record, nothing perm reads changed
             return old;
+        }
+        // an ownerless thing's first admin is named on it by its record (spec/permissions.md §1)
+        let genesis = |r: Option<&Rec>| match r.map(|r| &r.record) {
+            Some(CreationRecord::Ownerless { admin, .. }) => vec![(*admin, t)],
+            _ => Vec::new(),
+        };
+        let (was, now) = (genesis(old.as_ref()), genesis(self.created.get(&t)));
+        if was != now {
+            self.count(was, false);
+            self.count(now, true);
+            self.edges += 1;
         }
         self.touched.insert(t);
         self.generation += 1;

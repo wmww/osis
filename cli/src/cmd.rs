@@ -549,6 +549,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let n = db.move_thing(ctx.tid(&t)?, ctx.tid(&owner)?, &p)?;
             ctx.emit(&[n.to_uri()], J::obj([("tid", J::tid(n))]))
         }
+        Cmd::Ownerless { admin } => {
+            let t = db.create_ownerless(ctx.tid(&admin)?)?;
+            ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
+        }
         Cmd::Same { a, b } => {
             let s = db.same_thing(ctx.tid(&a)?, ctx.tid(&b)?);
             ctx.emit(&[s.to_string()], J::obj([("same", J::Bool(s))]))?;

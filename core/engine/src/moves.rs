@@ -194,7 +194,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     for d in deltas.iter().filter(|_| !tx.core.skip_writer_rules) {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
     }
-    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+    let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     build_and_apply(tx, plan, deltas).map(Some)
 }
 
@@ -321,7 +321,7 @@ mod tests {
                 f.map_dots(&|x| (x.src == Source::commit(d)).then(|| Dot::new(Source::commit(c), x.ctr)));
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
-                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: c, author: ch.author, actor: ch.actor, ts: ch.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
                 let r = Resolved { tid: copy, ak: a.ak.clone(), fragment: f, lo: 0, hi: 0, schema: None, retention: Some(a.retention), expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })

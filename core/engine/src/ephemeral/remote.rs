@@ -571,9 +571,9 @@ impl Engine {
                 if self.core.durable_created(&cur).is_some() || !chain.insert(cur) {
                     break;
                 }
-                match &th.record {
-                    CreationRecord::Thing { owner, .. } => cur = *owner,
-                    CreationRecord::KeyActor { .. } => break,
+                match th.record.owner() {
+                    Some(owner) => cur = owner,
+                    None => break,
                 }
             }
         }
@@ -680,7 +680,7 @@ impl Engine {
         b.aspects = writes;
         b.ephemeral = Some(class);
         let built = {
-            let secrets = CommitSecrets { core: &self.core, actor, created: &creates, published: &published };
+            let secrets = CommitSecrets { core: &self.core, actor, created: &creates, first: &BTreeMap::new(), published: &published };
             let mut sink = MemoryBlobs::default();
             b.build(&self.core.id.keys().signing, &secrets, &mut sink, &mut *self.rng)
         };
@@ -785,7 +785,8 @@ impl Engine {
                 Some(CreationRecord::Thing { owner, .. }) if *owner == node => return true,
                 Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
                 Some(CreationRecord::KeyActor { .. }) => return cur == node,
-                None => return false,
+                // an ephemeral thing owns nothing durable: an ownerless one is always durable
+                Some(CreationRecord::Ownerless { .. }) | None => return false,
             }
         }
         false
@@ -1618,10 +1619,7 @@ impl Engine {
     /// a later commit about them brings the record again (notes/ephemeral.md Own covers).
     fn free_unused_records(&mut self, mut cands: BTreeSet<Tid>) {
         loop {
-            let owners: BTreeSet<Tid> = self.eph.things.values().filter_map(|e| match &e.record {
-                CreationRecord::Thing { owner, .. } => Some(*owner),
-                CreationRecord::KeyActor { .. } => None,
-            }).collect();
+            let owners: BTreeSet<Tid> = self.eph.things.values().filter_map(|e| e.record.owner()).collect();
             let free: Vec<Tid> = cands.iter().filter(|t| !owners.contains(t) && self.record_unused(t)).copied().collect();
             if free.is_empty() {
                 return;
