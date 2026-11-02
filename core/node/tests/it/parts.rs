@@ -1641,7 +1641,7 @@ fn parked_part_goes_at_its_expiry_spec_commits_5() {
 // spec/commits.md §4, §5, spec/sync.md §7: an honest commit overwriting a value with a short expiry on X
 // beside a write on Y, a stale copy of X's part reaching a node that syncs only X past T. It reads as if
 // the part never came: the older value stands, the aspect is flagged and the commit waits for Y. A writer's
-// snapshot listing it repairs the aspect and settles the flag; or Y's part applies the commit, and another
+// snapshot listing it repairs the aspect (the flag stays: never dormant); or Y's part applies the commit, and another
 // copy of X's part joins value-less, as it would have joined had Y's part come first.
 #[test]
 fn stale_copy_beside_a_thing_not_synced_reads_as_never_received_spec_commits_5() {
@@ -1681,7 +1681,8 @@ fn stale_copy_beside_a_thing_not_synced_reads_as_never_received_spec_commits_5()
     let _ = p.engine.ingest(&on(&pk, x), Vec::new());
     assert_eq!(p.engine.pending(), vec![(c, Reason::WaitDeltas)]);
     assert_eq!(p.engine.get(&x, &brief).unwrap(), Some(s("older")));
-    // a writer's snapshot: its value-less copy supersedes the older value, the flag is dormant
+    // a writer's snapshot: its value-less copy supersedes the older value; the flag stays, the
+    // digests agree
     let mut r = new();
     let _ = r.engine.ingest(&on(&pk, x), Vec::new());
     lp.peers[0].clock.advance(1);
@@ -1690,7 +1691,7 @@ fn stale_copy_beside_a_thing_not_synced_reads_as_never_received_spec_commits_5()
     let _ = r.engine.ingest(&snap.bytes, snap.blobs.clone());
     r.engine.reexamine().unwrap();
     assert_eq!(r.engine.get(&x, &brief).unwrap(), None, "repaired");
-    assert!(!flagged(&mut r), "settled");
+    assert!(flagged(&mut r), "a pending-expiry flag is never dormant");
     lp.peers[0].engine.tick().unwrap();
     assert_eq!(r.engine.state_digest(&x, &brief).unwrap(), lp.peers[0].engine.state_digest(&x, &brief).unwrap());
     // Y's part: the commit applies; the dropped part stays out until a copy comes, then it joins
