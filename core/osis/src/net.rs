@@ -81,14 +81,18 @@ pub(crate) enum Net {
 /// Ends the driver's runtime use after the driver task ended. An engine call runs in
 /// `block_in_place`, off the workers, so a runtime shutdown does not wait for it, and the task
 /// polled on after it returns would find the runtime's timers gone (tokio panics). osis's own
-/// runtime (`Runtime::Own`) is shut down by a thread that waits for the task's end; `close` on
-/// the app's runtime waits for it (`Net::ended`), so the app may shut its runtime down next.
+/// runtime (`Runtime::Own`) is shut down by a thread that waits for the task's end; `close`
+/// waits for that thread (`Net::ended`: every task of the runtime, the host's too, is gone, so
+/// the host store is closed), on the app's runtime for the task's end, so the app may shut its
+/// runtime down next.
 pub(crate) struct Stop {
     own: Option<tokio::runtime::Runtime>,
-    /// Disconnects when the driver task ends (or was never spawned); shared by every `close`.
+    /// Disconnects when the driver task ends (or was never spawned).
     ended: Ended,
     /// The driver task holds this until it ends.
     task: Option<std::sync::mpsc::Sender<()>>,
+    /// `Runtime::Own`: the stopping thread holds the sender until the runtime shut down.
+    freed: Option<(std::sync::mpsc::Sender<()>, Ended)>,
 }
 
 impl Drop for Net {
@@ -96,12 +100,14 @@ impl Drop for Net {
         let Net::Driver { ctl, stop, .. } = self else { return };
         // the driver ends now, not when its last timer fires
         let _ = ctl.send(Control::Shutdown);
-        let Some(Stop { own: Some(rt), ended, .. }) = lock(stop).take() else { return };
+        let Some(Stop { own: Some(rt), ended, freed, .. }) = lock(stop).take() else { return };
+        // `close` waits until this drops: the runtime, with every task on it, is gone
+        let freed = freed.map(|(tx, _)| tx);
         // this drop may run inside the driver's engine call: wait on another thread
-        let job = Arc::new(Mutex::new(Some((rt, ended))));
+        let job = Arc::new(Mutex::new(Some((rt, ended, freed))));
         let j = job.clone();
         let spawned = std::thread::Builder::new().name("osis-sync-stop".into()).spawn(move || {
-            if let Some((rt, ended)) = lock(&j).take() {
+            if let Some((rt, ended, _freed)) = lock(&j).take() {
                 // bounded: a driver awaiting the network is not in an engine call (the database
                 // is gone) and may be dropped
                 let _ = lock(&ended).recv_timeout(STOP_WAIT);
@@ -109,8 +115,9 @@ impl Drop for Net {
             }
         });
         if spawned.is_err()
-            && let Some((rt, _)) = lock(&job).take()
+            && let Some((rt, _, _)) = lock(&job).take()
         {
+            // no thread to wait on: `close` returns before the tasks are gone
             rt.shutdown_background();
         }
     }
@@ -123,9 +130,9 @@ const STOP_WAIT: Duration = Duration::from_secs(5);
 /// Disconnects when the driver task ends.
 pub(crate) type Ended = Arc<Mutex<std::sync::mpsc::Receiver<()>>>;
 
-/// Waits until the driver task (on the app's multi-thread runtime, which runs it meanwhile)
-/// ended: it ends at the `Shutdown` the closed database's `Net` queued (it polls no timer while
-/// a control message waits, and runs no engine call: the database is gone).
+/// Waits until the driver is gone (`Net::ended`): the task ends at the `Shutdown` the closed
+/// database's `Net` queued (it polls no timer while a control message waits, and runs no engine
+/// call: the database is gone); on osis's own runtime the stopping thread then shuts it down.
 pub(crate) fn wait_ended(ended: &Ended) {
     blocking(|| {
         let _ = lock(ended).recv();
@@ -153,20 +160,27 @@ impl Net {
             }
         };
         let (task, ended) = std::sync::mpsc::channel();
+        let freed = own.is_some().then(|| {
+            let (tx, rx) = std::sync::mpsc::channel();
+            (tx, Arc::new(Mutex::new(rx)))
+        });
         let (ctl, rx) = mpsc::unbounded_channel();
-        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Arc::new(Mutex::new(ended)), task: Some(task) })) }, Some(rx)))
+        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Arc::new(Mutex::new(ended)), task: Some(task), freed })) }, Some(rx)))
     }
 
-    /// On the app's multi-thread runtime: what disconnects once the driver task ended (`close`
-    /// waits on it). Not on a current-thread one: the driver runs only while the app drives that
-    /// runtime, and runs no engine call in `block_in_place` there, so shutting it down at any
-    /// time is safe.
+    /// What disconnects once the driver is gone (`close` waits on it): on osis's own runtime,
+    /// once that runtime shut down (the stopping thread is bounded: `STOP_WAIT` twice); on the
+    /// app's multi-thread runtime, once the driver task ended. Not on a current-thread one: the
+    /// driver runs only while the app drives that runtime (`close` waiting there could hang), and
+    /// runs no engine call in `block_in_place` there, so shutting it down at any time is safe.
     pub fn ended(&self) -> Option<Ended> {
         let Net::Driver { stop, handle, .. } = self else { return None };
-        if handle.runtime_flavor() != tokio::runtime::RuntimeFlavor::MultiThread {
-            return None;
+        let s = lock(stop);
+        let s = s.as_ref()?;
+        if let Some((_, freed)) = &s.freed {
+            return Some(freed.clone());
         }
-        lock(stop).as_ref().filter(|s| s.own.is_none()).map(|s| s.ended.clone())
+        (handle.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread).then(|| s.ended.clone())
     }
 
     /// Whether anything carries actions.

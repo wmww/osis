@@ -388,8 +388,11 @@ impl Osis {
     /// Closes this handle. With no other handle left (clones, upgraded `WeakOsis`, value streams,
     /// text sessions, a `Joining`), returns once the database is closed (every commit is already
     /// durable), so the store can be opened again at once; a callback or sync engine call still
-    /// running ends first (with `Runtime::Tokio` on a multi-thread runtime, also its sync task, so
-    /// the app may shut that runtime down). While other handles keep it open, this one is closed
+    /// running ends first, and so does background sync, the host included (its store is closed
+    /// too): with `Runtime::Own` its runtime is shut down (bounded, about 10 s at worst), with
+    /// `Runtime::Tokio` on a multi-thread runtime its task ends (so the app may shut that runtime
+    /// down); on a current-thread runtime `close` does not wait for sync, which ends once the app
+    /// drives that runtime again. While other handles keep it open, this one is closed
     /// and it fails `StillOpen` at once. From a callback (the dispatcher, which holds the database
     /// while it runs) it fails `Invalid` at once: drop the handle instead. Never call it while
     /// holding something a running callback may wait for (a lock, a channel it awaits): close
@@ -408,7 +411,8 @@ impl Osis {
             return Err(Error::StillOpen { handles: users });
         }
         if let Some(e) = ended {
-            // on the app's runtime: the driver ended, so the app may shut its runtime down
+            // the driver, and the host with it, is gone: the host store is free and the app may
+            // shut its runtime down
             crate::net::wait_ended(&e);
         }
         Ok(())
