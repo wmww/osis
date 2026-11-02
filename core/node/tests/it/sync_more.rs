@@ -10,6 +10,7 @@ use osis_node::sync::{EntryKind, SyncConfig};
 use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
 use osis_host::HostPolicy;
+use osis_proto::LabelStore;
 use std::collections::BTreeSet;
 
 /// Commits under label `l` that `n` knows, with the aspects their headers touch.
@@ -163,13 +164,14 @@ fn reconciliation_fallback_spec_sync_6() {
 }
 
 /// Reader B holds v0 of a keep-at-most-1-h aspect; offline, A replaces it 5 times and the host
-/// deletes the replaced bodies and trims its log (`log_keep` 16) past B's cursor; `wipe`: the
-/// host then loses everything (a new log ID) and A registers and uploads again; `restart`: B
+/// deletes the replaced bodies and trims its log past B's cursor: by `log_keep` 16, or with
+/// `age` (default policy) by age, B staying away past `TOMBSTONE_LIFETIME`; `wipe`: the host
+/// then loses everything (a new log ID) and A registers and uploads again; `restart`: B
 /// restarts before coming back (its first sync there reconciles before using the cursor). B
 /// back online: whether it still knows v0's entry, and whether its entries are the host's.
-fn stale_entry_after_fallback(wipe: bool, restart: bool) -> (bool, bool) {
+fn stale_entry_after_fallback(age: bool, wipe: bool, restart: bool) -> (bool, bool) {
     let mut net = Net::new();
-    let host = net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() });
+    let host = if age { net.add_host() } else { net.add_host_with(HostPolicy { log_keep: 16, ..HostPolicy::default() }) };
     let a = net.node(1, &[host]);
     let b = net.node(2, &[host]);
     let g = net.group(a, &[(b, Role::Read)], &[host]);
@@ -192,6 +194,11 @@ fn stale_entry_after_fallback(wipe: bool, restart: bool) -> (bool, bool) {
     }
     net.advance(2 * 3_600_000 + 60_000);
     net.run();
+    if age {
+        net.advance(osis_base::format::TOMBSTONE_LIFETIME_MS);
+        net.run();
+        assert_eq!(net.hosts[host].hub.store().log_after(&l, 0, 1).unwrap(), None, "the log was trimmed by age");
+    }
     if wipe {
         net.set_online(a, false);
         net.wipe_host(host);
@@ -219,21 +226,28 @@ fn stale_entry_after_fallback(wipe: bool, restart: bool) -> (bool, bool) {
 // the reader's sync state as a Deleted record would take it.
 #[test]
 fn trimmed_log_reconcile_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(false, false), (false, true));
+    assert_eq!(stale_entry_after_fallback(false, false, false), (false, true));
+}
+
+// spec/sync.md §4, §6: as above with the log trimmed by age: the host drops its log up to
+// removals older than `TOMBSTONE_LIFETIME`, and a reader away longer converges through code 15.
+#[test]
+fn log_trimmed_by_age_reconcile_deletes_absent_entries_spec_sync_6() {
+    assert_eq!(stale_entry_after_fallback(true, false, false), (false, true));
 }
 
 // spec/sync.md §6: as above for a restarted reader: the reconciliation its first sync after
 // the start runs keeps durable presence, so the code 15 from its kept cursor still finds v0.
 #[test]
 fn trimmed_log_after_restart_deletes_absent_entries_spec_sync_6() {
-    assert_eq!(stale_entry_after_fallback(false, true), (false, true));
+    assert_eq!(stale_entry_after_fallback(false, false, true), (false, true));
 }
 
 // spec/sync.md §6, spec/wire.md §11.2 (code 10): a cursor of another log (a wiped host)
 // reconciles presence only: what the reader knew stays known, nothing taken as deleted.
 #[test]
 fn other_log_reconcile_keeps_entries_spec_sync_6() {
-    assert!(stale_entry_after_fallback(true, false).0);
+    assert!(stale_entry_after_fallback(false, true, false).0);
 }
 
 // spec/permissions.md §4 (growth, notes/growth.md): a node's record of a certificate copy it

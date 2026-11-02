@@ -20,7 +20,8 @@
 //! `T label blob` tombstone time; `G label seq` log record; `R blob` reference count and the
 //! blob's prefix bytes (`blob_prefix`);
 //! sweep indexes `X t label blob` (expiry), `P t label blob` (pending deletion),
-//! `Y t label blob` (tombstone drop), `Z t label step` (claim-set drop, with its `H` rows);
+//! `Y t label blob` (a removed entry's tombstone drop and log trim, holding the log position
+//! it went at), `Z t label step` (claim-set drop, with its `H` rows);
 //! `Q peer label` replication position; `N` host-wide totals (labels, entries, bytes).
 //!
 //! Ephemeral entries (blob prefix class ephemeral, spec/sync.md §4) are held in memory only:
@@ -690,6 +691,9 @@ impl Tx {
     }
 }
 
+/// A due index row: (row key, rest after `t`, value).
+type Due = (Vec<u8>, Vec<u8>, Vec<u8>);
+
 /// Host-wide totals.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Totals {
@@ -1192,7 +1196,7 @@ impl HostStore {
             if self.eph_entry(label, b).is_some() {
                 self.eph_remove(label, b, EphRemove::Delete(now))?;
             } else if let Some(row) = self.row(label, b)? {
-                self.remove(&mut tx, b, &row, Some(now))?;
+                self.remove(&mut tx, b, &row, now, true)?;
                 durable = true;
             }
         }
@@ -1289,9 +1293,11 @@ impl HostStore {
         self.policy.deposit_factor.max(1).saturating_mul(64u64.saturating_add(m.head_claims.saturating_mul(4)))
     }
 
-    /// Removes a held entry within `tx`: counters, indexes, blob reference; a tombstone when
-    /// `tombstone_at` is given.
-    fn remove(&self, tx: &mut Tx, blob: &BlobId, row: &Row, tombstone_at: Option<u64>) -> Result<(), StoreError> {
+    /// Removes a held entry at `now` within `tx`: counters, indexes, blob reference; a tombstone
+    /// and a deletion record when `tombstone`. Either way a `Y` row due `tombstone_ms` later
+    /// holds the log position the entry is gone at: the sweep then drops the log up to it
+    /// (spec/sync.md §4; a cursor below falls back to range reconciliation, §6).
+    fn remove(&self, tx: &mut Tx, blob: &BlobId, row: &Row, now: u64, tombstone: bool) -> Result<(), StoreError> {
         let l = tx.label.0;
         tx.batch.delete(key(b'E', &[&l, &blob.0]));
         if let Some(t) = row.expiry {
@@ -1307,16 +1313,18 @@ impl HostStore {
             m.dep_n = m.dep_n.saturating_sub(1);
             m.dep_bytes = m.dep_bytes.saturating_sub(row.meta.size);
         }
-        if let Some(t) = tombstone_at {
+        let drop = now.saturating_add(self.policy.tombstone_ms);
+        let seq = if tombstone {
             // A tombstone already present keeps its first drop time row; replace it.
             if let Some(old) = self.get(&key(b'T', &[&l, &blob.0]))? {
                 tx.batch.delete(key(b'Y', &[&old, &l, &blob.0]));
             }
-            let drop = t.saturating_add(self.policy.tombstone_ms);
             tx.batch.put(key(b'T', &[&l, &blob.0]), be(drop).to_vec());
-            tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), vec![]);
-            tx.append(&LogRecord::Deleted(*blob));
-        }
+            tx.append(&LogRecord::Deleted(*blob))
+        } else {
+            tx.meta.next_seq
+        };
+        tx.batch.put(key(b'Y', &[&be(drop), &l, &blob.0]), be(seq).to_vec());
         let (refs, prefix) = self.refs(blob)?;
         if refs <= 1 {
             tx.batch.delete(key(b'R', &[&blob.0]));
@@ -1333,18 +1341,18 @@ impl HostStore {
         Ok((read_u64(&b, 0)?, b.get(8..).unwrap_or_default().to_vec()))
     }
 
-    /// Up to `limit` due index rows `tag t ...` with `t <= now`: (row key, rest after `t`).
-    fn due(&self, tag: u8, now: u64, limit: usize) -> Result<Vec<KeyValue>, StoreError> {
+    /// Up to `limit` due index rows `tag t ...` with `t <= now`.
+    fn due(&self, tag: u8, now: u64, limit: usize) -> Result<Vec<Due>, StoreError> {
         let end = key(tag, &[&be(now.saturating_add(1))]);
         let start = [tag];
         let end = if now == u64::MAX { osis_store::prefix_end(&start) } else { Some(end) };
         let rows = self.scan(&start, end.as_deref(), limit)?;
-        Ok(rows.into_iter().map(|(k, _)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec())).collect())
+        Ok(rows.into_iter().map(|(k, v)| (k.clone(), k.get(9..).unwrap_or(&[]).to_vec(), v)).collect())
     }
 
     /// Expires entries (no tombstone, no event), executes due timed deletes, drops old tombstones
-    /// and claim sets superseded for `claim_keep_ms`; at most `budget` index rows, one commit per
-    /// label. An index row that does not parse, or names a label not held, is dropped.
+    /// and the log up to removals that old, and claim sets superseded for `claim_keep_ms`; at
+    /// most `budget` index and log rows, one commit per label. An index row that does not parse, or names a label not held, is dropped.
     pub fn sweep(&mut self, now: u64, budget: usize) -> Result<Swept, StoreError> {
         let mut out = Swept::default();
         let mut left = budget.max(1);
@@ -1353,7 +1361,7 @@ impl HostStore {
         for (tag, tomb) in [(b'X', false), (b'P', true)] {
             let due = self.due(tag, now, left)?;
             left -= due.len();
-            for (k, rest) in due {
+            for (k, rest, _) in due {
                 match (read_arr(&rest, 0).map(LabelId), read_arr(&rest, 16).map(BlobId)) {
                     (Ok(l), Ok(b)) if rest.len() == 48 => by_label.entry(l).or_default().push((k, b, tomb)),
                     _ => junk.delete(k),
@@ -1375,7 +1383,7 @@ impl HostStore {
                 }
                 let raw = self.get(&key(b'E', &[&label.0, &blob.0]))?;
                 if let Some(Ok(row)) = raw.map(|r| Row::decode(&r)) {
-                    self.remove(&mut tx, &blob, &row, tomb.then_some(now))?;
+                    self.remove(&mut tx, &blob, &row, now, tomb)?;
                 }
             }
             if tx.grew {
@@ -1383,17 +1391,56 @@ impl HostStore {
             }
             self.finish(tx)?;
         }
+        // removals past their lifetime: the tombstone goes, and the label's log up to the
+        // highest position an entry went at (spec/sync.md §4; each record once over the log's
+        // life), its `G` rows counted against the budget; a trim the budget cuts short keeps that
+        // highest `Y` row and its tombstone for the next sweep
         let mut b = Writes::default();
         let due = self.due(b'Y', now, left)?;
         left -= due.len();
-        for (k, rest) in due {
+        let mut trim: BTreeMap<LabelId, (u64, Vec<u8>, Vec<u8>)> = BTreeMap::new();
+        for (k, rest, v) in due {
+            if let (Ok(l), Ok(seq)) = (read_arr(&rest, 0).map(LabelId), read_u64(&v, 0))
+                && trim.get(&l).is_none_or(|t| t.0 <= seq)
+            {
+                if let Some((_, k, rest)) = trim.insert(l, (seq, k, rest)) {
+                    b.delete(key(b'T', &[&rest]));
+                    b.delete(k);
+                }
+                continue;
+            }
             b.delete(key(b'T', &[&rest]));
             b.delete(k);
+        }
+        for (label, (seq, k, rest)) in trim {
+            let mut done = true;
+            if let Ok(mut tx) = self.tx(&label)
+                && seq > tx.meta.horizon
+            {
+                let prefix = key(b'G', &[&label.0]);
+                let rows = self.scan(&prefix, Some(&key(b'G', &[&label.0, &be(seq.saturating_add(1))])), left)?;
+                done = rows.len() < left;
+                left -= rows.len();
+                for (k, _) in &rows {
+                    tx.batch.delete(k.clone());
+                }
+                tx.meta.records = tx.meta.records.saturating_sub(rows.len() as u64);
+                tx.meta.horizon = match rows.last() {
+                    _ if done => seq,
+                    Some((k, _)) => read_u64(k, 17)?,
+                    None => tx.meta.horizon,
+                };
+                self.finish(tx)?;
+            }
+            if done {
+                b.delete(key(b'T', &[&rest]));
+                b.delete(k);
+            }
         }
         // a dropped claim set's bytes, its index rows' included, leave the label's and the
         // host's totals; each index row counts against the budget (a set has up to `MAX_CLAIMS`
         // keys), so a set may go over several sweeps, its `Z` row kept until the last
-        for (k, rest) in self.due(b'Z', now, left)? {
+        for (k, rest, _) in self.due(b'Z', now, left)? {
             if left == 0 {
                 break;
             }
@@ -1667,7 +1714,7 @@ impl LabelStore for HostStore {
         if !self.rates.take(label, Rate::Delete, self.policy.deletes) {
             return Ok(Code::RATE_LIMITED);
         }
-        self.remove(&mut tx, blob_id, &row, Some(now))?;
+        self.remove(&mut tx, blob_id, &row, now, true)?;
         self.finish(tx)?;
         Ok(Code::OK)
     }

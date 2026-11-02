@@ -5,13 +5,13 @@ Marks: **M** = measured, **E** = estimated from encodings or spec, **C** = the c
 
 The probe for the M rows: 400 overwrites of one register by one node, compacted after each 200. Store bytes are MemoryBackend `dump()` key+value totals, page overhead included, debug build. Measured before store rows were padded (notes/local-store.md, Row padding: about +4% on rows, small units at least 512 B), not re-measured. Results:
 - Node store: 47 KB to 186 KB to 326 KB. That is about **690 B per overwrite, kept after compaction**. It is still there after 32 days, once tombstones and entry rows have gone.
-- Host store: 7.5 KB to 119 KB, then 66 KB after 32 days. That is about **146 B per overwrite after tombstones expire**.
+- Host store: 7.5 KB to 119 KB, then 66 KB after 32 days. That was about **146 B per overwrite after tombstones expire**, the log records (row 2), which the log trim by age now drops with them.
 
 ## Plain database, frequent overwrites (worst first)
 | # | Cause | Where | Grows with, size | Kind | Issue |
 |---|---|---|---|---|---|
 | 1 | Commit header, meta, record and voided mark kept after the bodies drop (commits.md §5 "never headers") | Node, old devices only (new devices never fetch compacted headers) | Per commit ever applied: header + signature about 290 B (E, budget test ≤ 330 B with a small delta) + meta about 90 B + record ≥ 14 B; **about 690 B per commit in the store (M)** | Closable: header forgetting | issues/session-sources.md |
-| 2 | Host per-label log: add and delete records (33-41 B each) | Host | Per blob ever added and deleted: **about 146 B per overwrite (M)**. Trimmed only at `log_keep` = 2^20 records per label (C), so bounded at about 40-150 MB per label | Closable: trim the log up to removals older than `TOMBSTONE_LIFETIME` (design in the issue); unblocked: a trimmed cursor gets code 15 and reconciliation deletes what the host lacks | issues/host-log-trim-by-age.md |
+| 2 | Host per-label log: add and delete records (33-41 B each) | Host | Per blob added and removed within the last `TOMBSTONE_LIFETIME`: about 146 B per overwrite (M, before the trim). The sweep drops each label's log up to its removals older than that (C), so overwrite churn keeps about 30 days of records; `log_keep` = 2^20 per label still caps it | Bounded (time) | none |
 | 3 | Receipt record `r/`: a 24 B `(lo, hi, t)` per one-minute arrival bucket per (aspect, source), plus 60 B per commit-form commit (C) | Node | Per minute of writing per aspect, for good | Closable: demotion frontiers by commit ID drop counter receipts; only receipts-only IDs stay (session design step 1) | issues/session-sources.md |
 | 4 | Snapshot `Absorbed`: commit ID + author, about 47 B per commit-form commit, carried by every later snapshot of the aspect | Node and host (synced) | Per commit-form commit ever (link and recovery keys, item 193's restore window: notes/node.md Counters) | Closable: session form plus "list only what occurs" | issues/session-sources.md |
 | 5 | Snapshot frontier entries for nodes with no write left in the aspect (frontier-only sources, crdt.md §3.3 rule 1) | Node and host (synced) | Per node that ever wrote the aspect: about 20 B (E). Bounded by device count | Closable: session design rule 3 | issues/session-sources.md |
@@ -48,5 +48,4 @@ The probe for the M rows: 400 overwrites of one register by one node, compacted 
 | Death records (DEATH rows) | Node | Live with their body | Bounded | none |
 
 ## Closable without other trade-offs (ready to brief)
-- Host log trimming by age (row 2): issues/host-log-trim-by-age.md.
-- The rest (rows 1, 3-6, expiring headers) close together with issues/session-sources.md, which carries the residuals it accepts.
+- Rows 1, 3-6 and expiring headers close together with issues/session-sources.md, which carries the residuals it accepts.
