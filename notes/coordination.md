@@ -1,5 +1,5 @@
 # Coordination
-> Summary: How a coordinator session runs osis work: one opus worker per task in a worktree, a fresh opus reviewer, gate in the worktree, fast-forward main; at most three agents; the periodic checks and their cadence; the watchdog that reviews how the session went; the complaints directory agents write to.
+> Summary: How a coordinator session runs osis work: one opus (or, for gnarly or already-failed problems, fable) worker per task in a worktree, a fresh opus reviewer, gate in the worktree, fast-forward main; at most three agents; the periodic checks and their cadence; the watchdog that reviews how the session went; the complaints directory agents write to.
 
 The build and test mechanics are in notes/build.md; this note is the process around them.
 
