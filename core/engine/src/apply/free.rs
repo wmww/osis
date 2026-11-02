@@ -244,4 +244,44 @@ mod tests {
         assert_eq!(digest(e), before);
         assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
     }
+
+    // review (eph-unify-a): a memory body is never dropped for its keep-at-most bound, so its
+    // header (and expiry timer) is never forgotten while its live writes stay in the state; they
+    // vanish at its expiry. spec: none (internal)
+    #[test]
+    fn memory_keep_at_most_ignored() {
+        let mut lp = LocalPeer::new(1, 954, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let ret = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(1000) } };
+        let t = WallMs(e.now().0 + 2 * 3_600_000);
+        let mut m = Mutation::new();
+        for (k, v) in [("t:r.0~", "v"), ("t:s.0~", "live")] {
+            m.retention(g, &ak(k), ret).unwrap();
+            m.set(g, &ak(k), &Value::Str(v.into())).unwrap();
+            m.expires(g, &ak(k), t).unwrap();
+        }
+        let c = e.commit_in_memory(m).unwrap().unwrap();
+        lp.advance(10);
+        let e = &mut lp.peers[0].engine;
+        // kills `r`'s write: its body's bound is a second (and the grace) later
+        let mut m = Mutation::new();
+        m.retention(g, &ak("t:r.0~"), ret).unwrap();
+        m.set(g, &ak("t:r.0~"), &Value::Str("w".into())).unwrap();
+        e.commit_in_memory(m).unwrap().unwrap();
+        lp.advance(2000 + 3_600_000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert!(e.core.ix.commits.get(&c).is_some_and(|m| m.dropped.is_empty()));
+        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), Some(Value::Str("live".into())));
+        lp.advance(2 * 3_600_000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "vanished at its expiry");
+        assert!(!e.core.ix.commits.contains_key(&c));
+    }
 }

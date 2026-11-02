@@ -74,6 +74,17 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
     Ok(changed)
 }
 
+/// After a part of memory commit `c` vanished at its expiry: `c` vanishes whole when every part
+/// it still holds is superseded (`drop_superseded` on its aspects; else a node that held it when
+/// its superseders came keeps the rest, while one receiving it after the expiry drops it on
+/// arrival). Not forgotten here: its caller does.
+pub(crate) fn superseded_rest(tx: &mut Tx<'_>, c: &CommitId) -> Result<BTreeSet<(Tid, Ak)>> {
+    let Some(m) = tx.core.ix.commits.get(c).filter(|m| plain_memory(m)) else { return Ok(BTreeSet::new()) };
+    let author = m.view.author;
+    let aspects = m.header.aspects.iter().enumerate().filter(|(ai, _)| m.holds(*ai)).map(|(_, a)| (a.tid, a.ak.clone())).collect();
+    drop_superseded(tx, &aspects, Some(author), Some(c))
+}
+
 /// A held plain memory commit (what the superseded rule judges).
 fn plain_memory(m: &crate::engine::Meta) -> bool {
     m.view.memory && m.header.ephemeral == Some(EphClass::Plain)

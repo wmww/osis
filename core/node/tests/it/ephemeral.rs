@@ -4806,3 +4806,127 @@ fn set_into_expired_entry_reads_alike_spec_crdt_4_7() {
     let reads: Vec<Option<Value>> = [a, b, c].iter().map(|n| net.eph_read(*n, w, CURSOR)).collect();
     assert_eq!(reads, vec![None, None, None]);
 }
+
+// spec/crdt.md §4.7 (Ephemeral data), spec/sync.md §9 (Superseded expiring writes), issues/
+// eph-unify.md Step A (review differential): random memory histories (expiring and plain puts
+// at shared keys, removals, replaces, two writers) reach four nodes through the Core hooks in
+// random orders, ticked at random times: once all are delivered, every node reads alike at each
+// later tick, whatever expired, was superseded or forgotten where first (300 seeds checked in
+// review; a few here)
+#[test]
+fn memory_random_histories_read_alike_spec_crdt_4_7() {
+    for seed in 0u64..6 {
+        let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut rnd = move |n: u64| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x % n };
+        let mut lp = crate::common::net(4, 1000 + seed);
+        lp.sync_all().unwrap();
+        let d = crate::common::new_thing(&mut lp, 0);
+        for i in [1, 2, 3] {
+            let n = lp.peers[i].engine.tid();
+            crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
+        }
+        lp.sync_all().unwrap();
+        let ak = "t:big.0~";
+        let mut queue: Vec<(u64, usize, (osis_base::CommitId, Vec<u8>))> = Vec::new();
+        let mut log = Vec::new();
+        let steps = 14;
+        for step in 0..steps {
+            let w = 1 + rnd(2) as usize;
+            let k = s(&format!("k{}", rnd(3)));
+            let exp = if rnd(5) == 0 { None } else { Some(200 + rnd(3000)) };
+            let (path, op) = match rnd(10) {
+                0 => (Vec::new(), Op::Remove(k)),
+                1 => (Vec::new(), Op::Replace(Value::Map([(k, s(&format!("r{step}")))].into()))),
+                _ => (vec![PathSeg::Key(k)], Op::Put(s(&format!("v{step}w{w}")))),
+            };
+            // sometimes a second part, expiring sooner: what is left may be superseded later
+            let side = (rnd(3) == 0).then(|| 50 + rnd(1000));
+            log.push(format!("{step}: w{w} {path:?} {op:?} exp {exp:?} side {side:?}"));
+            let c = {
+                let e = &mut lp.peers[w].engine;
+                let mut m = Mutation::new();
+                m.op(d, &eph(ak), PathOp { path, op }).unwrap();
+                if let Some(ms) = exp {
+                    m.expires(d, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
+                }
+                if let Some(ms) = side {
+                    m.op(d, &eph("t:tags.0~"), PathOp { path: Vec::new(), op: Op::Add(s(&format!("t{step}"))) }).unwrap();
+                    m.expires(d, &eph("t:tags.0~"), osis_base::WallMs(e.now().0 + ms)).unwrap();
+                }
+                match e.commit_in_memory(m) {
+                    Ok(Some(id)) => (id, e.package(&id).unwrap().unwrap().bytes),
+                    _ => {
+                        log.push("  (refused)".into());
+                        lp.advance(1 + rnd(300));
+                        continue;
+                    }
+                }
+            };
+            for to in 0..4 {
+                if to != w {
+                    queue.push((step + rnd(6), to, c.clone()));
+                }
+            }
+            lp.advance(1 + rnd(300));
+            for to in 0..4 {
+                if rnd(3) == 0 {
+                    lp.peers[to].engine.tick().unwrap();
+                }
+            }
+            let due: Vec<_> = queue.iter().filter(|q| q.0 <= step).cloned().collect();
+            queue.retain(|q| q.0 > step);
+            for (_, to, c) in due {
+                memory_deliver(&mut lp, to, &c);
+            }
+        }
+        for (_, to, c) in std::mem::take(&mut queue) {
+            memory_deliver(&mut lp, to, &c);
+        }
+        for round in 0..8 {
+            for to in 0..4 {
+                lp.peers[to].engine.tick().unwrap();
+            }
+            let reads: Vec<_> = (0..4).map(|i| (lp.peers[i].engine.get(&d, &eph(ak)).unwrap(), lp.peers[i].engine.get(&d, &eph("t:tags.0~")).unwrap())).collect();
+            assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
+            lp.advance(1 + rnd(800));
+        }
+    }
+}
+
+// spec/sync.md §9 (Superseded expiring writes, judged again when a part of the superseded commit
+// expires): 1's commit c moves its cursor entry (expiring late) and adds a tag (expiring soon);
+// its later move supersedes only the first part. 0 holds both before the tag expires, 2 gets
+// them after: both drop c (at 0 once the tag part vanished), so 2's removal of the entry it saw
+// leaves nothing at either (review eph-unify-a: 0 kept c's move and read it again)
+#[test]
+fn memory_partly_expired_commit_superseded_alike_spec_sync_9() {
+    let (mut lp, d) = memory_trio(47);
+    let k = s("k");
+    let mk = |lp: &mut osis_node::local_peer::LocalPeer, ops: Vec<(&str, Vec<PathSeg>, Op, u64)>| {
+        let e = &mut lp.peers[1].engine;
+        let mut m = Mutation::new();
+        for (ak, path, op, ms) in ops {
+            m.op(d, &eph(ak), PathOp { path, op }).unwrap();
+            m.expires(d, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
+        }
+        let id = e.commit_in_memory(m).unwrap().unwrap();
+        (id, e.package(&id).unwrap().unwrap().bytes)
+    };
+    let c = mk(&mut lp, vec![("t:big.0~", vec![PathSeg::Key(k.clone())], Op::Put(s("a")), 10_000), ("t:tags.0~", Vec::new(), Op::Add(s("y")), 1_000)]);
+    lp.advance(10);
+    let q = mk(&mut lp, vec![("t:big.0~", vec![PathSeg::Key(k.clone())], Op::Put(s("b")), 10_000)]);
+    memory_deliver(&mut lp, 0, &c);
+    memory_deliver(&mut lp, 0, &q);
+    lp.advance(2000);
+    for i in 0..3 {
+        lp.peers[i].engine.tick().unwrap();
+    }
+    memory_deliver(&mut lp, 2, &q);
+    memory_deliver(&mut lp, 2, &c);
+    assert!(!holds_commit(&lp, 0, &c.0) && !holds_commit(&lp, 2, &c.0));
+    let rm = memory_op(&mut lp, 2, d, "t:big.0~", Vec::new(), Op::Remove(k), None);
+    memory_deliver(&mut lp, 0, &rm);
+    for i in [0, 2] {
+        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map(BTreeMap::new())), "{i}");
+    }
+}
