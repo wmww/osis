@@ -16,3 +16,5 @@ c1 and c2 are void (one dot, one write). Z misstates c2 (another `ts` and value 
 ## Notes
 - Only a still-valid writer (or one whose demotion did not list c1) can do this; issues/session-sources.md "Equivocation by a valid writer" accepts the node split but expects the misstatement rule to hold where the snapshot carries the first write.
 - Goes away for durable commits with session form (step 2 of issues/session-sources.md: a fresh nonce per start, so honest copies never overlap), but a malicious writer can still equivocate within one session.
+
+Frontier study (notes/frontier-study.md): the frontier rule does not touch this; under it c1 is listed unless droppable, so a post-demotion c2 is unlisted and invalid, and where c1 was compacted both are invalid and Z's copy stands. The un-merge misstatement bug is the whole issue.
