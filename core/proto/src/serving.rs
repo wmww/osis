@@ -105,7 +105,7 @@ pub enum ServingOutput {
     StoreError(StoreError),
     /// A client-port request (Auth, Call, Sub) to answer by `ServingInput::Reply`; an Unsub
     /// (already answered: drop the subscription).
-    Request(Message),
+    Request(Box<Message>),
     /// Notifies of up to `budget` bytes may go now (after `ServingInput::WantRoom`).
     Room { budget: usize },
 }
@@ -720,12 +720,12 @@ impl ServingSession {
             }
             M::Unsub { sub, .. } => {
                 self.api_subs.remove(sub);
-                out.push(ServingOutput::Request(msg));
+                out.push(ServingOutput::Request(Box::new(msg)));
                 return Some(M::Ok { id });
             }
             _ => return None,
         }
-        out.push(ServingOutput::Request(msg));
+        out.push(ServingOutput::Request(Box::new(msg)));
         None
     }
 

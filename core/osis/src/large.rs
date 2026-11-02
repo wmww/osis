@@ -28,6 +28,8 @@ enum Src {
     /// `buf[at..]`: the unread rest of the current chunk, `buf` starting at canonical byte
     /// `start`; `head`: bytes of the string head.
     Tree { reader: Box<osis_label::TreeReader>, buf: Vec<u8>, start: u64, at: usize, head: u64 },
+    /// At the attached node: read in `stream_read` pages; `buf` is the page from `start`.
+    Remote { ak: osis_base::Ak, path: Path, buf: Vec<u8>, start: u64 },
 }
 
 impl std::fmt::Debug for ValueStream {
@@ -112,6 +114,21 @@ impl ValueStream {
                 let piece = b.get(start..start.saturating_add(want)).unwrap_or_default();
                 out.get_mut(..piece.len()).unwrap_or_default().copy_from_slice(piece);
                 piece.len()
+            }
+            Src::Remote { ak, path, buf, start } => {
+                let pos = self.pos;
+                if pos < *start || pos >= *start + buf.len() as u64 {
+                    *buf = self.db.remote_read(tid, ak, path, pos, crate::port::STREAM_CHUNK)?;
+                    *start = pos;
+                    if buf.is_empty() {
+                        return Err(Error::Storage("remote value shorter than its length".into()));
+                    }
+                }
+                let at = usize::try_from(pos - *start).unwrap_or(usize::MAX);
+                let piece = buf.get(at..).unwrap_or_default();
+                let n = piece.len().min(want);
+                out.get_mut(..n).unwrap_or_default().copy_from_slice(piece.get(..n).unwrap_or_default());
+                n
             }
             Src::Tree { reader, buf, start, at, .. } => {
                 while *at >= buf.len() {
@@ -200,7 +217,11 @@ impl<K: AspectKey> PathRef<'_, '_, K> {
     /// The string or blob at the path as a stream. `None` when absent.
     pub fn stream(&self) -> Result<Option<ValueStream>> {
         let (db, tid, key, path) = self.parts();
-        let crate::handle::Source::Local = db.route(tid);
+        if let crate::handle::Source::Remote = db.route(tid) {
+            let ak = ak_of(key)?;
+            let Some(len) = db.remote_len(tid, &ak, path)? else { return Ok(None) };
+            return Ok(Some(ValueStream { db: db.clone(), tid, len, pos: 0, src: Src::Remote { ak, path: path.clone(), buf: Vec::new(), start: 0 } }));
+        }
         match db.raw_at(tid, key, path)? {
             Some((tid, v)) => Ok(Some(ValueStream::open(db, tid, v)?)),
             None => Ok(None),

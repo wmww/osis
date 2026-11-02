@@ -210,7 +210,7 @@ pub enum Action {
     Host(Option<Box<osis_host::HostConfig>>),
     /// A client-port request on a served session (Auth, Call, Sub: answer by `Event::Reply`;
     /// Unsub: already answered). Not for the driver: the holder of the engine runs it.
-    Request { conn: ConnId, tier: Tier, msg: osis_proto::Message },
+    Request { conn: ConnId, tier: Tier, msg: Box<osis_proto::Message> },
     /// Notifies of up to `budget` bytes may go to `conn` now (`Event::Notify`).
     Room { conn: ConnId, budget: usize },
     /// A served session that made client-port requests ended: drop its subscriptions.

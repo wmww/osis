@@ -17,7 +17,7 @@ fn sent(out: &[ServingOutput]) -> Vec<Message> {
 }
 
 fn requests(out: &[ServingOutput]) -> Vec<Message> {
-    out.iter().filter_map(|o| if let ServingOutput::Request(m) = o { Some(m.clone()) } else { None }).collect()
+    out.iter().filter_map(|o| if let ServingOutput::Request(m) = o { Some((**m).clone()) } else { None }).collect()
 }
 
 /// A serving session past the Hellos.

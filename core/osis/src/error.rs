@@ -32,7 +32,7 @@ pub enum Error {
     /// Another node could not be reached in time.
     Network(String),
     /// Not provided by this build yet (issues/api-deferred.md).
-    Unsupported(&'static str),
+    Unsupported(String),
     /// The database is closed.
     Closed,
     /// `close`: this handle is closed, but `handles` others keep the database open.

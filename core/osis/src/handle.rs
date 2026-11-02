@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::net::{Net, Runtime, Transport, Waiter};
 use crate::share::{RecoveryCard, HostAddr, Status};
 use crate::watch::{Dispatch, Dispatcher, Msg, lock};
-use osis_base::{Clock, SystemClock, Tid};
+use osis_base::{Clock, SystemClock, Tid, Value};
 use osis_crypto::{CryptoRngCore, OsRng, SeededRng};
 use osis_node::sync::{Action, Event as SyncEvent, SyncConfig, SyncEngine};
 use osis_node::{Engine, Event};
@@ -137,6 +137,20 @@ impl Locked {
     }
 }
 
+impl Inner {
+    /// Hands the sync engine's actions on, in order: network actions to the driver, client-port
+    /// ones to the port (run after the lock is released).
+    pub(crate) fn apply(&self, acts: Vec<Action>) {
+        if acts.iter().any(crate::port::serve::is_port) {
+            let (port, net): (Vec<Action>, Vec<Action>) = acts.into_iter().partition(crate::port::serve::is_port);
+            self.port.queue(port);
+            self.net.apply(net);
+        } else {
+            self.net.apply(acts);
+        }
+    }
+}
+
 pub(crate) struct Inner {
     pub eng: Mutex<Locked>,
     pub dispatch: Dispatch,
@@ -150,6 +164,10 @@ pub(crate) struct Inner {
     /// Serializes undo and redo: candidate selection and commit.
     pub undo: Mutex<()>,
     pub net: Net,
+    /// The client port this node serves (notes/client-port.md): requests its served sessions make.
+    pub port: crate::port::serve::Port,
+    /// The node this process is attached to (`Osis::attach`): every tid-addressed call goes there.
+    pub remote: std::sync::OnceLock<Arc<crate::port::client::Remote>>,
     /// User handles and whether the store closed (the last field: it drops after `eng`).
     pub life: LifeGuard,
 }
@@ -197,13 +215,34 @@ pub struct Osis {
 pub(crate) enum Source {
     /// This process's engine.
     Local,
+    /// The node this process is attached to (`Osis::attach`).
+    Remote,
 }
 
 impl Osis {
-    /// The source of calls on `tid` (a thing or a group): a constant until remotes exist.
+    /// The source of calls on `tid` (a thing or a group): the attached node when there is one
+    /// (step (b): one attachment, every group remote), else this process's engine.
     #[inline]
     pub(crate) fn route(&self, _tid: Tid) -> Source {
-        Source::Local
+        if self.attached() { Source::Remote } else { Source::Local }
+    }
+
+    /// The source of a call on things this process does not name by tid (a sharing call's
+    /// several things): the attached node when there is one.
+    #[inline]
+    pub(crate) fn route_any(&self) -> Source {
+        if self.attached() { Source::Remote } else { Source::Local }
+    }
+
+    /// Whether this handle is attached to a node (`Osis::attach`).
+    #[inline]
+    pub(crate) fn attached(&self) -> bool {
+        self.inner.remote.get().is_some()
+    }
+
+    /// The attached node, if any.
+    pub(crate) fn remote(&self) -> Option<&Arc<crate::port::client::Remote>> {
+        self.inner.remote.get()
     }
 
     /// The source of calls over `scope` (`None`: every held change).
@@ -212,6 +251,7 @@ impl Osis {
         match scope {
             Some(crate::commits::Scope::Thing(t) | crate::commits::Scope::Group(t)) => self.route(*t),
             Some(crate::commits::Scope::Aspects(a)) => a.first().map_or(Source::Local, |(t, _)| self.route(*t)),
+            None if self.attached() => Source::Remote,
             None => Source::Local,
         }
     }
@@ -219,7 +259,7 @@ impl Osis {
     /// The source holding change `id`.
     #[inline]
     pub(crate) fn route_change(&self, _id: osis_node::ChangeId) -> Source {
-        Source::Local
+        if self.attached() { Source::Remote } else { Source::Local }
     }
 }
 
@@ -390,7 +430,8 @@ impl Osis {
         let dispatch = Dispatch::new(&cfg.dispatch);
         let (net, ctl) = Net::new(&cfg.runtime)?;
         let locked = Locked { sync, events, seq: 0, waiters: Vec::new(), status: Status::default(), offers: Vec::new(), links: BTreeMap::new() };
-        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, life: LifeGuard(Arc::default()) });
+        let port = crate::port::serve::Port::new();
+        let inner = Arc::new(Inner { eng: Mutex::new(locked), dispatch, node, me, limit: cfg.materialize_limit, idle_commit: cfg.idle_commit, wait_timeout: cfg.wait_timeout, clock: clock.clone(), schemas: Mutex::new(Vec::new()), undo: Mutex::new(()), net, port, remote: std::sync::OnceLock::new(), life: LifeGuard(Arc::default()) });
         inner.dispatch.start(Arc::downgrade(&inner))?;
         if let Some(ctl) = ctl {
             inner.net.spawn_driver(ctl, cfg, clock, WeakOsis(Arc::downgrade(&inner)))?;
@@ -453,20 +494,21 @@ impl Osis {
         Ok(())
     }
 
-    /// This device's node tid.
+    /// This device's node tid (attached: the node's).
     pub fn node(&self) -> Tid {
-        self.inner.node
+        self.remote().map_or(self.inner.node, |r| r.who.node)
     }
 
-    /// The person actor this database belongs to: the usual owner of what the app creates.
+    /// The person actor this database belongs to: the usual owner of what the app creates
+    /// (attached: the node's person).
     pub fn me(&self) -> Tid {
-        self.inner.me
+        self.remote().map_or(self.inner.me, |r| r.who.me)
     }
 
     /// The person's home group: the person actor itself, synced under its home label
     /// (spec/sync.md §2); things placed in it reach every device of the person.
     pub fn home(&self) -> Tid {
-        self.inner.me
+        self.remote().map_or(self.inner.me, |r| r.who.home)
     }
 
     /// The materialization bound in bytes.
@@ -485,7 +527,7 @@ impl Osis {
     pub(crate) fn handled(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
         self.locked_in(true, |l| {
             let acts = f(l);
-            self.inner.net.apply(acts);
+            self.inner.apply(acts);
         })
     }
 
@@ -504,6 +546,7 @@ impl Osis {
         *lock(holder) = None;
         drop(g);
         self.inner.dispatch.wake();
+        self.inner.port.kick(&self.inner);
         r
     }
 
@@ -527,7 +570,7 @@ impl Osis {
         let any = self.drain(l) || l.sync.engine().has_unsent();
         if any && !handled {
             let acts = l.sync.handle(SyncEvent::Local);
-            self.inner.net.apply(acts);
+            self.inner.apply(acts);
             self.drain(l);
         }
         if !(any || handled) {
@@ -561,7 +604,7 @@ impl Osis {
     pub(crate) fn act(&self, f: impl FnOnce(&mut Locked) -> Vec<Action>) {
         self.locked(|l| {
             let acts = f(l);
-            self.inner.net.apply(acts);
+            self.inner.apply(acts);
         })
     }
 
@@ -569,7 +612,7 @@ impl Osis {
     pub(crate) fn try_act(&self, f: impl FnOnce(&mut Locked) -> Result<Vec<Action>>) -> Result<()> {
         self.locked(|l| {
             let acts = f(l)?;
-            self.inner.net.apply(acts);
+            self.inner.apply(acts);
             Ok(())
         })
     }
@@ -586,6 +629,11 @@ impl Osis {
     /// call it inside an `Osis::read` or `Internals::engine` closure: a callback may need the lock
     /// that closure holds (deadlock).
     pub fn settle(&self) {
+        // attached: the node's deliveries so far reach the queue first (not from a callback:
+        // the reply would wait for this very dispatcher)
+        if self.attached() && !self.inner.dispatch.shared.on_dispatcher() {
+            self.remote_settle();
+        }
         self.inner.dispatch.settle(Arc::downgrade(&self.inner));
     }
 
@@ -609,6 +657,10 @@ impl Osis {
     /// Parses and registers a `*.osis` source (errors carry file:line:col).
     pub fn register_schema_source(&self, file: &str, src: &str) -> Result<Arc<Schema>> {
         let s = osis_schema::parse(file, src).map_err(|e| Error::Invalid(e.to_string()))?;
+        // attached: the node needs it for structural diffs and undo write-back
+        if self.attached() {
+            self.rcall(crate::port::method::REGISTER_SCHEMA, vec![Value::Str(file.into()), Value::Str(src.into())])?;
+        }
         self.register_schema(s)
     }
 

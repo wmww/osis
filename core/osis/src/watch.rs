@@ -74,6 +74,18 @@ pub(crate) enum Filter {
     Roster(Tid),
     Diagnostics,
     Status,
+    /// A subscription at the attached node, by its token (`port::client`).
+    Port(u64),
+}
+
+/// What a subscription at the attached node delivers (`port::client`), in wire order.
+#[derive(Clone, Debug)]
+pub(crate) enum PortEvent {
+    /// The Sub's reply: the initial value.
+    Initial(Value),
+    Notify(osis_proto::Payload),
+    /// The connection is gone: nothing more comes.
+    Closed,
 }
 
 /// What a callback is called with.
@@ -89,12 +101,14 @@ pub(crate) enum Delivery {
     Roster,
     Diagnostic(Diagnostic),
     Status(crate::share::Status),
+    Port(PortEvent),
 }
 
 pub(crate) enum Msg {
     Event(Event),
     Initial(u64),
     Status(crate::share::Status),
+    Port(u64, PortEvent),
     Barrier(Sender<()>),
 }
 
@@ -225,7 +239,7 @@ impl Dispatch {
         r.next += 1;
         let id = r.next;
         r.subs.insert(id, Arc::new(Sub { id, since, filter, removed: AtomicBool::new(false), cb: Mutex::new(cb) }));
-        Subscription { shared: Arc::downgrade(&self.shared), id: Some(id) }
+        Subscription { shared: Arc::downgrade(&self.shared), id: Some(id), port: None }
     }
 
     /// Returns once every message queued so far has been dispatched: waits for the thread,
@@ -328,6 +342,7 @@ fn targets(db: &Osis, sh: &Shared, seq: u64, m: &Msg) -> Vec<(Arc<Sub>, Pre)> {
         Msg::Event(Event::Roster { thing }) => to(&|f| *f == Filter::Roster(*thing), Delivery::Roster),
         Msg::Event(Event::Diagnostic(d)) => to(&|f| *f == Filter::Diagnostics, Delivery::Diagnostic(d.clone())),
         Msg::Status(st) => to(&|f| *f == Filter::Status, Delivery::Status(st.clone())),
+        Msg::Port(t, ev) => to(&|f| *f == Filter::Port(*t), Delivery::Port(ev.clone())),
         _ => Vec::new(),
     }
 }
@@ -423,12 +438,15 @@ fn call(db: &Osis, s: &Sub, d: Delivery) {
 pub struct Subscription {
     shared: Weak<Shared>,
     id: Option<u64>,
+    /// A subscription at the attached node: unsubscribed there on drop.
+    pub(crate) port: Option<(Weak<crate::port::client::Remote>, u64)>,
 }
 
 impl Subscription {
     /// Keeps the subscription for the database's life.
     pub fn detach(mut self) {
         self.id = None;
+        self.port = None;
     }
 
     pub(crate) fn id(&self) -> Option<u64> {
@@ -438,6 +456,11 @@ impl Subscription {
 
 impl Drop for Subscription {
     fn drop(&mut self) {
+        if let Some((r, token)) = self.port.take()
+            && let Some(r) = r.upgrade()
+        {
+            r.unsub(token);
+        }
         let (Some(id), Some(sh)) = (self.id, self.shared.upgrade()) else { return };
         let Some(s) = lock(&sh.registry).subs.remove(&id) else { return };
         s.removed.store(true, Ordering::Release);

@@ -4,6 +4,7 @@
 
 use crate::error::{Error, Result};
 use crate::handle::Osis;
+use crate::port::method as m;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
@@ -258,7 +259,9 @@ impl Osis {
 
     /// A typed read: `None` when absent or the thing is unknown.
     pub fn get<K: AspectKey>(&self, tid: Tid, key: K) -> Result<Option<K::T>> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.at(tid, key).get();
+        }
         self.read(|r| r.get(tid, &key))
     }
 
@@ -268,30 +271,50 @@ impl Osis {
     }
 
     pub fn aspects(&self, tid: Tid) -> Result<Vec<Ak>> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            let v = self.rcall(m::ASPECTS, vec![Value::Tid(tid)])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.iter().map(crate::port::codec::ak).collect();
+        }
         self.read(|r| r.aspects(tid))
     }
 
-    /// `Reader::groups_of`.
+    /// `Reader::groups_of`. Attached to a node that cannot be reached: empty (a diagnostic).
     pub fn groups_of(&self, tid: Tid) -> GroupsOf {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.infallible(self.rcall(m::GROUPS_OF, vec![Value::Tid(tid)]).and_then(crate::port::codec::groups));
+        }
         self.read(|r| r.groups_of(tid))
     }
 
     pub fn roster(&self, thing: Tid) -> Roster {
-        let crate::handle::Source::Local = self.route(thing);
+        if let crate::handle::Source::Remote = self.route(thing) {
+            return self.infallible(self.rcall(m::ROSTER, vec![Value::Tid(thing)]).and_then(crate::port::codec::roster));
+        }
         self.read(|r| r.roster(thing))
     }
 
     pub fn role_on(&self, tid: Tid) -> Option<Role> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.infallible(self.rcall(m::ROLE_ON, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|r| crate::port::codec::role(&r)).transpose()));
+        }
         self.read(|r| r.role_on(tid))
     }
 
     /// `Reader::knows`: the thing is here, not unknown or deleted.
     pub fn knows(&self, tid: Tid) -> bool {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.infallible(self.rcall(m::KNOWS, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
+        }
         self.read(|r| r.knows(tid))
+    }
+
+    /// A remote result of a call whose signature cannot fail: the default when the node could
+    /// not answer, reported as a diagnostic.
+    fn infallible<T: Default>(&self, r: Result<T>) -> T {
+        r.unwrap_or_else(|e| {
+            self.engine(|x| x.report(Diagnostic { kind: osis_node::DiagnosticKind::Storage, tids: Vec::new(), commit: None, peer: None, detail: format!("attached node: {e}") }));
+            T::default()
+        })
     }
 
     pub(crate) fn holds(&self, tid: Tid) -> bool {
@@ -300,32 +323,49 @@ impl Osis {
 
     /// The thing's owner, fixed at creation (`None`: unknown, or a key actor).
     pub fn owner_of(&self, tid: Tid) -> Option<Tid> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.infallible(self.rcall(m::OWNER_OF, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::tid(&t)).transpose()));
+        }
         self.read(|r| r.owner_of(tid))
+    }
+
+    fn remote_stamp(&self, m: u64, tid: Tid) -> Option<Stamp> {
+        self.infallible(self.rcall(m, vec![Value::Tid(tid)]).and_then(|v| crate::port::codec::Args::of(vec![v]).opt()?.map(crate::port::codec::stamp).transpose()))
     }
 
     /// When the thing was created (`Reader::created`).
     pub fn created(&self, tid: Tid) -> Option<Stamp> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.remote_stamp(m::CREATED, tid);
+        }
         self.read(|r| r.created(tid))
     }
 
     /// When the thing's content last changed (`Reader::changed`).
     pub fn changed(&self, tid: Tid) -> Option<Stamp> {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.remote_stamp(m::CHANGED, tid);
+        }
         self.read(|r| r.changed(tid))
     }
 
     /// The corrected wall clock (spec/sync.md §6): the time the database stamps commits with,
     /// for app timestamps.
     pub fn now(&self) -> WallMs {
+        if self.attached()
+            && let Ok(Some(n)) = self.rcall(m::NOW, vec![]).map(|v| v.as_uint())
+        {
+            return WallMs(n);
+        }
         self.engine(|e| e.now())
     }
 
     /// Whether two tids name the same thing across moves (spec/permissions.md §7): the only
     /// explicit resolution call; `Tid` equality is plain bits.
     pub fn same_thing(&self, a: Tid, b: Tid) -> bool {
-        let crate::handle::Source::Local = self.route(a);
+        if let crate::handle::Source::Remote = self.route(a) {
+            return self.infallible(self.rcall(m::SAME_THING, vec![Value::Tid(a), Value::Tid(b)]).and_then(|v| crate::port::codec::Args::of(vec![v]).bool()));
+        }
         self.read(|r| r.resolve(a) == r.resolve(b))
     }
 
@@ -362,7 +402,9 @@ impl Osis {
     /// callback, `f` gets the database handle, so it need not capture one (a captured clone in
     /// a detached callback keeps the database open; capture `Osis::downgrade()` instead).
     pub fn watch_thing(&self, tid: Tid, mut f: impl FnMut(&Osis, Change<Value>) + Send + 'static) -> Subscription {
-        let crate::handle::Source::Local = self.route(tid);
+        if let crate::handle::Source::Remote = self.route(tid) {
+            return self.remote_watch_thing(tid, Box::new(f));
+        }
         let tid = self.read(|r| r.resolve(tid));
         self.subscribe(Filter::Thing(tid), true, move |r| {
             let mut last: BTreeMap<Ak, Result<Option<Value>>> = BTreeMap::new();
@@ -389,7 +431,9 @@ impl Osis {
 
     /// Calls `f` with the roster of `actor` now (through the dispatcher) and on every change.
     pub fn watch_roster(&self, actor: Tid, mut f: impl FnMut(&Osis, Roster) + Send + 'static) -> Subscription {
-        let crate::handle::Source::Local = self.route(actor);
+        if let crate::handle::Source::Remote = self.route(actor) {
+            return self.remote_watch_roster(actor, Box::new(f));
+        }
         let actor = self.read(|r| r.resolve(actor));
         self.subscribe(Filter::Roster(actor), true, move |r| {
             let mut last = r.roster(actor);
@@ -409,6 +453,9 @@ impl Osis {
 
     /// Calls `f` with every diagnostic (structured, deduped and rate-limited by the engine).
     pub fn on_diagnostic(&self, mut f: impl FnMut(&Osis, Diagnostic) + Send + 'static) -> Subscription {
+        if self.attached() {
+            return self.remote_on_diagnostic(Box::new(f));
+        }
         self.subscribe(Filter::Diagnostics, false, |_| {
             Box::new(move |db, d| {
                 if let Delivery::Diagnostic(x) = d {
@@ -428,14 +475,21 @@ pub struct AspectRef<'d, K> {
 
 impl<'d, K: AspectKey> AspectRef<'d, K> {
     pub fn get(&self) -> Result<Option<K::T>> {
-        let crate::handle::Source::Local = self.db.route(self.tid);
+        if let crate::handle::Source::Remote = self.db.route(self.tid) {
+            let ak = ak_of(&self.key)?;
+            let Some(v) = self.get_value()? else { return Ok(None) };
+            let db = self.db;
+            return Ok(lenient(self.tid, &ak, self.key.decode(&v), |d| db.engine(|e| e.report(d))));
+        }
         self.db.read(|r| r.get(self.tid, &self.key))
     }
 
     /// The whole value, untyped.
     pub fn get_value(&self) -> Result<Option<Value>> {
-        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
+        if let crate::handle::Source::Remote = self.db.route(self.tid) {
+            return self.db.remote_get(self.tid, &ak, &Path::root());
+        }
         self.db.read(|r| r.value(self.tid, &ak))
     }
 
@@ -452,8 +506,13 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     where
         K: Sync,
     {
-        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
+        if let crate::handle::Source::Remote = self.db.route(self.tid) {
+            let key = self.key.clone();
+            let (st, sub) = self.db.remote_watch(self.tid, ak, Box::new(move |v: &Value| key.decode(v).is_ok()))?;
+            let key = self.key.clone();
+            return Ok(Watch::new(st, Arc::new(move |v: &Value| key.decode(v).ok()), sub));
+        }
         let tid = self.db.read(|r| r.resolve(self.tid));
         let mut state = None;
         let key = self.key.clone();
@@ -478,8 +537,14 @@ impl<K: AspectKey + Clone + Send + 'static> AspectRef<'_, K> {
     /// Calls coalesce: one call may show several commits' effect and carries the newest one's
     /// source; an unchanged value is not repeated, an error always is. Follows moves.
     pub fn on_change(&self, mut f: impl FnMut(&Osis, Change<K::T>) + Send + 'static) -> Result<Subscription> {
-        let crate::handle::Source::Local = self.db.route(self.tid);
         let ak = ak_of(&self.key)?;
+        if let crate::handle::Source::Remote = self.db.route(self.tid) {
+            let key = self.key.clone();
+            let ak2 = ak.clone();
+            let tid = self.tid;
+            let decode = move |db: &Osis, v: Result<Option<Value>>| -> Result<Option<K::T>> { Ok(v?.and_then(|x| lenient(tid, &ak2, key.decode(&x), |d| db.engine(|e| e.report(d))))) };
+            return self.db.remote_on_change(self.tid, ak, Box::new(move |db, ch: Change<Value>| f(db, Change { tid: ch.tid, ak: ch.ak, value: decode(db, ch.value), source: ch.source })));
+        }
         let tid = self.db.read(|r| r.resolve(self.tid));
         let key = self.key.clone();
         let ak2 = ak.clone();
@@ -512,7 +577,9 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
 
     /// The untyped value at the path (typed projection when the key has a schema).
     pub fn get_value(&self) -> Result<Option<Value>> {
-        let crate::handle::Source::Local = self.a.db.route(self.a.tid);
+        if let crate::handle::Source::Remote = self.a.db.route(self.a.tid) {
+            return self.a.db.remote_get(self.a.tid, &ak_of(&self.a.key)?, &self.path);
+        }
         self.a.db.read(|r| r.get_path(self.a.tid, &self.a.key, &self.path))
     }
 
@@ -521,7 +588,8 @@ impl<'d, K: AspectKey> PathRef<'_, 'd, K> {
     pub fn get<U: Codec>(&self) -> Result<Option<U>> {
         let Some(v) = self.get_value()? else { return Ok(None) };
         let db = self.a.db;
-        let (tid, ak) = (db.read(|r| r.resolve(self.a.tid)), ak_of(&self.a.key)?);
+        let tid = if db.attached() { self.a.tid } else { db.read(|r| r.resolve(self.a.tid)) };
+        let ak = ak_of(&self.a.key)?;
         Ok(lenient(tid, &ak, U::from_value(&v), |d| db.engine(|e| e.report(d))))
     }
 }
