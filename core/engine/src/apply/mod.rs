@@ -554,16 +554,17 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     rest.parts = w.parts;
     let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
     pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
-    note_record_wait(tx, id, applied, &w.reason, &w.others);
+    // judged on the waiting parts: a `secrets.0` one among them stays out, so that `reexamine` comes
+    note_record_wait(tx, id, &rest, &w.reason, &w.others);
     Ok(())
 }
 
-/// `waits::note` for parts of applied commit `id` (held: `merged`) waiting on a record: a delta
+/// `waits::note` for parts of applied commit `id` (`blob`: with them) waiting on a record: a delta
 /// wait is judged with the applied commit's dropped parts, which `note` does not read.
-fn note_record_wait(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, r: &Reason, others: &[Reason]) {
+fn note_record_wait(tx: &mut Tx<'_>, id: &CommitId, blob: &CommitBlob, r: &Reason, others: &[Reason]) {
     if matches!(r, Reason::UnknownCreated(_) | Reason::MissingChain(_)) {
         let now = tx.now().0;
-        waits::note(tx.core, *id, merged, merged.header.is_resolved(), r, others, now);
+        waits::note(tx.core, *id, blob, blob.header.is_resolved(), r, others, now);
     }
 }
 

@@ -368,6 +368,57 @@ fn chainless_part_under_at_most_any_order_spec_commits_4() {
     }
 }
 
+// issues/body-class-moves.md: one body under keep at most 0 on G and H, H's record away, a later
+// commit killing G's write. With the record first G's body stays (H's write is live); with it last
+// G's part was a body alone with no live write, so it dropped.
+#[test]
+#[ignore = "known hole: issues/body-class-moves.md"]
+fn repro_body_class_move_drops_spec_commits_5() {
+    use crate::common::*;
+    let mut lp = net(2, 63);
+    let g = new_thing(&mut lp, 0);
+    let setup = packages(&mut lp, 0);
+    let h = new_thing(&mut lp, 0);
+    let made = packages(&mut lp, 0);
+    let record: Vec<_> = made.into_iter().filter(|p| !setup.iter().any(|x| x.id == p.id)).collect();
+    lp.peers[0].clock.advance(10);
+    let mut m = Mutation::new();
+    m.set(g, &GONE, &s("x")).unwrap();
+    m.set(h, &GONE, &s("x")).unwrap();
+    let c1 = lp.peers[0].commit(m).unwrap().unwrap();
+    lp.peers[0].clock.advance(10);
+    let mut m = Mutation::new();
+    m.set(g, &GONE, &s("y")).unwrap();
+    let c2 = lp.peers[0].commit(m).unwrap().unwrap();
+    let all = packages(&mut lp, 0);
+    let (p1, p2) = (all.iter().find(|p| p.id == c1).unwrap(), all.iter().find(|p| p.id == c2).unwrap());
+    let now = lp.peers[0].engine.now();
+    let ids: std::collections::BTreeSet<_> = all.iter().map(|p| p.id).collect();
+    let mut want = None;
+    for record_first in [true, false] {
+        let mut p = Peer::new(FRESH, now).unwrap();
+        for x in &setup {
+            let _ = p.engine.ingest(&x.bytes, Vec::new());
+        }
+        let rec = |p: &mut Peer| {
+            for x in &record {
+                let _ = p.engine.ingest(&x.bytes, Vec::new());
+            }
+        };
+        if record_first {
+            rec(&mut p);
+        }
+        let _ = p.engine.ingest(&p1.bytes, Vec::new());
+        let _ = p.engine.ingest(&p2.bytes, Vec::new());
+        rec(&mut p);
+        p.engine.reexamine().unwrap();
+        let got = observe(&mut p.engine, &ids);
+        let w = want.get_or_insert_with(|| got.clone());
+        let first = got.iter().zip(w.iter()).find(|(a, b)| a != b);
+        assert!(got == *w, "record first {record_first}: {first:?}");
+    }
+}
+
 fn permutations(n: usize) -> Vec<Vec<usize>> {
     let mut out = vec![vec![]];
     for i in 0..n {
@@ -391,6 +442,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let rcpt = read_recipient(&lp.peers[1].engine);
     let e = &mut lp.peers[0].engine;
     let recs = vec![e.get_typed(&g, &ct::CREATED).unwrap().unwrap(), e.get_typed(&h, &ct::CREATED).unwrap().unwrap()];
+    let recs2 = recs.clone();
     let mut held = osis_keys::ActorEpochs::default();
     held.read.set_established(osis_keys::Epoch::new(1, [0; 32]).unwrap(), osis_keys::Provenance::Fixed);
     let rot = osis_keys::rotate(&h, &[Role::Read].into(), &held, &ct::Secrets::default(), &[rcpt], &osis_keys::Names::default(), &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
@@ -420,7 +472,20 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         b.encode()
     };
     let (one, two, whole) = (part(g), part(h), blob.encode());
-    for (name, order) in [("G first", vec![&one, &two]), ("H first", vec![&two, &one]), ("together", vec![&whole])] {
+    let plain = {
+        // G's part is no `secrets.0`: only the waiting part's boxes can be read
+        let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
+        let lab = osis_base::Ak::new("label.0").unwrap();
+        for (t, a) in [(g, &lab), (h, &secrets)] {
+            let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes.clone());
+            aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
+            cb.aspects.push(aw);
+        }
+        cb.build(&lp.peers[0].engine.identity().keys().signing, &crate::receive::Dedup(recs2), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit
+    };
+    let plain_id = plain.id();
+    let plain = plain.encode();
+    for (name, id, order) in [("G first", blob.id(), vec![&one, &two]), ("H first", blob.id(), vec![&two, &one]), ("together", blob.id(), vec![&whole]), ("plain G part", plain_id, vec![&plain])] {
         let mut lp2 = net(2, 64);
         for pk in &known {
             lp2.deliver(1, pk).unwrap();
@@ -431,7 +496,7 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
         }
         e.reexamine().unwrap();
         assert_eq!(e.pending().len(), 1, "H's part waits for H's record");
-        assert!(e.commit_ids().contains(&blob.id()), "G's part applied");
+        assert!(e.commit_ids().contains(&id), "{name}: G's part applied");
         assert!(!e.lost_due(), "{name}: nothing forgotten for it");
         assert!(e.epochs(&h).is_some_and(|x| x.read.holds_any()), "{name}: the waiting part's box read");
     }
