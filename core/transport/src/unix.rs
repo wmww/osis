@@ -124,10 +124,15 @@ impl Transport for Unix {
     }
 
     /// Binds `cfg.url` (the secret is unused: the key stands for the uid). A socket file left by
-    /// a process that is gone is replaced; one something answers on is `Io("in use")`.
+    /// a process that is gone is replaced; one something answers on is `Io("in use")`, any other
+    /// file there `Io` (never removed).
     async fn listen(&self, cfg: ListenConfig) -> Result<UnixListener, Error> {
+        use std::os::unix::fs::FileTypeExt;
         let path = url_path(&cfg.url)?;
-        if std::fs::symlink_metadata(&path).is_ok() {
+        if let Ok(m) = std::fs::symlink_metadata(&path) {
+            if !m.file_type().is_socket() {
+                return Err(Error::Io(format!("{}: exists and is no socket", path.display())));
+            }
             if UnixStream::connect(&path).await.is_ok() {
                 return Err(Error::Io(format!("{}: in use", path.display())));
             }
@@ -288,7 +293,24 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
     }
 
-    // notes/client-port.md §5: path sockets only: relative, abstract (NUL or no leading slash) and over-long paths are refused; a stale socket file is replaced, a live one is in use
+    // notes/client-port.md §5: a listener drops a peer of another uid before reading anything (the uid it expects stands in for another process's)
+    #[tokio::test]
+    async fn listener_drops_another_uid() {
+        let d = dir();
+        let url = url_of(&d.join("s.sock"));
+        let mut l = Unix.listen(ListenConfig { url, secret: StaticSecret::from_bytes([0; 32]) }).await.unwrap();
+        let addr = l.address();
+        l.uid = l.uid.wrapping_add(1);
+        let (out, mut incoming) = tokio::sync::mpsc::channel(4);
+        tokio::spawn(link::serve(l, W, W, out, 8));
+        let mut a = link::dial(&Unix, &addr, None, W).await.unwrap();
+        assert!(a.tx.send(b"hi".to_vec(), usize::MAX));
+        assert_eq!(tokio::time::timeout(W, a.rx.recv()).await.unwrap(), None, "closed by the listener");
+        assert!(tokio::time::timeout(Duration::from_millis(200), incoming.recv()).await.is_err(), "no session");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // notes/client-port.md §5: path sockets only: relative, abstract (NUL or no leading slash) and over-long paths are refused; a stale socket file is replaced, a live one is in use, another file is kept
     #[tokio::test]
     async fn path_rules() {
         for bad in ["unix://rel.sock", "unix://@abstract", "unix:///a\0b", "quic://x"] {
@@ -307,6 +329,10 @@ mod tests {
         assert!(matches!(Unix.listen(cfg()).await, Err(Error::Io(_))));
         drop(l);
         assert!(!d.join("s.sock").exists());
+        // a file that is no socket is never replaced
+        std::fs::write(d.join("s.sock"), b"keep").unwrap();
+        assert!(matches!(Unix.listen(cfg()).await, Err(Error::Io(_))));
+        assert_eq!(std::fs::read(d.join("s.sock")).unwrap(), b"keep");
         let _ = std::fs::remove_dir_all(&d);
     }
 }

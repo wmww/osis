@@ -154,8 +154,8 @@ impl Osis {
         }
         let seq = matches!(crate::large::type_of(&key, &path)?, Some(Type::Text));
         let key = crate::Key { ak: ak_of(&key)?, schema: key.schema().map(|s| Arc::new(s.clone())) };
-        let tid = self.read(|r| r.resolve(tid));
-        let now = match self.read(|r| r.get_path(tid, &key, &path))? {
+        let tid = self.read_local(|r| r.resolve(tid));
+        let now = match self.read_local(|r| r.get_path(tid, &key, &path))? {
             Some(Value::Str(s)) => s,
             None => String::new(),
             Some(_) => return Err(Error::Invalid("not a string".into())),
@@ -173,7 +173,7 @@ impl Osis {
             if let Err(e) = flush(db, &b2, &mut s) {
                 uncommitted(db, tid, &e);
             }
-            let merged = match db.read(|r| r.get_path(tid, &b2.key, &b2.path)) {
+            let merged = match db.read_local(|r| r.get_path(tid, &b2.key, &b2.path)) {
                 Ok(Some(Value::Str(x))) => x,
                 _ => return,
             };

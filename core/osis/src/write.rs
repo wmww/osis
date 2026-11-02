@@ -157,7 +157,7 @@ impl<'d> Write<'d> {
     /// `t` after moves; recorded as given when the batch goes to a remote node, which
     /// resolves it as it replays the batch (`Osis::replay`).
     fn resolve(&self, t: Tid) -> Tid {
-        if self.created.contains(&t) || self.db.attached() { t } else { self.db.read(|r| r.resolve(t)) }
+        if self.created.contains(&t) || self.db.attached() { t } else { self.db.read_local(|r| r.resolve(t)) }
     }
 
     /// `t` resolved, failing `UnknownThing` when it is not held; a remote node checks at replay.

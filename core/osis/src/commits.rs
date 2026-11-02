@@ -196,13 +196,13 @@ impl Osis {
             .map_err(Error::from)
         };
         Ok(match s {
-            Scope::Aspects(v) => v.iter().map(|(t, a)| (self.read(|r| r.resolve(*t)), a.clone())).collect(),
+            Scope::Aspects(v) => v.iter().map(|(t, a)| (self.read_local(|r| r.resolve(*t)), a.clone())).collect(),
             Scope::Thing(t) => {
-                let t = self.read(|r| r.resolve(*t));
+                let t = self.read_local(|r| r.resolve(*t));
                 things(&|_, x| *x == t)?
             }
             Scope::Group(g) => {
-                let g = self.read(|r| r.resolve(*g));
+                let g = self.read_local(|r| r.resolve(*g));
                 things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
             }
         })

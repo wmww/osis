@@ -107,7 +107,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
 | `MAX_SCHEMA_BYTES` 1 MiB per connection (osis `port`) | R (`TooLarge`) | no typed set through the port / one client fills memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
-| `MAX_BATCH_OPS` 1024 per `write` (osis `port`, spec/wire.md §13) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |
+| `MAX_BATCH_OPS` 1024 per `write` (osis `port`, the method table) | R (`Invalid`) | no remote write / a batch's cost unbounded per call (one frame bounds it anyway) |
 | unix `MAX_PATH` 107 bytes (osis-transport `unix`) | O (`sun_path`, the OS's) | |
 | `MAX_IDLE` 60 s, `MIN_WAKE_MS` 1 s, `FINISH_WAIT` 10 s, `RELISTEN_RETRY` 5 s | M | |
 | `RESEND_MS` 30 s | M (retry pacing after an answer that did not settle the entry; never while its request is unanswered, `ClientSession::answered`) | retry every pass / no retry on this connection |

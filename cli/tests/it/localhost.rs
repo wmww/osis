@@ -183,11 +183,21 @@ fn own_host_device_localhost() {
 
 /// Runs `osis` once; (exit code, stdout, stderr).
 fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
-    let o = Command::new(OSIS).arg("-s").arg(store).args(args).stdin(Stdio::null()).output().unwrap();
+    run_in(store, args, b"")
+}
+
+/// `run` with `stdin`.
+fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
+    let mut c = Command::new(OSIS).arg("-s").arg(store).args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    c.stdin.take().unwrap().write_all(stdin).unwrap();
+    let o = c.wait_with_output().unwrap();
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's; `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+/// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
+const BAD_SCRIPT: &[u8] = b"create --owner me --in home --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
+
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`); `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
@@ -199,6 +209,9 @@ fn daemon_clients_localhost() {
     let lt = osis(&local, &["create", "--owner", "me", "note:title.0", "\"x\""]);
     let lget = run(&local, &["get", &lt, "note:title.0"]);
     let lmiss = run(&local, &["get", &lt, "note:none.0"]);
+    let ljson = run(&local, &["--json", "get", &lt, "note:title.0"]);
+    let lbad = run_in(&local, &["write"], BAD_SCRIPT);
+    assert_eq!(lbad.0, 3, "{}", lbad.2);
     for xdg in [true, false] {
         // a killed daemon's pointer stays (stale): wait for the new one
         let _ = std::fs::remove_file(s.join("sock"));
@@ -224,6 +237,14 @@ fn daemon_clients_localhost() {
         assert_eq!((get.0, get.1.as_str()), (lget.0, lget.1.as_str()));
         let miss = run(&s, &["get", &t, "note:none.0"]);
         assert_eq!((miss.0, miss.1.as_str()), (lmiss.0, lmiss.1.as_str()));
+        let json = run(&s, &["--json", "get", &t, "note:title.0"]);
+        assert_eq!((json.0, json.1.as_str()), (ljson.0, ljson.1.as_str()));
+        // a write script: one commit; a failing one commits nothing, with the local run's error
+        let w = run_in(&s, &["write"], format!("set {t} note:body.0 \"b\"\n").as_bytes());
+        assert_eq!((w.0, w.1.lines().next().map(str::len)), (0, Some(64)), "{}", w.2);
+        assert_eq!(osis(&s, &["get", &t, "note:body.0"]), "\"b\"");
+        let bad = run_in(&s, &["write"], BAD_SCRIPT);
+        assert_eq!((bad.0, bad.1.as_str(), bad.2.as_str()), (lbad.0, lbad.1.as_str(), lbad.2.as_str()));
         // a watch through the daemon: its initial line, then the change another client makes
         let mut w = Command::new(OSIS).arg("-s").arg(&s).args(["--timeout", "60s", "watch", &t, "note:title.0", "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
         let mut wout = BufReader::new(w.stdout.take().unwrap());

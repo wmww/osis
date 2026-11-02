@@ -361,7 +361,7 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveri
 
 impl Osis {
     fn resolved(&self, t: Tid) -> Tid {
-        self.read(|r| r.resolve(t))
+        self.read_local(|r| r.resolve(t))
     }
 
     /// Persists the ephemeral things among `tids` with their owner chains by a content commit
@@ -429,7 +429,7 @@ impl Osis {
         if grant && !may && !opts.place_anyway {
             return Err(Error::Permission { tid: t, needs: Role::Admin });
         }
-        let placed = self.read(|r| {
+        let placed = self.read_local(|r| {
             let gs = r.groups_of(t);
             if opts.subgroup { gs.subgroup_of.contains(&g) } else { gs.item_of.contains(&g) }
         });
@@ -504,7 +504,7 @@ impl Osis {
             return Vec::new();
         }
         let t = self.resolved(tid);
-        let (gs, roster) = self.read(|r| (r.groups_of(t), r.roster(t)));
+        let (gs, roster) = self.read_local(|r| (r.groups_of(t), r.roster(t)));
         let placed: BTreeSet<Tid> = gs.item_of.into_iter().chain(gs.subgroup_of).collect();
         let mut out: Vec<GroupReach> = placed.iter().map(|g| GroupReach { group: *g, placed: true, share: roster.get(g).copied().map_or(Share::Excluded, share_of) }).collect();
         out.extend(roster.iter().filter(|(g, e)| e.tied && !placed.contains(g)).map(|(g, e)| GroupReach { group: *g, placed: false, share: Share::Tied(e.role) }));
@@ -580,7 +580,7 @@ impl Osis {
             return Vec::new();
         }
         let (t, a) = (self.resolved(target), self.resolved(actor));
-        self.read(|r| {
+        self.read_local(|r| {
             let mut via: BTreeMap<Tid, Tid> = BTreeMap::from([(t, t)]);
             let mut queue = std::collections::VecDeque::from([t]);
             while let Some(x) = queue.pop_front() {

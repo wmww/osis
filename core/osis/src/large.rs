@@ -193,7 +193,7 @@ impl Osis {
     /// The stored value at `path` of an aspect, links unmaterialized.
     fn raw_at<K: AspectKey>(&self, tid: Tid, key: &K, path: &Path) -> Result<Option<(Tid, Value)>> {
         let ak = ak_of(key)?;
-        self.read(|r| {
+        self.read_local(|r| {
             let (tid, Some(v)) = r.raw(tid, &ak)? else { return Ok(None) };
             Ok(osis_schema::value_at(&v, path).cloned().map(|x| (tid, x)))
         })

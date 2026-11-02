@@ -1,6 +1,6 @@
 //! `Multi`: one transport over several, picked by URL scheme (spec/sync.md §10): `mem://` to
 //! `InProcess`, `quic://` to `Quic`, `peer://` to `Iroh` (feature `iroh`), else to
-//! `InProcess` (which finds a `peer://` listener by key), `unix://` to `Unix`. A scheme without its transport is
+//! `InProcess` (which finds a `peer://` listener by key), `unix://` to `Unix` (listen only). A scheme without its transport is
 //! `UnknownScheme`. Lets one driver reach hosts and peers.
 
 use crate::{Address, Connection, Error, InProcess, ListenConfig, Listener, MemConn, MemListener, MemRecv, MemSend, PublicKey, RecvStream, SendStream, StaticSecret, Transport};
@@ -38,6 +38,14 @@ impl Multi {
             crate::PEER_SCHEME if self.iroh.is_some() => self.iroh.as_ref().map(Pick::Iroh).ok_or_else(unknown),
             "mem" | crate::PEER_SCHEME => self.mem.as_ref().map(Pick::Mem).ok_or_else(unknown),
             _ => Err(unknown()),
+        }
+    }
+
+    /// `pick` for a dial: never `unix://`.
+    fn pick_dial(&self, url: &str) -> Result<Pick<'_>, Error> {
+        match self.pick(url)? {
+            Pick::Unix(_) => Err(Error::UnknownScheme(crate::unix::SCHEME.to_owned())),
+            p => Ok(p),
         }
     }
 }
@@ -107,13 +115,15 @@ impl Transport for Multi {
     type Conn = MultiConn;
     type Listener = MultiListener;
 
+    /// `unix://` is listened on only (the client port, notes/client-port.md §5): an address
+    /// another node published never makes this process dial a local socket.
     async fn dial(&self, addr: &Address) -> Result<MultiConn, Error> {
-        let p = self.pick(&addr.url)?;
+        let p = self.pick_dial(&addr.url)?;
         each!(Pick; p, t => t.dial(addr).await.map(Into::into))
     }
 
     async fn dial_as(&self, addr: &Address, secret: &StaticSecret) -> Result<MultiConn, Error> {
-        let p = self.pick(&addr.url)?;
+        let p = self.pick_dial(&addr.url)?;
         each!(Pick; p, t => t.dial_as(addr, secret).await.map(Into::into))
     }
 
@@ -190,8 +200,12 @@ mod tests {
     use super::*;
     use crate::{Net, Sched};
 
+    fn me2() -> StaticSecret {
+        StaticSecret::from_bytes([7; 32])
+    }
+
     // spec/sync.md §10: the URL scheme picks the transport; `peer://` without iroh goes to the
-    // in-process listener of that key; a scheme without its transport is unknown (parked).
+    // in-process listener of that key; a scheme without its transport is unknown (parked); unix:// is never dialed.
     #[test]
     #[allow(clippy::needless_update)] // the other fields exist with feature `iroh`
     fn dispatch_by_scheme_spec_sync_10() {
@@ -212,6 +226,10 @@ mod tests {
             assert!(matches!(none.dial(&Address { url: "mem://b".into(), key }).await, Err(Error::UnknownScheme(_))));
             assert!(matches!(a.dial(&Address { url: "quic://x:1".into(), key }).await, Err(Error::UnknownScheme(_))));
             assert!(matches!(a.dial(&Address { url: "nothing".into(), key }).await, Err(Error::BadUrl(_))));
+            // unix:// is listened on, never dialed through a Multi (a published address cannot reach a local socket)
+            let u = Multi { unix: Some(Unix), ..Multi::default() };
+            assert!(matches!(u.dial(&Address { url: "unix:///tmp/x.sock".into(), key }).await, Err(Error::UnknownScheme(_))));
+            assert!(matches!(u.dial_as(&Address { url: "unix:///tmp/x.sock".into(), key }, &me2()).await, Err(Error::UnknownScheme(_))));
             drop(l);
         });
         assert!(done.is_some());

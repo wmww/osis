@@ -393,7 +393,7 @@ fn pump_dispatcher_runs_callbacks_in_settle() {
     c.dispatch = osis::Dispatcher::Pump(Arc::new(move || {
         w2.fetch_add(1, Ordering::SeqCst);
         if let Some(db) = weak2.get().and_then(|w| w.upgrade()) {
-            db.read(|_| ());
+            let _ = db.read(|_| ());
         }
     }));
     let db = Osis::create(c).unwrap().0;
