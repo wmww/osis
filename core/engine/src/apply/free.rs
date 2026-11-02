@@ -117,6 +117,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     for b in &v.chunks {
         core.ix.by_chunk.remove(b, id);
     }
+    if let Some(t) = v.undoes {
+        core.ix.undone_by.remove(&t, id);
+    }
     core.ix.void.remove(id);
     core.ix.pending.remove(id);
     core.stale_commits.remove(id);

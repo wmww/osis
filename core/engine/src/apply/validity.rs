@@ -60,10 +60,6 @@ fn dots_of(form: Form, range: Option<(u64, u64)>) -> Dots {
     }
 }
 
-fn dots_of_view(v: &View, ai: usize) -> Dots {
-    dots_of(v.form, v.aspects.get(ai).map(|a| (a.lo, a.hi)))
-}
-
 
 /// Entries of a `roles.0` (map) fragment: (dot, key, fragment).
 fn entries(f: &Fragment) -> Vec<(Dot, Option<Value>, Option<Fragment>)> {
@@ -162,7 +158,7 @@ fn note_keys(core: &mut Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -
 /// spec/crdt.md §5.6; an edge change is remove + put, spec/permissions.md §2). With whether
 /// every reset's entry is known here: a reset of an entry whose creation is not held names no
 /// holder yet.
-fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
+fn edge_ops(core: &Core, target: &Tid, es: &[Entry], own: Option<&Owned>) -> (Vec<EdgeOp>, bool) {
     let mut known = true;
     let mut per: BTreeMap<Tid, Option<Edge>> = BTreeMap::new();
     let mut set: BTreeSet<Tid> = BTreeSet::new();
@@ -187,7 +183,7 @@ fn edge_ops(core: &Core, target: &Tid, es: &[Entry], dots: Dots, own: Option<&Ow
             },
         }
     }
-    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge, dots }).collect(), known)
+    (per.into_iter().map(|(holder, edge)| EdgeOp { target: *target, holder, edge }).collect(), known)
 }
 
 /// Holders whose edge on `target` a `roles.0` delta writes: an entry it creates names its key,
@@ -231,7 +227,7 @@ fn tenures_of(s: &[Value]) -> Vec<ct::Tenure> {
 }
 
 /// A roster snapshot's parts on one thing: roster, ledger, `roles.0` dots.
-type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>, Dots);
+type RosterParts = (BTreeMap<Tid, Edge>, Vec<Tenure>);
 
 /// A roster snapshot naming one holder in two `roles.0` deltas of a thing is bad input
 /// (spec/permissions.md §6): which one counts would depend on the deltas a node holds.
@@ -430,7 +426,7 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
                 if too_deep(core, &a.tid) {
                     continue;
                 }
-                let (v, k) = edge_ops(core, &a.tid, es, dots_of_view(h, ai), Owned::of_view(h, id, ai).as_ref());
+                let (v, k) = edge_ops(core, &a.tid, es, Owned::of_view(h, id, ai).as_ref());
                 ops.extend(v);
                 known &= k;
             }
@@ -454,10 +450,9 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
             let mut by_thing: BTreeMap<Tid, RosterParts> = BTreeMap::new();
             for (ai, p) in &parts.0 {
                 let Some(a) = h.aspects.get(*ai) else { continue };
-                let e = by_thing.entry(a.tid).or_insert_with(|| (BTreeMap::new(), Vec::new(), Dots::Commit));
+                let e = by_thing.entry(a.tid).or_default();
                 match p {
                     EdgePart::Holders(es) => {
-                        e.2 = dots_of_view(h, *ai);
                         for (_, k, v) in es {
                             if let (Some(m), Some(Some(edge))) = (k, v) {
                                 e.0.insert(*m, *edge);
@@ -476,11 +471,11 @@ fn add_role_commit_in(core: &mut Core, h: &View, id: &CommitId, parts: &EdgePart
                     }
                 }
             }
-            for (thing, (roster, ledger, dots)) in by_thing {
+            for (thing, (roster, ledger)) in by_thing {
                 if linked.waiting.contains(&thing) || too_deep(core, &thing) {
                     continue;
                 }
-                core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, dots, roster, ledger });
+                core.ix.held.add_snapshot(RosterSnapshot { id: *id, ts: h.ts, author: h.author, actor: h.actor, thing, roster, ledger });
             }
         }
         _ => {}

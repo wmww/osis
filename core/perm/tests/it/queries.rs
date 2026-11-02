@@ -539,6 +539,26 @@ fn demotion_scope() {
     assert!(tl.demotion_scope(&d1, &d1, &p, None, ts(5)).is_empty(), "never its own subject");
 }
 
+/// spec/permissions.md §5.1 step 4 ("as restored"), §5.1 "Frontier": after x removed its own
+/// write edge (no audit), the next explicit write on that edge audits against the edge as
+/// restored, so its scope puts x's writes on P and G in question though the edge is gone.
+#[test]
+fn demotion_scope_as_restored_spec_permissions_5_1() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, a, x) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let g = w.thing(p);
+    let all: Vec<(Tid, u64)> = n.iter().map(|y| (*y, 0)).collect();
+    w.set(k, p, a, edge(Admin), 0, &all);
+    w.set(k, p, x, edge(Write), 0, &all);
+    w.set(x, p, x, None, 1, &all);
+    let tl = Timeline::evaluate(&w.held());
+    let both: std::collections::BTreeSet<Tid> = [p, g].into_iter().collect();
+    let s = tl.demotion_scope(&a, &x, &p, None, ts(5));
+    assert_eq!(s.content.get(&x), Some(&both));
+}
+
 /// spec/permissions.md §1: an owner chain reaches its key actor within `MAX_OWNER_DEPTH` owner
 /// links; a deeper thing has none, and a chain query walks at most that far.
 #[test]

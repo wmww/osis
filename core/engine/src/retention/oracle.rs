@@ -6,13 +6,13 @@
 use crate::engine::{Owned, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid, Ts};
-use osis_commit::{Decoded, Form, Header};
+use osis_commit::{Decoded, Header};
 use osis_crdt::{Changes, Fragment, Stamp};
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
     let (Some(sai), Some(cai)) = (super::aspect_index(tx.core, s, tid, ak), super::aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
-    if !crate::apply::validity::snapshot_valid(tx.core, s, tid, ak) {
+    if !crate::apply::validity::snapshot_valid(tx.core, s, tid, ak) || super::carrier_at(tx.core, s, sai) {
         return Ok(Some(false));
     }
     if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
@@ -21,8 +21,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let parts = crate::apply::held_parts(tx, s, sai)?;
     if let (Some(m), [Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(c), parts.as_slice()) {
         let h = &m.header;
-        let by_frontier = h.form == Form::Node && h.kind.has_own_writes();
-        let unseen = by_frontier && h.aspects.get(cai).is_some_and(|a| sn.frontiers.nodes.get(&h.author).is_none_or(|f| f.saturating_add(1) < a.hi));
+        let unseen = h.aspects.get(cai).is_some_and(|a| super::unseen_by(&sn.frontiers, h, c, a.hi));
         if unseen || (super::by_id(h.kind, h.form) && !sn.absorbed.contains_key(c)) {
             return Ok(Some(false));
         }

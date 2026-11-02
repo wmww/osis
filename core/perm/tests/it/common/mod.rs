@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
-use osis_perm::{Dots, Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
+use osis_perm::{Edge, EdgeOp, Frontier, RoleCommit, MemoryHeldSet, RosterSnapshot, Tenure, WriteId};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -178,7 +178,7 @@ impl World {
     /// A roster snapshot carrying a produced state, received by everyone at once.
     pub fn snapshot_state(&mut self, author: Tid, thing: Tid, state: osis_perm::RosterState, t: u64) -> CommitId {
         let id = self.fresh_id();
-        self.raw.push(RosterSnapshot { id, ts: ts(t), author, actor: author, thing, dots: Dots::Commit, roster: state.roster, ledger: state.ledger });
+        self.raw.push(RosterSnapshot { id, ts: ts(t), author, actor: author, thing, roster: state.roster, ledger: state.ledger });
         id
     }
 
@@ -236,7 +236,7 @@ impl World {
                 author: c.author,
                 actor: c.author,
                 frontier: Some(Arc::new(self.frontier(c.author, c.t))),
-                ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge, dots: Dots::Commit }).collect(),
+                ops: c.ops.iter().map(|&(target, holder, edge)| EdgeOp { target, holder, edge }).collect(),
             });
         }
         for s in self.raw.iter().filter(|s| !skip.contains(&s.id)) {
@@ -254,7 +254,7 @@ impl World {
                     frontier: audited.then(|| Arc::new(self.frontier(until.1, until.0))),
                 })
                 .collect();
-            h.add_snapshot(RosterSnapshot { id: s.id, ts: ts(s.t), author: s.author, actor: s.author, thing: s.thing, dots: Dots::Commit, roster: s.roster.clone(), ledger });
+            h.add_snapshot(RosterSnapshot { id: s.id, ts: ts(s.t), author: s.author, actor: s.author, thing: s.thing, roster: s.roster.clone(), ledger });
         }
         h
     }

@@ -21,10 +21,9 @@
 //!   explicit demotion it records, by its key's node (exempt as the author), audit-only
 //!   entries (`since` = `until`) included.
 
-use crate::content::{overlapping, Range};
 use crate::graph::{Class, Dense, Edges, Owners, Reads, Standing, View};
 use crate::held::HeldSet;
-use crate::types::{earliest, lowers, mark, pop, put, Dots, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, WriteId, ROLES};
+use crate::types::{earliest, lowers, mark, pop, put, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, WriteId};
 use osis_base::{CommitId, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -56,7 +55,6 @@ pub struct Applied {
     pub target: Tid,
     pub point: Point,
     pub attr: Attr,
-    pub dots: Dots,
 }
 
 /// A class fall whose audit ran (§5.1 step 4): the demoting write's point and the node's
@@ -90,14 +88,9 @@ pub(crate) struct Input {
     pub ever_admins: BTreeMap<Tid, BTreeSet<Tid>>,
     /// The earliest held write (edge op or roster snapshot) per (author, target).
     pub first_write: BTreeMap<(Tid, Tid), Point>,
-    /// Node-form `roles.0` ranges of every gathered commit and snapshot, voided ones
-    /// included, by (node, thing), with their largest end: what `can_append` checks against.
-    pub ranges: BTreeMap<(Tid, Tid), (Spans, u64)>,
     /// Every edge any held write, roster or ledger can set (any role, any time), holder to
     /// targets and target to holders: what any reach in any walk follows besides owner links.
     pub ever: Ever,
-    /// The commits and snapshots voided by overlapping ranges, as held (`holds_same`).
-    pub voided: (BTreeMap<CommitId, Arc<RoleCommit>>, BTreeMap<CommitId, Arc<RosterSnapshot>>),
 }
 
 /// Edges at any time, both ways (`Input::ever`).
@@ -124,9 +117,6 @@ impl Ever {
 pub(crate) fn written_on(c: &RoleCommit) -> impl Iterator<Item = Tid> + '_ {
     c.ops.iter().flat_map(|o| std::iter::once(o.target).chain((o.holder != c.author).then_some(o.holder)))
 }
-
-/// Node-form ranges `[lo, hi)` with their commits.
-pub(crate) type Spans = Vec<(u64, u64, CommitId)>;
 
 impl Input {
     /// Whether owner-chain authority on some thing with a roster snapshot may come through that
@@ -174,27 +164,6 @@ impl Input {
                 }
             }
         }
-        // Overlapping node-form ranges on `roles.0` void both commits (spec/commits.md §4);
-        // the node voids commits overlapping on its other aspects before handing them over.
-        let ranges: Vec<Range> = commits
-            .values()
-            .flat_map(|c| c.ops.iter().map(move |o| (c.id, c.author, o.target, o.dots)))
-            .chain(snaps.values().map(|s| (s.id, s.author, s.thing, s.dots)))
-            .filter_map(|(commit, node, tid, d)| match d {
-                Dots::Node { lo, hi } => Some(Range { commit, node, tid, ak: ROLES.to_string(), lo, hi }),
-                Dots::Commit => None,
-            })
-            .collect();
-        let mut by_key: BTreeMap<(Tid, Tid), (Spans, u64)> = BTreeMap::new();
-        for r in ranges.iter().filter(|r| r.lo < r.hi) {
-            let e = by_key.entry((r.node, r.tid)).or_default();
-            e.0.push((r.lo, r.hi, r.commit));
-            e.1 = e.1.max(r.hi);
-        }
-        let void = overlapping(ranges);
-        let voided = (commits.iter().filter(|(id, _)| void.contains(*id)).map(|(id, c)| (*id, c.clone())).collect(), snaps.iter().filter(|(id, _)| void.contains(*id)).map(|(id, s)| (*id, s.clone())).collect());
-        commits.retain(|id, _| !void.contains(id));
-        snaps.retain(|id, _| !void.contains(id));
         // Who can hold a class: key actors, authors, and holders that may be nodes.
         let mut nodes: BTreeSet<Tid> = things.iter().filter(|t| owners.is_key(t)).copied().collect();
         nodes.extend(commits.values().map(|c| c.author));
@@ -238,25 +207,23 @@ impl Input {
             let e = first_write.entry((a, t)).or_insert(p);
             *e = (*e).min(p);
         }
-        Input { owners, commits, snaps, nodes, ever_admins, first_write, ranges: by_key, ever, voided }
+        Input { owners, commits, snaps, nodes, ever_admins, first_write, ever }
     }
 
     /// Whether `c` is held here with this content (a record can grow under its ID: a part
     /// that arrives late).
     pub fn holds_commit(&self, c: &RoleCommit) -> bool {
-        self.commits.get(&c.id).or_else(|| self.voided.0.get(&c.id)).is_some_and(|o| o.same_input(c))
+        self.commits.get(&c.id).is_some_and(|o| o.same_input(c))
     }
 
     /// `holds_commit` for a roster snapshot.
     pub fn holds_snapshot(&self, s: &RosterSnapshot) -> bool {
-        self.snaps.get(&s.id).or_else(|| self.voided.1.get(&s.id)).is_some_and(|o| o.same_input(s))
+        self.snaps.get(&s.id).is_some_and(|o| o.same_input(s))
     }
 
     /// Whether every record held here is held in `other` with the same content.
     pub fn kept_in(&self, other: &Input) -> bool {
-        let commits = self.commits.values().chain(self.voided.0.values());
-        let snaps = self.snaps.values().chain(self.voided.1.values());
-        commits.into_iter().all(|c| other.holds_commit(c)) && snaps.into_iter().all(|s| other.holds_snapshot(s))
+        self.commits.values().all(|c| other.holds_commit(c)) && self.snaps.values().all(|s| other.holds_snapshot(s))
     }
 
     /// What reaches any of `seeds` (included) at any time: owner links and `ever` edges.
@@ -296,11 +263,9 @@ impl Input {
 
     /// Whether `new` (commits not held here) can join this input without changing anything but
     /// the commits and new nodes that reach nothing here (`append`): no thing without an owner
-    /// link here becoming owned, no overlapping node-form range (a void, spec/commits.md §4),
-    /// and with an epoch start ever changed, no role cycle (`Timeline::extend`'s
+    /// link here becoming owned, and with an epoch start ever changed, no role cycle (`Timeline::extend`'s
     /// conditions).
     pub fn can_append(&self, new: &[Arc<RoleCommit>], epoch_changed: bool) -> bool {
-        let mut mine: BTreeMap<(Tid, Tid), Spans> = BTreeMap::new();
         let mut admins = Vec::new();
         for c in new {
             if self.commits.contains_key(&c.id) || !self.may_be_node(&c.author) {
@@ -313,16 +278,6 @@ impl Input {
                 if o.edge.is_some_and(|e| e.role == Role::Admin) {
                     admins.push((o.target, o.holder));
                 }
-                let Dots::Node { lo, hi } = o.dots else { continue };
-                if lo >= hi {
-                    continue;
-                }
-                let k = (c.author, o.target);
-                let clash = |v: &[(u64, u64, CommitId)]| v.iter().any(|&(l, h, x)| x != c.id && l < hi && lo < h);
-                if self.ranges.get(&k).is_some_and(|(v, max)| *max > lo && clash(v)) || mine.get(&k).is_some_and(|v| clash(v)) {
-                    return false;
-                }
-                mine.entry(k).or_default().push((lo, hi, c.id));
             }
         }
         !(epoch_changed && self.cyclic_with(&admins))
@@ -348,13 +303,6 @@ impl Input {
                 }
                 if o.edge.is_some_and(|e| e.role == Role::Admin) {
                     self.ever_admins.entry(o.target).or_default().insert(o.holder);
-                }
-                if let Dots::Node { lo, hi } = o.dots
-                    && lo < hi
-                {
-                    let r = self.ranges.entry((c.author, o.target)).or_default();
-                    r.0.push((lo, hi, c.id));
-                    r.1 = r.1.max(hi);
                 }
             }
             self.commits.insert(c.id, c.clone());
@@ -649,7 +597,7 @@ impl Walked {
             // as `Pass::record`, at its place in walk order
             self.list_write((c.author, o.target), id, p);
             self.log.push(Undo::ByAuthorTarget((c.author, o.target)));
-            let was = self.applied.insert(id, Applied { author: c.author, target: o.target, point: p, attr, dots: o.dots });
+            let was = self.applied.insert(id, Applied { author: c.author, target: o.target, point: p, attr });
             self.log.push(Undo::Applied(id, was));
             // as `Pass::change` (no audit: `insert`): the key's state at the end is its state here
             let old = self.set_alive(p, key, new);
@@ -1331,7 +1279,7 @@ pub(crate) fn join(a: Option<Edge>, b: Edge) -> Edge {
 
 /// What an explicit write on an edge restores before the per-node standings (§5.1 step 4):
 /// its value before the write (`old`, unless written expired) joined with `prior`.
-fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
+pub(crate) fn restore_base(prior: Option<Edge>, old: Option<Edge>) -> Option<Edge> {
     match (prior, old) {
         (Some(a), Some(o)) => Some(join(Some(a), o)),
         (a, o) => a.or(o),
@@ -1860,7 +1808,7 @@ impl<'a> Pass<'a> {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.frontier.is_some_and(|f| f.covers(&a.target, ROLES, x, a.dots, &id.commit()));
+                || aud.frontier.is_some_and(|f| f.commits.contains(&id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);
@@ -1895,7 +1843,7 @@ impl<'a> Pass<'a> {
         for (k, id, attr) in judged {
             let Some(op) = c.ops.get(k) else { continue };
             let new = op.edge.map(|e| Edge { since: None, ..e });
-            self.record(id, Applied { author: c.author, target: op.target, point, attr, dots: op.dots });
+            self.record(id, Applied { author: c.author, target: op.target, point, attr });
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
             let auditor = explicit.then(|| Auditor {
                 author: Some(c.author),
@@ -1919,7 +1867,7 @@ impl<'a> Pass<'a> {
         if !self.dropped.contains_key(&id) {
             let best = self.roles(s.author, s.ts);
             if self.view(s.ts).standing(&s.author, &best, &s.thing).class == Class::Chain {
-                let a = Applied { author: s.author, target: s.thing, point: s.point(), attr: Attr::By(Class::Chain), dots: s.dots };
+                let a = Applied { author: s.author, target: s.thing, point: s.point(), attr: Attr::By(Class::Chain) };
                 if start {
                     self.record(id, a);
                 } else {

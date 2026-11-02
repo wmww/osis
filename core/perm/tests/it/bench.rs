@@ -96,7 +96,7 @@ fn bench_10k_edges() {
         let ta = Instant::now();
         for i in 0..100u8 {
             let id = osis_base::CommitId([i; 32]);
-            let op = osis_perm::EdgeOp { target: doc, holder: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }), dots: osis_perm::Dots::Commit };
+            let op = osis_perm::EdgeOp { target: doc, holder: nodes[210 + usize::from(i % 20)], edge: edge(if i % 2 == 0 { Read } else { Write }) };
             held3.add_commit(osis_perm::RoleCommit { id, ts: ts(n as u64 + 100 + u64::from(i)), author: nodes[1], actor: nodes[1], frontier: None, ops: vec![op] });
             inc.update_touched(&held3, &touched);
             appended += inc.appended();

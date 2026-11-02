@@ -533,6 +533,10 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     for b in &v.chunks {
         w = w.raw(&b.0);
     }
+    w = match &v.undoes {
+        None => w.u8(0),
+        Some(c) => w.u8(1).raw(&c.0),
+    };
     match &v.frontier {
         None => w = w.u8(0),
         Some(f) => {
@@ -571,6 +575,11 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     for _ in 0..r.u32()? {
         chunks.push(osis_base::BlobId(r.arr()?));
     }
+    let undoes = match r.u8()? {
+        0 => None,
+        1 => Some(CommitId(r.arr()?)),
+        _ => return Err(Error::Corrupt("meta row undoes")),
+    };
     let frontier = match r.u8()? {
         0 => None,
         1 => {
@@ -583,7 +592,7 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
         _ => return Err(Error::Corrupt("meta row frontier")),
     };
     r.end()?;
-    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks }))
+    Ok((parts, super::View { ts, kind, form, author, actor, linked, memory, aspects, frontier, chunks, undoes }))
 }
 
 /// A commit record's head and its blob bytes.

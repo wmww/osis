@@ -445,3 +445,59 @@ fn undo_absent_below_key_with_two_entries_spec_4_6() {
         seen_concurrent_by(&ty, &base, &v1, &|w, _| crdt_model::ops::map_put_new(w, &vt, &k, &other), t2, "put_new");
     }
 }
+
+/// §4.6 "Absent before" takes the outermost absent position only: below a map absent in the undo buffer
+/// (here a buffer that misses the entry another writer created, as no real buffer does) whose reset another
+/// writer's entry blocks, the undone edit into that entry's value gets the per-write rules (a register absent
+/// before: nothing), never a reset of the entry's value, whatever it holds.
+#[test]
+fn undo_absent_outermost_only_below_entry_spec_4_6() {
+    let vt = Ty::Struct([(1, Ty::Register)].into_iter().collect());
+    let ty = Ty::Map(Box::new(Ty::Register), Box::new(vt));
+    let view = TyView(ty.clone());
+    let k = MValue::Str("k".into());
+    let (n1, n2) = (MSource::node(1), MSource::node(2));
+    let base = crdt_model::ops::create(&mut MWriter::new(n2, 1 << 16, 1), &ty, &MValue::map(vec![(k.clone(), MValue::fields(vec![(1, MValue::Int(0))]))]));
+    let mut w1 = MWriter::new(n1.clone(), 20 << 16, 10);
+    let d1 = crdt_model::diff::diff(&mut w1, Some(&base), &ty, &MValue::map(vec![(k, MValue::fields(vec![(1, MValue::Int(7))]))])).unwrap();
+    let mut state = Some(base);
+    mapply(&mut state, d1.clone());
+    let state = state.unwrap();
+    let (lo, hi) = (w1.lo, w1.hi());
+    let made = |d: &Dot| d.source == n1 && (lo..hi).contains(&d.ctr);
+    let mud = crdt_model::undo::undo(&mut MWriter::new(n1.clone(), 30 << 16, hi), &ty, &d1, &made, &state, None, &|_| false);
+    let mut m = Some(state.clone());
+    if let Some(u) = mud {
+        mapply(&mut m, u);
+    }
+    let d1i = frag(&d1);
+    let src = source(&n1);
+    let u = Undone { delta: &d1i, source: &src, range: CounterRange { lo, hi }, restored: &|_| false };
+    let si = frag(&state);
+    let iud = undo(&mut Writer::new(ts(30 << 16), src.clone(), hi), &u, &si, &Fragment::default(), &view).unwrap();
+    let mut i = si.clone();
+    if let Some(u) = iud {
+        i.join(u);
+    }
+    assert_eq!(i.read(), mread(&m));
+    assert_eq!(i.read(), si.read(), "nothing written");
+}
+
+/// §4.6 register rule: a root register absent before whose "Absent before" does not apply (a node without the
+/// whole state before the commit) writes nothing: the value stays.
+#[test]
+fn undo_register_absent_before_skipped_writes_nothing_spec_4_6() {
+    struct Partial;
+    impl crate::undo::UndoBuffer for Partial {
+        fn before(&self, _: &[crate::ops::PathSeg]) -> Option<Fragment> {
+            None
+        }
+        fn complete(&self) -> bool {
+            false
+        }
+    }
+    let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let d = crate::ops::create(&mut Writer::new(ts(5), src.clone(), 1), &crate::view::AnyView, &osis_base::Value::Int(7)).unwrap();
+    let u = Undone { delta: &d, source: &src, range: CounterRange { lo: 1, hi: 2 }, restored: &|_| false };
+    assert_eq!(undo(&mut Writer::new(ts(9), src.clone(), 2), &u, &d, &Partial, &crate::view::AnyView).unwrap(), None);
+}

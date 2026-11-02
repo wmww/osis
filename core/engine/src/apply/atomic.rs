@@ -80,6 +80,9 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     for b in &h.chunks {
         core.ix.by_chunk.insert(*b, *id);
     }
+    if let Some(t) = h.undoes {
+        core.ix.undone_by.insert(t, *id);
+    }
 }
 
 /// Commits by the same node (session) whose node-form (session-form) ranges on one aspect

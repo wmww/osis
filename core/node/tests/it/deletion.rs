@@ -702,6 +702,10 @@ fn carrier_only_snapshot_drops_nothing_alike_spec_sync_6() {
     net.advance(10);
     let sn = net.engine(a).snapshot(&t, &k).unwrap().unwrap();
     assert!(osis_commit::retention::carrier_only(&net.engine(a).header(&sn).unwrap().aspects[0].retention));
+    // it covers none (so no body dropped later counts it as a coverer, `Dropped::covered_by`)
+    for c in [w, x, yz] {
+        assert_eq!(net.engine(a).covered(&sn, &c, &t, &k).unwrap(), Some(false), "a carrier covers nothing");
+    }
     net.run();
     net.advance(60_000 + osis_base::format::MAX_DRIFT_MS);
     for n in [a, b] {

@@ -6,6 +6,7 @@
 use crate::graph::View;
 use crate::timeline::Timeline;
 use crate::types::Edge;
+use crate::walk::{join, restore_base};
 use osis_base::{Role, Tid, Ts};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -26,20 +27,31 @@ impl DemotionScope {
 
 impl Timeline {
     /// The scope of setting `holder`'s edge on `target` to `new` now (at `ts`, after every
-    /// held write), as if the holder still held what it had: empty when it demotes nobody.
-    /// `author` (the demoter) is never its own subject.
+    /// held write), against the edge as restored (spec/permissions.md §5.1 step 4: values taken
+    /// by `until` or self-removal since the last explicit write on it, and each node's kept
+    /// standing): empty when it demotes nobody. `author` (the demoter) is never its own subject.
     pub fn demotion_scope(&self, author: &Tid, holder: &Tid, target: &Tid, new: Option<Edge>, ts: Ts) -> DemotionScope {
         let mut out = DemotionScope::default();
         let now = self.edges_at(None);
-        let was = now.get(holder, target).map(|e| Edge { until: None, since: None, ..*e });
-        let before_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, was);
+        let key = (*holder, *target);
+        let old = now.get(holder, target).copied().filter(|_| !self.walked.dead.contains(&key));
+        let base = restore_base(self.walked.prior.get(&key).copied(), old);
+        let kept = self.walked.prior_node.get(&key);
+        let restored = |x: &Tid| match (base, kept.and_then(|m| m.get(x))) {
+            (b, Some(m)) => Some(join(b, *m)),
+            (b, None) => b.map(|b| join(None, b)),
+        };
+        // the edge holder -> target changes neither who reaches the holder nor what the
+        // target reaches
+        let base_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, base.map(|b| join(None, b)));
         let after_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, new);
-        let ns = before_v.reach_forward(target);
-        for x in before_v.reach_backward(holder) {
+        let ns = base_v.reach_forward(target);
+        for x in base_v.reach_backward(holder) {
             // Only nodes write; an actor's nodes are reached through it.
             if x == *author || self.input.owners.owner_actor(&x).is_some() {
                 continue;
             }
+            let before_v = View::at(&self.input.owners, &now, Some(ts)).patched(*holder, *target, restored(&x));
             let (b, a) = (before_v.roles_from(&x), after_v.roles_from(&x));
             for n in &ns {
                 let (sb, sa) = (before_v.standing(&x, &b, n), after_v.standing(&x, &a, n));

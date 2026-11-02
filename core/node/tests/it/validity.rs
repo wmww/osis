@@ -219,6 +219,35 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
 
+// spec/wire.md §4 field 12: a role commit whose frontier does not decode as a frontier is bad
+// input, never a demotion without a frontier (which would drop every audited write).
+#[test]
+fn malformed_frontier_is_bad_input_spec_wire_4() {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Batch, Delta, Op, PathOp, Writer, encode_delta};
+    let (mut lp, d, b, _) = setup(48);
+    let a = lp.peers[0].engine.tid();
+    let ts = osis_base::Ts::make(WallMs(lp.peers[0].engine.now().0 + 5), 0).unwrap();
+    let empty = osis_crdt::Fragment::default();
+    let mut batch = Batch::new(&empty, Writer::new(ts, Form::Commit.own_source(a, osis_base::CommitId([0; 32])), 1).keyed_removals(true));
+    let view = osis_schema::core_schema().view("roles.0").unwrap();
+    batch.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
+    let (f, range) = batch.finish().unwrap();
+    let mut cx = writer_ctx(Kind::Role, ts, a, range.lo, range.hi);
+    cx.own = Form::Commit.own_source(a, osis_base::CommitId([0; 32]));
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, Form::Commit);
+    let mut aw = AspectWrite::new(d, ak("roles.0"), range.lo, range.hi, bytes);
+    aw.retention = osis_commit::retention::ROLE_RETENTION;
+    cb.aspects.push(aw);
+    cb.frontier = Some(Value::Int(5));
+    let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    let built = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let e = lp.peers[1].engine.ingest(&built.commit.encode(), Vec::new()).unwrap_err();
+    assert_eq!(e.class(), osis_base::ErrorClass::BadInput, "{e}");
+    assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
+}
+
 // spec/commits.md §2: a role commit changes at most
 // one edge; a frontier needs a demotion. A writer refuses such a commit before it leaves.
 #[test]

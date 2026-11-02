@@ -7,8 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::Role::{Admin, Write};
 use osis_base::{Role, Tid};
-use osis_perm::{overlapping, Dots, Edge, Point, Range, Timeline, Validity};
-use std::collections::BTreeSet;
+use osis_perm::{Dots, Edge, Point, Timeline, Validity};
 
 const DOC: &str = "doc.0";
 
@@ -155,40 +154,6 @@ fn regrant_validates_gap_until_next_removal() {
         w.set(if k_removes { k } else { d2 }, p, d1, None, 6, &[]);
         assert_eq!(valid(&Timeline::evaluate(&w.held()), gap, g, Admin), !k_removes, "k removes {k_removes}");
     }
-}
-
-/// spec/commits.md §4: overlapping node-form ranges from one node on one aspect void both
-/// commits; adjacent ranges, other nodes and other aspects do not.
-// spec/permissions.md §5.2 (dot reuse)
-#[test]
-fn node_form_overlap_voids_both() {
-    let mut w = World::new();
-    let n = w.nodes(2);
-    let t = w.thing(n[0]);
-    let r = |c: u32, node: Tid, ak: &str, lo: u64, hi: u64| Range { commit: cid(c), node, tid: t, ak: ak.into(), lo, hi };
-    let v = overlapping([r(1, n[0], DOC, 1, 3), r(2, n[0], DOC, 3, 5), r(3, n[0], DOC, 4, 6), r(4, n[1], DOC, 1, 9), r(5, n[0], "x.0", 1, 9), r(1, n[0], DOC, 1, 3)]);
-    assert_eq!(v, BTreeSet::from([cid(2), cid(3)]));
-}
-
-/// spec/commits.md §4 in layer 1: two edge commits by one node with overlapping `roles.0`
-/// ranges are both ignored.
-#[test]
-fn overlapping_role_commits_ignored() {
-    let (w, n, d) = doc();
-    let mut held = w.held();
-    let z = w.created.keys().copied().find(|t| !n.contains(t) && *t != d).unwrap_or(n[3]);
-    for (id, lo, hi, holder) in [(cid(1), 1, 3, n[3]), (cid(2), 2, 4, z)] {
-        held.add_commit(osis_perm::RoleCommit {
-            id,
-            ts: ts(5),
-            author: n[1],
-            actor: n[1],
-            frontier: None,
-            ops: vec![osis_perm::EdgeOp { target: d, holder, edge: edge(Write), dots: Dots::Node { lo, hi } }],
-        });
-    }
-    let tl = Timeline::evaluate(&held);
-    assert!(!tl.roster(&d, osis_perm::At::END).contains_key(&n[3]));
 }
 
 /// §5.2 re-grant makes writes valid *again*: a write before X's first tenure stays invalid

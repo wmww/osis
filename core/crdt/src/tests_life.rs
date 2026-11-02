@@ -819,3 +819,16 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     let ours = |w: Vec<(crate::Dot, Option<osis_base::Ts>)>| w.iter().any(|(d, _)| owned(&d.src, d.ctr, d.ctr + 1));
     assert!(ours(st.writes()) && !ours(st.live_writes()), "live_writes agrees");
 }
+
+/// §4.3, §4.7: a list element keeps its creation write when its content expires, so a list
+/// whose elements' content all expired is present and reads empty, not absent.
+#[test]
+fn expired_list_reads_empty_spec_crdt_4_3() {
+    use crate::ops::{Writer, create};
+    use crate::view::AnyView;
+    let x = Source::node(Tid::from_bytes([1; 15]));
+    let mut f = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &Value::List(vec![Value::Int(1), Value::Int(2)])).unwrap();
+    f.strip(&|d| d.src == x);
+    assert!(f.present());
+    assert_eq!(f.read(), Some(Value::List(Vec::new())));
+}
