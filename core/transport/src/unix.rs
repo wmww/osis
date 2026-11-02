@@ -20,6 +20,10 @@ use tokio::sync::watch;
 pub const SCHEME: &str = "unix";
 /// Bytes of a socket path, NUL excluded (`sun_path` is 108 bytes on Linux).
 pub const MAX_PATH: usize = 107;
+/// Wait before accepting again after an accept error (out of descriptors or memory: they
+/// persist a while). Minor consequence: a client may wait this long once the cause is gone; 0
+/// spins on a lasting error, infinity ends the listener at the first one.
+const ACCEPT_RETRY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// The key standing for uid `uid`: a name, never a secret (the kernel authenticates).
 pub fn uid_key(uid: u32) -> PublicKey {
@@ -99,6 +103,8 @@ pub struct UnixRecv {
 pub struct UnixListener {
     l: TokioListener,
     path: PathBuf,
+    /// The socket file's (device, inode): removed on drop only while it is still this one.
+    file: Option<(u64, u64)>,
     key: PublicKey,
     uid: u32,
 }
@@ -145,7 +151,7 @@ impl Transport for Unix {
         }
         let l = TokioListener::bind(&path).map_err(io)?;
         let uid = own_uid()?;
-        Ok(UnixListener { l, path, key: uid_key(uid), uid })
+        Ok(UnixListener { l, file: file_id(&path), path, key: uid_key(uid), uid })
     }
 }
 
@@ -154,7 +160,14 @@ impl Listener for UnixListener {
 
     async fn accept(&mut self) -> Result<UnixConn, Error> {
         loop {
-            let (s, _) = self.l.accept().await.map_err(|_| Error::Closed)?;
+            // an accept error (EMFILE, ECONNABORTED, ...) is the moment's, never the listener's end
+            let s = match self.l.accept().await {
+                Ok((s, _)) => s,
+                Err(_) => {
+                    tokio::time::sleep(ACCEPT_RETRY).await;
+                    continue;
+                }
+            };
             // another uid is dropped on arrival
             match s.peer_cred() {
                 Ok(c) if c.uid() == self.uid => return Ok(UnixConn::new(s, self.uid)),
@@ -170,9 +183,18 @@ impl Listener for UnixListener {
     fn close(&self) {}
 }
 
+/// A file's (device, inode), not following a symlink.
+fn file_id(path: &Path) -> Option<(u64, u64)> {
+    use std::os::unix::fs::MetadataExt;
+    std::fs::symlink_metadata(path).ok().map(|m| (m.dev(), m.ino()))
+}
+
 impl Drop for UnixListener {
+    /// Removes the socket file unless another listener has replaced it since.
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        if self.file.is_some() && file_id(&self.path) == self.file {
+            let _ = std::fs::remove_file(&self.path);
+        }
     }
 }
 
@@ -338,6 +360,22 @@ mod tests {
         std::fs::write(d.join("s.sock"), b"keep").unwrap();
         assert!(matches!(Unix.listen(cfg()).await, Err(Error::Io(_))));
         assert_eq!(std::fs::read(d.join("s.sock")).unwrap(), b"keep");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    // notes/client-port.md §5: a listener dropped after another replaced its socket file leaves the new one in place; dropped while its own, it removes it
+    #[tokio::test]
+    async fn drop_removes_only_its_own_socket() {
+        let d = dir();
+        let path = d.join("s.sock");
+        let cfg = || ListenConfig { url: url_of(&path), secret: StaticSecret::from_bytes([0; 32]) };
+        let old = Unix.listen(cfg()).await.unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let new = Unix.listen(cfg()).await.unwrap();
+        drop(old);
+        assert!(path.exists(), "the replacing listener's socket stays");
+        drop(new);
+        assert!(!path.exists());
         let _ = std::fs::remove_dir_all(&d);
     }
 }
