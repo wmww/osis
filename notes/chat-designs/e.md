@@ -9,7 +9,7 @@
 
 ## What is different
 
-There is nothing but C: an ownerless actor (`create_ownerless`, spec/permissions.md §1) synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. A required retention on the chat (`required.0^`, prefix `chat:msgs:`; spec/commits.md §5) refuses deltas with any other; set in the creating commit, no member can write under an earlier key.
+There is nothing but C: an ownerless actor (`create_ownerless`, spec/permissions.md §1) synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. A required retention on the chat (`required.0^`, prefix `chat:msgs:`; spec/commits.md §5) refuses deltas with any other; set before anyone is granted, no member can write under an earlier key.
 
 ## Permissions and topology
 
