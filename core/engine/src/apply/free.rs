@@ -82,7 +82,9 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             unindex_aspect(tx.core, t, &ak);
         }
         if tx.core.ix.groups.defs.contains_key(t) {
-            tx.core.ix.groups.set(*t, None);
+            for x in tx.core.ix.groups.set(*t, None) {
+                tx.core.waits.wake_thing(&x);
+            }
         }
         tx.core.ix.syncing.remove(t);
     }

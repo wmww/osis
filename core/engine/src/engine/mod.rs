@@ -439,6 +439,7 @@ indexes! {
     /// Node- and session-form ranges per (tid, ak, own source): lo -> (hi, commit).
     pub ranges: JNested<(Tid, Ak, osis_crdt::Source), u64, (u64, CommitId)>,
     pub pending: JMap<CommitId, Reason>,
+    /// What the node was asked to sync (`Core::syncs` adds what these groups hold).
     pub syncing: JSet<Tid>,
     pub void: JSet<CommitId>,
     /// Deltas whose value-carrying writes are held value-less (expired, purged).
@@ -678,6 +679,13 @@ impl Changed {
 pub(crate) type EpochIntro = JMap<(Tid, osis_base::Role, osis_crypto::Epoch), (Ts, CommitId)>;
 
 impl Core {
+    /// Whether the node syncs `t`: it was asked to, or a `group.0` it holds puts `t` in a group it
+    /// was asked to (a function of held data, whenever it was learned; spec/commits.md §4).
+    pub fn syncs(&self, t: &Tid) -> bool {
+        let s = &self.ix.syncing;
+        s.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| !gs.is_disjoint(s))
+    }
+
     /// Whether this node may write node-form dots on `t` (spec/crdt.md §2.1): with no sync
     /// layer, or once every label holding `t` passed completely since the sync layer started
     /// (`counters_unsure`), every label for a thing no label holds. Before, a commit this

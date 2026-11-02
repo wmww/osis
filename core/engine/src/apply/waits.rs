@@ -49,8 +49,8 @@ enum On {
     /// The missing deltas, and the earliest expiry or keep-at-most bound among them still to come
     /// (`next_expiry`). Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
-    /// (`waits_for_deltas`: held snapshots, purge rights).
-    Deltas { header: Arc<Header>, missing: Vec<(usize, usize)>, expiry: Option<u64> },
+    /// (`still_gated`: held snapshots, purge rights).
+    Deltas { header: Arc<Header>, missing: Vec<super::Gate>, expiry: Option<u64> },
 }
 
 pub(crate) struct Wait {
@@ -164,7 +164,7 @@ impl Waits {
         }
     }
 
-    /// This node starts or stops syncing `tid` (`Engine::set_syncing`): every check of the
+    /// This node starts or stops syncing `tid` (`Engine::set_syncing`, or a `group.0` moved it): every check of the
     /// examination may turn (a thing whose delta is not held gates the commit only if synced),
     /// so its waits are examined in full.
     pub fn wake_thing(&mut self, tid: &Tid) {
@@ -230,19 +230,21 @@ fn unindex<K: Ord>(m: &mut BTreeMap<K, BTreeSet<CommitId>>, k: &K, id: &CommitId
     }
 }
 
-fn aspects(h: &Header, missing: &[(usize, usize)]) -> BTreeSet<(Tid, Ak)> {
-    missing.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect()
+fn aspects(h: &Header, missing: &[super::Gate]) -> BTreeSet<(Tid, Ak)> {
+    missing.iter().filter_map(|((ai, _), _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect()
 }
 
 /// The earliest time after `now` a delta of `missing` of commit `id` counts as held by the clock:
 /// its expiry or its keep-at-most bound (`at_most_bound`, lowered by a commit `Waits::wake` tells of).
-fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[(usize, usize)], now: u64) -> Option<u64> {
-    missing.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).flat_map(|a| [a.expires, super::at_most_bound(core, h, id, a)]).flatten().filter(|e| *e > now).min()
+fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[super::Gate], now: u64) -> Option<u64> {
+    missing.iter().filter_map(|((ai, _), _)| h.aspects.get(*ai)).flat_map(|a| [a.expires, super::at_most_bound(core, h, id, a)]).flatten().filter(|e| *e > now).min()
 }
 
-/// Notes what examining pending commit `id` (`blob`, after `examine`) read, if it can be judged
-/// again from that alone. `others`: its other reasons, when parts wait alone for different things.
-pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, others: &[Reason], now: u64) {
+/// Notes what examining pending commit `id` (`blob`, after `examine`, with `skip`) read, if it can
+/// be judged again from that alone. `others`: its other reasons, when parts wait alone for
+/// different things.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, others: &[Reason], now: u64, skip: &BTreeSet<(usize, usize)>) {
     if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() == "secrets.0")) {
         return;
     }
@@ -259,7 +261,7 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
         }
         Reason::WaitDeltas if !others.is_empty() => return,
         Reason::WaitDeltas => {
-            let missing = blob.missing();
+            let missing = super::gating(core, blob, &id, skip);
             let expiry = next_expiry(core, h, &id, &missing, now);
             On::Deltas { header: Arc::new(h.clone()), missing, expiry }
         }
@@ -316,7 +318,7 @@ pub(crate) fn still_waits(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     let (h, missing) = (header.clone(), missing.clone());
     // the drift bound held when examined, and the clock has not gone back since
     debug_assert!(h.author == tx.core.id.tid() || h.ts.wall_ms().0 <= now.saturating_add(MAX_DRIFT_MS));
-    if !super::waits_for_deltas(tx, &h, id, missing.iter().copied())? {
+    if !super::still_gated(tx, &h, id, &missing)? {
         return Ok(false);
     }
     // judged again now: left out until something changes once more

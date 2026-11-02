@@ -1422,9 +1422,9 @@ enum Syncs {
     /// `on` from before the first commit, some commits' other parts never held (`withhold`);
     /// `prefix` synced only for a stretch of each delivery: a wait it causes ends when it stops.
     Early { on: Vec<Tid>, prefix: Vec<Tid> },
-    /// Nothing at first, `on` from a point of each delivery, some stopping and starting again:
-    /// every delta is held by the end of a delivery of the whole set. Never with parts withheld
-    /// for good: issues/sync-learned-after-apply.md (known, open).
+    /// Nothing at first, `on` from a point of each delivery, some stopping and starting again;
+    /// some commits' other parts never held. A held set with a commit waiting across things goes
+    /// without syncs (`learned_late_wait`).
     Late { on: Vec<Tid> },
 }
 
@@ -1486,7 +1486,8 @@ impl SyncPlan {
 
 /// The history as the seed's fresh nodes get it, by `seed % 3`: as made; each thing synced from
 /// the start with probability one half and half of the commits with parts on several aspects
-/// held in part for good (`Syncs::Early`); or things synced at varying points (`Syncs::Late`).
+/// held in part for good (`Syncs::Early`); or things synced at varying points, with such parts
+/// withheld too (`Syncs::Late`).
 fn with_syncs(mut played: Played, seed: u64) -> Played {
     let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
     let mut half = |ts: &[Tid]| ts.iter().copied().filter(|_| rng.below(2) == 0).collect::<Vec<_>>();
@@ -1495,7 +1496,7 @@ fn with_syncs(mut played: Played, seed: u64) -> Played {
     let prefix: Vec<Tid> = other.into_iter().filter(|t| !on.contains(t)).collect();
     match seed % 3 {
         0 => {}
-        1 => {
+        _ => {
             for i in played.base..played.packs.len() {
                 let mut b = osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap();
                 let ais: BTreeSet<usize> = b.parts.iter().map(|x| x.ai).collect();
@@ -1505,9 +1506,8 @@ fn with_syncs(mut played: Played, seed: u64) -> Played {
                     played.packs[i].bytes = b.encode();
                 }
             }
-            played.sync = Syncs::Early { on, prefix };
+            played.sync = if seed % 3 == 1 { Syncs::Early { on, prefix } } else { Syncs::Late { on } };
         }
-        _ => played.sync = Syncs::Late { on },
     }
     played
 }
@@ -1709,6 +1709,8 @@ struct Seen {
     invalid: u64,
     /// Commits with a part on each aspect, the whole set held.
     aspects: BTreeMap<String, u64>,
+    /// Commits the reference node held for missing deltas while it learned its syncs late.
+    late_waits: u64,
 }
 
 impl Seen {
@@ -1716,6 +1718,7 @@ impl Seen {
         self.orders += o.orders;
         self.tally.add(&o.tally);
         self.invalid += o.invalid;
+        self.late_waits += o.late_waits;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -1741,6 +1744,7 @@ impl Seen {
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
         if broad {
             assert!(self.pending.contains_key("WaitDeltas"), "order::{name}: nothing waited for deltas: {self:?}");
+            assert!(self.late_waits > 0, "order::{name}: nothing waited for deltas with syncs learned late: {self:?}");
             for a in ["t:text.0", "t:docs.0", "t:list.0", "t:count.0", "t:map.0"] {
                 assert!(self.aspects.contains_key(a), "order::{name}: no write on {a}: {self:?}");
             }
@@ -1749,10 +1753,10 @@ impl Seen {
     }
 }
 
-/// Whether this held set leaves a commit on several things, with every `Late` thing synced from
-/// the start, waiting whole for a thing's chain or record: when the node learns it syncs that thing
-/// then decides whether the commit's other parts apply.
-fn skip_sync_learned_wait(played: &Played, held: &[usize]) -> bool {
+/// Whether this held set leaves, with every `Late` thing synced from the start, a commit on several
+/// things or a role-class snapshot waiting whole: the cases where when the node learned it syncs a
+/// thing still decides the read (issues/sync-learned-after-apply.md).
+fn learned_late_wait(played: &Played, held: &[usize]) -> bool {
     let mut p = Peer::new(FRESH, played.now).unwrap();
     for t in played.sync.things() {
         p.engine.set_syncing(*t, true).unwrap();
@@ -1761,11 +1765,11 @@ fn skip_sync_learned_wait(played: &Played, held: &[usize]) -> bool {
         let pk = &played.packs[i];
         let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
     }
-    p.engine.pending().iter().any(|(id, r)| {
-        let (osis_node::Reason::MissingChain(_) | osis_node::Reason::UnknownCreated(_)) = r else { return false };
+    p.engine.pending().iter().any(|(id, _)| {
         played.packs.iter().find(|x| x.id == *id).is_some_and(|pk| {
-            let b = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
-            b.header.kind != osis_commit::Kind::Role && b.header.aspects.iter().any(|a| a.tid != b.header.aspects[0].tid)
+            let h = osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header;
+            let several = h.aspects.iter().any(|a| a.tid != h.aspects[0].tid);
+            (h.kind != osis_commit::Kind::Role && several) || matches!(h.kind, osis_commit::Kind::RosterSnapshot | osis_commit::Kind::RoleSnapshot)
         })
     })
 }
@@ -1788,14 +1792,14 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
     let subsets = if cfg.every_held && std::env::var("OSIS_ORDER_ALL_HELD").is_ok() { usize::MAX } else { cfg.subsets };
     let unsynced = Played { sync: Syncs::None, ..played.clone() };
     let synced = played;
+    // which of the two the whole set was judged under: only that one's held sets are compared to it
+    let mut full_of: Option<&Played> = None;
     for held in held_sets(&synced, subsets, &mut rng) {
-        // issues/sync-learned-after-apply.md (known, open): a wait for good is a part withheld for
-        // good, which `Syncs::Late` does not combine with
-        let played = if matches!(synced.sync, Syncs::Late { .. }) && skip_sync_learned_wait(&synced, &held) { &unsynced } else { &synced };
+        let played = if matches!(synced.sync, Syncs::Late { .. }) && learned_late_wait(&synced, &held) { &unsynced } else { &synced };
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
         // a partial set, then the rest (both ways), ends where the whole set does
-        if let Some(f) = &full {
+        if let Some(f) = full.as_ref().filter(|_| std::ptr::eq(played, full_of.unwrap_or(played))) {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
@@ -1818,6 +1822,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         for l in now.part("pending").lines() {
             let why = l.split(' ').nth(1).unwrap_or(l).split('(').next().unwrap_or("");
             *seen.pending.entry(why.to_string()).or_default() += 1;
+            seen.late_waits += u64::from(why == "WaitDeltas" && matches!(played.sync, Syncs::Late { .. }));
         }
         if full.is_none() {
             for id in p.engine.commit_ids() {
@@ -1848,6 +1853,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         want.index = Some(idx);
         if full.is_none() {
             full = Some(want.clone());
+            full_of = Some(played);
         }
         // order `k` alike (and alike after a reopen), or with late parts (split by `rng`) alike
         let one = |k: usize, split_rng: Option<&mut Rng>| -> Result<(), String> {
@@ -2138,11 +2144,10 @@ fn chainless_part_creation_missing_spec_commits_4() {
     assert_eq!(read(g, t), read(t, g));
 }
 
-// issues/sync-learned-after-apply.md: one commit on two aspects of G, one part held. A node syncing G
-// first waits for the other part; a node syncing G after applying the part shows it.
+// spec/commits.md §4: one commit on two aspects of G, one part held. A node syncing G first and one
+// syncing G after the part came read alike: the part waits for its thing's other part in both.
 #[test]
-#[ignore]
-fn repro_sync_learned_after_apply_spec_commits_4() {
+fn sync_learned_after_part_reads_alike_spec_commits_4() {
     use Step::*;
     let h = vec![Nested { by: 0, other: 1, t: 0, k: 0, text: false, compact: false, also: true }];
     let played = play(5, &h);

@@ -1717,6 +1717,43 @@ fn roster_snapshot_spec_perm_6() {
     assert!(tags(&mut lp, 0, t).contains("bob"));
 }
 
+// spec/commits.md §4 (the exception, issues/sync-learned-after-apply.md): a roster snapshot held in
+// part. A node syncing its thing first holds it whole; one learning that after the part applied
+// shows the part, with its reset. They agree once the rest comes.
+#[test]
+fn roster_snapshot_learned_late_stays_until_the_rest_comes_spec_commits_4() {
+    let read = |sync_first: bool| {
+        let (mut lp, ps) = people(2, 516);
+        let t = thing_of(&mut lp, 0, ps[0]);
+        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+        spread(&mut lp);
+        let c = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
+        let h = lp.peers[0].engine.header(&c).unwrap();
+        assert_eq!(h.kind, osis_commit::Kind::RosterSnapshot);
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        let mut part = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        // one holder's delta on `roles.0` and the reset; the rest stays away
+        let first = part.parts.iter().position(|p| h.aspects[p.ai].ak.as_str() == "roles.0").unwrap();
+        let (ai, di) = (part.parts[first].ai, part.parts[first].di);
+        part.parts.retain(|p| (p.ai, p.di) == (ai, di));
+        let e = &mut lp.peers[1].engine;
+        if sync_first {
+            e.set_syncing(t, true).unwrap();
+        }
+        let r = e.ingest(&part.encode(), Vec::new()).unwrap();
+        assert_eq!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), sync_first, "{r:?}");
+        e.set_syncing(t, true).unwrap();
+        let shown = e.commit_ids().contains(&c);
+        e.ingest(&pk.bytes, Vec::new()).unwrap();
+        assert!(e.pending().is_empty(), "{:?}", e.pending());
+        (shown, e.roster(&t))
+    };
+    let (first, late) = (read(true), read(false));
+    assert!(!first.0, "held whole");
+    assert!(late.0, "its part stays applied");
+    assert_eq!(first.1, late.1);
+}
+
 // spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
 // its holders on the copy and points the old thing at it; a second move is refused.
 // spec/permissions.md §7 (one import)

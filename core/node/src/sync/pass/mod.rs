@@ -231,10 +231,12 @@ impl SyncEngine {
     /// synced and the engine's changes spread first; what touches the set during the pass
     /// collects in its place and joins it after; a failed pass judges everything next time.
     fn with_work(&mut self, g: &Tid, conn: Option<ConnId>, l: LabelId, f: impl FnOnce(&mut Self, &BodyCtx, &mut Work) -> Result<()>) -> Result<()> {
-        // the group's closure, taken once for the pass; atomic apply waits for its deltas
-        // (spec/commits.md §4)
+        // atomic apply waits for the deltas of this group's closure (spec/commits.md §4)
+        if !self.engine.core.ix.syncing.contains(g) {
+            self.engine.set_syncing(*g, true)?;
+        }
+        // the group's closure, taken once for the pass
         let ctx = self.engine.body_ctx(g);
-        self.sync_closure(g, &ctx.closure)?;
         // what an earlier pass of this step changed in the engine (a carrier snapshot written)
         self.engine_events()?;
         self.spread_touches();
@@ -256,22 +258,6 @@ impl SyncEngine {
             Some(c) => self.lc_mut(c, &l).map(|x| &mut x.work),
             None => Some(self.local_work.entry(l).or_insert_with(Work::fresh)),
         }
-    }
-
-    /// Atomic apply waits for the deltas of every thing of `g`'s closure (spec/commits.md §4):
-    /// walked only when the closure changed since the last time (`Groups::closures`).
-    fn sync_closure(&mut self, g: &Tid, closure: &std::sync::Arc<BTreeSet<Tid>>) -> Result<()> {
-        if self.synced_closures.get(g).is_some_and(|c| super::work::same_closure(c, closure)) {
-            return Ok(());
-        }
-        self.stats.closures += 1;
-        for t in closure.iter() {
-            if !self.engine.core.ix.syncing.contains(t) {
-                self.engine.set_syncing(*t, true)?;
-            }
-        }
-        self.synced_closures.insert(*g, closure.clone());
-        Ok(())
     }
 
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or

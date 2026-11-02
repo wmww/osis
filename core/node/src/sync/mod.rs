@@ -262,8 +262,6 @@ pub struct PassStats {
     /// Bodies judged for upload, entries judged for deletion.
     pub bodies: u64,
     pub entries: u64,
-    /// Walks of a changed closure (`set_syncing` of its things).
-    pub closures: u64,
 }
 
 /// One label on one connection.
@@ -528,8 +526,6 @@ pub struct SyncEngine {
     pub(crate) covered_judged: BTreeSet<(osis_base::CommitId, osis_base::CommitId, Tid, osis_base::Ak)>,
     /// What passes did so far (`pass_stats`).
     pub(crate) stats: PassStats,
-    /// Each group's closure as last walked (`sync_closure`).
-    pub(crate) synced_closures: BTreeMap<Tid, Arc<BTreeSet<Tid>>>,
     /// Engine changes not yet spread to the labels' work sets (`spread_touches`).
     pub(crate) touched: work::Touched,
     /// Peer sessions this node serves (co-reader peer, spec/sync.md §5).
@@ -660,7 +656,6 @@ impl SyncEngine {
             served: BTreeMap::new(),
             covered_judged: BTreeSet::new(),
             stats: PassStats::default(),
-            synced_closures: BTreeMap::new(),
             touched: work::Touched::default(),
             own_keys: BTreeSet::new(),
             peer_steps: BTreeMap::new(),

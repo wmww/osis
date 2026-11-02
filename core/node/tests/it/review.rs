@@ -168,7 +168,7 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     lp.peers[i].engine.set_syncing(t, true).unwrap();
     lp.peers[i].engine.reexamine().unwrap();
     check(&mut lp.peers[i].engine, "named delta last");
-    // the snapshot's header, then its part (a late part, `join_late`)
+    // the snapshot's header (it waits for its part, spec/commits.md §4), then its part
     let j = lp.peers.len();
     lp.peers.push(osis_node::local_peer::Peer::new(0x5b03, lp.peers[0].engine.now()).unwrap());
     for p in rest.iter().chain([&secret_pk]) {
@@ -176,10 +176,15 @@ fn purge_drops_late_snapshot_spec_commits_5() {
     }
     let sh = lp.peers[0].engine.header(&snap).unwrap();
     let r = lp.peers[j].engine.ingest(&strip_parts(&spk, |_| false, &sh), Vec::new()).unwrap();
-    assert!(matches!(r, Ingested::Applied(_)), "{r:?}");
+    assert!(matches!(r, Ingested::Pending(_, Reason::WaitDeltas)), "{r:?}");
     lp.peers[j].engine.set_syncing(t, true).unwrap();
     lp.peers[j].engine.reexamine().unwrap();
     assert!(!lp.peers[j].engine.body_not_dropped(&secret, &t, &reg));
+    // its part counted as held (a later snapshot lists it): applied, and the part comes late
+    let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
+    let lister = forge_snapshot_absorbing(&mut lp, 0, t, &reg, ts, osis_crdt::Fragment::default(), osis_crdt::Frontiers::default(), std::collections::BTreeMap::from([(snap, sh.author)]));
+    assert!(matches!(lp.peers[j].engine.ingest(&lister, Vec::new()).unwrap(), Ingested::Applied(_)));
+    assert!(lp.peers[j].engine.commit_ids().contains(&snap));
     lp.deliver(j, &spk).unwrap();
     check(&mut lp.peers[j].engine, "snapshot part last");
     lp.peers[j].restart(0x5b04).unwrap();

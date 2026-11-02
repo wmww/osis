@@ -1,0 +1,3 @@
+# What a node syncs follows group membership, not entitlement
+> Summary: spec/commits.md §4 waits for deltas "under a label it syncs (entitlement, not group membership, decides)", but `Core::syncs` counts every thing a held `group.0` lists. A writer of a synced group can list another's private thing V: an honest commit across V and a thing the node holds then waits whole for V's part, which never comes, until the list changes. Same before `Core::syncs` (`sync_closure` was stickier). Fix: read whether the group's actor may read the thing (`may_read`, as `commit_bodies_under` does), with the wake that needs when the reader actor resolves late.
+> Tags: security, engine, sync

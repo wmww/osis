@@ -168,28 +168,30 @@ fn without_parts(bytes: &[u8], keep: impl Fn(&str) -> bool, h: &osis_commit::Hea
     b.encode()
 }
 
-// spec/commits.md §4: atomic apply waits for every delta under a synced thing; a delta of an
-// applied commit arriving later is joined on arrival.
+// spec/commits.md §4: atomic apply waits for every delta of a thing with a part held, or a synced
+// one; a delta of an applied commit arriving later is joined on arrival.
 #[test]
 fn atomic_wait_and_late_delta_spec_commits_4() {
     let mut lp = net(2, 26);
     let t = new_thing(&mut lp, 0);
+    let u = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
     let mut m = Mutation::new();
     m.set(t, &REG, &s("r")).unwrap();
-    m.set(t, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
+    m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
     let id = lp.peers[0].commit(m).unwrap().unwrap();
     let h = lp.peers[0].engine.header(&id).unwrap();
     let pk = packages(&mut lp, 0).pop().unwrap();
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
-    // not synced: applies with what arrived
+    // another thing, not synced: applies with what arrived
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Applied(_)));
-    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap(), None);
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
+    assert_eq!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap(), None);
     lp.peers[1].drain_events();
     assert!(matches!(lp.deliver(1, &pk).unwrap(), Ingested::Applied(_)));
-    assert!(lp.peers[1].engine.get(&t, &ak("t:tags.0")).unwrap().is_some());
+    assert!(lp.peers[1].engine.get(&u, &ak("t:tags.0")).unwrap().is_some());
     assert!(lp.peers[1].drain_events().iter().any(|e| matches!(e, Event::Changed { cause: osis_node::Cause::LateDelta, .. })));
-    // synced: waits
+    // the same thing, synced or not: waits
     let mut lp = net(2, 27);
     let t = new_thing(&mut lp, 0);
     sync(&mut lp, 0, 1);
@@ -203,8 +205,23 @@ fn atomic_wait_and_late_delta_spec_commits_4() {
     let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
     assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
-    // stopping to sync the thing re-examines it
+    // stopping to sync the thing changes nothing: when it learned that is no input
     lp.peers[1].engine.set_syncing(t, false).unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")));
+    // across things: stopping to sync the thing away re-examines the commit, which applies
+    let mut lp = net(2, 28);
+    let (t, u) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    sync(&mut lp, 0, 1);
+    lp.peers[1].engine.set_syncing(u, true).unwrap();
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("r")).unwrap();
+    m.set(u, &TAGS, &Value::Set([s("a")].into_iter().collect())).unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&id).unwrap();
+    let pk = packages(&mut lp, 0).pop().unwrap();
+    let partial = without_parts(&pk.bytes, |a| a == "t:reg.0", &h);
+    assert!(matches!(lp.peers[1].engine.ingest(&partial, Vec::new()).unwrap(), Ingested::Pending(_, Reason::WaitDeltas)));
+    lp.peers[1].engine.set_syncing(u, false).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("r")));
 }
 

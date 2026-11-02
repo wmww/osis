@@ -297,8 +297,7 @@ impl Engine {
     /// Whether `tid` is in some labeled closure here: synced itself, or in a group that is, through
     /// either side of `group.0`.
     pub fn ephemeral_synced(&self, tid: &Tid) -> bool {
-        let s = &self.core.ix.syncing;
-        s.contains(tid) || self.groups_of(tid).iter().any(|g| s.contains(g))
+        self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
     }
 
     /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
