@@ -160,15 +160,15 @@ fn split_in(l: &mut Locked, tid: Tid) -> Option<(Tid, Tid)> {
             None => syncs_here(l, g),
         };
         let e = l.sync.engine();
-        elsewhere && e.may_read(&e.group_actor(g), &t)
+        elsewhere && e.entitled(&e.group_actor(g), &t)
     })?;
     Some((routed, other))
 }
 
 /// Every split thing: they are all in the closure of a route.
 fn split_things(l: &mut Locked) -> BTreeSet<Tid> {
-    let closures: Vec<_> = l.routes.keys().map(|g| l.sync.engine().closure(g)).collect();
-    closures.iter().flat_map(|c| c.iter().copied()).collect::<BTreeSet<_>>().into_iter().filter(|t| split_in(l, *t).is_some()).collect()
+    let inside: BTreeSet<Tid> = l.routes.keys().flat_map(|g| l.sync.engine().closure_placed(g)).collect();
+    inside.into_iter().filter(|t| split_in(l, *t).is_some()).collect()
 }
 
 /// The attachment that answers for a thing known here to none (rule 4).
@@ -236,6 +236,7 @@ impl Osis {
     /// comes after the route: a move in between fails it instead of passing a route it never saw.
     pub(crate) fn route_write(&self, tid: Tid) -> Result<Source> {
         let s = self.route(tid);
+        self.after_route();
         self.check_split(&[tid])?;
         Ok(s)
     }
@@ -243,6 +244,7 @@ impl Osis {
     /// `route_all` for a call that writes.
     pub(crate) fn route_write_all(&self, things: &[Tid]) -> Result<Source> {
         let s = self.route_all(things)?;
+        self.after_route();
         self.check_split(things)?;
         Ok(s)
     }
@@ -251,12 +253,13 @@ impl Osis {
     /// out to touch, which only the source knows.
     pub(crate) fn route_write_scope(&self, scope: &crate::commits::Scope) -> Result<Source> {
         let s = self.route_scope(Some(scope))?;
+        self.after_route();
         match scope {
             crate::commits::Scope::Thing(t) => self.check_split(&[*t])?,
             crate::commits::Scope::Group(g) if self.routed() => {
                 let things: Vec<Tid> = self.locked(|l| {
                     let e = l.sync.engine();
-                    e.closure(&e.resolve(g, g)).iter().copied().collect()
+                    e.closure_placed(&e.resolve(g, g)).into_iter().collect()
                 });
                 self.check_split(&things)?;
             }
@@ -270,6 +273,7 @@ impl Osis {
     /// (a write through a route never comes here): `Invalid` while anything is split.
     pub(crate) fn route_write_change(&self, id: ChangeId) -> Result<Source> {
         let s = self.route_change(id)?;
+        self.after_route();
         if self.routed() && !self.is_attached() {
             match self.locked(|l| touched_by(l.engine(), id)) {
                 Some(touched) => self.check_split(&touched)?,

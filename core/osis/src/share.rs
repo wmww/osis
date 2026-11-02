@@ -460,7 +460,9 @@ impl Osis {
             // an edge change keeps its tie; a new hand grant is untied
             let tied = e.roster(&target).get(&holder).and_then(|x| x.tied).map(flows::tied::tie_ct);
             let done = e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)?;
-            // after the edge, as `make_link`: its first pass then knows who reads it (`reach.0`)
+            // after the edge, as `make_link`: its first pass then knows who reads it (`reach.0`). A
+            // crash or failure between leaves the edge alone, the call unacknowledged: the same
+            // grant again makes the label (separate transactions; one would save only that retry)
             if label {
                 self.make_label(l, target, hosts)?;
             }
