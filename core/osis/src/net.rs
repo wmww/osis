@@ -440,6 +440,7 @@ pub struct GroupPolicy {
 impl crate::Osis {
     /// `group`'s sync policy as set (`sync_policy`; the default when never set).
     pub fn group_policy(&self, group: osis_base::Tid) -> GroupPolicy {
+        let crate::handle::Source::Local = self.route(group);
         self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) })
     }
 
