@@ -8,12 +8,12 @@ use crate::common;
 use common::*;
 use osis_base::{BlobId, CommitId, LabelId};
 use osis_crypto::SeededRng;
-use osis_store::{AspectUnit, PendingKind, Shred, Store, forensic_plaintexts};
+use osis_store::{AspectUnit, Evidence, PendingKind, Shred, Store};
 
-/// Everything an attacker decrypts: start from the keys the current tree yields, open every
-/// row ever written with every key, harvest keys from opened tree nodes, until nothing new.
-fn attack(s: &mut Store, history: &[(Vec<u8>, Vec<u8>)]) -> Vec<Vec<u8>> {
-    forensic_plaintexts(s.forensic_keys().unwrap(), history)
+/// Everything an attacker recovers (`osis_store::attack`): from the keys the current tree
+/// yields and every row and blob ever written.
+fn attack(s: &mut Store, dev: &MemDevice) -> Vec<Vec<u8>> {
+    osis_store::attack(&Evidence::of(s.forensic_keys().unwrap(), &dev.backend), None).into_iter().map(|r| r.plain).collect()
 }
 
 fn contains(hay: &[u8], needle: &[u8]) -> bool {
@@ -21,7 +21,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 fn recoverable(s: &mut Store, dev: &MemDevice, marker: &[u8]) -> bool {
-    attack(s, &dev.backend.history()).iter().any(|p| contains(p, marker))
+    attack(s, dev).iter().any(|p| contains(p, marker))
 }
 
 const LABEL: LabelId = LabelId([4; 16]);
@@ -104,7 +104,7 @@ fn dropped_aspect_is_unrecoverable() {
     t.drop_aspect(&tid(1), &ak("big.0")).unwrap();
     t.drop_aspect(&tid(1), &ak("doc.0")).unwrap();
     t.commit().unwrap();
-    let plains = attack(&mut s, &dev.backend.history());
+    let plains = attack(&mut s, &dev);
     assert!(!plains.iter().any(|p| contains(p, b"element 77") || contains(p, b"undo:")));
 }
 
@@ -222,4 +222,68 @@ fn file_backend_holds_no_plaintext() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.get_wrap(&LABEL, &BlobId([1; 32])).unwrap(), None);
     assert_eq!(t.get_wrap(&LABEL, &BlobId([2; 32])).unwrap(), Some(b"other wrap".to_vec()));
+}
+
+/// Blobs as osis-label frames them, without a prefix: enough for the attack's blob paths.
+const CIPHERS: osis_store::Ciphers = osis_store::Ciphers {
+    open: |blob, key| osis_crypto::decrypt_blob(blob, 0, &osis_crypto::Secret32::from_bytes(*key)).ok(),
+    unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
+    wrap_len: osis_crypto::WRAP_LEN,
+};
+
+// spec/requirements.md, Deletion (forward secure): a blob's ciphertext outlives its deletion in
+// freed storage, so its key must not: the attack opens a blob through a recorded key or a wrap
+// under a read secret the device still yields, and through neither once both are dropped
+// shredded (the read secret still held)
+#[test]
+fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(7);
+    let mut s = create(&dev, &mut rng);
+    let secret = osis_crypto::Secret32::from_bytes([9; 32]);
+    let blob = |m: &[u8], rng: &mut SeededRng| {
+        let (key, b) = osis_crypto::encrypt_blob(&[], m, rng).unwrap();
+        (osis_crypto::blob_id(&b), key, b)
+    };
+    let (wrapped, wkey, wb) = blob(b"WRAPPED-BLOB-MARK", &mut rng);
+    let (keyed, kkey, kb) = blob(b"KEYED-BLOB-MARK", &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_blob(&wrapped, wb).unwrap();
+    t.put_wrap(&LABEL, &wrapped, &osis_crypto::wrap(&secret, &wrapped, &wkey).unwrap()).unwrap();
+    t.put_blob(&keyed, kb).unwrap();
+    t.put_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), kkey.expose(), Shred::No).unwrap();
+    t.commit().unwrap();
+    let found = |s: &mut Store, m: &[u8]| {
+        let ev = Evidence { secrets: vec![*secret.expose()], ..Evidence::of(s.forensic_keys().unwrap(), &dev.backend) };
+        osis_store::attack(&ev, Some(&CIPHERS)).into_iter().filter(|r| contains(&r.plain, m)).map(|r| r.from).collect::<Vec<_>>()
+    };
+    assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![osis_store::Source::Blob { id: wrapped, wrapped: true }]);
+    assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![osis_store::Source::Blob { id: keyed, wrapped: false }]);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert!(t.drop_wrap(&LABEL, &wrapped).unwrap());
+    assert!(t.remove_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), Shred::Yes).unwrap());
+    t.delete_blob(&wrapped);
+    t.delete_blob(&keyed);
+    t.commit().unwrap();
+    assert_eq!(found(&mut s, b"WRAPPED-BLOB-MARK"), vec![], "a dropped wrap opened its blob");
+    assert_eq!(found(&mut s, b"KEYED-BLOB-MARK"), vec![], "a dropped key opened its blob");
+    // the freed ciphertexts are still in the attacker's hands
+    assert_eq!(dev.backend.blob_history().iter().filter(|(_, b)| b.is_some()).count(), 2);
+}
+
+// spec/requirements.md, Deletion: the attack reads what the store keeps in clear (pointer and
+// journal rows) and blobs as stored
+#[test]
+fn attack_reads_clear_rows_and_raw_blobs() {
+    let dev = MemDevice::new();
+    dev.backend.record_history();
+    let mut rng = SeededRng::from_u64(8);
+    let mut s = create(&dev, &mut rng);
+    let mut t = s.transaction(&mut rng).unwrap();
+    t.put_blob(&BlobId([5; 32]), b"CLEAR-BLOB-MARK".to_vec()).unwrap();
+    t.commit().unwrap();
+    let all = osis_store::attack(&Evidence::of(s.forensic_keys().unwrap(), &dev.backend), None);
+    assert!(all.iter().any(|r| r.from == osis_store::Source::RawBlob(BlobId([5; 32])) && contains(&r.plain, b"CLEAR-BLOB-MARK")));
+    assert!(all.iter().any(|r| r.from == osis_store::Source::Row(b"r".to_vec())), "the clear pointer row");
 }

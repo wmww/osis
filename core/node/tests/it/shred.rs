@@ -13,7 +13,6 @@ use osis_crypto::SeededRng;
 use osis_node::local_peer::{LocalPeer, Peer};
 use osis_node::{Config, Engine, Mutation};
 use osis_store::{MemoryBackend, MemoryRoot, StoreConfig};
-use std::collections::HashSet;
 use std::sync::Arc;
 
 /// A peer over a small key tree (arity 4: few units share a leaf, so a shred elsewhere does
@@ -243,36 +242,8 @@ fn purged_large_value_unrecoverable_spec_commits_5() {
     let secret = lp.peers[0].commit(m).unwrap().unwrap();
     let chunks: Vec<Vec<u8>> = lp.peers[0].engine.package(&secret).unwrap().unwrap().blobs.into_iter().map(|(_, b)| b).collect();
     assert!(!chunks.is_empty(), "the value is chunked");
-    // the attack opens blobs (tree nodes, chunks) with any 32-byte CBOR byte string (a link
-    // key) it recovers, from rows and from blobs it opened
-    let cbor_keys = |x: &[u8]| -> Vec<[u8; 32]> {
-        let plain = x.windows(34).filter(|w| w[0] == 0x58 && w[1] == 32).map(|w| w[2..].try_into().unwrap());
-        let link = x.windows(35).filter(|w| w[0] == 0x58 && w[1] == 33).map(|w| w[3..].try_into().unwrap());
-        plain.chain(link).collect()
-    };
-    let opens = |p: &mut Peer| -> bool {
-        let mut keys: HashSet<[u8; 32]> = plaintexts(p).iter().flat_map(|x| cbor_keys(x)).collect();
-        let mut opened = vec![false; chunks.len()];
-        loop {
-            let mut new = Vec::new();
-            for (i, c) in chunks.iter().enumerate() {
-                if opened[i] {
-                    continue;
-                }
-                if let Some(pt) = keys.iter().find_map(|k| osis_label::open(c, &osis_crypto::Secret32::from_bytes(*k)).ok().map(|x| x.1)) {
-                    if contains(&pt, marker) {
-                        return true;
-                    }
-                    opened[i] = true;
-                    new.extend(cbor_keys(&pt));
-                }
-            }
-            if new.is_empty() {
-                return false;
-            }
-            keys.extend(new);
-        }
-    };
+    // the attack opens blobs (tree nodes, chunks) with the link keys it recovers
+    let opens = |p: &mut Peer| found_in(&mut p.engine, &p.backend, marker).iter().any(|f| matches!(f, osis_store::Source::Blob { .. }));
     assert!(opens(&mut lp.peers[0]), "the attack opens live chunks");
     filler(&mut lp, 0, 6);
     lp.advance(5);

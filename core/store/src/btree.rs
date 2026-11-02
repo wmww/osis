@@ -147,6 +147,26 @@ fn save(u: &mut dyn Units, slot: u64, p: &Page, shred: bool) -> Result<(), Error
     u.write(slot, p.encode(), shred)
 }
 
+/// A leaf entry's value as a page holds it: inline, or the slot of the unit holding it.
+pub(crate) type LeafValue = Result<Vec<u8>, u64>;
+
+/// A leaf page's entries, if `plain` decodes as one. Forensic tests only.
+pub(crate) fn forensic_leaf(plain: &[u8]) -> Vec<(Vec<u8>, LeafValue)> {
+    match Page::decode(plain) {
+        Ok(Page::Leaf(es)) => es
+            .into_iter()
+            .map(|e| {
+                let v = match e.val {
+                    Val::Inline(v) => Ok(v),
+                    Val::Overflow { slot, .. } => Err(slot),
+                };
+                (e.key, v)
+            })
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
 fn resolve(u: &mut dyn Units, v: &Val) -> Result<Vec<u8>, Error> {
     match v {
         Val::Inline(b) => Ok(b.clone()),
