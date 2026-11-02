@@ -1036,14 +1036,15 @@ impl Engine {
     pub fn body_keep(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
         self.settle_deaths()?;
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        let (h, r, d) = self.run(|tx| {
-            let (ai, h) = known_part(tx.core, &c, &tid, &ak)?;
-            let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(c))?.retention;
-            let d = deaths_of(tx, &h, &c, ai)?;
-            Ok((h, r, d))
-        })?;
-        let live = r.at_most.rel.is_some() && d.is_some() && self.body_live(&c, &tid, &ak)?;
-        Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
+        self.run(|tx| body_keep(tx, &c, &tid, &ak))
+    }
+
+    /// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
+    /// (`drop_from`); `None`: never, it may not purge it.
+    pub fn drop_from(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<u64>> {
+        self.settle_deaths()?;
+        let (c, tid, ak) = (*c, *tid, ak.clone());
+        self.run(|tx| drop_from(tx, &c, &tid, &ak))
     }
 
     /// Whether snapshot `s` is a carrier only on `(tid, ak)` (`osis_commit::retention::carrier_only`
@@ -1071,24 +1072,11 @@ impl Engine {
     /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
     /// until its aspect's state changes (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        let key = (*c, *tid, ak.clone());
-        if let Some(v) = self.core.live_bodies.get(&key) {
+        if let Some(v) = self.core.live_bodies.get(&(*c, *tid, ak.clone())) {
             return Ok(*v);
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());
-        let live = self.run(|tx| match aspect_index(tx.core, &c, &tid, &ak) {
-            Some(ai) => {
-                let r = live(tx, &c, ai)?;
-                #[cfg(test)]
-                assert_eq!(r, oracle::live(tx, &c, ai)?, "live streamed vs whole");
-                Ok(Some(r))
-            }
-            None => Ok(None),
-        })?;
-        // an unknown commit counts live, uncached (its apply may change nothing here)
-        let Some(live) = live else { return Ok(true) };
-        self.core.live_bodies.insert(key, live);
-        Ok(live)
+        self.run(|tx| body_live(tx, &c, &tid, &ak))
     }
 
     /// The lowest `ts` among the writes the held body of aspect `ak` of `c` carries (`None`: not
@@ -1281,6 +1269,47 @@ impl Engine {
             Ok(r)
         })
     }
+}
+
+/// `Engine::body_live` in `tx`, through `Core::live_bodies`.
+fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
+    let key = (*c, *tid, ak.clone());
+    if let Some(v) = tx.core.live_bodies.get(&key) {
+        return Ok(*v);
+    }
+    // an unknown commit counts live, uncached (its apply may change nothing here)
+    let Some(ai) = aspect_index(tx.core, c, tid, ak) else { return Ok(true) };
+    let r = live(tx, c, ai)?;
+    #[cfg(test)]
+    assert_eq!(r, oracle::live(tx, c, ai)?, "live streamed vs whole");
+    tx.core.live_bodies.insert(key, r);
+    Ok(r)
+}
+
+/// `Engine::body_keep` in `tx`, deaths settled.
+pub(crate) fn body_keep(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<osis_commit::retention::Keep> {
+    let (ai, h) = known_part(tx.core, c, tid, ak)?;
+    let r = h.aspects.get(ai).ok_or(Error::UnknownCommit(*c))?.retention;
+    let d = deaths_of(tx, &h, c, ai)?;
+    let live = r.at_most.rel.is_some() && d.is_some() && body_live(tx, c, tid, ak)?;
+    Ok(osis_commit::retention::body_keep(&h, &r, d.map(|d| d.0.wall_ms().0), d.map(|d| d.1.wall_ms().0), live))
+}
+
+/// From when this node's compaction may drop held body `(tid, ak)` of `c` as covered
+/// (spec/commits.md §5, spec/sync.md §7), deaths settled: `MAX_DRIFT` past its keep-at-least
+/// bound (a node whose clock lags by up to that still holds it must-hold and would place it
+/// again); `None` when this node may not purge it now. One predicate for compaction
+/// (node-sync's `drop_covered`) and a demotion's frontier (`receipt::droppable_here`), so the
+/// two never disagree.
+pub(crate) fn drop_from(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<u64>> {
+    let (ai, h) = known_part(tx.core, c, tid, ak)?;
+    let by = h.aspects.get(ai).map_or(PurgeBy::Nobody, |a| PurgeBy::from_code(a.retention.by as u64).unwrap_or(PurgeBy::Nobody));
+    let me = tx.core.id.tid();
+    let at = At::now(Ts::make(tx.now(), 0).unwrap_or_default());
+    if !tx.core.timelines.get(tid).is_some_and(|tl| tl.may_purge(&me, tid, by, &h.actor, at)) {
+        return Ok(None);
+    }
+    Ok(Some(body_keep(tx, c, tid, ak)?.at_least.saturating_add(osis_base::format::MAX_DRIFT_MS)))
 }
 
 /// Whether part `ai` of snapshot `s` is a carrier only (`osis_commit::retention::carrier_only`).

@@ -3313,3 +3313,82 @@ fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
     set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "received by the cut, should stay");
 }
+
+// spec/permissions.md §5.1 (a frontier leaves out only what the demoter's compaction could drop
+// now), issues/frontier-clobbers-history.md: Bob writes a kept register twice and Carol, any
+// writer, snapshots it just before Alice removes Bob. The snapshot keeps only "two"; Bob's
+// superseded "one" is inside its keep-at-least window, so Alice lists it and it stays valid where
+// held; a new device never given it reads alike. The live "two", covered, is left out (the
+// snapshot vouches for it), and once the window is past "one" is left out too.
+#[test]
+fn frontier_keeps_superseded_kept_write_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7181);
+    let kept = ak("t:kept.0");
+    let write = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.set(d, &KEPT, &s(v)).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.advance(1_000);
+        c
+    };
+    let one = write(&mut lp, "one");
+    let two = write(&mut lp, "two");
+    sync(&mut lp, 1, 2);
+    let snap = lp.peers[2].engine.snapshot(&d, &kept).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.covered(&snap, &one, &d, &kept).unwrap(), Some(true));
+    assert_eq!(lp.peers[0].engine.covered(&snap, &two, &d, &kept).unwrap(), Some(true));
+    lp.advance(1_000);
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(f.commits.contains(&one), "a superseded write inside its keep-at-least window is listed");
+    assert!(!f.commits.contains(&two), "a covered live write past its bound is left out");
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+    assert_eq!(lp.peers[0].engine.body_valid(&one, &d, &kept), Some(true), "kept history stays valid at the holder");
+    let mut fresh = net(1, 0x7183);
+    fresh.advance(DAY);
+    for p in packages(&mut lp, 0).into_iter().filter(|p| p.id != one) {
+        fresh.deliver(0, &p).unwrap();
+    }
+    fresh.peers[0].engine.reexamine().unwrap();
+    assert!(fresh.peers[0].engine.header(&one).is_none());
+    for l in [&mut lp, &mut fresh] {
+        assert_eq!(l.peers[0].engine.get(&d, &kept).unwrap(), Some(s("two")));
+        assert!(!l.peers[0].engine.roster(&d).contains_key(&b));
+    }
+    // past the window (and MAX_DRIFT), Alice's compaction could drop it: left out
+    lp.advance(2 * DAY);
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(!f.commits.contains(&one) && !f.commits.contains(&two), "{f:?}");
+}
+
+// spec/permissions.md §5.1: a commit with a delta on a thing the demoter does not hold is listed,
+// even when its part in question is droppable there (the demoter cannot judge the other delta).
+// Bob's one commit writes D and his own thing E; Alice gets only its D part, which Carol's
+// snapshot covers.
+#[test]
+fn frontier_lists_commit_with_unheld_part_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7185);
+    let reg = ak("t:reg.0");
+    let e = new_thing(&mut lp, 1);
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("both")).unwrap();
+    m.set(e, &REG, &s("both")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    let pk = lp.peers[1].engine.package(&c).unwrap().unwrap();
+    let mut blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let h = lp.peers[1].engine.header(&c).unwrap();
+    blob.parts.retain(|p| h.aspects[p.ai].tid == d);
+    lp.peers[0].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
+    lp.peers[2].engine.ingest(&blob.encode(), pk.blobs.clone()).unwrap();
+    assert!(lp.peers[0].engine.header(&c).is_some());
+    lp.advance(1_000);
+    let snap = lp.peers[2].engine.snapshot(&d, &reg).unwrap().unwrap();
+    sync(&mut lp, 2, 0);
+    assert_eq!(lp.peers[0].engine.covered(&snap, &c, &d, &reg).unwrap(), Some(true));
+    lp.advance(1_000);
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+    assert!(f.commits.contains(&c), "{f:?}");
+}

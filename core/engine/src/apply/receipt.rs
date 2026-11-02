@@ -70,14 +70,19 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
     held.chain(kept)
 }
 
-/// Whether held commit `c`'s part on `(tid, ak)` is covered here by snapshots received by
-/// `as_of`: dropped as covered with every coverer received by then (`retention::coverers`,
-/// coverers dropped in turn included), or held and covered by a
-/// held valid snapshot stamped after it and received by then (spec/commits.md §5). A demoter
-/// leaves such a commit out of its frontier: the covering snapshot vouches for its live writes
-/// (spec/permissions.md §5.2). A coverer received after `as_of` (a backdated revoke) would not
-/// be listed if the demoted node wrote it, so it would vouch for nothing after the demotion.
-fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs) -> Result<bool> {
+/// Whether this node's compaction could drop part `(tid, ak)` of held commit `c` now, or
+/// already dropped it as covered, under snapshots received by `as_of` (spec/permissions.md §5.1,
+/// spec/commits.md §5): dropped as covered with every coverer received by then
+/// (`retention::coverers`, coverers dropped in turn included), or held, droppable here now
+/// (`retention::drop_from`: this node may purge it and its keep-at-least bound is `MAX_DRIFT`
+/// past, as node-sync's `drop_covered` judges) and covered by a held valid snapshot stamped after
+/// it and received by then (of two covered-equal snapshots only the lower ID stays, as there).
+/// A demoter leaves a commit out of its frontier only when each of its parts in question is
+/// such: the covering snapshot vouches for its live writes (spec/permissions.md §5.2), and its
+/// dead writes are what compaction erases anyway; a kept body's history stays valid. A coverer
+/// received after `as_of` (a backdated revoke) would not be listed if the demoted node wrote
+/// it, so it would vouch for nothing after the demotion.
+fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs) -> Result<bool> {
     let by_then = |core: &crate::engine::Core, s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.received.0 <= as_of.0);
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(false) };
@@ -87,14 +92,23 @@ fn covered_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: WallMs
     if m.missing.contains(&ai) {
         return Ok(false);
     }
-    let ts = m.view.ts;
+    let (ts, snapshot) = (m.view.ts, m.view.kind.is_compaction());
+    if !crate::retention::drop_from(tx, c, tid, ak)?.is_some_and(|due| due <= tx.now().0) {
+        return Ok(false);
+    }
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && by_then(tx.core, &x.1)).map(|x| x.1).collect();
     for s in snaps {
-        if crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) {
+        if crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) && !(snapshot && *c < s && crate::retention::covered(tx, c, &s, tid, ak)? == Some(true)) {
             return Ok(true);
         }
     }
     Ok(false)
+}
+
+/// Whether some delta of held commit `c` is on a thing this node does not hold (neither held
+/// nor dropped here): it cannot judge that delta droppable, so a frontier lists the commit.
+fn part_missing(core: &crate::engine::Core, c: &CommitId) -> bool {
+    core.ix.commits.get(c).is_none_or(|m| !m.missing.is_empty())
 }
 
 /// Whether a held snapshot of `(tid, ak)`, any validity, stamped after commit `id` lists its
@@ -167,10 +181,11 @@ impl Engine {
     /// The frontier a demotion stamped now must embed (spec/permissions.md §5.1), by commit ID:
     /// per aspect the scope puts in question and per demoted node, that node's commits this
     /// node received by `as_of` (held ones at their meta's receipt time, those verified by
-    /// header alone at the record's), memory commits never, and held ones whose part there is
-    /// covered here (`covered_here`) left out; and, where it falls below write, its held
-    /// commits acting for that thing, each unless its every delta but `created.0` is covered here. This node's own receipts only; `as_of` earlier
-    /// than now gives a backdated revoke's frontier.
+    /// header alone at the record's), memory commits never, and held ones whose every delta is
+    /// held or dropped here and whose part there is droppable here (`droppable_here`) left out;
+    /// and, where it falls below write, its held commits acting for that thing, each left out
+    /// under the same rule on every delta but `created.0`. This node's own receipts only;
+    /// `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
@@ -197,6 +212,10 @@ impl Engine {
         aspects.sort();
         aspects.dedup();
         self.run(|tx| {
+            // keep bounds read deaths
+            if !tx.core.ix.deaths_due.is_empty() {
+                crate::retention::settle_due(tx)?;
+            }
             let mut f = Frontier::default();
             for (node, t, ak) in aspects.iter().cloned() {
                 for (id, (a, at)) in get(tx, &t, &ak)?.commits {
@@ -206,15 +225,18 @@ impl Engine {
                 }
                 let held: Vec<CommitId> = tx.core.durable_on(&(t, ak.clone())).filter(|c| tx.core.ix.commits.get(c).is_some_and(|m| m.view.author == node && m.received.0 <= as_of.0)).collect();
                 for c in held {
-                    if !covered_here(tx, &c, &t, &ak, as_of)? {
+                    if f.commits.contains(&c) {
+                        continue;
+                    }
+                    if part_missing(tx.core, &c) || !droppable_here(tx, &c, &t, &ak, as_of)? {
                         f.commits.insert(c);
                     }
                 }
             }
             // a fall below write on M puts in question every delta of the node's commits acting
-            // for M (`validity::acts_for`): one is listed unless each is covered here, as above
-            // (`created.0` is always valid, so never in question; an aspect walked above is
-            // covered, the commit not being listed)
+            // for M (`validity::acts_for`): one is listed unless each is droppable here, as above
+            // (`created.0` is always valid, so never in question; an aspect walked above was
+            // judged there, the commit not being listed)
             for (node, things) in &scope.content {
                 for t in things {
                     let acting: Vec<CommitId> = tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten().filter(|c| !f.commits.contains(*c)).copied().collect();
@@ -223,9 +245,13 @@ impl Engine {
                         if m.view.memory || m.received.0 > as_of.0 {
                             continue;
                         }
+                        if part_missing(tx.core, &c) {
+                            f.commits.insert(c);
+                            continue;
+                        }
                         let parts: Vec<(Tid, Ak)> = m.view.aspects.iter().filter(|a| a.ak.as_str() != osis_commit::retention::CREATED).map(|a| (a.tid, a.ak.clone())).filter(|(pt, pak)| aspects.binary_search(&(*node, *pt, pak.clone())).is_err()).collect();
                         for (pt, pak) in parts {
-                            if !covered_here(tx, &c, &pt, &pak, as_of)? {
+                            if !droppable_here(tx, &c, &pt, &pak, as_of)? {
                                 f.commits.insert(c);
                                 break;
                             }

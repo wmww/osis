@@ -2346,3 +2346,49 @@ fn removed_device_frontier_lists_uncovered_acting_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.get(&x, &reg).unwrap(), Some(s("v29")));
     assert_eq!(lp.peers[0].engine.get(&y, &reg).unwrap(), Some(s("as p")));
 }
+
+// spec/permissions.md §5.1 (a frontier leaves out only what the demoter's compaction could drop
+// now), spec/commits.md §5 (role-class deltas kept `ROLE_KEEP` after replaced): M leaves t twice
+// by self-removal, and admin X rotates t after each. Alice snapshots `secrets.0` and `keys.0`,
+// covering both rotations. Removing X, she lists X's first rotation (its keysets replaced inside
+// `ROLE_KEEP`), so it stays valid; the second, live and covered, is left out.
+#[test]
+fn rotation_within_role_keep_listed_spec_perm_5_1() {
+    let (mut lp, ps) = people(3, 0x7190);
+    let (pa, px, pm) = (ps[0], ps[1], ps[2]);
+    let t = thing_of(&mut lp, 0, pa);
+    lp.peers[0].engine.grant(&t, &px, &edge_of(Role::Admin)).unwrap();
+    let mut rotations = Vec::new();
+    for _ in 0..2 {
+        lp.peers[0].engine.grant(&t, &pm, &edge_of(Role::Read)).unwrap();
+        spread(&mut lp);
+        lp.advance(1_000);
+        lp.peers[2].engine.demote(&t, &Demotion { holder: pm, new: None, presync: PreSync::Synced }).unwrap();
+        spread(&mut lp);
+        lp.advance(1_000);
+        let (rot, still) = lp.peers[1].engine.ensure_rotated(&t).unwrap();
+        assert!(still.is_empty() && rot.commits.len() == 1);
+        assert_eq!(aks_of(&lp, 1, &rot.commits[0]), BTreeSet::from(["keys.0".to_string(), "secrets.0".to_string()]));
+        rotations.push(rot.commits[0]);
+        spread(&mut lp);
+        lp.advance(1_000);
+    }
+    let keys = ak("keys.0");
+    let snaps = [lp.peers[0].engine.snapshot(&t, &ak("secrets.0")).unwrap().unwrap(), lp.peers[0].engine.snapshot(&t, &keys).unwrap().unwrap()];
+    for (s, a) in snaps.iter().zip(["secrets.0", "keys.0"]) {
+        for r in &rotations {
+            assert_eq!(lp.peers[0].engine.covered(s, r, &t, &ak(a)).unwrap(), Some(true), "{a}");
+        }
+    }
+    lp.advance(1_000);
+    let x = lp.peers[1].engine.tid();
+    let things = BTreeSet::from([t]);
+    let scope = osis_perm::DemotionScope { roles: [(x, things.clone())].into(), content: [(x, things)].into() };
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    assert!(f.commits.contains(&rotations[0]), "a rotation replaced inside ROLE_KEEP is listed");
+    assert!(!f.commits.contains(&rotations[1]), "the live covered rotation is left out");
+    lp.peers[0].engine.demote(&t, &Demotion { holder: px, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(!lp.peers[0].engine.roster(&t).contains_key(&px));
+    assert_eq!(lp.peers[0].engine.body_valid(&rotations[0], &t, &keys), Some(true));
+}
