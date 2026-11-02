@@ -239,9 +239,11 @@ fn entry_dots(tx: &Tx<'_>, target: &Tid, holder: &Tid) -> Vec<(osis_crdt::Dot, o
 /// `others`, an explicit removal of those holders' edges too, under the same frontier and one
 /// rotation (spec/commits.md §2). Then the inbox copy to each holder, and placement before any
 /// other upload under every label the removed parties could read. `repudiate`: the rotations
-/// the frontier leaves out on purpose (`Engine::demote_repudiating`), judged invalid before the
-/// rotation, as every node judges them once the commit applies, and checked so after it.
-pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>, repudiate: Option<&BTreeSet<CommitId>>) -> Result<Done> {
+/// the frontier leaves out on purpose (`Engine::demote_repudiating`), each with an actor it
+/// locked: that part judged invalid before the rotation, as every node judges it once the
+/// commit applies, and checked so after it (the commit's parts on things not in question keep
+/// their validity).
+pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &Demotion, others: &[Tid], frontier: Option<osis_base::Value>, repudiate: Option<&BTreeSet<(CommitId, Tid)>>) -> Result<Done> {
     let who = signer.unwrap_or(tx.core.id.tid());
     let holder = d.holder;
     let ts = now_ts(tx.core);
@@ -275,8 +277,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let omit = repudiate.cloned().unwrap_or_default();
     // under the new frontier the omitted rotations are invalid: the epochs they superseded are
     // current again, and the rotation below goes from those (spec/permissions.md §3)
-    for c in &omit {
-        for ai in secrets_parts(tx, c) {
+    for (c, a) in &omit {
+        for ai in secrets_parts(tx, c, a) {
             crate::apply::keys::invalidated(tx, c, ai)?;
         }
     }
@@ -359,8 +361,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     // a repudiation that did not take (its author keeps its role another way) would leave the
     // target locked with the holder gone: nothing is written
-    if omit.iter().any(|c| secrets_parts(tx, c).into_iter().any(|ai| tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)))) {
-        return Err(Error::Misuse("a repudiated rotation stays valid (its author keeps write on the target another way): remove that first"));
+    if omit.iter().any(|(c, a)| secrets_parts(tx, c, a).into_iter().any(|ai| tx.core.ix.commits.get(c).is_some_and(|m| m.valid_at(ai)))) {
+        return Err(Error::Misuse("a repudiated rotation stays valid (its author keeps write on that thing another way): remove that first"));
     }
     done.add(c);
     if let Some(c) = c {
@@ -392,10 +394,10 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     Ok(done)
 }
 
-/// The parts of held commit `c` on `secrets.0`.
-fn secrets_parts(tx: &Tx<'_>, c: &CommitId) -> Vec<usize> {
+/// The parts of held commit `c` on `actor`'s `secrets.0`.
+fn secrets_parts(tx: &Tx<'_>, c: &CommitId, actor: &Tid) -> Vec<usize> {
     let Some(m) = tx.core.ix.commits.get(c) else { return Vec::new() };
-    m.view.aspects.iter().enumerate().filter(|(_, a)| a.ak.as_str() == "secrets.0").map(|(i, _)| i).collect()
+    m.view.aspects.iter().enumerate().filter(|(_, a)| a.tid == *actor && a.ak.as_str() == "secrets.0").map(|(i, _)| i).collect()
 }
 
 impl Engine {
@@ -465,9 +467,9 @@ impl Engine {
     /// The rotations a demotion repudiating lockouts leaves out of its frontier `f`
     /// (`demote_repudiating`): listed commits of a node `scope` demotes whose `secrets.0` delta
     /// on a thing in question for it rotated that thing to a current epoch whose secret this node
-    /// does not hold; repeatedly, since each one left out makes current again the epochs it
-    /// superseded (a second rotation from the first).
-    fn lockout_rotations(&self, f: &BTreeSet<CommitId>, scope: &osis_perm::DemotionScope) -> BTreeSet<CommitId> {
+    /// does not hold, each with that thing; repeatedly, since each one left out makes current
+    /// again the epochs it superseded (a second rotation from the first).
+    fn lockout_rotations(&self, f: &BTreeSet<CommitId>, scope: &osis_perm::DemotionScope) -> BTreeSet<(CommitId, Tid)> {
         let mut by_actor: std::collections::BTreeMap<Tid, BTreeSet<CommitId>> = std::collections::BTreeMap::new();
         for c in f {
             let Some(m) = self.core.ix.commits.get(c) else { continue };
@@ -495,7 +497,7 @@ impl Engine {
                 for c in &locking {
                     e.invalidate(c);
                 }
-                out.extend(locking);
+                out.extend(locking.into_iter().map(|c| (c, a)));
             }
         }
         out
@@ -529,7 +531,7 @@ impl Engine {
                     f.commits.extend(own.iter().copied());
                     if repudiate {
                         omit = self.lockout_rotations(&f.commits, &scope);
-                        f.commits.retain(|c| !omit.contains(c));
+                        f.commits.retain(|c| !omit.iter().any(|(o, _)| o == c));
                     }
                     let pf = osis_perm::Frontier { commits: f.commits.clone() };
                     let probe = self.demotion_probe(who, ops.clone(), pf);

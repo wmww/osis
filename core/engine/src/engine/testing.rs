@@ -32,19 +32,25 @@ impl Engine {
         Ok(r?.zip(forged))
     }
 
-    /// Rotates `roles` of `actor` as a hostile writer would: boxing only those of its current
-    /// holders in `boxed` (issues/writer-rotates-to-itself.md: itself alone locks out the rest).
+    /// Rotates `roles` of each of `actors` in one commit as a hostile writer would: boxing only
+    /// those of its current holders in `boxed` (itself alone locks out the rest,
+    /// spec/permissions.md §3, Lockout recovery).
     #[doc(hidden)]
-    pub fn rotate_boxing_only(&mut self, actor: &Tid, roles: &[osis_base::Role], boxed: &[Tid]) -> Result<Option<CommitId>> {
-        let (a, roles) = (*actor, roles.iter().copied().collect());
+    pub fn rotate_boxing_only(&mut self, actors: &[Tid], roles: &[osis_base::Role], boxed: &[Tid]) -> Result<Option<CommitId>> {
+        let roles = roles.iter().copied().collect();
         self.run(|tx| {
-            let held = tx.core.epochs(&a).ok_or(Error::Misuse("no secrets held for the actor"))?;
-            let mut holders = crate::rotation::recipients(tx, &a, &[])?;
-            holders.retain(|r| boxed.contains(&r.holder));
             let mut m = crate::Mutation::new();
-            let rot = crate::rotation::rotation_into(tx, &mut m, a, &roles, &held, &holders, &[])?;
+            let mut rots = Vec::new();
+            for a in actors {
+                let held = tx.core.epochs(a).ok_or(Error::Misuse("no secrets held for the actor"))?;
+                let mut holders = crate::rotation::recipients(tx, a, &[])?;
+                holders.retain(|r| boxed.contains(&r.holder));
+                rots.push((*a, crate::rotation::rotation_into(tx, &mut m, *a, &roles, &held, &holders, &[])?));
+            }
             let c = Engine::commit_tx(tx, m)?;
-            crate::rotation::record(tx, a, &rot)?;
+            for (a, rot) in &rots {
+                crate::rotation::record(tx, *a, rot)?;
+            }
             Ok(c)
         })
     }

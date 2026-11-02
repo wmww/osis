@@ -75,7 +75,9 @@ pub struct Demotion {
     /// Also repudiate the demoted holder's rotations of the target this device cannot open (a
     /// writer that rotated it and sealed the new secrets to itself alone, locking everyone else
     /// out: a plain demotion then fails). Those rotations are undone everywhere and the target
-    /// rotates from the secrets before them (spec/permissions.md §3). A direct edge only.
+    /// rotates from the secrets before them (spec/permissions.md §3); content under their
+    /// epochs stays readable only where those secrets are already held. Only after a lockout:
+    /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
     pub repudiate: bool,
 }
 
