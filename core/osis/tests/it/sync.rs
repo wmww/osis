@@ -1124,7 +1124,7 @@ fn a_grant_again_makes_the_label_a_crash_left_out() {
     let (alice, others, ids) = people(&mut w, 1);
     let t = plain(&alice, "for bob");
     // the first half of `Osis::grant`, its result dropped as a crash would
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     alice.engine(|e| e.grant(&t, &ids[0], &edge).map(drop)).unwrap();
     w.run();
     assert_eq!(x(&others[0], t), None);

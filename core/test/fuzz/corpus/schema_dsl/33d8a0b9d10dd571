@@ -12,6 +12,8 @@ type epoch = struct { 0 n: int, 1 nonce: blob };                 // nonce: 32 by
 type address = struct { 0 url: string, 1 key: blob };            // transport URL, 32-byte host static key
 type edge_key = struct { 0 ts: int, 1 node: tid, 2 commit: blob };   // (ts, author node, 32-byte commit ID) of a write
 type source = enum { 0 node(tid), 1 commit(blob) };             // a dot's source (spec/crdt.md §2.1); commit: 32-byte commit ID
+/// An aspect a heartbeat reports suspect, with its keyed state digest (16 bytes, spec/permissions.md §4).
+type suspect = struct { 0 thing: tid, 1 ak: string, 2 digest: blob };
 type tie = struct { 0 ts: int, 1 source: source, 2 ctr: int, 3 subgroup: bool };   // creation stamp of a group.0 element and its set
 type edge = struct { 0 role: role, 1 until: option<timestamp>, 2 invite: option<role>, 3 since: option<edge_key>, 4 tied: option<tie>, 5 keyset: option<edge_key> };
 type keyset = struct { 0 epoch: epoch, 1 kem_key: kem_key, 2 suite: int, 3 delete_key: signing_key, 4 supersedes: set<epoch> };   // suite ID of the epoch; delete key: spec/crypto.md §7; supersedes: spec/crypto.md §4
@@ -22,15 +24,14 @@ type box = enum {
     1 symmetric(struct { 0 epoch: epoch, 1 wrap: blob, 2 names: option<blob> }),     // epoch of s; wrap, names: spec/wire.md §7
 };
 type history_key = struct { 0 role: role, 1 epoch: epoch };
-type frontier = struct {
-    0 writes: map<tid, map<string, map<tid, int>>>,           // tid -> AK -> author node -> counter
-    1 commits: set<blob>,                                       // commit IDs of commit-form writes
-};
+type frontier = struct { 0 commits: set<blob> };   // 32-byte commit IDs of what the demoter received (spec/permissions.md §5.1)
 type tenure = struct { 0 holder: tid, 1 role: role, 2 since: option<edge_key>, 3 until: edge_key, 4 frontier: option<frontier> };
 type step_record = struct { 0 step: blob, 1 claims: option<blob> };   // spec/wire.md §8 bytes
 type label = struct { 0 index: int, 1 steps: map<blob, step_record>, 2 hosts: list<address>, 3 replaced: bool };
 type admit = enum { 0 own, 1 open };
 type host_caps = struct { 0 entries: int, 1 bytes: int };       // a label's caps in place of the policy's
+/// A thin client of the node: BLAKE3 of its bearer secret (32 bytes), when it ends.
+type client = struct { 0 secret_hash: blob, 1 until: option<timestamp> };
 
 aspect tid.0: tid [synthetic, guaranteed];
 /// AKs present on the thing.
@@ -52,9 +53,11 @@ aspect node.0: struct { 0 software: string };
 /// 32-byte P2P key, relay URLs, 32-byte LAN secret.
 aspect reach.0: struct { 0 dialable: blob, 1 relays: list<string>, 2 lan_secret: blob };
 /// ts: wall ms of the commit's ts.
-aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool };
+aspect seen.0: struct { 0 ts: timestamp, 1 stranded: bool, 2 suspect: set<suspect> };
 /// Hosting, on a node thing (absent: not hosting): listen URLs, admission, label IDs (16 bytes) admitted beside `own`'s, peer hosts to replicate to, policy knobs by name, per-label caps by label ID.
 aspect host.0^: struct { 0 listen: list<string>, 1 admit: admit, 2 labels: set<blob>, 3 replicate: list<address>, 4 policy: map<string, int>, 5 caps: map<blob, host_caps> };
+/// Thin clients of this node by client actor.
+aspect clients.0^: map<tid, client>;
 aspect group.0: struct { 0 items: set<tid>, 1 subgroups: set<tid> };
 /// The ephemeral placements into this group: items and subgroups placed while ephemeral, read with group.0. Written by group ops only.
 aspect placed.0~: struct { 0 items: set<tid>, 1 subgroups: set<tid> };

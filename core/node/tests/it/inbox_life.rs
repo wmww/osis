@@ -719,7 +719,7 @@ fn hint_under_another_thing_gives_way_to_the_group_spec_sync_3() {
 fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     let (mut net, _, a, b, _, bob, g, _) = alice_and_bob();
     let t = persisted_item(&mut net, a, g);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let gl = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     let names = |on: Tid, net: &mut Net| {
         let done = net.engine(a).grant(&on, &bob, &edge).unwrap();
@@ -737,7 +737,7 @@ fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
 #[test]
 fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     let (mut net, host, a, b, _, bob, g, home) = alice_and_bob_at(Vec::new());
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
     let c = *done.commits.iter().find(|i| net_is_role(&mut net, a, i, &g)).unwrap();
     let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();
