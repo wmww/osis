@@ -277,10 +277,14 @@ impl SyncEngine {
         let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
         let new = osis_label::unwrap_any(secrets.iter(), &b, wrap).map(|(_, k)| k);
         if let Some(k) = self.state.blobs.get(&b).map(|r| r.key.clone()) {
-            let opens = new.is_some_and(|x| x.expose() == k.expose());
+            let opens = new.as_ref().is_some_and(|x| x.expose() == k.expose());
             // a deposited one goes when a writer promotes it (with this wrap, if this node does)
-            if let Some(s) = host.filter(|_| held_stamped && !opens) {
-                self.state.set_gone(s, l, b);
+            if let Some(s) = host.filter(|_| held_stamped) {
+                match &new {
+                    _ if opens => self.state.clear_gone(s, l, b),
+                    Some(_) => self.state.set_gone(s, l, b),
+                    None => self.state.set_doubtful(s, l, b, *wrap),
+                }
             }
             return opens;
         }
@@ -288,14 +292,17 @@ impl SyncEngine {
         let bad = e.kind == Kind::Bad;
         // its wrap opens, the bytes are on their way, and this host's never will: heard only now
         if let Some(s) = host.filter(|_| held_stamped && opened && !bad && new.is_none()) {
-            self.state.set_gone(s, l, b);
+            self.state.set_doubtful(s, l, b, *wrap);
         }
         let take = e.shredded() || (new.is_some() && (!opened || bad)) || (new.is_none() && !opened && stamped && e.stamp.is_none());
         if take && new.is_some() && !e.shredded() {
             // the wrap it replaces is useless at the hosts that gave it
             for s in self.state.hosts_of(&l, &b) {
                 if Some(s) != host {
-                    self.state.set_gone(s, l, b);
+                    match opened {
+                        true => self.state.set_gone(s, l, b),
+                        false => self.state.set_doubtful(s, l, b, e.wrap),
+                    }
                 }
             }
         }
@@ -303,6 +310,26 @@ impl SyncEngine {
             e.kind = Kind::Unknown;
         }
         take
+    }
+
+    /// A wrap that opened under no read secret may be under an epoch this node lacks, and a node
+    /// cannot tell garbage from that (spec/sync.md §5): once more secrets are held, one that opens
+    /// to the blob's key was of use all along.
+    pub(crate) fn recheck_doubts(&mut self) {
+        let count = self.secrets_count();
+        if self.state.doubts.is_empty() || self.state.doubts_at == count {
+            return;
+        }
+        self.state.doubts_at = count;
+        for ((s, l, b), wrap) in self.state.doubts.clone() {
+            let secrets = self.group_of(&l).map(|g| self.read_secrets(&g)).unwrap_or_default();
+            let Some((_, k)) = osis_label::unwrap_any(secrets.iter(), &b, &wrap) else { continue };
+            let own = self.state.blobs.get(&b).map(|r| r.key.clone()).or_else(|| self.state.entries.get(&(l, b)).and_then(|e| osis_label::unwrap_any(secrets.iter(), &b, &e.wrap)).map(|(_, k)| k));
+            match own {
+                Some(o) if o.expose() == k.expose() => self.state.clear_gone(s, l, b),
+                _ => self.state.drop_doubt(s, l, b),
+            }
+        }
     }
 
     /// New entries no writer vouched for that neither opened nor unwrap under a held read secret
@@ -418,6 +445,7 @@ impl SyncEngine {
             todo = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|(k, _)| *k).collect();
         }
         self.engine.reexamine()?;
+        self.recheck_doubts();
         self.vet_inbox_hints()
     }
 

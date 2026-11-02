@@ -27,6 +27,7 @@ const BLOB: &[u8] = b"y/b";
 const CERT: &[u8] = b"y/k";
 const BEAT: &[u8] = b"y/t";
 const GONE: &[u8] = b"y/g";
+const DOUBT: &[u8] = b"y/3";
 const HINT: &[u8] = b"y/i";
 const TIMED: &[u8] = b"y/d";
 const CARRIER: &[u8] = b"y/s";
@@ -238,6 +239,11 @@ pub struct State {
     /// entry's wrap never changes there, spec/sync.md §5). Forgotten after `TOMBSTONE_LIFETIME`,
     /// when the host's tombstone is gone too; not while the host still holds the entry.
     pub gone: BTreeMap<(HostKey, LabelId, BlobId), u64>,
+    /// The wraps behind those of `gone` that opened under no read secret when heard, while the host
+    /// holds the entry: possibly under an epoch not held yet (`SyncEngine::recheck_doubts`).
+    pub doubts: BTreeMap<(HostKey, LabelId, BlobId), [u8; WRAP_LEN]>,
+    /// `SyncEngine::secrets_count` when `doubts` were last checked. In memory.
+    pub doubts_at: usize,
     pub hints: BTreeMap<LabelId, Hint>,
     /// Timed deletes a host took (spec/sync.md §5), until the entry leaves that host.
     pub timed: BTreeSet<(HostKey, LabelId, BlobId)>,
@@ -451,6 +457,9 @@ impl State {
                 b"g" => {
                     s.gone.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).u64()?);
                 }
+                b"3" => {
+                    s.doubts.insert((r.arr()?, LabelId(r.arr()?), BlobId(r.arr()?)), Rd::new(&v).arr()?);
+                }
                 b"s" => {
                     let at = Rd::new(&v).u64()?;
                     s.carriers.insert(CommitId(r.arr()?), Carriers { by: decode_commits(v.get(8..).unwrap_or_default())?, at });
@@ -623,7 +632,7 @@ impl State {
             for (k, v) in writes.clone() {
                 match v {
                     // a replaced wrap or key leaves no copy behind
-                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) || k.starts_with(CLIENT_LISTEN) { Shred::Yes } else { Shred::No })?,
+                    Some(v) => tx.txn.put_local(&k, &v, if k.starts_with(ENTRY) || k.starts_with(DOUBT) || k.starts_with(BLOB) || k.starts_with(REACH) || k.starts_with(HOST_SECRET) || k.starts_with(CLIENT_LISTEN) { Shred::Yes } else { Shred::No })?,
                     None => {
                         tx.txn.remove_local(&k, Shred::Yes)?;
                     }
@@ -757,6 +766,7 @@ impl State {
             self.version += 1;
             self.deposited.remove(&(s, l, b));
             self.del(k);
+            self.drop_doubt(s, l, b);
             // a timed delete is done once the entry left that host
             if self.timed.remove(&(s, l, b)) {
                 self.del(key(TIMED, &[&s, &l.0, &b.0]));
@@ -1001,7 +1011,32 @@ impl State {
             self.gone.insert((s, l, b), self.now);
             self.gone_by.insert((l, b, s));
             self.touch(l, b);
+            self.version += 1;
             self.put(key(GONE, &[&s, &l.0, &b.0]), Wr::new().u64(self.now).take());
+        }
+    }
+
+    /// `set_gone` for a wrap that opened under no read secret held.
+    pub fn set_doubtful(&mut self, s: HostKey, l: LabelId, b: BlobId, wrap: [u8; WRAP_LEN]) {
+        self.set_gone(s, l, b);
+        self.doubts.insert((s, l, b), wrap);
+        self.put(key(DOUBT, &[&s, &l.0, &b.0]), wrap.to_vec());
+    }
+
+    pub fn drop_doubt(&mut self, s: HostKey, l: LabelId, b: BlobId) {
+        if self.doubts.remove(&(s, l, b)).is_some() {
+            self.del(key(DOUBT, &[&s, &l.0, &b.0]));
+        }
+    }
+
+    /// The host's entry is of use after all.
+    pub fn clear_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
+        self.drop_doubt(s, l, b);
+        if self.gone.remove(&(s, l, b)).is_some() {
+            self.gone_by.remove(&(l, b, s));
+            self.touch(l, b);
+            self.version += 1;
+            self.del(key(GONE, &[&s, &l.0, &b.0]));
         }
     }
 
@@ -1159,7 +1194,7 @@ fn forget_records(tx: &mut Tx<'_>, labels: &BTreeSet<LabelId>, things: &BTreeSet
                 }
                 gone
             }
-            b"p" | b"c" | b"h" | b"g" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
+            b"p" | b"c" | b"h" | b"g" | b"3" | b"d" => lab(rest.get(32..).unwrap_or_default())?,
             b"t" => lab(rest)?,
             b"k" => {
                 let mut r = Rd::new(rest);
@@ -1442,13 +1477,14 @@ mod tests {
         let mut s = State { now: 1_000, ..State::default() };
         s.set_present(h1, l, b, true);
         assert!(s.held_anywhere(&l, &b));
-        s.set_gone(h1, l, b);
+        s.set_doubtful(h1, l, b, [3; WRAP_LEN]);
         assert!(s.present_anywhere(&l, &b) && !s.held_anywhere(&l, &b));
         s.set_present(h2, l, b, true);
         assert!(s.held_anywhere(&l, &b));
         s.expire_tombs(1_000 + osis_base::format::TOMBSTONE_LIFETIME_MS);
         assert!(s.is_gone_at(&h1, &l, &b), "still held there");
         s.set_present(h1, l, b, false);
+        assert!(s.doubts.is_empty(), "the wrap goes with the entry");
         s.expire_tombs(1_000 + osis_base::format::TOMBSTONE_LIFETIME_MS);
         assert!(!s.is_gone_at(&h1, &l, &b));
     }
@@ -1466,8 +1502,8 @@ mod tests {
         let (h, l, b) = ([7u8; 32], LabelId([1; 16]), BlobId([2; 32]));
         let (body, mid, snap, other) = (CommitId([3; 32]), CommitId([4; 32]), CommitId([5; 32]), CommitId([6; 32]));
         let mut s = State { now: 1_000, ..State::default() };
-        s.set_gone(h, l, b);
         s.set_present(h, l, b, true);
+        s.set_doubtful(h, l, b, [3; WRAP_LEN]);
         s.set_timed(h, l, b);
         // body carried by mid, itself dropped and carried by snap; other's carrier stands alone
         s.set_entry(l, BlobId([9; 32]), Entry { wrap: [1; WRAP_LEN], stamp: None, cert: false, kind: Kind::Commit { commit: body, parts: vec![(0, 0)], salt: [0; 16] } });
@@ -1479,12 +1515,14 @@ mod tests {
         s.flush(e).unwrap();
         let mut s = State::load(e).unwrap();
         assert_eq!(s.gone.get(&(h, l, b)), Some(&1_000));
+        assert_eq!(s.doubts.get(&(h, l, b)), Some(&[3; WRAP_LEN]));
         assert_eq!(s.carriers.get(&body).map(|c| (c.by.clone(), c.at)), Some((vec![mid], 1_000)));
         s.expire_tombs(1_000 + life - 1);
         s.sweep_carriers(1_000 + life - 1);
         s.set_present(h, l, b, false);
         s.flush(e).unwrap();
         assert_eq!((rows(e, GONE), rows(e, TIMED), rows(e, CARRIER)), (1, 0, 3));
+        assert_eq!(rows(e, DOUBT), 0);
         s.expire_tombs(1_000 + life);
         s.sweep_carriers(1_000 + life);
         s.sweep_certs(|c| *c == body);

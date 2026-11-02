@@ -199,6 +199,7 @@ impl SyncEngine {
         let (g, index) = (lc.group, lc.index);
         let Some(head) = lc.head.clone() else { return Ok(()) };
         // secrets may have arrived since the head was accepted
+        self.recheck_doubts();
         let (keys, read_ok) = self.usable_keys(&g, index, &head)?;
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
