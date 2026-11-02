@@ -2305,3 +2305,41 @@ fn backdated_revoke_before_own_grant_received_spec_perm_5_1() {
         assert!(!r.contains_key(&x) && r.get(&a).is_some_and(|e| e.role == Role::Admin), "peer {i}");
     }
 }
+
+// spec/permissions.md §5.1 Frontier, §5.2 Acting; issues/frontier-clobbers-history.md (a kick
+// never scales with history): device 1 writes doc X many times as its person P, compacted, and
+// once as P on its own thing Y. Removing it from P lists only what no snapshot covers: Y's write
+// (it would go invalid unlisted, though the device's own right on Y never fell), not every
+// commit it made as P; X keeps its last value.
+#[test]
+fn removed_device_frontier_lists_uncovered_acting_spec_perm_5_1() {
+    let (mut lp, p, _) = person_two_devices(902);
+    let x = thing_of(&mut lp, 0, p);
+    let d = lp.peers[1].engine.tid();
+    let y = thing_of(&mut lp, 1, d);
+    spread(&mut lp);
+    let reg = ak("t:reg.0");
+    let write = |lp: &mut LocalPeer, t: Tid, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        m.act_as(p);
+        lp.peers[1].commit(m).unwrap().unwrap()
+    };
+    let mut on_x = Vec::new();
+    for i in 0..30 {
+        on_x.push(write(&mut lp, x, &format!("v{i}")));
+    }
+    lp.peers[1].engine.snapshot(&x, &reg).unwrap().unwrap();
+    let on_y = write(&mut lp, y, "as p");
+    spread(&mut lp);
+    let ds = BTreeSet::from([p, x]);
+    let scope = osis_perm::DemotionScope { roles: [(d, ds.clone())].into(), content: [(d, ds)].into() };
+    let now = lp.peers[0].engine.now();
+    let f = lp.peers[0].engine.frontier(&scope, now).unwrap();
+    assert!(f.commits.contains(&on_y), "an uncovered write as P on a thing outside the scope");
+    assert!(on_x.iter().all(|c| !f.commits.contains(c)), "covered writes as P listed: {} commits", f.commits.len());
+    lp.peers[0].engine.demote(&p, &Demotion { holder: d, new: None, presync: PreSync::Synced }).unwrap();
+    assert!(!lp.peers[0].engine.roster(&p).contains_key(&d));
+    assert_eq!(lp.peers[0].engine.get(&x, &reg).unwrap(), Some(s("v29")));
+    assert_eq!(lp.peers[0].engine.get(&y, &reg).unwrap(), Some(s("as p")));
+}

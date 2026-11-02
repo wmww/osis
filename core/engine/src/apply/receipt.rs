@@ -169,7 +169,7 @@ impl Engine {
     /// node received by `as_of` (held ones at their meta's receipt time, those verified by
     /// header alone at the record's), memory commits never, and held ones whose part there is
     /// covered here (`covered_here`) left out; and, where it falls below write, its held
-    /// commits acting for that thing. This node's own receipts only; `as_of` earlier
+    /// commits acting for that thing, each unless its every delta but `created.0` is covered here. This node's own receipts only; `as_of` earlier
     /// than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
@@ -198,7 +198,7 @@ impl Engine {
         aspects.dedup();
         self.run(|tx| {
             let mut f = Frontier::default();
-            for (node, t, ak) in aspects {
+            for (node, t, ak) in aspects.iter().cloned() {
                 for (id, (a, at)) in get(tx, &t, &ak)?.commits {
                     if a == node && at <= as_of.0 {
                         f.commits.insert(id);
@@ -211,12 +211,26 @@ impl Engine {
                     }
                 }
             }
-            // a fall below write on M puts in question the node's commits acting for M
-            // (`validity::acts_for`), whatever they write
+            // a fall below write on M puts in question every delta of the node's commits acting
+            // for M (`validity::acts_for`): one is listed unless each is covered here, as above
+            // (`created.0` is always valid, so never in question; an aspect walked above is
+            // covered, the commit not being listed)
             for (node, things) in &scope.content {
                 for t in things {
-                    let acting = tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten();
-                    f.commits.extend(acting.filter(|c| tx.core.ix.commits.get(*c).is_some_and(|m| !m.view.memory && m.received.0 <= as_of.0)));
+                    let acting: Vec<CommitId> = tx.core.ix.by_actor.get(&(*t, *node)).into_iter().flatten().filter(|c| !f.commits.contains(*c)).copied().collect();
+                    for c in acting {
+                        let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+                        if m.view.memory || m.received.0 > as_of.0 {
+                            continue;
+                        }
+                        let parts: Vec<(Tid, Ak)> = m.view.aspects.iter().filter(|a| a.ak.as_str() != osis_commit::retention::CREATED).map(|a| (a.tid, a.ak.clone())).filter(|(pt, pak)| aspects.binary_search(&(*node, *pt, pak.clone())).is_err()).collect();
+                        for (pt, pak) in parts {
+                            if !covered_here(tx, &c, &pt, &pak, as_of)? {
+                                f.commits.insert(c);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             Ok(f)
