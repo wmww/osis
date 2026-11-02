@@ -1048,6 +1048,24 @@ mod tests {
         assert_eq!(open(&key, &unit, &v).unwrap(), vec![0, 0x80, 0]);
     }
 
+    // spec/wire.md §5: `P || 0x80 || zeros`; notes/local-store.md, Row padding: open accepts only that, at exactly the class length.
+    #[test]
+    fn row_padding_rejects_other_shapes() {
+        let key = Secret32::from_bytes([5; 32]);
+        let (unit, node) = (unit_row(3, 1), node_row(0, 2, 1));
+        let raw = |row: &[u8], padded: &[u8]| [&[0u8; NONCE_LEN][..], &aead::seal(key.expose(), &[0; NONCE_LEN], row, padded).unwrap()].concat();
+        let mut marker_then_byte = vec![0x80; 1];
+        marker_then_byte.resize(UNIT_MIN, 0);
+        marker_then_byte[UNIT_MIN - 1] = 1;
+        let mut short = vec![9u8; 10];
+        short.push(0x80);
+        for (row, padded) in [(&unit, vec![]), (&unit, vec![0; UNIT_MIN]), (&unit, marker_then_byte), (&unit, short.clone()), (&node, vec![0x80, 0])] {
+            assert_eq!(open(&key, row, &raw(row, &padded)), Err(Error::Corrupt("row padding")), "{padded:?}");
+        }
+        short.resize(padme(11), 0);
+        assert_eq!(open(&key, &node, &raw(&node, &short)).unwrap(), vec![9; 10], "the same bytes are a valid node row");
+    }
+
     // spec/wire.md §5: Padmé; notes/local-store.md, Row padding: overhead measurement (no timing). Units above the floor
     // pay under 1/16 of their length; prints the mean over every length up to 16 KiB.
     #[test]
@@ -1064,8 +1082,8 @@ mod tests {
     }
 
     proptest::proptest! {
-        // spec/commits.md §5, spec/wire.md §5; notes/local-store.md, Row padding: rows of lengths in one
-        // class seal to one length; every length round-trips.
+        // spec/commits.md §5, spec/wire.md §5; notes/local-store.md, Row padding: a sealed row's length is
+        // its Padmé class (units at least `UNIT_MIN`), nothing finer; every length round-trips.
         #[test]
         fn row_padding_classes(a in 0usize..6000, b in 0usize..6000, unit in proptest::bool::ANY) {
             let key = Secret32::from_bytes([3; 32]);
@@ -1073,7 +1091,8 @@ mod tests {
             let row = if unit { unit_row(2, 4) } else { node_row(0, 1, 4) };
             let (pa, pb): (Vec<u8>, Vec<u8>) = (vec![0x11; a], vec![0; b]);
             let (va, vb) = (seal(&key, &row, &pa, &mut rng).unwrap(), seal(&key, &row, &pb, &mut rng).unwrap());
-            proptest::prop_assert_eq!(va.len() == vb.len(), padded_len(&row, a) == padded_len(&row, b));
+            let class = |len: usize| NONCE_LEN + padme(len + 1).max(if unit { UNIT_MIN } else { 0 }) + aead::TAG_LEN;
+            proptest::prop_assert_eq!((va.len(), vb.len()), (class(a), class(b)));
             proptest::prop_assert_eq!(open(&key, &row, &va).unwrap(), pa);
             proptest::prop_assert_eq!(open(&key, &row, &vb).unwrap(), pb);
         }
