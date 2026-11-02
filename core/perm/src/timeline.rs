@@ -1,7 +1,8 @@
 //! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
-use crate::graph::{Class, Edges, EdgesAt, Owner, Owners, Standing, View};
+use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
+use osis_base::Owner;
 use crate::held::HeldSet;
 use crate::types::{Edge, RoleCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};

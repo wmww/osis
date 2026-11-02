@@ -10,7 +10,7 @@ use super::secrets::CommitSecrets;
 use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
-use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, owner_chain};
 use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
@@ -265,20 +265,17 @@ pub(crate) type Records<'a> = &'a dyn Fn(&Tid) -> Option<&'a CreationRecord>;
 /// The role `node` has on `tid` at `ts`: things not held as durable (`records`) take their
 /// owner's, through owners not held either (spec/permissions.md §1; notes/ephemeral.md Rights).
 pub(crate) fn role_with(core: &Core, node: Tid, records: Records<'_>, tid: &Tid, ts: Ts) -> Option<Role> {
-    let mut cur = *tid;
-    // a deeper chain is invalid anyway (`within_depth`)
-    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        return match records(&cur) {
-            Some(CreationRecord::KeyActor { .. }) => (cur == node).then_some(Role::Admin),
-            Some(CreationRecord::Thing { owner, .. }) if *owner == node => Some(Role::Admin),
-            Some(CreationRecord::Thing { owner, .. }) => {
-                cur = *owner;
-                continue;
-            }
+    for step in owner_chain(*tid, |t| records(t).map(CreationRecord::owner_link)) {
+        return match step {
+            ChainStep::Up { owner, .. } if owner == node => Some(Role::Admin),
+            ChainStep::Up { .. } => continue,
+            ChainStep::Key(k) => (k == node).then_some(Role::Admin),
             // one not held yet: only its first admin's edge (spec/permissions.md §1)
-            Some(CreationRecord::Ownerless { admin, .. }) if *admin == node => Some(Role::Admin),
-            Some(CreationRecord::Ownerless { admin, .. }) => role_with(core, node, records, admin, ts),
-            None => role_of(core, &node, &cur, ts),
+            ChainStep::Ownerless { admin, .. } if admin == node => Some(Role::Admin),
+            ChainStep::Ownerless { admin, .. } => role_with(core, node, records, &admin, ts),
+            ChainStep::Unknown(t) => role_of(core, &node, &t, ts),
+            // a deeper chain is invalid anyway (`within_depth`)
+            ChainStep::TooDeep => None,
         };
     }
     None
@@ -311,15 +308,8 @@ pub(crate) fn check_acts(core: &Core, node: Tid, records: Records<'_>, actor: &T
 /// an ownerless thing within `MAX_OWNER_DEPTH` owner links (spec/permissions.md §1: a write
 /// deeper is invalid).
 fn within_depth(core: &Core, records: Records<'_>, tid: &Tid) -> bool {
-    let mut cur = *tid;
-    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        match records(&cur).or_else(|| core.created(&cur)) {
-            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-            Some(CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. }) => return true,
-            None => return false,
-        }
-    }
-    false
+    let end = owner_chain(*tid, |t| records(t).or_else(|| core.created(t)).map(CreationRecord::owner_link)).end();
+    matches!(end, ChainStep::Key(_) | ChainStep::Ownerless { .. })
 }
 
 /// `created.0` of `rec`: one write of its record by a writer at `ts` under `src` from counter
@@ -750,17 +740,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
 /// carries, and what a memory commit on `t` carries beside its delta.
 pub(crate) fn memory_chain(core: &Core, t: &Tid) -> Vec<(Tid, CreationRecord)> {
     let mut out = Vec::new();
-    let mut cur = *t;
-    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
+    for cur in core.owner_chain(t).filter_map(|s| s.thing()) {
         if !core.ix.held.is_memory(&cur) {
             break;
         }
         let Some(rec) = core.created(&cur) else { break };
         out.push((cur, rec.clone()));
-        match rec.owner() {
-            Some(owner) => cur = owner,
-            None => break,
-        }
     }
     out
 }

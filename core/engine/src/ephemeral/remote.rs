@@ -23,8 +23,8 @@ use crate::apply::memory::{part_bound, part_charge, part_weight, records_bytes};
 use crate::error::{Error, Result};
 use crate::retention::memory::supersedes;
 use crate::events::{ChangeId, Event, Origin};
-use osis_base::format::{MAX_DRIFT_MS, MAX_OWNER_DEPTH};
-use osis_base::{Ak, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
+use osis_base::format::MAX_DRIFT_MS;
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
 use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, DELTA_PAST_BLOB, EphClass, Form, Header, Kind, MemoryBlobs};
 use osis_crdt::{AnyView, Fragment, Frontiers, Interner, Op, PathOp, Snapshot, Source, SourceKind, Unpaged, Writer};
 use osis_crypto::{DeleteSecret, VerifyingKey, dedup_secret};
@@ -565,15 +565,10 @@ impl Engine {
     fn record_chain(&self, recs: &BTreeSet<Tid>) -> BTreeSet<Tid> {
         let mut chain: BTreeSet<Tid> = BTreeSet::new();
         for t in recs {
-            let mut cur = *t;
-            for _ in 0..=MAX_OWNER_DEPTH {
-                let Some(th) = self.eph.things.get(&cur) else { break };
-                if self.core.durable_created(&cur).is_some() || !chain.insert(cur) {
+            for step in self.ephemeral_chain(t) {
+                let (ChainStep::Up { thing, .. } | ChainStep::Key(thing) | ChainStep::Ownerless { thing, .. }) = step else { break };
+                if self.core.durable_created(&thing).is_some() || !chain.insert(thing) {
                     break;
-                }
-                match th.record.owner() {
-                    Some(owner) => cur = owner,
-                    None => break,
                 }
             }
         }
@@ -771,9 +766,10 @@ impl Engine {
     /// by its nearest durable thing (spec/permissions.md §1), an ephemeral owner that is `node`
     /// making it valid. Unknown records count as invalid until they arrive.
     fn eph_write_valid(&self, tid: &Tid, ak: &str, node: Tid, ts: Ts, commit: &CommitId, carried: &BTreeMap<Tid, CreationRecord>) -> bool {
-        let mut cur = *tid;
-        for _ in 0..=MAX_OWNER_DEPTH {
-            if self.core.durable_created(&cur).is_some() {
+        for step in osis_base::owner_chain(*tid, |t| self.record_of(t, carried).map(CreationRecord::owner_link)) {
+            if let Some(cur) = step.thing()
+                && self.core.durable_created(&cur).is_some()
+            {
                 if crate::apply::validity::too_deep(&self.core, &cur) {
                     return false;
                 }
@@ -781,12 +777,12 @@ impl Engine {
                 let point = Point { ts, node, commit: *commit };
                 return tl.delta_valid(point, &cur, required_role(ak)) == Validity::Valid;
             }
-            match self.record_of(&cur, carried) {
-                Some(CreationRecord::Thing { owner, .. }) if *owner == node => return true,
-                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-                Some(CreationRecord::KeyActor { .. }) => return cur == node,
+            match step {
+                ChainStep::Up { owner, .. } if owner == node => return true,
+                ChainStep::Up { .. } => {}
+                ChainStep::Key(k) => return k == node,
                 // an ephemeral thing owns nothing durable: an ownerless one is always durable
-                Some(CreationRecord::Ownerless { .. }) | None => return false,
+                ChainStep::Ownerless { .. } | ChainStep::Unknown(_) | ChainStep::TooDeep => return false,
             }
         }
         false
@@ -1402,12 +1398,9 @@ impl Engine {
     /// chain stops otherwise).
     fn nearest_durable(&self, t: &Tid) -> Tid {
         let mut cur = *t;
-        for _ in 0..=MAX_OWNER_DEPTH {
-            if self.core.durable_created(&cur).is_some() {
-                break;
-            }
-            match self.eph.things.get(&cur).map(|e| &e.record) {
-                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
+        for step in self.ephemeral_chain(t) {
+            match step {
+                ChainStep::Up { thing, owner } if self.core.durable_created(&thing).is_none() => cur = owner,
                 _ => break,
             }
         }

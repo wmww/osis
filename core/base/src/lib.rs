@@ -5,6 +5,7 @@
 
 pub mod base64url;
 pub mod cbor;
+mod chain;
 pub mod chunker;
 mod error;
 pub mod format;
@@ -18,6 +19,7 @@ mod ids;
 mod time;
 mod value;
 
+pub use chain::{ChainStep, Owner, OwnerChain, owner_chain};
 pub use cbor::{CanonicalBytes, DecodeError, Limits, Place, decode, decode_prefix, encode, item_prefix, visit_items};
 pub use chunker::{ChunkParams, Chunker, PageCutter};
 pub use error::{Classified, ErrorClass};

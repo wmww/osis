@@ -12,7 +12,8 @@
 //! passes, `reach`). Frontiers are referenced by where the input holds them (a commit's, or
 //! a snapshot's ledger entry), not copied.
 
-use crate::graph::{Class, Edges, Owner, Owners};
+use crate::graph::{Class, Edges, Owners};
+use osis_base::Owner;
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
 use crate::types::{Edge, Frontier, RoleCommit, Point, RosterSnapshot, Tie, TieSource, WriteId};

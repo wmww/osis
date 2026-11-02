@@ -206,6 +206,12 @@ impl Engine {
         self.eph.things.get(tid)
     }
 
+    /// The steps up `tid`'s owner chain through the ephemeral things' records
+    /// (`osis_base::owner_chain`).
+    pub(crate) fn ephemeral_chain(&self, tid: &Tid) -> osis_base::OwnerChain<impl FnMut(&Tid) -> Option<osis_base::Owner> + '_> {
+        osis_base::owner_chain(*tid, |t| self.eph.things.get(t).map(|e| e.record.owner_link()))
+    }
+
     /// Whether `tid` is a draft again here (`Eph::drafts`), not deleted.
     pub fn is_draft_again(&self, tid: &Tid) -> bool {
         self.eph.drafts.get(tid) == Some(&false)

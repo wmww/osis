@@ -6,17 +6,19 @@
 use super::Core;
 use osis_base::CommitId;
 use crate::error::{Error, Result};
-use osis_base::{CreationRecord, Role, Tid, Value};
+use osis_base::{ChainStep, CreationRecord, Owner, OwnerChain, Role, Tid, Value};
 use osis_crypto::{DeleteSecret, Epoch, Secret32, VerifyingKey, dedup_secret};
 use osis_keys::{ActorEpochs, HistoryAlts, Key, Name, Opener, Own, Provenance, ROLES, Unchecked};
 use osis_schema::AspectKey;
 use osis_schema::core_types::{Keys, Secrets, SigningKey};
 use std::collections::BTreeMap;
 
-/// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
-const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
-
 impl Core {
+    /// The steps up `tid`'s owner chain through the held records (`osis_base::owner_chain`).
+    pub(crate) fn owner_chain(&self, tid: &Tid) -> OwnerChain<impl FnMut(&Tid) -> Option<Owner> + '_> {
+        osis_base::owner_chain(*tid, |t| self.created(t).map(CreationRecord::owner_link))
+    }
+
     /// The creation record of `tid`, durable or memory class (an ephemeral thing's).
     pub fn created(&self, tid: &Tid) -> Option<&CreationRecord> {
         self.ix.held.created(tid)
@@ -60,8 +62,8 @@ impl Core {
 
     fn chain_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
         let mut chain = Vec::new();
-        let mut cur = *tid;
-        for _ in 0..MAX_CHAIN {
+        for step in self.owner_chain(tid) {
+            let cur = step.thing()?;
             let held = (cur == self.id.tid()).then(|| self.id.epochs()).or_else(|| self.key_actors.get(&cur).map(|k| k.epochs())).or_else(|| self.own_epochs(&cur));
             if let Some(mut e) = held {
                 for t in chain.iter().rev() {
@@ -72,13 +74,10 @@ impl Core {
             if self.ix.own_keys.contains(&cur) {
                 return None;
             }
-            match self.created(&cur)? {
-                CreationRecord::Thing { owner, .. } => {
-                    chain.push(cur);
-                    cur = *owner;
-                }
+            match step {
+                ChainStep::Up { .. } => chain.push(cur),
                 // an ownerless thing has secrets of its own from its creation, never derived
-                CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. } => return None,
+                _ => return None,
             }
         }
         None
@@ -149,8 +148,8 @@ impl Core {
     /// itself first, with secrets of its own (all three roles at once, spec/crypto.md §3), or the
     /// key actor the chain ends at.
     pub(crate) fn delete_base(&self, tid: &Tid) -> Option<DeleteBase> {
-        let mut cur = *tid;
-        for _ in 0..MAX_CHAIN {
+        for step in self.owner_chain(tid) {
+            let cur = step.thing()?;
             if cur == self.id.tid() {
                 return Some(DeleteBase::KeyActor(self.id.keys().signing.verifying_key()));
             }
@@ -164,7 +163,7 @@ impl Core {
                 return Some(DeleteBase::Actor(cur, None));
             }
             match self.created(&cur)? {
-                CreationRecord::Thing { owner, .. } => cur = *owner,
+                CreationRecord::Thing { .. } => {}
                 CreationRecord::KeyActor { public_key, .. } => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
                 // its own secrets not held yet: no delete key
                 CreationRecord::Ownerless { .. } => return None,
@@ -178,8 +177,8 @@ impl Core {
     /// keeps content of its derived era under its former base's keys).
     pub(crate) fn delete_chain(&self, tid: &Tid) -> Vec<DeleteSource> {
         let mut out = Vec::new();
-        let mut cur = *tid;
-        for _ in 0..MAX_CHAIN {
+        for step in self.owner_chain(tid) {
+            let Some(cur) = step.thing() else { break };
             let seed = if cur == self.id.tid() { Some(self.id.seed().clone()) } else { self.key_actors.get(&cur).map(|k| k.seed().clone()) };
             if let Some(seed) = seed {
                 out.push(DeleteSource::KeyActor(DeleteSecret::from_seed(osis_crypto::kdf::kdf(osis_crypto::kdf::SIGN, seed.expose(), b""))));
@@ -187,10 +186,6 @@ impl Core {
             }
             if let Some(e) = self.ix.secrets.get(&cur) {
                 out.push(DeleteSource::Epochs(e.clone()));
-            }
-            match self.created(&cur) {
-                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-                _ => break,
             }
         }
         out
@@ -407,16 +402,15 @@ pub struct CommitSecrets<'c> {
 /// so it uses its owner's, but an ownerless one is its own, at the epochs this commit gives it
 /// (`first`).
 fn base_of(core: &Core, created: &crate::engine::write::Creates, first: &BTreeMap<Tid, ActorEpochs>, tid: &Tid) -> Option<DeleteBase> {
-    let mut cur = *tid;
-    for _ in 0..=created.len() {
-        match created.get(&cur) {
-            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-            Some(CreationRecord::KeyActor { public_key, .. }) => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
-            Some(CreationRecord::Ownerless { .. }) => return Some(DeleteBase::Actor(cur, first.get(&cur).cloned())),
-            None => return core.delete_base(&cur),
-        }
+    match osis_base::owner_chain(*tid, |t| created.get(t).map(CreationRecord::owner_link)).end() {
+        ChainStep::Key(k) => match created.get(&k)? {
+            CreationRecord::KeyActor { public_key, .. } => VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+            _ => None,
+        },
+        ChainStep::Ownerless { thing, .. } => Some(DeleteBase::Actor(thing, first.get(&thing).cloned())),
+        ChainStep::Unknown(t) => core.delete_base(&t),
+        ChainStep::Up { .. } | ChainStep::TooDeep => None,
     }
-    None
 }
 
 /// The admin and write delete keys published in `keys.0` (spec/crypto.md §3, §7) of the delete
@@ -551,17 +545,7 @@ impl osis_commit::Secrets for CommitSecrets<'_> {
 impl CommitSecrets<'_> {
     /// Whether this node holds the key actor at the end of the commit actor's owner chain.
     fn chain_holder(&self) -> bool {
-        let mut cur = self.actor;
-        for _ in 0..MAX_CHAIN {
-            if cur == self.core.id.tid() || self.core.key_actors.contains_key(&cur) {
-                return true;
-            }
-            match self.core.created(&cur) {
-                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-                _ => return false,
-            }
-        }
-        false
+        self.core.owner_chain(&self.actor).filter_map(|s| s.thing()).any(|t| t == self.core.id.tid() || self.core.key_actors.contains_key(&t))
     }
 
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from

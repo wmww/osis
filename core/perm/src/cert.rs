@@ -102,11 +102,9 @@ impl Timeline {
                 if !on_paths.insert(*c) {
                     continue;
                 }
-                // created.0 of each thing and of its owners up to the key actor
-                out.created.insert(*c);
-                let (up, top) = self.input.owners.chain(c);
-                out.created.extend(up);
-                out.created.extend(top);
+                // created.0 of each thing and of its owners up to the top (or as far as a
+                // verifier walks to find a chain too deep)
+                out.created.extend(osis_base::owner_chain(*c, |x| self.input.owners.owner(x)).filter_map(|s| s.thing()));
                 if self.input.owners.owner(c).is_some() {
                     out.keys.insert(*c);
                 }

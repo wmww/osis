@@ -30,7 +30,7 @@ use crate::error::{Error, Result};
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use osis_commit::{CommitBlob, Decoded, Header, Kind, MAX_LIST_BYTES, delta_ctx, verify_part};
 use osis_base::format::MAX_DRIFT_MS;
-use osis_base::{BlobId, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
+use osis_base::{BlobId, ChainStep, Classified, CommitId, CreationRecord, ErrorClass, Tid, Value, WallMs};
 use osis_crdt::Interner;
 use osis_crypto::{VerifyingKey, dedup_secret};
 use osis_label::BlobReader;
@@ -718,23 +718,16 @@ fn thing_wait(
     if record(&a.tid).is_none() {
         return Some(Reason::UnknownCreated(a.tid));
     }
-    let mut cur = a.tid;
-    let mut chain = vec![cur];
+    let mut chain = vec![a.tid];
     // a chain deeper than `MAX_OWNER_DEPTH` is not waited for further: its deltas are invalid
     // (`validity::too_deep`, spec/permissions.md §1)
-    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        match chain_rec(&cur, core) {
-            Some(CreationRecord::Thing { owner, .. }) => {
-                cur = owner;
-                chain.push(cur);
-            }
-            Some(CreationRecord::KeyActor { .. }) => break,
+    for step in osis_base::owner_chain(a.tid, |t| chain_rec(t, core).map(|r| r.owner_link())) {
+        match step {
+            ChainStep::Up { owner, .. } => chain.push(owner),
+            ChainStep::Key(_) | ChainStep::TooDeep => {}
             // its first admin's edge leads to it, the record perhaps not held yet (its creation)
-            Some(CreationRecord::Ownerless { admin, .. }) => {
-                chain.push(admin);
-                break;
-            }
-            None => return Some(Reason::MissingChain(cur)),
+            ChainStep::Ownerless { admin, .. } => chain.push(admin),
+            ChainStep::Unknown(t) => return Some(Reason::MissingChain(t)),
         }
     }
     // it is on the owner chain, or held edge writes lead from it to the chain (a revoked author

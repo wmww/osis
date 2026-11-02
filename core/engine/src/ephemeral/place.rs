@@ -11,7 +11,7 @@ use super::EphOp;
 use crate::engine::write::{AspectMut, Records, check_authority_with};
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
-use osis_base::{Ak, Tid, Ts, Value};
+use osis_base::{Ak, ChainStep, CreationRecord, Tid, Ts, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_schema::core_types::{GROUP, Group, PLACED};
 use osis_schema::AspectKey;
@@ -113,13 +113,10 @@ impl Engine {
         let chain = |roots: &BTreeSet<Tid>| {
             let mut out = BTreeSet::new();
             for t in roots {
-                let mut cur = *t;
-                while !out.contains(&cur) {
-                    let Some(rec) = records(&cur) else { break };
-                    out.insert(cur);
-                    match rec.owner() {
-                        Some(owner) => cur = owner,
-                        None => break,
+                for step in osis_base::owner_chain(*t, |x| records(x).map(CreationRecord::owner_link)) {
+                    let (ChainStep::Up { thing, .. } | ChainStep::Key(thing) | ChainStep::Ownerless { thing, .. }) = step else { break };
+                    if !out.insert(thing) {
+                        break;
                     }
                 }
             }
