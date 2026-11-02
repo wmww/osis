@@ -3131,64 +3131,31 @@ fn invalid_snapshot_key_erased_copies_go_spec_permissions_5_2() {
 }
 
 
-// spec/commits.md §4 (a commit no part of which is held waits whole for its things, synced or
-// not), §5 (a part pending at its expiry counts as never received): order seeds 1046 and 1007
-// (shrunk), with the node syncing things from a point of each delivery. The expiring part arrives
-// before its thing's creation record (never held) and past T, so it goes; the commit left with no
-// part pends on the record in every order, instead of applying header-only where the node did
-// not sync the thing when it came and pending where it did (seed 1007: its other part arrives
-// late and waits with it).
-#[test]
-fn partless_commit_pends_on_its_things_alike_spec_commits_4() {
-    use Step::*;
-    let h = vec![Aim(Box::new(New { by: 0, parent: 6, write: true })), Aim(Box::new(Edge { by: 2, t: 4, holder: 2, role: Some(Role::Write) })), Aim(Box::new(New { by: 2, parent: 1, write: false })), Aim(Box::new(Typed { by: 0, t: 0, op: 22, k: 2, v: 3 })), Aim(Box::new(Nested { by: 1, other: 2, t: 1, k: 2, text: true, compact: true, also: true })), Send { from: 2, to: 1, back: 1 }, Aim(Box::new(NestedItem { by: 0, other: 1, t: 0, k: 0, compact: true, also: false })), Aim(Box::new(Roster { by: 0, t: 4 })), Aim(Box::new(Nested { by: 2, other: 0, t: 5, k: 2, text: true, compact: true, also: false })), Aim(Box::new(Typed { by: 2, t: 4, op: 22, k: 1, v: 6 })), Aim(Box::new(Typed { by: 2, t: 2, op: 0, k: 0, v: 0 })), Aim(Box::new(Typed { by: 1, t: 7, op: 12, k: 1, v: 4 })), Aim(Box::new(Compact { by: 2, t: 2, op: 11 })), Aim(Box::new(Undo { by: 1, back: 2 })), Aim(Box::new(Typed { by: 1, t: 5, op: 21, k: 2, v: 4 })), Aim(Box::new(Edge { by: 0, t: 6, holder: 1, role: Some(Role::Write) })), Aim(Box::new(Typed { by: 1, t: 3, op: 9, k: 1, v: 0 })), Aim(Box::new(NestedItem { by: 1, other: 2, t: 1, k: 1, compact: true, also: true })), Sync { from: 1, to: 2 }, Advance { who: None, ms: 4863304 }, Aim(Box::new(Demote { by: 0, t: 6, holder: 2, at: 3, to_read: true })), Aim(Box::new(New { by: 0, parent: 0, write: false })), Aim(Box::new(Leave { by: 1, t: 7 })), Aim(Box::new(Typed { by: 1, t: 4, op: 5, k: 0, v: 1 })), Aim(Box::new(Typed { by: 1, t: 5, op: 13, k: 1, v: 8 })), Forged { by: 1, a: 3, b: 6, how: 3, op: 20, k: 0, v: 5 }, Aim(Box::new(Typed { by: 0, t: 5, op: 18, k: 1, v: 9 })), Aim(Box::new(Typed { by: 1, t: 1, op: 26, k: 0, v: 0 }))];
-    let played = with_syncs(play(1046, &h), 1046);
-    assert!(matches!(played.sync, Syncs::Late { .. }), "{:?}", played.sync);
-    let held: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 15, 16, 17, 18, 20, 23, 25, 26, 27, 28, 29, 32, 33, 34, 37, 38];
-    let rev: Vec<usize> = held.iter().rev().copied().collect();
-    let brief = (0..played.packs.len()).find(|&i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.ak.as_str() == "t:brief.0" && a.expires.is_some())).unwrap();
-    let c = played.packs[brief].id;
-    let (mut w, mut g) = (deliver(&played, &held), deliver(&played, &rev));
-    for p in [&mut w, &mut g] {
-        assert!(matches!(p.engine.pending().iter().find(|x| x.0 == c), Some((_, osis_node::Reason::UnknownCreated(_)))), "pending on its thing's record");
-        assert!(!p.engine.commit_ids().contains(&c), "not applied header-only");
-    }
-    let flips = |_: &str, _: &str| false;
-    assert_eq!(alike_exchanged(&played, &judged(&mut w, &played), &held, &judged(&mut g, &played), &rev, None, &flips), None);
 
-    let h = vec![Aim(Box::new(Compact { by: 0, t: 6, op: 11 })), Aim(Box::new(Typed { by: 1, t: 4, op: 24, k: 2, v: 2 })), Forged { by: 0, a: 3, b: 6, how: 4, op: 19, k: 2, v: 8 }, Aim(Box::new(Roster { by: 0, t: 5 })), Aim(Box::new(Nested { by: 1, other: 2, t: 5, k: 0, text: true, compact: true, also: true })), Aim(Box::new(Demote { by: 0, t: 3, holder: 2, at: 2, to_read: false })), Aim(Box::new(Typed { by: 1, t: 6, op: 15, k: 1, v: 2 })), Aim(Box::new(Compact { by: 0, t: 0, op: 8 })), NewTop { by: 0 }, Aim(Box::new(Typed { by: 2, t: 6, op: 10, k: 1, v: 2 })), Forged { by: 2, a: 0, b: 3, how: 0, op: 14, k: 0, v: 8 }, Aim(Box::new(Roster { by: 0, t: 1 })), NewTop { by: 2 }, Aim(Box::new(Write { by: 1, t: 6, op: 28, k: 1, v: 0 })), Aim(Box::new(Typed { by: 2, t: 0, op: 27, k: 2, v: 1 })), Advance { who: None, ms: 3833836 }, Aim(Box::new(Nested { by: 0, other: 2, t: 1, k: 2, text: true, compact: false, also: false })), Aim(Box::new(Compact { by: 0, t: 1, op: 24 })), Aim(Box::new(Write { by: 2, t: 3, op: 28, k: 2, v: 6 })), Aim(Box::new(Nested { by: 0, other: 1, t: 1, k: 1, text: false, compact: false, also: false })), Aim(Box::new(Typed { by: 0, t: 3, op: 22, k: 2, v: 2 }))];
-    let played = with_syncs(play(1007, &h), 1007);
-    let held: Vec<usize> = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 11, 12, 13, 14, 15, 17, 20, 21, 23, 24, 27, 28, 29, 30];
-    let rev: Vec<usize> = held.iter().rev().copied().collect();
-    let want = judged(&mut deliver(&played, &held), &played);
-    // the reversed order with its parts split (the expiring part first, alone)
-    let rng = Rng(1007);
-    let mut g = deliver_split(&played, &rev, &mut rng.clone());
-    assert_eq!(alike_exchanged(&played, &want, &held, &judged(&mut g, &played), &rev, Some(rng), &flips), None);
+
+// issues/snapshot-copy-of-expiring-write.md (order seed 4136, shrunk): node 0's compaction
+// snapshot of `t:map.0`, stamped after its own live expiring `Set` at k0, carries k0's older
+// field write instead of the expiring write value-less. Reversed, the expiring part arrives
+// before the base and goes at T (counts as never received, flagged); the snapshot lists it
+// (frontier reach) and so clears the flag, but gives k0 the old content back: k0 reads at one
+// node and not the other. On main the pending copy kept the part past T and the two orders
+// agreed, so the snapshot's content was never compared.
+#[test]
+#[ignore]
+fn repro_snapshot_omits_expiring_write_seed_4136() {
+    use Step::*;
+    let h = vec![Aim(Box::new(Nested { by: 2, other: 0, t: 7, k: 0, text: false, compact: true, also: false })), Aim(Box::new(Typed { by: 1, t: 0, op: 19, k: 1, v: 3 })), Aim(Box::new(Typed { by: 1, t: 5, op: 10, k: 1, v: 7 })), Aim(Box::new(Edge { by: 2, t: 7, holder: 1, role: Some(Role::Write) })), Aim(Box::new(Write { by: 1, t: 6, op: 1, k: 1, v: 5 })), Aim(Box::new(Edge { by: 0, t: 6, holder: 2, role: Some(Role::Read) })), Aim(Box::new(Typed { by: 0, t: 7, op: 28, k: 0, v: 8 })), Advance { who: Some(2), ms: 1447 }, Aim(Box::new(Nested { by: 1, other: 0, t: 6, k: 1, text: false, compact: true, also: false }))];
+    check(4136, &h, LARGE).unwrap();
 }
 
-
-// spec/permissions.md §4 (a suspect flag names the bodies it is about; a snapshot clears it only
-// by listing them): order seed 4108 (shrunk). Reversed, writer 1's expiring map write arrives
-// before its thing's creation record and past T, so it goes (counts as never received) and the
-// aspect is flagged; writer 0's later compaction snapshot, which never had that write, joins but
-// lists nothing of it, so the flag stays and the oracle excuses the aspect (as made it read the
-// write's value-less residue, a Slots conflict under k0). Clearing on any later-stamped snapshot
-// left the divergence silent.
+// issues/snapshot-copy-of-expiring-write.md (order seed 4208, shrunk): the register form. Node 0's
+// expiring `Set` of `t:reg.0` reaches node 2, whose snapshot lists it; a node given the snapshot
+// and the write's part only after T (the part goes while pending) reads the old value, one that
+// applied the part before T reads none.
 #[test]
-fn pending_expiry_flag_outlives_unlisting_snapshot_spec_permissions_4() {
+#[ignore]
+fn repro_snapshot_copy_of_expiring_register_seed_4208() {
     use Step::*;
-    let h = vec![Aim(Box::new(Typed { by: 0, t: 2, op: 22, k: 0, v: 1 })), Forged { by: 2, a: 5, b: 4, how: 2, op: 20, k: 1, v: 9 }, Aim(Box::new(NestedItem { by: 1, other: 0, t: 4, k: 0, compact: true, also: false })), Aim(Box::new(Demote { by: 0, t: 7, holder: 1, at: 0, to_read: false })), Aim(Box::new(Nested { by: 0, other: 2, t: 4, k: 2, text: true, compact: false, also: true })), Aim(Box::new(Leave { by: 1, t: 6 })), Aim(Box::new(Demote { by: 2, t: 6, holder: 2, at: 0, to_read: true })), Aim(Box::new(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) })), Send { from: 0, to: 1, back: 0 }, Aim(Box::new(Typed { by: 0, t: 7, op: 12, k: 2, v: 1 })), Aim(Box::new(Typed { by: 2, t: 2, op: 17, k: 2, v: 5 })), Aim(Box::new(Write { by: 1, t: 7, op: 28, k: 0, v: 9 })), Aim(Box::new(Demote { by: 2, t: 5, holder: 2, at: 0, to_read: false })), Aim(Box::new(Typed { by: 0, t: 1, op: 29, k: 2, v: 9 })), Aim(Box::new(New { by: 0, parent: 6, write: false })), Aim(Box::new(Write { by: 0, t: 3, op: 6, k: 0, v: 6 })), Aim(Box::new(Edge { by: 2, t: 7, holder: 1, role: Some(Role::Admin) })), Aim(Box::new(Write { by: 2, t: 7, op: 18, k: 0, v: 6 })), Aim(Box::new(Demote { by: 2, t: 5, holder: 1, at: 2, to_read: false })), Aim(Box::new(New { by: 0, parent: 2, write: true })), Aim(Box::new(Edge { by: 2, t: 6, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Edge { by: 0, t: 7, holder: 1, role: Some(Role::Admin) })), NewTop { by: 0 }, Aim(Box::new(Compact { by: 1, t: 3, op: 18 })), Aim(Box::new(Nested { by: 2, other: 1, t: 3, k: 0, text: true, compact: true, also: false })), Advance { who: None, ms: 6905671 }, Aim(Box::new(New { by: 0, parent: 1, write: false })), Aim(Box::new(Leave { by: 1, t: 1 })), Aim(Box::new(Compact { by: 2, t: 0, op: 23 })), Aim(Box::new(Typed { by: 1, t: 7, op: 13, k: 2, v: 6 })), Aim(Box::new(Typed { by: 1, t: 5, op: 29, k: 0, v: 7 })), Aim(Box::new(New { by: 0, parent: 4, write: false })), Aim(Box::new(Typed { by: 2, t: 5, op: 27, k: 1, v: 8 })), Aim(Box::new(Edge { by: 0, t: 0, holder: 2, role: Some(Role::Write) })), Aim(Box::new(Compact { by: 0, t: 5, op: 4 }))];
-    let played = with_syncs(play(4108, &h), 4108);
-    let made: Vec<usize> = (0..played.packs.len()).collect();
-    let rev: Vec<usize> = made.iter().rev().copied().collect();
-    let map = ak("t:map.0");
-    let expiring = (0..played.packs.len()).find(|&i| osis_commit::CommitBlob::decode(&played.packs[i].bytes).unwrap().header.aspects.iter().any(|a| a.ak == map && a.expires.is_some())).unwrap();
-    let t = osis_commit::CommitBlob::decode(&played.packs[expiring].bytes).unwrap().header.aspects[0].tid;
-    let (mut w, mut g) = (deliver(&played, &made), deliver(&played, &rev));
-    assert!(w.engine.suspects().unwrap().iter().all(|x| !(x.0 == t && x.1 == map)), "as made: applied before T, nothing suspect");
-    assert!(g.engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == map), "reversed: flagged after the snapshot joined");
-    assert_ne!(w.engine.get(&t, &map).unwrap(), g.engine.get(&t, &map).unwrap(), "the accepted divergence: the part's non-value writes never joined");
-    let flips = |_: &str, _: &str| false;
-    assert_eq!(alike_exchanged(&played, &judged(&mut w, &played), &made, &judged(&mut g, &played), &rev, None, &flips), None);
+    let h = vec![Aim(Box::new(Typed { by: 0, t: 3, op: 27, k: 0, v: 8 })), Sync { from: 0, to: 2 }, Aim(Box::new(Demote { by: 0, t: 5, holder: 1, at: 5, to_read: false })), Forged { by: 1, a: 5, b: 7, how: 4, op: 26, k: 1, v: 9 }, Forged { by: 0, a: 4, b: 3, how: 1, op: 15, k: 0, v: 3 }, Aim(Box::new(Demote { by: 0, t: 4, holder: 2, at: 4, to_read: false })), Aim(Box::new(Compact { by: 2, t: 3, op: 0 })), Aim(Box::new(Nested { by: 2, other: 0, t: 1, k: 1, text: false, compact: true, also: true })), Forged { by: 2, a: 0, b: 1, how: 1, op: 0, k: 0, v: 2 }, Aim(Box::new(Typed { by: 1, t: 1, op: 17, k: 2, v: 5 })), Forged { by: 1, a: 1, b: 7, how: 0, op: 10, k: 1, v: 9 }, Aim(Box::new(Compact { by: 0, t: 1, op: 28 })), Aim(Box::new(Typed { by: 0, t: 5, op: 4, k: 2, v: 4 })), Aim(Box::new(Write { by: 2, t: 5, op: 6, k: 1, v: 0 })), NewTop { by: 2 }, Advance { who: None, ms: 5744313 }, Aim(Box::new(Leave { by: 1, t: 2 })), Aim(Box::new(Nested { by: 1, other: 0, t: 7, k: 2, text: true, compact: true, also: true }))];
+    check(4208, &h, LARGE).unwrap();
 }

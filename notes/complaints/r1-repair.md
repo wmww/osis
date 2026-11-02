@@ -5,3 +5,4 @@
 - Tier 1 at load 40-45 took 6-11 min wall.
 - Review: an ad-hoc `OSIS_*` env switch in a test panics the run (`core/base/testenv-known.txt` lists the known ones); a probe switch needs another prefix. Useful guard, surprising the first time.
 - Review: a one-line text change in a `judgment::` scenario's `source` fails `judgment_vectors_spec_permissions_5_2` until the vectors are regenerated (`OSIS_WRITE_VECTORS=1 ... judgment_vectors_write`); the assertion message says so, but only after a 15 s run.
+- Review: main moved under the branch mid-review (seq-order); the rebase conflicted only in spec prose, but `tools/gate.sh` run right after a failed `git rebase main` in one shell line gated main's tree and printed exit 0. Check the rebase result before gating.

@@ -33,8 +33,15 @@ type Entry = (CommitId, u8, u8);
 /// The flag record: le64 corrected wall ms last raised, then per body a 32-byte commit ID, the
 /// aspect index and the `Why` bits.
 fn read(v: &[u8]) -> (u64, Vec<Entry>) {
-    let at = v.get(..8).and_then(|b| <[u8; 8]>::try_from(b).ok()).map_or(0, u64::from_le_bytes);
-    let bodies = v.get(8..).unwrap_or_default().chunks_exact(34).map(|e| (CommitId(e[..32].try_into().unwrap()), e[32], e[33])).collect();
+    let (at, rest) = v.split_first_chunk::<8>().map_or((0, &[][..]), |(a, r)| (u64::from_le_bytes(*a), r));
+    let (chunks, _) = rest.as_chunks::<34>();
+    let bodies = chunks
+        .iter()
+        .filter_map(|e| {
+            let (c, tail) = e.split_first_chunk::<32>()?;
+            Some((CommitId(*c), *tail.first()?, *tail.get(1)?))
+        })
+        .collect();
     (at, bodies)
 }
 
@@ -95,6 +102,10 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
 /// Valid snapshot `s` of `(tid, ak)` joined: the flag is no longer about the bodies it lists as
 /// included (spec/commits.md §4: it carried their writes).
 pub(crate) fn settled_by(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> Result<()> {
+    // an invalid snapshot gives nothing (spec/permissions.md §5.2)
+    if !tx.core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.valid.get(ai).copied().unwrap_or(false))) {
+        return Ok(());
+    }
     let Some((at, all)) = load(tx, tid, ak)? else { return Ok(()) };
     let mut kept = Vec::new();
     for e in all {
