@@ -3,6 +3,8 @@
 
 **Status:** reviewed, corrections pending; e-review.md overrides this file where they differ (sender verification, frontier cost, snapshots, tombstones).
 
+**Assumes (owner):** a kick does not clobber the kicked member's history; fixed in core regardless (issues/frontier-clobbers-history.md). Its size is still open.
+
 **Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement: C's machinery plus a tid log. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it.
 
 ## What is different
