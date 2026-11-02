@@ -105,6 +105,15 @@ fn readable(core: &Core, a: &Tid) -> bool {
     core.role_now(&node, a).is_some() || core.key_actors.keys().any(|k| core.role_now(k, a).is_some())
 }
 
+/// Whether all that ended the node's role on `a` is an `until` passing: walked with every edge's
+/// time ahead, a role is there. A removal saying its own `keep` is written expired and counts,
+/// which only has it wait for the labels too.
+fn lost_by_time(core: &Core, a: &Tid) -> bool {
+    let (node, ts) = (core.id.tid(), osis_base::Ts::default());
+    let role = |x: &Tid| crate::engine::write::role_of(core, x, a, ts).is_some();
+    role(&node) || core.key_actors.keys().any(role)
+}
+
 /// Whether box recipient `m` is this node, a held key actor or an actor it holds and reads now.
 fn ours(core: &Core, m: &Tid) -> bool {
     *m == core.id.tid() || core.key_actors.contains_key(m) || (core.ix.secrets.contains_key(m) && readable(core, m))
@@ -121,6 +130,14 @@ fn reaches(core: &Core, x: &Tid, a: &Tid) -> bool {
 /// 0 every such grant waits that way; at infinity a grant that never applies (a part parked for
 /// good) keeps a node that lost access holding the actor's secrets and content for good.
 pub const PENDING_GRANT_WAIT_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// How long past its time an entry due by the time alone waits for node-sync to hear its labels
+/// out (`LostScope::Overdue`): a host dead or hostile for good holds no erasure off beyond it.
+/// `ROLE_KEEP_MS`, past which a node offline does not sync cleanly anyway. Minor consequence: a
+/// node out of reach that long loses its unsent writes on what a renewal it has not heard would
+/// have kept, and comes back by a re-seal; a later erase before it. At 0 every offline holder
+/// loses those; at infinity one dead host keeps every expired share on the node for good.
+pub const LOST_HEARD_WAIT_MS: u64 = osis_base::format::ROLE_KEEP_MS;
 
 /// A held, not applied role commit's boxes to this node on actor `x`.
 struct PendingGrant {
@@ -399,8 +416,11 @@ pub enum LostScope<'a> {
     /// (`Engine::lost_leaving`).
     Due,
     /// `Due` for the entries due at once, from what the node received. An entry due by the time
-    /// alone waits (`lost_received`).
+    /// alone waits (`lost_received`), and so does an actor those reach whose role only an `until`
+    /// ended: a commit beside it says nothing of its edge, and the renewal may come next.
     Received,
+    /// `Due` for the entries past their time by `LOST_HEARD_WAIT_MS`.
+    Overdue,
     /// Those of these actors this node lost read access to.
     Only(&'a [Tid]),
     /// The user drops these kept copies (`Engine::kept_copies`).
@@ -426,8 +446,12 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
         }
         LostScope::Only(xs) => xs.to_vec(),
         LostScope::Kept(_) => Vec::new(),
-        LostScope::Due | LostScope::Received => {
-            let by = if matches!(scope, LostScope::Due) { tx.now().0 } else { 0 };
+        LostScope::Due | LostScope::Received | LostScope::Overdue => {
+            let by = match scope {
+                LostScope::Received => 0,
+                LostScope::Overdue => tx.now().0.saturating_sub(LOST_HEARD_WAIT_MS),
+                _ => tx.now().0,
+            };
             let due = take_due(tx, by)?;
             // an `until` passing is a loss with no role commit behind it: due again then
             let now = tx.now().0;
@@ -450,9 +474,14 @@ fn drop_scope(tx: &mut Tx<'_>, scope: LostScope<'_>) -> Result<Dropped> {
     }
     let (lost, leaving) = match scope {
         LostScope::All | LostScope::Only(_) | LostScope::Kept(_) => (judged, false),
-        LostScope::Due | LostScope::Received => {
+        LostScope::Due | LostScope::Received | LostScope::Overdue => {
             let (mut lost, mut leaving) = (Vec::new(), false);
             for a in judged {
+                if matches!(scope, LostScope::Received) && lost_by_time(tx.core, &a) {
+                    let now = tx.now().0;
+                    arm_lost_due(tx, a, now)?;
+                    continue;
+                }
                 // its removal goes up first (spec/permissions.md §3): node-sync's `drop_left`
                 if own_leaving(tx, &a)?.is_empty() {
                     lost.push(a);
@@ -515,6 +544,7 @@ impl Engine {
 
     /// Whether the lost-access trigger has work due now (`drop_lost_due`).
     pub fn lost_due(&self) -> bool {
+        debug_assert_eq!(self.core.ix.lost_due.len(), self.core.ix.lost_due_at.len());
         let now = self.now().0;
         self.core.ix.lost_due_at.first().is_some_and(|(at, _)| *at <= now)
     }
@@ -527,12 +557,20 @@ impl Engine {
         self.core.ix.lost_due_at.first().is_some_and(|(at, _)| *at == 0)
     }
 
-    /// When the lost-access trigger's next entry not due now comes due (engine ms): a plausible
-    /// pending grant keeping an actor ages out. Every scope arms these (a judged actor a
-    /// plausible grant keeps), so the trigger drops it then if the grant never applied.
+    /// Whether an entry due by the time alone has waited `LOST_HEARD_WAIT_MS` (`LostScope::Overdue`).
+    pub fn lost_overdue(&self) -> bool {
+        self.core.ix.lost_due_at.first().is_some_and(|(at, _)| at.saturating_add(LOST_HEARD_WAIT_MS) <= self.now().0)
+    }
+
+    /// When the lost-access trigger's next entry not due now comes due (engine ms), or one waiting
+    /// is overdue: a plausible pending grant keeping an actor ages out. Every scope arms these (a
+    /// judged actor a plausible grant keeps), so the trigger drops it then if the grant never
+    /// applied.
     pub fn next_lost_due(&self) -> Option<u64> {
         let now = self.now().0;
-        self.core.ix.lost_due_at.iter().map(|(at, _)| *at).find(|at| *at > now)
+        let next = self.core.ix.lost_due_at.iter().map(|(at, _)| *at).find(|at| *at > now);
+        let overdue = self.core.ix.lost_due_at.first().map(|(at, _)| at.saturating_add(LOST_HEARD_WAIT_MS)).filter(|at| *at > now);
+        next.into_iter().chain(overdue).min()
     }
 
     /// The lost-access trigger (spec/permissions.md §3): after received role commits

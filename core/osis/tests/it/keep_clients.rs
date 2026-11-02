@@ -608,6 +608,37 @@ fn an_until_ended_offline_goes_when_heard_out_spec_permissions_3() {
     }
 }
 
+// spec/permissions.md §3 (lost access; Keep): a host gone for good does not hold an `until` off forever: past `ROLE_KEEP` the node goes by the time alone
+#[test]
+fn an_until_ended_out_of_reach_goes_past_role_keep_spec_permissions_3() {
+    for keep in [None, Some(true)] {
+        let (mut w, _a, b, _, g, m, _, hour) = timed(keep);
+        w.set_online(&b, false);
+        let keep_ms = osis_base::format::ROLE_KEEP_MS;
+        w.advance(keep_ms - hour);
+        w.run();
+        assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")), "{keep:?}");
+        assert!(b.kept_copies().unwrap().is_empty(), "{keep:?}");
+        w.advance(2 * hour + 1000);
+        w.run();
+        assert_eq!(b.kept_copies().unwrap().contains(&g), keep.is_some(), "{keep:?}");
+        assert_eq!(b.get(m, text()).unwrap().is_some(), keep.is_some(), "{keep:?}");
+    }
+}
+
+// spec/permissions.md §3 (Keep; it writes nothing there), notes/client-port.md §3: a client that reads a copy cannot place it in a group it writes
+#[test]
+fn a_client_places_no_copy_spec_permissions_3() {
+    let c = chat(EdgeOpts::default(), Role::Write);
+    let (actor, _, app) = c.app(Role::Admin);
+    let own = c.b.write_with(|w| { let o = w.create(c.b.me())?; w.place(o, c.b.home())?; w.make_group(o)?; Ok(o) }).unwrap();
+    c.b.grant(own, actor, Role::Write, Default::default()).unwrap();
+    c.kick(c.bob, Some(true));
+    until("the app reads the copy", || app.get(c.m, text()).ok().flatten().is_some());
+    until("the app writes its group", || app.write_with(|w| { let n = w.create(own)?; w.place(n, own) }).is_ok());
+    assert!(matches!(app.write_with(|w| w.place(c.m, own)), Err(Error::Permission { .. })));
+}
+
 // spec/permissions.md §3 (Keep), notes/node.md (lost access): a holder online past its `until`, the renewal made only later: it erased, and is re-sealed through the stranded heartbeat: it returns, not at once
 #[test]
 fn a_late_renewal_comes_back_by_a_re_seal_spec_permissions_3() {

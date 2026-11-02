@@ -94,6 +94,11 @@ impl Engine {
                 if let Some(t) = added.iter().find_map(|v| find_tid(v, &hidden)) {
                     return Err(Error::UnknownThing(t));
                 }
+                // a copy it reads: frozen, for its group's readers too
+                let copy = |t: &Tid| crate::retention::forget::copy_of(&self.core, t).is_some();
+                if let Some(t) = added.iter().find_map(|v| find_tid(v, &copy)) {
+                    return Err(Error::Permission { tid: t });
+                }
             }
         }
         Ok(())
