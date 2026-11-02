@@ -1,6 +1,8 @@
 # Chat design E: spaces
 > Summary: A Discord- or Slack-style space over E chats with existing primitives: a space is a group listing channels (listing grants nothing) plus ownerless role actors; "everyone" holds the members, channels grant roles to role actors, so membership is inherited by nesting and one removal is one commit, each channel re-keyed lazily by its next poster. Not expressible: a per-channel deny for someone who holds "everyone", a mod who deletes but cannot also lock the channel or manage its role, per-member rate limits. Worst cost: at 100,000 members every device downloads every other device's card. Citations: `e-spaces-evidence.md`.
 
+**Status:** reviewed, corrections pending; e-spaces-review.md overrides this file where they differ.
+
 ## Shape
 
 - **Channel:** exactly an E chat, an ownerless actor C with its own label.
