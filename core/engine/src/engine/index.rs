@@ -731,6 +731,11 @@ pub(crate) fn persist(tx: &mut Tx<'_>) -> Result<()> {
 pub(crate) fn write_all(tx: &mut Tx<'_>) -> Result<()> {
     // what an older index held goes shredded (forgotten things' entries among it)
     tx.txn.drop_indexes()?;
+    // the tables memory rows go to exist whatever they hold: a memory transaction registering
+    // one would write it durably (a table's registration is always durable)
+    for name in [METAS, SNAPSHOTS, CARRIED] {
+        tx.txn.index(name)?;
+    }
     write_edges_all(tx)?;
     write(tx, true)?;
     tx.txn.put_local(VERSION_KEY, VERSION.as_bytes(), Shred::No)?;

@@ -22,7 +22,7 @@ mod tests_paged;
 pub(crate) use free::unindex_commit;
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, unmerge_fell};
+pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -490,15 +490,14 @@ fn thing_wait(
 }
 
 /// Applies or stores one decoded commit blob.
-/// A memory commit (session form, spec/commits.md §2-§3) is applied as memory work: every row it
+/// A memory commit (session-form content or commit-form snapshot, spec/commits.md §2-§3) is applied as memory work: every row it
 /// derives stays in the store's memory overlay, pending ones included.
 fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Ingested> {
     match (blob.header.ephemeral, blob.header.form) {
         (None, _) => ingest_class(tx, blob, origin),
-        (Some(osis_commit::EphClass::Plain), osis_commit::Form::Session(_)) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
-        // own covers and relay-only commits stay with `Engine::ingest_ephemeral` until memory
-        // commits replace them (issues/eph-unify.md step 3)
-        _ => Err(Error::BadInput("an ephemeral snapshot or relay-only commit on the commit path")),
+        (Some(osis_commit::EphClass::Plain), osis_commit::Form::Session(_) | osis_commit::Form::Commit) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
+        // relay-only commits are delivered, never held (`Engine::ingest_ephemeral`)
+        _ => Err(Error::BadInput("a relay-only commit on the commit path")),
     }
 }
 

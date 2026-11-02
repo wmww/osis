@@ -23,7 +23,7 @@ pub(crate) const ITEMS: u64 = 0;
 pub(crate) const SUBGROUPS: u64 = 1;
 
 /// A `group.0` definition: (items, subgroups).
-pub(super) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
+pub(crate) type Def = (BTreeSet<Tid>, BTreeSet<Tid>);
 
 pub(super) fn group_ak() -> Result<Ak> {
     Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))
@@ -60,7 +60,7 @@ pub(super) fn unplace_ops(items: &BTreeSet<Tid>, subs: &BTreeSet<Tid>, gone: &BT
 
 /// The definition a `placed.0~` state holds: its items and subgroups read field by field (an add
 /// carries no presence of the struct itself).
-pub(super) fn def_of(f: &Fragment) -> Option<Def> {
+pub(crate) fn def_of(f: &Fragment) -> Option<Def> {
     let tids = |field: u64| -> BTreeSet<Tid> {
         match f.at(&[PathSeg::Field(field)]).and_then(|x| x.read()) {
             Some(Value::Set(s)) => s.into_iter().filter_map(|v| if let Value::Tid(t) = v { Some(t) } else { None }).collect(),

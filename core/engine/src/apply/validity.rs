@@ -1241,7 +1241,12 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         // memory parts turned valid may supersede held ones (spec/sync.md §9)
         let memory: BTreeSet<(Tid, Ak)> = rose.iter().filter(|(t, a)| tx.txn.is_memory_aspect(t, a)).cloned().collect();
         if !memory.is_empty() {
-            let gone = tx.in_class(true, |tx| crate::retention::memory::drop_superseded(tx, &memory, None, None))?;
+            let gone = tx.in_class(true, |tx| {
+                let gone = crate::retention::memory::drop_superseded(tx, &memory, None, None)?;
+                // and snapshots turned valid cover held bodies
+                crate::retention::memory::drop_covered(tx, &memory, None)?;
+                Ok(gone)
+            })?;
             flipped.extend(gone);
         }
     }

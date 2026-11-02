@@ -284,4 +284,26 @@ mod tests {
         assert_eq!(e.get(&g, &ak("t:s.0~")).unwrap(), None, "vanished at its expiry");
         assert!(!e.core.ix.commits.contains_key(&c));
     }
+
+    // eph-unify-a review (item 216): a memory aspect's state written by a durable transaction
+    // lists the aspect in memory (`records::ASPECTS` routed by the key's marker), so nothing
+    // durable names a memory aspect. spec: none (internal)
+    #[test]
+    fn memory_state_row_follows_key() {
+        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let f = osis_crdt::Fragment::default();
+        let rows = e
+            .run(|tx| {
+                tx.set_state(&g, &ak("t:a.0~"), Some(f.clone()), osis_store::Shred::No, false)?;
+                Ok(tx.txn.memory_local_keys(crate::engine::records::ASPECTS))
+            })
+            .unwrap();
+        assert_eq!(rows.len(), 1, "{rows:?}");
+    }
 }
