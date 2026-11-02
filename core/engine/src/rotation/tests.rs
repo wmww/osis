@@ -2844,6 +2844,52 @@ fn projection_world(seed: u64, fork: bool) -> (LocalPeer, Tid, Tid, osis_crypto:
 // without its boxes, so it is bound to the keyset the grant's edge names (f): neither D's forged
 // keyset nor Z's honest fork boxing D (each N's newest keys.0 at X) is sealed to; N's holders of
 // f open X's epoch.
+// spec/crypto.md §4 (a bound boxer seals role read only): N rotates read and write (C1, w1),
+// then demotes writer W to read (C2, write keyset w2). G, knowing C2, grants N write on A: its
+// read box names C1's read keyset, its write box w2. X holds the grant without its boxes and C2
+// without its `roles.0` part, so it knows no departure from N: bound to C1, sealing N write at
+// C1's w1 would let W open A's write epoch; X boxes N read only.
+#[test]
+fn grant_projection_binds_read_only_spec_crypto_4() {
+    let rw = BTreeSet::from([Role::Read, Role::Write]);
+    let mut lp = LocalPeer::new(4, 4_151, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let tids: Vec<Tid> = (0..4).map(|i| lp.peers[i].engine.tid()).collect();
+    let n = group(&mut lp, 1);
+    lp.peers[1].engine.grant(&n, &tids[2], &edge(Role::Write)).unwrap();
+    let a = group(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &tids[3], &edge(Role::Admin)).unwrap();
+    lp.sync_all().unwrap();
+    // C1: N rotates read and write; W (2) holds w1
+    rotate_leaving_out(&mut lp, 1, n, &rw, &[]);
+    lp.sync_all().unwrap();
+    let w_n = lp.peers[2].engine.epochs(&n).unwrap();
+    let w1 = w_n.role(Role::Write).newest_held().unwrap().0;
+    // C2: W demoted to read in N (a write rotation)
+    let before = commit_ids(&mut lp, 1);
+    lp.peers[1].engine.demote(&n, &Demotion { holder: tids[2], new: Some(edge(Role::Read)), presync: PreSync::Synced }).unwrap();
+    let c2: BTreeSet<_> = commit_ids(&mut lp, 1).difference(&before).copied().collect();
+    let w2 = lp.peers[1].engine.epochs(&n).unwrap().role(Role::Write).newest_held().unwrap().0;
+    assert_ne!(w1, w2, "demotion rotated write");
+    send_skipping(&mut lp, 1, 0, &BTreeSet::new());
+    let before = commit_ids(&mut lp, 0);
+    lp.peers[0].engine.grant(&a, &n, &edge(Role::Write)).unwrap();
+    let grant: BTreeSet<_> = commit_ids(&mut lp, 0).difference(&before).copied().collect();
+    let skip: BTreeSet<_> = c2.union(&grant).copied().collect();
+    for i in [0, 1, 2] {
+        send_skipping(&mut lp, i, 3, &skip);
+    }
+    send_cut(&mut lp, 1, 3, &c2, n, "roles.0");
+    send_cut(&mut lp, 0, 3, &grant, a, "secrets.0");
+    assert!(lp.peers[3].engine.departures(&a).unwrap().is_empty(), "X knows no departure");
+    rotate_leaving_out(&mut lp, 3, a, &rw, &[]);
+    let x_w = lp.peers[3].engine.epochs(&a).unwrap().role(Role::Write).newest_held().unwrap().0;
+    let x_r = newest_read(&lp, 3, a).unwrap();
+    let got = opens_through(&mut lp, 3, a, n, &w_n);
+    assert!(got.role(Role::Write).reading_secret(&x_w).is_none(), "W, demoted in N, opens X's write epoch of A at w1");
+    assert!(got.read.reading_secret(&x_r).is_some(), "N left out of X's read epoch");
+}
+
 #[test]
 fn grant_projection_seals_named_keyset_spec_crypto_4() {
     for (seed, fork) in [(4_141, false), (4_143, true)] {
@@ -3092,8 +3138,6 @@ fn grant_names_before_boxing_holder_spec_crypto_4() {
     }
     assert!(lp.peers[3].engine.core.ix.keyset_epochs.get(&n).is_some_and(|s| s.contains(&(Role::Read, x_d))), "D's keyset valid at X");
     assert!(lp.peers[3].engine.core.current_holders(&a).iter().any(|h| h.0 == n), "X holds the grant");
-    let dbg = lp.peers[3].engine.run(|tx| { let st = crate::flows::secrets_in(tx, &a)?.boxes.into_iter().filter(|(k, _)| k.holder == n).map(|(k, b)| (k.epoch, osis_keys::carries_names(&b))).collect::<Vec<_>>(); let g = match super::departures::grant_names_held(tx, &a, &n)? { super::departures::GrantNames::Held => "held", super::departures::GrantNames::Unmet => "unmet", _ => "bound" }; Ok((st, g)) }).unwrap();
-    eprintln!("DBG {dbg:?}");
     rotate_leaving_out(&mut lp, 3, a, &read, &[]);
     let x_e = newest_read(&lp, 3, a).unwrap();
     assert_ne!(x_e, e, "X rotated");
