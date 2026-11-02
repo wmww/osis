@@ -47,7 +47,7 @@
 //!   re-placed).
 
 use crate::linearize::{Placed, place_idx};
-use crate::seq::{Anchor, PosW, SeqContent, SeqElem, is_creation, is_visible, sib_key};
+use crate::seq::{Anchor, PosW, SeqElem, is_creation, is_visible, sib_key};
 use crate::seq_place::{PlaceBlock, PlaceDiff, PlaceRow, PlaceTop};
 use crate::seq_span::{Elems, Recs, nth, piece};
 use crate::stamp::{Dot, Stamp};
@@ -225,11 +225,7 @@ impl Eq for Row {}
 /// Visibility and visible char of an element (§5.7 Read).
 fn shows(e: &SeqElem, text: bool) -> (bool, Option<char>) {
     let shown = is_visible(e, text);
-    let ch = match e.content {
-        SeqContent::Char(c) if shown => Some(c),
-        _ => None,
-    };
-    (shown, ch)
+    (shown, if shown && text { e.char() } else { None })
 }
 
 #[derive(Clone, Debug, Default)]

@@ -141,7 +141,7 @@ impl Copies<'_> {
                         self.put(Kind::Pos(a.clone(), k.clone()), st, None);
                     }
                     if let Some((st, b)) = &e.deleted {
-                        self.put(Kind::Flag(*b), st, None);
+                        self.put(Kind::Flag(*b), st, e.undel.map(Val::Char));
                     }
                     if let SeqContent::Frag(x) = &e.content {
                         self.frag(x);
@@ -265,10 +265,11 @@ impl Fragment {
 }
 
 /// Whether copy `mine` of a write of kind `k` agrees with `theirs`: equal, or `theirs` held
-/// value-less (expired or purged there), or `mine` without its value where it may be: a deleted
-/// text element's char (§3.3 rule 5), or anything when `lax`.
+/// value-less (expired or purged there), or `mine` without its value where it may be: a text
+/// element's char, the creation's (deleted: §3.3 rule 5) or an undelete's copy (§5.7), or
+/// anything when `lax`.
 fn agrees(k: &Kind, mine: &Option<Val>, theirs: &Option<Val>, lax: bool) -> bool {
-    theirs.is_none() || mine == theirs || mine.is_none() && (lax || matches!(k, Kind::Created(_)))
+    theirs.is_none() || mine == theirs || mine.is_none() && (lax || matches!(k, Kind::Created(_) | Kind::Flag(_)))
 }
 
 /// Fragments' writes by position, kind and stamp, and the dots they hold writes under

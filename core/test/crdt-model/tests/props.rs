@@ -762,7 +762,8 @@ proptest! {
 }
 
 /// Bootstrap convergence (§8, spec/commits.md §5 "covered"): a fresh node joins from a snapshot mid-way, everyone
-/// keeps editing, and the fresh node ends up reading and snapshotting exactly what a full-history node does.
+/// keeps editing, and the fresh node ends up reading what a full-history node does and holding a state below it
+/// (the snapshot dropped deleted chars, §3.3 rule 5: an undelete's copy fills the read, not the creation's copy).
 fn converge_bootstrap(seed: u64, ty: &Ty, rounds: usize) {
     let mut r = Rng(seed | 1);
     let n = 3;
@@ -821,7 +822,13 @@ fn converge_bootstrap(seed: u64, ty: &Ty, rounds: usize) {
     let snaps: Vec<Vec<u8>> = reps.iter().map(|x| x.state.as_ref().map_or(vec![], snapshot)).collect();
     for i in 1..reps.len() {
         assert_eq!(reads[0], reads[i], "reads converge (replica {i})");
-        assert_eq!(snaps[0], snaps[i], "snapshots converge (replica {i})");
+        if i < n {
+            assert_eq!(snaps[0], snaps[i], "snapshots converge (replica {i})");
+        } else if let (Some(full), Some(fresh)) = (&reps[0].state, &reps[i].state) {
+            let mut j = full.clone();
+            j.join(fresh.clone());
+            assert_eq!(snapshot(&j), snaps[0], "the bootstrapped replica holds nothing beyond the full one");
+        }
     }
 }
 
@@ -918,7 +925,7 @@ fn decoder_rejects_writer_rule_violations() {
     assert!(decode_delta(&enc(&f), &mut Ctx::new(ts, own.clone(), 5)).is_ok());
     // a run of own elements reaching hi, though its first dot is below lo (§2.3)
     let flags = |n: u64| {
-        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)) };
+        let el = || crdt_model::state::SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((Stamp::new(ts, own.clone(), 5), true)), undel: None };
         let elems = (0..n).map(|i| (Dot { source: own.clone(), ctr: 3 + i }, el())).collect();
         enc(&Frag::Seq { text: true, c: Default::default(), elems })
     };

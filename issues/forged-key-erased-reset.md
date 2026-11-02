@@ -1,0 +1,5 @@
+# Forged map key hidden by an erased record's reset before T
+> Summary: A dot created under two keys (only via forged valid snapshots, or a snapshot beside a dropped original's residue), one key removed: value erasure (expiry, purge) folds both into the key-erased record, whose reset then prunes the other key's record too, so a node before the creation's `T` holding a post-erasure snapshot beside the valued records reads that key gone while one without the snapshot reads it live, until it erases too. Converges at `T`; honest dots carry one key.
+> Tags: security, crdt
+
+Repro: osis-crdt `tests_review::repro_forged_key_hidden_by_erased_reset` (ignored). Split from the solved issues/forged-creation-copies.md (text and list creations: one creation per dot, undelete chars on the flag write, spec/crdt.md §5.7). Honest writers never create a dot under two keys and since issues/forged-cover.md a valid snapshot's copy replaces a held delta's differing one, so this needs two valid forged snapshots or a forged one beside a dropped original's residue.

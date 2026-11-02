@@ -21,7 +21,7 @@ pub(crate) fn insert_run(w: &mut Writer, s: &mut Seq, anchor: Anchor, contents: 
     for c in contents {
         let st = w.fresh();
         let d = st.dot.clone();
-        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, span: 1 });
+        s.elems_mut().insert(d.clone(), SeqElem { created: Some((st.clone(), prev.clone())), content: c, pos: vec![(st, prev, None)], deleted: None, undel: None, span: 1 });
         prev = Anchor::Dot(d);
     }
 }
@@ -249,7 +249,7 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             if !text {
                 return Err(Error::Mismatch("paste is a text op"));
             }
-            let held = |d: &Dot| s.rec(d).is_some_and(|e| matches!(e.content, SeqContent::Char(_)));
+            let held = |d: &Dot| s.rec(d).is_some_and(|e| e.char().is_some());
             if dots.is_empty() || !dots.iter().all(held) {
                 return Err(Error::Mismatch("the clipboard no longer matches"));
             }
@@ -272,10 +272,10 @@ pub(crate) fn op<V: View>(w: &mut Writer, text: bool, s: Option<&dyn SeqRead>, v
             check_bare(&out)?;
             let d = w.delta_stamp();
             for dot in dots {
-                let c = s.rec(dot).map_or(SeqContent::None, |e| e.content.clone());
+                let c = s.rec(dot).and_then(SeqElem::char);
                 let el = out.elems_mut().entry(dot.clone()).or_insert_with(SeqElem::bare);
                 el.deleted = Some((d.clone(), false));
-                el.content = c;
+                el.undel = c;
             }
         }
         Op::Edit { base, new } => return crate::seq_diff::edit(w, s, view, base, new),
@@ -327,10 +327,12 @@ pub(crate) fn overlay(acc: Seq, d: Seq, w: &Writer) -> Seq {
             (a, SeqContent::None) => a,
             (_, b) => b,
         };
-        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), span: 1 };
+        let undel = if de.deleted.is_some() { de.undel } else { prev.undel };
+        let mut el = SeqElem { created: prev.created.or(de.created), content, pos, deleted: de.deleted.or(prev.deleted), undel, span: 1 };
         if text && el.flag() {
             // a deleted char is never carried (§3.3 rule 5)
             el.content = SeqContent::None;
+            el.undel = None;
         }
         omit |= w.made(&dot) && el.created.is_some() && el.flag();
         elems.insert(dot, el);
@@ -388,11 +390,11 @@ pub(crate) fn undo<V: View>(w: &mut Writer, undone: &Seq, cur: Option<&Seq>, bef
         match &el.deleted {
             Some((_, true)) if text && was_visible(dot) => {
                 // delete: undelete carrying the content
-                let c = [pre, now].into_iter().flatten().map(|e| e.content.clone()).find(|c| matches!(c, SeqContent::Char(_)));
+                let c = [pre, now].into_iter().flatten().find_map(SeqElem::char);
                 if c.is_some() {
                     w.copy_dot(dot);
                 }
-                out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), content: c.unwrap_or(SeqContent::None), ..SeqElem::bare() });
+                out.elems_mut().insert(dot.clone(), SeqElem { deleted: Some((r.clone(), false)), undel: c, ..SeqElem::bare() });
             }
             Some((_, true)) if !text => {
                 // list delete: re-insert the value with a fresh dot after the old element

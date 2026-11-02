@@ -24,6 +24,17 @@ fn carries(e: &SeqElem) -> bool {
     e.flag() || !matches!(e.content, SeqContent::None)
 }
 
+/// A `FlagW` range being encoded: bounds, the write, an undelete's chars.
+type FlagRange<'a> = (u64, u64, &'a (Stamp, bool), Option<String>);
+
+/// A `FlagW` range decoded: bounds, the write, an undelete's chars (one per element).
+type FlagRun = (u64, u64, (Stamp, bool), Option<Vec<char>>);
+
+/// The creation's char (what a run's `Content` lists; an undelete's copy rides its `FlagW`).
+fn creation_char(e: &SeqElem) -> Option<char> {
+    if let SeqContent::Char(c) = e.content { Some(c) } else { None }
+}
+
 /// Elements of one record in a run, as the run's encoding reads them (list content is encoded
 /// as it is pushed): first dot, length, creation stamp and anchor of the first, the extra
 /// position writes (single-element records only), the deletion and a text char.
@@ -33,6 +44,8 @@ struct Part {
     created: Option<(Stamp, Anchor)>,
     pos: Vec<PosW>,
     deleted: Option<(Stamp, bool)>,
+    /// The undelete's char (§5.7), carried in its `FlagW`.
+    undel: Option<char>,
     ch: Option<char>,
 }
 
@@ -105,8 +118,8 @@ impl Runs {
             let take = (e.span - off).min(MAX_RUN - o.n);
             let created = e.created.as_ref().map(|(st, a)| (if off == 0 { st.clone() } else { Stamp { ts: st.ts, dot: nth(k, off) } }, anchor_at(a)));
             let pos = if e.span == 1 { e.pos.iter().filter(|p| p.0.dot != *k).cloned().collect() } else { Vec::new() };
-            let ch = if self.text && has_content(e) { e.char() } else { None };
-            o.parts.push(Part { dot: nth(k, off), len: take, created, pos, deleted: e.deleted.clone(), ch });
+            let ch = if self.text && has_content(e) { creation_char(e) } else { None };
+            o.parts.push(Part { dot: nth(k, off), len: take, created, pos, deleted: e.deleted.clone(), undel: e.undel, ch });
             o.n += take;
             o.prev = nth(k, off + take - 1);
             off += take;
@@ -206,7 +219,8 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut 
     // `Runs::chunk` takes them, `Runs::close` notes them)
     cx.defer(0);
     let mut posw = Vec::new();
-    let mut flagw: Vec<(u64, u64, &(Stamp, bool))> = Vec::new();
+    // flag writes: maximal ranges of one write, an undelete's chars (one per element) with it
+    let mut flagw: Vec<FlagRange<'_>> = Vec::new();
     let mut idx = 0u64;
     for p in parts {
         for (st, a, key) in &p.pos {
@@ -217,16 +231,21 @@ fn encode_run(text: bool, parts: &[Part], content: Option<Vec<Value>>, cx: &mut 
         }
         if let Some(dl) = &p.deleted {
             match flagw.last_mut() {
-                Some((_, to, x)) if *to + 1 == idx && *x == dl => *to = idx + p.len - 1,
-                _ => flagw.push((idx, idx + p.len - 1, dl)),
+                Some((_, to, x, u)) if *to + 1 == idx && *x == dl && u.is_some() == p.undel.is_some() => {
+                    *to = idx + p.len - 1;
+                    u.iter_mut().zip(p.undel).for_each(|(u, c)| u.push(c));
+                }
+                _ => flagw.push((idx, idx + p.len - 1, dl, p.undel.map(String::from))),
             }
         }
         idx += p.len;
     }
     cx.defer(1);
     let mut fw = Vec::with_capacity(flagw.len());
-    for (i, j, (st, b)) in flagw {
-        fw.push(Value::List(vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)]));
+    for (i, j, (st, b), u) in flagw {
+        let mut w = vec![uint(i), uint(j), cx.stamp(st), Value::Bool(*b)];
+        w.extend(u.map(Value::Str));
+        fw.push(Value::List(w));
     }
     if matches!(&content, Value::List(x) if x.is_empty()) {
         cx.note_bare(n)?;
@@ -335,9 +354,14 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             pws.push((i, (st, a, key)));
         }
         pws.sort_by_key(|p| p.0);
-        let mut fws: Vec<(u64, u64, (Stamp, bool))> = Vec::new();
+        // flag writes; an undelete's chars, one per element of its range, with it (§5.7)
+        let mut fws: Vec<FlagRun> = Vec::new();
         for f in as_array(flagw)? {
-            let [i, j, st, b] = as_array(f)? else { return Err(Error::Malformed("flag write")) };
+            let (i, j, st, b, u) = match as_array(f)? {
+                [i, j, st, b] => (i, j, st, b, None),
+                [i, j, st, b, Value::Str(u)] => (i, j, st, b, Some(u)),
+                _ => return Err(Error::Malformed("flag write")),
+            };
             let (i, j) = (index(i, n)?, index(j, n)?);
             let st = cx.level_stamp(st)?;
             let Value::Bool(b) = b else { return Err(Error::Malformed("flag")) };
@@ -347,11 +371,22 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             if !s.text && !b {
                 return Err(Error::Malformed("undelete of a list element"));
             }
+            let u = match u {
+                None => None,
+                Some(_) if *b => return Err(Error::Malformed("chars on a delete")),
+                Some(u) => {
+                    let cs: Vec<char> = u.chars().collect();
+                    if cs.len() as u64 != j - i + 1 {
+                        return Err(Error::Malformed("undelete chars differ from the range"));
+                    }
+                    Some(cs)
+                }
+            };
             // canonical flag writes are maximal ranges in order (rule 2), so never overlap
             if fws.last().is_some_and(|x| i <= x.1) {
                 return Err(Error::Malformed("overlapping flag writes"));
             }
-            fws.push((i, j, (st, *b)));
+            fws.push((i, j, (st, *b), u));
         }
         // content: one char per element not deleted (text), one fragment per element (list)
         let mut chars: Option<std::str::Chars> = None;
@@ -392,10 +427,12 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
             while fws.get(fi).is_some_and(|x| x.1 < a) {
                 fi += 1;
             }
-            let deleted = fws.get(fi).filter(|x| x.0 <= a).map(|x| x.2.clone());
+            let fw = fws.get(fi).filter(|x| x.0 <= a);
+            let deleted = fw.map(|x| x.2.clone());
+            let undels = fw.and_then(|x| x.3.as_ref().map(|u| (x.0, u)));
             let ts = segs.get(si).map(|x| x.2);
             let flag = deleted.as_ref().is_some_and(|x| x.1);
-            let single = frags.is_some() || chars.is_some() && !flag;
+            let single = frags.is_some() || chars.is_some() && !flag || undels.is_some();
             let mut at = a;
             while at < b {
                 let len = if single { 1 } else { b - at };
@@ -424,7 +461,8 @@ pub(crate) fn decode_elems(s: &mut Seq, runs: &[Value], cx: &mut Dec) -> Result<
                 if overlaps(s.elems(), &dot, len) {
                     return Err(Error::Malformed("element in two runs"));
                 }
-                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), span: len });
+                let undel = undels.and_then(|(from, u)| u.get((at - from) as usize).copied());
+                s.elems_mut().insert(dot, SeqElem { created, content, pos, deleted: deleted.clone(), undel, span: len });
                 at += len;
             }
         }

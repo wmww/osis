@@ -96,14 +96,29 @@ pub struct SeqElem {
     /// Text: the deleted flag (LWW bool). List: the element reset `R_elem`, always `true`; the element's content
     /// fragment is pruned under it and the element is deleted iff that fragment is absent (§5.7).
     pub deleted: Option<(Stamp, bool)>,
+    /// Text: the char the surviving `deleted` write carries (an undelete's copy of the content, §5.7); never with
+    /// a `true` flag. Read where the creation's char is not held.
+    pub undel: Option<char>,
 }
 
 impl SeqElem {
     pub fn new(created: Stamp, anchor: Anchor, content: Content) -> SeqElem {
-        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None }
+        SeqElem { created: Some((created.clone(), anchor.clone())), content, pos: vec![(created, anchor, None)], deleted: None, undel: None }
     }
     pub fn write(content: Content, pos: Vec<Pos>, deleted: Option<(Stamp, bool)>) -> SeqElem {
-        SeqElem { created: None, content, pos, deleted }
+        SeqElem { created: None, content, pos, deleted, undel: None }
+    }
+    /// A text flag write: a delete, or an undelete carrying `undel` (§5.7).
+    pub fn flag(s: Stamp, deleted: bool, undel: Option<char>) -> SeqElem {
+        SeqElem { created: None, content: Content::None, pos: vec![], deleted: Some((s, deleted)), undel: undel.filter(|_| !deleted) }
+    }
+    /// A text element's char as it reads (§5.7): the creation's, else the undelete's; none without a creation.
+    pub fn char(&self) -> Option<char> {
+        match self.content {
+            Content::Char(c) => Some(c),
+            Content::None if self.created.is_some() => self.undel,
+            _ => None,
+        }
     }
 }
 
@@ -145,7 +160,7 @@ pub fn owner(d: &Dot) -> &Dot {
 impl SeqElem {
     /// Whether the creation write counts toward presence: value-less creations (no content, not deleted or reset) do not.
     fn creation_counts(&self) -> bool {
-        !matches!(self.content, Content::None) || self.deleted.as_ref().map_or(false, |d| d.1)
+        matches!(self.content, Content::Frag(_)) || self.char().is_some() || self.deleted.as_ref().map_or(false, |d| d.1)
     }
     /// Text: the deleted flag. List: no present content fragment (reset, value-less or never had one).
     pub fn is_deleted(&self, text: bool) -> bool {
@@ -402,29 +417,41 @@ impl Frag {
                         None => {
                             ea.insert(d, nb);
                         }
-                        Some(na) => {
-                            // text: the char of the creation with the greater stamp; of two copies of one creation the
-                            // greater char (§4.1 copy order, §5.7)
-                            // (a record without a creation, an undelete repeating the char, joins its char as a copy)
-                            let by = match (&na.created, &nb.created) {
-                                (Some(a), Some(b)) => a.0.cmp(&b.0),
-                                _ => std::cmp::Ordering::Equal,
-                            };
-                            let (ca, cb) = match (text, by) {
-                                (true, std::cmp::Ordering::Greater) => (na.content, Content::None),
-                                (true, std::cmp::Ordering::Less) => (Content::None, nb.content),
-                                _ => (na.content, nb.content),
-                            };
-                            let content = match (ca, cb) {
+                        Some(mut na) => {
+                            let mut nb = nb;
+                            // one creation per dot: copies under other stamps are one write, the greater stamp wins
+                            // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join)
+                            if let (Some(a), Some(b)) = (&na.created, &nb.created) {
+                                if a.0 != b.0 {
+                                    let lost = a.clone().min(b.clone());
+                                    let loser = if a.0 < b.0 { &mut na } else { &mut nb };
+                                    loser.pos.retain(|p| p.2.is_some() || p.0 != lost.0 || p.1 != lost.1);
+                                    loser.created = None;
+                                    if text {
+                                        loser.content = Content::None;
+                                    }
+                                }
+                            }
+                            // of two copies of one creation the greater anchor and the greater char (§4.1 copy order)
+                            let content = match (na.content, nb.content) {
                                 (Content::None, x) | (x, Content::None) => x,
                                 (Content::Char(a), Content::Char(b)) => Content::Char(a.max(b)),
                                 (Content::Frag(a), Content::Frag(b)) => Content::Frag(Box::new(join_any(*a, *b))),
                                 (a, _) => a,
                             };
+                            // the flag: later wins; of copies of one write `true` over `false`, then a char over
+                            // none, then the greater char (§4.1 copy order)
+                            let (deleted, undel) = match (na.deleted, nb.deleted) {
+                                (None, d) => (d, nb.undel),
+                                (d, None) => (d, na.undel),
+                                (Some(a), Some(b)) => {
+                                    if (a.0.clone(), a.1, na.undel) < (b.0.clone(), b.1, nb.undel) { (Some(b), nb.undel) } else { (Some(a), na.undel) }
+                                }
+                            };
                             let mut pos = na.pos;
                             pos.extend(nb.pos);
                             let created = na.created.max(nb.created);
-                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted: max_pair(na.deleted, nb.deleted) });
+                            ea.insert(d, SeqElem { created, content, pos: top2(pos), deleted, undel });
                         }
                     }
                 }
@@ -577,6 +604,7 @@ impl Frag {
                     if let Some(d) = &el.deleted {
                         if !survives(&d.0, e) {
                             el.deleted = None;
+                            el.undel = None;
                         }
                     }
                     // a list element's content is pruned under its own reset as well (§5.7)
@@ -676,10 +704,7 @@ impl Frag {
             Frag::Seq { text, elems, .. } => {
                 let order = linearize(elems, *text);
                 if *text {
-                    Value::Str(order.iter().filter_map(|d| match &elems[d].content {
-                        Content::Char(c) => Some(*c),
-                        _ => None,
-                    }).collect())
+                    Value::Str(order.iter().filter_map(|d| elems[d].char()).collect())
                 } else {
                     Value::List(order.iter().filter_map(|d| match &elems[d].content {
                         Content::Frag(f) => f.read(),
@@ -783,9 +808,12 @@ impl Frag {
                     el.pos.retain(|p| !is_bad(&p.0) || p.0.dot == *d);
                     if el.deleted.as_ref().map_or(false, |x| is_bad(&x.0)) {
                         el.deleted = None;
+                        el.undel = None;
                     }
                     if created_by_bad {
+                        // the element's char, the undelete's copy included, is the creator's content (§4.7)
                         el.content = Content::None;
+                        el.undel = None;
                     } else if let Content::Frag(f) = &mut el.content {
                         f.unmerge(bad);
                         if f.is_empty() {
@@ -857,6 +885,7 @@ impl Frag {
                         Content::Frag(f) => f.strip_values(expired),
                         _ if exp(d) => {
                             el.content = Content::None;
+                            el.undel = None;
                             if matches!(d.source, Source::Derived(_)) {
                                 // an embedded character's creation is known only from the value (§7): it goes entirely
                                 el.created = None;

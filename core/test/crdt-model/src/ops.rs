@@ -116,7 +116,7 @@ pub fn visible(text: bool, elems: &BTreeMap<Dot, SeqElem>) -> Vec<Dot> {
     linearize(elems, text)
         .into_iter()
         .filter(|d| match &elems[d].content {
-            Content::None => false,
+            Content::None => text && elems[d].char().is_some(),
             Content::Char(_) => true,
             Content::Frag(f) => f.read().is_some(),
         })
@@ -363,13 +363,13 @@ pub fn seq_insert(w: &mut Writer, state: Option<&Frag>, text: bool, after: usize
     f
 }
 
-fn flag(w: &mut Writer, text: bool, dots: &[Dot], b: bool, contents: Option<Vec<Content>>) -> Frag {
+fn flag(w: &mut Writer, text: bool, dots: &[Dot], b: bool, chars: Option<Vec<Option<char>>>) -> Frag {
     let s = w.delta();
     let mut f = seq_delta(text);
     let Frag::Seq { elems, .. } = &mut f else { unreachable!() };
     for (i, d) in dots.iter().enumerate() {
-        let content = contents.as_ref().map_or(Content::None, |c| c[i].clone());
-        elems.insert(d.clone(), SeqElem::write(content, vec![], Some((s.clone(), b))));
+        let c = chars.as_ref().and_then(|c| c[i]);
+        elems.insert(d.clone(), SeqElem::flag(s.clone(), b, c));
     }
     f
 }
@@ -393,8 +393,8 @@ pub fn seq_delete(w: &mut Writer, state: &Frag, from: usize, len: usize) -> Opti
 /// its value with a fresh dot (§5.7).
 pub fn seq_undelete(w: &mut Writer, state: &Frag, dots: &[Dot]) -> Frag {
     let Frag::Seq { text: true, elems, .. } = state else { panic!("text") };
-    let contents = dots.iter().map(|d| elems.get(d).map_or(Content::None, |e| e.content.clone())).collect();
-    flag(w, true, dots, false, Some(contents))
+    let chars = dots.iter().map(|d| elems.get(d).and_then(|e| if let Content::Char(c) = e.content { Some(c) } else { e.undel })).collect();
+    flag(w, true, dots, false, Some(chars))
 }
 
 /// Move visible range [from, from+len) so it follows the element at index `after` of the sequence without the

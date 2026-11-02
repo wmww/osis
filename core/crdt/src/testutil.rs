@@ -170,6 +170,7 @@ pub fn frag(f: &m::Frag) -> Fragment {
                         content,
                         pos: e.pos.iter().map(|(s, a, k)| (stamp(s), anchor(a), k.as_ref().map(stamp))).collect(),
                         deleted: e.deleted.as_ref().map(|(s, b)| (stamp(s), *b)),
+                        undel: e.undel,
                         span: 1,
                     };
                     (dot(d), el)

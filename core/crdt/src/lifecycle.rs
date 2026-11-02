@@ -337,9 +337,10 @@ impl Visit for DotsIn<'_> {
         // `own`: whether a record of theirs counts with `holds`; `other`: a write of theirs on it
         let (d, own, other) = match r {
             Rec::Elem(d, _) | Rec::Entry(crate::fragment::Eid { dot: d, .. }, _) => (d, true, false),
-            // a sequence element: with content; a flag or a position write of theirs other than
-            // the element's own creation, which `remove_dots` keeps
-            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))),
+            // a sequence element: with content (an undelete's copy of its char included, §4.7);
+            // a flag or a position write of theirs other than the element's own creation, which
+            // `remove_dots` keeps
+            Rec::Seq(d, el) => (d, !matches!(el.content, SeqContent::None) || el.undel.is_some(), el.deleted.as_ref().is_some_and(|x| pred(x.0.dot.owner())) || el.pos.iter().any(|p| p.0.dot != *d && pred(p.0.dot.owner()))),
         };
         let theirs = pred(d.owner());
         if other || (self.holds && theirs && own) {
