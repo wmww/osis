@@ -11,6 +11,6 @@ Shape:
 - Derived secrets (§2: a plain thing's secrets derive from its owner) do not exist: an ownerless thing gets random secrets at creation, boxed to its first admin, who is granted in the creation commit.
 - Things it owns: owner-chain authority on them ends at nothing, so only edges count there too.
 - Moving between owners stays a copy (notes/permissions.md "Moving a thing"): an ownerless thing cannot be transferred, which is consistent.
-- Recovery: with no admin left the thing is stuck (members keep reading and writing as granted). Check that issues/writer-rotates-to-itself.md's recovery (needs an admin) still applies.
+- Recovery: with no admin left the thing is stuck (members keep reading and writing as granted). The lockout recovery (spec/permissions.md §3) needs an admin, so it applies while one is left.
 
 Open: whether `MAX_OWNER_DEPTH` and the chain certificate rules need wording for a chain ending at a non-key thing.

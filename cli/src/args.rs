@@ -101,6 +101,9 @@ pub struct DemoteFlags {
     /// Stamp the demotion at TS
     #[arg(long, value_name = "TS")]
     pub backdate: Option<String>,
+    /// Repudiate the holder's rotations this device cannot open (a writer that locked everyone out)
+    #[arg(long)]
+    pub repudiate: bool,
 }
 
 #[derive(Subcommand, Debug)]

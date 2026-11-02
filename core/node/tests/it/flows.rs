@@ -2392,3 +2392,125 @@ fn rotation_within_role_keep_listed_spec_perm_5_1() {
     assert!(!lp.peers[0].engine.roster(&t).contains_key(&px));
     assert_eq!(lp.peers[0].engine.body_valid(&rotations[0], &t, &keys), Some(true));
 }
+
+/// Peers 0 (admin, owner) and the people `ps`; `d` of person 0 with person 1 (the vandal) and
+/// person 2 writers; person 1's node rotates read and write of `d` boxing person 1 alone
+/// (issues/writer-rotates-to-itself.md), `times` times. Returns `d`, the epoch before and the
+/// vandal's rotation commits.
+fn locked_out(lp: &mut LocalPeer, ps: &[Tid], times: usize) -> (Tid, osis_crypto::Epoch, Vec<CommitId>) {
+    let d = thing_of(lp, 0, ps[0]);
+    for p in &ps[1..] {
+        lp.peers[0].engine.grant(&d, p, &edge_of(Role::Write)).unwrap();
+    }
+    spread(lp);
+    let e0 = newest_read(lp, 0, d).unwrap();
+    let rv: Vec<CommitId> = (0..times).map(|_| lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap()).collect();
+    (d, e0, rv)
+}
+
+fn remove(holder: Tid) -> Demotion {
+    Demotion { holder, new: None, presync: PreSync::Synced }
+}
+
+// spec/permissions.md §3 (lockout recovery), §5.1 (deliberate omission): a writer rotates `d`
+// to itself; no other node holds a current secret and a plain removal fails. The admin removes
+// it repudiating that rotation: the frontier leaves it out, the rotation goes from the epoch
+// before it, the other member reads and writes again and the vandal reads nothing new.
+#[test]
+fn writer_rotating_to_itself_recovered_spec_perm_3() {
+    let (mut lp, ps) = people(3, 571);
+    let (d, e0, rv) = locked_out(&mut lp, &ps, 1);
+    // labels carry the rotation wrapped under e0: everyone opens it
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 0, d), None, "the admin is locked out");
+    assert_eq!(newest_read(&lp, 2, d), None, "the member is locked out");
+    assert!(sealed_write(&mut lp, 1, d, "vandal").is_empty(), "nobody reads the vandal's epoch");
+    let err = lp.peers[0].engine.demote(&d, &remove(ps[1])).unwrap_err();
+    assert!(err.to_string().contains("repudiating"), "{err}");
+    let done = lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    let f: ct::Frontier = osis_schema::Codec::from_value(h.frontier.as_ref().unwrap()).unwrap();
+    assert!(!f.commits.contains(&rv[0]), "the frontier leaves the rotation out");
+    let e1 = newest_read(&lp, 0, d).unwrap();
+    assert_eq!(e1.n(), e0.n() + 1, "rotated from the epoch before the vandal's");
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 2, d), Some(e1), "the member holds the new epoch");
+    assert_eq!(lp.peers[1].engine.role_on(&d), None, "the vandal is out");
+    assert!(lp.peers[1].engine.epochs(&d).is_none_or(|e| e.read.reading_secret(&e1).is_none()), "and not boxed");
+    assert_eq!(sealed_write(&mut lp, 0, d, "after"), BTreeSet::from([2]));
+    assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
+}
+
+// spec/permissions.md §3, §5.1: a vandal rotating twice (the second from its own epoch): the
+// admin received both; repudiating the second makes the first current again, so both are left
+// out and the rotation goes from the epoch before them.
+#[test]
+fn vandal_rotating_twice_both_repudiated_spec_perm_3() {
+    let (mut lp, ps) = people(3, 572);
+    let (d, e0, rv) = locked_out(&mut lp, &ps, 2);
+    spread(&mut lp);
+    let done = lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let h = lp.peers[0].engine.header(&done.commits[0]).unwrap();
+    let f: ct::Frontier = osis_schema::Codec::from_value(h.frontier.as_ref().unwrap()).unwrap();
+    assert!(rv.iter().all(|c| !f.commits.contains(c)), "both rotations left out");
+    let e1 = newest_read(&lp, 0, d).unwrap();
+    assert_eq!(e1.n(), e0.n() + 1);
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 2, d), Some(e1));
+    assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0]));
+}
+
+// spec/permissions.md §3, spec/crypto.md §4 (forks): two admins recover concurrently; each
+// rotation goes from the epoch before the vandal's, the two fork, and every remaining holder
+// reads both.
+#[test]
+fn concurrent_recoveries_fork_spec_perm_3() {
+    let (mut lp, ps) = people(4, 573);
+    let (d, e0, _) = locked_out(&mut lp, &ps[..3], 0);
+    lp.peers[0].engine.grant(&d, &ps[3], &edge_of(Role::Admin)).unwrap();
+    spread(&mut lp);
+    assert_eq!(newest_read(&lp, 3, d), Some(e0));
+    lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    spread_sealed(&mut lp);
+    assert_eq!(newest_read(&lp, 3, d), None, "the second admin is locked out too");
+    lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    lp.peers[3].engine.demote_repudiating(&d, &remove(ps[1])).unwrap();
+    let (ea, eb) = (newest_read(&lp, 0, d).unwrap(), newest_read(&lp, 3, d).unwrap());
+    assert_ne!(ea, eb);
+    assert_eq!((ea.n(), eb.n()), (e0.n() + 1, e0.n() + 1));
+    spread_sealed(&mut lp);
+    // a later rotation may merge the forks (an admin sealing after both): every remaining
+    // holder agrees on the current epochs and holds them all
+    let cur = lp.peers[0].engine.epochs(&d).unwrap().read.current();
+    assert!(cur.iter().all(|e| e.n() > e0.n()));
+    for i in [0, 2, 3] {
+        let e = lp.peers[i].engine.epochs(&d).unwrap();
+        assert_eq!(e.read.current(), cur, "peer {i}");
+        assert!(cur.iter().all(|x| e.read.secret(x).is_some()), "peer {i}: all held");
+    }
+    assert_eq!(lp.peers[1].engine.role_on(&d), None);
+    assert_eq!(sealed_write(&mut lp, 2, d, "member"), BTreeSet::from([0, 3]));
+}
+
+// spec/permissions.md §5.1, §3: a repudiation counts only where the demotion audits the
+// rotation's author: a vandal that keeps write through its own actor holding write on `d` is
+// not demoted by losing its direct edge, so nothing is written.
+#[test]
+fn repudiation_without_audit_refused_spec_perm_3() {
+    let (mut lp, ps) = people(3, 574);
+    let d = thing_of(&mut lp, 0, ps[0]);
+    let t = thing_of(&mut lp, 1, ps[1]);
+    lp.peers[1].engine.give_own_secrets(&t).unwrap();
+    spread(&mut lp);
+    for p in [ps[1], ps[2], t] {
+        lp.peers[0].engine.grant(&d, &p, &edge_of(Role::Write)).unwrap();
+    }
+    spread(&mut lp);
+    lp.peers[1].engine.rotate_boxing_only(&d, &[Role::Read, Role::Write], &[ps[1]]).unwrap().unwrap();
+    spread(&mut lp);
+    let before = lp.peers[0].engine.commit_ids().len();
+    let err = lp.peers[0].engine.demote_repudiating(&d, &remove(ps[1])).unwrap_err();
+    assert!(err.to_string().contains("repudiat"), "{err}");
+    assert_eq!(lp.peers[0].engine.commit_ids().len(), before, "nothing written");
+    assert!(lp.peers[0].engine.roster(&d).contains_key(&ps[1]), "the vandal stays");
+}

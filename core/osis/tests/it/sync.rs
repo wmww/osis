@@ -73,7 +73,7 @@ fn pairing_spec_permissions_1() {
     let devs: Vec<Tid> = da.devices().unwrap().into_iter().map(|d| d.node).collect();
     assert!(devs.contains(&da.node()) && devs.contains(&db.node()), "{devs:?}");
     // a lost device, removed without waiting (spec/permissions.md §5.3 `Skip`)
-    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false };
     w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
     assert!(!da.devices().unwrap().iter().any(|d| d.node == db.node()));
     let after = item(&da, da.me(), da.home(), "after the removal");
@@ -411,7 +411,7 @@ fn demote_link_joiner_spec_permissions_9() {
     assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
     assert!(alice.roster(k).contains_key(&bob.me()) && alice.roster(k).contains_key(&l), "no half-removal");
     w.set_online(&alice, true);
-    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false };
     w.until(alice.demote(g, bob.me(), Lower::Remove, skip), 1000, 10).unwrap();
     let r = alice.roster(k);
     assert!(!r.contains_key(&bob.me()) && !r.contains_key(&l) && r.contains_key(&carol.me()));
@@ -436,7 +436,7 @@ fn demote_link_joiner_content_spec_permissions_9() {
     let (_, reply) = alice.pair_accept(join.request()).unwrap();
     let alice2 = join.finish(&reply).unwrap();
     w.run();
-    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None };
+    let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false };
     assert!(matches!(w.until(alice2.demote(g, carol.me(), Lower::Remove, skip), 1000, 10), Err(osis::Error::Invalid(_))));
     w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 20).unwrap();
     let after = item(&alice, g, g, "after bob left");

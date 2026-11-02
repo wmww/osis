@@ -149,7 +149,7 @@ fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
         Some(o) => return Err(usage(format!("--sync: required, try or skip (got {o:?})"))),
     };
     let backdate = opt_ts(&d.backdate)?;
-    Ok(Demotion { sync, backdate })
+    Ok(Demotion { sync, backdate, repudiate: d.repudiate })
 }
 
 fn scope(ctx: &Ctx<'_>, s: &Scope) -> anyhow::Result<osis::Scope> {
