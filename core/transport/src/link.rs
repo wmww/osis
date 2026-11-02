@@ -4,7 +4,7 @@
 //! every stream the dialer opens as a session (spec/sync.md §10), finishes its side when a session
 //! ends, and closes only once the dialer closed or the connection sat idle without sessions.
 
-use crate::{Address, Connection, Error, Listener, PublicKey, RecvStream, SendStream, Source, StaticSecret, Transport};
+use crate::{Address, Connection, Error, Listener, Peer, PublicKey, RecvStream, SendStream, Source, StaticSecret, Transport};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -83,6 +83,8 @@ pub async fn forward<E>(mut rx: LinkRx, ev: mpsc::Sender<E>, bytes: impl Fn(Vec<
 #[derive(Debug)]
 pub struct Link {
     pub peer_key: PublicKey,
+    /// The peer as the transport type tells it (`Connection::peer`).
+    pub peer: Peer,
     /// Where the connection carrying it comes from (`Connection::source`).
     pub source: Option<Source>,
     pub tx: LinkTx,
@@ -100,7 +102,7 @@ impl Drop for Live {
 
 /// Spawns the pumps of one stream. `closer`: the connection to close once our side is finished
 /// (the dialer's role). `wait` bounds the finish.
-fn session<C: Connection>(peer_key: PublicKey, source: Option<Source>, mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
+fn session<C: Connection>(peer: Peer, peer_key: PublicKey, source: Option<Source>, mut send: C::Send, mut recv: C::Recv, closer: Option<C>, live: Option<Live>, wait: Duration) -> Link {
     let (tx, mut wrx) = mpsc::unbounded_channel::<Vec<u8>>();
     let queued = Arc::new(AtomicUsize::new(0));
     let taken = Arc::new(AtomicU64::new(0));
@@ -137,7 +139,7 @@ fn session<C: Connection>(peer_key: PublicKey, source: Option<Source>, mut send:
             }
         }
     });
-    Link { peer_key, source, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
+    Link { peer_key, peer, source, tx: LinkTx { tx, queued, taken }, rx: LinkRx(rrx) }
 }
 
 /// Dials `addr` (as `secret`'s static key if given, else with an ephemeral key) and opens one
@@ -148,7 +150,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
         None => t.dial(addr).await?,
     };
     let (send, recv) = c.open_stream().await?;
-    Ok(session(c.peer_key(), c.source(), send, recv, Some(c), None, wait))
+    Ok(session(c.peer(), c.peer_key(), c.source(), send, recv, Some(c), None, wait))
 }
 
 /// Two ends of one in-process session, no transport between them: `a` sees `b_key` as its
@@ -156,7 +158,7 @@ pub async fn dial<T: Transport>(t: &T, addr: &Address, secret: Option<&StaticSec
 pub fn pair(a_key: PublicKey, b_key: PublicKey) -> (Link, Link) {
     let (a_tx, b_rx) = pipe();
     let (b_tx, a_rx) = pipe();
-    (Link { peer_key: b_key, source: None, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, source: None, tx: b_tx, rx: b_rx })
+    (Link { peer_key: b_key, peer: Peer::Key(b_key), source: None, tx: a_tx, rx: a_rx }, Link { peer_key: a_key, peer: Peer::Key(a_key), source: None, tx: b_tx, rx: b_rx })
 }
 
 /// One direction of a `pair`: a pump moves what is sent into the receiver's bounded queue,
@@ -223,7 +225,7 @@ pub async fn serve<L: Listener>(mut l: L, idle: Duration, wait: Duration, out: m
                 match timeout(idle, c.accept_stream()).await {
                     Ok(Ok((send, recv))) => {
                         live.fetch_add(1, Ordering::AcqRel);
-                        let link = session::<L::Conn>(c.peer_key(), c.source(), send, recv, None, Some(Live(live.clone())), wait);
+                        let link = session::<L::Conn>(c.peer(), c.peer_key(), c.source(), send, recv, None, Some(Live(live.clone())), wait);
                         if out.send(link).await.is_err() {
                             break;
                         }
