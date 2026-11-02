@@ -654,12 +654,12 @@ fn setting_below_a_body_erases_nothing_held_spec_perm_8() {
     }
 }
 
-// spec/commits.md §5, spec/sync.md §7: a writer that has not seen the change: a commit with one
-// delta breaking a setting takes its others that answer to one, on another thing too, in one blob
-// or two; a part on a role-class aspect could not be there, a `required.0^` beside it stands.
-// Bodies go alike; when the setting falls they come back and the commit reads whole.
+// spec/commits.md §5, spec/sync.md §7: a writer that has not seen the change: a commit's delta
+// breaking a setting falls alone and its body goes, in one blob with the others or not; the others
+// stand on this thing and another, at a new device too, from what is left at the host. When the
+// setting falls the body comes back.
 #[test]
-fn broken_delta_takes_its_commit_spec_commits_5() {
+fn broken_delta_falls_alone_spec_commits_5() {
     for same_class in [true, false] {
         let mut net = Net::new();
         let host = net.add_host();
@@ -692,14 +692,13 @@ fn broken_delta_takes_its_commit_spec_commits_5() {
         settle(&mut net);
         settle(&mut net);
         for n in [a, b, c, d] {
-            for (x, k) in [(t, &bad), (t, &good), (u, &good)] {
-                assert_eq!(net.engine(n).get(&x, k).unwrap(), None, "{same_class} {n}");
-            }
+            assert_eq!(net.engine(n).get(&t, &bad).unwrap(), None, "{same_class} {n}");
+            assert_eq!(net.engine(n).get(&t, &good).unwrap(), Some(s("good")), "{same_class} {n}");
+            assert_eq!(net.engine(n).get(&u, &good).unwrap(), Some(s("other")), "{same_class} {n}");
         }
-        for k in [&bad, &good] {
-            assert!(!net.engine(a).body_not_dropped(&cm, &t, k), "{same_class}: gone without a right");
-            assert!(net.engine(b).body_not_dropped(&cm, &t, k), "{same_class}: its author's stays");
-        }
+        assert!(!net.engine(a).body_not_dropped(&cm, &t, &bad), "{same_class}: gone without a right");
+        assert!(net.engine(a).body_not_dropped(&cm, &t, &good), "{same_class}: the other stays");
+        assert!(net.engine(b).body_not_dropped(&cm, &t, &bad), "{same_class}: its author's stays");
         if same_class {
             // the setting falls with Carol's admin; the author's node uploads; everyone reads it
             let carol = net.tid(c);
@@ -721,9 +720,9 @@ fn broken_delta_takes_its_commit_spec_commits_5() {
     }
 }
 
-// spec/commits.md §4: a broken delta a node never gets holds its commit, which reads as invalid
-// anyway: a new device with one part reads nothing of it, setting or not at first, and all of it
-// once the setting falls and the part comes
+// spec/commits.md §4: a broken delta a node never gets counts as held once its setting is held,
+// whatever the setting's validity: a new device reads the commit's other delta in any order of
+// the setting, the part and the setting's fall, and the broken one once it comes
 #[test]
 fn missing_broken_part_reads_alike_spec_commits_4() {
     let (mut lp, d) = setup(411);
@@ -745,17 +744,103 @@ fn missing_broken_part_reads_alike_spec_commits_4() {
     let part = part.encode();
     let dem = demote_to_write(&mut lp, d, carol, &[]);
     let demotion = pack(&mut lp.peers[0], &dem);
-    for setting_first in [true, false] {
+    let items = [(setting.bytes.clone(), setting.blobs.clone()), (part, whole.blobs.clone()), (demotion.bytes.clone(), demotion.blobs.clone())];
+    for order in [[0, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut p = fresh(&mut lp, &base, &[]);
         p.engine.set_syncing(d, true).unwrap();
-        let (x, y): (&[u8], &[u8]) = if setting_first { (&setting.bytes, &part) } else { (&part, &setting.bytes) };
-        p.engine.ingest(x, whole.blobs.clone()).unwrap();
-        p.engine.ingest(y, setting.blobs.clone()).unwrap();
-        assert_eq!(read(&mut p, d, "t:good.0"), None);
-        p.engine.ingest(&demotion.bytes, demotion.blobs.clone()).unwrap();
-        assert_eq!(read(&mut p, d, "t:good.0"), None, "still waits for its other part");
+        // the part alone, no setting held: it waits for its other delta
+        let setting_held = |done: &[usize]| done.contains(&0);
+        for (n, i) in order.iter().enumerate() {
+            let (x, b) = &items[*i];
+            p.engine.ingest(x, b.clone()).unwrap();
+            let done = &order[..=n];
+            let want = (done.contains(&1) && setting_held(done)).then(|| s("good"));
+            assert_eq!(read(&mut p, d, "t:good.0"), want, "{order:?} after {n}");
+        }
+        assert_eq!(read(&mut p, d, "t:bad.0"), None, "{order:?}");
         p.engine.ingest(&whole.bytes, whole.blobs.clone()).unwrap();
         assert_eq!(read(&mut p, d, "t:good.0"), Some(s("good")));
-        assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")));
+        assert_eq!(read(&mut p, d, "t:bad.0"), Some(s("bad")), "the setting fell");
+    }
+}
+
+// spec/commits.md §5: a commit's delta breaking a setting of one thing says nothing of its delta on
+// another. A member of the other thing alone never holds that setting: all its members read alike
+// and its bodies stay, whatever an admin of the first thing does.
+#[test]
+fn commit_across_things_reads_alike_spec_commits_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (oc, od, b, x) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]), net.node(4, &[host]));
+    let gc = net.group(oc, &[(b, Role::Write), (od, Role::Read)], &[host]);
+    let gd = net.group_seeded(od, &[(b, Role::Write), (x, Role::Read)], vec![net.address(host)], 7);
+    let tc = net.item(oc, gc, gc, "c");
+    let td = net.item(od, gd, gd, "d");
+    net.run();
+    net.set_online(b, false);
+    let mut m = Mutation::new();
+    m.set(tc, &ct::REQUIRED, &rules(&[("t:", permanent())])).unwrap();
+    net.engine(oc).commit(m).unwrap().unwrap();
+    settle(&mut net);
+    let (msg, card) = (ak("t:msg.0"), ak("t:card.0"));
+    let mut m = Mutation::new();
+    m.set(tc, &msg, &s("msg")).unwrap();
+    m.set(td, &card, &s("card")).unwrap();
+    let k = net.engine(b).commit(m).unwrap().unwrap();
+    net.advance(1_000);
+    net.set_online(b, true);
+    settle(&mut net);
+    settle(&mut net);
+    for n in [od, x, b] {
+        assert_eq!(net.engine(n).get(&td, &card).unwrap(), Some(s("card")), "node {n}");
+        assert!(net.engine(n).body_not_dropped(&k, &td, &card), "node {n}");
+    }
+    assert_eq!(net.engine(oc).get(&tc, &msg).unwrap(), None);
+}
+
+// A writer that had not seen a setting: its write falls when the setting arrives, and its node
+// says so; another's does not
+#[test]
+fn stale_writer_is_told_spec_commits_5() {
+    let (mut lp, d) = setup(431);
+    require(&mut lp, 2, d, &rules(&[("t:", permanent())]));
+    let mut m = Mutation::new();
+    m.set(d, &ak(MSGS), &s("late")).unwrap();
+    let c = lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(1_000);
+    for i in 0..3 {
+        lp.peers[i].drain_events();
+    }
+    lp.sync_all().unwrap();
+    assert_eq!(read(&mut lp.peers[1], d, MSGS), None);
+    let told = |p: &mut Peer| p.drain_events().iter().any(|e| matches!(e, osis_node::Event::Diagnostic(x) if x.kind == osis_node::DiagnosticKind::OwnWriteInvalid && x.commit == Some(c) && x.tids == [d]));
+    assert!(told(&mut lp.peers[1]), "its author's node");
+    assert!(!told(&mut lp.peers[0]));
+}
+
+// spec/crdt.md §5.7: a reopen forgets a deleted text element's char; the delete falling brings it
+// back from its creation's body, and a late part of an invalid body joins without a false alarm
+#[test]
+fn delete_falls_after_reopen_reads_text_spec_crdt_5_7() {
+    for reopen in [false, true] {
+        let (mut lp, d) = setup(433);
+        let carol = lp.peers[2].engine.tid();
+        let mut m = Mutation::new();
+        m.set(d, &TEXT, &s("abc")).unwrap();
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.op(d, &TEXT, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Delete { at: 1, len: 1 } }).unwrap();
+        lp.peers[2].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("ac")));
+        if reopen {
+            lp.peers[0].engine.reload().unwrap();
+            assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("ac")));
+        }
+        set_edge(&mut lp.peers[0].engine, d, carol, Some(edge(Role::Read)), Some(ct::Frontier::default().to_value()));
+        assert_eq!(read(&mut lp.peers[0], d, "t:text.0"), Some(s("abc")), "reopen {reopen}");
     }
 }

@@ -869,8 +869,12 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     0 => std::collections::BTreeMap::new(),
                     1 => one(aspect_of(op).as_str(), keep),
                     2 => one("t:", Retention::default()),
-                    // no keep at most on every aspect: issues/at-most-map-snapshot-drop.md
-                    _ => one("", if keep.at_most.is_none() { keep } else { Retention::default() }),
+                    // `t:map.0` out of a keep at most: issues/at-most-map-snapshot-drop.md
+                    _ => {
+                        let mut all = one("", keep);
+                        all.extend(one("t:map", Retention::default()));
+                        all
+                    }
                 };
                 let m = {
                     let mut m = Mutation::new();
@@ -2394,6 +2398,7 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             let mut p = deliver_with(&played, order, None, &mut |p| {
                 tick(p);
                 p.engine.drop_broken(None).unwrap();
+                p.engine.reload().unwrap();
             });
             for pk in &played.packs {
                 let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());

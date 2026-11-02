@@ -127,6 +127,10 @@ pub enum DiagnosticKind {
     /// it, or holds the same state (`tids`: the reporting node, the thing; `commit`: the
     /// snapshot written).
     Repair,
+    /// A commit of this node's turned invalid after it was written: a required retention it had
+    /// not seen (spec/commits.md §5), a demotion. Its writes no longer read, and nothing re-sends
+    /// them (`commit`: it, `tids`: its things).
+    OwnWriteInvalid,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

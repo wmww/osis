@@ -680,7 +680,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
                 return Err(Error::Misuse("required.0^ is written whole"));
             }
             if am.ops.iter().any(|o| matches!(&o.op, osis_crdt::Op::Replace(v) if <osis_schema::core_types::RequiredRules as osis_schema::Codec>::from_value(v).is_ok_and(|r| !osis_schema::core_types::required_fits(&r)))) {
-                return Err(Error::Misuse("required.0^ over its bounds"));
+                return Err(Error::Misuse("required.0^ over MAX_REQUIRED_ENTRIES entries or a prefix over MAX_AK_BYTES"));
             }
         }
         let framing = match kind {

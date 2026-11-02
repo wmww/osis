@@ -1244,13 +1244,17 @@ fn unmerge_part(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, un: &Unmerge, fell: Option<
     Ok(in_place == Some(true))
 }
 
-/// Debug builds: the state of `(tid, ak)` after an un-merge in place is what rebuilding gives.
+/// Debug builds: the state of `(tid, ak)` after an un-merge in place is what rebuilding gives,
+/// as stored: a reopen forgets a deleted text element's char (spec/crdt.md §5.7, its creation's
+/// body gives it back on a rebuild, and only a fallen delete needs it: that rebuilds), so a state
+/// reopened and one kept in memory differ there and read alike.
 fn unmerged_as_rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     #[cfg(debug_assertions)]
     {
+        use crate::engine::state::encode;
         let want = rebuilt(tx, tid, ak, &[], &BTreeSet::new())?.0;
         let got = tx.state(tid, ak)?;
-        debug_assert!(got == want.as_ref(), "in-place un-merge of {tid:?} {ak:?} differs from a rebuild:\n  in place {got:?}\n  rebuilt  {want:?}");
+        debug_assert!(got.map(encode).transpose()? == want.as_ref().map(encode).transpose()?, "in-place un-merge of {tid:?} {ak:?} differs from a rebuild:\n  in place {got:?}\n  rebuilt  {want:?}");
     }
     #[cfg(not(debug_assertions))]
     let _ = (tx, tid, ak);
