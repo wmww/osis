@@ -256,11 +256,13 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
     let (fr, abs) = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().find(|x| x.1 == *c).map(|x| (x.2.clone(), x.3.clone())).unwrap_or_default();
     // the dates (a write a page's path repeats, such as the entry it lies under, dies once)
     let mut deaths = BTreeSet::new();
+    let mut undated = false;
     // a valid snapshot vouches for every write it carries (spec/permissions.md §5.2)
     crate::apply::each_held_piece(tx, c, ai, &mut |tx, f| {
         let Some(mut st) = tx.state_at(tid, ak, &f)? else { return Ok(()) };
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
+        undated |= ch.undated();
         let core = &*tx.core;
         deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(core, tid, &fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
         Ok(())
@@ -270,6 +272,10 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
         let a: Vec<Ts> = deaths.iter().copied().collect();
         let w = super::oracle::copies_deaths(tx, c, ai, tid, ak, ts, &|core, d| took(core, tid, &fr, &abs, &d.by))?;
         assert_eq!(a, w, "note_copies streamed vs whole");
+    }
+    // a copy of a held creation or delete, or an out-of-order flag: dated from the bodies alone
+    if undated {
+        mark_deaths_due(tx, tid, ak)?;
     }
     if deaths.is_empty() {
         return Ok(());
@@ -382,7 +388,8 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let snap = kind.is_some_and(|k| k.is_compaction());
         crate::apply::each_held_piece(tx, c, ai, &mut |tx, mut f| {
             let core = &*tx.core;
-            f.remove_dots(&|d| un.bad(d));
+            // a valid snapshot's copies all play (spec/permissions.md §5.2)
+            f.remove_dots(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
             if cp {
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, _)| x != c) } else { core.commit_of(tid, ak, d).is_some_and(|x| x != *c && held_part(core, &x, tid, ak).is_some()) });
             }

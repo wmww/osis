@@ -250,6 +250,40 @@ fn revoked_writer_forging_into_covered_counters_spec_perm_5_1() {
     assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("alice")), "Alice");
 }
 
+// spec/permissions.md §5.2 (dot reuse), spec/crdt.md §4.6: Bob writes "bob", Alice compacts
+// (her snapshot carries his write under his dot), then Bob signs a newer commit on the same
+// counters. Both of Bob's commits are void; the snapshot's copy alone counts: Alice reads "bob",
+// with and without a removal of Bob (frontier not listing his first commit) before the forgery.
+// Was issues/equivocation-after-snapshot.md: the forgery's write stayed because a valid snapshot
+// held a write under its dot, and the in-place un-merge differed from a rebuild.
+#[test]
+fn equivocation_under_snapshot_dot_reads_snapshot_copy_spec_perm_5_2() {
+    for (seed, remove) in [(0x7111, false), (0x7112, true)] {
+        let (mut lp, d, b, _) = setup(seed);
+        let reg = ak("t:reg.0");
+        let mut m = Mutation::new();
+        m.set(d, &REG, &s("bob")).unwrap();
+        let first = lp.peers[1].commit(m).unwrap().unwrap();
+        let lo = lp.peers[1].engine.header(&first).unwrap().aspects.iter().find(|a| a.ak == reg).unwrap().lo;
+        sync(&mut lp, 1, 0);
+        lp.advance(1_000);
+        lp.peers[0].engine.snapshot(&d, &reg).unwrap().unwrap();
+        lp.advance(DAY);
+        if remove {
+            let now = lp.peers[0].engine.now();
+            let f = lp.peers[0].engine.frontier(&of(b, d), now).unwrap();
+            assert!(!f.commits.contains(&first), "covered: not listed");
+            set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+            lp.advance(1_000);
+        }
+        let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
+        let forged = forge_reg(&mut lp, d, &reg, lo, ts, "forged");
+        lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap();
+        assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "remove {remove}");
+        assert!(!lp.peers[0].engine.body_valid(&first, &d, &reg).unwrap(), "remove {remove}: the first commit is void");
+    }
+}
+
 // spec/permissions.md §5.1, §5.2: Alice removes Bob holding his compacted tag and his
 // uncompacted register write: her frontier lists the register write only; both stay, at Alice
 // and at a fresh node that never gets the compacted commit (the snapshot vouches for it).

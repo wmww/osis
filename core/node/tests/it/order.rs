@@ -290,14 +290,6 @@ fn fit(e: &mut osis_node::Engine, t: Tid, a: &Ak, mut po: PathOp) -> PathOp {
     po
 }
 
-/// Whether a compaction of `op`'s aspect is left out of generated histories:
-/// issues/seq-snapshot-unmerge-order.md (known, open), a snapshot of a sequence with a writer's
-/// fallen writes un-merges differently by arrival order. Nothing fallen, `seq_compact_history`
-/// does compact them. Remove with the fix.
-fn skip_seq_snapshot_unmerge(op: u8) -> bool {
-    matches!(aspect_of(op).as_str(), "t:text.0" | "t:docs.0")
-}
-
 /// Points an aimed step's author and things at ones that can write it as far as that peer can
 /// tell, `t` choosing among them; an author none of which can stays as it is (and is refused).
 fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<CommitId>]) -> Step {
@@ -330,12 +322,11 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         Roster { by, t } => pick(lp, by, t, &admin).map(|(by, t)| Roster { by, t }),
         Compact { by, t, op } => {
             // an op of an aspect the author holds
-            let op = if skip_seq_snapshot_unmerge(op) { 0 } else { op };
             let holds = |lp: &LocalPeer, b: usize, x: &Tid| write(lp, b, x) && holding[b].contains(&(*x, aspect_of(op)));
             pick(lp, by, t, &holds).map(|(by, t)| Compact { by, t, op })
         }
         New { by, parent, write: w } => pick(lp, by, parent, &write).map(|(by, parent)| New { by, parent, write: w }),
-        Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact: compact && !(text && skip_seq_snapshot_unmerge(8)), also }),
+        Nested { by, other, t, k, text, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| Nested { by, other, t, k, text, compact, also }),
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Undo { by, back } => {
             // one of the author's last content commits
@@ -962,14 +953,15 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 continue;
             }
             let (x, y) = (e.deaths(&id, &a.tid, &a.ak).unwrap(), o.deaths.get(&k).copied().flatten());
-            let what = format!("{id:?} {:?} {}: here {x:?}, earliest superseders {y:?}", a.tid, a.ak.as_str());
+            let what = format!("{id:?} ({:?}) {:?} {}: here {x:?}, earliest superseders {y:?}", h.kind, a.tid, a.ak.as_str());
             if e.body_not_dropped(&id, &a.tid, &a.ak) {
-                // issues/seq-death-delete-first.md (known, open): no date where one is due, or a
-                // last death too early; a first death given is still checked
-                let skip_seq_death_delete_first = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0") && y.is_some_and(|y| x.is_none_or(|x| copies || x.0 >= y.0));
                 // issues/map-snapshot-death-missing.md (known, open): no date on a map snapshot
                 let skip_map_snapshot_death_missing = copies && a.ak.as_str() == "t:map.0" && x.is_none() && y.is_some();
-                let ok = skip_seq_death_delete_first || skip_map_snapshot_death_missing || match (x, y, copies) {
+                // issues/seq-redelete-death-order.md (known, open): a text creation deleted,
+                // undeleted and deleted again, or carried by a snapshot, gets a last death earlier
+                // than the oracle's, or none on a snapshot; a first death is still checked
+                let skip_seq_redelete_death_order = matches!(a.ak.as_str(), "t:text.0" | "t:docs.0") && y.is_some_and(|y| if copies { true } else { x.is_some_and(|x| x.0 >= y.0) });
+                let ok = skip_seq_redelete_death_order || skip_map_snapshot_death_missing || match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
                     (Some(x), Some(y), true) => x.1 >= y.1,
@@ -1039,22 +1031,8 @@ impl Judged {
 }
 
 /// A state's text, with what spec/crdt.md §5.7 leaves to the node taken out: a deleted text
-/// element's char (a node may drop it locally; a reopen has). And bare sequence records, which
-/// carry nothing and which stripping a snapshot's copies leaves in one order and not in another:
-/// issues/seq-bare-records-order.md (known, open).
+/// element's char (a node may drop it locally; a reopen has).
 fn plain_state(state: &str) -> String {
-    const BARE: &str = ": SeqElem { created: None, content: None, pos: [], deleted: None, span: 1 }";
-    let mut rest = state.to_string();
-    while let Some(i) = rest.find(BARE) {
-        // the record's key starts after the `{` of the elements or a `, ` between records
-        let start = rest[..i].rfind(['{', ' ']).map_or(0, |x| x + 1);
-        let mut end = i + BARE.len();
-        if rest[end..].starts_with(", ") {
-            end += 2;
-        }
-        rest.replace_range(start..end, "");
-    }
-    let state = rest.replace(", }", "}");
     const AT: &str = "SeqElem {";
     let mut parts = state.split(AT);
     let mut out = parts.next().unwrap_or("").to_string();
@@ -1934,40 +1912,11 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     seen.floors(name, seeds.len(), !cfg.par_orders && len >= 60);
 }
 
-// issues/seq-snapshot-unmerge-order.md: a text write fallen under a demotion, and a valid
-// snapshot of the aspect, read by order. Seed 1007.
+// spec/permissions.md §5.2, spec/crdt.md §4.6: 2's snapshot, invalid once 0 lowers 2 to read,
+// gave 1's text creations (1's put not held); stripping them leaves no record of them, as at a
+// node that never joined the snapshot. Seed 1028 (was issues/seq-bare-records-order.md).
 #[test]
-#[ignore]
-fn repro_seq_snapshot_unmerge_read_order_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Typed { by: 1, t: 0, op: 24, k: 2, v: 2 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 2 }, Demote { by: 0, t: 0, holder: 2, at: 1, to_read: false }, Sync { from: 2, to: 0 }, Compact { by: 0, t: 0, op: 24 }];
-    check(1007, &h, LARGE).unwrap();
-}
-
-// issues/seq-snapshot-unmerge-order.md: the same for texts in map entries (the second `v1` is the
-// fallen writer's own insert, not a char read twice). Seed 1018.
-#[test]
-#[ignore]
-fn repro_seq_snapshot_nested_read_order_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Nested { by: 2, other: 0, t: 0, k: 0, text: true, compact: false, also: false }, Compact { by: 0, t: 0, op: 26 }];
-    check(1018, &h, LARGE).unwrap();
-}
-
-// issues/seq-snapshot-unmerge-order.md: an in-place un-merge differs from a rebuild (a debug
-// assertion, in `play`). Seed 1045.
-#[test]
-#[ignore]
-fn repro_seq_snapshot_unmerge_in_place_spec_crdt_4_6() {
-    use Step::*;
-    let h = vec![Nested { by: 0, other: 1, t: 0, k: 0, text: true, compact: false, also: false }, Sync { from: 1, to: 2 }, Demote { by: 0, t: 0, holder: 1, at: 5, to_read: true }, Sync { from: 0, to: 2 }, Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 0, k: 2, text: true, compact: false, also: false }];
-    check(1045, &h, LARGE).unwrap();
-}
-
-// issues/seq-bare-records-order.md: records with no write left in one order only. Seed 1028.
-#[test]
-#[ignore]
-fn repro_seq_bare_records_order_spec_crdt_4_6() {
+fn seq_stripped_copies_leave_no_records_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Nested { by: 1, other: 2, t: 0, k: 1, text: true, compact: true, also: false }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }];
     let played = play(1028, &h);
@@ -1977,13 +1926,15 @@ fn repro_seq_bare_records_order_spec_crdt_4_6() {
         let mut p = deliver(&played, order);
         format!("{:?}", p.engine.state(&played.things[0], &ak("t:docs.0")).unwrap())
     };
-    assert_eq!(state(&held), state(&held.iter().rev().copied().collect::<Vec<_>>()));
+    let as_made = state(&held);
+    assert_eq!(as_made, state(&held.iter().rev().copied().collect::<Vec<_>>()));
+    assert!(!as_made.contains("created: None, content: None, pos: [], deleted: None"), "no bare record: {as_made}");
 }
 
-// issues/seq-death-delete-first.md: a kept text's insert, its delete held first: no death. Seed 1054.
+// spec/crdt.md §4.8, spec/commits.md §5: a kept text's insert dies at its delete's `ts` whether
+// the delete is held after it or before it. Seed 1054 (was issues/seq-death-delete-first.md).
 #[test]
-#[ignore]
-fn repro_seq_death_delete_first_spec_crdt_4_8() {
+fn seq_death_delete_first_spec_crdt_4_8() {
     use Step::*;
     // on an empty text the first inserts (`fit`), the second deletes it
     let h = vec![Typed { by: 0, t: 0, op: 24, k: 0, v: 6 }, Typed { by: 0, t: 0, op: 24, k: 0, v: 9 }];
@@ -1991,8 +1942,9 @@ fn repro_seq_death_delete_first_spec_crdt_4_8() {
     let b = played.base;
     let insert = played.packs[b].id;
     let death = |order: Vec<usize>| deliver(&played, &order).engine.deaths(&insert, &played.things[0], &ak("t:text.0")).unwrap();
-    assert!(death((0..b + 2).collect()).is_some(), "the delete held last dates it");
-    assert!(death((0..b).chain([b + 1, b]).collect()).is_some(), "the delete held first dates it too");
+    let after = death((0..b + 2).collect());
+    assert!(after.is_some(), "the delete held last dates it");
+    assert_eq!(death((0..b).chain([b + 1, b]).collect()), after, "the delete held first dates it alike");
 }
 
 // issues/map-snapshot-death-missing.md: a snapshot of a kept map and a later put of a key it holds:
@@ -2399,8 +2351,7 @@ fn new_device_alike_large_spec_permissions_5_1() {
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
-// nothing fallen (no role change, no hostile commit), which `skip_seq_snapshot_unmerge` keeps out
-// of the histories above: several writers, undo, partial holders.
+// nothing fallen (no role change, no hostile commit): several writers, undo, partial holders.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_seq_compact_large_spec_crdt_5_7() {
@@ -2527,6 +2478,31 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // write that A's undo (`ts` below the snapshot's) already killed: held after the undo, the
     // snapshot got no death and kept the undone value with no bound
     cases.push((2700027, snapshot_of_undone(), LARGE));
+    // seeds 1007, 1018, 1045 (spec/permissions.md §5.2, spec/crdt.md §4.6): a text insert fallen
+    // under a demotion, and a valid snapshot taken after the un-merge, carrying its creation
+    // without the char. Un-merge kept any write of the fallen delta under a dot a valid snapshot
+    // held a write of, the delta's char included: held after the snapshot it read, held before
+    // it did not (`x` vs `v2x`; in a map entry's text `v7v1` vs `v7v1v1`); and an in-place
+    // un-merge differed from a rebuild. Now the snapshot's copy alone stays (was
+    // issues/seq-snapshot-unmerge-order.md)
+    let h = vec![Typed { by: 1, t: 0, op: 24, k: 2, v: 2 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 2 }, Demote { by: 0, t: 0, holder: 2, at: 1, to_read: false }, Sync { from: 2, to: 0 }, Compact { by: 0, t: 0, op: 24 }];
+    cases.push((1007, h, LARGE));
+    let h = vec![Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Edge { by: 0, t: 0, holder: 2, role: Some(Role::Read) }, Nested { by: 2, other: 0, t: 0, k: 0, text: true, compact: false, also: false }, Compact { by: 0, t: 0, op: 26 }];
+    cases.push((1018, h, LARGE));
+    let h = vec![Nested { by: 0, other: 1, t: 0, k: 0, text: true, compact: false, also: false }, Sync { from: 1, to: 2 }, Demote { by: 0, t: 0, holder: 1, at: 5, to_read: true }, Sync { from: 0, to: 2 }, Nested { by: 0, other: 2, t: 0, k: 0, text: true, compact: true, also: true }, Nested { by: 2, other: 1, t: 0, k: 2, text: true, compact: false, also: false }];
+    cases.push((1045, h, LARGE));
+    // seed 4123 (spec/permissions.md §5.2): B's snapshot carries the shell of B's own text entry
+    // (its creation and chars pruned by a later reset: an entry with bare anchors only), B's
+    // put not held; the snapshot turned invalid after B's demotion, and what it gave went by
+    // writes, so the shell stayed: now its records carrying no write go too
+    let h = vec![Leave { by: 2, t: 3 }, Edge { by: 2, t: 7, holder: 2, role: Some(Role::Read) }, Typed { by: 1, t: 4, op: 26, k: 1, v: 5 }, Undo { by: 1, back: 0 }, Nested { by: 0, other: 1, t: 3, k: 2, text: true, compact: false, also: true }, NewTop { by: 0 }, Nested { by: 0, other: 1, t: 0, k: 2, text: true, compact: true, also: false }, New { by: 0, parent: 5, write: false }, Demote { by: 0, t: 3, holder: 1, at: 1, to_read: true }, Typed { by: 1, t: 1, op: 1, k: 1, v: 3 }, Typed { by: 0, t: 1, op: 10, k: 2, v: 9 }, Roster { by: 2, t: 3 }];
+    cases.push((4123, h.into_iter().map(|s| if matches!(s, NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), LARGE));
+    // seed 8026 (spec/crdt.md §4.8, spec/commits.md §5): B inserts, deletes, undoes the delete
+    // and undoes the undo; a kept text insert held after its undelete and before its delete got
+    // no death (the delete arriving lost to the undelete without killing anything in the state),
+    // and one held after both had its killer gone from the state (a recompute from the bodies)
+    let h = vec![Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 6 }, Undo { by: 1, back: 0 }, Typed { by: 1, t: 0, op: 24, k: 1, v: 8 }, Typed { by: 2, t: 0, op: 10, k: 1, v: 0 }, Undo { by: 1, back: 1 }];
+    cases.push((8026, h.into_iter().map(|s| Aim(Box::new(s))).collect(), Cfg { sync: true, ..LARGE }));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {

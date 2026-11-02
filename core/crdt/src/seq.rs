@@ -311,6 +311,7 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
     // one creation per dot: copies under other stamps are one write, the greater stamp wins
     // whole (anchor and char) and the lesser goes, as a position write too (§5.7 Join); of two
     // copies of one stamp the greater anchor and the greater char (§4.1 copy order)
+    let (creates, held) = (de.created.is_some(), se.created.is_some());
     match (&de.created, &se.created) {
         (Some(a), Some(b)) if a.0 > b.0 => {
             let old = b.clone();
@@ -336,17 +337,27 @@ fn merge_elem(d: &Dot, se: &mut SeqElem, de: SeqElem, text: bool, e: Option<&Sta
             }
         }
     }
+    let flagged = de.deleted.is_some();
     let raised = join_flag(se, de.deleted, de.undel, ch);
-    if text
-        && raised
-        && se.flag()
-        && let (Some((c, _)), Some((f, _))) = (&se.created, &se.deleted)
-    {
-        // a deleted element's creation write is dead (§4.8)
-        ch.died(c, f);
-    }
     join_pos(d, &mut se.pos, de.pos, ch);
     prune_fields(d, se, e, ch);
+    // after pruning (a creation a reset prunes died by the reset, §4.2): a text element's
+    // creation write is dead once a delete newer than it is held (§4.8). The join dates it where
+    // the arriving write is newer than all the record holds: a delete raising the flag (over an
+    // undelete too: a replay in `ts` order meets the same raise), or the creation arriving where
+    // the element is deleted and no copy of it was held. Anything else, out of order or a copy
+    // held already (a flag older than the held one, or equal to it; a creation under an undelete,
+    // whose delete is gone from the state; a copy of a held creation), is dated from the bodies
+    // alone. An embedded char (§7) dies with its register's write: only a delete raised on it
+    // counts.
+    if text && let (Some((c, _)), Some((f, del))) = (&se.created, &se.deleted) {
+        let derived = d.src.is_derived();
+        if *del && (raised || (creates && !held && !derived)) {
+            ch.died(c, f);
+        } else if !derived && (creates || (flagged && !raised)) {
+            ch.undatable();
+        }
+    }
     let ee = max_opt(e.cloned(), se.reset());
     if raised
         && !text
@@ -996,9 +1007,16 @@ pub(crate) fn remove_dots(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, nested: bool
 }
 
 /// `Fragment::strip_copies` past `remove_dots`: the creations (anchor and char) of elements a
-/// matching dot created go too, their records staying as anchors.
+/// matching dot created go too, and their records where no write is left (the copies never
+/// counted, spec/permissions.md §5.2: a node that never held them has no such record); one
+/// holding others' writes stays.
 pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: bool) {
-    for (d, el) in s.elems_mut().iter_mut() {
+    let elems = s.elems_mut();
+    // a range record of bare anchors may span deltas: edited per element
+    let ranges: Vec<Dot> = elems.iter().filter(|(d, e)| e.span > 1 && (0..e.span).any(|k| pred(nth(d, k).owner()))).map(|(d, _)| d.clone()).collect();
+    let held: Elems = ranges.into_iter().filter_map(|k| elems.remove(&k).map(|e| (k, e))).collect();
+    elems.extend(crate::seq_span::expand(held));
+    elems.retain(|d, el| {
         if pred(d.owner()) {
             el.created = None;
             el.pos.retain(|p| p.0.dot != *d);
@@ -1009,8 +1027,12 @@ pub(crate) fn drop_creations(s: &mut Seq, pred: &dyn Fn(&Dot) -> bool, keys: boo
         }
         if let SeqContent::Frag(f) = &mut el.content {
             f.drop_creations(pred, keys);
+            if f.is_empty() {
+                el.content = SeqContent::None;
+            }
         }
-    }
+        !pred(d.owner()) || el.is_record()
+    });
 }
 
 /// Elements of the embedding of register `r` into a text slot (§7); the caller sets the reset.

@@ -1,5 +1,6 @@
-//! What a join did: whether the read may have changed and which writes died (spec/crdt.md §4.8),
-//! so the node fires listeners and tracks retention per body without re-reading the state.
+//! What a join did: whether the read may have changed, which writes died (spec/crdt.md §4.8),
+//! and whether a death the state cannot date may have been met, so the node fires listeners and
+//! tracks retention per body without re-reading the state.
 
 use crate::stamp::{Dot, Stamp};
 use osis_base::Ts;
@@ -19,6 +20,7 @@ pub struct Death {
 pub struct Changes {
     changed: bool,
     deaths: Vec<Death>,
+    undated: bool,
 }
 
 impl Changes {
@@ -35,14 +37,25 @@ impl Changes {
     pub fn into_deaths(self) -> Vec<Death> {
         self.deaths
     }
+    /// A text element's write joined out of order or as a copy of one held (§5.7: a flag no
+    /// newer than the held one, a creation under a flag), whose effect on deaths the state
+    /// cannot show, so they are dated from the held bodies (spec/commits.md §5).
+    pub fn undated(&self) -> bool {
+        self.undated
+    }
     /// Adds what another join did (a join done in pieces, spec/crdt.md §8).
     pub fn merge(&mut self, o: Changes) {
         self.changed |= o.changed;
         self.deaths.extend(o.deaths);
+        self.undated |= o.undated;
     }
     /// Keeps the deaths `keep` accepts.
     pub fn retain_deaths(&mut self, keep: impl FnMut(&Death) -> bool) {
         self.deaths.retain(keep);
+    }
+    /// Records that a write landed whose death the state cannot date (`undated`).
+    pub(crate) fn undatable(&mut self) {
+        self.undated = true;
     }
     /// Records that a write landed or went, so the read may have changed.
     pub(crate) fn touch(&mut self) {
