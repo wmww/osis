@@ -884,11 +884,13 @@ pub(crate) fn note_carried_of(core: &mut Core, tid: &Tid, ak: &Ak, snap: &Commit
 /// the own body or the coverers give the delta's writes back the same way. A write of a delta
 /// dropped otherwise, or under a coverer dropped for its bounds (whose writes the state alone
 /// holds), stays.
+/// Records carrying no write (bare anchors, tombstones) count as given too: stripped, a record
+/// left with no write goes (spec/crdt.md §4.2), as at a node that never joined the snapshot.
 pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> Result<Vec<Owned>> {
     let Some(sai) = tx.core.ix.commits.get(snap).and_then(|m| m.aspect(tid, ak)) else { return Ok(Vec::new()) };
     let mut dots = Vec::new();
     super::each_held_piece(tx, snap, sai, &mut |tx, f| {
-        dots.extend(f.writes().into_iter().filter(|(d, ts)| ts.is_some() && !d.src.is_derived() && regiven(tx.core, tid, ak, d)).map(|(d, _)| d));
+        dots.extend(f.writes().into_iter().filter(|(d, _)| !d.src.is_derived() && regiven(tx.core, tid, ak, d)).map(|(d, _)| d));
         Ok(())
     })?;
     Ok(Owned::dots(dots))

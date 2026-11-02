@@ -1,7 +1,0 @@
-# A text insert held after its delete gets no death
-> Summary: under a relative keep bound, a text insert whose delete arrives first has no death at that node (`deaths` None, the delete's `ts` by the oracle), so a keep-at-most bound never drops its body; an insert of several chars can get a last death earlier than due (`(t, t)` here, `(t, t+5)` by the oracle), which a keep-at-most bound would drop early. Honest histories; spec/commits.md §5, spec/crdt.md §4.8.
-> Tags: tests, crdt, engine, retention
-
-Repro (fails): `cargo test -p osis-node --test it -- --ignored repro_seq_death_delete_first_spec_crdt_4_8` (order seed 1054).
-
-Dating never covered text: the harness's untyped writes could not write one. The early last death: 55 of 300 seeds of `order::seq_compact_history` (replay seed 8026 with `OSIS_ORDER_SEED=8026 cargo test -p osis-node --test it order::arrival_order_seq_compact_large -- --ignored`, with the skip removed); not minimized, likely one cause (one char's delete held before the insert counts for no last death). `order::dating` lets a body of `t:text.0` or `t:docs.0` have no date or an early last death until this is fixed (`skip_seq_death_delete_first`; a first death given is still checked, for a held delta body); remove that with the fix, which may show more of this family (a kept text in a map entry, list elements). The harness writes text under keep at least only, so the keep-at-most consequence is read from spec/commits.md §5, not played.

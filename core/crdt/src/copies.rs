@@ -245,14 +245,21 @@ impl Fragment {
                     x.drop_creations(pred, keys);
                 }
             }
-            // an entry's creation went with `remove_dots_in`
+            // an entry's creation went with `remove_dots_in`; an entry left holding nothing
+            // (its sequence's records gone) goes with it
             Fragment::Map(m) => {
                 if keys {
                     m.erase_keys(&|d| pred(d.owner()));
                 }
-                for x in m.entries.values_mut().filter_map(|e| e.frag.as_deref_mut()) {
-                    x.drop_creations(pred, keys);
-                }
+                m.entries.retain(|_, e| {
+                    if let Some(x) = e.frag.as_deref_mut() {
+                        x.drop_creations(pred, keys);
+                        if x.is_empty() {
+                            e.frag = None;
+                        }
+                    }
+                    e.reset.is_some() || e.frag.is_some() || e.created.is_some()
+                });
             }
             Fragment::Seq(s) => crate::seq::drop_creations(s, pred, keys),
             Fragment::Slots(Slots { slots, .. }) => {
@@ -328,6 +335,10 @@ impl CopyIndex {
     /// Every owner dot indexed.
     pub fn dots(&self) -> impl Iterator<Item = &Dot> {
         self.0.keys()
+    }
+    /// Whether a write is indexed under owner dot `d`.
+    pub fn holds(&self, d: &Dot) -> bool {
+        self.0.contains_key(d)
     }
     /// Whether a write is indexed under a dot in `ranges` (source, counters `lo..hi`): else
     /// `misstated` and `outside` find nothing, whatever they compare with.

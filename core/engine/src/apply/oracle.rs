@@ -41,9 +41,12 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
         }
         j.touched.note(&a.tid, &a.ak, &f);
         let before = if snap && crate::retention::any_bounded(tx.core, &a.tid, &a.ak) { Some(state_of(tx, &a.tid, &a.ak)?) } else { None };
-        let ch = join_into_state(tx, &a.tid, &a.ak, f)?;
+        let ch = join_into_state(tx, &a.tid, &a.ak, f, snap)?;
         if ch.is_changed() {
             j.changed.insert((a.tid, a.ak.clone()));
+        }
+        if ch.undated() {
+            crate::retention::mark_if_bounded(tx, &a.tid, &a.ak)?;
         }
         j.joined.push((a.tid, a.ak.clone(), snap, held_deaths(ch, before.as_ref())));
     }
@@ -77,7 +80,7 @@ fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, j: 
     }
     let held = f.is_some();
     if let Some(f) = &f {
-        join_into_state(tx, tid, ak, f.clone())?;
+        join_into_state(tx, tid, ak, f.clone(), false)?;
     }
     if !unmerge_fell(tx, tid, ak, f)? && !held {
         return Ok(());
@@ -102,11 +105,16 @@ fn state_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
     Ok(tx.core.states.get(&(*tid, ak.clone())).cloned().flatten())
 }
 
-fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment) -> Result<Changes> {
+fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, snap: bool) -> Result<Changes> {
     tx.load_lazy(tid, ak)?;
     let un = Unmerge::probe(tx, tid, ak, &delta)?;
     if !un.is_empty() {
-        delta.remove_dots(&|d| un.bad(d));
+        if snap {
+            let mine = delta.copy_index();
+            delta.remove_dots(&|d| un.bad(d) && !mine.holds(d));
+        } else {
+            delta.remove_dots(&|d| un.bad(d));
+        }
     }
     strip_valueless(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));
