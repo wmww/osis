@@ -188,7 +188,7 @@ Long aspect, wall (CPU), release, on a box at load 10-30. Reads and writes on di
 | one local write, one received commit (durable) | 12 ms (1.3), 12 ms (0.3); before 18 ms (7.7) | 16 ms (3.3), 16 ms (1.3); before 131 ms (128) | 2.4 ms (1.3), 2.7 ms (4.0), on tmpfs; before 1.65 s (1.65) |
 | ingest all in order, per message | 8.9 ms (0.65) | 12.4 ms (1.4), the rest disk; before under 3*10^4 in 11 min | 3.3 ms (3.0), 5.4 ms at the end; 56 min in all |
 | first sync through a host (sim, one writer, stores in memory) | 39 s (14), 3.9 ms per message, load 39; before 54 s (49) | 207 s (155), 2.1 ms per message, load 28; before not finished | not run: about 1 h from the ingest above |
-| upload by the one writer, per message (item 7) | 4.3 ms | 6.6 ms | not run |
+| upload by the one writer, per message (issue item 8) | 4.3 ms | 6.6 ms | not run |
 | sync pass, nothing new; one more message | 1.9 ms; 13 ms | 2.6 ms; 58 ms | not run |
 | store on disk, per message; store writes per message | 14 MiB, 1.47 KB (fsync per write); 70 KB | 193 MiB, 2.0 KB; 115 KB | 1.13-1.5 GiB, 1.2-1.6 KB; 170 KB |
 | open; resident after | 54 ms (40); 52 MiB | 0.7 s (0.6); 400 MiB | 5 s (5); 2.6 GiB, 4.7 GiB after the first validity flip (every header decoded) |

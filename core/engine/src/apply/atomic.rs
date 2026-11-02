@@ -429,7 +429,7 @@ pub(crate) struct Unmerge {
 #[derive(Default)]
 struct OwnedSet {
     commits: BTreeSet<CommitId>,
-    /// Per source, the counter ranges owned, sorted and disjoint.
+    /// Per source, the counters owned as inclusive ranges, sorted and disjoint.
     ranges: BTreeMap<osis_crdt::Source, Vec<(u64, u64)>>,
 }
 
@@ -438,11 +438,11 @@ impl OwnedSet {
         let mut set = OwnedSet::default();
         for o in owned {
             match o {
-                Owned::Range { src, lo, hi } => set.ranges.entry(src.clone()).or_default().push((*lo, *hi)),
+                Owned::Range { src, lo, hi } => set.ranges.entry(src.clone()).or_default().extend((lo < hi).then(|| (*lo, hi - 1))),
                 Owned::Commit(c) => {
                     set.commits.insert(*c);
                 }
-                Owned::Dots { src, ctrs } => set.ranges.entry(src.clone()).or_default().extend(ctrs.iter().map(|c| (*c, c.saturating_add(1)))),
+                Owned::Dots { src, ctrs } => set.ranges.entry(src.clone()).or_default().extend(ctrs.iter().map(|c| (*c, *c))),
             }
         }
         for v in set.ranges.values_mut() {
@@ -468,7 +468,7 @@ impl OwnedSet {
             return true;
         }
         self.ranges.get(&d.src).is_some_and(|v| {
-            let i = v.partition_point(|r| r.1 <= d.ctr);
+            let i = v.partition_point(|r| r.1 < d.ctr);
             v.get(i).is_some_and(|r| r.0 <= d.ctr)
         })
     }
@@ -1385,6 +1385,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
         }
         let _s = settled.is_none().then(|| crate::costs::span("rebuild: body"));
         let Some((ai, snap, valid)) = joining(tx, c)? else { continue };
+        debug_assert!(copies || !snap, "snapshot {c:?} of {tid:?} {ak:?} held and stored, not in `ix.snapshots`");
         if snap && !valid {
             continue;
         }
@@ -1405,4 +1406,52 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
     debug_assert!(settled.as_ref().is_none_or(|x| *x == st), "a rebuild of {tid:?} {ak:?} stopped early: {settled:?}, all bodies {st:?}");
     strip_valueless(tx.core, tid, ak, &mut st);
     Ok(((!st.is_empty()).then_some(st), misstating))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Owned, OwnedSet};
+    use osis_crdt::{Dot, Source};
+
+    // `OwnedSet::owns` is `Owned::owns` of any of them, counters at both ends of the range too.
+    #[test]
+    fn owned_set_matches_owned_spec_crdt_4_6() {
+        let srcs = [Source::node(osis_base::Tid::from_bytes([1; 15])), Source::node(osis_base::Tid::from_bytes([2; 15])), Source::commit(osis_base::CommitId([3; 32])), Source::commit(osis_base::CommitId([4; 32]))];
+        let ctrs: Vec<u64> = (1..14).chain([u64::MAX - 1, u64::MAX]).collect();
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as usize % n
+        };
+        for _ in 0..3000 {
+            let owned: Vec<Owned> = (0..next(6))
+                .map(|_| {
+                    let src = srcs[next(srcs.len())].clone();
+                    match next(3) {
+                        0 => {
+                            let (a, b) = (ctrs[next(ctrs.len())], ctrs[next(ctrs.len())]);
+                            Owned::Range { src, lo: a.min(b), hi: a.max(b) }
+                        }
+                        1 => Owned::Commit(osis_base::CommitId([3 + next(2) as u8; 32])),
+                        _ => {
+                            let mut c: Vec<u64> = (0..next(4)).map(|_| ctrs[next(ctrs.len())]).collect();
+                            c.sort_unstable();
+                            c.dedup();
+                            Owned::Dots { src, ctrs: c }
+                        }
+                    }
+                })
+                .collect();
+            let set = OwnedSet::of(&owned);
+            assert_eq!(set.is_empty(), owned.is_empty());
+            for src in &srcs {
+                for ctr in &ctrs {
+                    let d = Dot { src: src.clone(), ctr: *ctr };
+                    assert_eq!(set.owns(&d), owned.iter().any(|o| o.owns(&d)), "{owned:?} {d:?}");
+                }
+            }
+        }
+    }
 }

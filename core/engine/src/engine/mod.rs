@@ -921,14 +921,14 @@ impl Core {
 
     /// Sets `id`'s meta: every change to what a part holds goes through here or `take_meta`, so
     /// `ix.bounded_held` stays exact.
-    pub fn put_meta(&mut self, id: CommitId, m: Meta) {
+    pub(crate) fn put_meta(&mut self, id: CommitId, m: Meta) {
         self.count_bounded(&m, true);
         if let Some(old) = self.ix.commits.insert(id, m) {
             self.count_bounded(&old, false);
         }
     }
 
-    pub fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
+    pub(crate) fn take_meta(&mut self, id: &CommitId) -> Option<Meta> {
         let m = self.ix.commits.remove(id)?;
         self.count_bounded(&m, false);
         Some(m)

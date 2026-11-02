@@ -126,7 +126,8 @@ fn list_over_the_bound_refused_at_the_author() {
     fits.frontier = Some(of(room));
     assert_eq!(osis_base::encode(fits.frontier.as_ref().unwrap()).len(), MAX_LIST_BYTES);
     let built = build(fits, &mut sink).unwrap();
-    assert!(built.commit.header.links.frontier.is_some());
+    let link = built.commit.header.links.frontier.expect("linked");
+    assert_eq!(read_list(&link, &sec(0xd0, &t(1)), &mut sink, MAX_LIST_BYTES).unwrap().len(), MAX_LIST_BYTES);
     let mut over = b;
     over.frontier = Some(of(room + 1));
     assert!(matches!(build(over, &mut sink), Err(Error::TooLarge("header list"))));

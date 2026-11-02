@@ -1493,3 +1493,150 @@ fn fall_of_many_one_pass_spec_crdt_4_6() {
     assert_eq!(lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("winner")));
     assert_eq!(n, 1, "un-merge passes");
 }
+
+// spec/crdt.md §2.2, §4.6: writes tied on `ts`: a rebuild reads every tied body, so whichever
+// holder's write has the higher dot, a re-add gives the same winner as before the fall.
+#[test]
+fn register_rebuild_reads_tied_writes_spec_crdt_4_6() {
+    let mut lp = net(3, 96);
+    let t = new_thing(&mut lp, 0);
+    let (p1, p2) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, p2, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    set(&mut lp, 0, t, &REG, "old");
+    sync(&mut lp, 0, 1);
+    sync(&mut lp, 0, 2);
+    lp.advance(10);
+    set(&mut lp, 1, t, &REG, "one");
+    set(&mut lp, 2, t, &REG, "two");
+    sync(&mut lp, 1, 0);
+    sync(&mut lp, 2, 0);
+    let e = |lp: &mut LocalPeer| lp.peers[0].engine.body_page(&t, &ak("t:reg.0"), true, 0, 2).unwrap();
+    let page = e(&mut lp);
+    assert_eq!(page[0].ts, page[1].ts, "not tied");
+    let read = |lp: &mut LocalPeer| lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
+    let won = read(&mut lp);
+    for (p, other) in [(p1, "two"), (p2, "one")] {
+        lp.advance(10);
+        set_edge(&mut lp.peers[0].engine, t, p, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+        assert_eq!(read(&mut lp), Some(s(other)));
+        lp.advance(10);
+        set_edge(&mut lp.peers[0].engine, t, p, Some(edge(Role::Write)), None);
+        assert_eq!(read(&mut lp), won);
+    }
+    // both fall: the older write, which sits below the two tied ones
+    for p in [p1, p2] {
+        lp.advance(10);
+        set_edge(&mut lp.peers[0].engine, t, p, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    }
+    assert_eq!(read(&mut lp), Some(s("old")));
+}
+
+// spec/crdt.md §4.6: over random flips, ties and writes from members without the role, a register
+// reads the winner of the valid held bodies, at every node: what a rebuild stopping early must
+// keep (debug builds also compare each stop with reading every body). Holds in release too.
+#[test]
+fn register_rebuild_random_winner_of_valid_bodies_spec_crdt_4_6() {
+    for seed in 0..6u64 {
+        let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+        let mut next = move |n: usize| {
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            x as usize % n
+        };
+        let mut lp = net(3, 970 + seed);
+        let t = new_thing(&mut lp, 0);
+        let holders = [lp.peers[1].engine.tid(), lp.peers[2].engine.tid()];
+        for h in holders {
+            set_edge(&mut lp.peers[0].engine, t, h, Some(edge(Role::Write)), None);
+        }
+        sync(&mut lp, 0, 1);
+        sync(&mut lp, 0, 2);
+        let aspects = ["t:reg.0", "t:kept.0"];
+        let mut writer = [true; 2];
+        for step in 0..40 {
+            if next(2) == 0 {
+                lp.advance(10);
+            }
+            let k = aspects[next(2)];
+            match next(5) {
+                0..=2 => {
+                    let i = next(3);
+                    let mut m = Mutation::new();
+                    m.set(t, &ak(k), &s(&format!("{seed}.{step}"))).unwrap();
+                    // past the writer's rules: a member without the role still writes
+                    lp.peers[i].engine.commit_hostile(m).unwrap();
+                }
+                3 => {
+                    let (a, b) = (next(3), next(3));
+                    if a != b {
+                        sync(&mut lp, a, b);
+                    }
+                }
+                _ => {
+                    let w = next(2);
+                    lp.advance(10);
+                    let e = if writer[w] { None } else { Some(edge(Role::Write)) };
+                    let frontier = writer[w].then(|| osis_schema::core_types::Frontier::default().to_value());
+                    set_edge(&mut lp.peers[0].engine, t, holders[w], e, frontier);
+                    writer[w] = !writer[w];
+                }
+            }
+        }
+        for _ in 0..2 {
+            for (a, b) in [(0, 1), (0, 2), (1, 2), (1, 0), (2, 0), (2, 1)] {
+                sync(&mut lp, a, b);
+            }
+        }
+        for name in aspects {
+            let a = ak(name);
+            let reads: Vec<_> = (0..3).map(|i| lp.peers[i].engine.get(&t, &a).unwrap()).collect();
+            assert_eq!(reads[0], reads[1], "seed {seed} {name}");
+            assert_eq!(reads[0], reads[2], "seed {seed} {name}");
+            for (i, read) in reads.iter().enumerate() {
+                let e = &mut lp.peers[i].engine;
+                let n = e.held_bodies(&t, &a);
+                let page = e.body_page(&t, &a, true, 0, n).unwrap();
+                let mut valid = page.iter().filter(|b| b.valid);
+                let Some(top) = valid.next() else {
+                    assert_eq!(*read, None, "seed {seed} {name}: nothing valid");
+                    continue;
+                };
+                let tied: Vec<_> = std::iter::once(top).chain(valid.take_while(|b| b.ts == top.ts)).map(|b| b.value.clone()).collect();
+                assert!(tied.contains(read), "seed {seed} {name} peer {i}: {read:?} of {tied:?}");
+            }
+        }
+    }
+}
+
+// spec/commits.md §5, §4.6 of spec/crdt.md: a write superseded only once its superseder rises: a
+// body kept at most 0 after replaced goes with the rise (`rejudge_deaths`, a bound being held).
+#[test]
+fn keep_at_most_rejudged_on_rise_spec_commits_5() {
+    let mut lp = net(2, 98);
+    let t = new_thing(&mut lp, 0);
+    let p1 = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    set(&mut lp, 0, t, &GONE, "kept");
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, p1, None, Some(osis_schema::core_types::Frontier::default().to_value()));
+    lp.advance(10);
+    set(&mut lp, 1, t, &GONE, "late");
+    sync(&mut lp, 1, 0);
+    let a = ak("t:gone.0");
+    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(s("kept")));
+    assert_eq!(lp.peers[0].engine.invalid_writes(&t, &a).len(), 1);
+    let held = |lp: &mut LocalPeer| lp.peers[0].engine.held_bodies(&t, &a);
+    assert_eq!(held(&mut lp), 2);
+    lp.advance(10);
+    set_edge(&mut lp.peers[0].engine, t, p1, Some(edge(Role::Write)), None);
+    assert_eq!(lp.peers[0].engine.get(&t, &a).unwrap(), Some(s("late")));
+    assert_eq!(held(&mut lp), 1, "the replaced body, its bound passed");
+}
