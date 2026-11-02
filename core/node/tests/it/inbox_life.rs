@@ -778,6 +778,48 @@ fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     assert!(net.engine(b).roster(&g).contains_key(&bob));
 }
 
+// spec/sync.md §3, spec/commits.md §4 (copies): a declined invite stays unapplied though a reader's junk
+// label copy of its commit gets it looked at: the inbox copy is no copy to ingest again.
+#[test]
+fn junk_label_copy_applies_no_declined_invite_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob_at(Vec::new());
+    net.nodes[b].accepts = false;
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c]);
+    assert!(net.sync(b).decline_invite(c).unwrap());
+    let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();
+    let mut junk = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
+    for p in &mut junk.parts {
+        p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![7; 40])]));
+    }
+    let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
+    let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let conn = net.conn_to(b, host).expect("connected");
+    let ev = osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None };
+    let m = osis_proto::Message::Push { label: home, events: vec![ev], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 1 << 40 } };
+    net.feed(b, osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&m.encode()) });
+    net.settle(10_000);
+    assert!(net.engine(b).pending().iter().any(|x| x.0 == c), "the junk holds its slots");
+    // what the commit waits for comes: the junk goes, and the commit is looked at
+    for id in net.engine(a).commit_ids().into_iter().filter(|i| *i != c) {
+        let pk = net.engine(a).package(&id).unwrap().unwrap();
+        let _ = net.engine(b).ingest(&pk.bytes, pk.blobs);
+    }
+    net.engine(b).reexamine().unwrap();
+    net.restart(b, 2);
+    net.nodes[b].accepts = false;
+    net.feed(b, osis_node::sync::Event::Local);
+    net.settle(10_000);
+    assert!(net.engine(b).pending().iter().all(|x| x.0 != c));
+    assert!(!net.engine(b).commit_ids().contains(&c), "declined");
+    assert_eq!(net.sync(b).redelivered, 0);
+}
+
 fn net_is_role(net: &mut Net, a: usize, c: &osis_base::CommitId, g: &Tid) -> bool {
     net.engine(a).header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|x| x.tid == *g && x.ak.as_str() == "roles.0"))
 }

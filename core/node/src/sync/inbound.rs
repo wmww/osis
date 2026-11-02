@@ -427,6 +427,7 @@ impl SyncEngine {
     /// retries every unopened entry while new secrets keep arriving.
     pub(crate) fn open_entries(&mut self, l: LabelId, ids: &[BlobId]) -> Result<()> {
         let mut todo: Vec<(LabelId, BlobId)> = ids.iter().map(|b| (l, *b)).collect();
+        let start = self.secrets_count();
         for _ in 0..MAX_ROUNDS {
             let before = self.secrets_count();
             let mut commits: Vec<(Vec<u8>, osis_commit::CommitBlob)> = Vec::new();
@@ -442,10 +443,10 @@ impl SyncEngine {
             if self.secrets_count() == before {
                 break;
             }
-            self.reread_boxes = true;
             todo = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|(k, _)| *k).collect();
         }
         self.engine.reexamine()?;
+        self.reread_boxes |= self.secrets_count() != start;
         self.recheck_doubts();
         self.vet_inbox_hints()
     }
@@ -455,86 +456,108 @@ impl SyncEngine {
     /// `apply::with_pending`). Every commit bytes this node ingests are an entry whose blob it keeps
     /// (a label's, under `BlobRec.key`; an inbox's, opened again under its held keys), so nothing is
     /// stored for this, and a flood cannot keep a part out however large while the entries are there.
+    /// Also after new secrets: the boxes of a commit's other copies (`with_pending`). A copy that is junk
+    /// anywhere is no source: a true part in it also has its author's copy (a holder of the part who
+    /// deletes that one can withhold it anyway).
     ///
-    /// Invariant (bounded): a copy `examine` would drop anything of is `Some(false)` by
-    /// `parts_genuine`, with the same inputs, and is not ingested again (an entry marked `Kind::Bad`
-    /// once by `genuine`), so a round names a commit again only for what a new record or copy just
-    /// proved junk; a commit is visited once a call with at most one round per entry, and a name left
-    /// after that goes: an entry costs one judgment per name, and a name needs a junk copy in a slot.
-    /// Also after new secrets: the boxes of a commit's other copies (`with_pending`).
+    /// Invariant (no work without a junk copy stored): a name needs a stored copy proved junk, and a copy
+    /// is stored only from an entry not judged false (a copy `examine` would drop anything of is
+    /// `Some(false)` by `parts_genuine`, with the same inputs: marked `Kind::Bad`, not ingested again) on
+    /// a slot left empty. So a commit's names run out, a true copy's slot goes to it, and in steady state
+    /// this costs nothing. Should the invariant ever fail, a commit past one visit per entry waits for the
+    /// next step rather than spin here: a bound on work, never on what is looked at.
     pub(crate) fn redeliver(&mut self) -> Result<()> {
-        let mut force: BTreeSet<CommitId> = BTreeSet::new();
-        if std::mem::take(&mut self.reread_boxes) {
-            force.extend(self.contested_boxes()?);
+        if std::mem::take(&mut self.start_look) {
+            self.name_after_crash();
         }
+        let mut force: BTreeSet<CommitId> = if std::mem::take(&mut self.reread_boxes) { self.contested_boxes()?.into_iter().collect() } else { BTreeSet::new() };
         let mut todo = self.engine.take_redeliver();
         todo.extend(force.iter().copied());
         if todo.is_empty() {
             return Ok(());
         }
+        let before = self.secrets_count();
         let inbox = self.inbox_by_commit();
-        let mut visited = BTreeSet::new();
+        let mut visits: BTreeMap<CommitId, usize> = BTreeMap::new();
+        let mut later = Vec::new();
         while let Some(c) = todo.pop_first() {
-            if !visited.insert(c) {
+            let forced = force.remove(&c);
+            let entries: Vec<BlobId> = self.state.by_commit.get(&c).into_iter().flatten().copied().collect();
+            let inbox = inbox.get(&c).map_or(&[][..], Vec::as_slice);
+            let visit = visits.entry(c).or_default();
+            *visit += 1;
+            if *visit > 1 + entries.len() + inbox.len() {
+                later.push(c);
                 continue;
             }
-            let forced = force.contains(&c);
-            let n = self.state.by_commit.get(&c).map_or(0, BTreeSet::len);
-            let inbox = inbox.get(&c).map_or(&[][..], Vec::as_slice);
-            for round in 0..=n + inbox.len() {
-                let held = self.engine.held_slots(&c)?;
-                let entries: Vec<BlobId> = self.state.by_commit.get(&c).into_iter().flatten().copied().collect();
-                for b in entries {
-                    let Some(r) = self.state.blobs.get(&b) else { continue };
-                    let brings = (forced && round == 0) || r.parts.iter().any(|p| !held.contains(p));
-                    let key = r.key.clone();
-                    if !brings {
-                        continue;
-                    }
-                    self.genuine(&b);
-                    if self.genuine.get(&b) == Some(&false) {
-                        continue;
-                    }
-                    let Some(bytes) = self.engine.blob(&b)? else { continue };
-                    let Ok((pt, _)) = open_commit(&bytes, &key) else { continue };
-                    self.redelivered += 1;
-                    if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
-                        self.diag(format!("ingest {c:?} again: {e}"));
-                    }
+            let mut held = self.engine.held_slots(&c)?;
+            for b in entries {
+                let Some(r) = self.state.blobs.get(&b) else { continue };
+                let (parts, key) = (r.parts.clone(), r.key.clone());
+                if !forced && parts.iter().all(|p| held.contains(p)) {
+                    continue;
                 }
-                for (l, b) in inbox {
-                    let Some(bytes) = self.engine.blob(b)? else { continue };
-                    let Some((_, payload)) = self.open_inbox(l, &bytes) else { continue };
-                    let pt = osis_base::encode(&payload.commit);
-                    let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
-                    let brings = (forced && round == 0) || blob.parts.iter().any(|p| !held.contains(&(p.ai, p.di)));
-                    if !brings || self.engine.parts_genuine(&blob) == Some(false) {
-                        continue;
-                    }
-                    self.redelivered += 1;
-                    if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
-                        self.diag(format!("ingest {c:?} again: {e}"));
-                    }
+                self.genuine(&b);
+                if self.genuine.get(&b) == Some(&false) {
+                    continue;
                 }
-                self.engine.reexamine()?;
-                let mut named = self.engine.take_redeliver();
-                let again = named.remove(&c);
-                todo.extend(named);
-                if !again {
-                    break;
-                }
+                let Some(bytes) = self.engine.blob(&b)? else { continue };
+                let Ok((pt, _)) = open_commit(&bytes, &key) else { continue };
+                self.ingest_again(&c, &pt);
+                held.extend(parts);
             }
+            for (l, b) in inbox {
+                let Some(bytes) = self.engine.blob(b)? else { continue };
+                let Some((_, payload)) = self.open_inbox(l, &bytes) else { continue };
+                let pt = osis_base::encode(&payload.commit);
+                let Ok(blob) = osis_commit::CommitBlob::decode(&pt) else { continue };
+                if (!forced && blob.parts.iter().all(|p| held.contains(&(p.ai, p.di)))) || self.engine.parts_genuine(&blob) == Some(false) {
+                    continue;
+                }
+                self.ingest_again(&c, &pt);
+                held.extend(blob.parts.iter().map(|p| (p.ai, p.di)));
+            }
+            self.engine.reexamine()?;
+            todo.extend(self.engine.take_redeliver());
         }
+        for c in later {
+            self.engine.name_redeliver(c);
+        }
+        self.reread_boxes |= self.secrets_count() != before;
         Ok(())
     }
 
-    /// The inbox entries under the synced labels by the commit they carry.
+    fn ingest_again(&mut self, c: &CommitId, plaintext: &[u8]) {
+        self.redelivered += 1;
+        if let Err(e) = self.engine.ingest(plaintext, Vec::new()) {
+            self.diag(format!("ingest {c:?} again: {e}"));
+        }
+    }
+
+    /// A crash may have lost what the engine named (`redeliver`). Looked at once per start: what pends,
+    /// a commit with an entry that is neither applied nor pending (gone with a junk signature or all its
+    /// junk), and an applied commit with an entry on an aspect it misses (a waiting part's junk slot gone).
+    fn name_after_crash(&mut self) {
+        let ix = &self.engine.core.ix;
+        let mut named: Vec<CommitId> = ix.pending.keys().copied().collect();
+        named.extend(self.state.by_commit.iter().filter(|(c, blobs)| match ix.commits.get(c) {
+            None => true,
+            Some(m) => blobs.iter().filter_map(|b| self.state.blobs.get(b)).any(|r| r.parts.iter().any(|p| m.missing.contains(&p.0))),
+        }).map(|(c, _)| *c));
+        for c in named {
+            self.engine.name_redeliver(c);
+        }
+    }
+
+    /// The inbox entries under the synced labels by the commit they carry, but for what the user declined.
     fn inbox_by_commit(&mut self) -> BTreeMap<CommitId, Vec<(LabelId, BlobId)>> {
         let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
         let mut out: BTreeMap<CommitId, Vec<(LabelId, BlobId)>> = BTreeMap::new();
         for l in labels {
             for b in self.state.of_kind(&l, 2) {
-                if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, b)).map(|e| &e.kind) {
+                if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, b)).map(|e| &e.kind)
+                    && !self.state.declined.contains(c)
+                {
                     out.entry(*c).or_default().push((l, b));
                 }
             }
@@ -982,7 +1005,10 @@ impl SyncEngine {
     }
 
     /// Drops a commit blob no label entry names any more whose deltas are not all held (its
-    /// key and ciphertext: a dropped body's copies go, spec/commits.md §5).
+    /// key and ciphertext: a dropped body's copies go, spec/commits.md §5). A pending commit's true copy
+    /// goes so too, a junk copy perhaps holding its slot (`redeliver` then finds nothing): keeping it
+    /// would store what a sender floods and deletes, and the deletion is what a body's holders repair
+    /// by uploading it again.
     pub(crate) fn forget_blob(&mut self, b: &BlobId) -> Result<()> {
         let Some(r) = self.state.blobs.get(b) else { return Ok(()) };
         let dropped = self.engine.core.ix.commits.get(&r.commit).is_some_and(|m| r.parts.iter().any(|p| m.dropped.contains_key(&p.0)));

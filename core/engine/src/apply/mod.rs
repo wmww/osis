@@ -382,9 +382,10 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     // a copy holding only what does not hash is no copy of it: refused, as if it never came
     let only_junk = !blob.parts.is_empty() && junk.len() == blob.parts.len() && blob.parts.iter().any(|p| h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h)));
     if !junk.is_empty() {
-        // a slot's first copy, kept while it could not be checked: a true copy may be held (a part of
-        // the wrong class has no true copy)
-        if tx.core.ix.pending.contains_key(id) && junk.iter().any(|(ai, _)| h.aspects.get(*ai).is_none_or(|a| a.ak.lifetime() == class_of(&h))) {
+        // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
+        // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
+        let kept_out = |p: &osis_commit::Part| junk.contains(&(p.ai, p.di)) && h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h));
+        if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }
         blob.parts.retain(|p| !junk.contains(&(p.ai, p.di)));
@@ -715,6 +716,16 @@ fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<
         && let Some((_, old)) = tx.txn.get_pending(id)?
         && let Ok(mut old) = CommitBlob::decode(&old)
     {
+        // what a true copy is judged by below; while the header's lists are away a `created.0` copy
+        // cannot prove itself and is discarded like any other (issues/linked-header-junk-record.md)
+        if !old.header.is_resolved()
+            && let Some(dedup) = tx.core.dedup(&old.header.actor)
+        {
+            let mut h = old.header.clone();
+            if h.resolve(&mut TxBlobs::new(&mut tx.txn), &dedup, MAX_LIST_BYTES).is_ok() {
+                old.header = h;
+            }
+        }
         // a slot the header does not list has no true copy: a sender could grow the blob by them
         if old.header.is_resolved() {
             let h = old.header.clone();
@@ -1127,6 +1138,9 @@ impl Engine {
                     Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
                     Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),
                     Ok(Exam::Parked) => debug_assert!(false, "pending commit {id:?} left out of reexamine would park"),
+                    // a delta wait is not woken by the record that proves its stored copies junk: they
+                    // go when the wait ends (`examine`), nothing else of it having changed
+                    Err(Error::BadInput("delta hash")) if want == Some(Reason::WaitDeltas) => {}
                     Err(e) => debug_assert!(false, "pending commit {id:?} left out of reexamine: {e}"),
                 }
             }

@@ -480,6 +480,8 @@ pub struct SyncEngine {
     pub(crate) genuine: BTreeMap<osis_base::BlobId, bool>,
     /// New secrets: the boxes of pending commits' other copies are read again (`redeliver`).
     pub(crate) reread_boxes: bool,
+    /// The first `redeliver` of this start looks for what a crash lost (`name_after_crash`).
+    pub(crate) start_look: bool,
     /// Entries `redeliver` ingested again since the start.
     #[doc(hidden)]
     pub redelivered: u64,
@@ -600,13 +602,6 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
-        // a crash may have lost what the engine named (`redeliver`): a commit waiting, or gone with a
-        // junk signature, is looked at once
-        for c in state.by_commit.keys() {
-            if !engine.core.ix.commits.contains_key(c) || engine.core.ix.pending.contains_key(c) {
-                engine.name_redeliver(*c);
-            }
-        }
         engine.core.receipts_only = state.receipts_only.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
@@ -646,6 +641,7 @@ impl SyncEngine {
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
             reread_boxes: true,
+            start_look: true,
             redelivered: 0,
             settle_at: None,
             local_dirty: true,
