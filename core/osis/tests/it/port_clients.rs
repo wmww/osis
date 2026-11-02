@@ -527,6 +527,138 @@ fn registry_through_the_owner_session() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// spec/wire.md §11.2, notes/client-port.md §3: `group.0` written as an aspect (a path op, a whole value) places nothing the actor may not read, as the group calls: the check judges what the mutation writes, not which call recorded it
+#[test]
+fn group_aspect_ops_place_only_what_it_reads() {
+    let x = node();
+    let items = osis_schema::Path(vec![osis_schema::Step::Field(0)]);
+    let (_, _, c) = x.client(Role::Write);
+    let hidden = |r: osis::Result<()>| assert!(matches!(r, Err(Error::UnknownThing { .. })), "{r:?}");
+    hidden(c.write_with(|w| w.at(x.g, ct::GROUP).path(items.clone()).add(&x.out)));
+    hidden(c.write_with(|w| w.at(x.g, ct::GROUP).path(items.clone()).add(&Tid::from_bytes([9; 15]))));
+    let with_out = ct::Group { items: [x.t, x.out].into_iter().collect(), subgroups: Default::default() };
+    hidden(c.write_with(|w| w.at(x.g, ct::GROUP).set(&with_out)));
+    hidden(c.write_with(|w| w.at(x.g, ct::GROUP).replace(&with_out)));
+    assert!(!x.n.groups_of(x.out).item_of.contains(&x.g));
+    // what it reads, and what the batch creates
+    let g2 = c
+        .write_with(|w| {
+            let m = w.create(x.g)?;
+            w.at(x.g, ct::GROUP).path(items.clone()).add(&m)?;
+            Ok(m)
+        })
+        .unwrap();
+    assert!(x.n.groups_of(g2).item_of.contains(&x.g));
+    // a listed name it may not read may go: it holds write on the list
+    x.n.write_with(|w| w.place(x.out, x.g)).unwrap();
+    c.write_with(|w| w.unplace(x.out, x.g)).unwrap();
+    assert!(!x.n.groups_of(x.out).item_of.contains(&x.g));
+}
+
+// spec/wire.md §11.2 (a thing the actor may not read answers as unknown), spec/commits.md §7: a group it may not read scopes nothing, even an item it reads: no membership oracle, and no undo through it
+#[test]
+fn hidden_group_scopes_nothing() {
+    let x = node();
+    let name = ak("name.0");
+    let (_, _, c) = x.client(Role::Write);
+    x.n.write_with(|w| w.place(x.t, x.h)).unwrap();
+    c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Int(1))).unwrap();
+    let ghost = Tid::from_bytes([9; 15]);
+    let scoped = |g: Tid| c.commits(&CommitQuery::new().scope(Scope::Group(g))).unwrap();
+    assert!(scoped(ghost).is_empty());
+    assert!(scoped(x.h).is_empty(), "an item's commits through a group it may not read");
+    assert_eq!(c.undo(&Scope::Group(x.h)).unwrap(), None);
+    assert_eq!(x.n.get(x.t, name.clone()).unwrap(), Some(Value::Int(1)));
+    assert!(!scoped(x.g).is_empty());
+    assert!(c.undo(&Scope::Group(x.g)).unwrap().is_some());
+    // the synthetic list of its groups shows what `groups_of` shows
+    assert_eq!(c.at(x.t, ak("groups.0")).get_value().unwrap(), Some(Value::Set([Value::Tid(x.g)].into_iter().collect())));
+    assert!(matches!(x.n.at(x.t, ak("groups.0")).get_value().unwrap(), Some(Value::Set(s)) if s.len() == 2));
+}
+
+// spec/wire.md §11.2, notes/client-port.md §3 (Undo/redo/revert): a revert that would write what the actor may not read is refused naming only what it reads; an ephemeral change of a thing it may not read answers as one with no log here
+#[test]
+fn revert_names_only_what_it_reads() {
+    let x = node();
+    let name = ak("name.0");
+    let (_, _, c) = x.client(Role::Write);
+    let id = {
+        let mut w = x.n.write();
+        w.at(x.t, name.clone()).set(&Value::Int(7)).unwrap();
+        w.at(x.out, name.clone()).set(&Value::Int(7)).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    let r = c.revert(id);
+    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == x.t), "{r:?}");
+    assert_eq!(x.n.get(x.out, name.clone()).unwrap(), Some(Value::Int(7)));
+    let eph = {
+        let mut w = x.n.write();
+        w.at(x.out, ak("t:e.0~")).set(&Value::Int(7)).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    let r = c.revert(eph);
+    assert!(matches!(r, Err(Error::NotUndoable { .. })), "{r:?}");
+    assert_eq!(x.n.get(x.out, ak("t:e.0~")).unwrap(), Some(Value::Int(7)));
+}
+
+// spec/crdt.md §4.6, spec/permissions.md §5.2, notes/client-port.md §3: reverting a creation deletes the thing: every held aspect, every placement this node may write. The node may; the actor must too: a writer removes no admin-only aspect that way, and no placement in a group it may not write
+#[test]
+fn revert_of_a_creation_needs_what_the_delete_writes() {
+    let x = node();
+    let (name, adm) = (ak("name.0"), ak("t:adm.0^"));
+    let (_, _, c) = x.client(Role::Write);
+    let made = |x: &Node| {
+        let mut w = x.n.write();
+        let m = w.create(x.g).unwrap();
+        w.at(m, name.clone()).set(&Value::Int(1)).unwrap();
+        w.place(m, x.g).unwrap();
+        (m, w.commit().unwrap().unwrap().id)
+    };
+    let (m, id) = made(&x);
+    x.n.write_with(|w| w.at(m, adm.clone()).set(&Value::Int(2))).unwrap();
+    assert!(matches!(c.revert(id), Err(Error::Permission { .. })));
+    assert_eq!(x.n.get(m, adm).unwrap(), Some(Value::Int(2)));
+    let (m, id) = made(&x);
+    x.n.write_with(|w| w.place(m, x.h)).unwrap();
+    let r = c.revert(id);
+    assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid != x.h), "{r:?}");
+    assert!(x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&m), "a placement in a group it may not write");
+    assert!(x.n.knows(m));
+    // nothing beyond its rights: the revert runs
+    let (m, id) = made(&x);
+    c.revert(id).unwrap();
+    assert!(!x.n.knows(m));
+}
+
+// spec/data-model.md §8, spec/wire.md §11.2, notes/client-port.md §3: persisting a thing converts its ephemeral placements in the groups the writer may write: the actor's, not this node's
+#[test]
+fn persisting_converts_only_placements_the_actor_may_write() {
+    let x = node();
+    let (_, _, c) = x.client(Role::Write);
+    let e = x
+        .n
+        .write_with(|w| {
+            let e = w.create(x.g)?;
+            w.place(e, x.h)?;
+            Ok(e)
+        })
+        .unwrap();
+    c.write_with(|w| w.at(e, ak("name.0")).set(&Value::Int(1))).unwrap();
+    assert_eq!(x.n.get(e, ak("name.0")).unwrap(), Some(Value::Int(1)));
+    assert!(!x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&e), "written durably with this node's rights");
+    // the same write by the node converts it
+    let e2 = x
+        .n
+        .write_with(|w| {
+            let e = w.create(x.g)?;
+            w.place(e, x.h)?;
+            Ok(e)
+        })
+        .unwrap();
+    x.n.write_with(|w| w.at(e2, ak("name.0")).set(&Value::Int(1))).unwrap();
+    assert!(x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&e2));
+}
+
 /// A small xorshift (the walk's choices; failure messages name the seed).
 struct Rng(u64);
 impl Rng {
@@ -555,6 +687,9 @@ fn walk(seed: u64) {
     let mut on_group: [Option<Role>; 2] = [None, None];
     let mut on_thing: Option<Role> = None; // on `x.out`, directly
     let (g, h) = (x.g, x.h);
+    // an item of a group it may not read tells nothing of that group
+    x.n.write_with(|w| w.place(x.t, h)).unwrap();
+    let items = osis_schema::Path(vec![osis_schema::Step::Field(0)]);
     let (mut a, mut s) = x.n.add_client(None).unwrap();
     let mut c = x.attach(&s).unwrap();
     let skip = Demotion { sync: WaitForSync::Skip, backdate: None };
@@ -562,7 +697,7 @@ fn walk(seed: u64) {
     let mut last: [Value; 4] = std::array::from_fn(|_| Value::Str("x".into()));
     for step in 0..40 {
         let why = format!("seed {seed:#x} step {step}");
-        match rng.next(9) {
+        match rng.next(10) {
             0 | 1 => {
                 let i = rng.next(2) as usize;
                 let r = [Role::Read, Role::Write][rng.next(2) as usize];
@@ -628,6 +763,19 @@ fn walk(seed: u64) {
                     x.n.write_with(|w| w.at(node, ct::CLIENTS).path(osis_schema::Path::root()).put(&a, &ct::Client { until: None, ..e })).unwrap();
                 }
             }
+            7 => {
+                // a placement through an op on the group's aspect: it needs write on the group
+                // and to read the thing; a successful one leaves it placed only for this step
+                let i = rng.next(2) as usize;
+                let target = [g, h][i];
+                let may = on_group[i] >= Some(Role::Write) && on_thing.is_some();
+                let r = c.write_with(|w| w.at(target, ct::GROUP).path(items.clone()).add(&x.out));
+                assert_eq!(r.is_ok(), may, "{why}: placing out in group {i} with {:?} on it and {on_thing:?} on out: {r:?}", on_group[i]);
+                assert_eq!(x.n.groups_of(x.out).item_of.contains(&target), may, "{why}");
+                if may {
+                    x.n.write_with(|w| w.unplace(x.out, target)).unwrap();
+                }
+            }
             _ => {
                 // a write through the client on a random thing
                 let (t, _) = things[rng.next(4) as usize];
@@ -653,6 +801,13 @@ fn walk(seed: u64) {
             assert_eq!(c.knows(*t), role.is_some(), "{why}: knows {t}");
             assert_eq!(c.role_on(*t), role, "{why}: role_on {t}");
             assert_eq!(c.commits(&CommitQuery::new().scope(Scope::Thing(*t))).unwrap().is_empty(), role.is_none(), "{why}: commits {t}");
+        }
+        for (i, group) in [g, h].into_iter().enumerate() {
+            assert_eq!(c.commits(&CommitQuery::new().scope(Scope::Group(group))).unwrap().is_empty(), on_group[i].is_none(), "{why}: scope of group {i}");
+        }
+        if on_group[0].is_some() {
+            let shown = c.at(x.t, ak("groups.0")).get_value().unwrap();
+            assert!(matches!(&shown, Some(Value::Set(s)) if s.contains(&Value::Tid(h)) == on_group[1].is_some()), "{why}: groups.0 {shown:?}");
         }
         // what it may not ever read, whatever it holds
         assert!(!c.knows(x.n.me()) && !c.knows(x.n.node()), "{why}");

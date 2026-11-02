@@ -109,9 +109,10 @@ impl Osis {
         }
         let node = self.node();
         let Some(e) = self.get(node, ct::CLIENTS)?.unwrap_or_default().remove(&actor) else { return Ok(false) };
-        let now = self.now();
-        if e.until.is_none_or(|u| u > now) {
-            self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).put(&actor, &ct::Client { until: Some(now), ..e }))?;
+        // ended under any clock: one moved back revives no half-removed client
+        let ended = Some(WallMs(0));
+        if e.until != ended {
+            self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).put(&actor, &ct::Client { until: ended, ..e }))?;
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             let done = self.engine(|x| x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced }))?;

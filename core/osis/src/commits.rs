@@ -209,6 +209,11 @@ impl Osis {
             }
             Scope::Group(g) => {
                 let g = self.read_local(|r| r.resolve(*g));
+                // acting as an actor: a group it may not read names nothing, not even an item it
+                // reads (that would tell the group from an unknown tid)
+                if self.read_local(|r| r.hidden(g)) {
+                    return Ok(Vec::new());
+                }
                 things(&|e, x| *x == g || e.groups_of(x).contains(&g))?
             }
         })
@@ -457,6 +462,12 @@ impl Osis {
                 }
             }
             if let Some(a) = self.acting {
+                // an ephemeral change of what it may not read: as one with no log here
+                if let ChangeId::Ephemeral(_) = target
+                    && !e.ephemeral_log().iter().filter(|l| l.id == target).all(|l| l.aspects.iter().any(|(t, _)| e.readable_by(&a, t)))
+                {
+                    return Err(blocked(DropReason::Compacted));
+                }
                 e.check_revert_as(&a, target)?;
             }
             match e.revert_change(target, me)? {

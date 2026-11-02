@@ -147,7 +147,12 @@ impl Reader<'_> {
         if self.hidden(tid) {
             return Ok((tid, None));
         }
-        Ok((tid, self.e.get(&tid, ak)?))
+        let v = self.e.get(&tid, ak)?;
+        // `groups.0`: the local index, shown as `groups_of` shows it
+        if let (Some(_), "groups.0", Some(Value::Set(s))) = (self.actor, ak.as_str(), &v) {
+            return Ok((tid, Some(Value::Set(s.iter().filter(|g| !matches!(g, Value::Tid(t) if self.hidden(*t))).cloned().collect()))));
+        }
+        Ok((tid, v))
     }
 
     fn materialize(&mut self, tid: &Tid, v: Value) -> Result<Value> {

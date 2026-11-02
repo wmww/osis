@@ -166,12 +166,6 @@ impl<'d> Write<'d> {
         if self.created.contains(&t) || self.db.attached() || self.db.holds(t) { Ok(t) } else { Err(Error::UnknownThing { tid: t }) }
     }
 
-    /// A group op's member resolved. Acting as an actor it must be something that actor reads:
-    /// else the commit's checks of the member would tell a hidden thing from an unknown one.
-    fn member(&self, t: Tid) -> Result<Tid> {
-        if self.db.acting.is_some() { self.known(t) } else { Ok(self.resolve(t)) }
-    }
-
     /// The index of `key` (AK `ak`) in the key table: one entry, and one copy of its schema,
     /// per (AK, schema) of the batch. A schema is told apart by address: keys borrow theirs
     /// from a static or an `Arc` the table shares, so the address is not reused meanwhile.
@@ -228,7 +222,7 @@ impl<'d> Write<'d> {
 
     fn group(&mut self, g: Tid, items: bool, member: Tid, add: bool, exp: Option<Duration>) -> Result<()> {
         let g = self.known(g)?;
-        let member = self.member(member)?;
+        let member = self.resolve(member);
         self.group_expiry(g, exp)?;
         // an ephemeral item's placement is an ephemeral write (notes/ephemeral.md Ephemeral
         // placements): `Engine::write` splits the group ops by what persists
@@ -475,7 +469,7 @@ impl Osis {
                     }
                     WriteOp::MakeGroup(g)
                 }
-                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.member(o.tid()?)?, items: o.bool()?, add: o.bool()? },
+                2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.resolve(o.tid()?), items: o.bool()?, add: o.bool()? },
                 3 => WriteOp::Path { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, op: op(o.next()?)? },
                 4 => {
                     let (tid, k, at) = (w.resolve(o.tid()?), key(o.uint()?)?, WallMs(o.uint()?));

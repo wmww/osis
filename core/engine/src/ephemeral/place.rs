@@ -115,7 +115,9 @@ impl Engine {
             }
             out
         };
-        let may_place = |g: &Tid| check_authority_with(&self.core, node, records, g, GROUP.ak(), ts).is_ok();
+        // a confined batch (`Mutation::confine`) converts placements by its actor's rights
+        let placer = if m.confined { m.actor.unwrap_or(node) } else { node };
+        let may_place = |g: &Tid| check_authority_with(&self.core, placer, records, g, GROUP.ak(), ts).is_ok();
         let gak = group_ak()?;
         let pak = placed_ak()?;
         // member removals of this batch: an unplace beside the persisting write wins over the

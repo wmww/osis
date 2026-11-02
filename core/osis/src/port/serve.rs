@@ -547,6 +547,8 @@ impl Worker {
             match d {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
+                // a signal of what it may not read takes none of its budget (a lapse would tell)
+                Delivery::Fired { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
                 Delivery::Aspect { ak, source, .. } => mark(Some(ak), source),
                 // a fired signal carries a fifth item: delivered even when equal to the last
                 Delivery::Fired { tid, ak, source, value } => queue(Value::List(vec![Value::Tid(tid), c::ak_v(&ak), c::read_v(&Ok(Some(value))), c::source_v(&source), Value::Bool(true)])),
