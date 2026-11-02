@@ -3184,3 +3184,28 @@ fn lying_frontier_leaves_writes_spec_crdt_2_1() {
     assert_eq!(lp.peers[0].engine.get_typed(&t, &REG).unwrap(), Some(s("after")));
 }
 
+
+// spec/permissions.md §5.1 (what A had received as of T; covered commits left out only under a
+// snapshot that vouches after the demotion): Alice receives Bob's write before a backdated
+// revoke's cut and Bob's own snapshot covering it after. The snapshot is not listed (received
+// late), so it is invalid after the removal; the write must be listed and stay.
+#[test]
+fn backdated_frontier_lists_write_covered_after_cut_spec_perm_5_1() {
+    let (mut lp, d, b, _) = setup(0x7171);
+    let reg = ak("t:reg.0");
+    let mut m = Mutation::new();
+    m.set(d, &REG, &s("bob")).unwrap();
+    let first = lp.peers[1].commit(m).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    lp.advance(1_000);
+    let cut = lp.peers[0].engine.now();
+    lp.advance(1_000);
+    let snap = lp.peers[1].engine.snapshot(&d, &reg).unwrap().unwrap();
+    sync(&mut lp, 1, 0);
+    assert_eq!(lp.peers[0].engine.covered(&snap, &first, &d, &reg).unwrap(), Some(true));
+    lp.advance(1_000);
+    let f = lp.peers[0].engine.frontier(&of(b, d), cut).unwrap();
+    assert!(f.commits.contains(&first) && !f.commits.contains(&snap), "{f:?}");
+    set_edge(&mut lp.peers[0].engine, d, b, None, Some(f.to_value()));
+    assert_eq!(lp.peers[0].engine.get(&d, &reg).unwrap(), Some(s("bob")), "received by the cut, should stay");
+}

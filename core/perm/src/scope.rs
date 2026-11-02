@@ -2,7 +2,7 @@
 //! settled walk with the demotion: for each node it demotes, the things whose role-class and
 //! admin-only (`^`) aspects it puts in question (a fall below a role, and the things holding
 //! the edge writes its audit drops) and the things whose every aspect it puts in question (a
-//! fall below write). The node fills the counters from its receipt record (§5.1: what it had
+//! fall below write). The node lists the commit IDs it had received there (§5.1: what it had
 //! received as of T).
 
 use crate::timeline::Timeline;
@@ -15,9 +15,9 @@ use std::sync::Arc;
 /// The aspects a demotion puts in question, per demoted node.
 #[derive(Clone, PartialEq, Eq, Debug, Default)]
 pub struct DemotionScope {
-    /// Node -> things whose role-class and admin-only aspects need its counters.
+    /// Node -> things whose role-class and admin-only aspects the frontier lists its commits on.
     pub roles: BTreeMap<Tid, BTreeSet<Tid>>,
-    /// Node -> things whose every aspect needs its counters.
+    /// Node -> things on whose every aspect the frontier lists its commits.
     pub content: BTreeMap<Tid, BTreeSet<Tid>>,
 }
 
