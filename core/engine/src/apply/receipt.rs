@@ -105,8 +105,9 @@ fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: Wall
     Ok(false)
 }
 
-/// Whether some delta of held commit `c` is on a thing this node does not hold (neither held
-/// nor dropped here): it cannot judge that delta droppable, so a frontier lists the commit.
+/// Whether some delta of held commit `c` is missing here (neither held nor dropped: on a thing
+/// this node does not hold, still to arrive, or dropped at its keep bounds and so counting as
+/// never received): it cannot judge that delta droppable, so a frontier lists the commit.
 fn part_missing(core: &crate::engine::Core, c: &CommitId) -> bool {
     core.ix.commits.get(c).is_none_or(|m| !m.missing.is_empty())
 }
