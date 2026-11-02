@@ -355,11 +355,16 @@ pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> 
 /// 8413009), it dies at the earliest one newer than it (`TextDeletes`), as its own delta, had it
 /// played, would have (seed 7731022). That death adds to what the join reports, never hides one
 /// (a reset's at the same `ts` dates a snapshot that had not applied it, seed 8413015).
-fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>, dels: &mut TextDeletes) {
+fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>, dels: Option<&mut TextDeletes>) {
     let mut ch = Changes::new();
-    let mut late = if copies { dels.deaths(&f) } else { Vec::new() };
-    late.retain(|d| !dead.contains(&d.stamp));
-    dels.add(&f);
+    let mut late = Vec::new();
+    if let Some(dels) = dels {
+        if copies {
+            late = dels.deaths(&f);
+            late.retain(|d| !dead.contains(&d.stamp));
+        }
+        dels.add(&f);
+    }
     let g = copies.then(|| f.clone());
     st.join_into(f, None, &mut ch);
     for d in ch.into_deaths() {
@@ -396,7 +401,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             // supersede like any held (spec/crdt.md §4.7)
             if let Some(mut f) = residue_of(tx, c, tid, ak)? {
                 un.strip(&mut f);
-                join(&mut st, f, false, &mut deaths, &mut dead, &mut dels);
+                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels));
             }
             continue;
         };
@@ -423,14 +428,15 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 let plays_own = |x: &CommitId, ai: usize| x != c && core.ix.commits.get(x).is_some_and(|m| m.valid_at(ai));
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, ai)| plays_own(x, *ai)) } else { core.commit_of(tid, ak, d).is_some_and(|x| held_part(core, &x, tid, ak).is_some_and(|ai| plays_own(&x, ai))) });
             }
-            join(&mut st, f, cp, &mut deaths, &mut dead, &mut dels);
+            join(&mut st, f, cp, &mut deaths, &mut dead, Some(&mut dels));
             Ok(())
         })?;
     }
     {
         let _s = crate::costs::span("deaths: state");
         if let Some(cur) = tx.state(tid, ak)?.cloned() {
-            join(&mut st, cur, false, &mut deaths, &mut dead, &mut dels);
+            // joined last: no copy meets its deletes
+            join(&mut st, cur, false, &mut deaths, &mut dead, None);
         }
     }
     // a text creation dies once, at its earliest delete (spec/crdt.md §4.8; a delete over an

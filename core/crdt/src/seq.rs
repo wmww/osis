@@ -1148,13 +1148,14 @@ pub(crate) use crate::seq_ops::{create, element_at, op, overlay, undo, wrap_elem
 #[derive(Default)]
 pub struct TextDeletes(BTreeMap<(Vec<At>, Dot), std::collections::BTreeSet<Stamp>>);
 
-/// A step to a nested text (`TextDeletes`): a field, a case, a map entry, a list element's
-/// content, an encoding's slot.
+/// A step to a nested text (`TextDeletes`): a field, a case, a map entry (by dot: a dot's keyed
+/// and key-erased records are one entry for superseding, §5.6), a list element's content, an
+/// encoding's slot.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum At {
     Field(u64),
     Case(u64),
-    Entry(crate::fragment::Eid),
+    Entry(Dot),
     Elem(Dot),
     Slot(Encoding),
 }
@@ -1212,7 +1213,7 @@ fn text_records(f: &Fragment, path: &mut Vec<At>, each: &mut dyn FnMut(&[At], &D
         }
         Fragment::Struct(crate::fragment::Struct { fields, .. }) => fields.iter().for_each(|(i, x)| sub(At::Field(*i), x, path, each)),
         Fragment::Enum(crate::fragment::Enum { payloads, .. }) => payloads.iter().for_each(|(i, x)| sub(At::Case(*i), x, path, each)),
-        Fragment::Map(m) => m.entries.iter().filter_map(|(id, e)| Some((id, e.frag.as_deref()?))).for_each(|(id, x)| sub(At::Entry(id.clone()), x, path, each)),
+        Fragment::Map(m) => m.entries.iter().filter_map(|(id, e)| Some((id, e.frag.as_deref()?))).for_each(|(id, x)| sub(At::Entry(id.dot.clone()), x, path, each)),
         Fragment::Slots(s) => s.slots.iter().for_each(|(k, x)| sub(At::Slot(*k), x, path, each)),
         Fragment::Register(_) | Fragment::Set(_) | Fragment::Bag(_) => {}
     }

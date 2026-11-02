@@ -867,6 +867,27 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
     assert_eq!(f.read(), Some(Value::List(Vec::new())));
 }
 
+/// §5.6 (the records of one dot are one entry for superseding), §4.8: a text in a map entry whose
+/// char's creation is left value-less in the key-erased record (an expired put, as a snapshot
+/// copies it) dies at a delete of the char in the keyed record (`TextDeletes`, the deaths replay).
+#[test]
+fn text_deletes_across_key_erased_record_spec_5_6() {
+    use crate::ops::{Writer, create};
+    use std::collections::BTreeMap;
+    let x = Source::node(Tid::from_bytes([1; 15]));
+    let view = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
+    let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
+    let put = create(&mut Writer::new(ts(5), x.clone(), 1), &view, &map("ab")).unwrap();
+    let del = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &view, &map("b")).unwrap().unwrap();
+    let mut erased = put.clone();
+    erased.strip(&|d| d.ctr < 7);
+    let mut dels = crate::TextDeletes::default();
+    dels.add(&del);
+    let deaths = dels.deaths(&erased);
+    assert_eq!(deaths.len(), 1, "{deaths:?}\n{erased:?}");
+    assert_eq!((deaths[0].at, deaths[0].element), (ts(8), true));
+}
+
 /// §5.6 (the records of one dot are one entry for superseding), §4.8: a key-erased record's
 /// value-less write (a snapshot's copy of an expiring put) is beaten by a later write at its
 /// position in the keyed record (a put into the entry by a node holding the entry live): the
