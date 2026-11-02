@@ -7,7 +7,7 @@ use super::blobs::Body;
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_commit::Decoded;
-use osis_base::{Ak, BlobId, CommitId, CreationRecord, Tid};
+use osis_base::{Ak, BlobId, ChainStep, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Aspects a node card holds (each its own commit, spec/permissions.md §4).
@@ -134,19 +134,10 @@ impl Engine {
             }
         }
         // the owner chain's `created.0` records
-        let mut cur = Some(*g);
-        let mut seen = BTreeSet::new();
-        while let Some(t) = cur {
-            if !seen.insert(t) {
-                break;
-            }
+        for t in self.core.owner_chain(g).filter_map(|s| s.thing()) {
             if let Some(c) = self.latest_on(&t, "created.0") {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
-            cur = match self.core.created(&t) {
-                Some(CreationRecord::Thing { owner, .. }) => Some(*owner),
-                _ => None,
-            };
         }
         if let Some(tl) = self.core.timelines.get(g) {
             let certs = tl.certificates(&me, g);
@@ -170,21 +161,17 @@ impl Engine {
             None => osis_perm::Certificates::default(),
         };
         for x in [t, node] {
-            let mut cur = Some(*x);
-            for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-                let Some(y) = cur else { break };
-                cs.created.insert(y);
-                cur = match self.core.created(&y) {
-                    Some(CreationRecord::Thing { owner, .. }) => {
-                        cs.keys.insert(y);
-                        Some(*owner)
+            for step in self.core.owner_chain(x) {
+                match step {
+                    ChainStep::Up { thing, .. } | ChainStep::Ownerless { thing, .. } => {
+                        cs.created.insert(thing);
+                        cs.keys.insert(thing);
                     }
-                    Some(CreationRecord::Ownerless { .. }) => {
-                        cs.keys.insert(y);
-                        None
+                    ChainStep::Key(y) | ChainStep::Unknown(y) => {
+                        cs.created.insert(y);
                     }
-                    _ => None,
-                };
+                    ChainStep::TooDeep => {}
+                }
             }
         }
         cs

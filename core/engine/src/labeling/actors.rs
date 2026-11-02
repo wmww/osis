@@ -3,14 +3,11 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{CreationRecord, LabelId, Role, Tid};
+use osis_base::{ChainStep, LabelId, Role, Tid};
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// Owner chains end at a key actor within `MAX_OWNER_DEPTH` links (spec/permissions.md §1).
-const MAX_CHAIN: usize = osis_base::format::MAX_OWNER_DEPTH + 1;
 
 /// A label of a group as its `label.0` records it (spec/sync.md §2).
 #[derive(Clone, Debug)]
@@ -48,16 +45,16 @@ impl Core {
     /// The actor whose secrets `t`'s derive from: up the owner chain to a thing with secrets of
     /// its own or a key actor.
     pub fn secret_actor(&self, t: &Tid) -> Option<Tid> {
-        let mut cur = *t;
-        for _ in 0..MAX_CHAIN {
+        for step in self.owner_chain(t) {
+            let cur = step.thing()?;
             if self.ix.own_keys.contains(&cur) || cur == self.id.tid() {
                 return Some(cur);
             }
-            match self.created(&cur)? {
-                CreationRecord::Thing { owner, .. } => cur = *owner,
-                CreationRecord::KeyActor { .. } => return Some(cur),
-                // has secrets of its own from its creation; not held yet
-                CreationRecord::Ownerless { .. } => return None,
+            match step {
+                ChainStep::Up { .. } => {}
+                ChainStep::Key(k) => return Some(k),
+                // an ownerless thing has secrets of its own from its creation; not held yet
+                _ => return None,
             }
         }
         None
@@ -67,15 +64,8 @@ impl Core {
     /// read or above on the actor they derive from (spec/sync.md §3, entitlement).
     pub fn may_read(&self, x: &Tid, t: &Tid) -> bool {
         let Some(a) = self.secret_actor(t) else { return false };
-        let mut cur = a;
-        for _ in 0..MAX_CHAIN {
-            if cur == *x {
-                return true;
-            }
-            match self.created(&cur) {
-                Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-                _ => break,
-            }
+        if self.owner_chain(&a).filter_map(|s| s.thing()).any(|c| c == *x) {
+            return true;
         }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
         crate::engine::write::role_of(self, x, &a, ts) >= Some(Role::Read)

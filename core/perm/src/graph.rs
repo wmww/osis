@@ -3,21 +3,9 @@
 
 use crate::held::HeldSet;
 use crate::types::{earliest, mark, put, Edge};
-use osis_base::format::MAX_OWNER_DEPTH;
-use osis_base::{CreationRecord, Role, Tid, Ts, WallMs};
+use osis_base::{ChainStep, CreationRecord, Owner, Role, Tid, Ts, WallMs, owner_chain};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
-
-/// A thing's owner link, from its verified `created.0` record.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Owner {
-    Actor(Tid),
-    /// A key actor: owns itself.
-    Key,
-    /// An ownerless thing: no owner link; the record's first admin holds an admin edge on it
-    /// from the start (spec/permissions.md §1).
-    Ownerless(Tid),
-}
 
 /// Authority class of a node on a thing (spec/permissions.md §5.1 step 3), ordered: owner
 /// chain above edge admin above every invite level.
@@ -69,11 +57,7 @@ impl Owners {
         o
     }
     pub fn insert(&mut self, t: Tid, rec: &CreationRecord) {
-        let link = match rec {
-            CreationRecord::Thing { owner, .. } => Owner::Actor(*owner),
-            CreationRecord::KeyActor { .. } => Owner::Key,
-            CreationRecord::Ownerless { admin, .. } => Owner::Ownerless(*admin),
-        };
+        let link = rec.owner_link();
         if let Owner::Actor(y) = link {
             self.owned.entry(y).or_default().push(t);
         }
@@ -107,9 +91,11 @@ impl Owners {
             _ => None,
         }
     }
-    /// Strict ancestors of `t` by ownership, nearest first, and the key actor at the top if the
-    /// chain reaches one (`t` itself for a key actor) within `MAX_OWNER_DEPTH` owner links
-    /// (spec/permissions.md §1: a deeper thing has no owner chain). O(`MAX_OWNER_DEPTH`).
+    /// Strict ancestors of `t` by ownership, nearest first (an ownerless top the last, a chain
+    /// with an unknown record up to that one), and the key actor at the top if the chain reaches
+    /// one (`t` itself for a key actor). None of either for a thing more than `MAX_OWNER_DEPTH`
+    /// owner links below its top (spec/permissions.md §1: it has no owner chain).
+    /// O(`MAX_OWNER_DEPTH`).
     pub fn chain(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let chains = self.chains.get_or_init(|| self.owner.keys().map(|t| (*t, self.chain_searched(t))).collect());
         chains.get(t).cloned().unwrap_or_else(|| self.chain_searched(t))
@@ -117,20 +103,18 @@ impl Owners {
 
     fn chain_searched(&self, t: &Tid) -> (Vec<Tid>, Option<Tid>) {
         let mut up = Vec::new();
-        let mut cur = *t;
-        for _ in 0..=MAX_OWNER_DEPTH {
-            match self.owner(&cur) {
-                Some(Owner::Key) => return (up, Some(cur)),
-                Some(Owner::Actor(y)) if y != *t && !up.contains(&y) => {
-                    up.push(y);
-                    cur = y;
-                }
-                _ => return (up, None),
+        for step in owner_chain(*t, |x| self.owner(x)) {
+            match step {
+                ChainStep::Up { owner, .. } => up.push(owner),
+                ChainStep::Key(k) => return (up, Some(k)),
+                ChainStep::TooDeep => return (Vec::new(), None),
+                ChainStep::Ownerless { .. } | ChainStep::Unknown(_) => break,
             }
         }
         (up, None)
     }
 }
+
 
 /// An edge state: every current `roles.0` edge. The per-target and per-holder maps are
 /// shared between clones until written (a kept state costs O(targets + holders), not

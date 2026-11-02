@@ -261,17 +261,13 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
 /// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the
 /// nearest actor's above it. `None` for a key actor (direct delivery only).
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    let mut cur = *holder;
-    for _ in 0..64 {
+    let chain: Vec<Tid> = tx.core.owner_chain(holder).filter_map(|s| s.thing()).collect();
+    for cur in chain {
         if tx.core.is_key_actor(&cur) {
             return Ok(None);
         }
         if let Some(i) = Core::keys_in(tx, &cur)?.and_then(|k| k.inbox) {
             return Ok(Some((cur, i)));
-        }
-        match tx.core.owner(&cur) {
-            Some(o) => cur = o,
-            None => return Ok(None),
         }
     }
     Ok(None)

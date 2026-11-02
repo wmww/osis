@@ -446,13 +446,11 @@ pub fn delete_key<'a>(keys: &'a HeadKeys, item: &osis_label::DeleteItem) -> Opti
 fn published_by_actor(core: &crate::engine::Core, labeled: &std::collections::BTreeSet<Tid>) -> std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> {
     let mut map: std::collections::BTreeMap<Tid, std::collections::BTreeSet<Tid>> = std::collections::BTreeMap::new();
     for h in labeled {
-        let mut cur = *h;
-        for _ in 0..64 {
-            let Some(osis_base::CreationRecord::Thing { owner, .. }) = core.created(&cur) else { break };
-            cur = *owner;
-            if labeled.contains(&cur) && core.ix.own_keys.contains(&cur) {
-                if cur != *h {
-                    map.entry(cur).or_default().insert(*h);
+        for step in core.owner_chain(h) {
+            let osis_base::ChainStep::Up { owner, .. } = step else { break };
+            if labeled.contains(&owner) && core.ix.own_keys.contains(&owner) {
+                if owner != *h {
+                    map.entry(owner).or_default().insert(*h);
                 }
                 break;
             }

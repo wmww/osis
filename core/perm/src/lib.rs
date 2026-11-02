@@ -21,7 +21,7 @@ mod walk;
 
 pub use cert::{project, verify, Certificates};
 pub use content::Validity;
-pub use graph::{Class, Edges, Owner, Owners, Standing};
+pub use graph::{Class, Edges, Owners, Standing};
 pub use held::{HeldSet, MemoryHeldSet};
 pub use incremental::{Changed, SaveDone, Saves, Timelines};
 pub use moves::{MoveIndex, RESOLUTION_HOPS};

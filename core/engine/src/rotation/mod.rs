@@ -422,14 +422,19 @@ pub(crate) fn above(core: &Core, a: &Tid) -> Vec<Tid> {
 /// uncovered: it must not encrypt under them.
 pub(crate) fn ensure_rotated(tx: &mut Tx<'_>, who: Tid, a: Tid, done: &mut Done) -> Result<BTreeSet<Role>> {
     // a plain thing follows its owner's epochs
-    let mut a = a;
-    let mut owners = BTreeSet::new();
-    while !tx.core.has_own_secrets(&a) {
-        match tx.core.owner(&a) {
-            Some(o) if owners.insert(a) && !owners.contains(&o) && !tx.core.is_key_actor(&o) => a = o,
-            _ => return Ok(BTreeSet::new()),
+    let mut found = None;
+    for step in tx.core.owner_chain(&a) {
+        let Some(t) = step.thing() else { break };
+        if tx.core.has_own_secrets(&t) {
+            found = Some(t);
+            break;
+        }
+        match step {
+            osis_base::ChainStep::Up { owner, .. } if !tx.core.is_key_actor(&owner) => {}
+            _ => break,
         }
     }
+    let Some(a) = found else { return Ok(BTreeSet::new()) };
     let firsts = |tx: &mut Tx<'_>, x: &Tid| -> Result<Vec<Tid>> {
         let f: BTreeSet<Tid> = departures(tx, x)?.into_iter().filter_map(|d| d.via.first().copied()).collect();
         Ok(f.into_iter().rev().collect())

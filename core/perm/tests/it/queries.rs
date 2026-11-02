@@ -587,8 +587,26 @@ fn owner_chain_capped_spec_permissions_1() {
     let (up, k) = o.chain(&at_cap);
     assert_eq!((up.len(), up.last(), k), (MAX_OWNER_DEPTH, Some(&key), Some(key)));
     let (up, k) = o.chain(chain.last().unwrap());
-    assert_eq!(k, None, "one link deeper: no owner chain");
-    assert!(up.len() <= MAX_OWNER_DEPTH + 1);
+    assert_eq!((up.len(), k), (0, None), "one link deeper: no owner chain");
+}
+
+/// §1: the key actor holds owner-chain class on a thing `MAX_OWNER_DEPTH` links below it and
+/// none one link deeper (the engine judges writes there invalid; no class from the links above).
+#[test]
+fn chain_class_capped_spec_permissions_1() {
+    use osis_base::format::MAX_OWNER_DEPTH;
+    use osis_perm::Class;
+    let mut w = World::new();
+    let k = w.nodes(1)[0];
+    let mut chain = vec![w.thing(k)];
+    for _ in 0..MAX_OWNER_DEPTH {
+        let t = w.thing(*chain.last().unwrap());
+        chain.push(t);
+    }
+    // chain[i] is i + 1 links below k
+    let tl = Timeline::evaluate(&w.held());
+    assert_eq!(tl.class(&k, &chain[MAX_OWNER_DEPTH - 1], At::END), Class::Chain);
+    assert_ne!(tl.class(&k, &chain[MAX_OWNER_DEPTH], At::END), Class::Chain);
 }
 
 /// A `View` with one edge patched answers every authority query as the edge state cloned with

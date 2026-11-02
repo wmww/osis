@@ -1461,19 +1461,7 @@ fn same_set(s: &[osis_label::Address], old: &BTreeSet<osis_label::Address>) -> b
 fn follow_labels(e: &mut osis_node::Engine, me: Tid, fixed: &BTreeSet<Tid>, old: &BTreeSet<osis_label::Address>, new: &[osis_label::Address]) -> Result<()> {
     let list = Codec::to_value(&new.to_vec());
     let devices: BTreeSet<Tid> = e.roster(&me).into_keys().collect();
-    let mine = |e: &osis_node::Engine, g: Tid| {
-        let mut cur = g;
-        for _ in 0..16 {
-            if cur == me {
-                return true;
-            }
-            match e.owner(&cur) {
-                Some(o) => cur = o,
-                None => return false,
-            }
-        }
-        false
-    };
+    let mine = |e: &osis_node::Engine, g: Tid| e.owner_chain(&g).any(|c| c == me);
     let mut m = osis_node::Mutation::new();
     let mut any = false;
     for g in e.labeled_groups() {

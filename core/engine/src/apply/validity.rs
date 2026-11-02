@@ -9,7 +9,7 @@ use crate::engine::write::required_role;
 use crate::engine::{Core, Meta, Owned, Tx, View};
 use crate::error::{Error, Result};
 use osis_commit::{Decoded, Form, Header, Kind};
-use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Value};
+use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Value};
 use osis_crdt::{Dot, Fragment};
 use osis_perm::{At, Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Validity, WriteId};
 use osis_schema::core_types as ct;
@@ -685,15 +685,7 @@ pub(crate) fn resolve_unresolved(tx: &mut Tx<'_>) -> Result<bool> {
 /// owner links (spec/permissions.md §1): deeper, or a creation record on it is not held (unknown
 /// counts as invalid, so forgetting a record never makes a deep delta valid). O(`MAX_OWNER_DEPTH`).
 pub(crate) fn too_deep(core: &Core, t: &Tid) -> bool {
-    let mut cur = *t;
-    for _ in 0..=osis_base::format::MAX_OWNER_DEPTH {
-        match core.created(&cur) {
-            Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
-            Some(CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. }) => return false,
-            None => return true,
-        }
-    }
-    true
+    !matches!(core.owner_chain(t).end(), ChainStep::Key(_) | ChainStep::Ownerless { .. })
 }
 
 /// Is aspect `ai` of a held commit valid (spec/permissions.md §5.2)?

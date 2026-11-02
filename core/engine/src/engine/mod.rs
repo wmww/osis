@@ -1610,10 +1610,11 @@ impl Engine {
         self.core.owner(tid).or_else(|| self.ephemeral_thing(tid)?.record.owner())
     }
 
-    /// `tid`, then its owners up the chain: at most `MAX_OWNER_DEPTH` owner links
-    /// (spec/permissions.md §1), so a cycle ends too.
+    /// `tid`, then its owners up the chain (durable and ephemeral records): at most
+    /// `MAX_OWNER_DEPTH` owner links (`osis_base::owner_chain`).
     pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        std::iter::successors(Some(*tid), |t| self.owner(t)).take(osis_base::format::MAX_OWNER_DEPTH + 1)
+        let record = |t: &Tid| self.core.created(t).or_else(|| Some(&self.ephemeral_thing(t)?.record));
+        osis_base::owner_chain(*tid, move |t| record(t).map(osis_base::CreationRecord::owner_link)).filter_map(|s| s.thing())
     }
 
     /// This node's tid.
