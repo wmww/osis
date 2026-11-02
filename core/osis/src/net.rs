@@ -366,6 +366,21 @@ pub(crate) struct Pending<T> {
     slot: Arc<Slot<T>>,
 }
 
+impl<T> Pending<T> {
+    /// A result known now.
+    pub fn ready(v: T) -> Pending<T> {
+        let slot = Slot::new();
+        slot.put(v);
+        Pending { slot }
+    }
+
+    /// A result its slot gets later.
+    pub fn new() -> (Pending<T>, Arc<Slot<T>>) {
+        let slot = Slot::new();
+        (Pending { slot: slot.clone() }, slot)
+    }
+}
+
 impl<T> Future for Pending<T> {
     type Output = T;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<T> {
