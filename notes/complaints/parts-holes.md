@@ -6,3 +6,4 @@
 - Single-threaded `parts_differential` at default size is 4-5 min; fix-disabled probes across 10 mutations took 10 min. Worth a seed-range note if it grows.
 - Reviewer: local keys have no registry: `y/` was taken by node-sync, whose load reads every row under it, and nothing says so at the engine's prefix list. Grep both crates before taking a prefix.
 - Reviewer: a flood test past a bound must fill to the last bytes: 4 MiB copies stop short of it and leave room for the small true part, so its "refused" branch had never run.
+- I reverted a probe with `git checkout <file>` before wip-committing the edit it sat on, losing it (redone from my own script). The rule is there for this: wip-commit, then probe.

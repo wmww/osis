@@ -730,3 +730,54 @@ fn grant_payload_names_only_the_things_own_label_spec_wire_9() {
     assert_eq!(names(t, &mut net), None);
     assert_eq!(names(g, &mut net), Some(gl));
 }
+
+// spec/commits.md §4 (copies), spec/sync.md §3: a grant's true copy reaches a node only as an inbox blob,
+// a reader's junk copy holding the slots first with the thing's record away: the junk goes when the record
+// comes, the inbox blob opens again and the grant applies. Nothing is stored for it but the entry.
+#[test]
+fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob_at(Vec::new());
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None };
+    let done = net.engine(a).grant(&g, &bob, &edge).unwrap();
+    let c = *done.commits.iter().find(|i| net_is_role(&mut net, a, i, &g)).unwrap();
+    let body = net.engine(a).bodies(&c).unwrap().into_iter().find(|x| !x.parts.is_empty()).unwrap();
+    let mut junk = osis_commit::CommitBlob::decode(&body.plaintext).unwrap();
+    for p in &mut junk.parts {
+        p.delta = osis_base::encode(&osis_base::Value::List(vec![osis_base::Value::Bytes(vec![7; 40])]));
+    }
+    let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
+    let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
+    let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let conn = net.conn_to(b, host).expect("connected");
+    let ev = osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None };
+    let m = osis_proto::Message::Push { label: home, events: vec![ev], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 1 << 40 } };
+    net.feed(b, osis_node::sync::Event::Bytes { conn, bytes: osis_proto::encode_frame(&m.encode()) });
+    net.settle(10_000);
+    assert_eq!(net.engine(b).pending().iter().filter(|x| x.0 == c).count(), 1, "the junk holds the slots");
+    net.set_online(b, false);
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    net.advance(70_000);
+    assert!(!net.host_ids(host, &home).is_empty());
+    // every label copy of it goes: the inbox blob is the one true copy
+    let now = net.now();
+    for (_, l) in net.sync(a).labels() {
+        let ids: Vec<_> = net.sync(a).entries(&l.id).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).map(|x| x.0).collect();
+        for id in ids {
+            use osis_proto::LabelStore;
+            net.hosts[host].hub.store_mut().delete(&l.id, &id, now).unwrap();
+        }
+    }
+    net.set_online(a, false);
+    net.set_online(b, true);
+    net.run();
+    assert!(net.engine(b).commit_ids().contains(&c), "{:?}", net.engine(b).pending());
+    assert!(net.sync(b).redelivered >= 1);
+    assert!(net.engine(b).roster(&g).contains_key(&bob));
+}
+
+fn net_is_role(net: &mut Net, a: usize, c: &osis_base::CommitId, g: &Tid) -> bool {
+    net.engine(a).header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|x| x.tid == *g && x.ak.as_str() == "roles.0"))
+}

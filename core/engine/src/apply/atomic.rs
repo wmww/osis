@@ -853,6 +853,35 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     crate::retention::memory::forget_if_spent(tx, id)
 }
 
+/// Takes applied snapshot `id` out of the walk on a thing where a part of `waiting` is held with a
+/// linked frontier away, if it is still in. Nothing joins: `rejudged` and its events as a late part's.
+pub(crate) fn leave_walk(tx: &mut Tx<'_>, id: &CommitId, waiting: &[osis_commit::Part]) -> Result<()> {
+    let meta = tx.core.ix.commits.get(id).cloned().ok_or(Error::Corrupt("commit index"))?;
+    let h = meta.header.clone();
+    let away = validity::away_parts(tx, &h, id, waiting);
+    let out: BTreeSet<Tid> = away.iter().filter_map(|(ai, _, _)| h.aspects.get(*ai)).map(|a| a.tid).filter(|t| tx.core.ix.held.walks(id, t)).collect();
+    if out.is_empty() {
+        return Ok(());
+    }
+    tx.core.touch();
+    let mut all = super::edge_parts(tx, id)?;
+    all.0.extend(validity::EdgeParts::of(&h, &away).0);
+    tx.core.ix.held.remove(id);
+    validity::add_role_commit(tx, &meta.view, Some(&h), id, &all)?;
+    tx.core.update_timelines();
+    let flipped = rejudged(tx, true)?;
+    if meta.origin != Origin::Local {
+        crate::rotation::mark_lost_due(tx, out.iter().copied())?;
+    }
+    for thing in out {
+        tx.core.events.queue(Event::Roster { thing });
+    }
+    if !flipped.is_empty() {
+        tx.core.events.queue(Event::Changed { cause: Cause::Validity, changed: flipped });
+    }
+    Ok(())
+}
+
 /// The late parts of role commit `id` judged with the parts held before (a grant's `roles.0`
 /// part names what its `secrets.0` part may box): what that judged (an overreaching late
 /// `secrets.0` part) holds for their join; other aspects' flips go through the re-judge

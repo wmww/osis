@@ -40,8 +40,6 @@ pub const DEATHS_DUE: &[u8] = b"e/";
 pub const SUSPECT: &[u8] = b"q/";
 /// The local schema of each app AK (`Core::schemas`): `d/` + AK, the schema's canonical form.
 pub const SCHEMAS: &[u8] = b"d/";
-/// `f/` + commit ID -> unsettled copies of a pending commit (`apply::copies`). (`y/` is node-sync's, `osis_node::sync::state`.)
-pub const COPIES: &[u8] = b"f/";
 /// Records the API layer keeps (identity choices, settings): `u/` + name.
 pub const APP: &[u8] = b"u/";
 

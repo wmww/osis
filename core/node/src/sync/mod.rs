@@ -478,6 +478,11 @@ pub struct SyncEngine {
     /// forged (`false`; the entry is `Bad`): only checked blobs stand in for this node's own
     /// uploads or justify deleting another entry (`SyncEngine::genuine`).
     pub(crate) genuine: BTreeMap<osis_base::BlobId, bool>,
+    /// New secrets: the boxes of pending commits' other copies are read again (`redeliver`).
+    pub(crate) reread_boxes: bool,
+    /// Entries `redeliver` ingested again since the start.
+    #[doc(hidden)]
+    pub redelivered: u64,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
     pub(crate) settle_at: Option<u64>,
@@ -595,6 +600,13 @@ impl SyncEngine {
         // keeps the changed commits from now on (`Engine::take_changed`)
         engine.take_changed();
         let mut state = State::load(&mut engine)?;
+        // a crash may have lost what the engine named (`redeliver`): a commit waiting, or gone with a
+        // junk signature, is looked at once
+        for c in state.by_commit.keys() {
+            if !engine.core.ix.commits.contains_key(c) || engine.core.ix.pending.contains_key(c) {
+                engine.name_redeliver(*c);
+            }
+        }
         engine.core.receipts_only = state.receipts_only.clone();
         // deposits not answered before a restart go again
         let outbox = state.outbox.keys().map(|k| (*k, local::Outgoing::default())).collect();
@@ -633,6 +645,8 @@ impl SyncEngine {
             retired_at: BTreeSet::new(),
             deferred: Vec::new(),
             genuine: BTreeMap::new(),
+            reread_boxes: true,
+            redelivered: 0,
             settle_at: None,
             local_dirty: true,
             local_last: 0,
@@ -794,7 +808,7 @@ impl SyncEngine {
         self.synced.key.0 = u64::MAX;
         // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
         self.engine.core.defer_deaths = true;
-        let r = self.step(ev, &mut out);
+        let r = self.step(ev, &mut out).and_then(|()| self.redeliver());
         // off whatever the step returned: left on, no later transaction would settle
         let settled = self.engine.defer_deaths(false);
         for e in [r.err(), settled.err()].into_iter().flatten() {
