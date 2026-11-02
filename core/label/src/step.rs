@@ -290,13 +290,14 @@ pub fn parse_entry_box(b: &[u8]) -> Result<SecretBox, Error> {
     parse_box(&decode(b, &OBJECT_LIMITS)?)
 }
 
-/// A `box` value in the sealed form (spec/wire.md §7), strictly: it must re-encode to itself.
+/// A `box` value in the sealed form carrying no names (spec/wire.md §7), strictly: it must
+/// re-encode to itself.
 fn parse_box(v: &Value) -> Result<SecretBox, Error> {
     let b = SecretBox::from_value(v).map_err(|e| match e.kind {
         osis_schema::PathErrorKind::UnknownCase(c) => Error::Crypto(osis_crypto::Error::UnknownCase(c)),
         _ => Error::Malformed("entry box"),
     })?;
-    if b.to_value() != *v || !matches!(b, SecretBox::Sealed(_)) {
+    if b.to_value() != *v || !matches!(&b, SecretBox::Sealed(x) if x.names.is_none()) {
         return Err(Error::Malformed("entry box"));
     }
     Ok(b)
