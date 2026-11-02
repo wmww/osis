@@ -833,6 +833,10 @@ fn wait_synced_all_waits_on_hosted_label_of_mixed_group() {
     let st = carol.status().unwrap().groups[&g].clone();
     assert_eq!((st.state, st.labels.len()), (SyncState::NoHosts, 2), "a hostless and a hosted label");
     w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(10)), 1000, 10).unwrap();
+    // the hostless one is replaced (it takes nothing until it retires): `Group(g)` fails only
+    // on her hostless home, which holds `g`
+    let r = w.until(carol.wait_synced(SyncScope::Group(g), Duration::from_secs(10)), 1000, 10);
+    assert!(matches!(&r, Err(osis::Error::Unsynced { groups }) if *groups == [carol.home()]), "{r:?}");
     w.set_reachable(&carol, h, false);
     item(&carol, g, g, "while cut off");
     assert!(matches!(w.until(carol.wait_synced(SyncScope::All, Duration::from_secs(5)), 1000, 10), Err(osis::Error::Network(_))));

@@ -333,6 +333,8 @@ pub struct LabelStatus {
     /// Some host refused registering it for now (tried again after a back-off).
     pub refused: bool,
     pub last_sync: Option<u64>,
+    /// Replaced (an admin syncs it until it retires, `retire_replaced`).
+    pub replaced: bool,
 }
 
 /// A body: its commit and parts `(ai, di)`.
@@ -1069,7 +1071,7 @@ impl SyncEngine {
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
         for (g, l) in self.labels() {
-            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, last_sync: None };
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, last_sync: None, replaced: l.replaced };
             for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
                 if c.up {
                     st.connected += 1;
