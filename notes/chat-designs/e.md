@@ -1,59 +1,50 @@
 # Chat design E: the chat's history is the chat
-> Summary: A chat C is one thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author` with keep at least forever; the sender is the signed header's actor, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, tombstones and kicks fall out of existing rules; new: a history read API, and "add without history" as a chain of chats. Citations: `e-evidence.md`.
+> Summary: A chat C is one ownerless thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author` with keep at least forever (a permanent delta); the sender is the header's actor checked by a display rule until core verifies it, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, lasting tombstones and cheap kicks fall out of existing rules once the frontier study lands; new: a history read API, partial fetch, a history-less grant. Citations: `e-evidence.md`; corrections from `e-review.md` applied.
 
-**Status:** reviewed, corrections pending; e-review.md overrides this file where they differ (sender verification, frontier cost, snapshots, tombstones).
+**[unbuilt]** marks a claim resting on core work not yet built: ownerless things, the frontier study (notes/frontier-study.md), the history read API, partial fetch, the history-less grant, purge modes, keep-after-removal, the verified actor.
 
-**Assumes (owner):** a kick does not clobber the kicked member's history; fixed in core regardless (issues/frontier-clobbers-history.md). Its size is still open.
-
-**Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement: C's machinery plus a tid log. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it.
+**Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds at honest nodes: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it (e-review §1).
 
 ## What is different
 
-There is nothing but C: an actor synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs.0` (a new aspect name per year); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. The app shows only deltas with the requested retention.
+There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. The app shows only deltas with the requested retention.
 
 ## Permissions and topology
 
 | thing | owner | roles on it | written by |
 |---|---|---|---|
-| C: actor, group of itself, label; `chat:msgs:y2026.0` (one write per message; retention `author`, keep at least forever), `chat:reactions.0` (same), `chat:settings.0^`, `chat:hidden.0^`, `chat:next.0^`, read marker and typing (memory) | burned key | members: write; admins: admin | members; `^` aspects by admins |
+| C: actor, group of itself, label; `chat:msgs:y2026.0` (one write per message; retention `author`, keep at least forever), `chat:reactions.0` (same), `chat:settings.0^`, `chat:hidden.0^`, `chat:next.0^`, read marker and typing (memory) | none (ownerless) | members: write; admins: admin | members; `^` aspects by admins |
 
-Who sent this: a valid delta on the message aspect; its sender is the header's actor, tied to the signing device by validity. Nothing can be written as someone else: no fake members, no forged tombstones.
+**Who sent this.** The header's `actor` is not verified by validity today (issues/header-actor-unverified.md). Rule: show a sender only if, just before the commit, its signing device could write as that actor and that actor could write on C; the history API returns this flag, computed from held chain certificates. If core makes a wrong actor invalid **[unbuilt]**, the rule goes. Either way nobody can speak as another, and a "Bob deleted" marker from someone else's device is hidden.
 
 ## Common operations
 
-- **Send.** One commit, one delta, about 0.5 KB. Order by commit time; each device knows when it received it.
-- **Read.** History, not state: held bodies with author, time and validity, paged by time. Reactions and read markers likewise, so nobody can fake another's.
+- **Send.** One commit, one delta, about 0.5 KB; one message per commit. Order by commit time; each device knows when it received it.
+- **Read.** History, not state: held bodies with author, time, validity and the sender flag, paged by time, memory commits included **[unbuilt]**. Reactions and read markers likewise. Partial and newest-first fetch for a new device **[unbuilt]**; today a new device replays the whole label.
 - **Edit.** Not osis editing: a new message with `replaces` naming the commit ID of the original, honored only if both have the same verified sender; newest by (time, commit ID) wins, in any arrival order. Replies and reactions keep naming the original. Modes: old text purged; old text kept as visible edit history; editing off (ignore `replaces`). Owner notes this is the one place E does not use normal osis editing.
-- **Delete for everyone.** A purge request: one body dropped everywhere honest, deleted at hosts with the sender's account key. The header-only blob is the tombstone until headers are forgotten; a durable tombstone is a small marker write.
-- **Moderator delete.** An admin purges the delta (`author` includes admins). No new feature; "admins cannot delete" is not expressible.
-- **Disappearing.** `expires` on the delta; hosts delete unattended.
-- **Kick.** One commit: removal and C's rotation (2.7 KB per remaining member). The frontier judges the member's deltas: posts the kicker had not received drop for everyone (the pre-sync narrows this), later or backdated posts are invalid wherever the kick is held, re-adding revives them. A modified kicked client gets nothing through. The kicked device drops the chat, its own messages included.
+- **Delete for everyone.** A purge request: one body dropped everywhere honest, deleted at hosts with the sender's account key. The header-only blob is the lasting tombstone: a purged permanent delta's header is never dropped and stays must-hold, so new devices get it too **[unbuilt]**.
+- **Moderator delete.** An admin purges the delta. Purge modes unnested **[unbuilt]**: author-only (admins cannot delete) is a chat setting; `admin` is admin-only delete; `nobody` is a permanent chat. A purge item by (aspect, author) **[unbuilt]** erases a removed member's flood in one item.
+- **Disappearing.** `expires` on the delta; hosts delete unattended. Expiring deltas are not permanent and take the ordinary frontier path.
+- **Kick.** One commit: removal and C's rotation (2.7 KB per remaining member). With the frontier study **[unbuilt]** the frontier names one head per message aspect and device, so a kick costs the same at 10 messages and 10 million, no snapshot can hide the kicked member's past, and a device removal is one head per aspect it wrote. Posts the kicker had not received still drop for everyone (`WaitForSync::Required` narrows this to the 30 s before the stamp); later or backdated posts are invalid wherever the kick is held; re-adding revives them. A modified kicked client gets nothing through. What the kicked device keeps is a property of the removal or the actor **[unbuilt]**; the chat default is the owner's to confirm.
 - **Leave.** Self-removal; an admin follows with an explicit removal, so backdated posts are audited.
-- **Hostile member.** Can only add. Junk written with retention `nobody` is hidden but can never be erased.
-- **Hosts, block, links, strangers.** As C.
+- **Hostile member.** Can only add. Junk under `nobody` is hidden; erasing it needs purge by author. Wrap poisoning at hosts is a general osis hole (issue filed).
+- **Hosts, block, links, strangers.** As C. An ownerless C needs a host that admits its label explicitly.
 
-## Adding without history (owner's idea, traced)
+## Adding without history
 
-A chat in the app is a chain of **segments**, each an osis chat as above. To add someone without history, an admin creates C2, grants every current member and the newcomer, copies the settings, and adds C2 to C1's `chat:next.0^` (admin-only set). Old members stitch C1 and C2 by time; the newcomer holds only C2.
-- **Newcomer learns:** nothing. C2 carries no pointer back; a tid is a bare reference and C1's label and hosts live under C1's label.
-- **Who creates it:** anyone can make a new chat with the same people, but only an admin's `next` is stitched. A link joiner sees its segment from its start; a no-history joiner needs an admin online.
-- **Cost:** per member one grant (about 2.7 KB) and its chain certificates under the new label (about 11.5 KB), one more label to sync; about 15 MB at 1000 members against 2.7 KB per member for a kick. Estimated.
-- **Old segments** stay live: reactions, edits and purges there still work; an offline member's late post to C1 is re-posted to C2 by its app.
-- **Kick** applies to every segment the member is in; current segment only is a setting that leaves it reading and writing the old one.
-- **Fork:** two admins offline each make a segment with different newcomers; `next` is a set, old members stitch both, each newcomer sees only its branch; admins merge with a third segment. Deterministic.
-- **A member left out** keeps C1 and sees the chat go quiet; a segment carries the whole roster.
+Primary: a core **history-less grant** (issues/history-less-grant.md) **[unbuilt]**: a read rotation at the add with earlier secrets sealed per prior holder instead of a shared history box, a newcomer node that tolerates entries it cannot open, every author's chain certificates re-placed under the new epoch (about 11.5 KB per member). The newcomer never held an earlier box, so review4's flaw does not apply. Documents and folders want the same.
 
-**Alternative, a core history-less grant:** a read rotation at the add whose earlier secrets are sealed per prior holder instead of a shared history box, a newcomer node that tolerates entries it cannot open (a link-key bearer already does), and every author's chain certificates re-placed under the new epoch (about 11.5 KB per member, the same bill). It changes history boxes, re-seals, claims and established epochs (spec/crypto.md §4). The flaw that sank design D (review4: a seed box in the recording opens under keys the device keeps) does not apply: the newcomer never held an earlier box, and earlier secrets are sealed only to prior holders. Documents and folders cannot be segmented, so they would want it; a chat does not. **Recommend segments:** no core change, same cost, works for every topology.
+Fallback, no core change: **segments**. The app's chat is a chain of osis chats; an admin creates C2, grants every current member and the newcomer, copies the settings, and adds C2 to C1's `chat:next.0^` (admin-only set). Old members stitch by time; the newcomer holds only C2 and learns nothing of C1. Rules: on seeing `next`, any admin re-applies roster changes across segments; links made on C1 die at each segment; a kick is one commit per segment; a late post to C1 stays there; `next` is a set, so a fork shows both branches to old members and one to each newcomer. About 15 KB per member per segment.
 
 ## Core changes needed
 
-- **History read API:** held bodies of an aspect with author, time, received time and validity, paged by time, plus a change event per commit. Without it there is no chat.
-- **Purge of invalid bodies:** admins may purge the body of an invalid delta whatever its retention. Without it a kicked member's `nobody` junk is stored by everyone for good.
-- As before: sender card, keep-read-only policy, wake relay. Not needed: add-only member list, entry API, delegated purge, history-less grant.
+- **History read API** (bodies with author, time, received time, validity, sender flag; memory commits; a change event per commit). Without it there is no chat.
+- **Frontier study** (heads for permanent deltas). Without it a kick costs 34 B per message ever sent, caps near 2.5×10^5 messages, and any snapshot hides a kicked member's past.
+- **Ownerless things**, **purge by author**, **unnested purge modes**, **partial fetch**, **history-less grant**, **keep-after-removal**, **verified actor** (or the display rule). As before: sender card, wake relay. Not needed: add-only member list, entry API, delegated purge, a burned-owner helper.
 
 ## Costs
 
-Message about 0.5 KB; join about 35 KB; kick 2.7 KB per remaining member. Per device: the bodies, plus about 33 B per expired or purged message (12 MB for ten years at 100 a day). Open at a million messages: a kick re-reads the aspect's history to un-merge; one aspect name per year bounds it. Frontier: 10 B per aspect and device today, 32 B per message since the last snapshot after the session change; an occasional one-value snapshot (drops nothing) keeps it small.
+Message about 0.5 KB on the wire, about 1.2 KB stored at every device for good; join about 35 KB; kick 2.7 KB per remaining member plus a few 60 B heads. Expired or purged: about 33 B residue, 300 B for a purged permanent delta's tombstone. Open is O(all commits): about 6 s at 10^6 messages, first sync about 15 min (extrapolated, e-review §6); re-adding a member rebuilds the year's aspect, about 70 s at 10^6. A hostile 10^7-message flood costs every member about 5 GB until purged by author.
 
 ## Rules leaned on
 
@@ -61,7 +52,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
+Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Sender: header-actor-unverified. Reading: history-read-api, partial-history-fetch. Rights: purge-rights-not-nested, purge-by-author. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer-rotates-to-itself, fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect are unmeasured (issues/node-core-gaps.md).
 
 ## Accepted by the owner
 
@@ -69,7 +60,7 @@ A stolen unlocked device shows history; no deniability; deletion binds only hone
 
 ## Sorting into the owner's categories
 
-- **Default:** moderator delete; visible tombstones; others keep a kicked member's messages; block local; disappearing timer per chat; add with history.
-- **Setting:** add without history (new segment); permanent chat (`nobody`); admin-only delete (`admin`); durable tombstone markers; private read position; members may invite; kick from the current segment only.
-- **Not exposed, clean for another app:** channels; per-year things owned by C with their own labels for paging.
-- **Incompatible:** a kicked or leaving member keeping its own messages without the keep policy; "admins cannot delete"; erasing a modified member's `nobody` junk without the new rule; keeping a pre-kick message the kicker never saw; a newcomer in a fork seeing the other branch.
+- **Default:** moderator delete; lasting tombstones; others keep a kicked member's messages; block local; disappearing timer per chat; add with history; edits purge the old text.
+- **Setting:** add without history; permanent chat (`nobody`); admin-only or author-only delete; edit history kept or editing off; private read position; members may invite; what a removed member keeps (owner to confirm the default).
+- **Not exposed, clean for another app:** channels; per-year things owned by C with their own labels.
+- **Incompatible:** a newcomer in a fork seeing the other branch; keeping a pre-kick message the kicker never received; readers reacting in a channel.

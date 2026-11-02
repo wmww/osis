@@ -1,7 +1,7 @@
 # Chat test cases by architecture
 > Summary: Informal chat behavior cases, each answered per proposed architecture (A, B, C, D, E): forced yes or no, app's choice, or needs a core change. Add a column per new topology; a good one has many `opt` and no `!`. Answers come from reading spec and code, nothing was run; `want` values are guesses for the owner to correct.
 
-Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** (parked; review4 refuted its protection claim) is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change. **E** messages are writes on an aspect of the chat itself, kept as history (retention `author`, keep at least forever), no member actor and no member list; E1 (a register of message-thing tids) is noted only where it differs.
+Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** (parked; review4 refuted its protection claim) is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change. **E** messages are writes on an aspect of the chat itself, kept as history (retention `author`, keep at least forever: permanent deltas), no member actor and no member list, sender shown by a display rule until the actor is verified in core; E cells assume the frontier study (notes/frontier-study.md), unbuilt; E1 (a register of message-thing tids) is noted only where it differs.
 Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `–` not applicable; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not.
 Assumed fixed (issues/): deposits of closure content, writer rotating to itself, header forgetting, rotation-name growth, the query API.
 
@@ -12,13 +12,13 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Can a member edit another member's message? | no | no | no | no | no | no |
 | Can a chat admin edit another member's message? | no | no | no | no | no | no |
 | Can a chat admin hide a message from honest clients? | yes | opt | opt | opt | opt | opt |
-| Can a chat admin erase one message from hosts and honest devices? | yes | no! core b | no! core b | no! core b | no! core b | yes²⁶ |
+| Can a chat admin erase one message from hosts and honest devices? | yes | no! core b | no! core b | no! core b | no! core b | opt³⁸ |
 | Can an admin of a member's account (their other device) edit that member's messages? | yes | yes | yes | yes | yes | yes |
 | Can an admin of a team that is a member edit a team member's messages? | no | no | no | no | no | no |
-| Can a member make a message appear as written by Bob? | no | no | opt¹ | no | no | no |
-| Can a member make messages appear from a fake account that was never a member? | no | opt² | opt² | opt² | opt² | no |
-| Does such a fake account's content cost every member storage until an admin removes it? | no | yes! | yes! | yes! | yes! | no |
-| Does every reader see the verified sender of each message? | yes | yes | yes | yes | yes | yes |
+| Can a member make a message appear as written by Bob? | no | no | opt¹ | no | no | opt³⁹ |
+| Can a member make messages appear from a fake account that was never a member? | no | opt² | opt² | opt² | opt² | opt³⁹ |
+| Does such a fake account's content cost every member storage until an admin removes it? | no | yes! | yes! | yes! | yes! | yes! |
+| Does every reader see the verified sender of each message? | yes | yes | yes | yes | yes | opt³⁹ |
 | Can a member prove to outsiders that you wrote a message? | accepted | yes | yes | yes | yes | yes |
 | Can a member purge another member's message? | no | no | no | no | no | no |
 
@@ -26,7 +26,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 
 | case | want | A | B | C | D | E |
 |---|---|---|---|---|---|---|
-| Can they still read their own old messages? | yes | yes | yes | yes | yes | no! core c |
+| Can they still read their own old messages? | yes | yes | yes | yes | yes | core c |
 | Can they still read others' old messages? | opt | core c | core c | core c | core c | core c |
 | Can they read new messages? | no | no | no | no | no | no |
 | Can they post? | no | no | no | no | no | no |
@@ -39,13 +39,13 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | A message they sent before the kick that the kicker had not received: does it stay for others? | yes | yes | no! | yes | yes | no! |
 | Kick without pre-sync: can the member's whole history drop from the list for everyone? | no | opt⁴ | opt⁴ | opt⁴ | opt⁴ | – |
 | Re-added later: do posts their modified client made while kicked appear? | no | yes! | yes! | yes! | yes! | yes! |
-| Re-added later: can they read what was sent while they were out? | opt | opt* | opt* | opt* | opt* | opt* |
+| Re-added later: can they read what was sent while they were out? | opt | opt* | opt* | opt* | opt* | core n |
 
 ## Leaving
 
 | case | want | A | B | C | D | E |
 |---|---|---|---|---|---|---|
-| After leaving, can you read your own old messages? | yes | yes | yes | yes | yes | no! core c |
+| After leaving, can you read your own old messages? | yes | yes | yes | yes | yes | core c |
 | After leaving, can you read others' old messages? | opt | core c | core c | core c | core c | core c |
 | Do others still see your messages after you leave? | yes | opt | opt | opt | opt | opt |
 | Can you delete your messages for everyone before leaving? | yes | yes | yes | yes | yes | yes |
@@ -114,7 +114,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Does the app show a "message deleted" tombstone by default? | opt | opt | opt | opt | opt | opt |
 | Can the app be set to show no trace at all? | opt | opt | opt | opt | opt | opt |
 | Modified client: can it tell a message existed, who sent it and when, from what osis keeps? | accepted | yes | yes | yes¹⁸ | yes¹⁸ | yes²⁸ |
-| Can a member forge a "Bob deleted a message" tombstone for a message Bob never sent? | no | no | yes¹⁹! | no | no | no |
+| Can a member forge a "Bob deleted a message" tombstone for a message Bob never sent? | no | no | yes¹⁹! | no | no | opt³⁹ |
 | Can members tell an expired message from a purged one? | opt | opt²⁰ | opt²⁰ | opt²⁰ | opt²⁰ | opt²⁰ |
 | Can a host tell that a message was deleted? | accepted | yes | yes | yes | yes | yes |
 | Can a host tell who sent the deleted message, or what it said? | no | no | no | no | no | no |
@@ -127,7 +127,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 |---|---|---|---|---|---|---|
 | Modified member: can it write junk nobody can ever erase from hosts and honest devices? | no | no | no | no | no | yes³¹! core k |
 | Can admins wipe a member's whole history from hosts and devices? | yes | yes | yes | yes | yes | yes²⁶ |
-| Can admins get one illegal message off hosts without wiping the member? | yes | no! core b | no! core b | no! core b | no! core b | yes²⁶ |
+| Can admins get one illegal message off hosts without wiping the member? | yes | no! core b | no! core b | no! core b | no! core b | opt³⁸ |
 | Can you block someone without deleting anything on either side? | yes | opt | opt | opt | opt | opt |
 | Is your evidence kept after blocking? | yes | opt | opt | opt | opt | opt |
 | Can a blocked contact you share a group with add you to a chat? | no | opt¹² | opt¹² | opt¹² | opt¹² | opt¹² |
@@ -165,7 +165,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Modified client: can a sender backdate a message into history? | no | yes! | yes! | yes! | yes! | yes! |
 | Honest sender with a wrong clock: shown at a sane position? | yes | yes | yes | yes¹⁵ | yes¹⁵ | yes |
 | Reply to a deleted message: shown as a placeholder? | yes | opt | opt | opt | opt | opt |
-| Can a new device page recent history without downloading all of it? | yes | no! | opt¹⁶ | opt¹⁶ | opt¹⁶ | opt²⁹ |
+| Can a new device page recent history without downloading all of it? | yes | no! | opt¹⁶ | opt¹⁶ | opt¹⁶ | core o |
 | Can the app show the latest 50 messages with the osis API alone? | yes | yes | yes | core g | core g | core l |
 | Read receipts: can a member keep their read position private? | yes | opt | opt | opt | opt | opt |
 | Typing: reaches connected devices only, stored nowhere? | yes | yes | yes | yes | yes | yes |
@@ -177,7 +177,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | case | want | A | B | C | D | E |
 |---|---|---|---|---|---|---|
 | Kick in a chat with a million messages under a minute of work on a phone? | yes | ? | ? | ? | ? | ?³² |
-| Kick or lost device in a 1000-member group under 10 MB upload? | yes | yes | yes | yes | yes | yes |
+| Kick or lost device in a 1000-member group under 10 MB upload? | yes | yes | yes | yes | yes | yes⁴⁰ |
 | Fresh device of a disappearing chat under 50 MB after 10 years at 100 a day? | yes | no! | no! | yes | yes | yes |
 | Long-lived device of a permanent chat holds every message body? | yes | yes | yes | yes | yes | yes |
 | Join under 100 KB? | yes | yes | yes | yes | yes | yes |
@@ -217,16 +217,20 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
-- **c** Keep-read-only policy on removal: permissions §3 drops the secrets but keeps units by local policy; requirements Deletion line 61 qualified; never for device removal.
+- **c** Keep-after-removal: whether a removed holder keeps what it held is a property of the removal or the actor, not the node (issues/keep-after-removal.md); the chat default is the owner's to confirm; never for device removal.
 - **e** Sender card in invite requests (owner: yes).
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.
 - **h** Wake relay for background notifications (owner: does not block).
 - **i** Content key chain (D only): a boxed seed with no history box, re-seeded in every read rotation; an hourly hash-chain key in the clear prefix; content blobs wrapped under it; devices erase hour keys after two hours and keep blob keys of retained bodies; content older than the window is may-hold; a re-wrapped transfer bundle for new devices. Assumed in every D cell. Refuted by review4: the seed's box is in the recording and opens under keys the device keeps, so a thief rebuilds every hour key; only "newcomers cannot read older content" survives.
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker hosts can link or trial decryption.
-- **k** Admins may purge the body of an invalid delta whatever its retention (E).
+- **k** Purge by author: a purge item naming (aspect, author) so an admin erases a removed member's deltas in one item, `nobody` ones included (issues/purge-by-author.md).
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
-- **l** History read API (E): the held bodies of an aspect with author, time, received time and validity, paged by time, and a change event per commit.
+- **l** History read API (E): the held bodies of an aspect with author, time, received time, validity and the sender flag, paged by time, memory commits included, and a change event per commit.
+- **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
+- **o** Partial and newest-first fetch of a label (issues/partial-history-fetch.md).
+- **p** Verified actor: a commit is invalid unless its author could write as its `actor` (issues/header-actor-unverified.md); until then E uses the display rule of footnote 39.
+- **q** Purge modes not nested: author-only (admins cannot purge) becomes a setting beside `admin` and `nobody` (issues/purge-rights-not-nested.md).
 
 ## Footnotes
 
@@ -255,15 +259,18 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 23. D: the window is the current and previous hour (`MAX_DRIFT`); below it in-flight uploads become unreadable.
 24. D: a forward hash chain; cut off at the next membership change, or by an optional periodic re-seed (1.2 KB per member each).
 25. D: the uploader attaches a timed host delete, or the chat uses expiry; otherwise old content stays unreadable dead weight.
-26. E: for messages written with the requested retention (`author`); a modified sender's `nobody` message is hidden but stored (core k).
+26. E: for messages written with the requested retention; a modified sender's `nobody` message is hidden but stored until purged by author (core k).
 27. E: an edit is a new message plus a purge of the old one.
-28. E: the header-only blob until headers are forgotten, then the value-less stamp; E1 keeps the tid and time forever by design.
+28. E: the header-only blob of a purged permanent delta is kept forever and reaches new devices (frontier study, unbuilt); E1 keeps the tid and time forever by design.
 29. E: per-year things owned by the chat, each synced under its own label.
 30. E: nothing is compacted; messages keep at least forever.
-31. E: `nobody` retention plus keep at least forever is must-hold for good and nobody holds a purge right; in A-D an admin removes the member's M instead.
-32. E: a kick un-merges the member's deltas by re-reading the aspect's history (issues/node-core-gaps.md), bounded by one aspect name per year; not measured in any design.
-33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change.
+31. E: `nobody` retention plus keep at least forever is must-hold for good and nobody holds a purge right; in A-D an admin removes the member's M instead; core k erases it.
+32. E: the frontier is a few heads (frontier study), but un-merging a kicked member's deltas re-reads the year's aspect (about 70 s at 10^6, extrapolated, e-review §6); not measured in any design.
+33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change; the owner's primary path is core n.
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and hosts live under its own label.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.
 37. D as written: the chain seed's box is in the recording, sealed to a key the device keeps, so a thief rebuilds every hour key (review4).
+38. E: default yes; author-only purge (admins cannot delete) is a chat setting once purge modes are unnested (core q, unbuilt).
+39. E: the header's actor is unverified today; the app shows a sender only if its signing device could write as that actor and the actor could write on the chat just before the commit (from held chain certificates); core p removes the rule.
+40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 2.5x10^5 messages.
