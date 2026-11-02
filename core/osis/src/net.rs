@@ -366,7 +366,8 @@ impl<T> Future for Pending<T> {
     }
 }
 
-pub(crate) type Check = Box<dyn FnMut(&mut SyncEngine, &Status) -> Option<Result<()>> + Send>;
+/// The check gets whether the deadline passed (its last look: an answer then replaces `Network`).
+pub(crate) type Check = Box<dyn FnMut(&mut SyncEngine, &Status, bool) -> Option<Result<()>> + Send>;
 
 /// A condition on the sync state, looked at after every change.
 pub(crate) struct Waiter {
@@ -382,11 +383,12 @@ impl Waiter {
         if Arc::strong_count(&self.slot) == 1 {
             return true;
         }
-        if let Some(r) = (self.check)(sync, status) {
+        let late = self.deadline.is_some_and(|d| now >= d);
+        if let Some(r) = (self.check)(sync, status, late) {
             self.slot.put(r);
             return true;
         }
-        if self.deadline.is_some_and(|d| now >= d) {
+        if late {
             self.slot.put(Err(Error::Network("timed out".into())));
             return true;
         }
@@ -395,7 +397,8 @@ impl Waiter {
 }
 
 impl crate::Osis {
-    /// A future resolving once `check` answers (or `Network` after `timeout`). Fails at once
+    /// A future resolving once `check` answers (or `Network` after `timeout`, unless the check
+    /// answers then). Fails at once
     /// with `Network` when nothing carries the network (`Runtime::None`).
     pub(crate) fn wait_until(&self, timeout: Option<Duration>, check: Check) -> Pending<Result<()>> {
         let slot = Slot::new();

@@ -215,6 +215,9 @@ pub enum SyncState {
     Syncing,
     Unreachable,
     NoHosts,
+    /// A host does not admit it (yet: code 14, spec/wire.md §11.2; `GroupSync::not_admitted`
+    /// names them); registered again after a back-off. Ranks above `NoHosts`, below `Stranded`.
+    Refused,
     /// Waiting for a re-seal (spec/permissions.md §3). Ranks above `NoHosts` (a group shows
     /// its worst label's state; `wait_synced` judges each label on its own).
     Stranded,
@@ -229,6 +232,8 @@ pub struct GroupSync {
     /// The labels this node syncs it under (several while one replaces another): what a host
     /// admits it by (`Hosting::labels`, `caps`).
     pub labels: Vec<LabelId>,
+    /// Hosts that do not admit one of those labels (yet), state `Refused`.
+    pub not_admitted: Vec<HostAddr>,
 }
 
 /// Sync status: hosts connected and each synced group (`groups`: groups with a label this
@@ -255,6 +260,8 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
         SyncState::NoHosts
     } else if s.stranded {
         SyncState::Stranded
+    } else if !s.not_admitted.is_empty() {
+        SyncState::Refused
     } else if s.refused && s.open == 0 {
         SyncState::Unreachable
     } else if s.open > 0 && s.idle == s.open {
@@ -272,17 +279,19 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
     for s in sync.label_status() {
         let state = label_state(&s);
         let last = s.last_sync.map(WallMs);
-        groups
-            .entry(s.group)
-            .and_modify(|g| {
-                g.state = g.state.max(state);
-                g.last_sync = g.last_sync.max(last);
-                g.labels.push(s.label);
-            })
-            .or_insert(GroupSync { state, last_sync: last, labels: vec![s.label] });
+        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new() });
+        g.state = g.state.max(state);
+        g.last_sync = g.last_sync.max(last);
+        g.labels.push(s.label);
+        for a in s.not_admitted {
+            let a = HostAddr(a);
+            if !g.not_admitted.contains(&a) {
+                g.not_admitted.push(a);
+            }
+        }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new() });
+        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new() });
     }
     Status { connected: sync.connected(), groups }
 }
@@ -309,8 +318,9 @@ fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>
 
 /// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
 /// (all their labels but a replaced hostless one beside another) or `None` (every label with hosts), then the pending deliveries about
-/// `deliveries` (every one when `groups` is `None`).
-fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>) -> Option<Result<()>> {
+/// `deliveries` (every one when `groups` is `None`). `late` (the deadline passed): a refused
+/// label's group fails `Unsynced` (before it, the label may yet be admitted).
+fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveries: Option<&BTreeSet<Tid>>, late: bool) -> Option<Result<()>> {
     let skip = sync.receipts_only().clone();
     let all: Vec<_> = sync.label_status().into_iter().filter(|s| !skip.contains(&s.group) && groups.is_none_or(|gs| gs.contains(&s.group))).collect();
     // a replaced hostless label beside another of its group takes nothing (it retires after
@@ -322,7 +332,7 @@ fn synced(sync: &mut SyncEngine, groups: Option<&[Tid]>, reads: &[Tid], deliveri
         .map(|s| (s.group, label_state(s)))
         .filter(|(_, st)| groups.is_some() || *st != SyncState::NoHosts)
         .collect();
-    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| matches!(s, SyncState::Stranded | SyncState::NoHosts)).map(|(g, _)| *g).collect();
+    let mut bad: BTreeSet<Tid> = labels.iter().filter(|(_, s)| matches!(s, SyncState::Stranded | SyncState::NoHosts) || late && *s == SyncState::Refused).map(|(g, _)| *g).collect();
     let read = sync.receipts_read(reads);
     if let Some(Err(b)) = &read {
         bad.extend(b);
@@ -535,10 +545,10 @@ impl Osis {
     /// Resolves once every label in scope is `Synced` and the receipts-only reads of `reads`
     /// are done (with `deliveries`, also once no delivery about one of those things is
     /// pending, any delivery for `groups` `None`); fails `Unsynced` when a label in scope is
-    /// stranded, `Network` after `wait`. The scope: every label of `groups` (a hostless one
+    /// stranded (refused: at `wait`), `Network` after `wait`. The scope: every label of `groups` (a hostless one
     /// fails `Unsynced`), or for `None` every label with hosts of a synced group.
     fn groups_synced(&self, groups: Option<Vec<Tid>>, reads: Vec<Tid>, wait: Duration, deliveries: Option<BTreeSet<Tid>>) -> crate::net::Pending<Result<()>> {
-        self.wait_until(Some(wait), Box::new(move |sync, _| synced(sync, groups.as_deref(), &reads, deliveries.as_ref())))
+        self.wait_until(Some(wait), Box::new(move |sync, _, late| synced(sync, groups.as_deref(), &reads, deliveries.as_ref(), late)))
     }
 
     /// The edges through which `actor` is a holder of `target` (spec/permissions.md §2): the
@@ -696,7 +706,7 @@ impl Osis {
         let t = Some(self.inner.wait_timeout);
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
-        self.wait_until(t, Box::new(move |s, _| {
+        self.wait_until(t, Box::new(move |s, _, _| {
             let e = s.engine_mut();
             (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && !pending_on(e, &k)).then_some(Ok(()))
         }))
@@ -709,7 +719,7 @@ impl Osis {
         drop(key);
         self.carry(done)?;
         // joined: the grant stands in a view with nothing on K pending
-        self.wait_until(t, Box::new(move |s, _| {
+        self.wait_until(t, Box::new(move |s, _, _| {
             let e = s.engine_mut();
             (e.knows(&target) && e.roster(&k).contains_key(&me) && !pending_on(e, &k)).then_some(Ok(()))
         }))
@@ -896,7 +906,7 @@ impl Osis {
         let r = self
             .wait_until(
                 Some(self.inner.wait_timeout),
-                Box::new(move |s, _| {
+                Box::new(move |s, _, _| {
                     let e = s.engine_mut();
                     let owner = e.owner(&p)?;
                     e.get_typed(&owner, &ct::KEYS).ok().flatten()?;
@@ -1092,7 +1102,8 @@ impl Osis {
     /// Resolves once every label in scope finished a pass with nothing outstanding after the
     /// local commits so far (they are at a host) and every pending delivery in scope was
     /// taken (a grant to a recipient whose inbox host refuses it for now keeps it waiting);
-    /// fails `Unsynced` for a stranded label in scope, `Network` after `timeout` or without a
+    /// fails `Unsynced` for a stranded label in scope (a refused one: at `timeout`), `Network`
+    /// after `timeout` or without a
     /// runtime. `Group(t)`: the labels of the groups holding `t` (a hostless one fails
     /// `Unsynced`, unless replaced beside another) and the deliveries about `t`, a thing it holds or one of those groups (a
     /// grant on one, a non-writer's write under its label). `All`: every label with hosts
