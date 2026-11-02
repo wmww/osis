@@ -5086,3 +5086,209 @@ fn memory_cover_invalidated_rejoins_spec_permissions_5_2() {
     assert!(holds_commit(&lp, a, &x.0), "an invalid snapshot covers nothing");
     assert_eq!(memory_tags(&mut lp, a, d), xs, "a reads as b once X is back");
 }
+
+// spec/permissions.md §5.2 (a snapshot turning invalid gives nothing), memory class (eph-unify-b
+// review): random memory histories with snapshots (`memory_random_histories`) on two aspects,
+// set adds and removals, and an admin demoting one writer mid-history, so memory snapshots turn
+// invalid after holders dropped and forgot what they covered; every blob is delivered again at
+// the end (to its author too: the B2 lane's job). Then every node reads alike and holds the same
+// memory commits, whatever arrived when (400 seeds in review)
+#[test]
+fn memory_random_snapshots_demotion_redelivered_alike_spec_permissions_5_2() {
+    for seed in 0..5 {
+        memory_random_demotion(seed);
+    }
+}
+
+fn memory_random_demotion(seed: u64) {
+    let mut x = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    let mut rnd = move |n: u64| { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x % n };
+    let mut lp = crate::common::net(4, 5000 + seed);
+    lp.sync_all().unwrap();
+    let d = crate::common::new_thing(&mut lp, 0);
+    for i in [1, 2, 3] {
+        let n = lp.peers[i].engine.tid();
+        crate::common::set_edge(&mut lp.peers[0].engine, d, n, Some(crate::common::edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    let aks = ["t:big.0~", "t:tags.0~"];
+    let mut queue: Vec<(u64, usize, (osis_base::CommitId, Vec<u8>))> = Vec::new();
+    let mut sent: Vec<(osis_base::CommitId, Vec<u8>)> = Vec::new();
+    let mut log = Vec::new();
+    let demote_at = 4 + rnd(14);
+    let mut dq: Vec<(u64, usize, osis_node::local_peer::Package)> = Vec::new();
+    for step in 0..24 {
+        if step == demote_at {
+            let who = 1 + rnd(3) as usize;
+            let holder = lp.peers[who].engine.tid();
+            let dm = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced };
+            let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
+            let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
+            log.push(format!("{step}: demote {who}"));
+            for to in 1..4 {
+                dq.push((step + rnd(8), to, rp.clone()));
+            }
+        }
+        let due: Vec<_> = dq.iter().filter(|q| q.0 <= step).cloned().collect();
+        dq.retain(|q| q.0 > step);
+        for (_, to, p) in due {
+            log.push(format!("  demotion to {to}"));
+            lp.deliver(to, &p).unwrap();
+        }
+        let w = 1 + rnd(3) as usize;
+        let ak = aks[rnd(2) as usize];
+        let c = if rnd(4) == 0 {
+            let by = if rnd(4) == 0 { 0 } else { w };
+            let e = &mut lp.peers[by].engine;
+            // refused once the demotion reached the snapshotter
+            let c = e.snapshot(&d, &eph(ak)).ok().flatten().and_then(|id| e.package(&id).unwrap().map(|p| (id, p.bytes)));
+            log.push(format!("{step}: snapshot {ak} by {by}: {:?}", c.as_ref().map(|c| c.0)));
+            c.map(|c| (by, c))
+        } else {
+            let k = s(&format!("k{}", rnd(3)));
+            let exp = (rnd(3) == 0).then(|| 200 + rnd(4000));
+            let (path, op) = match (ak, rnd(10)) {
+                ("t:big.0~", 0) => (Vec::new(), Op::Remove(k)),
+                ("t:big.0~", 1) => (Vec::new(), Op::Replace(Value::Map([(k, s(&format!("r{step}")))].into()))),
+                ("t:big.0~", _) => (vec![PathSeg::Key(k)], Op::Put(s(&format!("v{step}w{w}")))),
+                (_, 0..=3) => (Vec::new(), Op::Remove(k)),
+                _ => (Vec::new(), Op::Add(k)),
+            };
+            log.push(format!("{step}: w{w} {ak} {path:?} {op:?} exp {exp:?}"));
+            let e = &mut lp.peers[w].engine;
+            let mut m = Mutation::new();
+            m.op(d, &eph(ak), PathOp { path, op }).unwrap();
+            if let Some(ms) = exp {
+                m.expires(d, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
+            }
+            e.commit_in_memory(m).ok().flatten().map(|id| (w, (id, e.package(&id).unwrap().unwrap().bytes)))
+        };
+        if let Some((from, c)) = c {
+            sent.push(c.clone());
+            for to in (0..4).filter(|to| *to != from) {
+                queue.push((step + rnd(8), to, c.clone()));
+            }
+        }
+        // a copy of an earlier blob again (a forgotten one applies and goes again)
+        if !sent.is_empty() && rnd(3) == 0 {
+            queue.push((step + rnd(4), rnd(4) as usize, sent[rnd(sent.len() as u64) as usize].clone()));
+        }
+        lp.advance(1 + rnd(400));
+        for to in 0..4 {
+            if rnd(3) == 0 {
+                lp.peers[to].engine.tick().unwrap();
+            }
+        }
+        let due: Vec<_> = queue.iter().filter(|q| q.0 <= step).cloned().collect();
+        queue.retain(|q| q.0 > step);
+        for (_, to, c) in due {
+            log.push(format!("  {:?} to {to}", c.0));
+            memory_deliver(&mut lp, to, &c);
+        }
+    }
+    for (_, to, p) in std::mem::take(&mut dq) {
+        lp.deliver(to, &p).unwrap();
+    }
+    for (_, to, c) in std::mem::take(&mut queue) {
+        memory_deliver(&mut lp, to, &c);
+    }
+    for c in &sent {
+        for to in 0..4 {
+            memory_deliver(&mut lp, to, c);
+        }
+    }
+    for round in 0..6 {
+        for to in 0..4 {
+            lp.peers[to].engine.tick().unwrap();
+        }
+        let reads: Vec<_> = (0..4).map(|i| aks.iter().map(|ak| lp.peers[i].engine.get(&d, &eph(ak)).unwrap()).collect::<Vec<_>>()).collect();
+        assert!(reads.iter().all(|r| *r == reads[0]), "seed {seed} round {round}: {reads:?}\n{}", log.join("\n"));
+        let held: Vec<BTreeSet<osis_base::CommitId>> = (0..4)
+            .map(|i| lp.peers[i].engine.core.ix.commits.iter().filter(|(_, m)| m.view.memory && (0..m.view.aspects.len()).any(|ai| !m.dropped.contains_key(&ai) && !m.missing.contains(&ai))).map(|(c, _)| *c).collect())
+            .collect();
+        assert!(held.iter().all(|h| *h == held[0]), "seed {seed} round {round}: held {held:?}\n{}", log.join("\n"));
+        lp.advance(1 + rnd(1500));
+    }
+}
+
+// spec/permissions.md §5.2 (an explicit demotion invalidates all the demoted node's ephemeral
+// commits, its memory snapshots included), spec/requirements.md Convergence (eph-unify-b review,
+// pinned for B2): 2 writes X; 1 snapshots it and every holder, 2 included, drops X as covered
+// and forgets it; the admin then removes 1. X, a valid write of a node still writing, must still
+// read; today it is gone everywhere with no copy left to bring it back
+#[test]
+#[ignore = "eph-unify B2: a demoted compactor's memory snapshots lose other authors' writes"]
+fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
+    let (mut lp, d) = memory_trio(61);
+    let w1 = lp.peers[1].engine.tid();
+    let x = memory_op(&mut lp, 2, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    memory_deliver(&mut lp, 0, &x);
+    memory_deliver(&mut lp, 1, &x);
+    lp.advance(10);
+    let c = memory_snapshot(&mut lp, 1, d);
+    memory_deliver(&mut lp, 0, &c);
+    memory_deliver(&mut lp, 2, &c);
+    lp.advance(10);
+    let dm = osis_node::flows::Demotion { holder: w1, new: None, presync: osis_node::flows::PreSync::Synced };
+    let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
+    let rp = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    lp.deliver(1, &rp).unwrap();
+    lp.deliver(2, &rp).unwrap();
+    for i in 0..3 {
+        assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("X")].into())), "{i}");
+    }
+}
+
+// spec/sync.md §9 (Compaction, memory class), notes/growth.md (eph-unify-b review, pinned for
+// B2): a session's expiring write on an aspect leaves out its counters from every snapshot's
+// frontier (and, once vanished, a gap no frontier passes), so none of that session's later
+// plain writes there is ever covered: held for the session's life, and a size trigger fires on
+// every write. A snapshot past the expiry must cover them
+#[test]
+#[ignore = "eph-unify B2: plain writes after an expiring one are never covered"]
+fn memory_snapshot_covers_plain_after_expired_spec_sync_9() {
+    let (mut lp, d) = memory_trio(63);
+    memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("E")), Some(1000));
+    let ps: Vec<_> = (0..3).map(|i| memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s(&format!("p{i}"))), None)).collect();
+    lp.advance(2000);
+    lp.peers[1].engine.tick().unwrap();
+    memory_snapshot(&mut lp, 1, d);
+    for p in &ps {
+        assert!(!holds_commit(&lp, 1, &p.0), "covered");
+    }
+}
+
+// spec/sync.md §9 (Compaction, memory class), spec/commits.md §5 (covered): a memory snapshot
+// and the body it covers, both invalid on arrival (their author's new write edge not yet known
+// there), turn valid with the edge; the holder then drops the covered body as one that knew the
+// edge first did (eph-unify-b review: no test reached `drop_covered` on a rise)
+#[test]
+fn memory_snapshot_turned_valid_covers_spec_sync_9() {
+    let (mut lp, d) = memory_trio(67);
+    let n1 = lp.peers[1].engine.tid();
+    let mut edge = |lp: &mut osis_node::local_peer::LocalPeer, e: Option<ct::Edge>| {
+        lp.advance(10);
+        let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, e, None);
+        lp.peers[0].engine.package(&id).unwrap().unwrap()
+    };
+    let gone = edge(&mut lp, None);
+    let back = edge(&mut lp, Some(crate::common::edge(Role::Write)));
+    for i in [1, 2] {
+        lp.deliver(i, &gone).unwrap();
+    }
+    lp.deliver(1, &back).unwrap();
+    lp.advance(10);
+    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    let c = memory_snapshot(&mut lp, 1, d);
+    for i in [0, 2] {
+        memory_deliver(&mut lp, i, &x);
+        memory_deliver(&mut lp, i, &c);
+    }
+    assert!(!holds_commit(&lp, 0, &x.0));
+    assert!(holds_commit(&lp, 2, &x.0), "invalid: covers nothing yet");
+    lp.deliver(2, &back).unwrap();
+    assert!(!holds_commit(&lp, 2, &x.0), "covered once valid");
+    for i in 0..3 {
+        assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("X")].into())), "{i}");
+    }
+}

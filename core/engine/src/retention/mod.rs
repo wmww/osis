@@ -1043,7 +1043,9 @@ impl Engine {
 
     /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
     /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
-    /// value-less; frontiers from the receipt record. A carrier-only one included.
+    /// value-less; frontiers from the receipt record. A carrier-only one included. On a `~`
+    /// aspect a memory commit: deltas with an expiry left out whole, frontiers continuing from
+    /// the held valid memory snapshots'.
     pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
         self.snapshot_if(tid, ak, false)
     }
