@@ -47,7 +47,7 @@ pub fn socket_path(store: &Path) -> Result<PathBuf> {
 
 /// Creates `dir` 0700 if missing, then checks it is a directory of `uid`'s, mode 0700, not a
 /// symlink; refuses it otherwise (another user's or a planted directory).
-pub(crate) fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
+pub fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt};
     let mut b = std::fs::DirBuilder::new();
     b.mode(0o700);
@@ -64,7 +64,7 @@ pub(crate) fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
 }
 
 /// This process's uid (`SO_PEERCRED` of a socket pair, on a small runtime of its own).
-pub(crate) fn own_uid() -> Result<u32> {
+pub fn own_uid() -> Result<u32> {
     let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().map_err(|e| Error::Storage(e.to_string()))?;
     let _g = rt.enter();
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
@@ -597,3 +597,4 @@ impl Osis {
         self.inner.dispatch.register(u64::MAX, Filter::Port(u64::MAX), Box::new(|_, _| {}))
     }
 }
+

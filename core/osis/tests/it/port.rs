@@ -43,7 +43,7 @@ fn attach(sock: &std::path::Path) -> Osis {
     Osis::attach(sock, Config::memory()).unwrap()
 }
 
-// notes/client-port.md §1, §2 (b): an attached handle reads, writes, watches and undoes at the node as its Owner: me/node/home are the node's; every read agrees with the node's own; a node-side write reaches the client's watch, a client write the node's
+// spec/wire.md §11.2 (client port), notes/client-port.md §1, §2 (b): an attached handle reads, writes, watches and undoes at the node as its Owner: me/node/home are the node's; every read agrees with the node's own; a node-side write reaches the client's watch, a client write the node's
 #[test]
 fn attached_handle_works_at_the_node() {
     let d = Dir::new();
@@ -54,6 +54,8 @@ fn attached_handle_works_at_the_node() {
     assert!(c.is_attached());
     assert_eq!((c.me(), c.home(), c.node()), (n.me(), n.home(), n.node()));
     let title = ak("note:title.0");
+    // a batch naming no existing thing goes to the node too
+    c.write_with(|w| w.create(c.me())).unwrap();
     let (t, g) = c
         .write_with(|w| {
             let g = w.create(c.me())?;
@@ -129,7 +131,7 @@ fn attached_handle_works_at_the_node() {
     n.close().unwrap();
 }
 
-// notes/client-port.md §2 Reply allowance: a value above the reply bound reads TooLarge; `stream` reads it by stream_read pages
+// spec/wire.md §11.2 (max_reply), notes/client-port.md §2 Reply allowance: a value above the reply bound reads TooLarge; `stream` reads it by stream_read pages
 #[test]
 fn too_large_then_stream_read() {
     let d = Dir::new();
@@ -227,7 +229,7 @@ fn set_batch(nonce: u64, actor: osis::Tid, t: osis::Tid, k: &Ak, v: Value) -> Ve
 
 const WRITE: u64 = 11;
 
-// notes/client-port.md §2 Writes: a repeated nonce is answered with its first result and applies once; one at or below the highest seen and not remembered is "outcome unknown"; two sessions keep separate ranges; a restarted node has another epoch (a client never retries across it)
+// spec/wire.md §11.2 (Auth node_epoch), notes/client-port.md §2 Writes: a repeated nonce is answered with its first result and applies once; one at or below the highest seen and not remembered is "outcome unknown"; two sessions keep separate ranges; a restarted node has another epoch (a client never retries across it)
 #[test]
 fn write_nonces_per_session_and_epoch() {
     let d = Dir::new();
@@ -278,7 +280,7 @@ fn write_nonces_per_session_and_epoch() {
     n.close().unwrap();
 }
 
-// notes/client-port.md §0, §5: the Owner tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
+// spec/sync.md §10 (unix), spec/wire.md §11.2 (Error 1), notes/client-port.md §0, §5: the Owner tier comes from the unix transport alone: a keyed InProcess peer on the node's own listener is refused at Auth (Error 1) and its calls too
 #[test]
 fn keyed_peer_is_never_owner() {
     let d = Dir::new();
@@ -296,4 +298,97 @@ fn keyed_peer_is_never_owner() {
     assert!(matches!(u.auth([1; 16]), Ok(Outcome::Ok { .. })));
     drop((r, u));
     n.close().unwrap();
+}
+
+// spec/wire.md §11.2, notes/client-port.md §2 Port stall bounds: the worst method rows as the port worker runs them (each one engine transaction holding the lock the sync driver needs) against a Sync pass's per-input bound (notes/sync.md Hub stall bounds: 1024 puts in one commit, about 0.45 s at 10^5 entries). Wall time of the call at an otherwise idle node (the worker is one thread). Release, by hand: `cargo test --release -p osis --test it -- --ignored port::bench_worst_rows --nocapture`
+#[test]
+#[ignore = "timing, release"]
+fn bench_worst_rows() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let k = ak("b:v.0");
+    let count = 10_000;
+    let mut things = Vec::new();
+    for chunk in 0..count / 100 {
+        things.extend(
+            n.write_with(|w| {
+                (0..100)
+                    .map(|i| {
+                        let t = w.create(n.me())?;
+                        w.at(t, k.clone()).set(&Value::Int(chunk * 100 + i))?;
+                        Ok(t)
+                    })
+                    .collect::<osis::Result<Vec<_>>>()
+            })
+            .unwrap(),
+        );
+    }
+    for t in things.iter().take(1000) {
+        n.write_with(|w| w.at(*t, k.clone()).set(&Value::Int(-1))).unwrap();
+    }
+    let c = attach(&sock);
+    let time = |what: &str, f: &mut dyn FnMut()| {
+        let t0 = std::time::Instant::now();
+        f();
+        eprintln!("{what}: {:.3} s", t0.elapsed().as_secs_f64());
+    };
+    // the sync engine's own per-event cost at this store (every port request and reply is one)
+    time("sync engine: one Tick", &mut || n.feed(osis::internals::node::sync::Event::Tick));
+    time("local get", &mut || drop(n.get(things[0], k.clone()).unwrap()));
+    {
+        let d2 = Dir::new();
+        let s2 = d2.0.join("s.sock");
+        let small = node(&MemStore::new(), &osis_transport::Net::new(2), &s2, true);
+        let cs = attach(&s2);
+        let t = cs.write_with(|w| w.create(cs.me())).unwrap();
+        time("get, small store, 100 times", &mut || {
+            for _ in 0..100 {
+                drop(cs.get(t, k.clone()).unwrap());
+            }
+        });
+        drop(cs);
+        small.close().unwrap();
+    }
+    time("get", &mut || drop(c.get(things[0], k.clone()).unwrap()));
+    time("write 1024 sets", &mut || {
+        c.write_with(|w| {
+            for t in things.iter().take(1024) {
+                w.at(*t, k.clone()).set(&Value::Int(-2))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+    });
+    time("commits, whole store (10^4 things, 1100 commits)", &mut || drop(c.commits(&CommitQuery::new()).unwrap()));
+    time("commits, one thing", &mut || drop(c.commits(&CommitQuery::new().scope(Scope::Thing(things[0]))).unwrap()));
+    time("undo, home group", &mut || drop(c.undo(&Scope::Group(c.home()))));
+    time("status", &mut || drop(c.status().unwrap()));
+    drop(c);
+    n.close().unwrap();
+}
+
+
+// spec/sync.md §10 (unix path sockets), notes/client-port.md §5: the socket directory is made 0700 and used only when it is this uid's, mode 0700 and not a symlink; the socket name fits sun_path
+#[test]
+fn socket_dir_rules() {
+    use std::os::unix::fs::PermissionsExt;
+    let uid = osis::own_uid().unwrap();
+    let d = Dir::new();
+    let ok = d.0.join("ok");
+    osis::socket_dir(&ok, uid).unwrap();
+    assert_eq!(std::fs::metadata(&ok).unwrap().permissions().mode() & 0o777, 0o700);
+    osis::socket_dir(&ok, uid).unwrap();
+    let open = d.0.join("open");
+    std::fs::create_dir(&open).unwrap();
+    std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(osis::socket_dir(&open, uid).is_err(), "group/other access");
+    let link = d.0.join("link");
+    std::os::unix::fs::symlink(&ok, &link).unwrap();
+    assert!(osis::socket_dir(&link, uid).is_err(), "a symlink");
+    assert!(osis::socket_dir(&ok, uid.wrapping_add(1)).is_err(), "another uid's");
+    let p = osis::socket_path(&d.0.join("store")).unwrap();
+    assert!(p.as_os_str().len() <= osis_transport::unix::MAX_PATH, "{p:?}");
+    assert!(p.extension().is_some_and(|e| e == "sock"));
 }

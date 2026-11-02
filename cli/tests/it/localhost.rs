@@ -187,7 +187,7 @@ fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 
-// notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's; `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's; `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
