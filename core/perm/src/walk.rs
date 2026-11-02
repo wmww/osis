@@ -165,50 +165,31 @@ impl Input {
                 }
             }
         }
-        // Who can hold a class: key actors, authors, and holders that may be nodes.
+        // Who can hold a class: key actors, authors, and holders that may be nodes (the
+        // commits' by `append`).
         let mut nodes: BTreeSet<Tid> = things.iter().filter(|t| owners.is_key(t)).copied().collect();
-        nodes.extend(commits.values().map(|c| c.author));
-        nodes.extend(snaps.values().map(|s| s.author));
-        let holders = commits
-            .values()
-            .flat_map(|c| c.ops.iter().map(|o| o.holder))
-            .chain(snaps.values().flat_map(|s| s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.holder))));
-        nodes.extend(holders.filter(|m| owners.owner_actor(m).is_none()).collect::<Vec<_>>());
         // An invite of admin needs an admin edge, so admin edges carry all admin authority.
         let mut ever_admins: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
-        for c in commits.values() {
-            for o in c.ops.iter().filter(|o| o.edge.is_some_and(|e| e.role == Role::Admin)) {
-                ever_admins.entry(o.target).or_default().insert(o.holder);
-            }
-        }
+        let mut ever = Ever::default();
+        let mut first_write: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
         for s in snaps.values() {
+            nodes.insert(s.author);
+            nodes.extend(s.roster.keys().copied().chain(s.ledger.iter().map(|t| t.holder)).filter(|m| owners.owner_actor(m).is_none()));
             let roster = s.roster.iter().filter(|(_, e)| e.role == Role::Admin).map(|(m, _)| *m);
             let ledger = s.ledger.iter().filter(|t| t.role == Role::Admin).map(|t| t.holder);
             ever_admins.entry(s.thing).or_default().extend(roster.chain(ledger));
-        }
-        let mut ever = Ever::default();
-        for c in commits.values() {
-            for o in &c.ops {
-                if let Some(e) = &o.edge {
-                    ever.add(o.holder, o.target, e);
-                }
-            }
-        }
-        for s in snaps.values() {
             for (m, e) in &s.roster {
                 ever.add(*m, s.thing, e);
             }
             for t in &s.ledger {
                 ever.add(t.holder, s.thing, &Edge::new(t.role));
             }
+            let e = first_write.entry((s.author, s.thing)).or_insert(s.point());
+            *e = (*e).min(s.point());
         }
-        let mut first_write: BTreeMap<(Tid, Tid), Point> = BTreeMap::new();
-        let writes = commits.values().flat_map(|c| written_on(c).map(move |t| (c.author, t, c.point()))).chain(snaps.values().map(|s| (s.author, s.thing, s.point())));
-        for (a, t, p) in writes {
-            let e = first_write.entry((a, t)).or_insert(p);
-            *e = (*e).min(p);
-        }
-        Input { owners, commits, snaps, nodes, ever_admins, first_write, ever }
+        let mut input = Input { owners, commits: BTreeMap::new(), snaps, nodes, ever_admins, first_write, ever };
+        input.append(&commits.into_values().collect::<Vec<_>>());
+        input
     }
 
     /// Whether `c` is held here with this content (a record can grow under its ID: a part
@@ -284,20 +265,27 @@ impl Input {
         !(epoch_changed && self.cyclic_with(&admins))
     }
 
-    /// Adds `new`, which `can_append` accepted.
-    pub fn append(&mut self, new: &[Arc<RoleCommit>]) {
+    /// Adds role commits `new` not held here (all of `gather`'s, or ones `can_append`
+    /// accepted); the nodes they bring.
+    pub fn append(&mut self, new: &[Arc<RoleCommit>]) -> BTreeSet<Tid> {
+        let mut fresh = BTreeSet::new();
+        let mut node = |n: Tid| {
+            if self.nodes.insert(n) {
+                fresh.insert(n);
+            }
+        };
         for c in new {
-            self.nodes.insert(c.author);
+            node(c.author);
             for t in written_on(c) {
                 let e = self.first_write.entry((c.author, t)).or_insert(c.point());
                 *e = (*e).min(c.point());
             }
             for o in &c.ops {
                 if self.owners.owner_actor(&o.holder).is_none() {
-                    self.nodes.insert(o.holder);
+                    node(o.holder);
                 }
                 if self.owners.is_key(&o.target) {
-                    self.nodes.insert(o.target);
+                    node(o.target);
                 }
                 if let Some(e) = &o.edge {
                     self.ever.add(o.holder, o.target, e);
@@ -308,6 +296,7 @@ impl Input {
             }
             self.commits.insert(c.id, c.clone());
         }
+        fresh
     }
 }
 
@@ -1198,14 +1187,13 @@ enum Item {
     Virtual(Box<Virtual>),
 }
 
-/// What an explicit demotion's frontier and exceptions cover.
-struct Auditor<'a> {
-    author: Option<Tid>,
-    frontier: Option<&'a Frontier>,
+/// An explicit demotion auditing what it took away: its author (exempt), its frontier and
+/// commit (`None`: a ledger entry, §6), which cover writes.
+struct Auditor {
+    author: Tid,
+    frontier: Option<Arc<Frontier>>,
     commit: Option<CommitId>,
     point: Point,
-    ledger: bool,
-    frontier_arc: Option<Arc<Frontier>>,
 }
 
 /// Edge state of `s.thing` before `s` by its roster and ledger (spec/permissions.md §6): the
@@ -1222,24 +1210,14 @@ fn ledger_writes(s: &RosterSnapshot) -> (Vec<(Tid, Edge)>, Vec<Virtual>) {
         // The value just after key `b` (`None`: the beginning); `with_roster: false` counts
         // the roster edge only where it starts at `b` itself.
         let value = |b: Option<Point>, with_roster: bool| -> Option<Edge> {
-            let inside = tenures
-                .iter()
-                .filter(|t| match (t.since, b) {
-                    (None, _) => b.is_none_or(|b| b < t.until),
-                    (Some(_), None) => false,
-                    (Some(s), Some(b)) => s <= b && b < t.until,
-                })
-                .map(|t| t.role)
-                .max();
+            // started at or before `b` (`None`: from the beginning)
+            let started = |since: Option<Point>| since.is_none_or(|s| b.is_some_and(|b| s <= b));
+            let inside = tenures.iter().filter(|t| started(t.since) && b.is_none_or(|b| b < t.until)).map(|t| t.role).max();
             if let Some(role) = inside {
                 return Some(Edge::new(role));
             }
             let r = roster.filter(|r| with_roster || (r.since.is_some() && r.since == b))?;
-            let started = match (r.since, b) {
-                (None, _) => true,
-                (Some(_), None) => false,
-                (Some(s), Some(b)) => s <= b,
-            };
+            let started = started(r.since);
             let after_tenures = match b {
                 None => tenures.is_empty(),
                 Some(b) => tenures.iter().all(|t| t.until <= b),
@@ -1631,9 +1609,9 @@ impl<'a> Pass<'a> {
         // Before the change: does the author reach the holder (a demotion of itself)? Only
         // asked when the edge restores something.
         let restores = self.w.restores(key, old);
-        let own = auditor.and_then(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&holder).contains(a));
+        let own = auditor.map(|a| a.author).filter(|a| restores && self.view(point.ts).reach_backward(&holder).contains(a));
         self.set_tracked(holder, target, edge, point.ts);
-        let (Some(aud), Some((base, mine, lowered))) = (auditor, self.w.record_change(point, key, old, edge, by, auditor.map(|a| a.frontier_arc.clone()))) else {
+        let (Some(aud), Some((base, mine, lowered))) = (auditor, self.w.record_change(point, key, old, edge, by, auditor.map(|a| a.frontier.clone()))) else {
             return false;
         };
         let grew = lowered && self.audit_fall(key, base, &mine, point.ts, aud);
@@ -1662,7 +1640,7 @@ impl<'a> Pass<'a> {
     /// demotion for layer 2 and audit the classes X fell through. Returns whether D grew.
     fn audit_fall(&mut self, (holder, target): (Tid, Tid), base: Option<Edge>, mine: &BTreeMap<Tid, Edge>, ts: Ts, aud: &Auditor) -> bool {
         let view = self.view(ts);
-        let xs: Vec<Tid> = view.reach_backward(&holder).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != Some(*x)).collect();
+        let xs: Vec<Tid> = view.reach_backward(&holder).into_iter().filter(|x| self.input.nodes.contains(x) && aud.author != *x).collect();
         let cur = self.w.edges.get(&holder, &target).copied().filter(|e| e.alive_at(Some(ts)));
         // Every x's roles on what its standing on the target reads (the holder, the target,
         // holders with an invite, admin anywhere on its owner chain): from their forward roles
@@ -1755,7 +1733,7 @@ impl<'a> Pass<'a> {
             for (n, now, held) in pairs {
                 for below in [Role::Write, Role::Admin] {
                     if held.role >= Some(below) && now.role < Some(below) {
-                        let d = Demotion { point: aud.point, below, frontier: aud.frontier_arc.clone(), ledger: aud.ledger };
+                        let d = Demotion { point: aud.point, below, frontier: aud.frontier.clone(), ledger: aud.commit.is_none() };
                         self.w.demotions.entry((x, n)).or_default().push(d);
                         self.w.log.push(Undo::Demotion((x, n)));
                     }
@@ -1810,7 +1788,7 @@ impl<'a> Pass<'a> {
                 continue;
             }
             let covered = aud.commit == Some(id.commit())
-                || aud.frontier.is_some_and(|f| f.commits.contains(&id.commit()));
+                || aud.frontier.as_ref().is_some_and(|f| f.commits.contains(&id.commit()));
             if !covered && !self.dropped.contains_key(&id) {
                 self.dropped.insert(id, aud.point);
                 self.fresh.push(id);
@@ -1847,14 +1825,7 @@ impl<'a> Pass<'a> {
             let new = op.edge.map(|e| Edge { since: None, ..e });
             self.record(id, Applied { author: c.author, target: op.target, point, attr });
             let explicit = matches!(attr, Attr::By(Class::Chain | Class::Edge));
-            let auditor = explicit.then(|| Auditor {
-                author: Some(c.author),
-                frontier: c.frontier.as_deref(),
-                commit: Some(c.id),
-                point,
-                ledger: false,
-                frontier_arc: c.frontier.clone(),
-            });
+            let auditor = explicit.then(|| Auditor { author: c.author, frontier: c.frontier.clone(), commit: Some(c.id), point });
             grew |= self.change(point, (op.holder, op.target), new, Some(id), auditor.as_ref());
         }
         grew
@@ -1919,12 +1890,10 @@ impl<'a> Pass<'a> {
         let auditor = v.audit.as_ref().map(|(node, f)| Auditor {
             // A ledger entry with a frontier counts as an explicit demotion by its key's node
             // (§6): that node is exempt as from its own write.
-            author: Some(*node),
-            frontier: Some(f.as_ref()),
+            author: *node,
+            frontier: Some(f.clone()),
             commit: None,
             point: v.point,
-            ledger: true,
-            frontier_arc: Some(f.clone()),
         });
         self.change(v.point, (v.holder, v.thing), v.edge, None, auditor.as_ref())
     }

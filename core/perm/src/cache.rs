@@ -192,12 +192,13 @@ impl W {
             self.edge(e);
         }
     }
-    /// A frontier as the tag covers it: its sizes. Its content is fixed by the record holding
-    /// it (`HeldSet`), and hashing it would cost O(frontier) per save and restore.
+    /// A frontier as the tag covers it: its sizes (`Frontier::shape`; hashing its content
+    /// would cost O(frontier) per save and restore).
     fn frontier_shape(&mut self, f: &Frontier) {
-        self.len(f.writes.len());
-        self.len(f.writes.values().map(|a| a.values().map(BTreeMap::len).sum::<usize>()).sum());
-        self.len(f.commits.len());
+        let (a, b, c) = f.shape();
+        self.len(a);
+        self.len(b);
+        self.len(c);
     }
 }
 
@@ -242,11 +243,7 @@ fn put_input(h: &mut osis_base::hash::Hasher, owners: &Owners, commits: &BTreeMa
         w.tid(&s.author);
         w.tid(&s.actor);
         w.tid(&s.thing);
-        w.len(s.roster.len());
-        for (m, e) in &s.roster {
-            w.tid(m);
-            w.edge(e);
-        }
+        w.edge_map(&s.roster);
         w.len(s.ledger.len());
         for t in &s.ledger {
             w.tid(&t.holder);
@@ -380,41 +377,40 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             w.class(f.held);
         }
     }
-    let r = wk;
-    w.len(r.prior.len());
-    for (k, e) in &r.prior {
+    w.len(wk.prior.len());
+    for (k, e) in &wk.prior {
         w.pair(k);
         w.edge(e);
     }
-    w.len(r.dead.len());
-    for k in &r.dead {
+    w.len(wk.dead.len());
+    for k in &wk.dead {
         w.pair(k);
     }
-    w.len(r.prior_node.len());
-    for (k, m) in &r.prior_node {
+    w.len(wk.prior_node.len());
+    for (k, m) in &wk.prior_node {
         w.pair(k);
         w.edge_map(m);
     }
-    w.len(r.by_author_target.len());
-    for (k, v) in &r.by_author_target {
+    w.len(wk.by_author_target.len());
+    for (k, v) in &wk.by_author_target {
         w.pair(k);
         w.len(v.len());
         for id in v {
             w.wid(id);
         }
     }
-    w.len(r.setter.len());
-    for (k, id) in &r.setter {
+    w.len(wk.setter.len());
+    for (k, id) in &wk.setter {
         w.pair(k);
         w.wid(id);
     }
-    w.len(r.candidates.len());
-    for (c, a) in &r.candidates {
+    w.len(wk.candidates.len());
+    for (c, a) in &wk.candidates {
         w.cid(c);
         w.applied(a);
     }
-    w.len(r.log.len());
-    for u in &r.log {
+    w.len(wk.log.len());
+    for u in &wk.log {
         match u {
             Undo::Edge(m, t, e) => {
                 w.u8(0);
@@ -466,14 +462,14 @@ pub(crate) fn save(inputs: &Inputs, tl: &Timeline, salt: &[u8]) -> Option<Vec<u8
             }
         }
     }
-    w.len(r.marks.len());
-    for (l, h) in &r.marks {
+    w.len(wk.marks.len());
+    for (l, h) in &wk.marks {
         w.len(*l);
         w.len(*h);
     }
     // D in the order the walks found it (`Walked::found`)
-    w.len(r.found.len());
-    for id in &r.found {
+    w.len(wk.found.len());
+    for id in &wk.found {
         w.wid(id);
         w.point(tl.dropped().get(id)?);
     }

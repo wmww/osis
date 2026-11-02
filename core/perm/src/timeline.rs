@@ -302,11 +302,7 @@ impl Timeline {
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
             let first: BTreeMap<Tid, Option<Point>> = walk::written_on(c).map(|t| (t, self.input.first_write.get(&(c.author, t)).copied())).collect();
-            let mut fresh: BTreeSet<Tid> = c.ops.iter().map(|o| o.holder).filter(|m| self.input.owners.owner_actor(m).is_none()).collect();
-            fresh.extend(c.ops.iter().map(|o| o.target).filter(|t| self.input.owners.is_key(t)));
-            fresh.insert(c.author);
-            fresh.retain(|t| !self.input.nodes.contains(t));
-            self.input.append(std::slice::from_ref(c));
+            let fresh = self.input.append(std::slice::from_ref(c));
             let n0 = self.walked.history.len();
             let h = self.walked.marks.get(self.items.place(c)).map_or(n0, |m| m.1);
             let before = self.edges_before(h);

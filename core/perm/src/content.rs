@@ -57,7 +57,7 @@ impl Timeline {
         let x = at.node;
         // A re-grant makes valid *again*: only writes from the start of X's first tenure of
         // `required` on the thing.
-        if self.role(&x, thing, At::END) >= Some(required) && self.first_held(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= at)) {
+        if self.valid_from(&x, thing, required).is_some_and(|s| s.is_none_or(|p| p <= at)) {
             return Validity::Valid;
         }
         let held = self.role(&x, thing, At::before(at)) >= Some(required);
@@ -75,9 +75,7 @@ impl Timeline {
             None => Validity::Invalid { by: None },
         }
     }
-}
 
-impl Timeline {
     /// Where `x` first held `required` on `thing`: `Some(None)` from the beginning, `Some(p)`
     /// from the change at `p`, `None` never.
     fn first_held(&self, x: &Tid, thing: &Tid, required: Role) -> Option<Option<Point>> {
@@ -174,4 +172,3 @@ impl Timeline {
         None
     }
 }
-

@@ -54,7 +54,7 @@ type Chain = (Vec<Tid>, Option<Tid>);
 
 impl Owners {
     /// From the held `created.0` records; one that does not hash to its tid is ignored.
-    pub fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Owners {
+    pub(crate) fn from_held(held: &dyn HeldSet, things: &BTreeSet<Tid>) -> Owners {
         let mut o = Owners::default();
         for t in things {
             if let Some(rec) = held.created(t)
@@ -90,7 +90,7 @@ impl Owners {
         self.owned.get(t).map_or(&[], |v| v.as_slice())
     }
     /// The owner actor of `t` when it is an ordinary thing.
-    pub fn owner_actor(&self, t: &Tid) -> Option<Tid> {
+    pub(crate) fn owner_actor(&self, t: &Tid) -> Option<Tid> {
         match self.owner(t) {
             Some(Owner::Actor(y)) => Some(y),
             _ => None,
@@ -166,7 +166,7 @@ impl Edges {
     }
     /// Sets `changes` in each of `states`, consecutive kept states in order: a map two
     /// neighbours shared before stays shared (one copy per run of states sharing it).
-    pub fn set_all<'a>(states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
+    pub(crate) fn set_all<'a>(states: impl Iterator<Item = &'a mut Arc<Edges>>, changes: &[(Tid, Tid, Option<Edge>)]) {
         /// The target's and the holder's maps before and after a change, in the previous state.
         type Was = ((Option<Arc<BTreeMap<Tid, Edge>>>, Option<Arc<BTreeMap<Tid, Edge>>>), (Option<Arc<BTreeSet<Tid>>>, Option<Arc<BTreeSet<Tid>>>));
         fn same<T>(a: &Option<Arc<T>>, b: &Option<Arc<T>>) -> bool {
@@ -226,7 +226,7 @@ impl Edges {
 /// few (at most a checkpoint interval), sorted by (holder, target), with a 256-bit filter of
 /// the holders and targets present so most lookups skip them.
 #[derive(Clone, Debug, Default)]
-pub struct Overlay {
+pub(crate) struct Overlay {
     set: Vec<(Tid, Tid, Option<Edge>)>,
     holders: [u64; 4],
     targets: [u64; 4],
@@ -461,7 +461,7 @@ impl Dense {
 
 /// What a standing on a thing reads besides the node's roles: the thing's owner chain (and
 /// the key actor at its top) and its holders holding an invite (edges alive).
-pub struct Reads {
+pub(crate) struct Reads {
     pub up: Vec<Tid>,
     pub top: Option<Tid>,
     pub invites: Vec<(Tid, Edge)>,
@@ -490,7 +490,7 @@ fn class_of(chain: bool, role: Option<Role>, invite: impl FnOnce() -> Option<Rol
 }
 
 /// One edge set to a value over an edge state: (holder, target, value).
-pub type Patch = (Tid, Tid, Option<Edge>);
+type Patch = (Tid, Tid, Option<Edge>);
 
 /// Authority queries over owners and an edge state (optionally a base with an overlay), with
 /// edges alive at `ts` (`None`: the end of time), and optionally one edge patched.
@@ -566,7 +566,7 @@ impl<'a> View<'a> {
 
     /// `roles_from` and the earliest `until` of an edge it followed: the answer holds at any
     /// later ts before that, while no edge of a node it reaches changes.
-    pub fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+    pub(crate) fn roles_expiring(&self, x: &Tid) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut best: BTreeMap<Tid, Role> = BTreeMap::from([(*x, Role::Admin)]);
         for level in [Role::Admin, Role::Write, Role::Read] {
@@ -602,7 +602,7 @@ impl<'a> View<'a> {
     }
 
     /// `roles_raised` and the earliest `until` of an edge it followed.
-    pub fn roles_raised_expiring(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
+    pub(crate) fn roles_raised_expiring(&self, best: &BTreeMap<Tid, Role>, seeds: &[Tid]) -> (BTreeMap<Tid, Role>, Option<WallMs>) {
         let mut expires: Option<WallMs> = None;
         let mut raised: BTreeMap<Tid, Role> = BTreeMap::new();
         let mut stack: Vec<Tid> = seeds.iter().filter(|s| best.contains_key(s)).copied().collect();
@@ -634,7 +634,7 @@ impl<'a> View<'a> {
     }
 
     /// Every entity's highest effective role on any of `ys`.
-    pub fn roles_to_any(&self, ys: &[Tid]) -> BTreeMap<Tid, Role> {
+    pub(crate) fn roles_to_any(&self, ys: &[Tid]) -> BTreeMap<Tid, Role> {
         let mut best: BTreeMap<Tid, Role> = ys.iter().map(|y| (*y, Role::Admin)).collect();
         let mut stack = ys.to_vec();
         while let Some(t) = stack.pop() {
@@ -672,7 +672,7 @@ impl<'a> View<'a> {
     }
 
     /// What a standing on `n` reads besides the node's roles.
-    pub fn reads(&self, n: &Tid) -> Reads {
+    pub(crate) fn reads(&self, n: &Tid) -> Reads {
         let (up, top) = self.owners.chain(n);
         let mut invites = Vec::new();
         self.each_holder(n, |m, e| {
@@ -685,7 +685,7 @@ impl<'a> View<'a> {
 
     /// Standing on `n` from its parts: whether the node is admin on `n`'s owner chain, its role
     /// on `n`, and its roles on `n`'s holders (for the invite).
-    pub fn standing_from(&self, chain: bool, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
+    pub(crate) fn standing_from(&self, chain: bool, role: Option<Role>, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
         Standing { class: class_of(chain, role, || self.invite(best, n)), role }
     }
 
