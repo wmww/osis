@@ -26,13 +26,18 @@ pub fn uid_key(uid: u32) -> PublicKey {
     osis_base::hash::hash(&[b"osis v1 unix peer".as_slice(), &uid.to_be_bytes()].concat())
 }
 
-/// This process's effective uid, read as `SO_PEERCRED` of a socket pair (no unsafe code).
-/// Needs a tokio runtime the first time.
+/// This process's effective uid, read as `SO_PEERCRED` of a socket pair (no unsafe code; the
+/// first call outside a tokio runtime starts a small one for it).
 pub fn own_uid() -> Result<u32, Error> {
     static UID: OnceLock<u32> = OnceLock::new();
     if let Some(u) = UID.get() {
         return Ok(*u);
     }
+    let rt = match tokio::runtime::Handle::try_current() {
+        Ok(_) => None,
+        Err(_) => Some(tokio::runtime::Builder::new_current_thread().enable_io().build().map_err(io)?),
+    };
+    let _g = rt.as_ref().map(|r| r.enter());
     let (a, _b) = UnixStream::pair().map_err(io)?;
     let uid = a.peer_cred().map_err(io)?.uid();
     Ok(*UID.get_or_init(|| uid))

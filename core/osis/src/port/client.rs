@@ -63,10 +63,8 @@ pub fn socket_dir(dir: &Path, uid: u32) -> Result<()> {
     Ok(())
 }
 
-/// This process's uid (`SO_PEERCRED` of a socket pair, on a small runtime of its own).
+/// This process's uid (`SO_PEERCRED` of a socket pair).
 pub fn own_uid() -> Result<u32> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_io().build().map_err(|e| Error::Storage(e.to_string()))?;
-    let _g = rt.enter();
     osis_transport::unix::own_uid().map_err(|e| Error::Storage(e.to_string()))
 }
 
