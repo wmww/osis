@@ -1762,3 +1762,199 @@ fn forged_parts_beside_a_part_past_expiry_alike_in_every_order_spec_commits_4() 
         }
     }
 }
+
+// spec/commits.md §4: a commit on two synced things, one part away. Its author's removal on the other
+// thing ends the wait in every order, whatever follows (a re-grant, the remover's own demotion making it
+// fall: the commit that applied stays applied, so a node learning of them first applies it too); a
+// removal whose frontier lists the commit leaves the delta valid: it waits.
+#[test]
+fn missing_delta_of_a_removed_author_any_order_spec_commits_4() {
+    use crate::common::*;
+    use osis_schema::Codec as _;
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    enum Case {
+        Regrant,
+        Falls,
+        Covered,
+    }
+    for case in [Case::Regrant, Case::Falls, Case::Covered] {
+        let mut lp = net(3, 77);
+        let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+        let (bob, carol) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        for (t, who, r) in [(g, bob, Role::Write), (h, bob, Role::Write), (h, carol, Role::Admin)] {
+            set_edge(&mut lp.peers[0].engine, t, who, Some(edge(r)), None);
+        }
+        lp.sync_all().unwrap();
+        let base: Vec<_> = packages(&mut lp, 0);
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        m.set(g, &REG, &s("by bob")).unwrap();
+        m.set(h, &REG, &s("by bob")).unwrap();
+        let c = lp.peers[1].commit(m).unwrap().unwrap();
+        let cp = packages(&mut lp, 1).into_iter().find(|p| p.id == c).unwrap();
+        if case == Case::Covered {
+            sync(&mut lp, 1, 2);
+        }
+        lp.advance(1_000);
+        let revoke = |lp: &mut osis_node::local_peer::LocalPeer, by: usize, who: Tid| {
+            let scope = osis_perm::DemotionScope { roles: [(who, [h].into())].into(), content: [(who, [h].into())].into() };
+            let now = lp.peers[by].engine.now();
+            let f = lp.peers[by].engine.frontier(&scope, now).unwrap();
+            set_edge(&mut lp.peers[by].engine, h, who, None, Some(f.to_value()))
+        };
+        let d = revoke(&mut lp, 2, bob);
+        let dp = packages(&mut lp, 2).into_iter().find(|p| p.id == d).unwrap();
+        lp.advance(1_000);
+        let after = match case {
+            Case::Falls => revoke(&mut lp, 0, carol),
+            _ => set_edge(&mut lp.peers[0].engine, h, bob, Some(edge(Role::Write)), None),
+        };
+        let ap = packages(&mut lp, 0).into_iter().find(|p| p.id == after).unwrap();
+        let items = [on(&cp, g), dp.bytes.clone(), ap.bytes.clone()];
+        for (k, order) in permutations(3).into_iter().enumerate() {
+            let mut p = Peer::new(7000 + k as u64, lp.peers[0].engine.now()).unwrap();
+            p.engine.set_syncing(g, true).unwrap();
+            p.engine.set_syncing(h, true).unwrap();
+            for pk in &base {
+                p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            }
+            for i in order.iter() {
+                let _ = p.engine.ingest(&items[*i], Vec::new());
+                p.engine.reexamine().unwrap();
+            }
+            let want = if case == Case::Covered { "new" } else { "by bob" };
+            assert_eq!(p.engine.get(&g, &reg()).unwrap(), Some(s(want)), "{case:?} {order:?}");
+            assert_eq!(p.engine.get(&h, &reg()).unwrap(), Some(s("new")), "{case:?} {order:?}");
+        }
+    }
+}
+
+/// Random histories of writers' commits on two things, demotions, re-grants and demotions of the
+/// demoter: what the removed-author rule of spec/commits.md §4 turns on.
+fn removed_steps(rng: &mut Rng) -> Vec<Step> {
+    use Step::*;
+    let tick = Advance { who: None, ms: 1000 };
+    let mut out = vec![NewTop { by: 0 }, tick.clone()];
+    for (t, holder, role) in [(1, 1, Role::Write), (1, 2, Role::Admin), (2, 1, Role::Write)] {
+        out.push(Edge { by: 0, t, holder, role: Some(role) });
+    }
+    out.extend([Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, tick.clone()]);
+    for _ in 0..(6 + rng.below(10)) {
+        let t = rng.below(2) as usize;
+        let writer = 1 + rng.below(2) as usize;
+        out.push(match rng.below(9) {
+            0..=2 => Two { by: writer, a: t, b: 1 - t, v: rng.below(9) as u8 },
+            3 => Demote { by: 2, t, holder: 1, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
+            4 => Demote { by: 0, t, holder: writer, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
+            5 => Edge { by: 0, t, holder: writer, role: Some(Role::Write) },
+            6 => Roster { by: 0, t },
+            7 => Sync { from: rng.below(3) as usize, to: rng.below(3) as usize },
+            _ => tick.clone(),
+        });
+        out.push(tick.clone());
+    }
+    out
+}
+
+/// What one seed of `removed_author_differential` found.
+#[derive(Default)]
+struct RemovedSeed {
+    played: bool,
+    /// Commits a reader syncing all applied with a part of theirs away.
+    released: usize,
+    /// Those that wait instead.
+    waiting: usize,
+    bad: Vec<String>,
+}
+
+fn removed_seed(seed: u64) -> RemovedSeed {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let steps = removed_steps(&mut rng);
+    let Ok(played) = std::panic::catch_unwind(|| play(seed, &steps)) else { return RemovedSeed::default() };
+    let ids: std::collections::BTreeSet<_> = played.packs.iter().map(|x| x.id).collect();
+    let mut out = RemovedSeed { played: true, ..Default::default() };
+    // a part of each commit on two things stays away, on one of them
+    let away: Vec<(usize, Tid)> = (0..played.packs.len())
+        .filter_map(|i| {
+            let ts = things_of(&played, i);
+            let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
+            (b.header.kind == osis_commit::Kind::Content && ts.len() == 2 && rng.below(4) != 0).then(|| (i, ts[rng.below(2) as usize]))
+        })
+        .collect();
+    if away.is_empty() {
+        return out;
+    }
+    let cut = |i: usize| -> Vec<Vec<u8>> {
+        let Some((_, t)) = away.iter().find(|x| x.0 == i) else { return vec![played.packs[i].bytes.clone()] };
+        let b = CommitBlob::decode(&played.packs[i].bytes).unwrap();
+        let mut x = b.clone();
+        x.parts.retain(|p| b.header.aspects[p.ai].tid != *t);
+        vec![x.encode()]
+    };
+    let read = |toks: &[(usize, Vec<u8>)], late: bool| {
+        let mut p = Peer::new(FRESH, played.now).unwrap();
+        for t in &played.things {
+            p.engine.set_syncing(*t, true).unwrap();
+        }
+        for (i, b) in toks {
+            let _ = p.engine.ingest(b, played.packs[*i].blobs.clone());
+            p.engine.reexamine().unwrap();
+        }
+        let held = p.engine.pending();
+        let pending = away.iter().filter(|(i, _)| held.iter().any(|x| x.0 == played.packs[*i].id)).count();
+        if late {
+            for (i, _) in &away {
+                let _ = p.engine.ingest(&played.packs[*i].bytes, Vec::new());
+                p.engine.reexamine().unwrap();
+            }
+        }
+        let seen: Vec<(String, String)> = observe(&mut p.engine, &ids).into_iter().map(|(k, v)| (k, v.split(' ').filter(|w| !w.starts_with("deaths=")).collect::<Vec<_>>().join(" "))).collect();
+        (seen, played.things.iter().map(|t| format!("{:?}", p.engine.roster(t))).collect::<Vec<_>>(), pending)
+    };
+    let toks: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).flat_map(|i| cut(i).into_iter().map(move |b| (i, b))).collect();
+    let whole: Vec<(usize, Vec<u8>)> = (0..played.packs.len()).map(|i| (i, played.packs[i].bytes.clone())).collect();
+    let want = read(&toks, false);
+    let joined = read(&whole, false);
+    out.waiting = want.2;
+    out.released = away.len() - want.2;
+    let mut differs = |what: &str, got: &(Vec<(String, String)>, Vec<String>, usize), w: &(Vec<(String, String)>, Vec<String>, usize)| {
+        if (&got.0, &got.1) != (&w.0, &w.1) {
+            let first = got.0.iter().filter(|x| !w.0.contains(x)).map(|x| format!("got {x:?}")).chain(w.0.iter().filter(|x| !got.0.contains(x)).map(|x| format!("want {x:?}"))).collect::<Vec<_>>().join("; ");
+            out.bad.push(format!("seed {seed} {what}: {}", first.chars().take(300).collect::<String>()));
+        }
+    };
+    for _ in 0..8 {
+        let mut order = toks.clone();
+        for i in (1..order.len()).rev() {
+            order.swap(i, rng.below(i as u64 + 1) as usize);
+        }
+        let got = read(&order, false);
+        differs("any order, a part away", &got, &want);
+        // the part arriving late: what they join to is the same as whole
+        let got = read(&order, true);
+        differs("the part comes", &got, &joined);
+    }
+    out
+}
+
+fn removed_replay(s: u64) -> String {
+    format!("OSIS_REMOVED_START={s} OSIS_REMOVED_SEEDS=1 cargo test --workspace --test it parts::removed_author_differential_large_spec_commits_4 -- --ignored --exact")
+}
+
+// spec/commits.md §4: with a part of a commit on two things away, what a reader syncing both applies is
+// alike in every order; the part coming late leaves what a reader holding it whole has. Reaches the
+// removed-author rule: without it nothing is released.
+#[test]
+#[ignore]
+fn removed_author_differential_large_spec_commits_4() {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_REMOVED_START", "OSIS_REMOVED_SEEDS", 1..61);
+    let n = seeds.range.end - seeds.range.start;
+    let all = seeds.run("parts::removed_author_differential_large_spec_commits_4", removed_replay, removed_seed);
+    let played_n = all.iter().filter(|s| s.played).count() as u64;
+    let (released, waiting): (usize, usize) = (all.iter().map(|s| s.released).sum(), all.iter().map(|s| s.waiting).sum());
+    let bad: Vec<&String> = all.iter().flat_map(|s| &s.bad).collect();
+    eprintln!("{played_n} of {n} histories played, {released} commits released with a part away, {waiting} waiting");
+    assert!(played_n > n / 2);
+    assert!(n < 10 || (released > 0 && waiting > 0), "the histories reach the rule");
+    assert!(bad.is_empty(), "{} failures:\n{}", bad.len(), bad.iter().take(12).map(|x| x.as_str()).collect::<Vec<_>>().join("\n"));
+}

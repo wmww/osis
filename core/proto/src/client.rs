@@ -354,6 +354,16 @@ impl ClientSession {
         self.closed
     }
 
+    /// Pings now, with nothing outstanding and nothing sent or heard for `quiet_ms`: the stall
+    /// timeout then finds a dead connection. Never with a request outstanding: a send counts as
+    /// progress, so it would push that timeout back.
+    pub fn ping_if_quiet(&mut self, now: u64, quiet_ms: u64) -> Vec<ClientOutput> {
+        if self.pending.is_empty() && self.progress.saturating_add(quiet_ms) <= now {
+            self.next_ping = now;
+        }
+        self.handle(now, ClientInput::Timer)
+    }
+
     /// Requests not yet answered (sent or waiting to be sent).
     pub fn outstanding(&self) -> usize {
         self.pending.len()

@@ -1753,9 +1753,20 @@ impl SyncEngine {
     /// Catches up at the caller's word (an app's refresh, at any rate): a label that needs it syncs,
     /// a live one only judges again. A Sync of every label costs a round trip per two (each may
     /// answer `MAX_MESSAGE`, `osis_proto::client::WINDOW`) and shows `Syncing`, so a caller polling
-    /// faster than that kept a node `Syncing` for good and every `wait_synced` waiting.
+    /// faster than that kept a node `Syncing` for good and every `wait_synced` waiting. A connection
+    /// quiet for `retry_ms` gets a ping: after a network change it may be dead with nothing in flight
+    /// to find out by (the stall timeout), and a live label would hear nothing.
     pub fn refresh(&mut self) -> Vec<Action> {
         let mut out = Vec::new();
+        let (now, quiet) = (self.raw_now(), self.cfg.retry_ms);
+        let conns: Vec<ConnId> = self.conns.keys().copied().collect();
+        for conn in conns {
+            let Some(c) = self.conns.get_mut(&conn) else { continue };
+            let o = c.session.ping_if_quiet(now, quiet);
+            if let Err(e) = self.outputs(conn, o, &mut out) {
+                self.diag(format!("sync: {e}"));
+            }
+        }
         let open: Vec<(ConnId, LabelId)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && !l.receipts).map(move |(lid, _)| (*id, *lid))).collect();
         for (conn, label) in open {
             if self.needs_sync(conn, &label) {
