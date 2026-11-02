@@ -56,6 +56,8 @@ impl Core {
             match self.created(&cur)? {
                 CreationRecord::Thing { owner, .. } => cur = *owner,
                 CreationRecord::KeyActor { .. } => return Some(cur),
+                // has secrets of its own from its creation; not held yet
+                CreationRecord::Ownerless { .. } => return None,
             }
         }
         None

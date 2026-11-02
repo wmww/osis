@@ -4,7 +4,7 @@
 ## 1. Things and tids
 - Every datum is an **aspect** of a **thing**. A thing holds aspects and nothing else.
 - A **tid** is 120 bits: the first 120 bits of BLAKE3 over the canonical encoding of the thing's **creation record** (spec/wire.md §3). Text form: 20 characters of unpadded base64url, prefixed `osis://` where ambiguous or user-visible.
-- Creation record of an ordinary thing: (owner actor tid, 32-byte random nonce). Of a **key actor** (node, recovery key, link key), which owns itself: (algorithm-tagged signing public key, 32-byte nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
+- Creation record of an ordinary thing: (owner actor tid, 32-byte random nonce). Of a **key actor** (node, recovery key, link key), which owns itself: (algorithm-tagged signing public key, 32-byte nonce). Of an **ownerless thing** (spec/permissions.md §1): (first admin's tid, 32-byte random nonce). A link key's or recovery key's nonce derives from its seed (spec/crypto.md §3).
 - A node checks a creation record by hashing when it receives the thing's data. A tid inside a value is a bare reference: it may dangle, and the thing may lack the expected aspects.
 - A received record that hashes to a tid the node already holds a different record for is bad input: keep the held record, ignore the new one, report a diagnostic. Never panic on it.
 - A thing never changes owner; moving it is a copy under a new tid (spec/permissions.md §7).
@@ -165,7 +165,7 @@ aspect name.0: string;
 aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
-- `creation`'s fields 0 and 1 are exclusive and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
+- `creation` holds exactly one of fields 0, 1 and 4 and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
 - `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects and `created.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 

@@ -1,6 +1,7 @@
 //! Joint walk over several actors (spec/permissions.md §5.1): one timeline over every edge
 //! write of every actor, ordered by (t, author node, commit ID). Nodes are key actors; each
-//! actor is owned by a node or another actor; an edge (holder: node or actor, target actor,
+//! actor is owned by a node or another actor, or is ownerless (its one genesis edge, admin, is
+//! its record's first admin, spec/permissions.md §1); an edge (holder: node or actor, target actor,
 //! role). Effective role: max over paths of the min along the path, paths climbing edges and
 //! owner links, computed as a fixpoint so mutual role is fine. Class of a node on an
 //! actor: owner chain (admin of an actor strictly above it in its owner chain, or the node at
@@ -29,6 +30,9 @@ const LATE: u32 = 1000;
 pub enum Owner {
     Node(usize),
     Actor(usize),
+    /// Ownerless (spec/permissions.md §1): its one genesis edge, admin, is its record's first
+    /// admin; nothing below it has genesis edges (no key actor at the top to write them).
+    None,
 }
 
 #[derive(Clone, Debug)]
@@ -104,11 +108,12 @@ impl JHist {
         self.owners.len()
     }
 
-    /// The owner entity of actor `x`.
-    fn owner(&self, x: usize) -> usize {
+    /// The owner entity of actor `x` (none: ownerless).
+    pub fn owner(&self, x: usize) -> Option<usize> {
         match self.owners[x] {
-            Owner::Node(o) => o,
-            Owner::Actor(y) => self.nodes + y,
+            Owner::Node(o) => Some(o),
+            Owner::Actor(y) => Some(self.nodes + y),
+            Owner::None => None,
         }
     }
 
@@ -182,7 +187,7 @@ impl JHist {
         loop {
             let mut changed = false;
             for e in 0..nn + na {
-                if !v[e] && (0..na).any(|x| v[nn + x] && (edges[e][x] > Role::None || self.owner(x) == e)) {
+                if !v[e] && (0..na).any(|x| v[nn + x] && (edges[e][x] > Role::None || self.owner(x) == Some(e))) {
                     v[e] = true;
                     changed = true;
                 }
@@ -202,7 +207,7 @@ impl JHist {
         loop {
             let mut changed = false;
             for x in 0..na {
-                if !v[nn + x] && (v[self.owner(x)] || (0..nn + na).any(|e| v[e] && edges[e][x] > Role::None)) {
+                if !v[nn + x] && (self.owner(x).is_some_and(|o| v[o]) || (0..nn + na).any(|e| v[e] && edges[e][x] > Role::None)) {
                     v[nn + x] = true;
                     changed = true;
                 }
@@ -221,7 +226,7 @@ impl JHist {
     /// §1: an edge for the target's owner is no write (the owner is implicitly admin and
     /// cannot be removed).
     fn is_owner_edge(&self, w: &JWrite) -> bool {
-        w.holder == self.owner(w.target)
+        self.owner(w.target) == Some(w.holder)
     }
 
     /// §2 self-removal: lowers an edge whose holder the author has admin on, and either lowers
@@ -405,7 +410,10 @@ fn ent_name(nodes: usize, e: usize) -> String {
 impl std::fmt::Display for JHist {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         let nm = |e: usize| ent_name(self.nodes, e);
-        let owners: Vec<String> = (0..self.actors()).map(|x| format!("A{x} owned by {}", nm(self.owner(x)))).collect();
+        let owners: Vec<String> = (0..self.actors()).map(|x| match self.owner(x) {
+            Some(o) => format!("A{x} owned by {}", nm(o)),
+            None => format!("A{x} ownerless"),
+        }).collect();
         writeln!(f, "nodes n0..n{}; {}", self.nodes - 1, owners.join(", "))?;
         for (m, row) in self.genesis.iter().enumerate() {
             for (x, r) in row.iter().enumerate().filter(|(_, r)| **r != Role::None) {
@@ -465,7 +473,8 @@ impl crate::shrink::Shrink for JHist {
             }
         }
         for m in 0..self.genesis.len() {
-            for x in 0..na {
+            // an ownerless actor keeps its record's first admin
+            for x in (0..na).filter(|x| self.owners[*x] != Owner::None) {
                 if self.genesis[m][x] > Role::None {
                     let mut h = self.clone();
                     h.genesis[m][x] = Role::None;
@@ -573,6 +582,28 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
             }
         }
     }
+    // Some actors ownerless: their one genesis edge an admin edge of a node or lower actor
+    // (their record names it), none on the actors below them.
+    let mut owners = owners;
+    for x in 1..na {
+        if rng.below(4) == 0 {
+            owners[x] = Owner::None;
+        }
+    }
+    for x in 0..na {
+        let mut o = owners[x];
+        while let Owner::Actor(y) = o {
+            o = owners[y];
+        }
+        if o == Owner::None {
+            for row in genesis.iter_mut() {
+                row[x] = Role::None;
+            }
+        }
+        if owners[x] == Owner::None {
+            genesis[rng.below(nodes + x)][x] = Role::Admin;
+        }
+    }
     let k = 2 + rng.below(6);
     let mut h = JHist { nodes, owners, genesis, writes: vec![], recv: vec![] };
     while h.writes.len() < k {
@@ -609,12 +640,8 @@ pub fn random_hist(rng: &mut Rng) -> JHist {
                     if v[nodes + x] {
                         continue;
                     }
-                    let owner = match h.owners[x] {
-                        Owner::Node(o) => o,
-                        Owner::Actor(z) => nodes + z,
-                    };
                     let edge = (0..ents).any(|m| v[m] && (h.genesis[m][x] > Role::None || h.writes.iter().any(|w| w.holder == m && w.target == x)));
-                    if v[owner] || edge {
+                    if h.owner(x).is_some_and(|o| v[o]) || edge {
                         v[nodes + x] = true;
                         changed = true;
                     }

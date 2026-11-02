@@ -77,7 +77,8 @@ impl Core {
                     chain.push(cur);
                     cur = *owner;
                 }
-                CreationRecord::KeyActor { .. } => return None,
+                // an ownerless thing has secrets of its own from its creation, never derived
+                CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. } => return None,
             }
         }
         None
@@ -111,7 +112,8 @@ impl Core {
     /// invalid. Its `Rotated` establishment is not computed: `own_epochs` is the view.
     pub(crate) fn own_record(&self, tid: &Tid) -> Option<&ActorEpochs> {
         let e = self.ix.secrets.get(tid)?;
-        let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. }));
+        // an ownerless thing is judged alike: its creation commit's keyset part may turn invalid
+        let thing = matches!(self.created(tid), Some(CreationRecord::Thing { .. } | CreationRecord::Ownerless { .. }));
         if self.ix.own_keys.contains(tid) || !thing {
             return Some(e);
         }
@@ -164,6 +166,8 @@ impl Core {
             match self.created(&cur)? {
                 CreationRecord::Thing { owner, .. } => cur = *owner,
                 CreationRecord::KeyActor { public_key, .. } => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+                // its own secrets not held yet: no delete key
+                CreationRecord::Ownerless { .. } => return None,
             }
         }
         None
@@ -392,19 +396,23 @@ pub struct CommitSecrets<'c> {
     pub actor: Tid,
     /// Creation records of things the commit creates.
     pub created: &'c crate::engine::write::Creates,
+    /// The epochs the commit gives the ownerless things it creates.
+    pub first: &'c BTreeMap<Tid, ActorEpochs>,
     /// Delete keys published in `keys.0` of delete bases whose secret of that role is not held
     /// ([`published_keys`]).
     pub published: &'c BTreeMap<(Tid, Role), VerifyingKey>,
 }
 
 /// The delete base of `tid` ([`Core::delete_base`]); a thing `created` in this commit is plain,
-/// so it uses its owner's.
-fn base_of(core: &Core, created: &crate::engine::write::Creates, tid: &Tid) -> Option<DeleteBase> {
+/// so it uses its owner's, but an ownerless one is its own, at the epochs this commit gives it
+/// (`first`).
+fn base_of(core: &Core, created: &crate::engine::write::Creates, first: &BTreeMap<Tid, ActorEpochs>, tid: &Tid) -> Option<DeleteBase> {
     let mut cur = *tid;
     for _ in 0..=created.len() {
         match created.get(&cur) {
             Some(CreationRecord::Thing { owner, .. }) => cur = *owner,
             Some(CreationRecord::KeyActor { public_key, .. }) => return VerifyingKey::from_slice(public_key).ok().map(DeleteBase::KeyActor),
+            Some(CreationRecord::Ownerless { .. }) => return Some(DeleteBase::Actor(cur, first.get(&cur).cloned())),
             None => return core.delete_base(&cur),
         }
     }
@@ -418,7 +426,7 @@ pub(crate) fn published_keys(tx: &mut crate::engine::Tx<'_>, created: &crate::en
     let mut need = std::collections::BTreeSet::new();
     for t in tids {
         for r in [Role::Admin, Role::Write] {
-            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &t)
+            if let Some(DeleteBase::Actor(b, e)) = base_of(tx.core, created, &BTreeMap::new(), &t)
                 && e.is_none_or(|e| e.role(r).newest_held().is_none())
             {
                 need.insert((b, r));
@@ -559,7 +567,7 @@ impl CommitSecrets<'_> {
     /// The delete key of role `r` of `tid`'s delete base: a key actor's signing key, else from
     /// the newest held secret of the role, else the published one.
     fn key(&self, tid: &Tid, r: Role) -> Option<VerifyingKey> {
-        match base_of(self.core, self.created, tid)? {
+        match base_of(self.core, self.created, self.first, tid)? {
             DeleteBase::KeyActor(k) => Some(k),
             DeleteBase::Actor(b, e) => e.and_then(|e| newest_delete_key(&e, r)).or_else(|| self.published.get(&(b, r)).copied()),
         }

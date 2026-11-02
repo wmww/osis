@@ -1605,12 +1605,9 @@ impl Engine {
         self.core.events.diagnostic(d, now);
     }
 
-    /// The owner of `tid` (`None`: a key actor or an unknown thing).
+    /// The owner of `tid` (`None`: a key actor, an ownerless thing or an unknown thing).
     pub fn owner(&self, tid: &Tid) -> Option<Tid> {
-        self.core.owner(tid).or_else(|| match &self.ephemeral_thing(tid)?.record {
-            osis_base::CreationRecord::Thing { owner, .. } => Some(*owner),
-            osis_base::CreationRecord::KeyActor { .. } => None,
-        })
+        self.core.owner(tid).or_else(|| self.ephemeral_thing(tid)?.record.owner())
     }
 
     /// `tid`, then its owners up the chain: at most `MAX_OWNER_DEPTH` owner links

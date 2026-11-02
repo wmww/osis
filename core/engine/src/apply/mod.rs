@@ -729,6 +729,11 @@ fn thing_wait(
                 chain.push(cur);
             }
             Some(CreationRecord::KeyActor { .. }) => break,
+            // its first admin's edge leads to it, the record perhaps not held yet (its creation)
+            Some(CreationRecord::Ownerless { admin, .. }) => {
+                chain.push(admin);
+                break;
+            }
             None => return Some(Reason::MissingChain(cur)),
         }
     }

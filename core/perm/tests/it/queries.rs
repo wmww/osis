@@ -126,25 +126,9 @@ fn cert_run_joint(samples: u64, seed: u64) {
         let h = joint::random_hist(&mut rng);
         let mut w = World::new();
         let nodes = w.nodes(h.nodes);
-        let (mut actors, mut top) = (Vec::new(), Vec::new());
-        for o in &h.owners {
-            let (owner, tp) = match *o {
-                joint::Owner::Node(n) => (nodes[n], nodes[n]),
-                joint::Owner::Actor(y) => (actors[y], top[y]),
-            };
-            actors.push(w.thing(owner));
-            top.push(tp);
-        }
+        let (actors, top) = joint_actors(&mut w, &h, &nodes);
+        joint_genesis(&mut w, &h, &nodes, &actors, &top, None);
         let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
-        let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-        for (m, row) in h.genesis.iter().enumerate() {
-            for (x, &r) in row.iter().enumerate() {
-                if r != roles_model::Role::None {
-                    let role = if r == roles_model::Role::Admin { Admin } else { Write };
-                    w.set(top[x], actors[x], ent(m), edge(role), 0, &all0);
-                }
-            }
-        }
         for (i, jw) in h.writes.iter().enumerate() {
             let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
             let e = match jw.role {
@@ -159,10 +143,12 @@ fn cert_run_joint(samples: u64, seed: u64) {
         }
         // one actor compacted at a roster snapshot of the end: its history held only as
         // roster and ledger tenures
+        // (an ownerless actor and those below it have no key actor at the top to write one)
         let x = actors[s as usize % actors.len()];
+        let Some(tp) = top[s as usize % actors.len()] else { continue };
         let tl = Timeline::evaluate(&w.held());
         let mut w2 = w.clone();
-        let snap = w2.snapshot_state(top[s as usize % actors.len()], x, tl.roster_state(&x), LATE / 2);
+        let snap = w2.snapshot_state(tp, x, tl.roster_state(&x), LATE / 2);
         if let Some(d) = cert_check_held(&w2.compacted(x, snap)) {
             panic!("seed {seed:#x} sample {s}, {x:?} compacted: {d}\n{h}");
         }

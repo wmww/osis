@@ -115,25 +115,9 @@ fn run_joint(samples: u64, seed: u64) {
         let h = joint::random_hist(&mut rng);
         let mut w = World::new();
         let nodes = w.nodes(h.nodes);
-        let (mut actors, mut top) = (Vec::new(), Vec::new());
-        for o in &h.owners {
-            let (owner, tp) = match *o {
-                joint::Owner::Node(n) => (nodes[n], nodes[n]),
-                joint::Owner::Actor(y) => (actors[y], top[y]),
-            };
-            actors.push(w.thing(owner));
-            top.push(tp);
-        }
+        let (actors, top) = joint_actors(&mut w, &h, &nodes);
+        joint_genesis(&mut w, &h, &nodes, &actors, &top, None);
         let ent = |e: usize| if e < h.nodes { nodes[e] } else { actors[e - h.nodes] };
-        let all0: Vec<(Tid, u64)> = nodes.iter().map(|n| (*n, 0)).collect();
-        for (m, row) in h.genesis.iter().enumerate() {
-            for (x, &r) in row.iter().enumerate() {
-                if r != roles_model::Role::None {
-                    let role = if r == roles_model::Role::Admin { Admin } else { Write };
-                    w.set(top[x], actors[x], ent(m), edge(role), 0, &all0);
-                }
-            }
-        }
         for (i, jw) in h.writes.iter().enumerate() {
             let recv: Vec<(Tid, u64)> = nodes.iter().enumerate().map(|(n, t)| (*t, h.recv[i][n] as u64)).collect();
             let e = match jw.role {
@@ -145,7 +129,9 @@ fn run_joint(samples: u64, seed: u64) {
         }
         let ps = probes(&mut w, &nodes, &mut rng);
         for x in 0..actors.len() {
-            if let Some(d) = neutral(&w, actors[x], top[x], &actors, &ps) {
+            // no key actor above an ownerless actor: nobody snapshots it or what it owns here
+            let Some(tp) = top[x] else { continue };
+            if let Some(d) = neutral(&w, actors[x], tp, &actors, &ps) {
                 panic!("seed {seed:#x} sample {s}: {d}\n{h}");
             }
         }

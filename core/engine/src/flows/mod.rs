@@ -13,6 +13,7 @@
 pub mod edges;
 pub(crate) mod labels;
 pub(crate) mod links;
+mod ownerless;
 pub(crate) mod person;
 pub(crate) mod roster;
 mod moving;
@@ -202,10 +203,7 @@ impl Core {
 
     /// The owner of `tid` (none for a key actor or an unknown thing).
     pub(crate) fn owner(&self, tid: &Tid) -> Option<Tid> {
-        match self.created(tid)? {
-            CreationRecord::Thing { owner, .. } => Some(*owner),
-            CreationRecord::KeyActor { .. } => None,
-        }
+        self.created(tid)?.owner()
     }
 
     pub fn is_key_actor(&self, tid: &Tid) -> bool {

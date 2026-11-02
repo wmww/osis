@@ -3,13 +3,13 @@
 
 **A chat is a faction** (notes/chat-designs/e-factions.md): an actor with members and a message aspect; servers, teams, channels and roles are the same thing, nested by grants. Nothing below changes for a plain chat.
 
-**[unbuilt]** marks a claim resting on core work not yet built: ownerless things, the frontier study (notes/frontier-study.md), the history read API, partial fetch, the history-less grant, keep-after-removal, the verified actor.
+**[unbuilt]** marks a claim resting on core work not yet built: the frontier study (notes/frontier-study.md), the history read API, partial fetch, the history-less grant, keep-after-removal, the verified actor.
 
 **Verdict: E2 over E1.** E1 (a register holding the tid of the last message thing) does not put the message in C's closure (closure runs only through member lists, spec/data-model.md §8), so each message would again need a member actor and a placement. E2 (the message *is* the write) needs neither. The crux, whether another member can destroy or hide a superseded body, holds at honest nodes: with keep at least forever a body is must-hold for good, compaction may not drop it, only purge rights decide, and a non-admin holds no delete key for it (e-review §1).
 
 ## What is different
 
-There is nothing but C: an ownerless actor **[unbuilt]** synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. A required retention on the chat **[unbuilt]** refuses deltas with any other.
+There is nothing but C: an ownerless actor (`create_ownerless`, spec/permissions.md §1) synced as a group of itself with an empty member list; its label carries its own aspects, members are its roster. A message is a delta on `chat:msgs:y2026.0` (one aspect name per year; that bounds only re-merge); author, time and retention come from the signed header. The register's value is unused; the held bodies are the chat. A required retention on the chat **[unbuilt]** refuses deltas with any other.
 
 ## Permissions and topology
 
@@ -42,7 +42,7 @@ Fallback, no core change: **segments**. The app's chat is a chain of osis chats;
 
 - **History read API** (bodies with author, time, received time, validity, sender flag; memory commits; a change event per commit). Without it there is no chat.
 - **Frontier study** (heads for permanent deltas). Without it a kick costs 34 B per message ever sent, caps near 2.5×10^5 messages, and any snapshot hides a kicked member's past.
-- **Ownerless things**, **purge by author**, **partial fetch**, **history-less grant**, **keep-after-removal**, **verified actor** (or the display rule). As before: sender card, wake relay. Not needed: add-only member list, entry API, delegated purge, a burned-owner helper.
+- **Purge by author**, **partial fetch**, **history-less grant**, **keep-after-removal**, **verified actor** (or the display rule). As before: sender card, wake relay. Not needed: add-only member list, entry API, delegated purge, a burned-owner helper.
 
 ## Costs
 
@@ -58,7 +58,7 @@ Retention bounds and purge rights per edit are promised (requirements Deletion);
 
 ## Core work this depends on
 
-Ownership: issues/ownerless-things.md. Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Reading: history-read-api, partial-history-fetch. Rights: purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 2.4*10^5 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large factions, target 10,000 members (owner; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
+Ownership: built (notes/permissions.md Ownerless things). Kick cost and history: issues/frontier-clobbers-history.md (study by the other coordinator). Reading: history-read-api, partial-history-fetch. Rights: purge-by-author, required-retention. Tombstones: purge-tombstone-forever. Removal: keep-after-removal. Adding: history-less-grant. Hostile: writer rotating to itself (recovered by `repudiate`, spec/permissions.md §3), fresh-deposit-seed-readable-by-departed, wrap-poisoning-hides-from-new-devices. Costs at 10^6 commits per aspect (write 2.4 ms before its fsync, kick of 3.7*10^4 messages 4 s, rise 0.6-11 s, open 5 s and 2.6 GiB; a kick past 2.4*10^5 commits needs frontier heads): issues/long-aspect-cost.md. Needed only for large factions, target 10,000 members (owner; comfortable at about 1,000 to a few thousand with the issues above fixed, 100,000 not designed for): default-off sync of children, a settle rule for cascade rotations (no forks), pure readers placing no chains, cards or heartbeats under big labels, frontier heads by commit ID.
 
 ## Accepted by the owner
 

@@ -268,7 +268,7 @@ impl Engine {
         // person) may be owned by any key actor held
         let owners: Vec<osis_keys::ActorEpochs> = match self.core.created(g) {
             Some(osis_base::CreationRecord::Thing { owner, .. }) => self.epochs(owner).or_else(|| self.core.key_actors.get(owner).map(|id| osis_keys::ActorEpochs::key_actor(id.seed()))).into_iter().collect(),
-            Some(osis_base::CreationRecord::KeyActor { .. }) => Vec::new(),
+            Some(osis_base::CreationRecord::KeyActor { .. } | osis_base::CreationRecord::Ownerless { .. }) => Vec::new(),
             None => self.core.key_actors.values().map(|id| osis_keys::ActorEpochs::key_actor(id.seed())).collect(),
         };
         for oe in owners {

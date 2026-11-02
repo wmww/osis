@@ -1,7 +1,7 @@
 //! The role timeline (spec/permissions.md §5.1) and its queries: roster, effective role,
 //! effective invite and authority class at a point, the applied and dropped edge writes.
 
-use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
+use crate::graph::{Class, Edges, EdgesAt, Owner, Owners, Standing, View};
 use crate::held::HeldSet;
 use crate::types::{Edge, RoleCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
@@ -242,6 +242,10 @@ impl Timeline {
     /// not now owned, or a new node owns a thing not among them.
     fn joined(&self, input: &Input, added: Option<Point>) -> Option<(BTreeSet<Tid>, Option<Point>)> {
         if !self.input.owners.links().all(|(t, o)| input.owners.owner(t) == Some(*o)) {
+            return None;
+        }
+        // a new ownerless thing brings an initial edge (its first admin): from the start
+        if input.owners.links().any(|(t, o)| matches!(o, Owner::Ownerless(_)) && self.input.owners.owner(t).is_none()) {
             return None;
         }
         let mut below: BTreeSet<Tid> = input.owners.links().filter(|(t, _)| self.input.owners.owner(t).is_none()).map(|(t, _)| *t).collect();

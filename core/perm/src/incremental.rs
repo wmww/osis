@@ -109,12 +109,15 @@ pub struct SaveDone {
 }
 
 /// The unions of the partition that thing `t`'s held inputs make (`created` its record,
-/// `commits` and `snaps` those held of it): with its owner; each edge write's author and
+/// `commits` and `snaps` those held of it): with its owner, or an ownerless thing with its
+/// first admin; each edge write's author and
 /// holder with its target; a snapshot's author, roster and ledger holders with its thing, and
 /// the key's node of a ledger entry with a frontier (a demotion by it, §6).
 fn joins(t: Tid, created: Option<&CreationRecord>, commits: &[Arc<RoleCommit>], snaps: &[Arc<RosterSnapshot>], mut join: impl FnMut(Tid, Tid)) {
-    if let Some(CreationRecord::Thing { owner, .. }) = created {
-        join(t, *owner);
+    match created {
+        Some(CreationRecord::Thing { owner, .. }) => join(t, *owner),
+        Some(CreationRecord::Ownerless { admin, .. }) => join(t, *admin),
+        _ => {}
     }
     for c in commits {
         for o in &c.ops {

@@ -163,7 +163,7 @@ impl Engine {
     }
 
     /// `node`'s chain certificates for `t` with the owner chains of both up to their key
-    /// actors, timeline or not.
+    /// actors or ownerless things, timeline or not.
     fn chain_to(&self, node: &Tid, t: &Tid) -> osis_perm::Certificates {
         let mut cs = match self.core.timelines.get(t) {
             Some(tl) => tl.certificates(node, t),
@@ -178,6 +178,10 @@ impl Engine {
                     Some(CreationRecord::Thing { owner, .. }) => {
                         cs.keys.insert(y);
                         Some(*owner)
+                    }
+                    Some(CreationRecord::Ownerless { .. }) => {
+                        cs.keys.insert(y);
+                        None
                     }
                     _ => None,
                 };

@@ -82,13 +82,17 @@ pub enum CreationRecord {
     /// `alg` 1 (ed25519, 32 bytes) is readable in this build; other cases can be built (a later
     /// suite) but `from_value` refuses them.
     KeyActor { alg: u64, public_key: Vec<u8>, nonce: [u8; 32] },
+    /// Ownerless thing (spec/permissions.md §1): no owner, no key; `admin` holds the first
+    /// admin edge on it, fixed by the tid (no write grants it).
+    Ownerless { admin: Tid, nonce: [u8; 32] },
 }
 
-// spec/wire.md §3: `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 creator: tid }`.
+// spec/wire.md §3: `creation = struct { 0 owner: tid, 1 key: signing_key, 2 nonce: blob, 3 creator: tid, 4 admin: tid }`.
 const REC_OWNER: i64 = 0;
 const REC_KEY: i64 = 1;
 const REC_NONCE: i64 = 2;
 const REC_CREATOR: i64 = 3;
+const REC_ADMIN: i64 = 4;
 /// `signing_key` case ed25519 (spec/wire.md §3).
 pub const SIGNING_KEY_ED25519: u64 = 1;
 
@@ -109,12 +113,16 @@ impl CreationRecord {
                 m.insert(Value::Int(REC_KEY), key);
                 m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
             }
+            CreationRecord::Ownerless { admin, nonce } => {
+                m.insert(Value::Int(REC_NONCE), Value::Bytes(nonce.to_vec()));
+                m.insert(Value::Int(REC_ADMIN), Value::Tid(*admin));
+            }
         }
         Value::Map(m)
     }
-    /// Reads a record: exactly one of owner and key, a 32-byte nonce, a creator only with an
-    /// owner, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input (an unknown key case included:
-    /// callers that must park it check the enum case themselves).
+    /// Reads a record: exactly one of owner, key and admin, a 32-byte nonce, a creator only with
+    /// an owner, no other field, key an ed25519 `signing_key` of 32 bytes. `None` is bad input
+    /// (an unknown key case included: callers that must park it check the enum case themselves).
     pub fn from_value(v: &Value) -> Option<CreationRecord> {
         let Value::Map(m) = v else { return None };
         let nonce: [u8; 32] = match m.get(&Value::Int(REC_NONCE)) {
@@ -126,9 +134,10 @@ impl CreationRecord {
             Some(_) => return None,
             None => None,
         };
-        match (m.get(&Value::Int(REC_OWNER)), m.get(&Value::Int(REC_KEY)), m.len()) {
-            (Some(Value::Tid(owner)), None, n) if n == 2 + usize::from(creator.is_some()) => Some(CreationRecord::Thing { owner: *owner, nonce, creator }),
-            (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), 2) => match p.as_ref() {
+        match (m.get(&Value::Int(REC_OWNER)), m.get(&Value::Int(REC_KEY)), m.get(&Value::Int(REC_ADMIN)), m.len()) {
+            (Some(Value::Tid(owner)), None, None, n) if n == 2 + usize::from(creator.is_some()) => Some(CreationRecord::Thing { owner: *owner, nonce, creator }),
+            (None, None, Some(Value::Tid(admin)), 2) => Some(CreationRecord::Ownerless { admin: *admin, nonce }),
+            (None, Some(Value::Enum(SIGNING_KEY_ED25519, Some(p))), None, 2) => match p.as_ref() {
                 Value::Bytes(pk) if pk.len() == 32 => {
                     Some(CreationRecord::KeyActor { alg: SIGNING_KEY_ED25519, public_key: pk.clone(), nonce })
                 }
@@ -139,11 +148,18 @@ impl CreationRecord {
     }
     pub fn nonce(&self) -> &[u8; 32] {
         match self {
-            CreationRecord::Thing { nonce, .. } | CreationRecord::KeyActor { nonce, .. } => nonce,
+            CreationRecord::Thing { nonce, .. } | CreationRecord::KeyActor { nonce, .. } | CreationRecord::Ownerless { nonce, .. } => nonce,
         }
     }
     pub fn tid(&self) -> Tid {
         Tid::of_record(self)
+    }
+    /// The owner actor of an ordinary thing (none for a key actor or an ownerless thing).
+    pub fn owner(&self) -> Option<Tid> {
+        match self {
+            CreationRecord::Thing { owner, .. } => Some(*owner),
+            CreationRecord::KeyActor { .. } | CreationRecord::Ownerless { .. } => None,
+        }
     }
 }
 

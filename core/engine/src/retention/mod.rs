@@ -1424,7 +1424,7 @@ impl Engine {
             };
             // a memory snapshot is commit form (spec/commits.md §3)
             let form = if memory { Form::Commit } else { Form::Node };
-            let plan = CommitPlan { kind, ts, actor: node, form, creates: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let plan = CommitPlan { kind, ts, actor: node, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })

@@ -348,6 +348,8 @@ pub enum Cmd {
     },
     /// Whether two tids name one thing (exit 3 if not)
     Same { a: String, b: String },
+    /// Create an ownerless thing, ADMIN its first admin (prints its tid)
+    Ownerless { admin: String },
     /// Connectivity and per-group sync state
     Status {
         #[arg(long)]
