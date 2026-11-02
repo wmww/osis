@@ -1267,3 +1267,252 @@ fn moved_row_keeps_key_spec_6_1() {
     // forged: the copy alone (X stays under p, its key drops)
     moved_row_keeps_key(vec![(w6.clone(), pa.clone(), None), (c1.clone(), pa.clone(), None)], vec![(w6, pa, Some(c1.clone()))], c1);
 }
+
+/// Hostile single-record deltas on one text or list (§5.7, §6): creation chains anchored at
+/// random dots (their own run, unknown dots, later dots), forged copies of one creation or
+/// position write with other anchors or keys, moves with random anchors and sibling keys (cycles
+/// through chains and range records), deletes, undeletes, resets; with `slots` (text), register
+/// writes of strings at the position (§7: embedded chars, `Derived` dots moved, deleted and
+/// anchored at, held or not).
+fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: usize) -> Vec<MFrag> {
+    use crdt_model::stamp::{Dot as MDot, Source as MSrc, Stamp as MStamp};
+    use crdt_model::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
+    let srcs = [MSource::node(1), MSource::node(2), MSource::node(3)];
+    // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..)
+    let mut regs: Vec<MDot> = Vec::new();
+    fn dot(r: &mut crdt_model::r#gen::Rng, srcs: &[MSrc; 3], regs: &[MDot]) -> MDot {
+        if !regs.is_empty() && r.chance(1, 4) {
+            return MDot { source: MSrc::Derived(Box::new(regs[r.below(regs.len())].clone())), ctr: 1 + r.below(4) as u64 };
+        }
+        MDot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 }
+    }
+    fn anchor(r: &mut crdt_model::r#gen::Rng, srcs: &[MSrc; 3], regs: &[MDot]) -> MAnchor {
+        if r.chance(1, 6) { MAnchor::Head } else { MAnchor::Dot(dot(r, srcs, regs)) }
+    }
+    let content = |r: &mut crdt_model::r#gen::Rng, s: &MStamp| Content::Frag(Box::new(MFrag::Register { reset: None, write: Some((s.clone(), Some(crdt_model::value::Value::Int(r.below(3) as i64)))) }));
+    // one char per dot, so undeletes repeat it (a forged undelete's char: issues/forged-creation-copies.md)
+    let fixed = |d: &MDot| match &d.source {
+        MSrc::Derived(u) => Content::Char(char::from(b'a' + ((u.ctr + d.ctr) % 4) as u8)),
+        _ => Content::Char(char::from(b'a' + (d.ctr % 4) as u8)),
+    };
+    let seq = |elems: BTreeMap<MDot, MElem>, reset: Option<MStamp>| MFrag::Seq { text: !list, c: Composite { reset, w: None }, elems };
+    // stamps: ts in a small range so writes interleave; position write counters apart from dots
+    let mut pos_ctr = 100u64;
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let t = (1 + r.below(30) as u64) << 16;
+        let k = r.below(20);
+        let mut elems = BTreeMap::new();
+        if k < 8 {
+            // a creation chain of 1..4 elements (never of a `Derived` source: a writer's delta
+            // rejects them)
+            let d = MDot { source: srcs[r.below(3)].clone(), ctr: 1 + r.below(12) as u64 };
+            let len = 1 + r.below(4) as u64;
+            let mut a = anchor(r, &srcs, &regs);
+            for i in 0..len {
+                let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
+                // one creation `ts` per dot: creations of one dot under other `ts` are forged
+                // copies (issues/forged-creation-copies.md); copies of one stamp may differ
+                let ct = (1 + (srcs.iter().position(|x| *x == e.source).unwrap() as u64 * 7 + e.ctr * 3) % 30) << 16;
+                let s = MStamp { ts: ct, dot: e.clone() };
+                let c = if list { content(r, &s) } else { fixed(&e) };
+                elems.insert(e.clone(), MElem::new(s, a.clone(), c));
+                a = MAnchor::Dot(e);
+            }
+        } else if k < 15 {
+            // a move (or a forged copy of an earlier position write: same counter)
+            let d = dot(r, &srcs, &regs);
+            if r.chance(1, 4) {
+                pos_ctr = pos_ctr.saturating_sub(r.below(3) as u64);
+            }
+            pos_ctr += 1;
+            let src = srcs[r.below(3)].clone();
+            let s = MStamp { ts: t, dot: MDot { source: src, ctr: pos_ctr } };
+            let key = if r.chance(1, 3) && t > 1 << 16 { Some(MStamp { ts: t - (1 << 16), dot: dot(r, &srcs, &[]) }) } else { None };
+            elems.insert(d, MElem::write(Content::None, vec![(s, anchor(r, &srcs, &regs), key)], None));
+        } else if k < 19 {
+            // a delete or (text) an undelete with a char; a run of 1..3
+            let d = dot(r, &srcs, &regs);
+            let len = 1 + r.below(3) as u64;
+            pos_ctr += 1;
+            let s = MStamp { ts: t, dot: MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
+            let undel = !list && r.chance(1, 3);
+            for i in 0..len {
+                let e = MDot { source: d.source.clone(), ctr: d.ctr + i };
+                let c = if undel { fixed(&e) } else { Content::None };
+                elems.insert(e, MElem::write(c, vec![], Some((s.clone(), !undel))));
+            }
+        } else if slots && r.chance(1, 2) {
+            // an old app's save: a register write of a string (a reset of everything older)
+            pos_ctr += 1;
+            let d = MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr };
+            let v: String = (0..r.below(4)).map(|i| char::from(b'a' + ((d.ctr + i as u64 + 1) % 4) as u8)).collect();
+            out.push(MFrag::Register { reset: None, write: Some((MStamp { ts: t, dot: d.clone() }, Some(crdt_model::value::Value::Str(v)))) });
+            regs.push(d);
+            continue;
+        } else {
+            pos_ctr += 1;
+            let s = MStamp { ts: t / 2, dot: MDot { source: srcs[r.below(3)].clone(), ctr: pos_ctr } };
+            out.push(seq(elems, Some(s)));
+            continue;
+        }
+        out.push(seq(elems, None));
+    }
+    out
+}
+
+/// Joins `writes` in a random order (each once or twice) into a placement read before every
+/// join (so it is followed, not rebuilt): state and read equal the model's after each join, the
+/// cached placement equals a whole pass, and snapshots encode byte-identically with the model's.
+fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
+    let mut r = crate::testutil::rng(seed | 1);
+    // deltas of 1..4 writes each (a delta is a state fragment: their join)
+    let mut writes = Vec::new();
+    let mut single = hostile_writes(&mut r, list, slots, 48).into_iter().peekable();
+    while single.peek().is_some() {
+        let mut d = None;
+        for w in single.by_ref().take(1 + r.below(4)) {
+            mapply(&mut d, w);
+        }
+        writes.extend(d);
+    }
+    let mut reference = None;
+    for w in &writes {
+        mapply(&mut reference, w.clone());
+    }
+    for _ in 0..3 {
+        let mut order: Vec<usize> = (0..writes.len()).collect();
+        for k in (1..order.len()).rev() {
+            order.swap(k, r.below(k + 1));
+        }
+        let mut model = None;
+        let mut ours = Fragment::default();
+        for k in order {
+            let reps = if r.chance(1, 5) { 2 } else { 1 };
+            for _ in 0..reps {
+                let _ = ours.read();
+                // a placement held in part follows like a whole pass where it follows (a reset
+                // is joined over records loaded whole)
+                if let (Fragment::Seq(st), Fragment::Seq(d)) = (&ours, frag(&writes[k]))
+                    && d.meta.reset.is_none()
+                {
+                    let _ = crate::testutil::partial_follow(st, &d, 1 + r.below(4));
+                }
+                mapply(&mut model, writes[k].clone());
+                ours.join(frag(&writes[k]));
+                crate::testutil::check_lin(&ours);
+                assert_eq!(ours, crate::testutil::ostate(&model), "state after joining write {k}");
+                assert_eq!(ours.read(), model.as_ref().and_then(|m| m.read()).map(|v| crate::testutil::value(&v)), "read after write {k}");
+            }
+        }
+        assert_eq!(ours, crate::testutil::ostate(&reference), "converged");
+        let st = reference.as_ref().unwrap();
+        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
+        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+        assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
+        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        assert_eq!(back.fragment.read(), ours.read(), "snapshot read");
+    }
+    // un-merge of one author (§4.6): the join of the bodies each without its writes equals the
+    // model's and does not depend on the order; removing them in place from the state agrees
+    // unless `dots_supersede` says the bodies are needed (the author held a winner or a top-2
+    // position write)
+    let bad = crate::testutil::source(&MSource::node(2));
+    let unmerged = |order: &mut dyn Iterator<Item = &MFrag>| {
+        let mut out = Fragment::default();
+        for w in order {
+            let mut b = frag(w);
+            b.remove_dots(&|d| d.src == bad);
+            out.join(b);
+        }
+        out
+    };
+    let mut model = None;
+    for w in &writes {
+        let mut m = w.clone();
+        m.unmerge(&|s| *s == MSource::node(2));
+        mapply(&mut model, m);
+    }
+    let ours = unmerged(&mut writes.iter());
+    assert_eq!(ours, crate::testutil::ostate(&model), "un-merged bodies equal the model's");
+    assert_eq!(ours, unmerged(&mut writes.iter().rev()), "un-merge order-independent");
+    let state = crate::testutil::ostate(&reference);
+    let pred = |d: &Dot| d.src == bad;
+    if !state.dots_supersede(&pred) {
+        let mut fast = state.clone();
+        if fast.holds_dots(&pred) {
+            fast.remove_dots(&pred);
+            fast.prune(None, &mut crate::Changes::new());
+        }
+        assert_eq!(fast, ours, "in-place un-merge agrees");
+    }
+}
+
+proptest! {
+    /// §5.7, §6.2: hostile writes on a text converge with the model in every order.
+    #[test]
+    fn hostile_text_matches_model_spec_6_2(seed in any::<u64>()) {
+        hostile_lockstep(seed, false, false);
+    }
+
+    /// §7: the same with register writes of strings at the position (embedded chars).
+    #[test]
+    fn hostile_text_slots_match_model_spec_7(seed in any::<u64>()) {
+        hostile_lockstep(seed, false, true);
+    }
+
+    /// §5.7, §6.2: the same on a list.
+    #[test]
+    fn hostile_list_matches_model_spec_6_2(seed in any::<u64>()) {
+        hostile_lockstep(seed, true, false);
+    }
+}
+
+
+/// §3.3 rule 3: runs past `MAX_RUN` (a creation chain longer than a run, deleted stretches and
+/// bare anchors as range records of more than `MAX_RUN`) encode byte-identically with the model and
+/// round trip.
+#[test]
+fn long_runs_match_model_spec_3_3() {
+    use crdt_model::stamp::{Dot as MDot, Stamp as MStamp};
+    use crdt_model::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
+    let src = MSource::node(1);
+    let n = crate::MAX_RUN + 1000;
+    let mut elems = BTreeMap::new();
+    let mut a = MAnchor::Head;
+    for c in 1..=n {
+        let d = MDot { source: src.clone(), ctr: c };
+        let s = MStamp { ts: 3 << 16, dot: d.clone() };
+        elems.insert(d.clone(), MElem::new(s, a, Content::Char('a')));
+        a = MAnchor::Dot(d);
+    }
+    let mut state = Some(MFrag::Seq { text: true, c: Composite::default(), elems });
+    // a delete of most of it, a move inside the deleted stretch, then a reset leaving bare
+    // anchors below it for the first copy only
+    let del = MStamp { ts: 5 << 16, dot: MDot { source: MSource::node(2), ctr: 1 } };
+    let mut d = BTreeMap::new();
+    for c in 10..n - 10 {
+        d.insert(MDot { source: src.clone(), ctr: c }, MElem::write(Content::None, vec![], Some((del.clone(), true))));
+    }
+    mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
+    let mv = MStamp { ts: 6 << 16, dot: MDot { source: MSource::node(2), ctr: 2 } };
+    let mut d = BTreeMap::new();
+    d.insert(MDot { source: src.clone(), ctr: 2000 }, MElem::write(Content::None, vec![(mv, MAnchor::Head, None)], None));
+    mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
+    for reset in [false, true] {
+        if reset {
+            let r = MStamp { ts: 7 << 16, dot: MDot { source: MSource::node(2), ctr: 3 } };
+            mapply(&mut state, MFrag::Seq { text: true, c: Composite { reset: Some(r), w: None }, elems: BTreeMap::new() });
+        }
+        let st = state.as_ref().unwrap();
+        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let ours = frag(st);
+        let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
+        let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
+        assert!(sbytes == msnap, "snapshot bytes equal the model's (reset {reset})");
+        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        assert_eq!(back.fragment, as_carried(&ours));
+        assert_eq!(back.fragment.read(), ours.read());
+    }
+}

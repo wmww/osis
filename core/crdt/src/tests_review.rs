@@ -337,6 +337,33 @@ fn repro_forged_creation_ts_undelete_char() {
     assert_eq!(x.read(), y.read());
 }
 
+// issues/forged-creation-copies.md: the lesser of two creations of one dot under other `ts` (a
+// forged copy) stays a position write (`prev`, §5.7 Join) but a snapshot cannot carry it (a
+// `PosW` stamped with the element's own dot is read as its creation, §3.3 rule 5), so a node
+// bootstrapped from the snapshot breaks a cycle through the element differently (§6.2).
+#[test]
+#[ignore = "issues/forged-creation-copies.md"]
+fn repro_forged_creation_ts_snapshot_drops_prev() {
+    use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
+    let n = |c: u64| Dot::new(Source::node(Tid::from_bytes([5; 15])), c);
+    let (x, y, z) = (n(1), n(2), n(3));
+    let mk = |s: &Stamp, a: Anchor, c: char| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char(c), pos: vec![(s.clone(), a, None)], ..SeqElem::bare() };
+    let at = |t: u64, d: &Dot| Stamp { ts: ts(t << 16), dot: d.clone() };
+    // x created at HEAD (t5) and, forged, after y (t7); y created at HEAD (t3), moved after x
+    // (t9): the cycle x -> y -> x demotes x (t7 < t9) to its `prev`, HEAD; z at HEAD (t4)
+    let mut xe = mk(&at(7, &x), Anchor::Dot(y.clone()), 'x');
+    xe.pos.push((at(5, &x), Anchor::Head, None));
+    let mut ye = mk(&at(3, &y), Anchor::Head, 'y');
+    ye.pos.insert(0, (st(9, 6, 1), Anchor::Dot(x.clone()), None));
+    let f = Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(x, xe), (y, ye), (z.clone(), mk(&at(4, &z), Anchor::Head, 'z'))])));
+    assert_eq!(f.read(), Some(Value::Str("xyz".into())));
+    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
+    let bytes = encode_snapshot(&snap, &cx, None).unwrap();
+    let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
+    assert_eq!(back.read(), f.read());
+}
+
 /// A map entry record: its creation stamp (the dot), key, reset and value.
 type Rec = (Stamp, Option<Value>, Option<Stamp>, Option<i64>);
 
