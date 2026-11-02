@@ -115,7 +115,6 @@ impl Owners {
     }
 }
 
-
 /// An edge state: every current `roles.0` edge. The per-target and per-holder maps are
 /// shared between clones until written (a kept state costs O(targets + holders), not
 /// O(edges)).
