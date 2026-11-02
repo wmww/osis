@@ -22,6 +22,9 @@ pub trait Internals {
     fn take_actions(&self) -> Vec<Action>;
     /// With `Runtime::Manual`: feeds a network event.
     fn feed(&self, ev: Event);
+    /// Live dispatcher registrations: this process's watches and the client port's
+    /// subscriptions it serves.
+    fn watches(&self) -> usize;
 }
 
 impl Internals for Osis {
@@ -44,6 +47,10 @@ impl Internals for Osis {
     fn feed(&self, ev: Event) {
         here(self);
         self.handled(|l| l.sync.handle(ev));
+    }
+    fn watches(&self) -> usize {
+        here(self);
+        self.inner.dispatch.registrations()
     }
 }
 

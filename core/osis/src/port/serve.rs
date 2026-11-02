@@ -254,12 +254,21 @@ impl Worker {
                 self.reply(db, conn, id, Ok(out));
             }
             Message::Sub { id, max_reply, filter } => {
-                let r = self.sub(db, conn, id, usize::try_from(max_reply).unwrap_or(usize::MAX), filter);
+                let max = usize::try_from(max_reply).unwrap_or(usize::MAX);
+                let r = self.sub(db, conn, id, max, filter);
                 let seq = db.locked(|l| l.seq);
-                let out = match r {
+                let mut out = match r {
                     Ok(value) => Outcome::Ok { seq, value },
                     Err(e) => outcome_err(&e),
                 };
+                // an initial value above max_reply ends the subscription here as in proto, which
+                // answers it TooLarge and frees the id (`MAX_SUBS` counts live ones only)
+                if (Message::Reply { id, outcome: out.clone() }).encode().len() > max {
+                    if let Some(c) = self.conns.get_mut(&conn) {
+                        c.subs.remove(&id);
+                    }
+                    out = Outcome::too_large(max);
+                }
                 self.reply(db, conn, id, Ok(out));
             }
             Message::Unsub { sub, .. } => {
@@ -551,8 +560,6 @@ impl Worker {
         for (id, s) in &cn.subs {
             let mut g = lock(&s.pending);
             if g.lapsed {
-                let freed: usize = g.queue.iter().map(|(_, n)| *n).sum();
-                cn.held.fetch_sub(freed, Ordering::AcqRel);
                 notes.push((*id, Payload::Lapsed));
                 gone.push(*id);
                 continue;
@@ -588,12 +595,20 @@ impl Worker {
             let mut sent = 0;
             for (v, _, src) in &out {
                 let mut p = Payload::Delivery { seq, value: v.clone() };
-                let mut size = osis_proto::Message::Notify { sub: *id, payload: p.clone() }.encode().len();
+                let size_of = |p: &Payload| Message::Notify { sub: *id, payload: p.clone() }.encode().len();
+                let mut size = size_of(&p);
                 if size > s.max_reply {
                     // above the subscription's bound: what changed, read by path or stream
                     p = Payload::TooLarge { seq, source: c::source_v(&src.unwrap_or(crate::watch::Source::Initial)) };
-                    size = 64;
+                    size = size_of(&p);
                 }
+                if size > s.max_reply {
+                    // not even that fits: the subscription ends here as proto would end it
+                    // (`Lapsed`), so it is never live at one side only
+                    p = Payload::Lapsed;
+                    size = size_of(&p);
+                }
+                let lapse = p == Payload::Lapsed;
                 if used.saturating_add(size) > budget && !notes.is_empty() {
                     left = true;
                     break;
@@ -601,6 +616,10 @@ impl Worker {
                 used = used.saturating_add(size);
                 notes.push((*id, p));
                 sent += 1;
+                if lapse {
+                    gone.push(*id);
+                    break;
+                }
             }
             // drop what went
             let q_sent = sent.min(nq);
@@ -623,7 +642,11 @@ impl Worker {
             }
         }
         for id in gone {
-            cn.subs.remove(&id);
+            // what it still held is freed with it
+            if let Some(s) = cn.subs.remove(&id) {
+                let freed: usize = lock(&s.pending).queue.iter().map(|(_, n)| *n).sum();
+                cn.held.fetch_sub(freed, Ordering::AcqRel);
+            }
         }
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
         if !notes.is_empty() {
