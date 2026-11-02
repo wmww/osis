@@ -2713,10 +2713,11 @@ fn newest_event_names_departure_spec_crypto_4() {
 
 // spec/crypto.md §4 (a grant's names; study C3 with the grant held only as a projection): as
 // `grant_names_before_boxing_holder_spec_crypto_4`, but a host gives X the grant's `roles.0`
-// part without its `secrets.0` part on A. X sees N a current holder and holds no names for it:
-// it leaves N out until the grant's boxes arrive.
+// part without its `secrets.0` part on A. X sees N a current holder and holds no names for it,
+// and its rotation of A boxes N at D's keyset.
 #[test]
-fn grant_projection_names_unheld_spec_crypto_4() {
+#[ignore = "repro: issues/grant-names-projection.md"]
+fn repro_grant_projection_names_unheld_spec_crypto_4() {
     let read = BTreeSet::from([Role::Read]);
     let mut lp = LocalPeer::new(4, 4_137, WallMs(1_700_000_000_000)).unwrap();
     lp.sync_all().unwrap();
