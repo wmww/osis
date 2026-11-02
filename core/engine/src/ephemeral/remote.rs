@@ -19,7 +19,9 @@ use super::EphThing;
 use crate::engine::Engine;
 use crate::engine::secrets::{CommitSecrets, published_keys};
 use crate::engine::write::{Creates, required_role, run_ops};
+use crate::apply::memory::{part_bound, part_charge, part_weight, records_bytes};
 use crate::error::{Error, Result};
+use crate::retention::memory::supersedes;
 use crate::events::{ChangeId, Event, Origin};
 use osis_base::format::{MAX_DRIFT_MS, MAX_OWNER_DEPTH};
 use osis_base::{Ak, CommitId, CreationRecord, Lifetime, Tid, Ts, Value};
@@ -53,17 +55,6 @@ pub const COVER_FACTOR: usize = 2;
 /// whose overhead dwarfs their bytes (a host's cap fills with overhead the trigger never sees),
 /// infinity compacts at every write.
 pub const ENTRY_CHARGE: usize = 1024;
-
-/// Copies a holder keeps of a received part's writes, each counted by the node cap
-/// (`ephemeral_charge`): the decoded part and the joined state.
-const HELD_COPIES: usize = 2;
-
-/// Bytes a holder spends per held part past its fragments (the part's and aspect's records, the
-/// header's aspect entry), as the node cap counts it (`ephemeral_charge`). Resource estimate,
-/// measured (`scale::eph_decoded_memory`, aspects shape: about 2.3 KiB of RSS per part with one
-/// small write, release, x86-64): 0 leaves a commit of many small aspects counted at a tenth of
-/// what it holds; infinity fills the cap with a label's first commit.
-pub const PART_OVERHEAD: usize = 2048;
 
 /// One delta of an ephemeral commit to build: thing, aspect, fragment, expiry.
 type EphDelta = (Tid, Ak, Fragment, Option<u64>);
@@ -1733,7 +1724,8 @@ impl Engine {
 
     /// Those of own held commits `ids` (with their costs) an own cover may absorb (every aspect
     /// writable here now, on a thing in a labeled closure here now; an earlier session's only once
-    /// every label caught up, `set_ephemeral_caught_up`), and the cost of the rest. A thing in no
+    /// every label caught up, `set_ephemeral_caught_up`; tests may let a writer cover past its
+    /// role, `skip_writer_rules`), and the cost of the rest. A thing in no
     /// closure here, or not yet in all of its (an earlier session's commit fetched back before the
     /// ones placing its thing), would have its cover's parts placed under those labels only while
     /// the commits it absorbs go, deleted where they were.
@@ -1744,7 +1736,7 @@ impl Engine {
         let records: crate::engine::write::Records<'_> = &|x| things.get(x).map(|e| &e.record);
         let writable = |id: &CommitId| {
             let Some(h) = self.eph.remote.held.get(id) else { return false };
-            (h.own || self.eph.remote.caught_up) && h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).all(|a| self.ephemeral_synced(&a.tid) && crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok())
+            (h.own || self.eph.remote.caught_up) && h.parts.iter().filter_map(|p| h.header.aspects.get(p.ai)).all(|a| self.ephemeral_synced(&a.tid) && (self.core.skip_writer_rules || crate::engine::write::check_authority_with(&self.core, me, records, &a.tid, a.ak.as_str(), ts).is_ok()))
         };
         let (ok, stuck): (Vec<_>, Vec<_>) = ids.into_iter().partition(|(id, _)| writable(id));
         (ok, stuck.iter().map(|(_, c)| c).sum())
@@ -1900,34 +1892,6 @@ impl Engine {
     }
 }
 
-/// What a held part costs (`ephemeral_charge`): its decoded heap size (`heap`, at least its
-/// encoded `bytes`) in each copy kept, weighed as a part (`part_weight`).
-fn part_charge(heap: usize, bytes: usize) -> u64 {
-    part_weight(heap.max(bytes).saturating_mul(HELD_COPIES)) as u64
-}
-
-/// A part of `bytes` with the per-part overhead a holder's cap charges (`PART_OVERHEAD`). Shared
-/// by the node cap (`part_charge`) and an author's cover trigger (`own_held`, `cover_cost`), so
-/// the trigger weighs per part what holders are charged: else a holder of many small parts fills
-/// its cap before the cover comes.
-fn part_weight(bytes: usize) -> usize {
-    bytes.saturating_add(PART_OVERHEAD)
-}
-
-/// An upper bound on `part_charge` of part `p` once decoded, from its bytes alone
-/// (`osis_crdt::decoded_bound`): a part of tiny map entries decodes to about 200 times its size.
-fn part_bound(p: &osis_commit::Part) -> Result<u64> {
-    let heap = osis_crdt::decoded_bound(&p.delta).map_err(|_| Error::BadInput("ephemeral part not one CBOR value"))?;
-    let recs = records_bytes(p);
-    Ok(part_charge(heap.saturating_add(recs), p.delta.len().saturating_add(recs)))
-}
-
-/// The encoded bytes of the records beside part `p`: held as ephemeral things while the commit
-/// is, so the node cap counts them with the part (a record decoded is about its encoded size).
-fn records_bytes(p: &osis_commit::Part) -> usize {
-    p.records.iter().fold(0usize, |n, r| n.saturating_add(osis_base::encode(&r.to_value()).len()))
-}
-
 /// The records ephemeral commit `blob` carries beside its deltas (each hashes to its tid by
 /// construction, spec/commits.md §2).
 fn carried_records(blob: &CommitBlob) -> BTreeMap<Tid, CreationRecord> {
@@ -1951,32 +1915,6 @@ fn contains(c: &Fragment, x: &Fragment) -> bool {
         debug_assert!(!yes || j == *c, "a piece contains what the whole does not");
     }
     yes
-}
-
-/// Whether writes `q` of an author supersede its earlier writes `p` on one aspect (spec/sync.md
-/// §9): `p` expires (`p_exp`), `q` too and no earlier (`q_exp`), neither carries a reset, every write of `q` is
-/// later than every write of `p` and none is into a record it did not create (it would be
-/// hidden with `p`'s), and `p` joined into `q` reads as `q` alone (a cursor's newer entry at
-/// its key, a register's newer write). While `q` is held nothing reads `p`, and `p` goes first.
-fn supersedes(q: &Fragment, q_exp: Option<u64>, p: &Fragment, p_exp: Option<u64>) -> bool {
-    let Some(tp) = p_exp else { return false };
-    // a sequence's or bag's elements all show in the read: none shadows another's (cheap out
-    // for appended events)
-    // a superseder expires, no earlier than `p`: a plain one could be absorbed
-    // by a cover that does not supersede `p`, and a node getting only the cover would hold `p`;
-    // a reset in either part would make the relation intransitive or drop a tombstone, and the
-    // drop order-dependent
-    if q_exp.is_none_or(|t| t < tp) || matches!(q, Fragment::Seq(_) | Fragment::Bag(_)) || q.has_any_reset() || p.has_any_reset() {
-        return false;
-    }
-    let Some(newest_p) = p.writes().into_iter().filter_map(|(_, ts)| ts).max() else { return false };
-    let qw = q.writes();
-    if qw.is_empty() || !qw.iter().all(|(_, ts)| ts.is_some_and(|t| t > newest_p)) {
-        return false;
-    }
-    let mut j = q.clone();
-    j.join(p.clone());
-    j.read() == q.read()
 }
 
 /// The encoding context of an ephemeral commit's snapshot deltas by `me` at `ts`.

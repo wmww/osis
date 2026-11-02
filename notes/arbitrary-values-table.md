@@ -136,7 +136,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_REUSE` 16 GiB | P | |
 | `MAX_LIST_BYTES` 8 MiB, `MAX_READ` 1 GiB | R (sign-off) | |
 | `ENTRY_CHARGE` 1024, `COVER_FACTOR` 2, `MAX_DELIVERED` 2^16, `DEFAULT_EPHEMERAL_HISTORY` 16 MiB | P/R (commented) | |
-| `PART_OVERHEAD` 2048 (engine ephemeral, node cap charge per held part) | R, measured estimate (commented; `scale::eph_decoded_memory`) | |
+| `PART_OVERHEAD` 2048 (engine `apply/memory.rs`, node cap charge per held part) | R, measured estimate (commented; `scale::eph_decoded_memory`) | |
 | `ITEM_BYTES` 512, `BYTE_BYTES` 3 (osis-crdt `decoded_bound`: a pre-decode bound on `approx_bytes`, per CBOR item and per byte of a run's text content, and per byte; plus a whole value B-tree node, three times, per map head and set tag, from `size_of::<Value>()`; the node cap's per-part decode check, engine `part_bound`) | R, measured estimate (commented; worst seen about 300 per item outside map and set heads, 380 per text character, a map key's bytes held three times; 0 lets a blob decode past the cap, infinity refuses every blob) | |
 | events `PER_PEER` 64 per `WINDOW_MS` 60 s, `DEDUP` 1024 | M (diagnostics) | |
 | `GRANULARITY_MS` 60 s | M | |

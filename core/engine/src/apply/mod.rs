@@ -5,6 +5,7 @@
 
 mod atomic;
 mod free;
+pub(crate) mod memory;
 mod waits;
 pub(crate) mod keys;
 pub(crate) mod receipt;
@@ -18,6 +19,8 @@ mod oracle;
 #[cfg(test)]
 mod tests_paged;
 
+pub(crate) use free::unindex_commit;
+pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, unmerge_fell};
 
@@ -63,6 +66,9 @@ pub enum Ingested {
     Pending(CommitId, Reason),
     /// Kept as bytes: this build cannot interpret part of it (spec/versioning.md §2).
     Parked(CommitId),
+    /// A memory commit not held nor kept waiting: its parts could cost more decoded than the
+    /// room given (`Engine::ingest_memory`), found before decoding them.
+    TooLarge(CommitId),
 }
 
 pub(crate) enum Exam {
@@ -552,19 +558,24 @@ impl Engine {
 
     /// `ingest`, attributing diagnostics to `peer`.
     pub fn ingest_from(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>) -> Result<Ingested> {
-        self.ingest_class(bytes, blobs, peer, false)
+        self.ingest_class(bytes, blobs, peer, None)
     }
 
     /// Receives a memory commit (session form, spec/commits.md §2-§3) through the commit path,
-    /// every row it derives in memory. Hidden: no production caller until received ephemeral
-    /// commits leave `ingest_ephemeral` (issues/eph-unify.md step 3); `ingest` refuses them so a
+    /// every row it derives in memory. `room`: what holding it may cost, as `memory_charge`
+    /// counts it (the node cap, spec/sync.md §9 Caps): when its parts not held here could cost
+    /// more decoded (`memory::part_bound`, from their bytes alone) it is `TooLarge`, nothing of
+    /// it decoded, held or kept waiting. Hidden: no production caller until received ephemeral
+    /// commits leave `ingest_ephemeral` (issues/eph-unify.md step B); `ingest` refuses them so a
     /// writer cannot slip one in through the durable lane meanwhile.
     #[doc(hidden)]
-    pub fn ingest_memory(&mut self, bytes: &[u8]) -> Result<Ingested> {
-        self.ingest_class(bytes, Vec::new(), None, true)
+    pub fn ingest_memory(&mut self, bytes: &[u8], room: u64) -> Result<Ingested> {
+        self.ingest_class(bytes, Vec::new(), None, Some(room))
     }
 
-    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, memory: bool) -> Result<Ingested> {
+    /// `room`: a memory commit's (`ingest_memory`); `None` on the durable path.
+    fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
+        let memory = room.is_some();
         let _s = crate::costs::span("ingest");
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
@@ -572,8 +583,13 @@ impl Engine {
                 return Err(Error::BadInput(if memory { "a durable commit on the memory path" } else { "an ephemeral commit on the durable path" }));
             }
             // a memory commit links no blob and stores nothing durable (spec/commits.md §2)
-            if memory {
+            if let Some(room) = room {
                 tx.set_memory();
+                if let Ok(b) = &decoded
+                    && memory::new_parts_bound(tx, b)? > room
+                {
+                    return Ok(Ingested::TooLarge(b.id()));
+                }
             } else {
                 for (id, b) in blobs {
                     if osis_label::blob_id(&b) == id {

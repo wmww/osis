@@ -180,7 +180,7 @@ mod tests {
         let leaf = e.new_thing(&mut m, top);
         m.set(leaf, &ak("t:a.0~"), &Value::Str("x".into())).unwrap();
         m.expires(leaf, &ak("t:a.0~"), WallMs(e.now().0 + 60_000)).unwrap();
-        e.commit_in_memory(m).unwrap().unwrap();
+        let first = e.commit_in_memory(m).unwrap().unwrap();
         for i in 0..2 {
             let mut m = Mutation::new();
             m.set(leaf, &ak("t:a.0~"), &Value::Str(format!("y{i}"))).unwrap();
@@ -193,11 +193,11 @@ mod tests {
         let kid = e.new_thing(&mut m, boss);
         m.set(kid, &ak("t:a.0~"), &Value::Str("k".into())).unwrap();
         e.commit_in_memory(m).unwrap().unwrap();
-        // the first write expires: held value-less, its timer gone
+        // the first write expires: vanished and forgotten (`retention::memory`)
         lp.advance(61_000);
         let e = &mut lp.peers[0].engine;
         e.tick().unwrap();
-        assert!(e.core.ix.valueless.keys().any(|(t, _)| *t == leaf));
+        assert!(!e.core.ix.commits.contains_key(&first) && e.core.ix.valueless.is_empty());
         assert_ne!(digest(e), before);
         assert!(!rows(e).is_empty());
         e.free_memory(&BTreeSet::from([boss])).unwrap();
@@ -214,5 +214,34 @@ mod tests {
         // a durable thing is never freed
         e.free_memory(&BTreeSet::from([g])).unwrap();
         assert_eq!(digest(e), before);
+    }
+
+    // issues/session-sources.md rule 8 (memory half), spec/crdt.md §4.7: memory commits on a
+    // durable thing that expire, or are superseded and then expire, are forgotten: every
+    // journaled index (and perm's view) as if they had never applied, the state too. spec: none
+    // (internal)
+    #[test]
+    fn forget_equals_never_indexed() {
+        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        let before = digest(e);
+        let key = Value::Str("k".into());
+        for i in 0..3 {
+            let mut m = Mutation::new();
+            m.op(g, &ak("t:m.0~"), osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(key.clone())], op: osis_crdt::Op::Put(Value::Str(format!("v{i}"))) }).unwrap();
+            m.expires(g, &ak("t:m.0~"), WallMs(e.now().0 + 1000)).unwrap();
+            e.commit_in_memory(m).unwrap().unwrap();
+        }
+        assert_eq!(e.core.ix.commits.values().filter(|m| m.view.memory).count(), 1, "superseded moves are forgotten");
+        lp.advance(2000);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(digest(e), before);
+        assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
     }
 }

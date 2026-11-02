@@ -1576,6 +1576,63 @@ fn removed_holder_writes_go_after_covers_spec_permissions_5_2() {
     assert_eq!(notes(&mut net, d, w), left, "a node arriving later agrees");
 }
 
+// spec/requirements.md Convergence, spec/permissions.md §5.2 (issues/eph-cover-invalidated-loses-
+// absorbed.md, pinned repro): writer w writes X, removes itself from the group (no demotion
+// frontier), then covers X with C stamped after the removal, so C is invalid wherever the
+// removal is known and X stays valid. Holder a gets C before the removal (drops X as covered,
+// then C turns invalid), holder b the removal first (C invalid on arrival, X kept). Both stay
+// connected past the host's ephemeral tombstone and must read alike. Fails today (a reads
+// without X for the rest of its session, nothing makes b's X reach it); eph-unify step B (covers
+// as Core snapshots, durable's uncover: a refetches X, b's uncovered X is uploaded again) is to
+// make it pass, rewritten onto its API with this expectation.
+#[test]
+#[ignore = "issues/eph-cover-invalidated-loses-absorbed.md: closed by eph-unify step B"]
+fn cover_invalidated_by_self_removal_reads_alike_spec_permissions_5_2() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let w = net.node(2, &[host]);
+    let b = net.node(3, &[host]);
+    let g = net.group(a, &[(w, Role::Write), (b, Role::Read)], &[host]);
+    net.run();
+    let wn = window(&mut net, a, g, "w");
+    net.run();
+    note(&mut net, w, wn, "x", "X");
+    net.run();
+    let x = map(&[("x", "X")]);
+    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (x.clone(), x.clone()));
+    net.set_online(a, false);
+    net.set_online(b, false);
+    let wt = net.tid(w);
+    let d = osis_node::flows::Demotion { holder: wt, new: None, presync: osis_node::flows::PreSync::Synced };
+    let done = net.engine(w).demote(&g, &d).unwrap();
+    let r = *done.commits.last().unwrap();
+    net.engine(w).core.skip_writer_rules = true;
+    let c = net.engine(w).compact_own_ephemeral(true).unwrap();
+    net.engine(w).core.skip_writer_rules = false;
+    assert_eq!(c.len(), 1, "w covers X past its removal");
+    let acts = net.sync(w).carry_out(done).unwrap();
+    net.actions(w, acts);
+    local(&mut net, w);
+    net.run();
+    let rp = net.engine(w).package(&r).unwrap().unwrap();
+    // a: C, then the removal
+    net.engine(a).ingest_ephemeral(c[0].blob.clone()).unwrap();
+    net.engine(a).ingest(&rp.bytes, rp.blobs.clone()).unwrap();
+    net.engine(a).rejudge_ephemeral().unwrap();
+    // b: the removal, then C
+    net.engine(b).ingest(&rp.bytes, rp.blobs.clone()).unwrap();
+    net.engine(b).rejudge_ephemeral().unwrap();
+    net.engine(b).ingest_ephemeral(c[0].blob.clone()).unwrap();
+    net.set_online(a, true);
+    net.set_online(b, true);
+    assert_eq!((notes(&mut net, a, wn), notes(&mut net, b, wn)), (BTreeMap::new(), x), "the split: a lost X with C, b kept it");
+    for _ in 0..(osis_base::format::MAX_DRIFT_MS / 60_000 + 5) {
+        net.advance(60_000);
+    }
+    assert_eq!(notes(&mut net, a, wn), notes(&mut net, b, wn), "holders of the same commits read alike");
+}
+
 // spec/sync.md §9 (an ephemeral commit carries only its author's writes): a writer's commit
 // carrying another node's writes under that node's name joins only the writer's own
 #[test]
@@ -4341,7 +4398,7 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     // the durable path refuses it (no production caller yet: a writer cannot slip one in there)
     assert!(matches!(lp.deliver(1, &pk), Err(osis_node::Error::BadInput(_))));
     // the author is not known yet: pending, in memory
-    let got = lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
+    let got = lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
     assert!(matches!(got, osis_node::Ingested::Pending(..)), "{got:?}");
     assert_eq!(faults.forbidden(), 0);
     faults.forbid_writes(false);
@@ -4351,20 +4408,20 @@ fn received_memory_commit_in_memory_spec_commits_4() {
     assert!(e.core.created(&w).is_some() && e.core.durable_created(&w).is_none());
     assert!(e.run(|tx| Ok(tx.txn.pending(None, 16)?)).unwrap().is_empty());
     faults.forbid_writes(true);
-    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Duplicate(_)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Duplicate(_)));
     let id2 = {
         let mut m = Mutation::new();
         m.set(w, &eph("t:tags.0~"), &s("y")).unwrap();
         lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap()
     };
     let pk2 = lp.peers[0].engine.package(&id2).unwrap().unwrap();
-    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk2.bytes).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk2.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 1, w), Some(s("y")));
     // one waiting for drift is re-examined and applied in memory too
     lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     let id3 = memory_write(&mut lp, 0, w, "z");
     let pk3 = lp.peers[0].engine.package(&id3).unwrap().unwrap();
-    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk3.bytes).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk3.bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     lp.peers[1].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     lp.peers[1].engine.reexamine().unwrap();
     assert!(lp.peers[1].engine.core.ix.commits.contains_key(&id3), "applied at re-examination");
@@ -4429,7 +4486,7 @@ fn memory_part_on_unmarked_key_dropped_spec_commits_2() {
     let id = memory_write_unmarked(&mut lp, 2, d, "memory");
     let pk = lp.peers[2].engine.package(&id).unwrap().unwrap();
     for i in [0, 1] {
-        lp.peers[i].engine.ingest_memory(&pk.bytes).unwrap();
+        lp.peers[i].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
         assert!(!lp.peers[i].engine.run(|tx| Ok(tx.txn.is_memory_aspect(&d, &tags))).unwrap(), "{i}: the aspect turned memory class");
     }
     assert_eq!(durable_tags(&mut lp, 0, d), None);
@@ -4477,13 +4534,13 @@ fn freed_thing_drops_pending_memory_commit() {
     m.set(w, &eph("t:tags.0~"), &s("x")).unwrap();
     let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
     let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
-    lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap();
+    lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap();
     assert_eq!(memory_tags(&mut lp, 1, w), Some(s("x")));
     // a later one from 0's clock far ahead waits for drift
     lp.peers[0].clock.advance(2 * osis_base::format::MAX_DRIFT_MS);
     let later = memory_write(&mut lp, 0, w, "y");
     let pk = lp.peers[0].engine.package(&later).unwrap().unwrap();
-    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
+    assert!(matches!(lp.peers[1].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Pending(_, osis_node::Reason::Drift)));
     let e = &mut lp.peers[1].engine;
     e.free_memory(&BTreeSet::from([w])).unwrap();
     assert!(e.core.created(&w).is_none() && !e.core.ix.pending.contains_key(&later));
@@ -4502,7 +4559,7 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     memory_write(&mut lp, 0, d, "own");
     let id = memory_write(&mut lp, 1, d, "theirs");
     let pk = lp.peers[1].engine.package(&id).unwrap().unwrap();
-    assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes).unwrap(), osis_node::Ingested::Applied(_)));
+    assert!(matches!(lp.peers[0].engine.ingest_memory(&pk.bytes, u64::MAX).unwrap(), osis_node::Ingested::Applied(_)));
     assert_eq!(memory_tags(&mut lp, 0, d), Some(Value::Set([s("own"), s("theirs")].into())));
     let b = lp.peers[1].engine.tid();
     let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) };
@@ -4514,6 +4571,161 @@ fn removed_writer_memory_commits_unmerged_spec_permissions_5_2() {
     // the un-merge, done in the removal's durable transaction, wrote nothing durable about it
     lp.peers[0].restart(38).unwrap();
     assert_no_durable_trace(&mut lp.peers[0].engine, &[id]);
+}
+
+/// Peer `i` applies `op` at `path` of the ephemeral `ak` of `t` as a memory commit, expiring
+/// `ms` from its clock's now when given: its ID and blob.
+fn memory_op(lp: &mut osis_node::local_peer::LocalPeer, i: usize, t: Tid, ak: &str, path: Vec<PathSeg>, op: Op, ms: Option<u64>) -> (osis_base::CommitId, Vec<u8>) {
+    let e = &mut lp.peers[i].engine;
+    let mut m = Mutation::new();
+    m.op(t, &eph(ak), PathOp { path, op }).unwrap();
+    if let Some(ms) = ms {
+        m.expires(t, &eph(ak), osis_base::WallMs(e.now().0 + ms)).unwrap();
+    }
+    let id = e.commit_in_memory(m).unwrap().unwrap();
+    (id, e.package(&id).unwrap().unwrap().bytes)
+}
+
+/// Peer `to` receives memory commit blob `c` (no room limit).
+fn memory_deliver(lp: &mut osis_node::local_peer::LocalPeer, to: usize, c: &(osis_base::CommitId, Vec<u8>)) -> osis_node::Ingested {
+    lp.peers[to].engine.ingest_memory(&c.1, u64::MAX).unwrap()
+}
+
+fn holds_commit(lp: &osis_node::local_peer::LocalPeer, i: usize, id: &osis_base::CommitId) -> bool {
+    lp.peers[i].engine.core.ix.commits.contains_key(id)
+}
+
+// spec/crdt.md §4.7 (Ephemeral data: an expired delta vanishes whole, its resets included, at
+// every node): 1's expiring replace of the set 0 added to reads until T; past it the replace is
+// gone whole at its author, at 0 (held it at T) and at 2 (got it only after T): all read 0's
+// element again, the expired commit forgotten everywhere (a copy arriving again goes again),
+// nothing durable written
+#[test]
+fn memory_expiry_vanishes_whole_spec_crdt_4_7() {
+    let (mut lp, d) = memory_trio(41);
+    let faults: Vec<_> = lp.peers.iter().map(|p| p.backend.faults().clone()).collect();
+    faults.iter().for_each(|f| f.forbid_writes(true));
+    let add = memory_op(&mut lp, 0, d, "t:tags.0~", Vec::new(), Op::Add(s("a")), None);
+    for i in [1, 2] {
+        assert!(matches!(memory_deliver(&mut lp, i, &add), osis_node::Ingested::Applied(_)));
+    }
+    let rep = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Replace(Value::Set([s("b")].into())), Some(1000));
+    memory_deliver(&mut lp, 0, &rep);
+    let b = Some(Value::Set([s("b")].into()));
+    assert_eq!((memory_tags(&mut lp, 0, d), memory_tags(&mut lp, 1, d)), (b.clone(), b));
+    lp.advance(2000);
+    for i in 0..3 {
+        lp.peers[i].engine.tick().unwrap();
+    }
+    assert!(matches!(memory_deliver(&mut lp, 2, &rep), osis_node::Ingested::Applied(_)));
+    let a = Some(Value::Set([s("a")].into()));
+    for i in 0..3 {
+        assert_eq!(memory_tags(&mut lp, i, d), a, "{i}: the expired replace vanished whole");
+        assert!(!holds_commit(&lp, i, &rep.0), "{i}: the expired commit is forgotten");
+        assert!(holds_commit(&lp, i, &add.0));
+    }
+    memory_deliver(&mut lp, 0, &rep);
+    assert!(!holds_commit(&lp, 0, &rep.0));
+    assert_eq!(memory_tags(&mut lp, 0, d), a);
+    assert!(faults.iter().all(|f| f.forbidden() == 0), "nothing durable written");
+}
+
+// spec/sync.md §9 (Superseded expiring writes): an expiring move of 0's cursor entry vanishes
+// once its later move (expiring no earlier) is held: at the author, at 1 (older first) and at 2
+// (newer first: the older one is not kept); one expiring earlier supersedes nothing; once the
+// newer entries are removed the superseded move does not read again anywhere
+#[test]
+fn memory_superseded_expiring_write_vanishes_spec_sync_9() {
+    let (mut lp, d) = memory_trio(43);
+    let me = s(&lp.peers[0].engine.tid().to_string());
+    let key = vec![PathSeg::Key(me.clone())];
+    let old = memory_op(&mut lp, 0, d, "t:big.0~", key.clone(), Op::Put(s("c0")), Some(30_000));
+    lp.advance(10);
+    memory_deliver(&mut lp, 1, &old);
+    let new = memory_op(&mut lp, 0, d, "t:big.0~", key.clone(), Op::Put(s("c1")), Some(30_000));
+    assert!(!holds_commit(&lp, 0, &old.0) && holds_commit(&lp, 0, &new.0), "the author drops the superseded move");
+    assert!(holds_commit(&lp, 1, &old.0));
+    memory_deliver(&mut lp, 1, &new);
+    memory_deliver(&mut lp, 2, &new);
+    memory_deliver(&mut lp, 2, &old);
+    let c1 = Some(Value::Map([(me.clone(), s("c1"))].into()));
+    for i in 0..3 {
+        assert!(!holds_commit(&lp, i, &old.0) && holds_commit(&lp, i, &new.0), "{i}");
+        assert_eq!(lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap(), c1, "{i}");
+    }
+    lp.advance(10);
+    let short = memory_op(&mut lp, 0, d, "t:big.0~", key, Op::Put(s("c2")), Some(1_000));
+    assert!(holds_commit(&lp, 0, &new.0) && holds_commit(&lp, 0, &short.0), "expiring earlier: supersedes nothing");
+    memory_deliver(&mut lp, 1, &short);
+    let rm = memory_op(&mut lp, 1, d, "t:big.0~", Vec::new(), Op::Remove(me), None);
+    for i in [0, 2] {
+        memory_deliver(&mut lp, i, &short);
+        memory_deliver(&mut lp, i, &rm);
+    }
+    for i in 0..3 {
+        let v = lp.peers[i].engine.get(&d, &eph("t:big.0~")).unwrap();
+        assert!(v.as_ref().is_none_or(|v| *v == Value::Map(BTreeMap::new())), "{i}: {v:?}");
+    }
+}
+
+// spec/sync.md §9 (Superseded expiring writes, a function of the commits held): 2 holds 1's
+// two moves while a removal of 1 by admin 3 makes them invalid there: nothing is superseded;
+// once 0's earlier removal of 3 arrives, 3's removal is invalid, the moves valid again, and the
+// older move goes there too
+#[test]
+fn memory_superseded_once_superseder_valid_spec_sync_9() {
+    let mut lp = crate::common::net(4, 45);
+    lp.sync_all().unwrap();
+    let d = crate::common::new_thing(&mut lp, 0);
+    let [w, h, x] = [1, 2, 3].map(|i| lp.peers[i].engine.tid());
+    for (t, r) in [(w, Role::Write), (h, Role::Write), (x, Role::Admin)] {
+        crate::common::set_edge(&mut lp.peers[0].engine, d, t, Some(crate::common::edge(r)), None);
+    }
+    lp.sync_all().unwrap();
+    let me = s(&w.to_string());
+    let key = vec![PathSeg::Key(me.clone())];
+    let old = memory_op(&mut lp, 1, d, "t:big.0~", key.clone(), Op::Put(s("c0")), Some(30_000));
+    lp.advance(10);
+    let new = memory_op(&mut lp, 1, d, "t:big.0~", key, Op::Put(s("c1")), Some(30_000));
+    crate::common::set_edge(&mut lp.peers[0].engine, d, x, None, None);
+    lp.advance(10);
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(w, BTreeSet::from([d]))]), content: BTreeMap::from([(w, BTreeSet::from([d]))]) };
+    let now = lp.peers[3].engine.now();
+    let f = lp.peers[3].engine.frontier(&scope, now).unwrap();
+    crate::common::set_edge(&mut lp.peers[3].engine, d, w, None, Some(osis_schema::Codec::to_value(&f)));
+    lp.sync(3, 2).unwrap();
+    memory_deliver(&mut lp, 2, &old);
+    memory_deliver(&mut lp, 2, &new);
+    let valid = |lp: &osis_node::local_peer::LocalPeer, c: &osis_base::CommitId| lp.peers[2].engine.core.ix.commits.get(c).is_some_and(|m| m.valid.iter().all(|v| *v));
+    assert!(holds_commit(&lp, 2, &old.0) && holds_commit(&lp, 2, &new.0) && !valid(&lp, &new.0), "both invalid at 2: neither supersedes");
+    lp.sync(0, 2).unwrap();
+    assert!(valid(&lp, &new.0), "3's removal of 1 is invalid at 2");
+    assert!(!holds_commit(&lp, 2, &old.0) && holds_commit(&lp, 2, &new.0), "the older move goes once the newer is valid");
+    assert_eq!(lp.peers[2].engine.get(&d, &eph("t:big.0~")).unwrap(), Some(Value::Map([(me, s("c1"))].into())));
+}
+
+// spec/sync.md §9 (Caps: a holder decodes nothing past the room its cap leaves): a memory commit
+// whose parts could cost more decoded than the room given is refused before decoding, nothing
+// of it held or kept waiting; within the room it applies, charged its decoded size per copy
+// kept and less than its bound; a copy of it again needs no room
+#[test]
+fn memory_ingest_within_room_spec_sync_9() {
+    let (mut lp, d) = memory_pair(47);
+    let mut m = Mutation::new();
+    let w = lp.peers[0].engine.new_thing(&mut m, d);
+    m.set(w, &eph("t:tags.0~"), &Value::Set((0..200).map(|n| s(&format!("e{n}"))).collect())).unwrap();
+    let id = lp.peers[0].engine.commit_in_memory(m).unwrap().unwrap();
+    let pk = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let (bound, _) = osis_node::Engine::ephemeral_bound(&blob);
+    let e = &mut lp.peers[1].engine;
+    assert!(matches!(e.ingest_memory(&pk.bytes, bound - 1).unwrap(), osis_node::Ingested::TooLarge(c) if c == id));
+    assert!(!e.core.ix.commits.contains_key(&id) && !e.core.ix.pending.contains_key(&id) && e.core.created(&w).is_none(), "nothing of it held");
+    assert!(matches!(e.ingest_memory(&pk.bytes, bound).unwrap(), osis_node::Ingested::Applied(_)));
+    let charge = e.memory_charge(&id).unwrap();
+    let delta: usize = blob.parts.iter().map(|p| p.delta.len()).sum();
+    assert!(charge >= (2 * delta + osis_node::apply::PART_OVERHEAD) as u64 && charge < bound, "{charge} {delta} {bound}");
+    assert!(matches!(e.ingest_memory(&pk.bytes, 0).unwrap(), osis_node::Ingested::Duplicate(_)), "held parts need no room");
 }
 
 // spec/sync.md §9 (an expiring commit superseded by its author's later writes is dropped and
