@@ -460,10 +460,9 @@ fn connected_sender_invite_goes_through_spec_sync_3() {
     assert_eq!(net.read(b, t), Some(s("second")), "joined directly");
 }
 
-// spec/sync.md §3: a request accepted on one of Bob's devices is admitted on his other one by
-// the grant's copy under his home label (a commit blob of it under a synced label).
-#[test]
-fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
+/// Alice and Bob, Bob with a second device `b2` paired: (net, a, b, b2, bob, g), neither of
+/// Bob's devices accepting invites by itself.
+fn bob_with_two_devices() -> (Net, usize, usize, usize, Tid, Tid) {
     let (mut net, host, a, b, _, bob, g, _) = alice_and_bob();
     let b2 = net.node(3, &[host]);
     net.pair(b2, b);
@@ -485,6 +484,14 @@ fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
     for _ in 0..3 {
         net.advance(70_000);
     }
+    (net, a, b, b2, bob, g)
+}
+
+// spec/sync.md §3: a request accepted on one of Bob's devices is admitted on his other one by
+// the grant's copy under his home label (a commit blob of it under a synced label).
+#[test]
+fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
+    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
     let t = net.item(a, g, g, "for bob");
     let c = grant_commit(&mut net, a, g, bob);
     for _ in 0..3 {
@@ -499,6 +506,30 @@ fn invite_accepted_on_one_device_admitted_on_the_other_spec_sync_3() {
     }
     assert_eq!(net.read(b, t), Some(s("for bob")));
     assert!(requests(&mut net, b2).is_empty(), "admitted on the other device");
+    assert_eq!(net.read(b2, t), Some(s("for bob")));
+}
+
+// spec/sync.md §3 (a decline holds against inbox blobs only; a sibling's acceptance wins): Bob
+// declines on b2, then accepts on b; b2 applies the grant from b's copy under the home label
+#[test]
+fn sibling_acceptance_wins_over_decline_spec_sync_3() {
+    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
+    let t = net.item(a, g, g, "for bob");
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b2).decline_invite(c).unwrap());
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    assert!(!holds(&mut net, b2, &c), "declined: not applied");
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert!(holds(&mut net, b2, &c), "the sibling's acceptance applies it");
     assert_eq!(net.read(b2, t), Some(s("for bob")));
 }
 

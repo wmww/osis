@@ -117,6 +117,9 @@ pub struct BlobRec {
     pub cert: bool,
 }
 
+/// A body under a label: (label, commit, its `(ai, di)` delta set, sorted).
+pub type DeletedBody = (LabelId, CommitId, Vec<(usize, usize)>);
+
 /// A deposit (an inbox blob, a non-writer's role write) sealed, wrapped and signed, kept
 /// until its host answers (spec/sync.md §3, §5).
 #[derive(Clone, Debug)]
@@ -246,13 +249,14 @@ pub struct State {
     /// Entries this node dropped, by when (corrected wall ms): refused from peers for
     /// `TOMBSTONE_LIFETIME` (spec/sync.md §5), so a peer cannot replay a deleted body.
     pub tombs: BTreeMap<(LabelId, BlobId), u64>,
-    /// Commits whose body entry (not a certificate copy) left a label by a delete, by when
-    /// (`remove_entry`): such a body is not placed there again while its live writes are carried
+    /// Bodies (commit and delta set) whose entry (not a certificate copy) left a label by a
+    /// delete, by when (`remove_entry`): such a body is not placed there again while its live
+    /// writes are carried
     /// (spec/sync.md §6). In memory, from `tombs` at load where the blob's record is known;
     /// forgotten with the tombstone (`TOMBSTONE_LIFETIME`, minor consequence: at 0 a right
     /// holder whose bounds are dated later re-uploads it every pass until its own bound, at
     /// infinity memory grows with deletions; live writes are carried either way).
-    pub deleted: BTreeMap<(LabelId, CommitId), u64>,
+    pub deleted: BTreeMap<DeletedBody, u64>,
     /// Inbox blobs not yet answered by their host, by (host, blob).
     pub outbox: BTreeMap<(HostKey, LabelId, BlobId), OutRec>,
     /// Corrected wall ms of the running `handle` (tombstone times).
@@ -528,7 +532,7 @@ impl State {
         s.entries = entries;
         s.present_by = s.present.iter().map(|(host, l, b)| (*l, *b, *host)).collect();
         s.gone_by = s.gone.keys().map(|(host, l, b)| (*l, *b, *host)).collect();
-        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit), *t))).collect();
+        s.deleted = s.tombs.iter().filter_map(|((l, b), t)| s.blobs.get(b).filter(|r| !r.cert).map(|r| ((*l, r.commit, r.parts.clone()), *t))).collect();
         Ok(s)
     }
 
@@ -654,8 +658,8 @@ impl State {
 
     /// Forgets an entry, tombstoned (`tombs`).
     pub fn remove_entry(&mut self, l: LabelId, b: BlobId) {
-        if let Some(Entry { cert: false, kind: Kind::Commit { commit, .. }, .. }) = self.entries.get(&(l, b)) {
-            self.deleted.insert((l, *commit), self.now);
+        if let Some(Entry { cert: false, kind: Kind::Commit { commit, parts, .. }, .. }) = self.entries.get(&(l, b)) {
+            self.deleted.insert((l, *commit, parts.clone()), self.now);
         }
         if self.drop_entry(l, b) {
             self.put(key(TOMB, &[&l.0, &b.0]), Wr::new().u64(self.now).take());
@@ -996,7 +1000,7 @@ impl State {
     /// its entries are learned would cost that snapshot, at infinity carriers stay for good.
     pub fn sweep_carriers(&mut self, now: u64) {
         let lifetime = osis_base::format::TOMBSTONE_LIFETIME_MS;
-        let mut keep: BTreeSet<CommitId> = self.by_label_commit.keys().map(|(_, c)| *c).chain(self.deleted.keys().map(|(_, c)| *c)).collect();
+        let mut keep: BTreeSet<CommitId> = self.by_label_commit.keys().map(|(_, c)| *c).chain(self.deleted.keys().map(|(_, c, _)| *c)).collect();
         keep.extend(self.carriers.iter().filter(|(_, c)| c.at.saturating_add(lifetime) > now).map(|(b, _)| *b));
         let mut todo: Vec<CommitId> = keep.iter().copied().collect();
         while let Some(b) = todo.pop() {

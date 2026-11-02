@@ -751,3 +751,48 @@ fn lost_access_wakes_when_pending_grant_ages_out_spec_permissions_3() {
         assert!(net.engine(b).epochs(&g).is_none_or(|e| e.read.held().next().is_none()));
     }
 }
+
+// spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
+// register and a keep-at-most-1h one, two bodies; both are overwritten, the second's body is
+// deleted past its bound, and the host is wiped: the first's body (must-hold, uncovered) goes up
+// again though another body of c was deleted
+#[test]
+fn deleted_body_withholds_only_itself_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "v1");
+    let both = |net: &mut Net, v: &str| {
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s(v)).unwrap();
+        m.set(t, &GONE, &s(v)).unwrap();
+        let c = net.engine(a).commit(m).unwrap().unwrap();
+        net.run();
+        c
+    };
+    let c = both(&mut net, "x");
+    let l = net.label(a);
+    assert_eq!(blobs_of(&mut net, a, &l, &c).len(), 2, "two bodies");
+    net.advance(1_000);
+    both(&mut net, "y");
+    net.advance(osis_base::format::MAX_DRIFT_MS + 60_000);
+    net.run();
+    let reg_body = |net: &mut Net| {
+        let h = net.engine(a).header(&c).unwrap();
+        net.sync(a).entries(&l).into_iter().filter_map(|(id, k)| match k {
+            EntryKind::Commit { commit, parts, .. } if commit == c && parts.iter().all(|(ai, _)| h.aspects[*ai].ak.as_str() == "t:reg.0") => Some(id),
+            _ => None,
+        }).collect::<Vec<_>>()
+    };
+    assert_eq!(blobs_of(&mut net, a, &l, &c).len(), 1, "the keep-at-most body deleted");
+    assert_eq!(reg_body(&mut net).len(), 1);
+    net.set_online(a, false);
+    net.wipe_host(host);
+    net.set_online(a, true);
+    net.run();
+    net.advance(120_000);
+    net.run();
+    let at_host = net.host_ids(host, &l);
+    assert!(reg_body(&mut net).iter().any(|id| at_host.contains(id)), "the register's body uploaded again");
+}
