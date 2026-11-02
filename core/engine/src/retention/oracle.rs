@@ -151,11 +151,12 @@ pub(crate) fn kills(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (c, ai): (&CommitId, us
     Ok(dead)
 }
 
-/// `make_valueless`'s residue: the body (or, dropped as covered, its held valid coverers'
+/// `make_valueless`'s residue: the body and `kept` (or, dropped as covered, its held valid coverers'
 /// copies of its writes) joined, then stripped.
-pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai: usize, o: &Owned) -> Result<Option<Fragment>> {
+pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai: usize, o: &Owned, kept: &[Fragment]) -> Result<Option<Fragment>> {
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
     let mut bodies = crate::apply::held_fragments(tx, c, ai)?;
+    bodies.extend(kept.iter().cloned());
     if bodies.is_empty() && m.dropped.get(&ai).is_some_and(|d| d.as_cover) {
         for s in super::coverers(tx.core, c, ai) {
             let Some(sai) = super::held_part(tx.core, &s, &a.tid, &a.ak) else { continue };

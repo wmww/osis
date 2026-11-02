@@ -696,6 +696,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     after_store(tx, &h, &id, &uncarried, &voided, &mut j)?;
     {
         let _s = crate::costs::span("apply: retention");
+        crate::retention::stripped_joined(tx, &id, &parts.stripped_joined(), &mut j.changed)?;
         crate::retention::on_apply(tx, &id, &mut j.changed)?;
     }
     {
@@ -882,6 +883,7 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     tx.put_commit(id, merged, &meta, Shred::No, all.as_ref())?;
     after_store(tx, &h, id, &uncarried, &BTreeSet::new(), &mut j)?;
     // expiry and purges for the late parts (a late snapshot part carrying purged values too)
+    crate::retention::stripped_joined(tx, id, &parts.stripped_joined(), &mut j.changed)?;
     crate::retention::on_late(tx, id, &late, &mut j.changed)?;
     if edges && let Some(all) = &all {
         tx.core.ix.held.remove(id);

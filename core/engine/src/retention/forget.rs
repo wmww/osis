@@ -154,6 +154,9 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
             continue;
         }
         let rest = osis_commit::rewrite(&blob, |ai, _| ais.contains(&ai));
+        for ai in &ais {
+            super::forget_stripped(tx, &id, Some(*ai))?;
+        }
         tx.txn.remove_pending(&id, Shred::Yes)?;
         if !rest.parts.is_empty() {
             tx.txn.put_pending(&id, k, &rest.encode())?;

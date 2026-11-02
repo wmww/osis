@@ -147,9 +147,17 @@ pub(crate) struct Parts {
     /// Why the first part judged bad was (`examine`): dropped alone, or for a commit this node
     /// writes a refusal.
     pub bad: Option<Error>,
+    /// Aspects of the parts in `whole` held value-less while they waited
+    /// (`retention::strip_purged`): held so once joined (`retention::stripped_joined`).
+    pub stripped: Vec<usize>,
 }
 
 impl Parts {
+    /// The parts joined from stripped deltas (`stripped`): aspect and fragment.
+    pub(crate) fn stripped_joined(&self) -> Vec<(usize, osis_crdt::Fragment)> {
+        self.whole.iter().filter(|x| self.stripped.contains(&x.0)).map(|(ai, _, d)| (*ai, d.fragment().clone())).collect()
+    }
+
     /// Whether a part of aspect `ai` is held.
     pub(crate) fn has(&self, ai: usize) -> bool {
         self.whole.iter().any(|p| p.0 == ai) || self.streamed.iter().any(|p| p.ai == ai)
@@ -419,12 +427,18 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
     if h.author != tx.core.id.tid() && h.ts.wall_ms().0 > tx.now().0.saturating_add(MAX_DRIFT_MS) {
         return Ok(Exam::Pending(Reason::Drift, Vec::new()));
     }
+    // the slots a held purge request emptied while they waited (`retention::strip_purged`): their
+    // stripped deltas, checked when kept, join in their place
+    let emptied = crate::retention::emptied();
+    let stripped = if blob.parts.iter().any(|p| p.delta == emptied) && tx.core.ix.pending.contains_key(id) { crate::retention::stripped_of(tx, id)? } else { BTreeMap::new() };
+    let kept = |p: &osis_commit::Part| p.delta == emptied && stripped.contains_key(&(p.ai, p.di));
     // a part that does not hash to its header entry is no part of this commit, and one on an aspect
     // of the wrong storage class (core keys are unmarked but `placed.0~`) is never applied: dropped
     // alone, before anything reads what is held (spec/commits.md §4)
     let junk: Vec<(usize, usize)> = blob
         .parts
         .iter()
+        .filter(|p| !kept(p))
         .filter(|p| {
             let Some(a) = h.aspects.get(p.ai) else { return true };
             let Some(want) = a.hashes.get(p.di) else { return true };
@@ -534,6 +548,11 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             continue;
         }
         let a = h.aspects.get(p.ai).ok_or(Error::BadInput("part index"))?;
+        if let Some(d) = stripped.get(&(p.ai, p.di)).filter(|_| kept(p)) {
+            out.whole.push((p.ai, p.di, d.clone()));
+            out.stripped.push(p.ai);
+            continue;
+        }
         let dedup = record(&a.tid).map(|r| dedup_secret(r.nonce())).ok_or(Error::UnknownThing(a.tid))?;
         let wait = match judge_part(tx, &h, id, p, a, &dedup, rules, &mut interner, &mut out) {
             Ok(Judged::Good) => continue,
@@ -609,6 +628,8 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
             out.waiting = Some(Waiting { parts, reason, others: aside.others });
         }
     }
+    // what joins of an emptied slot is its stripped delta: no stored copy holds it
+    blob.parts.retain(|p| !kept(p));
     Ok(Exam::Ready(out))
 }
 
@@ -1080,8 +1101,8 @@ impl Engine {
     }
 
     /// The slots of commit `id` no copy need bring here: those held, applied or pending, and those
-    /// counting as never received (spec/commits.md §5), its body dropped, past its expiry or purged
-    /// while pending, which only a new copy brings back (`SyncEngine::redeliver`).
+    /// counting as never received (spec/commits.md §5), its body dropped or past its expiry, which
+    /// only a new copy brings back (`SyncEngine::redeliver`).
     pub fn settled_slots(&mut self, id: &CommitId) -> Result<BTreeSet<(usize, usize)>> {
         let id = *id;
         self.run(|tx| {
@@ -1091,7 +1112,7 @@ impl Engine {
             if let Some(b) = &pending {
                 out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
                 for ai in 0..b.header.aspects.len() {
-                    if crate::retention::pending_gone(tx, &id, &b.header, ai)? {
+                    if crate::retention::pending_expired(tx, &b.header, ai) {
                         out.extend(out_of(&b.header, ai));
                     }
                 }
@@ -1110,8 +1131,8 @@ impl Engine {
     }
 
     /// Whether copy `copy` of commit `id` holds a part that went from the node (spec/commits.md §5:
-    /// dropped from the applied commit, or held pending past its expiry or purged,
-    /// `retention::pending_gone`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
+    /// dropped from the applied commit, held pending past its expiry, or held pending value-less,
+    /// `retention::strip_purged`) and nothing a copy may still be needed for (`SyncEngine::redeliver`):
     /// its every other part went too, is applied, or, where parts of it wait, is in the pending copy
     /// alike or provably does not hash to its header entry. Node-sync then forgets the copy's blob and
     /// key; one that may hold the only true copy of a part a junk copy holds the slot of stays until
@@ -1130,7 +1151,7 @@ impl Engine {
             };
             let mut gone = false;
             for p in &copy.parts {
-                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && crate::retention::pending_gone(tx, id, &h, p.ai)? {
+                if meta.as_ref().is_some_and(|m| m.dropped.contains_key(&p.ai)) || pending.is_some() && (crate::retention::pending_expired(tx, &h, p.ai) || crate::retention::is_stripped(tx, id, p.ai, p.di)?) {
                     gone = true;
                     continue;
                 }
@@ -1281,6 +1302,7 @@ impl Engine {
                         Ok(_) => {}
                         Err(e) if e.class() == ErrorClass::BadInput => {
                             tx.txn.remove_pending(&id, Shred::Yes)?;
+                            crate::retention::forget_stripped(tx, &id, None)?;
                             tx.core.ix.pending.remove(&id);
                             tx.core.waits.unpended(&id);
                             keys::forget_unchecked(tx, &id)?;

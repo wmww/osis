@@ -409,8 +409,8 @@ fn redelivery_leaves_a_part_past_its_expiry_spec_commits_5() {
     assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "still counts as never received");
 }
 
-// spec/commits.md §5: a part of a pending commit named by a held purge request goes from the node:
-// the pending copy and the blob holding it. The commit waits for its other delta.
+// spec/commits.md §5: a part of a pending commit named by a held purge request is held value-less: its
+// values go from the pending copy and the blob holding it goes. The commit waits for its other delta.
 #[test]
 fn purged_pending_part_leaves_its_blob_spec_commits_5() {
     let mut x = case();
@@ -437,7 +437,7 @@ fn purged_pending_part_leaves_its_blob_spec_commits_5() {
     x.give(pp, p, 110);
     assert!(x.holds(p));
     assert!(x.net.engine(b).pending().iter().any(|q| q.0 == c), "it still waits");
-    assert_eq!(x.net.engine(b).suspects().unwrap().len(), 1, "flagged");
+    assert!(x.net.engine(b).suspects().unwrap().is_empty(), "held value-less, not dropped");
     assert!(!x.net.sync(b).holds_blob(&id), "the purged part's blob and key go");
     every_body(&mut x.net, a, a, g, b, host, l, &c, 120);
     assert!(x.holds(c), "{:?}", x.net.engine(b).pending());

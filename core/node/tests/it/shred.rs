@@ -119,8 +119,8 @@ fn pending_purge(seed: u64, marker: &str) -> (LocalPeer, Tid, osis_base::CommitI
     (lp, t, c, whole, request)
 }
 
-// spec/commits.md §5: a part of a commit held pending that a held purge request names goes from
-// the pending copy, whether the request comes first or after
+// spec/commits.md §5: a part of a commit held pending that a held purge request names is held value-less:
+// its values go from the pending copy, whether the request comes first or after
 #[test]
 fn purged_while_pending_unrecoverable_spec_commits_5() {
     for request_first in [true, false] {
@@ -134,7 +134,7 @@ fn purged_while_pending_unrecoverable_spec_commits_5() {
         assert!(lp.peers[1].engine.pending().iter().any(|x| x.0 == c), "request first {request_first}: it waits for t2");
         assert_eq!(lp.peers[1].engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("public")));
         assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "request first {request_first}: purged content recovered from the pending copy");
-        assert_eq!(lp.peers[1].engine.suspects().unwrap().len(), 1, "request first {request_first}: flagged");
+        assert!(lp.peers[1].engine.suspects().unwrap().is_empty(), "request first {request_first}: held value-less, not dropped");
     }
 }
 
@@ -513,18 +513,23 @@ fn suspect_flag_outlives_a_snapshot_listing_nothing_of_it_spec_permissions_4() {
     assert_eq!(lp.peers[1].engine.state_digest(&t, &brief).unwrap(), lp.peers[0].engine.state_digest(&t, &brief).unwrap());
 }
 
-
-
-// spec/commits.md §5, spec/permissions.md §4: a commit, its thing's record and a purge request naming a
-// part of it (resetting nothing), in every order: the node reads as its author (the part value-less), or,
-// where the part waited when the request came (it counts as never received), flags the aspect suspect.
+// spec/commits.md §5, spec/requirements.md (Deterministic): a commit, its thing's record and a purge
+// request naming its parts on a register, a list and a map (resetting nothing), in every order: the node
+// holds each aspect as its author does (the parts value-less, their non-value writes kept), whether the
+// parts waited when the request came or not, flags nothing and keeps no purged value.
 #[test]
-fn purge_of_a_waiting_part_reads_alike_or_flags_spec_commits_5() {
-    let mut outs = Vec::new();
+fn purge_of_a_waiting_part_reads_alike_spec_commits_5() {
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let aspects = [ak("t:reg.0"), ak("t:list.0"), ak("t:big.0")];
+    let mut reads = Vec::new();
     for order in [[0usize, 1, 2], [0, 2, 1], [1, 0, 2], [1, 2, 0], [2, 0, 1], [2, 1, 0]] {
         let mut lp = net2(131);
         let t = new_thing(&mut lp, 0);
-        set(&mut lp, 0, t, &REG, "old");
+        let mut m = Mutation::new();
+        m.set(t, &REG, &s("old")).unwrap();
+        m.set(t, &LIST, &Value::List(vec![s("a")])).unwrap();
+        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("old")) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
         let t3 = new_thing(&mut lp, 0);
         lp.sync(0, 1).unwrap();
         lp.peers[1].engine.set_syncing(t3, true).unwrap();
@@ -535,32 +540,51 @@ fn purge_of_a_waiting_part_reads_alike_or_flags_spec_commits_5() {
         let rec: Vec<_> = lp.packages(0).unwrap().into_iter().filter(|p| !had.contains(&p.id)).collect();
         lp.advance(5);
         let mut m = Mutation::new();
-        m.set(t, &REG, &s("secret")).unwrap();
+        m.set(t, &REG, &s("SECRET-9c2e")).unwrap();
+        m.op(t, &LIST, PathOp { path: Vec::new(), op: Op::Insert { at: 1, items: vec![s("SECRET-L7a1")] } }).unwrap();
+        m.op(t, &BIG, PathOp { path: vec![PathSeg::Key(s("SECRET-K3b8"))], op: Op::Set(s("SECRET-V5d0")) }).unwrap();
         m.set(t2, &REG, &s("other")).unwrap();
         let c = lp.peers[0].commit(m).unwrap().unwrap();
         let whole = lp.peers[0].engine.package(&c).unwrap().unwrap();
         lp.advance(5);
         let mut m = Mutation::new();
         m.set(t3, &REG, &s("other3")).unwrap();
-        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: ak("t:reg.0") });
+        for a in &aspects {
+            m.purge(PurgeItem::Commit { commit: c, tid: t, ak: a.clone() });
+        }
         let p = lp.peers[0].commit(m).unwrap().unwrap();
         let request = lp.peers[0].engine.package(&p).unwrap().unwrap();
         let groups = [rec, vec![whole], vec![request]];
-        for g in order {
-            for pk in &groups[g] {
+        let markers = ["SECRET-9c2e", "SECRET-L7a1", "SECRET-K3b8", "SECRET-V5d0"];
+        for (i, g) in order.iter().enumerate() {
+            for pk in &groups[*g] {
                 lp.deliver(1, pk).unwrap();
             }
             lp.peers[1].engine.reexamine().unwrap();
+            // the request held while the commit waits: its values left already
+            if order[..=i].contains(&2) && lp.peers[1].engine.pending().iter().any(|x| x.0 == c) {
+                for marker in markers {
+                    assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "order {order:?}, waiting: {marker}");
+                }
+            }
         }
-        let want = lp.peers[0].engine.get(&t, &ak("t:reg.0")).unwrap();
-        let e = &mut lp.peers[1].engine;
-        assert!(e.pending().is_empty(), "order {order:?}");
-        assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
-        let flagged = e.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == ak("t:reg.0"));
-        let read = e.get(&t, &ak("t:reg.0")).unwrap();
-        assert!(read == want || flagged, "order {order:?}: {read:?}, author {want:?}");
-        outs.push(flagged);
+        {
+            let e = &mut lp.peers[1].engine;
+            assert!(e.pending().is_empty(), "order {order:?}: {:?}", e.pending());
+            assert_eq!(e.get(&t2, &ak("t:reg.0")).unwrap(), Some(s("other")), "order {order:?}");
+            assert!(e.suspects().unwrap().is_empty(), "order {order:?}");
+        }
+        let mut read = Vec::new();
+        for a in &aspects {
+            let author = lp.peers[0].engine.state_digest(&t, a).unwrap();
+            assert_eq!(lp.peers[1].engine.state_digest(&t, a).unwrap(), author, "order {order:?}: {a:?} as its author holds it");
+            read.push(lp.peers[1].engine.get(&t, a).unwrap());
+        }
+        for marker in markers {
+            assert!(!recoverable(&mut lp.peers[1], marker.as_bytes()), "order {order:?}: {marker}");
+        }
+        reads.push(read);
     }
-    // the request before the commit applies drops its part: both outcomes occur
-    assert!(outs.contains(&true) && outs.contains(&false), "{outs:?}");
+    assert_eq!(reads[0][0], None, "the value-less write wins over \"old\"");
+    assert!(reads.iter().all(|r| *r == reads[0]), "{reads:?}");
 }
