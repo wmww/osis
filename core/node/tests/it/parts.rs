@@ -629,7 +629,8 @@ fn junk_copy(played: &Played, i: usize, rng: &mut Rng) -> Vec<u8> {
 }
 
 /// What a node keeps of what it is given, for the tests here at the engine: every copy, ingested again
-/// as `SyncEngine::redeliver` does (`parts_relay` runs the real one).
+/// as `SyncEngine::redeliver` does but for its look at which slots a copy brings (`parts_relay` runs the
+/// real one, restarts and lost names included).
 #[derive(Default)]
 struct Relay {
     copies: Vec<(CommitBlob, Vec<u8>)>,
@@ -661,16 +662,7 @@ impl Relay {
             }
             p.engine.reexamine().unwrap();
         }
-        let names = p.engine.take_redeliver();
-        let ours: Vec<String> = self.copies.iter().filter(|(b, _)| names.contains(&b.id())).map(|(b, _)| format!("{:?} kind {:?} genuine {:?} pending {} parts {:?}", b.id(), b.header.kind, p.engine.parts_genuine(b), p.engine.pending().iter().any(|x| x.0 == b.id()), b.parts.iter().map(|x| (x.ai, x.di)).collect::<Vec<_>>())).collect();
-        let mut res = Vec::new();
-        for (b, bytes) in &self.copies {
-            if names.contains(&b.id()) {
-                let r = p.engine.ingest(bytes, Vec::new());
-                res.push(format!("{r:?} named {:?} pend {:?} slots {:?}", !p.engine.take_redeliver().is_empty(), p.engine.pending().iter().filter(|x| x.0 == b.id()).collect::<Vec<_>>(), p.engine.commit_bytes(&b.id()).unwrap().map(|x| CommitBlob::decode(&x).unwrap().parts.iter().map(|q| (q.ai, q.di, q.delta.len())).collect::<Vec<_>>())));
-            }
-        }
-        panic!("a name for every round: {ours:?} {res:#?}");
+        assert!(p.engine.take_redeliver().is_empty(), "a name for every round");
     }
 }
 
@@ -1274,4 +1266,38 @@ fn bad_part_answers_beside_a_waiting_part_spec_commits_4() {
     assert!(want.1, "applied without its bad part, its other part waiting");
     assert_eq!(read(&[on_a.clone(), on_b.clone()]), want);
     assert_eq!(read(&[on_b, on_a]), want);
+}
+
+// spec/commits.md §4 (copies): a true `created.0` proves itself under a header whose aspect list goes by
+// link too: the stored copy's header reads empty until its list is resolved.
+#[test]
+fn true_record_replaces_junk_under_a_linked_header_spec_commits_4() {
+    use crate::common::*;
+    let mut lp = net(2, 71);
+    let known = packages(&mut lp, 0);
+    let e = &mut lp.peers[0].engine;
+    let mut m = Mutation::new();
+    let t = e.new_thing(&mut m, e.identity().tid());
+    for i in 0..800 {
+        m.set(t, &ak(&format!("u:{}{i:05}.0", "a".repeat(100))), &s("v")).unwrap();
+    }
+    let id = e.commit(m).unwrap().unwrap();
+    assert!(e.header(&id).unwrap().links.aspects.is_some(), "the aspect list goes by link");
+    let pk = e.package(&id).unwrap().unwrap();
+    let whole = CommitBlob::decode(&pk.bytes).unwrap();
+    let mut resolved = whole.clone();
+    resolved.header = (*e.header(&id).unwrap()).clone();
+    let created = resolved.parts.iter().position(|p| resolved.header.aspects[p.ai].ak.as_str() == "created.0").unwrap();
+    let mut junk = whole.clone();
+    junk.parts = vec![junk.parts[created].clone()];
+    junk.parts[0].delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![9; 40])]));
+    let p = &mut lp.peers[1];
+    for k in &known {
+        p.engine.ingest(&k.bytes, k.blobs.clone()).unwrap();
+    }
+    p.engine.ingest(&junk.encode(), pk.blobs.clone()).unwrap();
+    assert!(!p.engine.commit_ids().contains(&id));
+    p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    p.engine.reexamine().unwrap();
+    assert!(p.engine.commit_ids().contains(&id), "{:?}", p.engine.pending());
 }

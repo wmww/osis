@@ -110,31 +110,24 @@ impl Case {
 }
 
 // spec/commits.md §4 (copies): junk under the true commit ID, however many, before or after the true
-// copy, its thing's record last: the true one is taken, each junk entry judged bad once, no name left.
+// copy, its thing's record last: the true one is taken, no name left.
 #[test]
 fn junk_entry_keeps_out_no_entry_spec_commits_4() {
     for true_at in [0u64, 1, 2] {
         let mut x = case();
         let c = x.c;
         let good = plain(&mut x.net, x.a, &c);
-        let mut junk = Vec::new();
         for i in 0..3u64 {
             if i == true_at {
                 x.give(good.clone(), c, 100 + i);
             }
-            junk.push(x.give(junk_parts(&good, i as u8), c, 200 + i));
+            x.give(junk_parts(&good, i as u8), c, 200 + i);
         }
         assert!(!x.holds(c));
         x.give_record(300);
         assert!(x.holds(c), "true copy at {true_at}");
         assert_eq!(x.read(), Some(Value::Str("second".into())), "true copy at {true_at}");
         assert!(x.net.engine(x.b).pending().is_empty());
-        // a true first copy leaves nothing to look at
-        if true_at > 0 {
-            for j in junk {
-                assert!(x.is_bad(j), "true copy at {true_at}");
-            }
-        }
         assert!(x.net.engine(x.b).take_redeliver().is_empty());
     }
 }
@@ -269,4 +262,270 @@ fn no_repeated_redelivery_spec_commits_4() {
     assert!(x.net.sync(b).redelivered <= 1, "the true copy, not the flood: {}", x.net.sync(b).redelivered);
     assert!(x.net.engine(b).pending().is_empty());
     let _ = g;
+}
+
+fn edge_op(holder: Tid) -> osis_crdt::PathOp {
+    osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(holder))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&osis_schema::core_types::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None })) }
+}
+
+// spec/commits.md §4 (copies), crash: a role commit applied, its part on a thing whose record is away
+// waiting with a junk copy in its slot. The record comes, the junk goes, and the crash takes the name:
+// the commit neither pends nor misses anything by the index of what pends. The start finds the true copy.
+#[test]
+fn restart_with_a_waiting_part_of_an_applied_commit_spec_commits_4() {
+    let mut x = case();
+    let (a, b, g, h, r) = (x.a, x.b, x.g, x.h, x.r);
+    let holder = x.net.tid(a);
+    let mut m = osis_node::Mutation::new();
+    m.op(g, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
+    m.op(h, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
+    let c = x.net.engine(a).commit_hostile(m).unwrap().unwrap();
+    let good = x.net.engine(a).package(&c).unwrap().unwrap().bytes;
+    let mut junk = CommitBlob::decode(&good).unwrap();
+    assert!(junk.header.aspects.iter().any(|e| e.tid == g));
+    for p in &mut junk.parts {
+        if junk.header.aspects[p.ai].tid == h {
+            p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![3; 40])]));
+        }
+    }
+    x.give(junk.encode(), c, 100);
+    assert!(x.holds(c), "its part on g applied");
+    assert!(x.net.engine(b).pending().iter().any(|p| p.0 == c), "its part on h waits");
+    x.give(good, c, 101);
+    let pk = x.net.engine(a).package(&r).unwrap().unwrap();
+    x.net.engine(b).ingest(&pk.bytes, pk.blobs).unwrap();
+    x.net.engine(b).reexamine().unwrap();
+    assert!(!x.net.engine(b).take_redeliver().is_empty(), "named");
+    x.net.restart(b, 77);
+    x.net.feed(b, Event::Local);
+    x.net.settle(10_000);
+    assert!(x.net.engine(b).pending().iter().all(|p| p.0 != c));
+    assert!(x.net.engine(b).get_typed(&h, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().contains_key(&holder), "the true part of h came");
+}
+
+// spec/commits.md §4 (copies): a name raised while node-sync works on another commit: `d`'s slot on `h2`
+// proves junk only when `e`'s true copy, ingested again in the same round, brings `h2`'s record.
+#[test]
+fn a_name_raised_during_redelivery_is_kept_spec_commits_4() {
+    let mut x = case();
+    let (a, b, h1) = (x.a, x.b, x.h);
+    x.net.engine(b).set_syncing(h1, true).unwrap();
+    let mut m = osis_node::Mutation::new();
+    let h2 = x.net.engine(a).new_thing(&mut m, x.g);
+    m.set(h2, &REG, &Value::Str("two".into())).unwrap();
+    m.set(h1, &REG, &Value::Str("e".into())).unwrap();
+    let e = x.net.engine(a).commit(m).unwrap().unwrap();
+    // `d` before `e` in the order of a round
+    let (d, want) = (0..1000).find_map(|i| {
+        let mut m = osis_node::Mutation::new();
+        m.set(h1, &REG, &Value::Str(format!("d{i}"))).unwrap();
+        m.set(h2, &REG, &Value::Str(format!("d{i}"))).unwrap();
+        let d = x.net.engine(a).commit(m).unwrap().unwrap();
+        (d < e).then(|| (d, format!("d{i}")))
+    }).unwrap();
+    let good_d = plain(&mut x.net, a, &d);
+    x.give(junk_parts(&good_d, 1), d, 100);
+    x.give(good_d, d, 101);
+    // `e`'s copy of the class of its writes, its slot on `h1` junk
+    let body = x.net.engine(a).bodies(&e).unwrap().into_iter().find(|y| CommitBlob::decode(&y.plaintext).unwrap().parts.iter().any(|p| p.ai < 99 && y.parts.contains(&(p.ai, p.di)) && x.net.engine(a).header(&e).unwrap().aspects[p.ai].ak.as_str() == "t:reg.0")).unwrap();
+    let mut junk_e = CommitBlob::decode(&body.plaintext).unwrap();
+    let hdr = junk_e.header.clone();
+    junk_e.parts.retain(|p| hdr.aspects[p.ai].tid == h1);
+    for p in &mut junk_e.parts {
+        p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![2; 40])]));
+    }
+    let junk_e = osis_node::labeling::Body { plaintext: junk_e.encode(), ..body };
+    let sealed = osis_node::labeling::seal_body(&junk_e, &mut SeededRng::from_u64(102)).unwrap();
+    let secret = x.net.engine(a).wrap_secret(&x.g, None).unwrap().unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let (host, l) = (x.host, x.l);
+    push(&mut x.net, b, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, 102);
+    let g = x.g;
+    every_body(&mut x.net, a, a, g, b, host, l, &e, 110);
+    x.give_record(300);
+    assert!(x.holds(e), "e: {:?} {:?}", x.net.engine(b).pending(), x.net.diagnostics(b));
+    assert!(x.holds(d), "d: {:?}", x.net.engine(b).pending());
+    assert_eq!(x.net.engine(b).get(&h2, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), Some(Value::Str(want)), "{:?}", x.net.engine(b).pending());
+}
+
+// spec/requirements.md (no unbounded work from peer input): a junk copy that kept nothing out names
+// nothing: a flood of them on a waiting commit whose record is known costs no look at its entries.
+#[test]
+fn junk_with_a_known_record_names_nothing_spec_commits_4() {
+    let mut x = case();
+    let (a, b, g, h) = (x.a, x.b, x.g, x.h);
+    let r = x.r;
+    every_body(&mut x.net, a, a, g, b, x.host, x.l, &r, 90);
+    // a second thing, its record away: the commit on both waits with `h`'s slot checkable
+    let mut m = osis_node::Mutation::new();
+    let h2 = x.net.engine(a).new_thing(&mut m, g);
+    m.set(h2, &REG, &Value::Str("two".into())).unwrap();
+    x.net.engine(a).commit(m).unwrap().unwrap();
+    let mut m = osis_node::Mutation::new();
+    m.set(h, &REG, &Value::Str("c".into())).unwrap();
+    m.set(h2, &REG, &Value::Str("c".into())).unwrap();
+    let c = x.net.engine(a).commit(m).unwrap().unwrap();
+    let good = plain(&mut x.net, a, &c);
+    let mut stored = CommitBlob::decode(&good).unwrap();
+    let hdr = stored.header.clone();
+    stored.parts.retain(|p| hdr.aspects[p.ai].tid == h2);
+    x.net.engine(b).ingest(&stored.encode(), Vec::new()).unwrap();
+    assert!(x.net.engine(b).pending().iter().any(|p| p.0 == c));
+    let mut junk = CommitBlob::decode(&good).unwrap();
+    junk.parts.retain(|p| hdr.aspects[p.ai].tid == h);
+    for p in &mut junk.parts {
+        p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![4; 40])]));
+    }
+    let _ = x.net.engine(b).ingest(&junk.encode(), Vec::new());
+    assert!(x.net.engine(b).take_redeliver().is_empty(), "it kept nothing out");
+}
+
+struct Rng(u64);
+impl Rng {
+    fn below(&mut self, n: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % n.max(1)
+    }
+}
+
+/// One seed: `a` and an offline writer `d` make commits a node has none of (things and records, a commit
+/// on two things, role commits on two things, a junk signature's commit by an author it has not heard
+/// of). Their true entries and a relay's junk come in random order, the node restarting, some of its
+/// names lost to a crash. The node ends holding every slot of every commit, as `a` reads, nothing
+/// waiting, and it ingested again no more than the entries it was given.
+fn relay_seed(seed: u64) {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    let mut x = case();
+    let (a, b, g, h1, host, l) = (x.a, x.b, x.g, x.h, x.host, x.l);
+    let holder = x.net.tid(a);
+    let d = x.net.node(3, &[host]);
+    x.net.set_online(d, false);
+    let dt = x.net.tid(d);
+    let mut sources: Vec<(usize, CommitId)> = vec![(a, x.r), (a, x.c)];
+    let mut m = osis_node::Mutation::new();
+    let h2 = x.net.engine(a).new_thing(&mut m, g);
+    m.set(h2, &REG, &Value::Str("two".into())).unwrap();
+    m.set(h1, &REG, &Value::Str("with two".into())).unwrap();
+    sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
+    x.net.advance(10);
+    let mut m = osis_node::Mutation::new();
+    m.set(h1, &REG, &Value::Str("both".into())).unwrap();
+    m.set(h2, &REG, &Value::Str("both".into())).unwrap();
+    sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
+    x.net.advance(10);
+    let mut m = osis_node::Mutation::new();
+    m.op(g, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
+    m.op(h2, &osis_schema::core_types::ROLES, edge_op(holder)).unwrap();
+    sources.push((a, x.net.engine(a).commit_hostile(m).unwrap().unwrap()));
+    x.net.advance(10);
+    let mut m = osis_node::Mutation::new();
+    m.op(h1, &osis_schema::core_types::ROLES, edge_op(dt)).unwrap();
+    sources.push((a, x.net.engine(a).commit(m).unwrap().unwrap()));
+    for id in x.net.engine(a).commit_ids() {
+        let pk = x.net.engine(a).package(&id).unwrap().unwrap();
+        let _ = x.net.engine(d).ingest(&pk.bytes, pk.blobs);
+    }
+    x.net.engine(d).reexamine().unwrap();
+    let held_a = x.net.engine(a).commit_ids();
+    for id in x.net.engine(d).commit_ids().into_iter().filter(|i| !held_a.contains(i)) {
+        sources.push((d, id));
+    }
+    x.net.advance(10);
+    let c_d = x.net.write(d, h1, "by d");
+    sources.push((d, c_d));
+    let want = (x.net.engine(d).get(&h1, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), x.net.engine(a).get(&h2, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap());
+
+    let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
+    let mut entries: Vec<(osis_base::BlobId, osis_proto::Event)> = Vec::new();
+    let mut seal = |body: osis_node::labeling::Body, at: u64| {
+        let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(at)).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+        entries.push((sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }));
+    };
+    let mut slots = Vec::new();
+    let mut at = seed.wrapping_mul(1000);
+    for (from, c) in &sources {
+        for body in x.net.engine(*from).bodies(c).unwrap().into_iter().filter(|y| !y.parts.is_empty()) {
+            slots.extend(body.parts.iter().map(|p| (*c, *p)));
+            at += 1;
+            seal(body.clone(), at);
+            for _ in 0..rng.below(4) {
+                let mut j = CommitBlob::decode(&body.plaintext).unwrap();
+                match rng.below(3) {
+                    // every part
+                    0 => j.parts.iter_mut().for_each(|p| p.delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![rng.below(250) as u8; 40])]))),
+                    // one part
+                    1 => {
+                        let i = rng.below(j.parts.len() as u64) as usize;
+                        j.parts[i].delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![rng.below(250) as u8; 40])]));
+                    }
+                    _ => j.signature = osis_crypto::Signature::from_slice(&[rng.below(250) as u8 + 1; 64]).unwrap(),
+                }
+                at += 1;
+                seal(osis_node::labeling::Body { plaintext: j.encode(), ..body.clone() }, at);
+            }
+        }
+    }
+    if rng.below(2) == 0 {
+        x.net.engine(b).set_syncing(h1, true).unwrap();
+        x.net.engine(b).set_syncing(h2, true).unwrap();
+    }
+    let n = entries.len() as u64;
+    for i in (1..entries.len()).rev() {
+        entries.swap(i, rng.below(i as u64 + 1) as usize);
+    }
+    for (i, (_, e)) in entries.into_iter().enumerate() {
+        push(&mut x.net, b, host, l, e, 500_000 * seed + i as u64);
+        match rng.below(16) {
+            // a record comes and the crash takes what that named
+            0 => {
+                let (from, c) = sources[[0, 2][rng.below(2) as usize]];
+                let pk = x.net.engine(from).package(&c).unwrap().unwrap();
+                let _ = x.net.engine(b).ingest(&pk.bytes, pk.blobs);
+                x.net.engine(b).reexamine().unwrap();
+                x.net.engine(b).take_redeliver();
+                x.net.restart(b, seed + i as u64);
+                x.net.feed(b, Event::Local);
+                x.net.settle(10_000);
+            }
+            1 => {
+                x.net.restart(b, seed + i as u64);
+                x.net.feed(b, Event::Local);
+                x.net.settle(10_000);
+            }
+            _ => {}
+        }
+    }
+    x.net.feed(b, Event::Local);
+    x.net.settle(10_000);
+    let pending = x.net.engine(b).pending();
+    assert!(pending.is_empty(), "seed {seed}: {pending:?}");
+    for (c, p) in &slots {
+        assert!(x.net.engine(b).held_slots(c).unwrap().contains(p), "seed {seed}: {c:?} {p:?}");
+    }
+    let got = (x.net.engine(b).get(&h1, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap(), x.net.engine(b).get(&h2, &osis_base::Ak::new("t:reg.0").unwrap()).unwrap());
+    assert_eq!(got, want, "seed {seed}");
+    assert_eq!(x.net.engine(b).get_typed(&h2, &osis_schema::core_types::ROLES).unwrap().unwrap_or_default().get(&holder).map(|e| e.role), Some(Role::Write), "seed {seed}");
+    assert!(x.net.sync(b).redelivered <= 4 * n, "seed {seed}: {} of {n}", x.net.sync(b).redelivered);
+}
+
+// spec/commits.md §4 (copies), at the real node: every order of true entries and junk, with restarts and
+// lost names, ends where the true entries alone would.
+#[test]
+fn relay_differential_spec_commits_4() {
+    for seed in 1..9 {
+        relay_seed(seed);
+    }
+}
+
+#[test]
+#[ignore]
+fn relay_differential_large_spec_commits_4() {
+    let (from, n) = (std::env::var("OSIS_RELAY_START").ok().and_then(|x| x.parse().ok()).unwrap_or(1u64), std::env::var("OSIS_RELAY_SEEDS").ok().and_then(|x| x.parse().ok()).unwrap_or(150u64));
+    for seed in from..from + n {
+        relay_seed(seed);
+    }
+    println!("relay differential: seeds {from}..{}", from + n);
 }
