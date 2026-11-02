@@ -12,6 +12,7 @@ mod place;
 mod remote;
 
 pub use log::{LoggedChange, Reverted};
+pub(crate) use place::gains;
 pub(crate) use place::{ITEMS, SUBGROUPS};
 pub use remote::{COVER_FACTOR, EphCommit, EphIngest};
 

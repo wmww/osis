@@ -1,0 +1,3 @@
+# A link naming no blob breaks its aspect for every reader
+> Summary: A writer node's commit can hold a `link` that names no blob, or one under another thing's dedup secret. Readers fail that aspect (`label: blob missing`, `verification failed`), other aspects stay fine, sync settles (`Synced`, `wait_synced` returns: nothing waits). As a set element it passes the typed check (`typed.rs`: any atomic position takes a link, even a `tid`), so one element makes a whole `group.0` unreadable by `get`. Thin clients cannot write links (`Osis::replay`); a foreign or local writer still can. Consider refusing a link where the element type can never exceed `CHUNK_THRESHOLD`, and reading `group.0` without materializing.
+> Tags: security, schema, crdt

@@ -612,7 +612,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         false => Kind::Content,
     };
     if let Some(u) = m.undoes {
-        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, &m.undo_keep).map(Some).or_else(|e| match e {
+        return crate::undo::undo_in(tx, u, m.actor.unwrap_or(node), m.ts, &m.undo_keep, m.confined).map(Some).or_else(|e| match e {
             Error::Misuse("nothing to undo") => Ok(None),
             e => Err(e),
         });

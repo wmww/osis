@@ -2,18 +2,19 @@
 //! §3): receivers judge a commit by its author node's rights alone (spec/permissions.md §1; the
 //! header's actor is attribution), and this node's are usually wider than the actor's, so only
 //! this node can hold it to them. `Mutation::confine` asks for that check before a write;
-//! `readable_by`, `actor_role` and `check_revert_as` are the same rule for reads and reverts.
+//! `readable_by`, `actor_role` and `revert_as` are the same rule for reads and reverts.
 
-use super::write::{check_authority_with, check_role_with, role_with, Mutation, Records};
-use super::Engine;
+use super::write::{check_authority, check_authority_with, check_role_with, role_with, Mutation, Records, Resolved};
+use super::{Engine, Tx};
 use crate::error::{Error, Result};
+use crate::ephemeral::{gains, Reverted};
 use crate::events::ChangeId;
 use crate::flows::Done;
 use crate::rotation;
 use osis_base::{Ak, Role, Tid, Ts, Value};
 use osis_crdt::Op;
 use osis_perm::At;
-use osis_schema::core_types::{CREATED, GROUP, is_role_class};
+use osis_schema::core_types::GROUP;
 use osis_schema::AspectKey;
 use std::collections::BTreeSet;
 
@@ -42,8 +43,9 @@ impl Engine {
     /// every creation (write on the owner), every thing it persists or frees. A purge names
     /// history whose right (spec/permissions.md §8) is judged at receivers by this node's rights:
     /// it needs admin, the one role that holds every such right. `group.0` gains only what it may
-    /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: a
-    /// placement carries the thing's data under the group's labels.
+    /// read or this batch creates (`UnknownThing`, as for a tid nobody knows), by whatever op: else
+    /// the answer would tell a hidden thing from an unknown one and its name would reach the
+    /// group's readers (its data would not: spec/sync.md §3 entitlement judges the group's actor).
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;
@@ -65,7 +67,7 @@ impl Engine {
             for op in &a.ops {
                 let added: &[Value] = match &op.op {
                     Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Edit { new: v, .. } => std::slice::from_ref(v),
-                    Op::Insert { items, .. } => items,
+                    Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items,
                     _ => &[],
                 };
                 let mut bad = None;
@@ -82,40 +84,26 @@ impl Engine {
         Ok(())
     }
 
-    /// What reverting change `id` writes: the aspects it touched; for a thing it created, which the
-    /// revert deletes (`undo::unmake_ops`), every held aspect and its placements in every group
-    /// this node may write. Things it saved as drafts are not deleted; they count anyway.
-    fn revert_writes(&mut self, id: ChangeId) -> Result<BTreeSet<(Tid, Ak)>> {
-        let mut out: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
+    /// Reverts change `id` for `actor`, held to its rights: on everything the change touched,
+    /// whether or not the revert still writes it (the answer tells nothing of what it may not
+    /// read), and on every write the revert really makes (`undo_in`, `revert_inner`). An error
+    /// names only what it reads.
+    pub fn revert_as(&mut self, id: ChangeId, actor: Tid) -> Result<Reverted> {
+        let mut touched: BTreeSet<(Tid, Ak)> = self.ephemeral_log().into_iter().filter(|l| l.id == id).flat_map(|l| l.aspects).collect();
         if let ChangeId::Commit(c) = id
             && let Some(h) = self.header(&c)
         {
-            out.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+            touched.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
         }
-        let made: Vec<Tid> = out.iter().filter(|(_, a)| a.as_str() == CREATED.ak()).map(|(t, _)| *t).collect();
-        let group = Ak::new(GROUP.ak()).map_err(|_| Error::Misuse("ak"))?;
-        for t in made {
-            out.extend(self.aspects(&t)?.into_iter().filter(|a| a.as_str() != CREATED.ak() && !is_role_class(a.as_str())).map(|a| (t, a)));
-            let (items, subs) = self.listed_in(&t);
-            out.extend(items.into_iter().chain(subs).filter(|g| *g != t && self.role_on(g) >= Some(Role::Write)).map(|g| (g, group.clone())));
-        }
-        Ok(out)
-    }
-
-    /// Fails `Permission` unless `actor` may make every write reverting change `id` makes; the
-    /// error names only what it may read.
-    pub fn check_revert_as(&mut self, actor: &Tid, id: ChangeId) -> Result<()> {
-        let writes = self.revert_writes(id)?;
+        let shown = touched.iter().map(|(t, _)| *t).find(|t| self.readable_by(&actor, t));
         let ts = self.acting_ts();
         let records: Records<'_> = &|t| self.ephemeral_thing(t).map(|e| &e.record);
-        let shown = writes.iter().map(|(t, _)| *t).find(|t| self.readable_by(actor, t));
-        for (t, ak) in &writes {
-            check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts).map_err(|e| match shown {
-                Some(tid) if !self.readable_by(actor, t) => Error::Permission { tid },
-                _ => e,
-            })?;
-        }
-        Ok(())
+        let check = touched.iter().try_for_each(|(t, ak)| check_authority_with(&self.core, actor, records, t, ak.as_str(), ts));
+        let r = check.and_then(|()| self.revert_inner(id, actor, true));
+        r.map_err(|e| match (e, shown) {
+            (Error::Permission { tid }, Some(s)) if !self.readable_by(&actor, &tid) => Error::Permission { tid: s },
+            (e, _) => e,
+        })
     }
 
     /// The things `actor` holds a current edge on.
@@ -143,6 +131,21 @@ impl Engine {
             Ok((a, done))
         })
     }
+}
+
+/// A confined revert's durable writes, as `undo_in` is about to make them: `actor`'s rights on
+/// each, and `group.0` gains only what it may read (a revert of an unplace puts a thing back).
+pub(crate) fn check_undo(tx: &mut Tx<'_>, actor: Tid, deltas: &[Resolved], ts: Ts) -> Result<()> {
+    for d in deltas {
+        check_authority(tx.core, actor, &Default::default(), &d.tid, d.ak.as_str(), ts)?;
+        if d.ak.as_str() == GROUP.ak() {
+            let gained = gains(tx.state(&d.tid, &d.ak)?, &d.fragment);
+            if let Some(t) = gained.iter().find(|t| !tx.core.may_read(&actor, t)) {
+                return Err(Error::Permission { tid: *t });
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Calls `f` with every tid inside `v`.

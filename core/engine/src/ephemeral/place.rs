@@ -72,6 +72,16 @@ pub(super) fn def_of(f: &Fragment) -> Option<Def> {
     (present || !d.0.is_empty() || !d.1.is_empty()).then_some(d)
 }
 
+/// What `delta` newly lists when joined into a group's or placement's state `before`.
+pub(crate) fn gains(before: Option<&Fragment>, delta: &Fragment) -> BTreeSet<Tid> {
+    let def = |f: &Fragment| def_of(f).unwrap_or_default();
+    let (items, subs) = before.map(def).unwrap_or_default();
+    let mut after = before.cloned().unwrap_or_default();
+    after.join(delta.clone());
+    let (i, s) = def(&after);
+    i.difference(&items).chain(s.difference(&subs)).copied().collect()
+}
+
 /// How a batch's group ops and the placements of the things it persists split.
 pub(super) struct Placed {
     /// Ephemeral things (and new ones) the durable half persists, owner chains included.

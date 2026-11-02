@@ -128,8 +128,9 @@ pub(crate) fn undo_expiring(mut w: Writer, undone: &Undone, state: &Fragment, mu
 }
 
 /// Builds and applies the undo commit of `target` (spec/crdt.md §4.6); of the things it
-/// created, `keep` (drafts it saved) are not deleted.
-pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>) -> Result<CommitId> {
+/// created, `keep` (drafts it saved) are not deleted. `confined`: every write it makes is held to
+/// `actor`'s rights (`Engine::revert_as`).
+pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<Ts>, keep: &BTreeSet<Tid>, confined: bool) -> Result<CommitId> {
     let m = tx.core.ix.commits.get(&target).cloned().ok_or(Error::UnknownCommit(target))?;
     let h = m.header.clone();
     if !matches!(h.kind, Kind::Content) {
@@ -231,6 +232,9 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
     }
     for d in &deltas {
         crate::engine::write::check_authority(tx.core, tx.core.id.tid(), &Default::default(), &d.tid, d.ak.as_str(), ts)?;
+    }
+    if confined {
+        crate::engine::acting::check_undo(tx, actor, &deltas, ts)?;
     }
     let plan = CommitPlan { kind: Kind::Content, ts, actor, form, creates: Default::default(), purge: Vec::new(), undoes: Some(target), frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     build_and_apply(tx, plan, deltas)
@@ -376,7 +380,7 @@ impl Engine {
     pub fn revert(&mut self, target: &CommitId) -> Result<Option<CommitId>> {
         let t = *target;
         let me = self.tid();
-        match self.run(|tx| undo_in(tx, t, me, None, &BTreeSet::new())) {
+        match self.run(|tx| undo_in(tx, t, me, None, &BTreeSet::new(), false)) {
             Err(Error::Misuse("nothing to undo")) => Ok(None),
             r => r.map(Some),
         }

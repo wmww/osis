@@ -6,7 +6,7 @@
 //! only) so undo reports it instead of reaching past it.
 
 use super::{Resolved, Written};
-use crate::engine::write::run_ops;
+use crate::engine::write::{Records, check_authority_with, run_ops};
 use crate::engine::{Engine, Mutation};
 use crate::error::{Error, Result};
 use crate::events::{ChangeId, EphemeralId};
@@ -217,6 +217,12 @@ impl Engine {
     /// commit when there is one. An ephemeral change this session never logged (remote, or from
     /// before a restart) is `Misuse`.
     pub fn revert_change(&mut self, id: ChangeId, actor: Tid) -> Result<Reverted> {
+        self.revert_inner(id, actor, false)
+    }
+
+    /// `revert_change`; `confined`: held to `actor`'s rights on every write it really makes
+    /// (`Engine::revert_as`), before anything applies.
+    pub(crate) fn revert_inner(&mut self, id: ChangeId, actor: Tid, confined: bool) -> Result<Reverted> {
         let at = self.eph.log.find(&id);
         if let ChangeId::Ephemeral(e) = id
             && at.is_none()
@@ -246,10 +252,22 @@ impl Engine {
             None => Vec::new(),
         };
         self.unmake_ephemeral(&del, ts, &mut resolved)?;
+        if confined {
+            let records: Records<'_> = &|t| self.eph.things.get(t).map(|e| &e.record);
+            for r in &resolved {
+                check_authority_with(&self.core, actor, records, &r.tid, r.ak.as_str(), ts)?;
+                if r.ak.as_str() == PLACED.ak()
+                    && let Some(t) = super::gains(self.eph.state(&r.tid, &r.ak), &r.delta).iter().find(|t| !self.readable_by(&actor, t))
+                {
+                    return Err(Error::Permission { tid: *t });
+                }
+            }
+        }
         let commit = match id {
             ChangeId::Commit(c) => {
                 let mut m = Mutation::new();
                 m.act_as(actor).undo(c);
+                m.confined = confined;
                 m.undo_keep = keep;
                 m.ts = Some(ts);
                 self.commit(m)?

@@ -630,6 +630,243 @@ fn revert_of_a_creation_needs_what_the_delete_writes() {
     assert!(!x.n.knows(m));
 }
 
+// spec/wire.md §11.2: however a raw session spells an addition to `group.0` (set add, whole value, insert, edit, a key step), nothing it may not read gets listed
+#[test]
+fn raw_group_ops_list_nothing_hidden() {
+    let x = node();
+    let (a, s, _c) = x.client(Role::Write);
+    let mut r = x.raw(&s);
+    let n = Value::Int;
+    let out = Value::Tid(x.out);
+    let set = Value::Set([out.clone()].into_iter().collect());
+    let list = Value::List(vec![out.clone()]);
+    let whole = Value::Map([(n(0), set.clone()), (n(1), Value::Set(Default::default()))].into_iter().collect());
+    let cases: Vec<(Vec<Value>, Vec<Value>)> = vec![
+        (vec![field(0)], vec![n(4), out.clone()]),
+        (vec![field(1)], vec![n(4), out.clone()]),
+        (vec![field(0)], vec![n(4), set.clone()]),
+        (vec![field(0)], vec![n(0), set.clone()]),
+        (vec![field(0)], vec![n(0), list.clone()]),
+        (vec![field(0)], vec![n(1), set.clone()]),
+        (vec![field(0)], vec![n(2), set.clone()]),
+        (vec![field(0)], vec![n(2), out.clone()]),
+        (vec![field(0)], vec![n(7), n(0), list.clone()]),
+        (vec![field(0)], vec![n(10), Value::Set(Default::default()), set.clone()]),
+        (vec![field(0)], vec![n(10), Value::List(vec![]), list.clone()]),
+        (vec![field(0), key(out.clone())], vec![n(0), Value::Bool(true)]),
+        (vec![field(0), key(out.clone())], vec![n(2), Value::Bool(true)]),
+        (vec![key(out.clone())], vec![n(0), Value::Bool(true)]),
+        (vec![], vec![n(0), whole.clone()]),
+        (vec![], vec![n(1), whole.clone()]),
+        (vec![], vec![n(2), whole.clone()]),
+        (vec![], vec![n(10), Value::Map(Default::default()), whole.clone()]),
+    ];
+    for (i, (path, op)) in cases.into_iter().enumerate() {
+        let o = path_op(&mut r, i as u64 + 1, a, "group.0", x.g, path, op);
+        assert!(matches!(o, Outcome::Err { .. }), "{i}: {o:?}");
+        let g = x.n.get(x.g, ct::GROUP).unwrap().unwrap();
+        assert!(!g.items.contains(&x.out) && !g.subgroups.contains(&x.out), "{i}");
+    }
+    // the ephemeral side and its neighbours place nothing
+    assert!(matches!(path_op(&mut r, 100, a, "placed.0~", x.g, vec![field(0)], vec![n(4), out.clone()]), Outcome::Err { .. }));
+    path_op(&mut r, 101, a, "group.1", x.g, vec![field(0)], vec![n(4), out.clone()]);
+    assert!(!x.n.groups_of(x.out).item_of.contains(&x.g));
+}
+
+/// One raw path op on `t`'s aspect `k`, as a `write` call.
+fn path_op(r: &mut Raw, nonce: u64, actor: Tid, k: &str, t: Tid, path: Vec<Value>, op: Vec<Value>) -> Outcome {
+    let pop = Value::List(vec![Value::List(path), Value::List(op)]);
+    let args = vec![Value::uint(nonce), Value::Tid(actor), Value::List(vec![Value::Str(k.into())]), Value::List(vec![Value::List(vec![Value::Int(3), Value::Tid(t), Value::Int(0), pop])])];
+    r.call_at(nonce, WRITE, args)
+}
+
+fn field(i: i64) -> Value {
+    Value::List(vec![Value::Int(0), Value::Int(i)])
+}
+
+fn key(v: Value) -> Value {
+    Value::List(vec![Value::Int(2), v])
+}
+
+// spec/wire.md §11.2: a client writes no link, anywhere in a write: one of a hidden value (its blob would go under the labels of what it writes), one naming no blob (an element of a set breaks the whole aspect for every reader); nothing is written
+#[test]
+fn a_client_writes_no_link() {
+    let x = node();
+    let name = ak("name.0");
+    let (a, s, c) = x.client(Role::Write);
+    let mut r = x.raw(&s);
+    x.n.write_with(|w| w.at(x.out, name.clone()).set(&Value::Str("q".repeat(1 << 20)))).unwrap();
+    let hidden = x.n.engine(|e| e.get(&x.out, &name)).unwrap().unwrap();
+    assert!(matches!(hidden, Value::Link(_)));
+    let bogus = Value::Link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let n = Value::Int;
+    let in_list = Value::List(vec![bogus.clone()]);
+    let in_map = Value::Map([(bogus.clone(), n(1))].into_iter().collect());
+    let cases: Vec<(&str, Tid, Vec<Value>, Vec<Value>)> = vec![
+        ("name.0", x.t, vec![], vec![n(0), hidden.clone()]),
+        ("t:b.0", x.t, vec![], vec![n(0), bogus.clone()]),
+        ("t:b.0", x.t, vec![], vec![n(1), in_list.clone()]),
+        ("t:b.0", x.t, vec![], vec![n(2), in_map]),
+        ("t:b.0", x.t, vec![], vec![n(10), n(0), in_list.clone()]),
+        ("t:b.0", x.t, vec![], vec![n(7), n(0), in_list]),
+        ("t:b.0", x.t, vec![key(bogus.clone())], vec![n(0), n(1)]),
+        ("group.0", x.g, vec![field(0)], vec![n(4), bogus.clone()]),
+        ("group.0", x.g, vec![field(0)], vec![n(5), bogus.clone()]),
+    ];
+    let before = x.n.commits(&CommitQuery::new()).unwrap().len();
+    for (i, (k, t, path, op)) in cases.into_iter().enumerate() {
+        let o = path_op(&mut r, i as u64 + 1, a, k, t, path, op);
+        assert!(matches!(o, Outcome::Err { code: 8, .. }), "{i}: {o:?}");
+    }
+    assert_eq!(x.n.commits(&CommitQuery::new()).unwrap().len(), before);
+    assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Str("x".into())));
+    assert!(x.n.get(x.g, ct::GROUP).unwrap().is_some());
+    // a large value the ordinary way: the node chunks it
+    c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Str("r".repeat(1 << 20)))).unwrap();
+    assert_eq!(c.get(x.t, name.clone()).unwrap(), Some(Value::Str("r".repeat(1 << 20))));
+}
+
+// spec/wire.md §11.2 (a thing the actor may not read answers every method as a thing the node does not know): the side-by-side beyond `answers`: group scopes, every way a write names it, with what is written; durable, a group, owned elsewhere, ephemeral
+#[test]
+fn hidden_answers_writes_as_unknown() {
+    let x = node();
+    let (_, _, c) = x.client(Role::Write);
+    let me = x.n.me();
+    let ephg = x.n.write_with(|w| { let e = w.create(me)?; w.make_group(e)?; Ok(e) }).unwrap();
+    let eph = x.n.write_with(|w| { let e = w.create(me)?; w.at(e, ak("t:e.0~")).set(&Value::Int(1))?; Ok(e) }).unwrap();
+    assert!(x.n.engine(|e| e.ephemeral_thing(&eph).is_some() && e.ephemeral_thing(&ephg).is_some()));
+    let ghost = Tid::from_bytes([9; 15]);
+    let g = write_answers(&c, &x, ghost);
+    assert!(g.contains("UnknownThing"), "{g}");
+    for (name, t) in [("thing", x.out), ("group", x.h), ("its thing", x.u), ("ephemeral", eph), ("ephemeral group", ephg), ("person", me), ("node", x.n.node())] {
+        assert_eq!(write_answers(&c, &x, t), g, "{name}");
+        assert_eq!(answers(&c, t).replace(&format!("{t:?}"), "T"), answers(&c, ghost).replace(&format!("{ghost:?}"), "T"), "{name}");
+    }
+}
+
+fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
+    let k = ak("name.0");
+    let items = osis_schema::Path(vec![osis_schema::Step::Field(0)]);
+    let read = |r: osis::Result<String>| r.unwrap_or_else(|e| format!("{e:?}"));
+    let write = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>| {
+        let mut w = c.write();
+        match f(&mut w).and_then(|()| w.commit()) {
+            Ok(Some(z)) => format!("written {:?}", z.id),
+            Ok(None) => "nothing".into(),
+            // a refused creation names the new tid, random each time
+            Err(Error::Permission { needs, .. }) => format!("Permission {needs:?}"),
+            Err(e) => format!("{e:?}"),
+        }
+    };
+    let out = [
+        read(c.commits(&CommitQuery::new().scope(Scope::Group(t))).map(|v| format!("{v:?}"))),
+        read(c.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(t, k.clone())]))).map(|v| format!("{v:?}"))),
+        read(c.undo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
+        read(c.redo(&Scope::Group(t)).map(|v| format!("{v:?}"))),
+        read(c.redo(&Scope::Thing(t)).map(|v| format!("{v:?}"))),
+        write(&|w| w.place(t, x.g)),
+        write(&|w| w.unplace(t, x.g)),
+        write(&|w| w.add_subgroup(x.g, t)),
+        write(&|w| w.remove_subgroup(x.g, t)),
+        write(&|w| w.place(x.t, t)),
+        write(&|w| w.unplace(x.t, t)),
+        write(&|w| w.make_group(t)),
+        write(&|w| w.at(x.g, ct::GROUP).path(items.clone()).add(&t)),
+        write(&|w| w.at(t, ct::GROUP).path(items.clone()).add(&x.t)),
+        write(&|w| w.create(t).map(|_| ())),
+        write(&|w| {
+            let m = w.create(x.g)?;
+            w.place(m, t)
+        }),
+        write(&|w| w.at(t, ak("t:sig.0*")).set(&Value::Int(1))),
+        write(&|w| w.at(t, ak("t:e.0~")).set(&Value::Int(1))),
+        read(c.at(t, ak("groups.0")).get_value().map(|v| format!("{v:?}"))),
+        read(c.at(t, ct::GROUP).get().map(|v| format!("{v:?}"))),
+        read(c.at(t, ak("placed.0~")).get_value().map(|v| format!("{v:?}"))),
+    ];
+    out.join("\n").replace(&format!("{t:?}"), "T")
+}
+
+// spec/wire.md §11.2, notes/client-port.md §3: a revert is held to the actor as a write is: reverting an unplace or subgroup removal, durable or ephemeral, the actor's own too, puts back nothing it may not read, refused naming what it reads; what it reads goes back; the node's own revert is unchanged
+#[test]
+fn revert_lists_nothing_hidden() {
+    let x = node();
+    let (_, _, c) = x.client(Role::Write);
+    let refused = |r: osis::Result<osis::Committed>, g: Tid| assert!(matches!(r, Err(Error::Permission { tid, .. }) if tid == g), "{r:?}");
+    let unplaced = |m: Tid| {
+        let mut w = x.n.write();
+        w.unplace(m, x.g).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    let listed = |m: Tid| x.n.groups_of(m).item_of.contains(&x.g);
+    // durable
+    x.n.write_with(|w| w.place(x.out, x.g)).unwrap();
+    let id = unplaced(x.out);
+    refused(c.revert(id), x.g);
+    assert!(!listed(x.out));
+    // a subgroup
+    x.n.write_with(|w| w.add_subgroup(x.g, x.h)).unwrap();
+    let rm = {
+        let mut w = x.n.write();
+        w.remove_subgroup(x.g, x.h).unwrap();
+        w.commit().unwrap().unwrap().id
+    };
+    refused(c.revert(rm), x.g);
+    assert!(!x.n.groups_of(x.h).subgroup_of.contains(&x.g));
+    // ephemeral
+    let me = x.n.me();
+    let e = x.n.write_with(|w| { let e = w.create(me)?; w.place(e, x.g)?; Ok(e) }).unwrap();
+    let eid = unplaced(e);
+    assert!(matches!(eid, osis::ChangeId::Ephemeral(_)));
+    refused(c.revert(eid), x.g);
+    assert!(!listed(e));
+    // its own unplace of a listed name it may not read: gone stays gone
+    x.n.write_with(|w| w.place(x.placed, x.g)).unwrap();
+    c.write_with(|w| w.unplace(x.placed, x.g)).unwrap();
+    assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
+    assert!(!listed(x.placed));
+    // what it reads goes back
+    let mine = c.write_with(|w| { let m = w.create(x.g)?; w.at(m, ak("name.0")).set(&Value::Int(1))?; w.place(m, x.g)?; Ok(m) }).unwrap();
+    let id = unplaced(mine);
+    c.revert(id).unwrap();
+    assert!(listed(mine));
+    // the node may, what the actor may not
+    x.n.write_with(|w| w.place(x.out, x.g)).unwrap();
+    let id = unplaced(x.out);
+    x.n.revert(id).unwrap();
+    assert!(listed(x.out));
+    // a client's draft saved, undone and redone: its own, placed by it
+    let name = ak("name.0");
+    let d = c.write_with(|w| { let m = w.create(x.g)?; w.at(m, ak("t:e.0~")).set(&Value::Int(1))?; w.place(m, x.g)?; Ok(m) }).unwrap();
+    assert!(x.n.engine(|e| e.ephemeral_thing(&d).is_some()));
+    c.write_with(|w| w.at(d, name.clone()).set(&Value::Int(2))).unwrap();
+    assert!(x.n.get(x.g, ct::GROUP).unwrap().unwrap().items.contains(&d));
+    c.undo(&Scope::Thing(d)).unwrap().unwrap();
+    assert_eq!(x.n.get(d, name.clone()).unwrap(), None);
+    c.redo(&Scope::Thing(d)).unwrap().unwrap();
+    assert_eq!(x.n.get(d, name.clone()).unwrap(), Some(Value::Int(2)));
+    assert!(x.n.get(x.g, ct::GROUP).unwrap().unwrap().items.contains(&d));
+}
+
+// notes/client-port.md §8 (remove_client): a removal cut short leaves the entry ended under any clock: no session, nothing revived by the clock or a secret rotation; retrying finishes it
+#[test]
+fn half_removed_client_stays_ended() {
+    let x = node();
+    let (a, s) = x.n.add_client(None).unwrap();
+    x.n.grant(x.g, a, Role::Read, Default::default()).unwrap();
+    let node_thing = x.n.node();
+    let e = x.n.get(node_thing, ct::CLIENTS).unwrap().unwrap().remove(&a).unwrap();
+    x.n.write_with(|w| w.at(node_thing, ct::CLIENTS).path(osis_schema::Path::root()).put(&a, &ct::Client { until: Some(WallMs(0)), ..e })).unwrap();
+    assert!(matches!(x.attach(&s), Err(Error::Unsupported(_))));
+    let s2 = x.n.rotate_client_secret(a).unwrap();
+    assert!(matches!(x.attach(&s2), Err(Error::Unsupported(_))), "a rotation revives nothing");
+    assert!(x.n.roster(x.g).contains_key(&a));
+    assert!(x.n.remove_client(a).unwrap());
+    assert!(!x.n.roster(x.g).contains_key(&a));
+    assert!(x.n.clients().unwrap().is_empty());
+    assert!(!x.n.remove_client(a).unwrap());
+}
+
 // spec/data-model.md §8, spec/wire.md §11.2, notes/client-port.md §3: persisting a thing converts its ephemeral placements in the groups the writer may write: the actor's, not this node's
 #[test]
 fn persisting_converts_only_placements_the_actor_may_write() {

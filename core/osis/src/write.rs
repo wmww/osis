@@ -470,7 +470,15 @@ impl Osis {
                     WriteOp::MakeGroup(g)
                 }
                 2 => WriteOp::Group { g: w.known(o.tid()?)?, member: w.resolve(o.tid()?), items: o.bool()?, add: o.bool()? },
-                3 => WriteOp::Path { tid: w.resolve(o.tid()?), key: key(o.uint()?)?, op: op(o.next()?)? },
+                3 => {
+                    let (tid, k, p) = (w.resolve(o.tid()?), key(o.uint()?)?, op(o.next()?)?);
+                    // a link is the node's: this one would name a blob of something it may not
+                    // read, or none at all, for every reader of the aspect
+                    if self.acting.is_some() && op_links(&p) {
+                        return Err(Error::Invalid("a client writes values, not links".into()));
+                    }
+                    WriteOp::Path { tid, key: k, op: p }
+                }
                 4 => {
                     let (tid, k, at) = (w.resolve(o.tid()?), key(o.uint()?)?, WallMs(o.uint()?));
                     expiring.push(tid);
@@ -499,6 +507,27 @@ impl Osis {
         }
         w.commit()
     }
+}
+
+/// Whether `p` holds a link, in its path or its values.
+fn op_links(p: &PathOp) -> bool {
+    fn link(v: &Value) -> bool {
+        match v {
+            Value::Link(_) => true,
+            Value::List(l) => l.iter().any(link),
+            Value::Set(s) => s.iter().any(link),
+            Value::Map(m) => m.iter().any(|(k, x)| link(k) || link(x)),
+            Value::Enum(_, Some(x)) => link(x),
+            _ => false,
+        }
+    }
+    p.path.iter().any(|s| matches!(s, PathSeg::Key(k) if link(k)))
+        || match &p.op {
+            Op::Set(v) | Op::Replace(v) | Op::Put(v) | Op::Add(v) | Op::Remove(v) | Op::Inc(v) => link(v),
+            Op::Insert { items, .. } | Op::InsertAfter { items, .. } => items.iter().any(link),
+            Op::Edit { base, new } => link(base) || link(new),
+            Op::RemoveAspect | Op::Delete { .. } | Op::DeleteDots { .. } | Op::Move { .. } | Op::Paste { .. } => false,
+        }
 }
 
 /// A batch's engine mutation and the placements its commit acts on.
