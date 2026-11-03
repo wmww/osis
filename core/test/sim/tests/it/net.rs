@@ -59,7 +59,8 @@ fn stranded_reseal() {
 
 // spec/sync.md §5 (one step per rotation), spec/permissions.md §3, §4: sweep seed 0, an admin's
 // `label.0` record of the first step held back the second rotation's step (the settle rule), so
-// both rotations shared one step and the stale device claimed through.
+// both rotations shared one step and the stale device claimed through. Pinned by osis-node
+// `pinned::label_record_delays_no_step_spec_sync_5`.
 #[test]
 #[ignore = "tier 2"]
 fn stranded_reseal_seed_0() {
@@ -93,14 +94,14 @@ fn compaction() {
     ok("compaction", 1);
 }
 
-// spec/sync.md §6, §7: sweep seed 2887, two writers each dropped what the other's carrier snapshot covered, not what their own did, and deleted each other's bodies of one commit (message storm).
+// spec/sync.md §6, §7: sweep seed 2887, two writers each dropped what the other's carrier snapshot covered, not what their own did, and deleted each other's bodies of one commit (message storm). Pinned by osis-node `pinned::crossed_snapshots_drop_alike_spec_sync_7`.
 #[test]
 #[ignore = "tier 2"]
 fn compaction_seed_2887() {
     ok("compaction", 2887);
 }
 
-// spec/sync.md §6, §7: sweep seed 3914, the same churn as seed 2887 (not quiescent after 40 rounds).
+// spec/sync.md §6, §7: sweep seed 3914, the same churn as seed 2887 (not quiescent after 40 rounds); pinned as there.
 #[test]
 #[ignore = "tier 2"]
 fn compaction_seed_3914() {
@@ -142,7 +143,8 @@ fn grant_lost_on_crash() {
 }
 
 // spec/sync.md §6; spec/commits.md §4: sweep seed 23, entries whose bytes were never fetched
-// freeze the writer's must-hold set; the other device waits for deltas for good.
+// freeze the writer's must-hold set; the other device waits for deltas for good. Pinned by
+// osis-node `pinned::entry_whose_fetch_was_lost_is_fetched_again_spec_sync_6`.
 #[test]
 fn two_devices_host_seed_23() {
     ok("two_devices_host", 23);
@@ -166,7 +168,9 @@ fn large_edits() {
 
 // spec/sync.md §6, §7: a relayer whose upload of another node's commit was lost later re-uploaded
 // its own encryption although the author's was present, so the tiebreak deleted the author's after
-// quiescence (fixed: an entry present at the host is the body's entry).
+// quiescence (fixed: an entry present at the host is the body's entry). Pinned by osis-node
+// `pinned::relayer_retry_leaves_the_authors_entry_spec_sync_6` and
+// `pinned::step_uploads_no_second_encryption_of_a_present_role_commit_spec_sync_5`.
 #[test]
 #[ignore = "tier 2"]
 fn stranded_reseal_seed_23() {
@@ -218,19 +222,22 @@ fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9: a run where compaction of others' commits left one stuck at the full host.
+// spec/sync.md §9: a run where compaction of others' commits left one stuck at the full host
+// (own covers; that machinery went with eph-unify).
 #[test]
 fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
 
-// spec/sync.md §9: a run where the full host held `created.0`-only commits nothing covered.
+// spec/sync.md §9: a run where the full host held `created.0`-only commits nothing covered
+// (own covers; that machinery went with eph-unify).
 #[test]
 fn ephemeral_capped_seed_2400045() {
     ok("ephemeral_capped", 2400045);
 }
 
-// spec/sync.md §9: periodic run 8, node 3 held a commit of node 0 with its e:notes.0 part missing.
+// spec/sync.md §9: periodic run 8, node 3 held a commit of node 0 with its e:notes.0 part missing
+// (own covers; that machinery went with eph-unify).
 #[test]
 fn ephemeral_seed_21054() {
     ok("ephemeral", 21054);
