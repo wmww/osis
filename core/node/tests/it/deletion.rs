@@ -1211,11 +1211,10 @@ fn right_learned_late_spec_commits_5() {
     assert!(!net.engine(n).body_not_dropped(&c, &t, &k));
 }
 
-// issues/atomic-wait-snapshot-gap.md: a device that never held a body another's compaction dropped
-// has a frontier stopping at the gap, so its own snapshot covers none of that author's later bodies.
-// Safe, only less compaction: nothing drops and reads stay alike.
+// spec/commits.md §5: a device that never held a body another's compaction dropped has a frontier
+// stopping at the gap; its compaction still drops that author's later bodies, covered by the join.
 #[test]
-fn fresh_snapshot_stops_at_a_gap_spec_commits_5() {
+fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     let mut net = Net::new();
     let host = net.add_host();
     let (a, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
@@ -1239,8 +1238,7 @@ fn fresh_snapshot_stops_at_a_gap_spec_commits_5() {
     let acts = net.sync(f).compact(&t, &k).unwrap();
     let snap = latest_snapshot(&mut net, f, t, &k, acts);
     assert!(net.engine(f).snapshot_right(&snap, &c, &t, &k));
-    assert_eq!(net.engine(f).covered(&snap, &c, &t, &k).unwrap(), Some(false));
     net.run();
-    assert!(net.engine(f).body_not_dropped(&c, &t, &k));
+    assert!(!net.engine(f).body_not_dropped(&c, &t, &k), "dropped as covered");
     assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), net.engine(a).get_typed(&t, &SEQ).unwrap());
 }

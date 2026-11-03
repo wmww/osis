@@ -155,10 +155,6 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(Some(false));
     }
     let held = crate::apply::held_parts(tx, c, cai)?;
-    let other = match held.as_slice() {
-        [Decoded::Snapshot(o)] => Some((o.frontiers.clone(), o.absorbed.clone())),
-        _ => None,
-    };
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
     // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
@@ -198,7 +194,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let [g] = gives.as_slice() else { return Ok(None) };
     if let Some((fr, abs)) = g {
         let h = &m.header;
-        if h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi)) {
+        // a held body is judged by the join below whatever the tables say; its session listed
+        // short of it only says what the writer had applied, and the writer may never get it
+        if !held && h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi)) {
             return Ok(Some(false));
         }
         // the snapshot holds nothing of the body's session or commit (spec/crdt.md §8): its
@@ -212,15 +210,6 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         };
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
-        }
-        // a snapshot covers another only if its frontiers reach the other's for every session
-        // both list: otherwise a holder of it alone does not count as listed what the other's
-        // frontier listed (a session only the other lists left no write in this one, which is
-        // what its holders take an absent session for, spec/crdt.md §8)
-        if let Some((ofr, _)) = &other
-            && ofr.sources().any(|(s, f)| fr.lists(&s) && fr.of(&s) < f)
-        {
-            return Ok(Some(false));
         }
     }
     // a body this node holds no delta of (dropped at its keep bounds or as covered, a purge

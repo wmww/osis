@@ -22,9 +22,10 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(None);
     }
     let parts = crate::apply::held_parts(tx, s, sai)?;
+    let held = crate::apply::held_parts(tx, c, cai)?;
     if let (Some(m), [Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(c), parts.as_slice()) {
         let h = &m.header;
-        if h.aspects.get(cai).is_some_and(|a| super::snapshot::unseen_by(&sn.frontiers, h, c, a.hi)) {
+        if held.is_empty() && h.aspects.get(cai).is_some_and(|a| super::snapshot::unseen_by(&sn.frontiers, h, c, a.hi)) {
             return Ok(Some(false));
         }
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), super::snapshot::by_id(h.kind, h.form)) {
@@ -35,12 +36,6 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
         }
-    }
-    let held = crate::apply::held_parts(tx, c, cai)?;
-    if let ([Decoded::Snapshot(sn)], [Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-        && other.frontiers.sources().any(|(s, f)| sn.frontiers.lists(&s) && sn.frontiers.of(&s) < f)
-    {
-        return Ok(Some(false));
     }
     let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
     let [snap] = snap.as_slice() else { return Ok(None) };

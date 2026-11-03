@@ -321,7 +321,7 @@ fn snapshot_after_release_leaves_part_to_join_spec_crdt_8() {
     assert!(e.pending().is_empty(), "released by c2: {:?}", e.pending());
     let snap = e.snapshot(&t, &map).unwrap().unwrap();
     assert_eq!(e.covered(&snap, &c[0].id, &t, &map).unwrap(), Some(false), "the snapshot lacks the part's write");
-    assert_eq!(e.covered(&snap, &c[1].id, &t, &map).unwrap(), Some(false), "the frontier stops at the gap, as for a commit still pending");
+    assert_eq!(e.covered(&snap, &c[1].id, &t, &map).unwrap(), Some(true), "c2 is in the snapshot, though the frontier stops at the gap");
     lp.deliver(1, &c[0]).unwrap();
     let want = lp.peers[0].engine.get(&t, &map).unwrap();
     assert_eq!(lp.peers[1].engine.get(&t, &map).unwrap(), want, "the part joined");

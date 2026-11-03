@@ -193,7 +193,8 @@ fn coverer_revoked() {
 // compacters, a device coming fresh: kept bodies stay available, reads alike, the labels go quiet.
 #[test]
 fn snapshot_rights() {
-    for seed in 1..=2 {
+    // 26..: a fresh device's snapshot listing a session short of a body it covered by the join
+    for seed in [1, 2, 26, 27, 36, 55, 85, 91, 9021] {
         ok("snapshot_rights", seed);
     }
 }
