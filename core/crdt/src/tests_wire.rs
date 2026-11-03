@@ -2,7 +2,8 @@
 //! every §3.3 rule 7 rejection.
 
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
-use crate::stamp::{CounterRange, Interner, Source};
+use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
+use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
 use crate::testutil::{frag, history_with, mapply, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
@@ -40,7 +41,9 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let st = state.as_ref().unwrap();
         let mut fr = crdt_model::received::Received::default();
         fr.add(&c.w.source, 1, c.w.hi());
-        let mfr: Vec<(MSource, u64)> = fr.frontiers();
+        // a snapshot lists frontiers for the sources of its fragment only (§8)
+        let traced = crate::sources_of(&frag(st), &snap_cx()).unwrap();
+        let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| traced.contains(&source(s))).collect();
         let msnap = crdt_model::wire::encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
         let mut frontiers = Frontiers::default();
         for (s, c) in &mfr {
@@ -49,8 +52,9 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
-        let back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
+        let mut back = decode_snapshot(&sbytes, &snap_cx(), &mut Interner::new(), None).unwrap();
         crate::testutil::check_bound(&sbytes, &back.fragment);
+        back.frontiers = back.frontiers.without_zeros();
         assert_eq!(back, s, "snapshot round trip");
     }
 }
@@ -273,29 +277,41 @@ fn rejects_deep_values_spec_3_3() {
     rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), v])), &wcx(), ErrorClass::BadInput);
 }
 
+// §8: one frontier entry per node or session source of the fragment, in table order, 0 where
+// the writer claims nothing; a source of the fragment without an entry, an entry for a source
+// not in the fragment, or one for a commit source is bad input.
 #[test]
 fn snapshot_frontiers_spec_8() {
-    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::commit(osis_base::CommitId([0; 32])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let session = crate::Session { node: tid(5), nonce: [1; crate::SESSION_NONCE_LEN] };
-    let frontiers = Frontiers { nodes: BTreeMap::from([(tid(5), 7), (tid(2), 3)]), sessions: BTreeMap::from([(session, 4)]) };
-    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: crate::Fragment::default(), frontiers };
+    // a set with elements of a node (first), a session and a commit source
+    let mut elems = BTreeMap::new();
+    for (k, src) in [(1u8, Source::node(tid(5))), (2, Source::session(session)), (3, Source::commit(osis_base::CommitId([7; 32])))] {
+        let dot = Dot::new(src, 4);
+        elems.insert(dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp { ts: ts((u64::from(k) + 1) << 16), dot }, value: Some(Value::Int(i64::from(k))) }) }))) });
+    }
+    let fragment = Fragment::Set(Set { meta: Meta::default(), elems });
+    let frontiers = Frontiers { nodes: BTreeMap::from([(tid(5), 7)]), sessions: BTreeMap::new() };
+    let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers };
     let b = encode_snapshot(&s, &scx, None).unwrap();
-    // own (Src 0) first; the frontier-only sources last in Sources, a node before its session
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
-    assert_eq!(back, s);
+    assert!(back.frontiers.lists(&Source::session(session)) && back.frontiers.of(&Source::session(session)) == 0, "the session is listed with 0");
+    assert_eq!(Snapshot { frontiers: back.frontiers.clone().without_zeros(), ..back.clone() }, s);
     let top = osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap();
     let Value::List(a) = top else { panic!() };
-    assert_eq!(a[1], l(vec![Value::Bytes(tid(5).as_bytes().to_vec()), Value::Bytes(session.to_bytes().to_vec())]));
-    assert_eq!(a[4], l(vec![l(vec![i(0), i(3)]), l(vec![i(1), i(7)]), l(vec![i(2), i(4)])]));
-    // a zero counter is refused
-    let bad = Snapshot { frontiers: Frontiers::of_nodes(BTreeMap::from([(tid(5), 0)])), ..s.clone() };
-    assert!(encode_snapshot(&bad, &scx, None).is_err());
-    // a frontier naming a commit source is bad input
-    let mut a = a.clone();
-    a[1] = l(vec![Value::Bytes(vec![7; 32])]);
-    a[4] = l(vec![l(vec![i(1), i(4)])]);
-    let e = decode_snapshot(&osis_base::encode(&Value::List(a)), &scx, &mut Interner::new(), None).unwrap_err();
-    assert_eq!(e.class(), ErrorClass::BadInput, "{e}");
+    assert_eq!(a[1], l(vec![Value::Bytes(tid(5).as_bytes().to_vec()), Value::Bytes(session.to_bytes().to_vec()), Value::Bytes(vec![7; 32])]));
+    assert_eq!(a[4], l(vec![l(vec![i(1), i(7)]), l(vec![i(2), i(0)])]));
+    let bad = |fr: Value| {
+        let mut a = a.clone();
+        a[4] = fr;
+        decode_snapshot(&osis_base::encode(&Value::List(a)), &scx, &mut Interner::new(), None).unwrap_err().class()
+    };
+    assert_eq!(bad(l(vec![l(vec![i(1), i(7)])])), ErrorClass::BadInput, "the session's entry missing");
+    assert_eq!(bad(l(vec![l(vec![i(1), i(7)]), l(vec![i(2), i(0)]), l(vec![i(3), i(1)])])), ErrorClass::BadInput, "a commit source");
+    assert_eq!(bad(l(vec![l(vec![i(2), i(0)]), l(vec![i(1), i(7)])])), ErrorClass::BadInput, "out of table order");
+    // a frontier for a source outside the fragment is refused at the encoder
+    let extra = Snapshot { frontiers: Frontiers::of_nodes(BTreeMap::from([(tid(5), 7), (tid(2), 3)])), ..s.clone() };
+    assert!(encode_snapshot(&extra, &scx, None).is_err());
 }
 
 /// spec/crdt.md §3.2 (set elements), §3.3 rule 7, §5.5: a set element of a struct type is one
@@ -377,7 +393,9 @@ fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, D
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let srcs = [vec![Value::Bytes(tid(1).as_bytes().to_vec())], more_src].concat();
     let commits = [vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])], more_commits].concat();
-    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), l(commits), f, l(vec![]), l(vec![])]));
+    // one frontier entry per node or session source of the table (§8), claiming nothing
+    let fr: Vec<Value> = srcs.iter().enumerate().filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 15 || b.len() == 31)).map(|(k, _)| l(vec![i(k as i64 + 1), i(0)])).collect();
+    let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), l(commits), f, l(fr), l(vec![])]));
     (b, scx)
 }
 
@@ -548,7 +566,9 @@ fn links_compare_by_bytes_spec_3_3() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx, None).unwrap();
-    assert_eq!(decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap(), snap);
+    let mut back = decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap();
+    back.frontiers = back.frontiers.without_zeros();
+    assert_eq!(back, snap);
 }
 
 /// §2.4, §8: a snapshot commit carries only foreign writes and consumes no counters: a write of

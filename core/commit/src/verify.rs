@@ -4,7 +4,7 @@ use crate::blob::{CommitBlob, Part};
 use crate::header::{Form, Header};
 use crate::Error;
 use osis_base::{CommitId, Tid};
-use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, Source, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
+use osis_crdt::{CounterRange, Delta, DeltaCtx, DeltaKind, Interner, PageSource, Piece, Snapshot, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
 use osis_crypto::{Secret32, VerifyingKey, delta_hash};
 
 /// A verified, decoded delta.
@@ -44,8 +44,8 @@ pub fn delta_ctx(h: &Header, id: &CommitId, ai: usize, interner: &mut Interner) 
 
 /// The writer-side context for encoding a delta of `kind` in a commit (commit form uses a
 /// placeholder own source: own dots are encoded without it).
-pub fn writer_ctx(kind: crate::Kind, ts: osis_base::Ts, author: Tid, lo: u64, hi: u64) -> DeltaCtx {
-    DeltaCtx { ts, own: Source::node(author), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
+pub fn writer_ctx(form: Form, kind: crate::Kind, ts: osis_base::Ts, author: Tid, lo: u64, hi: u64) -> DeltaCtx {
+    DeltaCtx { ts, own: form.own_source(author, CommitId([0; 32])), range: CounterRange { lo, hi }, kind: kind.delta_kind() }
 }
 
 /// Checks one part's delta hash under the dedup secret of its thing and decodes it against the

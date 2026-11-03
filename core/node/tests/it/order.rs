@@ -1271,8 +1271,8 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let approx = a.retention.at_most.rel.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.body_not_dropped(&id, &a.tid, &a.ak);
-            // the node-form counters its writes own (`-`: commit form, a snapshot)
-            let owns = if h.form == osis_commit::Form::Node && a.lo < a.hi { format!("N{:?}:{}-{}", h.author, a.lo, a.hi) } else { "-".into() };
+            // the session counters its writes own (`-`: commit form, a snapshot)
+            let owns = if h.form.counted() && a.lo < a.hi { format!("{:?}:{}-{}", h.form.own_source(h.author, id), a.lo, a.hi) } else { "-".into() };
             let copies = !h.kind.has_own_writes();
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
@@ -3172,7 +3172,7 @@ fn check_new_device(seed: u64, steps: &[Step]) -> Result<(usize, usize), String>
     for (t, a) in full.engine.all_aspects().unwrap() {
         let (want, got) = (full.engine.get(&t, &a).unwrap(), fresh.engine.get(&t, &a).unwrap());
         if want != got && !expired.contains(&(format!("{t:?}"), a.as_str().to_string())) {
-            return Err(format!("{t:?} {}: every body {want:?}, after covered drops {got:?}", a.as_str()));
+            return Err(format!("{t:?} {}: every body {want:?}, after covered drops {got:?}\nevery body:\n{}\nafter covered drops:\n{}", a.as_str(), full.engine.aspect_dump(&t, &a), fresh.engine.aspect_dump(&t, &a)));
         }
     }
     for t in &played.things {

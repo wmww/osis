@@ -1,6 +1,6 @@
 //! Property tests (spec/wire.md §4, spec/sync.md §3).
 
-use crate::tests::{dkey, t, ts};
+use crate::tests::{SESSION, dkey, t, ts};
 use crate::tests::build::{key, rng};
 use crate::tests::verify::{TestSecrets, register_delta};
 use crate::*;
@@ -48,7 +48,7 @@ prop_compose! {
         }
         let mut h = Header {
             version: 1, author, actor, kind: Kind::from_id(kind).unwrap(), ts: ts(wall).max(ts(0)),
-            form: if form { Form::Commit } else { Form::Node },
+            form: if form { Form::Commit } else { SESSION },
             aspects,
             chunks: chunks.into_iter().map(|(b, keys)| ChunkEntry { blob: BlobId(b), keys }).collect(),
             purge: purge.into_iter().map(|(c, tid)| match c {
@@ -83,7 +83,7 @@ prop_compose! {
 /// A content commit over `n` aspects of three things with mixed retention and expiry.
 fn commit(classes: &[(u8, u8, bool)]) -> CommitBlob {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     for (i, (thing, by, exp)) in classes.iter().enumerate() {
         let mut a = AspectWrite::new(t(10 + thing), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, register_delta(t(1), at, 1, &format!("{i}")));
         a.retention = Retention { by: PurgeBy::from_id(u64::from(*by)).unwrap(), ..Default::default() };

@@ -357,13 +357,18 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
         assert!(received.frontier(&source(&c.w.source)) >= c.w.hi() - 1);
     }
     let snap = |f: &Fragment, fr: Frontiers| encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: fr }, &scx(), None).unwrap();
-    let bytes = snap(&a, received.frontiers());
+    // frontiers of the sources left in the state only (§8)
+    let traced = |f: &Fragment, mut fr: Frontiers| {
+        fr.retain(&crate::sources_of(f, &scx()).unwrap());
+        fr
+    };
+    let bytes = snap(&a, traced(&a, received.frontiers()));
     let got = decode_snapshot(&bytes, &scx(), &mut Interner::new(), None).unwrap();
     let mut b = Fragment::default();
     b.join(got.fragment);
     let mut rb = Received::new();
     rb.add_frontiers(&got.frontiers);
-    assert_eq!(rb.frontiers(), received.frontiers());
+    assert_eq!(rb.frontiers(), traced(&a, received.frontiers()));
     assert_eq!(b.read(), a.read());
     // b edits; a edits concurrently; both exchange
     let view = TyView(ty.clone());

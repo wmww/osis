@@ -25,7 +25,7 @@ fn peer(seed: u64) -> Peer {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, events }
+    Peer { engine, clock, backend, root, events, restarts: 0 }
 }
 
 /// `p` restarted over its durable state, as `peer` opens it.
@@ -35,7 +35,7 @@ fn reopened(p: Peer, seed: u64) -> Peer {
     let c: Arc<dyn Clock> = clock.clone();
     let mut engine = Engine::open(Box::new(backend.clone()), Box::new(root.clone()), cfg, c, Box::new(SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    Peer { engine, clock, backend, root, events }
+    Peer { engine, clock, backend, root, events, restarts: 0 }
 }
 
 fn net2(seed: u64) -> LocalPeer {

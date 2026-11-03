@@ -24,6 +24,10 @@ pub(crate) fn dkey(level: u8, b: u8) -> DeleteKey {
     DeleteKey::new(level, &osis_crypto::DeleteSecret::derive(&Secret32::from_bytes([b; 32])).verifying_key())
 }
 
+/// The test author's session nonce (spec/crdt.md §2.1).
+pub(crate) const NONCE: [u8; 16] = [0x5e; 16];
+pub(crate) const SESSION: Form = Form::Session(NONCE);
+
 pub(crate) fn sample_header() -> Header {
     Header {
         version: 1,
@@ -31,7 +35,7 @@ pub(crate) fn sample_header() -> Header {
         actor: t(2),
         kind: Kind::Content,
         ts: ts(1_000_000),
-        form: Form::Node,
+        form: SESSION,
         aspects: vec![AspectEntry {
             tid: t(3),
             ak: Ak::new("app:title.0").unwrap(),

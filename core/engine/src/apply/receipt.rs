@@ -112,26 +112,44 @@ fn part_missing(core: &crate::engine::Core, c: &CommitId) -> bool {
     core.ix.commits.get(c).is_none_or(|m| !m.missing.is_empty())
 }
 
-/// Whether a held snapshot of `(tid, ak)`, any validity, stamped after commit `id` lists its
-/// delta on the aspect as included: its frontier reaches a node-form commit's counters, or its
-/// `Absorbed` names the commit (atomic apply: the missing delta counts as dropped,
-/// spec/commits.md §4; a snapshot never absorbed a commit stamped after it, spec/crdt.md §2.2).
-pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
-    listed_where(core, h, id, ai, |_| true)
-}
-
-/// `listed` by a held snapshot valid here: it gave the delta's writes (spec/permissions.md
-/// §5.2; a suspect flag's body, `retention::suspect`).
-pub(crate) fn listed_by_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
+/// Whether a held snapshot of the delta's aspect, any validity, stamped after its commit and signed
+/// by a possible holder of the role such a snapshot needs (`Held::ever_holders`, `snapshot_role`)
+/// stands in for it (atomic apply: the missing delta counts as dropped, spec/commits.md §4). Its
+/// frontier does not matter (spec/crdt.md §8): one holding nothing of the delta's session or commit
+/// says its writes are dead there or were never received, and a snapshot whose frontier reached the
+/// delta may since have been covered by one that holds nothing of the session, so a frontier short
+/// of the delta cannot mean "wait" either, or nodes that applied the commit under the earlier
+/// snapshot and nodes given the later one alone would differ. A snapshot never absorbed a commit
+/// stamped after it (spec/crdt.md §2.2).
+///
+/// Its signer does: a writer's compaction is honest and its body may be all that is left, so a
+/// writer's counts, fallen or not (its possible holders only grow and validity would flip with
+/// arrival), and a writer can show a commit part by part while a host hides a part; anyone else's
+/// counts for nothing. A valid snapshot's signer is in the set, so no part waits behind one.
+pub(crate) fn listed(core: &crate::engine::Core, h: &Header, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
-    listed_where(core, h, id, ai, |s| crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak))
+    let later = || held_snapshots(core, &a.tid, &a.ak).filter(|x| x.1 > h.ts);
+    let role = crate::engine::write::snapshot_role(a.ak.as_str());
+    let author = |s: &CommitId| core.ix.commits.get(s).map(|m| m.view.author);
+    debug_assert!(
+        {
+            let holders = core.ix.held.ever_holders(&a.tid, role);
+            later().filter(|x| crate::apply::copies::snapshot_valid(core, &x.0, &a.tid, &a.ak)).all(|x| author(&x.0).is_some_and(|by| holders.contains(&by)))
+        },
+        "a valid snapshot's signer is a possible holder"
+    );
+    crate::apply::gates::signed_by_possible(core, &a.tid, role, later().filter_map(|x| author(&x.0)))
 }
 
-fn listed_where(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize, by: impl Fn(CommitId) -> bool) -> bool {
+/// Whether a held snapshot valid here gave the delta's writes (spec/permissions.md §5.2; a
+/// suspect flag's body, `retention::suspect`): its frontier reaches the delta's counters, or
+/// its `Absorbed` names the commit. One holding nothing of the delta's session or commit
+/// repaired nothing.
+pub(crate) fn listed_by_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
     let counted = (h.form.counted() && h.kind.has_own_writes()).then(|| h.form.own_source(h.author, *id));
     held_snapshots(core, &a.tid, &a.ak).any(|(s, ts, fr, abs)| {
-        by(s)
+        crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak)
             && ts > h.ts
             && match &counted {
                 Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),

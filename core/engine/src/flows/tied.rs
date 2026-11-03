@@ -10,7 +10,7 @@ use super::{Demotion, Done, PreSync, ak, now_ts};
 use crate::engine::Engine;
 use crate::error::Result;
 use osis_base::{Role, Tid, Value};
-use osis_crdt::{Held, Source, SourceKind, Stamp};
+use osis_crdt::{Held, Session, Source, SourceKind, Stamp};
 use osis_perm::{Tie, TieSource};
 use osis_schema::AspectKey;
 use osis_schema::core_types as ct;
@@ -29,6 +29,7 @@ pub fn tie_ct(t: Tie) -> ct::Tie {
     let source = match t.src {
         TieSource::Node(n) => ct::Source::Node(n),
         TieSource::Commit(c) => ct::Source::Commit(c),
+        TieSource::Session(n, nonce) => ct::Source::Session(Session { node: n, nonce }.to_bytes()),
     };
     ct::Tie { ts: t.ts, source, ctr: t.ctr, subgroup: t.subgroup }
 }
@@ -37,6 +38,10 @@ pub fn tie_perm(t: ct::Tie) -> Tie {
     let src = match t.source {
         ct::Source::Node(n) => TieSource::Node(n),
         ct::Source::Commit(c) => TieSource::Commit(c),
+        ct::Source::Session(b) => {
+            let s = Session::from_bytes(&b);
+            TieSource::Session(s.node, s.nonce)
+        }
     };
     Tie { ts: t.ts, src, ctr: t.ctr, subgroup: t.subgroup }
 }
@@ -45,6 +50,7 @@ fn stamp_of(t: &Tie) -> Stamp {
     let src = match t.src {
         TieSource::Node(n) => Source::node(n),
         TieSource::Commit(c) => Source::commit(c),
+        TieSource::Session(n, nonce) => Source::session(Session { node: n, nonce }),
     };
     Stamp::new(t.ts, src, t.ctr)
 }
@@ -63,7 +69,8 @@ impl Engine {
         let src = match s.dot.src.kind() {
             SourceKind::Node(n) => TieSource::Node(*n),
             SourceKind::Commit(c) => TieSource::Commit(*c),
-            SourceKind::Derived(_) | SourceKind::Session(_) => return Ok(None),
+            SourceKind::Session(x) => TieSource::Session(x.node, x.nonce),
+            SourceKind::Derived(_) => return Ok(None),
         };
         Ok(Some(Tie { ts: s.ts, src, ctr: s.dot.ctr, subgroup }))
     }

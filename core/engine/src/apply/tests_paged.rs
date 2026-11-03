@@ -511,36 +511,41 @@ fn forge_snapshot(w: &mut World, by: usize, ak: &Ak, ts: osis_base::Ts, f: osis_
     let snap = osis_crdt::Snapshot { absorbed: Default::default(), nonce: [7; 16], fragment: f, frontiers: Default::default() };
     let bytes = {
         let mut sink = Mutating { inner: osis_label::BlobWriter::new(&framing, &mut blobs, &mut rng), n: 0, mutate };
-        osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap()
+        osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), Some(&mut sink)).unwrap()
     };
     let mut aw = AspectWrite::new(t, ak.clone(), 0, 0, bytes);
     aw.retention = retention;
     aw.chunks = blobs.0.keys().copied().collect();
-    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     cb.blind = Some(blind);
     let c = cb.build(&w.lp.peers[by].engine.identity().keys().signing, &sec, &mut osis_commit::MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit;
     Package { id: c.id(), bytes: c.encode(), blobs: blobs.0.into_iter().collect() }
 }
 
-/// A big map of `n` entries by a made-up node `src` (made-up sources sort by their bytes, so a
-/// write by source 1 lands on the first page, by 0xfe on the last).
+/// A session of a made-up node `src` (made-up sources sort by their bytes among the peers'
+/// sessions, so a write by source 1 lands on the first page, by 0xfe on the last).
+fn made_up(src: u8) -> osis_crdt::Source {
+    osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([src; 15]), nonce: [src; osis_crdt::SESSION_NONCE_LEN] })
+}
+
+/// A big map of `n` entries by made-up source `src`.
 fn forged_map(ts: osis_base::Ts, n: u64, src: u8) -> osis_crdt::Fragment {
-    let mut w = osis_crdt::Writer::new(ts, osis_crdt::Source::node(Tid::from_bytes([src; 15])), 1 << 40);
+    let mut w = osis_crdt::Writer::new(ts, made_up(src), 1 << 40);
     let v = Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, 0))).collect());
     osis_crdt::create(&mut w, &osis_crdt::AnyView, &v).unwrap()
 }
 
 /// One entry `k` by a made-up node `src` stamped `ts`.
 fn one_entry(ts: osis_base::Ts, src: u8, k: i64) -> osis_crdt::Fragment {
-    let mut w = osis_crdt::Writer::new(ts, osis_crdt::Source::node(Tid::from_bytes([src; 15])), 1 << 41);
+    let mut w = osis_crdt::Writer::new(ts, made_up(src), 1 << 41);
     osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(Value::Int(k), Value::Str("late".into()))]))).unwrap()
 }
 
 /// A keyed removal of a made-up entry (malformed outside role-class aspects).
 fn keyed_removal(ts: osis_base::Ts, src: u8) -> osis_crdt::Fragment {
-    let w = osis_crdt::Writer::new(ts, osis_crdt::Source::node(Tid::from_bytes([src; 15])), 1 << 42).keyed_removals(true);
-    osis_crdt::reset_entries(&w, &[(osis_crdt::Dot::new(osis_crdt::Source::node(Tid::from_bytes([src; 15])), 5), Value::Int(-1))])
+    let w = osis_crdt::Writer::new(ts, made_up(src), 1 << 42).keyed_removals(true);
+    osis_crdt::reset_entries(&w, &[(osis_crdt::Dot::new(made_up(src), 5), Value::Int(-1))])
 }
 
 /// Changes the first register fragment (`[0, ...]`) of a page into an unknown encoding.
@@ -638,7 +643,7 @@ fn paged_snapshot_misstating_held_matches_whole_spec_perm_5_2() {
             w.lp.deliver(0, &pk[0]).unwrap();
             let h = osis_commit::CommitBlob::decode(&pk[0].bytes).unwrap().header;
             // node 1's writes again, the last `changed` values otherwise
-            let mut wr = osis_crdt::Writer::new(h.ts, osis_crdt::Source::node(b), h.aspects[0].lo);
+            let mut wr = osis_crdt::Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), h.aspects[0].lo);
             let copy = Value::Map((0..n).map(|i| (Value::Int(i as i64), s(i, if i + changed >= n { 1 } else { 0 }))).collect());
             let mut f = osis_crdt::create(&mut wr, &osis_crdt::AnyView, &copy).unwrap();
             for _ in 0..3 {

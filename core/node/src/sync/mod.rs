@@ -614,9 +614,6 @@ impl SyncEngine {
         let mut rng = rng;
         rng.fill_bytes(&mut state.feed.log_id);
         let started = clock.now_wall_ms().0;
-        // until `counters_step` knows which labels passed: every labeled group
-        let labeled = engine.labeled_groups().into_iter().collect();
-        engine.set_counters_unsure(labeled);
         Ok(SyncEngine {
             engine,
             events,
@@ -925,7 +922,6 @@ impl SyncEngine {
         self.send_inbox()?;
         self.send_outbox(out)?;
         self.eph_step(out)?;
-        self.counters_step();
         self.run_dirty(out)?;
         self.notify_served(out)?;
         Ok(())

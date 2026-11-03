@@ -72,7 +72,7 @@ fn wake_listed(core: &mut Core, h: &Header, held: &BTreeSet<usize>) {
     }
 }
 
-/// Adds a commit to the per-aspect and node-form range indexes.
+/// Adds a commit to the per-aspect and session range indexes.
 pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::View) {
     for a in &h.aspects {
         core.ix.by_aspect.insert((a.tid, a.ak.clone()), (h.ts, *id));
@@ -100,8 +100,8 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
     }
 }
 
-/// Commits by the same node (session) whose node-form (session-form) ranges on one aspect
-/// overlap this one's (spec/commits.md §4: all are invalid).
+/// Commits of the same session whose counter ranges on one aspect overlap this one's
+/// (spec/commits.md §4: all are invalid).
 fn overlaps(core: &Core, id: &CommitId, h: &Header) -> BTreeSet<CommitId> {
     let mut out = BTreeSet::new();
     if !h.form.counted() || !h.kind.has_own_writes() {
@@ -314,11 +314,6 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         return if perm { Ok(()) } else { arrived_invalid(tx, &tid, &ak, j) };
     }
     if let Some(fr) = gives {
-        // a valid snapshot's frontier for this node: counters of own commits this store lost
-        // (restored from a backup) whose bodies are gone (spec/crdt.md §2.1)
-        if v && let Some(ctr) = fr.0.nodes.get(&tx.core.id.tid()) {
-            tx.txn.raise_counter(&tid, &ak, ctr.saturating_add(1))?;
-        }
         note_snapshot(tx.core, &tid, &ak, h.ts, id, fr);
     }
     // a valid snapshot carrying writes of deltas invalid here makes them count again, and
@@ -623,7 +618,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         tx.core.update_timelines();
     }
 
-    // overlapping node-form counters void both commits
+    // overlapping session-form counters void both commits
     let ov = overlaps(tx.core, &id, &h);
     if !ov.is_empty() {
         held_changed = true;
@@ -764,7 +759,7 @@ fn unmerged(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
 }
 
 /// Whether a dot of `src` with a counter in `lo..hi` may have a received owner (a cheap filter
-/// before `strip_copies`: a node-form range overlapping a held one, any commit source).
+/// before `strip_copies`: a session range overlapping a held one, any commit source).
 pub(super) fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
     match src.kind() {
         osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.ix.ranges.get(&(*tid, ak.clone(), src.clone())).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),

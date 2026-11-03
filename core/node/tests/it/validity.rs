@@ -157,8 +157,8 @@ impl osis_commit::Secrets for Dedup {
 // spec/permissions.md §5.2 (dot reuse)
 #[test]
 fn overlapping_counters_spec_commits_4() {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let (mut lp, d, b, _) = setup(45);
     let other = ak("x:other.0");
     let mut m = Mutation::new();
@@ -166,14 +166,14 @@ fn overlapping_counters_spec_commits_4() {
     let first = lp.peers[1].commit(m).unwrap().unwrap();
     let h = lp.peers[1].engine.header(&first).unwrap();
     let (lo, hi) = (h.aspects[0].lo, h.aspects[0].hi);
-    // Bob's key signs a second commit reusing those counters
+    // Bob's key signs a second commit of the same session reusing those counters
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
-    let mut w = Writer::new(ts, Source::node(b), lo);
+    let mut w = Writer::new(ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &AnyView, &s("second")).unwrap();
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Content, ts, b, lo, hi), None).unwrap();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(h.form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, other.clone(), lo, hi, bytes);
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, h.form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     let built = cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
@@ -183,19 +183,20 @@ fn overlapping_counters_spec_commits_4() {
     assert_eq!(lp.peers[0].engine.get(&d, &other).unwrap(), None);
 }
 
-/// Bob's key signs a node-form commit on `d`'s `ak` with counters from `lo` (any he used
-/// before included), setting the register to `v` at `ts`.
+/// Bob's key signs a commit of his engine's session on `d`'s `ak` with counters from `lo`
+/// (any he used before included), setting the register to `v` at `ts`.
 fn forge_reg(lp: &mut LocalPeer, d: Tid, ak: &osis_base::Ak, lo: u64, ts: osis_base::Ts, v: &str) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let b = lp.peers[1].engine.tid();
-    let mut w = Writer::new(ts, Source::node(b), lo);
+    let form = crate::common::session_of(lp, 1);
+    let mut w = Writer::new(ts, form.own_source(b, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &AnyView, &s(v)).unwrap();
     let hi = lo + 1;
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Content, ts, b, lo, hi), None).unwrap();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, b, lo, hi), None).unwrap();
     let mut aw = AspectWrite::new(d, ak.clone(), lo, hi, bytes);
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
-    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, b, b, form);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[1].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
@@ -349,7 +350,7 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
 #[test]
 fn reused_counters_never_void_a_grant_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Source, Writer, encode_delta};
+    use osis_crdt::{AnyView, Batch, Delta, Op, PathOp, PathSeg, Writer, encode_delta};
     let mut lp = net(3, 46);
     lp.sync_all().unwrap();
     let d = new_thing(&mut lp, 0);
@@ -360,22 +361,23 @@ fn reused_counters_never_void_a_grant_spec_commits_4() {
     let h = lp.peers[0].engine.header(&g).unwrap();
     assert_eq!(h.form, Form::Commit, "role commits use commit form");
     let holders = h.aspects.iter().find(|x| x.tid == d && x.ak.as_str() == "roles.0").unwrap();
-    // Alice's key signs a node-form commit on d's roles.0 with the grant's range
+    // Alice's key signs a session-form commit on d's roles.0 with the grant's range
     let ts = osis_base::Ts::make(WallMs(h.ts.wall_ms().0 + 5), 0).unwrap();
     let empty = osis_crdt::Fragment::default();
-    let mut batch = Batch::new(&empty, Writer::new(ts, Source::node(a), holders.lo));
+    let form = crate::common::session_of(&lp, 0);
+    let mut batch = Batch::new(&empty, Writer::new(ts, form.own_source(a, osis_base::CommitId([0; 32])), holders.lo));
     batch.apply(&PathOp { path: vec![PathSeg::Key(Value::Tid(c))], op: Op::Set(edge(Role::Read).to_value()) }, &AnyView).unwrap();
     let (f, range) = batch.finish().unwrap();
     assert!(range.lo < holders.hi && holders.lo < range.hi, "the ranges overlap");
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
-    let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, Form::Node);
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Role, ts, a, range.lo, range.hi), None).unwrap();
+    let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, form);
     let mut aw = AspectWrite::new(d, holders.ak.clone(), range.lo, range.hi, bytes);
     aw.retention = osis_commit::retention::ROLE_RETENTION;
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&d, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    // a node-form role commit is refused when built and when received (spec/commits.md §4)
+    // a session-form role commit is refused when built and when received (spec/commits.md §4)
     let e = cb.build(&lp.peers[0].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap_err();
-    assert!(e.to_string().contains("node-form role commit"), "{e}");
+    assert!(e.to_string().contains("session form outside a content commit"), "{e}");
     assert_eq!(lp.peers[1].engine.role_on(&d), Some(Role::Write));
 }
 
@@ -393,8 +395,7 @@ fn malformed_frontier_is_bad_input_spec_wire_4() {
     let view = osis_schema::core_schema().view("roles.0").unwrap();
     batch.apply(&PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(b))], op: Op::Set(edge(Role::Read).to_value()) }, &view).unwrap();
     let (f, range) = batch.finish().unwrap();
-    let mut cx = writer_ctx(Kind::Role, ts, a, range.lo, range.hi);
-    cx.own = Form::Commit.own_source(a, osis_base::CommitId([0; 32]));
+    let cx = writer_ctx(Form::Commit, Kind::Role, ts, a, range.lo, range.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, a, a, Form::Commit);
     let mut aw = AspectWrite::new(d, ak("roles.0"), range.lo, range.hi, bytes);
@@ -484,12 +485,10 @@ fn forge_acting(lp: &mut LocalPeer, d: Tid, actor: Tid, v: &str) -> Vec<u8> {
     use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
     let b = lp.peers[1].engine.tid();
     let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let own = Source::commit(osis_base::CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), 1);
+    let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
     let f = create(&mut w, &AnyView, &s(v)).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Content, ts, b, r.lo, r.hi);
-    cx.own = own;
+    let cx = writer_ctx(Form::Commit, Kind::Content, ts, b, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(d, ak("t:reg.0"), r.lo, r.hi, bytes);
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
@@ -558,15 +557,13 @@ fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &V
     let author = lp.peers[by].engine.tid();
     let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
     // commit form (spec/commits.md §3): own dots name the commit, a placeholder until built
-    let own = Source::commit(osis_base::CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), lo);
+    let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), lo);
     let f = match osis_schema::core_schema().view(ak.as_str()) {
         Some(view) => create(&mut w, &view, v).unwrap(),
         None => create(&mut w, &osis_crdt::AnyView, v).unwrap(),
     };
     let r = w.range();
-    let mut cx = writer_ctx(kind, ts, author, r.lo, r.hi);
-    cx.own = own;
+    let cx = writer_ctx(Form::Commit, kind, ts, author, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
@@ -770,10 +767,23 @@ fn snapshot_vouches_for_its_writes_spec_perm_5_2() {
     }
 }
 
-/// One map entry `k: v` written by `node` at `ts` with counters from `lo`.
-fn entry_by(node: Tid, ts: osis_base::Ts, lo: u64, k: &str, v: &str) -> osis_crdt::Fragment {
-    let mut w = osis_crdt::Writer::new(ts, osis_crdt::Source::node(node), lo);
+/// One map entry `k: v` written under `src` at `ts` with counters from `lo`.
+fn entry_by(src: osis_crdt::Source, ts: osis_base::Ts, lo: u64, k: &str, v: &str) -> osis_crdt::Fragment {
+    let mut w = osis_crdt::Writer::new(ts, src, lo);
     osis_crdt::create(&mut w, &osis_crdt::AnyView, &Value::Map(BTreeMap::from([(s(k), s(v))]))).unwrap()
+}
+
+/// The own source of held commit `c` at peer `i` (a session-form commit's session).
+fn source_of(lp: &LocalPeer, i: usize, c: &osis_base::CommitId) -> osis_crdt::Source {
+    let h = lp.peers[i].engine.header(c).unwrap();
+    h.form.own_source(h.author, *c)
+}
+
+/// Frontiers of one session source.
+fn frontier_of(src: &osis_crdt::Source, ctr: u64) -> osis_crdt::Frontiers {
+    let mut fr = osis_crdt::Frontiers::default();
+    assert!(fr.insert(src, ctr));
+    fr
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, and its copy
@@ -782,13 +792,14 @@ fn entry_by(node: Tid, ts: osis_base::Ts, lo: u64, k: &str, v: &str) -> osis_crd
 // carries; one copying a dot of Bob's held commit otherwise replaces Bob's entry.
 #[test]
 fn writer_snapshot_vouches_spec_perm_5_2() {
-    let (mut lp, d, b, _) = setup(53);
+    let (mut lp, d, _, _) = setup(53);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
     m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
     let real = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     let lo = lp.peers[1].engine.header(&real).unwrap().aspects[0].lo;
+    let bs = source_of(&lp, 1, &real);
     assert!(lo >= 1, "room for a forged counter below Bob's");
     let entries = |lp: &mut LocalPeer| match lp.peers[0].engine.get(&d, &m_ak).unwrap() {
         Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
@@ -799,14 +810,14 @@ fn writer_snapshot_vouches_spec_perm_5_2() {
     let old = osis_base::Ts::make(WallMs(T0.0 - DAY), 0).unwrap();
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     // a carried ts for a dot of a held commit other than its own: the held delta gives that dot
-    let clash = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(b, old, lo, "f0", "x"));
+    let clash = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(bs.clone(), old, lo, "f0", "x"));
     lp.peers[0].engine.ingest(&clash, Vec::new()).unwrap();
     assert_eq!(entries(&mut lp), BTreeSet::from([s("f0")]), "a copy of a held write at another ts");
-    let mut f = entry_by(b, old, 1 << 39, "f1", "x");
-    f.join(entry_by(b, old, 1 << 40, "f2", "y"));
+    let mut f = entry_by(bs.clone(), old, 1 << 39, "f1", "x");
+    f.join(entry_by(bs.clone(), old, 1 << 40, "f2", "y"));
     // and a valid write of Alice's (the snapshot applies)
     let a = lp.peers[0].engine.tid();
-    f.join(entry_by(a, now, 1 << 42, "c", "alice"));
+    f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 42, "c", "alice"));
     let snap = forge_snapshot(&mut lp, 2, d, &m_ak, now, f);
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
     let want = BTreeSet::from([s("f0"), s("c"), s("f1"), s("f2")]);
@@ -825,9 +836,10 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let later = osis_base::Ts::make(WallMs(lp.peers[2].engine.now().0 + 1_000), 0).unwrap();
     let a = lp.peers[0].engine.tid();
-    let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, later, 1 << 42, "c", "x"));
+    let asrc = crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32]));
+    let bad = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(asrc.clone(), later, 1 << 42, "c", "x"));
     assert_eq!(lp.peers[0].engine.ingest(&bad, Vec::new()).unwrap_err().class(), osis_base::ErrorClass::BadInput);
-    let ok = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "x"));
+    let ok = forge_snapshot(&mut lp, 2, d, &m_ak, now, entry_by(asrc, now, 1 << 42, "c", "x"));
     lp.peers[0].engine.ingest(&ok, Vec::new()).unwrap();
 }
 
@@ -837,17 +849,20 @@ fn snapshot_future_stamp_refused_spec_crdt_8() {
 // snapshot's own carried write too.
 #[test]
 fn inflated_frontier_keeps_write_in_move_spec_perm_7() {
-    let (mut lp, d, b, _) = setup(55);
+    let (mut lp, d, _, _) = setup(55);
     let m_ak = ak("x:m.0");
     let mut m = Mutation::new();
     m.set(d, &m_ak, &Value::Map(BTreeMap::from([(s("k"), s("bob"))]))).unwrap();
-    lp.peers[1].commit(m).unwrap().unwrap();
+    let bobs = lp.peers[1].commit(m).unwrap().unwrap();
     sync(&mut lp, 1, 0);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
     let a = lp.peers[0].engine.tid();
-    let fr = osis_crdt::Frontiers::of_nodes(BTreeMap::from([(b, 1 << 40)]));
-    let snap = forge_snapshot_with(&mut lp, 2, d, &m_ak, now, entry_by(a, now, 1 << 42, "c", "alice"), fr);
+    // Bob's entry as held (his session occurs), his frontier inflated, and an entry of Alice's
+    let bs = source_of(&lp, 1, &bobs);
+    let mut f = lp.peers[1].engine.state(&d, &m_ak).unwrap().unwrap();
+    f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 42, "c", "alice"));
+    let snap = forge_snapshot_with(&mut lp, 2, d, &m_ak, now, f, frontier_of(&bs, 1 << 40));
     lp.peers[0].engine.ingest(&snap, Vec::new()).unwrap();
     let want = Some(Value::Map(BTreeMap::from([(s("c"), s("alice")), (s("k"), s("bob"))])));
     assert_eq!(lp.peers[0].engine.get(&d, &m_ak).unwrap(), want);
@@ -1023,7 +1038,7 @@ fn misstated_copy_keeps_no_other_record_spec_crdt_4_6() {
     put_at(&mut lp, 2, d, &["late", "b"], s("2"));
     lp.advance(1);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
-    let snap = forge_snapshot(&mut lp, 2, d, &ak("x:m.0"), now, entry_by(b, h.ts, lo, "evil", "x"));
+    let snap = forge_snapshot(&mut lp, 2, d, &ak("x:m.0"), now, entry_by(h.form.own_source(b, osis_base::CommitId([0; 32])), h.ts, lo, "evil", "x"));
     lp.peers[2].engine.ingest(&snap, Vec::new()).unwrap();
     let keys = |lp: &mut LocalPeer, i: usize| match lp.peers[i].engine.get(&d, &ak("x:m.0")).unwrap() {
         Some(Value::Map(m)) => m.into_keys().collect::<BTreeSet<_>>(),
@@ -1602,7 +1617,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
 // earlier value where it is not.
 #[test]
 fn forged_copy_governs_held_original_alike_spec_perm_5_2() {
-    use osis_crdt::{Source, Writer, create};
+    use osis_crdt::{Writer, create};
     let (mut lp, d, b, c) = setup(0x5fc0);
     let base = packages(&mut lp, 0);
     lp.advance(1_000);
@@ -1614,7 +1629,7 @@ fn forged_copy_governs_held_original_alike_spec_perm_5_2() {
     let h = lp.peers[1].engine.header(&real).unwrap();
     let reg = ak("t:reg.0");
     let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
-    let mut w = Writer::new(h.ts, Source::node(b), lo);
+    let mut w = Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[2].engine.now(), 0).unwrap();
@@ -1677,7 +1692,7 @@ fn forged_copy_governs_held_original_alike_spec_perm_5_2() {
 // the holder, as where Bob's commit is not held) and no misstatement is reported.
 #[test]
 fn valueless_copy_governs_unreported_spec_perm_5_2() {
-    use osis_crdt::{Source, Writer, create};
+    use osis_crdt::{Writer, create};
     let (mut lp, d, b, _) = setup(0x5fe0);
     lp.advance(1_000);
     let mut m = Mutation::new();
@@ -1687,7 +1702,7 @@ fn valueless_copy_governs_unreported_spec_perm_5_2() {
     let h = lp.peers[1].engine.header(&real).unwrap();
     let reg = ak("t:reg.0");
     let lo = h.aspects.iter().find(|x| x.tid == d && x.ak == reg).unwrap().lo;
-    let mut w = Writer::new(h.ts, Source::node(b), lo);
+    let mut w = Writer::new(h.ts, h.form.own_source(b, osis_base::CommitId([0; 32])), lo);
     let mut f = create(&mut w, &osis_crdt::AnyView, &s("real")).unwrap();
     f.strip(&|_| true);
     lp.advance(1_000);
@@ -1707,7 +1722,7 @@ fn valueless_copy_governs_unreported_spec_perm_5_2() {
 // after that write's commit (peer 2) or before it (peer 3); a restart keeps it so.
 #[test]
 fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
-    use osis_crdt::{Source, Writer, create};
+    use osis_crdt::{Writer, create};
     let mut lp = net(4, 0x5f01);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -1724,8 +1739,8 @@ fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {
     let lo = h.aspects.iter().find(|x| x.tid == t && x.ak.as_str() == "t:reg.0").unwrap().lo;
     let reg = ak("t:reg.0");
     let before = states(&mut lp.peers[2].engine, &[t]);
-    // the reader re-uses (a, lo) and its ts
-    let mut w = Writer::new(h.ts, Source::node(a), lo);
+    // the reader re-uses (a's session, lo) and its ts
+    let mut w = Writer::new(h.ts, h.form.own_source(a, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
@@ -1762,7 +1777,7 @@ fn snapshot_forging_entry_key_changes_nothing_spec_perm_5_2() {
     let before = states(&mut lp.peers[2].engine, &[t]);
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, lo, "evil", "x"));
+    let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, entry_by(h.form.own_source(a, osis_base::CommitId([0; 32])), h.ts, lo, "evil", "x"));
     let got = lp.peers[2].engine.ingest(&forged, Vec::new());
     assert_eq!(states(&mut lp.peers[2].engine, &[t]), before, "after c: {got:?}");
     let got = lp.peers[3].engine.ingest(&forged, Vec::new());
@@ -1853,7 +1868,8 @@ fn snapshot_copy_of_a_delta_never_held_counts_spec_perm_5_2() {
     let lo = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap().lo;
     let hi = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap().hi;
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, lo, "k", "zzz forged"), osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, hi - 1)])));
+    let asrc = h.form.own_source(a, osis_base::CommitId([0; 32]));
+    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(asrc.clone(), h.ts, lo, "k", "zzz forged"), frontier_of(&asrc, hi - 1));
     let feed = |lp: &mut LocalPeer, seed: u64, seq: &[&[u8]]| {
         let now = lp.peers[0].engine.now();
         lp.peers.push(osis_node::local_peer::Peer::new(seed, now).unwrap());
@@ -1909,7 +1925,8 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
     let x = h.aspects.iter().find(|x| x.tid == t && x.ak == m_ak).unwrap();
     let now = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     sync(&mut lp, 0, 1);
-    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(a, h.ts, x.lo, "k", "zzz forged"), osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, x.hi - 1)])));
+    let asrc = h.form.own_source(a, osis_base::CommitId([0; 32]));
+    let forged = forge_snapshot_with(&mut lp, 1, t, &m_ak, now, entry_by(asrc.clone(), h.ts, x.lo, "k", "zzz forged"), frontier_of(&asrc, x.hi - 1));
     let f = match lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
         other => panic!("{other:?}"),
@@ -1925,7 +1942,7 @@ fn forged_snapshot_covers_nothing_spec_commits_5() {
 // used, stamped now, changes nothing: its author could not write the aspect.
 #[test]
 fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
-    use osis_crdt::{Source, Writer, create};
+    use osis_crdt::{Writer, create};
     let mut lp = net(3, 0x5f71);
     lp.sync_all().unwrap();
     let t = new_thing(&mut lp, 0);
@@ -1940,7 +1957,7 @@ fn snapshot_forging_unused_dot_changes_nothing_spec_perm_5_2() {
     let reg = ak("t:reg.0");
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let mut w = Writer::new(now, Source::node(a), 1 << 40);
+    let mut w = Writer::new(now, crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), 1 << 40);
     let f = create(&mut w, &osis_crdt::AnyView, &s("zzz forged")).unwrap();
     let forged = forge_snapshot(&mut lp, 1, t, &reg, now, f);
     let got = lp.peers[2].engine.ingest(&forged, Vec::new());
@@ -2031,7 +2048,7 @@ fn reader_snapshot_gives_nothing_either_order_spec_perm_5_2() {
     lp.advance(1_000);
     let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
     let mut f = lp.peers[1].engine.state(&t, &m_ak).unwrap().unwrap().clone();
-    f.join(entry_by(a, now, 1 << 40, "evil", "x"));
+    f.join(entry_by(crate::common::session_of(&lp, 0).own_source(a, osis_base::CommitId([0; 32])), now, 1 << 40, "evil", "x"));
     let forged = forge_snapshot(&mut lp, 1, t, &m_ak, now, f);
     let fid = match lp.peers[2].engine.ingest(&forged, Vec::new()).unwrap() {
         Ingested::Applied(id) => id,
@@ -2442,7 +2459,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
 // (its turning invalid strips its copies of shared dots too, `copies::given_by`).
 #[test]
 fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
-    use osis_crdt::{Batch, Op, PathOp, Source, Writer};
+    use osis_crdt::{Batch, Op, PathOp, Writer};
     let (mut lp, d, b, c) = setup(0x5fb0);
     add_tag(&mut lp, 1, d, "bob");
     lp.sync_all().unwrap();
@@ -2451,7 +2468,7 @@ fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     let bh = lp.peers[1].engine.header(&bob).unwrap();
     let lo = bh.aspects.iter().find(|a| a.ak == tags_ak).unwrap().lo;
     let empty = osis_crdt::Fragment::default();
-    let mut batch = Batch::new(&empty, Writer::new(bh.ts, Source::node(b), lo));
+    let mut batch = Batch::new(&empty, Writer::new(bh.ts, bh.form.own_source(b, osis_base::CommitId([0; 32])), lo));
     batch.apply(&PathOp { path: Vec::new(), op: Op::Add(s("evil")) }, &osis_crdt::AnyView).unwrap();
     let (evil, _) = batch.finish().unwrap();
     lp.advance(1_000);
@@ -3034,7 +3051,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
         let ts = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
         let f = lp.peers[1].engine.state(&d, &tags_ak).unwrap().unwrap();
         let ghost = osis_base::CommitId([9; 32]);
-        let forged = forge_snapshot_absorbing(&mut lp, 1, d, &tags_ak, ts, f, osis_crdt::Frontiers::of_nodes(BTreeMap::from([(b, 1 << 40)])), BTreeMap::from([(ghost, b)]));
+        let bs = crate::common::session_of(&lp, 1).own_source(b, osis_base::CommitId([0; 32]));
+        let forged = forge_snapshot_absorbing(&mut lp, 1, d, &tags_ak, ts, f, frontier_of(&bs, 1 << 40), BTreeMap::from([(ghost, b)]));
         if snap_first {
             assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
             sync(&mut lp, 1, 0);
@@ -3216,20 +3234,21 @@ fn bound_dropped_coverer_still_carries_spec_commits_5() {
 /// A content commit signed by peer `by`'s key carrying only `created.0` of `rec`'s thing at `ts`,
 /// its delta `ops` run from counter `lo` (the record's view, else untyped).
 fn forge_created(lp: &mut LocalPeer, by: usize, rec: &osis_base::CreationRecord, ts: osis_base::Ts, lo: u64, ops: &[osis_crdt::PathOp], typed: bool) -> Result<Vec<u8>, String> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Batch, Delta, Source, Writer, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Batch, Delta, Writer, encode_delta};
     let view = osis_schema::core_schema().view("created.0").unwrap();
     let author = lp.peers[by].engine.tid();
     let empty = osis_crdt::Fragment::default();
-    let mut b = Batch::new(&empty, Writer::new(ts, Source::node(author), lo));
+    let form = crate::common::forged_session(author);
+    let mut b = Batch::new(&empty, Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), lo));
     for op in ops {
         if typed { b.apply(op, &view) } else { b.apply(op, &osis_crdt::AnyView) }.map_err(|e| format!("{e:?}"))?;
     }
     let (f, r) = b.finish().ok_or("empty")?;
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).map_err(|e| format!("{e:?}"))?;
     let mut aw = AspectWrite::new(rec.tid(), ak("created.0"), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::fixed_retention("created.0").unwrap();
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(aw);
     Ok(cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec.clone()), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode())
 }
@@ -3329,33 +3348,6 @@ fn late_joiner_after_compaction_keeps_writes_spec_crdt_8() {
     assert!(!lp.peers[0].engine.roster(&d).contains_key(&b));
 }
 
-// spec/crdt.md §2.1: a writer's valid snapshot claiming this node's counters up to the wire's
-// limit raises its next counter there; node form above it could not be encoded, so its later
-// writes on the aspect go in commit form instead of failing.
-#[test]
-fn lying_frontier_leaves_writes_spec_crdt_2_1() {
-    let mut lp = net(2, 0x5f06);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (a, w) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("real")).unwrap();
-    lp.peers[0].commit(m).unwrap().unwrap();
-    sync(&mut lp, 0, 1);
-    lp.advance(1_000);
-    let reg = ak("t:reg.0");
-    let now = osis_base::Ts::make(lp.peers[1].engine.now(), 0).unwrap();
-    let f = lp.peers[1].engine.core.states.get(&(t, reg.clone())).cloned().flatten().unwrap();
-    let forged = forge_snapshot_with(&mut lp, 1, t, &reg, now, f, osis_crdt::Frontiers::of_nodes(BTreeMap::from([(a, i64::MAX as u64 - 1)])));
-    assert!(matches!(lp.peers[0].engine.ingest(&forged, Vec::new()).unwrap(), Ingested::Applied(_)));
-    lp.advance(1_000);
-    let mut m = Mutation::new();
-    m.set(t, &REG, &s("after")).unwrap();
-    let c = lp.peers[0].commit(m).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&c).unwrap().form, osis_commit::Form::Commit);
-    assert_eq!(lp.peers[0].engine.get_typed(&t, &REG).unwrap(), Some(s("after")));
-}
 
 
 // spec/permissions.md §5.1 (what A had received as of T; covered commits left out only under a

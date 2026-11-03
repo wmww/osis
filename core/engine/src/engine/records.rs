@@ -41,7 +41,7 @@ pub const PURGES_NAMED: &[u8] = b"pn/";
 pub const TIMER: &[u8] = b"x/";
 /// Things this node syncs: `s/` + tid.
 pub const SYNCING: &[u8] = b"s/";
-/// Commits voided by overlapping node-form ranges: `o/` + commit ID.
+/// Commits voided by overlapping session ranges: `o/` + commit ID.
 pub const VOID: &[u8] = b"o/";
 /// Commits whose `keys.0` part on a thing wrote a keyset in its body (`Indexes::keyset_parts`;
 /// kept while the commit is held, whatever becomes of the body): `g/` + tid + commit ID.

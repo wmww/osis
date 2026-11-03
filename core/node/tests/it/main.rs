@@ -37,6 +37,7 @@ mod port_tiers;
 mod receive;
 mod replaced_chunks;
 mod retention;
+mod sessions;
 mod review;
 mod revokes;
 mod scale;

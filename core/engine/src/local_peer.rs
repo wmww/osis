@@ -50,6 +50,9 @@ pub struct Peer {
     pub backend: MemoryBackend,
     pub root: MemoryRoot,
     pub events: Receiver<Event>,
+    /// Opens so far: mixed into each restart's rng seed, so no two opens of one store draw
+    /// the same session nonce (spec/crdt.md §2.1) however a test seeds them.
+    pub restarts: u64,
 }
 
 impl Peer {
@@ -60,12 +63,14 @@ impl Peer {
         let c: Arc<dyn Clock> = clock.clone();
         let mut engine = Engine::create(Box::new(backend.clone()), Box::new(root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         let events = engine.subscribe();
-        Ok(Peer { engine, clock, backend, root, events })
+        Ok(Peer { engine, clock, backend, root, events, restarts: 0 })
     }
 
     /// Drops the engine and opens it again over the same durable state.
     pub fn restart(&mut self, seed: u64) -> Result<()> {
         let c: Arc<dyn Clock> = self.clock.clone();
+        self.restarts += 1;
+        let seed = seed.wrapping_add(self.restarts.wrapping_mul(0x9e37_79b9_7f4a_7c15));
         let mut engine = Engine::open(Box::new(self.backend.clone()), Box::new(self.root.clone()), Config::default(), c, Box::new(SeededRng::from_u64(seed)))?;
         self.events = engine.subscribe();
         self.engine = engine;

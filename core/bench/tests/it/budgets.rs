@@ -39,16 +39,17 @@ impl osis_commit::Secrets for Secrets {
 fn budget_minimal_commit() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
     use osis_base::{Ak, Ts, Value, WallMs};
-    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let (author, at) = (Tid::from_bytes([1; 15]), Ts::make(WallMs(1_700_000_000_000), 0).unwrap());
-    let mut w = Writer::new(at, Source::node(author), 1);
+    let form = Form::Session([6; 16]);
+    let mut w = Writer::new(at, form.own_source(author, osis_base::CommitId([0; 32])), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let d = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap();
-    let mut b = CommitBuilder::new(Kind::Content, at, author, Tid::from_bytes([2; 15]), Form::Node);
+    let d = encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(form, Kind::Content, at, author, 1, 2), None).unwrap();
+    let mut b = CommitBuilder::new(Kind::Content, at, author, Tid::from_bytes([2; 15]), form);
     b.aspects.push(AspectWrite::new(Tid::from_bytes([3; 15]), Ak::new("app:title.0").unwrap(), 1, 2, d));
     let key = osis_crypto::SigningSecret::from_seed(&osis_crypto::Secret32::from_bytes([5; 32]));
     let c = b.build(&key, &Secrets, &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
-    assert_budget("minimal content commit plaintext", c.encode().len(), 330);
+    assert_budget("minimal content commit plaintext", c.encode().len(), 350);
 }
 
 // spec: none (budget from notes/crdt.md, Text size): a text's snapshot is at most 3.5x the plain text at 100 edits per

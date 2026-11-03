@@ -174,13 +174,21 @@ pub fn forge_snapshot_with(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base:
 /// `forge_snapshot_with` listing `absorbed` (commit ID -> author).
 #[allow(clippy::too_many_arguments)]
 pub fn forge_snapshot_absorbing(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, f: osis_crdt::Fragment, frontiers: osis_crdt::Frontiers, absorbed: std::collections::BTreeMap<osis_base::CommitId, Tid>) -> Vec<u8> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
+    use osis_commit::{Form, Kind, writer_ctx};
     let author = lp.peers[by].engine.tid();
     let snap = osis_crdt::Snapshot { absorbed, nonce: [7; 16], fragment: f, frontiers };
-    let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
+    let bytes = osis_crdt::encode_snapshot(&snap, &writer_ctx(Form::Commit, Kind::ContentSnapshot, ts, author, 0, 0), None).unwrap();
+    forge_snapshot_bytes(lp, by, t, a, ts, bytes)
+}
+
+/// A content snapshot commit of `(t, a)` by peer `by` at `ts` over snapshot delta `bytes` as
+/// given (hand-built, unchecked: bad input reaches the receiver's decoder).
+pub fn forge_snapshot_bytes(lp: &mut LocalPeer, by: usize, t: Tid, a: &osis_base::Ak, ts: osis_base::Ts, bytes: Vec<u8>) -> Vec<u8> {
+    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs};
+    let author = lp.peers[by].engine.tid();
     let mut aw = AspectWrite::new(t, a.clone(), 0, 0, bytes);
     aw.retention = osis_commit::retention::snapshot_retention(a.as_str(), [], 0);
-    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::ContentSnapshot, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
     let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
     cb.build(&lp.peers[by].engine.identity().keys().signing, &Keys(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
@@ -205,16 +213,28 @@ impl osis_commit::Secrets for Keys {
 }
 
 /// Whether commit `id` (header `h`) owns one of `dots`, carried writes by aspect
-/// (`Engine::carried_dots`): its node-form range on the aspect holds one, or a commit-form dot
-/// names it.
+/// (`Engine::carried_dots`): its session-form range on the aspect holds one, or a commit-form
+/// dot names it.
 pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collections::BTreeSet<(Tid, Ak, osis_crdt::Dot)>) -> bool {
     h.aspects.iter().any(|a| {
         dots.iter().filter(|(t, k, _)| *t == a.tid && *k == a.ak).any(|(_, _, d)| match d.src.kind() {
-            osis_crdt::SourceKind::Node(n) => h.form == osis_commit::Form::Node && *n == h.author && a.lo <= d.ctr && d.ctr < a.hi,
+            osis_crdt::SourceKind::Session(_) => h.form.counted() && d.src == h.form.own_source(h.author, *id) && a.lo <= d.ctr && d.ctr < a.hi,
             osis_crdt::SourceKind::Commit(c) => c == id,
-            osis_crdt::SourceKind::Session(_) | osis_crdt::SourceKind::Derived(_) => false,
+            osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Derived(_) => false,
         })
     })
+}
+
+/// A session of `node` for hand-built commits (spec/crdt.md §2.1): one of its own, apart from
+/// its engine's.
+pub fn forged_session(node: Tid) -> osis_commit::Form {
+    let _ = node;
+    osis_commit::Form::Session([0x5e; 16])
+}
+
+/// The session form of peer `i`'s engine: what its own commits write under.
+pub fn session_of(lp: &LocalPeer, i: usize) -> osis_commit::Form {
+    osis_commit::Form::Session(lp.peers[i].engine.ephemeral_session().nonce)
 }
 
 /// Node `e` as a reader to box a secret to.
@@ -242,13 +262,10 @@ pub fn forge_pending_grant(by: &mut Engine, rcpt: osis_keys::Recipient, t: Tid, 
     let author = by.tid();
     let ts = osis_base::Ts::make(osis_base::WallMs(by.now().0 + 2 * osis_base::format::MAX_DRIFT_MS), 0).unwrap();
     let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-    let own = Source::commit(CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), 1);
+    let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &v).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
-    cx.own = own;
-    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi), None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
     let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes);
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();

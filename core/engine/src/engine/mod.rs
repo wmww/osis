@@ -356,7 +356,7 @@ impl std::fmt::Debug for LazyHeader {
 /// one node (writes snapshots carry, `ctrs` sorted).
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Owned {
-    /// Counters `lo..hi` of a node or session source (node and session form).
+    /// Counters `lo..hi` of a session source (session form).
     Range { src: osis_crdt::Source, lo: u64, hi: u64 },
     Commit(CommitId),
     Dots { src: osis_crdt::Source, ctrs: Vec<u64> },
@@ -602,9 +602,9 @@ pub struct Core {
     pub(crate) forged: Option<Vec<u8>>,
     /// Tests: `Engine::freeze_pending`.
     pub frozen_pending: bool,
-    /// Labeled groups whose labels have not passed completely since the sync layer started
-    /// (`Engine::set_counters_unsure`); `None` without one. See `Core::counters_sure`.
-    pub counters_unsure: Option<BTreeSet<Tid>>,
+    /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
+    /// and memory; its counters live in the store's memory overlay.
+    pub session: osis_crdt::Session,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -732,21 +732,6 @@ impl Core {
     pub fn syncs(&self, t: &Tid) -> bool {
         let s = &self.ix.syncing;
         s.contains(t) || self.ix.groups.of.get(t).is_some_and(|gs| !gs.is_disjoint(s))
-    }
-
-    /// Whether this node may write node-form dots on `t` (spec/crdt.md §2.1): with no sync
-    /// layer, or once every label holding `t` passed completely since the sync layer started
-    /// (`counters_unsure`), every label for a thing no label holds. Before, a commit this
-    /// store lost (restored from a backup) may still hold the counters it would use; the pass
-    /// brings it, and its header raises the counters (`apply::examine`).
-    pub fn counters_sure(&self, t: &Tid) -> bool {
-        let Some(unsure) = &self.counters_unsure else { return true };
-        if unsure.is_empty() {
-            return true;
-        }
-        let groups = self.ix.groups.of.get(t);
-        let mut held = groups.into_iter().flatten().chain(std::iter::once(t)).filter(|g| self.ix.labeled.contains(g)).peekable();
-        held.peek().is_some() && held.all(|g| !unsure.contains(g))
     }
 
     /// The held durable commits with a delta on `k` (`by_aspect` without memory commits).
@@ -909,7 +894,7 @@ impl Core {
         self.stale_commits.clear();
     }
 
-    fn new(id: Identity, clock: Arc<dyn Clock>) -> Core {
+    fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
@@ -937,7 +922,7 @@ impl Core {
             forge_bad: BTreeSet::new(),
             forged: None,
             frozen_pending: false,
-            counters_unsure: None,
+            session,
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
@@ -1609,11 +1594,12 @@ pub struct Engine {
     pub(crate) cfg: Config,
 }
 
-/// A new session of node `node` for this open's ephemeral writes (spec/crdt.md §2.1).
-fn session(node: Tid, rng: &mut dyn CryptoRngCore) -> crate::ephemeral::Eph {
+/// A new session of node `node` for this open's writes (spec/crdt.md §2.1): a random nonce,
+/// so no two opens of one store (a restored copy, two live copies) share a source.
+fn session(node: Tid, rng: &mut dyn CryptoRngCore) -> osis_crdt::Session {
     let mut nonce = [0u8; osis_crdt::SESSION_NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    crate::ephemeral::Eph::new(osis_crdt::Session { node, nonce })
+    osis_crdt::Session { node, nonce }
 }
 
 impl Engine {
@@ -1625,8 +1611,8 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let eph = session(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
+        let session = session(id.tid(), &mut *rng);
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session), eph: crate::ephemeral::Eph::new(session), clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -1649,8 +1635,8 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
-        let eph = session(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone()), eph, clock, cfg };
+        let session = session(id.tid(), &mut *rng);
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session), eph: crate::ephemeral::Eph::new(session), clock, cfg };
         e.reload()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
@@ -1818,7 +1804,7 @@ impl Engine {
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         let id = Identity::from_seed(self.core.id.seed().clone());
-        let mut fresh = Core::new(id, self.clock.clone());
+        let mut fresh = Core::new(id, self.clock.clone(), self.core.session);
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);
@@ -1827,7 +1813,6 @@ impl Engine {
         fresh.skip_writer_rules = self.core.skip_writer_rules;
         fresh.redeliver = std::mem::take(&mut self.core.redeliver);
         fresh.frozen_pending = self.core.frozen_pending;
-        fresh.counters_unsure = self.core.counters_unsure.take();
         fresh.walk_cache_min = self.core.walk_cache_min;
         fresh.sync_records = self.core.sync_records;
         // caches keyed on it (the sync engine's labels and co-readers) never see an old value again

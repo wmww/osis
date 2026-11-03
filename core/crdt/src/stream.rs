@@ -134,8 +134,7 @@ pub(crate) fn stream<'a>(bytes: &[u8], cx: &DeltaCtx, interner: &'a mut Interner
             }
         }
     }
-    let extra: Vec<_> = frontiers.sources().map(|(s, _)| s).collect();
-    if !found.is_empty() || !enc.check_tables(&extra) {
+    if !found.is_empty() || !enc.check_tables() {
         return Err(NOT_CANONICAL);
     }
     Ok(Head { nonce, frontiers, absorbed })

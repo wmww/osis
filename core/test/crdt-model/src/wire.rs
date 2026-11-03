@@ -106,9 +106,9 @@ impl Ctx {
         }
     }
     /// Fill `sources` and `commits` from a fragment (§3.3 rule 1): sources in order of first appearance in the
-    /// fragment's encoding, then `extra` (a snapshot's frontier-only sources); commits grouped by source index,
-    /// ascending ts, base = smallest counter of that commit's stamps in the fragment.
-    fn collect(&mut self, f: &Frag, extra: &[Source]) {
+    /// fragment's encoding; commits grouped by source index, ascending ts, base = smallest counter of that
+    /// commit's stamps in the fragment.
+    fn collect(&mut self, f: &Frag) {
         self.sources.clear();
         self.commits.clear();
         let mut commits: Vec<(Ts, Source, u64)> = Vec::new();
@@ -127,12 +127,6 @@ impl Ctx {
                 }
             }
         });
-        // frontier-only sources come last, by ascending source (§3.3 rule 1)
-        let mut extra: Vec<&Source> = extra.iter().collect();
-        extra.sort();
-        for s in extra {
-            self.index(s);
-        }
         commits.sort_by_key(|c| (self.idx_of(&c.1), c.0));
         self.commits = commits;
     }
@@ -249,11 +243,11 @@ impl Ctx {
         }
         Ok(())
     }
-    /// After decoding: the declared tables must be exactly what the fragment (plus `extra`) yields (§3.3 rule 1),
-    /// and a writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7.
-    fn check(&self, f: &Frag, extra: &[Source]) -> Result<(), Error> {
+    /// After decoding: the declared tables must be exactly what the fragment yields (§3.3 rule 1), and a
+    /// writer's delta obeys §2.3 and the writer-only rules of §3.3 rule 7.
+    fn check(&self, f: &Frag) -> Result<(), Error> {
         let mut again = Ctx::new(self.ts, self.own.clone(), self.lo);
-        again.collect(f, extra);
+        again.collect(f);
         if again.sources != self.sources {
             return Err(Error::Bad("non-canonical sources"));
         }
@@ -1216,7 +1210,7 @@ fn dec_runs(text: bool, it: &Item, cx: &Ctx) -> Result<BTreeMap<Dot, SeqElem>, E
 
 /// Full delta: `[nonce, Sources, Commits, Fragment]` (§3.2). Fills `cx.sources` and `cx.commits`.
 pub fn encode_delta(f: &Frag, nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
-    cx.collect(f, &[]);
+    cx.collect(f);
     let frag = encode(f, cx);
     cbor::encode(&Item::Array(vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag]))
 }
@@ -1228,32 +1222,34 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
-            cx.check(&frag, &[])?;
+            cx.check(&frag)?;
             Ok(frag)
         }
         _ => Err(Error::Bad("delta")),
     }
 }
 
-/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]` sorted
-/// by `Src`, one entry per `Node` or `Session` source (§8). The caller strips the values of expiring deltas first
-/// (§4.7). Frontier-only sources come last in `Sources`. `Absorbed` (absorbed commit-form commits) is always empty
-/// here: the model keeps no per-commit receipts.
+/// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]`, one
+/// entry per `Node` or `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8). Every
+/// source `frontiers` names must occur in the fragment. The caller strips the values of expiring deltas first
+/// (§4.7). `Absorbed` (absorbed commit-form commits) is always empty here: the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
-    let extra: Vec<Source> = frontiers
-        .iter()
-        .map(|(s, c)| {
-            assert!(matches!(s, Source::Node(_) | Source::Session(_)) && *c >= 1, "frontiers name node or session sources");
-            s.clone()
-        })
-        .collect();
-    cx.collect(f, &extra);
+    cx.collect(f);
+    for (s, c) in frontiers {
+        assert!(matches!(s, Source::Node(_) | Source::Session(_)) && *c >= 1, "frontiers name node or session sources");
+        assert!(cx.sources.contains(s), "a frontier names a source of the fragment");
+    }
     let frag = encode(f, cx);
-    let mut fr: Vec<(u64, u64)> = frontiers.iter().map(|(s, c)| (cx.idx_of(s), *c)).collect();
-    fr.sort();
+    let fr: Vec<(u64, u64)> = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Node(_) | Source::Session(_))).map(|(i, s)| (i as u64 + 1, frontiers.iter().find(|x| x.0 == *s).map_or(0, |x| x.1))).collect();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
     let top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
     cbor::encode(&Item::Array(top))
+}
+
+/// The sources of `f`'s `Sources` table (§3.3 rule 1): what a snapshot of `f` may list a frontier for (§8).
+pub fn sources_of(f: &Frag, cx: &mut Ctx) -> Vec<Source> {
+    cx.collect(f);
+    cx.sources.clone()
 }
 
 pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source, u64)>), Error> {
@@ -1268,25 +1264,26 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
+            // one entry per node or session source of the table, in table order (§8)
             let mut out = Vec::new();
-            let mut last: Option<u64> = None;
+            let mut counted = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Node(_) | Source::Session(_)));
             for e in fr.array()? {
                 let (i, c) = match e.array()? {
-                    [i, c] => (i.uint()?, nonzero(c.uint()?)?),
+                    [i, c] => (i.uint()?, c.uint()?),
                     _ => return Err(Error::Bad("frontier")),
                 };
-                if last.map_or(false, |l| l >= i) {
-                    return Err(Error::Bad("frontier order"));
-                }
-                last = Some(i);
-                let s = cx.source(i)?;
-                if !matches!(s, Source::Node(_) | Source::Session(_)) {
+                let Some((j, s)) = counted.next() else { return Err(Error::Bad("frontier source")) };
+                if i != j as u64 + 1 {
                     return Err(Error::Bad("frontier source"));
                 }
-                out.push((s, c));
+                if c > 0 {
+                    out.push((s.clone(), c));
+                }
             }
-            let extra: Vec<Source> = out.iter().map(|x| x.0.clone()).collect();
-            cx.check(&frag, &extra)?;
+            if counted.next().is_some() {
+                return Err(Error::Bad("frontier missing"));
+            }
+            cx.check(&frag)?;
             // a snapshot writes nothing itself (§2.4): no stamp of this commit (`Ci` 0)
             let mut own = false;
             frag.walk(&mut |r| own |= matches!(r, Ref::Stamp(s) | Ref::Key(s) if s.dot.source == cx.own && s.ts == cx.ts));

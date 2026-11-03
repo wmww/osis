@@ -1,8 +1,8 @@
 //! Delete keys, commit blobs, delta verification (spec/crypto.md §7, spec/wire.md §4, spec/commits.md §4).
 
-use crate::tests::{sample_header, t, ts};
+use crate::tests::{SESSION, sample_header, t, ts};
 use crate::*;
-use osis_base::{Classified, ErrorClass, Tid, Ts, Value};
+use osis_base::{Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{AnyView, Delta, Interner, Source, Writer, create, encode_delta};
 use osis_crypto::{DeleteSecret, Secret32, SigningSecret, VerifyingKey, delta_hash};
 use osis_schema::{PurgeBy, Retention};
@@ -34,10 +34,10 @@ impl Secrets for TestSecrets {
 
 /// A one-register delta by `author` at `ts`, counter `lo`.
 pub(crate) fn register_delta(author: Tid, at: Ts, lo: u64, v: &str) -> Vec<u8> {
-    let mut w = Writer::new(at, Source::node(author), lo);
+    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), lo);
     let fragment = create(&mut w, &AnyView, &Value::Str(v.into())).unwrap();
     let d = Delta { nonce: [lo as u8; 16], fragment };
-    encode_delta(&d, &writer_ctx(Kind::Content, at, author, lo, lo + 1), None).unwrap()
+    encode_delta(&d, &writer_ctx(SESSION, Kind::Content, at, author, lo, lo + 1), None).unwrap()
 }
 
 // spec/crypto.md §7: delete keys by retention level; level 2 omitted for imports; a missing
@@ -142,12 +142,12 @@ fn verify_deltas() {
     // range check: a delta whose own writes reach above the header range [1, 2)
     let (mut b2, _) = one_commit();
     let (author, at) = (b2.header.author, b2.header.ts);
-    let mut w = Writer::new(at, Source::node(author), 1);
+    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
     let set = Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect());
     let fragment = create(&mut w, &AnyView, &set).unwrap();
     let r = w.range();
     assert!(r.hi > 2);
-    let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Kind::Content, at, author, r.lo, r.hi), None).unwrap();
+    let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, r.lo, r.hi), None).unwrap();
     b2.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
     b2.parts[0].delta = delta;
     let mut i = Interner::new();
@@ -185,10 +185,10 @@ fn keyed_map_removal_only_in_role_class_aspects_spec_crdt_5_6() {
     let (mut b, _) = one_commit();
     let (author, at) = (b.header.author, b.header.ts);
     let dot = osis_crdt::Dot::new(Source::node(t(9)), 4);
-    let w = Writer::new(at, Source::node(author), 1);
+    let w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
     let check = |b: &mut CommitBlob, keyed: bool, ak: &str| {
         let fragment = osis_crdt::reset_entries(&w.clone().keyed_removals(keyed), &[(dot.clone(), Value::Str("a key".into()))]);
-        let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap();
+        let delta = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap();
         b.header.aspects[0].ak = osis_base::Ak::new(ak).unwrap();
         b.header.aspects[0].hashes = vec![delta_hash(&sec(0xd0, &t(3)), &delta)];
         b.parts[0].delta = delta;

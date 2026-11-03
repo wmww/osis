@@ -1,7 +1,7 @@
 //! Builder, header-list links, projection, purge rewrite (spec/commits.md §1, §5; spec/wire.md
 //! §4, §6; spec/sync.md §3).
 
-use crate::tests::{t, ts};
+use crate::tests::{SESSION, t, ts};
 use crate::tests::verify::{TestSecrets, register_delta, sec};
 use crate::*;
 use osis_base::format::{CHUNK_THRESHOLD, MAX_BLOB};
@@ -20,7 +20,7 @@ pub(crate) fn rng() -> SeededRng {
 
 pub(crate) fn content(n: usize) -> CommitBuilder {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     for i in 0..n {
         let d = register_delta(t(1), at, 1, &format!("v{i}"));
         let tid = Tid::from_bytes([(i % 251) as u8, (i / 251) as u8, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7]);
@@ -197,9 +197,9 @@ fn projection_partitions() {
 }
 
 fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
-    let mut w = Writer::new(at, Source::node(author), 1);
+    let mut w = Writer::new(at, SESSION.own_source(author, CommitId([0; 32])), 1);
     let fragment = create(&mut w, &AnyView, &Value::Bytes(vec![0x5a; len])).unwrap();
-    encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(Kind::Content, at, author, 1, 2), None).unwrap()
+    encode_delta(&Delta { nonce: [1; 16], fragment }, &writer_ctx(SESSION, Kind::Content, at, author, 1, 2), None).unwrap()
 }
 
 // spec/sync.md §3: a class above MAX_BLOB splits greedily in aspect-list order; spec/commits.md
@@ -207,7 +207,7 @@ fn big_delta(author: Tid, at: Ts, len: usize) -> Vec<u8> {
 #[test]
 fn projection_splits_by_size() {
     let at = ts(1_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     for i in 0..4u8 {
         b.aspects.push(AspectWrite::new(t(3), Ak::new(format!("app:f{i}.0")).unwrap(), 1, 2, big_delta(t(1), at, 3 << 20)));
     }
@@ -217,7 +217,7 @@ fn projection_splits_by_size() {
     for p in &ps {
         assert!(p.plaintext.len() < MAX_BLOB);
     }
-    let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+    let mut huge = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
     huge.aspects.push(AspectWrite::new(t(3), Ak::new("app:f.0").unwrap(), 1, 2, big_delta(t(1), at, MAX_BLOB)));
     assert!(matches!(build(huge, &mut MemoryBlobs::default()), Err(Error::Build(_))));
 }
@@ -259,16 +259,16 @@ fn wide_struct_delta_fits_spec_commits_1() {
     let at = ts(1_000_000);
     let max_blob = 64 << 10;
     let v = Value::Map((0..65).map(|i| (Value::Int(i), Value::Str("w".repeat(max_blob / 64 - 16)))).collect());
-    let mut w = Writer::new(at, Source::node(t(1)), 1);
+    let mut w = Writer::new(at, SESSION.own_source(t(1), CommitId([0; 32])), 1);
     let fragment = create(&mut w, &Wide(true), &v).unwrap();
     let hi = w.range().hi;
     let small = PageParams { target: 4096, cut: osis_base::ChunkParams { min: 1024, max: 4096, mask_bits: 8 }, fanout: 8, ..PageParams::FORMAT };
     let enc = |params: PageParams| {
         let mut pages = MemoryPages::with_params(params);
-        encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()
+        encode_delta(&Delta { nonce: [1; 16], fragment: fragment.clone() }, &writer_ctx(SESSION, Kind::Content, at, t(1), 1, hi), Some(&mut pages)).unwrap()
     };
     let attempt = |delta: Vec<u8>| {
-        let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), Form::Node);
+        let mut b = CommitBuilder::new(Kind::Content, at, t(1), t(2), SESSION);
         b.max_blob = max_blob;
         b.aspects.push(AspectWrite::new(t(3), Ak::new("app:w.0").unwrap(), 1, hi, delta));
         build(b, &mut MemoryBlobs::default())
@@ -304,8 +304,8 @@ fn build_import() {
     let ots = ts(1_000_000);
     let mut w = Writer::new(ots, Source::commit(origin), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("moved".into())).unwrap();
-    let d = encode_delta(&Delta { nonce: [2; 16], fragment }, &writer_ctx(Kind::Import, at, t(1), 0, 0), None).unwrap();
-    let mut b = CommitBuilder::new(Kind::Import, at, t(1), t(2), Form::Node);
+    let d = encode_delta(&Delta { nonce: [2; 16], fragment }, &writer_ctx(Form::Commit, Kind::Import, at, t(1), 0, 0), None).unwrap();
+    let mut b = CommitBuilder::new(Kind::Import, at, t(1), t(2), Form::Commit);
     let mut a = AspectWrite::new(t(3), Ak::new("app:title.0").unwrap(), 0, 0, d);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
     b.aspects.push(a);

@@ -14,7 +14,7 @@ use osis_schema::core_types::is_role_class;
 use std::collections::BTreeSet;
 
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
-/// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the node-form delta
+/// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the session-form delta
 /// whose counter range holds it, the commit-form commit it names, the imports listing that commit
 /// as an origin); for writes whose own delta's header is not held, the held snapshot bodies of
 /// the aspect carrying them, and for any of those none carries, every snapshot of the aspect
@@ -101,18 +101,20 @@ pub(super) fn carrier_at(core: &Core, s: &CommitId, ai: usize) -> bool {
     core.ix.commits.get(s).and_then(|m| m.header.aspects.get(ai).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
 }
 
-/// Whether frontiers `fr` miss some of the counters below `hi` of commit `c` (header `h`), a
-/// node- or session-form commit with own writes (judged by counters); `false` for others.
+/// Whether frontiers `fr` list the session of commit `c` (header `h`, a session-form commit
+/// with own writes) and miss some of its counters below `hi`; `false` for others, and for a
+/// session `fr` does not list: the snapshot holds no write of it (spec/crdt.md §8), so it
+/// reaches none of its counters and covers what joins unchanged.
 pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi: u64) -> bool {
     if !h.form.counted() || !h.kind.has_own_writes() {
         return false;
     }
     let src = h.form.own_source(h.author, *c);
-    fr.sources().find(|(s, _)| *s == src).is_none_or(|(_, f)| f.saturating_add(1) < hi)
+    fr.lists(&src) && fr.of(&src).saturating_add(1) < hi
 }
 
-/// Whether a commit's writes are judged by its ID (commit form, imports: snapshots list them
-/// absorbed) rather than by counters under a frontier.
+/// Whether a commit's writes are judged by its ID (commit form, imports: a snapshot lists
+/// those whose writes it holds as absorbed) rather than by counters under a frontier.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
     kind == Kind::Import || (form == Form::Commit && kind.has_own_writes())
 }
@@ -135,6 +137,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         return Ok(None);
     }
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    // a snapshot never carries an expiring delta's values, so it never covers one
+    // (spec/crdt.md §8), held, dropped at its expiry or still to come
+    if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
+        return Ok(Some(false));
+    }
     let held = crate::apply::held_parts(tx, c, cai)?;
     let other = match held.as_slice() {
         [Decoded::Snapshot(o)] => Some((o.frontiers.clone(), o.absorbed.clone())),
@@ -179,23 +186,34 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let [g] = gives.as_slice() else { return Ok(None) };
     if let Some((fr, abs)) = g {
         let h = &m.header;
-        let unseen = h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi));
-        if unseen || (by_id(h.kind, h.form) && !abs.iter().any(|x| x.0 == *c)) {
+        if h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi)) {
             return Ok(Some(false));
         }
-        // a snapshot covers another only if its frontiers hold the other's too: otherwise a
-        // holder of it alone does not count as listed what the other's frontier listed
-        if let Some((ofr, oabs)) = &other
-            && (ofr.sources().any(|(s, f)| fr.of(&s) < f) || oabs.keys().any(|c| !abs.iter().any(|x| x.0 == *c)))
+        // the snapshot holds nothing of the body's session or commit (spec/crdt.md §8): its
+        // writes are dead where the body is held and joins unchanged (below); a body not held
+        // here establishes nothing, as the writer may never have applied it
+        let untraced = match (h.form.counted() && h.kind.has_own_writes(), by_id(h.kind, h.form)) {
+            (true, _) => !fr.lists(&h.form.own_source(h.author, *c)),
+            (_, true) => !abs.iter().any(|x| x.0 == *c),
+            _ => false,
+        };
+        if untraced && m.missing.contains(&cai) {
+            return Ok(None);
+        }
+        // a snapshot covers another only if its frontiers reach the other's for every session
+        // both list: otherwise a holder of it alone does not count as listed what the other's
+        // frontier listed (a session only the other lists left no write in this one, which is
+        // what its holders take an absent session for, spec/crdt.md §8)
+        if let Some((ofr, _)) = &other
+            && ofr.sources().any(|(s, f)| fr.lists(&s) && fr.of(&s) < f)
         {
             return Ok(Some(false));
         }
     }
-    // a body this node holds no delta of joins nothing: covered, unless still to come with an
-    // expiry: a snapshot carries none of its values (spec/crdt.md §8), so it must still join
+    // a body this node holds no delta of (dropped at its keep bounds or as covered, a purge
+    // rewrite) joins nothing: covered
     if !held {
-        let awaited = m.missing.contains(&cai) && m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some());
-        return Ok(Some(!awaited));
+        return Ok(Some(true));
     }
     // joining the body changes the snapshot's canonical bytes, judged on its part at the
     // body's positions (the rest is left as it is)
@@ -295,9 +313,11 @@ impl Engine {
             let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))));
             let left_out = |c: &CommitId| memory && expiring.iter().any(|x| x.0 == *c);
             // frontiers cover only counters whose writes this state reflects: applied, valid
-            // (and for memory, not expiring). A memory commit is forgotten once covered, its
-            // counters with it: there the held valid snapshots' frontiers count as reflected (their
-            // writes are joined), and own ranges continue from them
+            // (and for memory, not expiring), of the sessions that occur in it (spec/crdt.md §8:
+            // a session with no write left in the state is pruned with them). A memory commit
+            // is forgotten once covered, its counters with it: there the held valid snapshots'
+            // frontiers count as reflected (their writes are joined), and own ranges continue
+            // from them
             let mut frontiers = Frontiers::default();
             if memory {
                 for (_, s, fr, _) in tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten() {
@@ -310,7 +330,7 @@ impl Engine {
                     }
                 }
             }
-            let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
+            let from = (tid, ak.clone(), osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([0; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }));
             for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
                 let mut next = frontiers.of(n).saturating_add(1);
                 for (lo, (hi, c)) in ranges {
@@ -336,7 +356,12 @@ impl Engine {
                     absorbed.insert(*c, m.header.author);
                 }
             }
+            // only sources that occur in the state (spec/crdt.md §8): a reader takes an absent
+            // source as one with no write left, so a frontier never grows with sessions gone by
             let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
+            let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
+            frontiers.retain(&traced);
+            absorbed.retain(|c, _| traced.contains(&osis_crdt::Source::commit(*c)));
             // bounds from the retention of the writes it carries, schema known here or not
             // (spec/commits.md §5); a memory one's are `writer` without bounds (spec/commits.md §2)
             let retention = if memory {
@@ -354,9 +379,7 @@ impl Engine {
             } else {
                 Vec::new()
             };
-            // a memory snapshot is commit form (spec/commits.md §3)
-            let form = if memory { Form::Commit } else { Form::Node };
-            let plan = CommitPlan { kind, ts, actor: node, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
@@ -364,10 +387,11 @@ impl Engine {
 
     /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
-    /// unchanged, and for a node-form body, the snapshot's frontier holds its counters, for a
-    /// body judged by commit ID, the snapshot lists it as absorbed (so every holder of the
-    /// snapshot counts the dropped body's delta as listed in atomic apply, spec/crdt.md §8). A
-    /// carrier only covers none. `None` when either is not held (nothing is established).
+    /// unchanged, and the snapshot's frontier for a session-form body's session, when it lists
+    /// one, holds its counters (a session it does not list left no write in it, spec/crdt.md
+    /// §8, so every holder of the snapshot counts the dropped body's delta as listed in atomic
+    /// apply). A carrier only covers none. `None` when either is not held (nothing is
+    /// established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {

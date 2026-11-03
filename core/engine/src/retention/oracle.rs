@@ -21,23 +21,32 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let parts = crate::apply::held_parts(tx, s, sai)?;
     if let (Some(m), [Decoded::Snapshot(sn)]) = (tx.core.ix.commits.get(c), parts.as_slice()) {
         let h = &m.header;
-        let unseen = h.aspects.get(cai).is_some_and(|a| super::snapshot::unseen_by(&sn.frontiers, h, c, a.hi));
-        if unseen || (super::snapshot::by_id(h.kind, h.form) && !sn.absorbed.contains_key(c)) {
+        if h.aspects.get(cai).is_some_and(|a| super::snapshot::unseen_by(&sn.frontiers, h, c, a.hi)) {
             return Ok(Some(false));
+        }
+        let untraced = match (h.form.counted() && h.kind.has_own_writes(), super::snapshot::by_id(h.kind, h.form)) {
+            (true, _) => !sn.frontiers.lists(&h.form.own_source(h.author, *c)),
+            (_, true) => !sn.absorbed.contains_key(c),
+            _ => false,
+        };
+        if untraced && m.missing.contains(&cai) {
+            return Ok(None);
         }
     }
     let held = crate::apply::held_parts(tx, c, cai)?;
     if let ([Decoded::Snapshot(sn)], [Decoded::Snapshot(other)]) = (parts.as_slice(), held.as_slice())
-        && (other.frontiers.sources().any(|(s, f)| sn.frontiers.of(&s) < f) || other.absorbed.keys().any(|c| !sn.absorbed.contains_key(c)))
+        && other.frontiers.sources().any(|(s, f)| sn.frontiers.lists(&s) && sn.frontiers.of(&s) < f)
     {
         return Ok(Some(false));
     }
     let snap: Vec<Fragment> = parts.into_iter().map(Decoded::into_fragment).collect();
     let [snap] = snap.as_slice() else { return Ok(None) };
     let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
+        return Ok(Some(false));
+    }
     if held.is_empty() {
-        let awaited = m.missing.contains(&cai) && m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some());
-        return Ok(Some(!awaited));
+        return Ok(Some(true));
     }
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();

@@ -33,15 +33,24 @@ const AUTHOR: Tid = Tid::from_bytes([0x21; 15]);
 const ACTOR: Tid = Tid::from_bytes([0x22; 15]);
 const THING: Tid = Tid::from_bytes([0x23; 15]);
 const BLIND: [u8; 16] = [0x34; 16];
+/// The author's session nonce (spec/crdt.md §2.1).
+const NONCE: [u8; osis_crdt::SESSION_NONCE_LEN] = [0x28; osis_crdt::SESSION_NONCE_LEN];
+const SESSION: Form = Form::Session(NONCE);
 
 fn ts(wall: u64) -> Ts {
     Ts::make(WallMs(wall), 0).unwrap()
 }
 
-fn delta(kind: Kind, at: Ts, src: Source, lo: u64, v: Value, nonce: u8) -> Vec<u8> {
-    let mut w = Writer::new(at, src, lo);
+/// The own source of a commit of `form` by the author (commit form: the placeholder).
+fn own(form: Form) -> Source {
+    form.own_source(AUTHOR, CommitId([0; 32]))
+}
+
+/// A writer's delta of one register write under the own source of `form`.
+fn delta(form: Form, kind: Kind, at: Ts, lo: u64, v: Value, nonce: u8) -> Vec<u8> {
+    let mut w = Writer::new(at, own(form), lo);
     let fragment = create(&mut w, &AnyView, &v).unwrap();
-    encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(kind, at, AUTHOR, lo, lo + 1), None).unwrap()
+    encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(form, kind, at, AUTHOR, lo, lo + 1), None).unwrap()
 }
 
 fn built(b: CommitBuilder) -> CommitBlob {
@@ -69,8 +78,8 @@ fn record(name: &str, spec: &str, c: &CommitBlob) -> Record {
 
 fn content() -> CommitBlob {
     let at = ts(1_700_000_000_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
-    b.aspects.push(AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("hello".into()), 1)));
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
+    b.aspects.push(AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("hello".into()), 1)));
     built(b)
 }
 
@@ -78,20 +87,23 @@ fn role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
     let edge = |m: u8| Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), Value::Int(1))].into_iter().collect());
-    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x41), 2));
-    a.deltas.push(delta(Kind::Role, at, Source::node(AUTHOR), 1, edge(0x42), 3));
+    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Role, at, 1, edge(0x41), 2));
+    a.deltas.push(delta(Form::Commit, Kind::Role, at, 1, edge(0x42), 3));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     built(b)
 }
 
+/// A compaction snapshot carrying the author's session's write (spec/crdt.md §8: its frontier
+/// names that session, which occurs in the fragment).
 fn snapshot() -> CommitBlob {
     let at = ts(1_700_000_002_000);
-    let mut w = Writer::new(ts(1_700_000_000_000), Source::node(AUTHOR), 1);
+    let mut w = Writer::new(ts(1_700_000_000_000), own(SESSION), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers: Frontiers::of_nodes([(AUTHOR, 1)].into_iter().collect()) };
-    let bytes = encode_snapshot(&s, &writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
-    let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Node);
+    let frontiers = Frontiers { sessions: [(osis_crdt::Session { node: AUTHOR, nonce: NONCE }, 1)].into_iter().collect(), ..Default::default() };
+    let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers };
+    let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
+    let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 0, 0, bytes);
     a.retention = retention::snapshot_retention("app:title.0", [], 0);
     b.aspects.push(a);
@@ -107,9 +119,7 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
     let frontiers = Frontiers { sessions: [(session, 1)].into_iter().collect(), ..Default::default() };
     let s = Snapshot { absorbed: Default::default(), nonce: [6; 16], fragment, frontiers };
-    let mut cx = writer_ctx(Kind::ContentSnapshot, at, AUTHOR, 0, 0);
-    cx.own = Source::commit(CommitId([0; 32]));
-    let bytes = encode_snapshot(&s, &cx, None).unwrap();
+    let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 0, 0, bytes);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
@@ -123,14 +133,8 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
 /// creation record beside the delta.
 fn session_commit() -> CommitBlob {
     let at = ts(1_700_000_004_500);
-    let nonce = [0x28; osis_crdt::SESSION_NONCE_LEN];
-    let src = Source::session(osis_crdt::Session { node: AUTHOR, nonce });
-    let mut w = Writer::new(at, src.clone(), 1);
-    let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
-    let mut cx = writer_ctx(Kind::Content, at, AUTHOR, 1, 2);
-    cx.own = src;
-    let bytes = encode_delta(&Delta { nonce: [11; 16], fragment }, &cx, None).unwrap();
-    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Session(nonce));
+    let bytes = delta(SESSION, Kind::Content, at, 1, Value::Str("typing".into()), 11);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let mut a = AspectWrite::new(THING, Ak::new("app:state.0").unwrap(), 1, 2, bytes);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
     a.records = vec![osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x29; 32], creator: None }];
@@ -143,8 +147,10 @@ fn import() -> CommitBlob {
     let at = ts(1_700_000_003_000);
     let origin = CommitId([0x24; 32]);
     let ots = ts(1_600_000_000_000);
-    let d = delta(Kind::Import, at, Source::commit(origin), 1, Value::Str("moved".into()), 5);
-    let mut b = CommitBuilder::new(Kind::Import, at, AUTHOR, ACTOR, Form::Node);
+    let mut w = Writer::new(at, Source::commit(origin), 1);
+    let fragment = create(&mut w, &AnyView, &Value::Str("moved".into())).unwrap();
+    let d = encode_delta(&Delta { nonce: [5; 16], fragment }, &writer_ctx(Form::Commit, Kind::Import, at, AUTHOR, 0, 0), None).unwrap();
+    let mut b = CommitBuilder::new(Kind::Import, at, AUTHOR, ACTOR, Form::Commit);
     let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 0, 0, d);
     a.retention = Retention { by: PurgeBy::Writer, ..Default::default() };
     b.aspects.push(a);
@@ -233,7 +239,7 @@ fn more_accepted() -> Vec<Record> {
     // commit form, expiring, absolute bounds, chunks, undoes
     let at = ts(1_700_000_004_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("typed".into()), 6));
+    let mut a = AspectWrite::new(THING, Ak::new("app:title.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Content, at, 1, Value::Str("typed".into()), 6));
     a.expires = Some(at.wall_ms().0 + 86_400_000);
     a.retention = Retention { by: PurgeBy::Writer, at_least: Bound { abs: Some(1_800_000_000_000), rel: None }, at_most: Bound { abs: Some(1_900_000_000_000), rel: Some(1000) } };
     a.chunks = vec![BlobId([0x28; 32]), BlobId([0x2a; 32])];
@@ -243,11 +249,11 @@ fn more_accepted() -> Vec<Record> {
     out.push(record("commit form, expiry, absolute bounds, chunks, undoes", "spec/wire.md §4; spec/commits.md §3, §5, §6, §7", &c));
     // purge request, created.0 kept forever
     let at = ts(1_700_000_005_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
-    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("record".into()), 7));
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
+    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("record".into()), 7));
     cr.retention = retention::CREATED_RETENTION;
     b.aspects.push(cr);
-    b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Str("".into()), 8)));
+    b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
     b.purge = vec![
         PurgeItem::Aspect { tid: THING, ak: Ak::new("app:body.0").unwrap() },
         PurgeItem::Commit { commit: CommitId([0x2d; 32]), tid: THING, ak: Ak::new("app:title.0").unwrap() },
@@ -256,17 +262,17 @@ fn more_accepted() -> Vec<Record> {
     // role commit with a frontier
     let at = ts(1_700_000_006_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Kind::Role, at, Source::node(AUTHOR), 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
+    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Role, at, 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     b.frontier = Some(Value::Map([(Value::Int(0), Value::Map(Default::default())), (Value::Int(1), Value::Set(Default::default()))].into_iter().collect()));
     out.push(record("role demotion with a frontier", "spec/wire.md §4; spec/permissions.md §5", &built(b)));
     // a linked aspect list (above CHUNK_THRESHOLD)
     let at = ts(1_700_000_007_000);
-    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, Form::Node);
+    let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
     let long = "x".repeat(990);
     for i in 0..140u32 {
-        b.aspects.push(AspectWrite::new(THING, Ak::new(format!("app:{long}{i:03}.0")).unwrap(), 1, 2, delta(Kind::Content, at, Source::node(AUTHOR), 1, Value::Int(i64::from(i)), 10)));
+        b.aspects.push(AspectWrite::new(THING, Ak::new(format!("app:{long}{i:03}.0")).unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Int(i64::from(i)), 10)));
     }
     let key = SigningSecret::from_seed(&s32(0x35));
     let mut rec = Recording(osis_crypto::SeededRng::from_seed([0x36; 32]), Vec::new());
@@ -353,20 +359,21 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.keys.remove(0);
     x.aspects[0].keys = vec![0];
     out.push(reject("author retention without its level-1 key", "spec/crypto.md §7", &x, "delete-levels"));
-    let e = ephemeral(osis_commit::EphClass::Plain).header;
-    let mut x = e.clone();
-    x.form = Form::Node;
-    out.push(reject("ephemeral commit in node form", "spec/commits.md §2", &x, "ephemeral"));
     let mut x = content.clone();
+    x.form = Form::Node;
+    out.push(reject("node form", "spec/commits.md §3", &x, "form"));
+    let mut x = m.clone();
+    x.form = SESSION;
+    out.push(reject("session form on a role commit", "spec/commits.md §3", &x, "form"));
+    let e = ephemeral(osis_commit::EphClass::Plain).header;
+    let mut x = content.clone();
+    x.form = Form::Commit;
     x.ephemeral = Some(osis_commit::EphClass::Plain);
-    out.push(reject("ephemeral marker on a content commit", "spec/commits.md §2", &x, "ephemeral"));
+    out.push(reject("ephemeral marker on a commit-form content commit", "spec/commits.md §2", &x, "ephemeral"));
     let mut x = e.clone();
     x.purge.push(PurgeItem::Aspect { tid: THING, ak: Ak::new("app:title.0").unwrap() });
     out.push(reject("ephemeral commit with a purge request", "spec/commits.md §2", &x, "ephemeral"));
     let s = session_commit().header;
-    let mut x = s.clone();
-    x.ephemeral = None;
-    out.push(reject("session form without the ephemeral marker", "spec/commits.md §3", &x, "ephemeral"));
     let mut v = s.to_value();
     if let Value::List(items) = &mut v {
         items[5] = Value::List(vec![Value::Int(3), Value::Bytes(vec![0x28; 16])]);

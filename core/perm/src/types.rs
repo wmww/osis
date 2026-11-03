@@ -56,6 +56,8 @@ pub struct Tie {
 pub enum TieSource {
     Node(Tid),
     Commit(CommitId),
+    /// A session of the node: its 16-byte nonce.
+    Session(Tid, [u8; 16]),
 }
 
 impl Edge {

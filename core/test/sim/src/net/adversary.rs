@@ -396,13 +396,13 @@ impl osis_commit::Secrets for Dedup {
 }
 
 /// An equivocating writer (spec/commits.md §4: two commits by one node with overlapping
-/// node-form counter ranges on one aspect are both invalid; spec/crdt.md §2.3): writer B writes
+/// counter ranges of one session on one aspect are both invalid; spec/crdt.md §2.3): writer B writes
 /// `c1` on an aspect, then signs a second commit `c2` reusing that commit's counters on the
 /// same aspect, outside its engine, and uploads it stamped under the label. Expected: every
 /// node, B's own included, ends up reading neither write, holds both commits, and converges.
 pub fn equivocating_writer(seed: u64) -> Res<Report> {
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{AnyView, Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{AnyView, Delta, Writer, create, encode_delta};
     let mut d = Dice::new(seed ^ 0xe9);
     let mut sim = sim("equivocating_writer", seed, NetWeights::default());
     let s = sim.add_host()?;
@@ -432,12 +432,14 @@ pub fn equivocating_writer(seed: u64) -> Res<Report> {
     let bt = sim.tid(b)?;
     let wall = sim.engine(b)?.now().0.max(h.ts.wall_ms().0) + 5;
     let ts = osis_base::Ts::make(osis_base::WallMs(wall), 0).ok_or_else(|| sim.fail("ts out of range"))?;
-    let mut w = Writer::new(ts, Source::node(bt), lo);
+    // c1's session: the only source whose counters c2 can reuse
+    let form = h.form;
+    let mut w = Writer::new(ts, form.own_source(bt, osis_base::CommitId([0; 32])), lo);
     let f = create(&mut w, &AnyView, &osis_base::Value::Str("c2".into())).map_err(|e| sim.fail(e.to_string()))?;
-    let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
+    let delta = encode_delta(&Delta { nonce: [9; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, bt, lo, hi), None).map_err(|e| sim.fail(e.to_string()))?;
     let mut aw = AspectWrite::new(t, eq.clone(), lo, hi, delta);
     aw.retention = osis_schema::Retention { by: osis_schema::PurgeBy::Nobody, ..Default::default() };
-    let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, bt, bt, form);
     cb.aspects.push(aw);
     let rec = sim.engine(a)?.get_typed(&t, &osis_schema::core_types::CREATED).map_err(|e| sim.fail(e.to_string()))?.ok_or_else(|| sim.fail("no created.0"))?;
     let key = sim.engine(b)?.identity().keys().signing.clone();

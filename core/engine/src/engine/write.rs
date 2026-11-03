@@ -44,7 +44,8 @@ pub struct Mutation {
     pub(crate) actor: Option<Tid>,
     /// `Engine::write` holds the batch to `actor`'s own rights first (`Mutation::confine`).
     pub(crate) confined: bool,
-    pub(crate) form: Form,
+    /// Commit-form dots (spec/commits.md §3); else session form.
+    pub(crate) commit_form: bool,
     pub(crate) purge: Vec<PurgeItem>,
     pub(crate) undoes: Option<CommitId>,
     /// With `undoes`: things whose `created.0` the undone commit carries that it saved (drafts
@@ -84,7 +85,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, form: Form::Node, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -105,7 +106,7 @@ impl Mutation {
     /// key or link key (spec/crypto.md §2). Commit form: its holders share no counters.
     pub fn sign_as(&mut self, key_actor: Tid) -> &mut Self {
         self.signer = Some(key_actor);
-        self.form = Form::Commit;
+        self.commit_form = true;
         self
     }
 
@@ -117,7 +118,7 @@ impl Mutation {
 
     /// Commit-form dots (spec/commits.md §3).
     pub fn commit_form(&mut self) -> &mut Self {
-        self.form = Form::Commit;
+        self.commit_form = true;
         self
     }
 
@@ -421,26 +422,8 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     Ok((retention, expires, framing))
 }
 
-/// The writer's own source: the author node or session, or for commit form a placeholder
-/// commit that sorts below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
-/// Past this next counter an aspect is written in commit form (spec/crdt.md §2.1): a writer's
-/// snapshot frontier may claim any counter of this node up to the wire's 2^63 - 1, which this
-/// node then skips (`raise_counter`), and node form above it could not be encoded. Honest
-/// writing never nears it; a lie leaves at least 2^62 counters or none.
-const MAX_NODE_COUNTER: u64 = 1 << 62;
-
-/// Whether this node may write node form on every aspect of `keys` (spec/crdt.md §2.1): it is
-/// sure of the thing's counters (`Core::counters_sure`; a thing `creates` holds has no counters
-/// elsewhere) and has not passed `MAX_NODE_COUNTER`.
-pub(crate) fn node_form_ok<'a>(tx: &mut Tx<'_>, keys: impl IntoIterator<Item = &'a (Tid, Ak)>, creates: &Creates) -> Result<bool> {
-    for (t, ak) in keys {
-        if (!creates.contains_key(t) && !tx.core.counters_sure(t)) || tx.txn.counter(t, ak)? > MAX_NODE_COUNTER {
-            return Ok(false);
-        }
-    }
-    Ok(true)
-}
-
+/// The writer's own source: its session, or for commit form a placeholder commit that sorts
+/// below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
 fn own_source(form: Form, node: Tid) -> Source {
     form.own_source(node, osis_base::CommitId([0; 32]))
 }
@@ -455,10 +438,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         if expires.is_some() && !plan.purge.is_empty() {
             return Err(Error::Misuse("a commit with a purge request cannot carry expires (spec/commits.md §5)"));
         }
-        let mut cx = writer_ctx(plan.kind, plan.ts, node, d.lo, d.hi);
-        // own writes already carry the commit-form placeholder (`own_source`), so foreign dots
-        // of this node's node-form writes stay node dots
-        cx.own = own_source(plan.form, node);
+        let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         // a roster snapshot: one delta per edge and per ledger entry (spec/commits.md §2)
         let fragments = if d.split { d.fragment.split_entries() } else { vec![d.fragment] };
         let mut blobs = TxBlobs::new(&mut tx.txn);
@@ -529,12 +509,6 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
 }
 
 impl Engine {
-    /// The labeled groups whose labels have not passed completely since the sync layer started
-    /// (`Core::counters_sure`): its writes on their things use commit form until they have.
-    pub fn set_counters_unsure(&mut self, groups: BTreeSet<Tid>) {
-        self.core.counters_unsure = Some(groups);
-    }
-
     /// A new thing owned by `owner`, created by `m` (spec/data-model.md §1).
     pub fn new_thing(&mut self, m: &mut Mutation, owner: Tid) -> Tid {
         m.create(self.thing_record(owner))
@@ -562,7 +536,7 @@ impl Engine {
     /// aspects it writes must hold no durable row.
     #[doc(hidden)]
     pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
-        m.form = Form::Session(self.eph.session().nonce);
+        m.commit_form = false;
         self.run(|tx| {
             tx.set_memory();
             commit_in(tx, m)
@@ -643,16 +617,12 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             e => Err(e),
         });
     }
-    // role commits use commit form: a later commit by the same node can never void
-    // them by reusing their counters (spec/commits.md §3)
-    if kind != Kind::Content {
-        m.form = Form::Commit;
-    }
-    if m.form == Form::Node && !node_form_ok(tx, m.aspects.keys(), &m.creates)? {
-        m.form = Form::Commit;
-    }
+    // role commits use commit form: a later commit by the same node can never void them by
+    // reusing their counters; content commits write under this open's session unless asked
+    // for commit form (spec/commits.md §3)
+    let form = if kind != Kind::Content || m.commit_form { Form::Commit } else { Form::Session(tx.core.session.nonce) };
     let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
-    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form: m.form, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
+    let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| plan.creates.get(t), &plan.actor, ts)?;
     }
@@ -712,9 +682,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
             chunks = super::large::chunk_frontiers(tx, &mut am.ops, &framing)?;
         }
-        let lo = match m.form {
+        let lo = match form {
             Form::Commit => next_ctr,
-            // a session's counters: rows of memory aspects, gone with the session
+            // a session's counters: memory rows, gone with the session
             Form::Node | Form::Session(_) => tx.txn.counter(&tid, &ak)?,
         };
         let empty = Fragment::default();
@@ -723,14 +693,14 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let keyed = osis_schema::core_types::is_role_class(ak.as_str());
         let run = |tx: &Tx<'_>| {
             let state = tx.cached(&tid, &ak).unwrap_or(&empty);
-            let w = Writer::new(ts, own_source(m.form, node), lo).keyed_removals(keyed);
+            let w = Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed);
             match &view {
                 Some(v) => run_ops(state, w, &am.ops, v),
                 None => run_ops(state, w, &am.ops, &AnyView),
             }
         };
         let out = tx.run_attached(&tid, &ak, attached, run)??;
-        let w2 = Writer::new(ts, own_source(m.form, node), lo).keyed_removals(keyed);
+        let w2 = Writer::new(ts, own_source(form, node), lo).keyed_removals(keyed);
         let out = match (out, m.dead_resets.get(&(tid, ak.clone())).filter(|d| !d.is_empty())) {
             (o, None) => o,
             (Some((mut f, r)), Some(ds)) => {
@@ -740,7 +710,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
         };
         let Some((fragment, range)) = out else { continue };
-        if m.form == Form::Commit {
+        if form == Form::Commit {
             next_ctr = range.hi;
         }
         if let Some(s) = &am.schema {

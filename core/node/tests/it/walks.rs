@@ -1029,26 +1029,26 @@ fn random_history(seed: u64, max_moves: usize, doubles: bool, forge: bool) -> ([
 }
 
 /// Peer `i` forges a snapshot of `t`'s `t:tags.0`: its state with the value of a held tag (a
-/// node-form commit's element) replaced, under that element's dot and `ts`, and takes it.
+/// session-form commit's element) replaced, under that element's dot and `ts`, and takes it.
 fn forge_tag(lp: &mut LocalPeer, i: usize, t: Tid, step: usize, rng: &mut Rng) -> bool {
     use osis_crdt::{Batch, Source, Writer};
     let tags = ak("t:tags.0");
     let e = &lp.peers[i].engine;
-    let held: Vec<(osis_base::Ts, Tid, u64)> = e
+    let held: Vec<(osis_base::Ts, Source, u64)> = e
         .commit_ids()
         .iter()
-        .filter_map(|id| e.header(id))
-        .filter(|h| h.kind == osis_commit::Kind::Content && h.form == osis_commit::Form::Node)
-        .filter_map(|h| h.aspects.iter().find(|a| a.tid == t && a.ak == tags).map(|a| (h.ts, h.author, a.lo)))
+        .filter_map(|id| e.header(id).map(|h| (*id, h)))
+        .filter(|(_, h)| h.kind == osis_commit::Kind::Content && h.form.counted())
+        .filter_map(|(id, h)| h.aspects.iter().find(|a| a.tid == t && a.ak == tags).map(|a| (h.ts, h.form.own_source(h.author, id), a.lo)))
         .collect();
     if held.is_empty() {
         return false;
     }
-    let (ts, author, lo) = held[rng.below(held.len() as u64) as usize];
-    let dot = osis_crdt::Dot::new(Source::node(author), lo);
+    let (ts, src, lo) = held[rng.below(held.len() as u64) as usize].clone();
+    let dot = osis_crdt::Dot::new(src.clone(), lo);
     let Some(mut f) = lp.peers[i].engine.state(&t, &tags).unwrap() else { return false };
     f.strip_copies(&|d| *d == dot);
-    let mut b = Batch::new(&f, Writer::new(ts, Source::node(author), lo));
+    let mut b = Batch::new(&f, Writer::new(ts, src, lo));
     if b.apply(&PathOp { path: Vec::new(), op: Op::Add(s(&format!("forged{step}"))) }, &osis_crdt::AnyView).is_err() {
         return false;
     }
