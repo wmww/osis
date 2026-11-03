@@ -1,5 +1,5 @@
 # Versioning: conventions and rationale
-> Summary: The problem, why the core rules of spec/versioning.md suffice, and the codegen conventions above them (decided with owner): transitions with read/write conversions and `succeeds` links, the timestamp tie-break between forms, the per-write policy for which form to write, blessed paths for hard changes, a worked example, rejected options, what osis-schema implements and what is open.
+> Summary: The problem, why the core rules of spec/versioning.md suffice, and the codegen conventions above them (decided with Tess): transitions with read/write conversions and `succeeds` links, the timestamp tie-break between forms, the per-write policy for which form to write, blessed paths for hard changes, a worked example, rejected options, what osis-schema implements and what is open.
 
 Pre-release (CLAUDE.md, spec/overview.md): none of this constrains today's formats; they change in place with no readers for earlier builds' data.
 
@@ -9,7 +9,7 @@ Many apps and app versions share data like a file format. Apps do not always upg
 Three layers of compatibility: store/relay/merge (universal: merge is schema-free), typing (per app, ordinary errors), semantics (doc comments, uncheckable). App versions do not exist for the core.
 
 ## Core vs convention
-The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or version travels on the wire (owner, round 13): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
+The core does four things (spec/versioning.md): IDs never reused, open structs with reader defaults, an additive checker, and the parking rule plus encoding lattice. No schema ID or version travels on the wire (Tess, round 13): a node types an AK by the schema it holds. Everything below is a codegen convention over ordinary writes: the core never interprets it, merge converges whatever maintainers do, and the convention can change without touching stored data.
 - Writers emitting the oldest format version that fits means one upgraded node strands nobody unless it uses a new feature, and then only on that aspect.
 - Defaults are never materialized and immutable: changing one would read old data differently per version; materializing them would make a default-valued field distinguishable from an unwritten one.
 - Without the schema-aware diff an old app's save of a `set<struct>` would remove every element a newer app had extended and add a stripped copy, and a list with one unreadable element would be rewritten around it.

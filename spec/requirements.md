@@ -1,7 +1,7 @@
 # Requirements
 > Summary: What osis must satisfy and what it deliberately does not: hard requirements, goals, the limits the design accepts, and the threat model. Mechanism-free; every design is checked against it.
 
-Items are hard unless a section says goal. A design that cannot meet an item does not get a footnote: the item is changed to say what actually holds (significant changes need owner sign-off).
+Items are hard unless a section says goal. A design that cannot meet an item does not get a footnote: the item is changed to say what actually holds (significant changes need sign-off).
 
 ## Purpose
 - End-user apps with small-to-large interconnected data across users and devices. Many apps, app versions, generic tools and agents share the same data, like a file format.

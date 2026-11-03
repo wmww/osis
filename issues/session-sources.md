@@ -1,5 +1,5 @@
 # Durable writes in session form; per-session tables pruned; covered headers forgotten
-> Summary: Design (owner direction, plan checked): every non-role content commit writes under `Session(node, nonce)` (random per process start, memory-only counters), which removes item 193's restore gate and fixes issues/cloned-store.md; demotion frontiers list commit IDs only, which closes owner decision (a) (a revoked writer forging into covered dots) with no snapshot pins; snapshot frontiers list only sessions still traced; nodes forget a content commit's header once its held parts are gone as covered, expired or purged. Six-step build plan below, each step mergeable alone; independent of eph-unify's swap. Step 1 built (rules 6, 7); steps 2, 4, 5, 6 to build; step 3 not built (owner/coordinator).
+> Summary: Design (Tess's direction, plan checked): every non-role content commit writes under `Session(node, nonce)` (random per process start, memory-only counters), which removes item 193's restore gate and fixes issues/cloned-store.md; demotion frontiers list commit IDs only, which closes Tess's decision (a) (a revoked writer forging into covered dots) with no snapshot pins; snapshot frontiers list only sessions still traced; nodes forget a content commit's header once its held parts are gone as covered, expired or purged. Six-step build plan below, each step mergeable alone; independent of eph-unify's swap. Step 1 built (rules 6, 7); steps 2, 4, 5, 6 to build; step 3 not built (Tess/coordinator).
 > Tags: engine, node, perm, crdt, spec, design
 
 ## Rules
@@ -17,7 +17,7 @@
    The value-less list (`v/`) and residues (`w/`) of expired or purged parts stay. They, not the header, strip late valued copies. Role commits are not forgotten: the timeline, certificates and epoch introductions read them. A thing's first commit is never forgotten either, because its `created.0` part is never covered. Nor is a lasting commit (spec/commits.md §5, built; `retention::lasting` is the check): a purged permanent delta's, its purge commit's. Memory commits follow the same rule (issues/eph-unify.md Header memory).
 9. **Replays.** A forgotten commit that arrives again is indexed and joined again. Join idempotence keeps the state right; rule 7 keeps it invalid after a demotion that did not list it, and the snapshot that covered it vouches for its live writes. Node-sync's entry rows stop the node fetching it again. No drop-on-arrival check.
 
-## Owner decision (a): closed by rule 7
+## Tess's decision (a): closed by rule 7
 The residual: a demoted X writes c2 under counters its demotion D covers in session S, after S lost every trace in snapshots. Nodes holding neither the original c1 nor a snapshot listing S count c2.
 
 **The candidate fix fails.** The candidate was: snapshots keep entries for sessions a held demotion covers, plus the hardening rule ("a write under a dot a held valid snapshot's frontier reaches but the snapshot does not carry counts for nothing"), optionally `ts ≤ T`.
@@ -96,7 +96,7 @@ B never needs to know which case it is in. Per construct:
 - **Memory:** counters per (aspect, session) for aspects written since start.
 
 ## Requirements compromises (spec/requirements.md)
-- **API "Atomic":** rule 5 also counts a missing part as dropped when a later snapshot was written concurrently by a node that had not yet received c. B can then show c without that part until the part arrives (it is under a label B syncs, so it does). Final state is unaffected. This is the same class as owner decision (a) of round 13, a forged snapshot showing a commit partly. It needs the race of a concurrent snapshot plus out-of-order parts.
+- **API "Atomic":** rule 5 also counts a missing part as dropped when a later snapshot was written concurrently by a node that had not yet received c. B can then show c without that part until the part arrives (it is under a label B syncs, so it does). Final state is unaffected. This is the same class as Tess's decision (a) of round 13, a forged snapshot showing a commit partly. It needs the race of a concurrent snapshot plus out-of-order parts.
 - **Cost "one entry per aspect it wrote":** a snapshot holds one entry per (aspect, traced session). For sequences that is every inserting session.
 - **Permissions "judged by what the revoker had received":** a received write that a held valid snapshot shows dead is not covered. It stays gone even if its killer is later un-merged, which can only happen where that snapshot is invalid. Also the double-removal residual under decision (a) above.
 - **Transient after a demotion with compaction first (step 3):** a node that holds X's original bodies and gets D before the demoter's snapshot un-merges X's writes until the snapshot arrives. Listing IDs instead (no compaction) has no such window.
@@ -159,7 +159,7 @@ Each step merges alone, passes the gate, and updates the spec sections it change
    - Verification: walks `open_equals_rebuild` (default and forged variants), order exhaustive, sim `restore_backup`, bench budgets (header ≤ 330 B), the growth probe (COUNTER rows gone).
 3. **Demoter compacts first** (rule 7's MAY, local policy). In the revoke flow (`flows/edges.rs` before `frontier`), when `as_of` is now: `compaction_snapshot` for each scope aspect where this node holds an uncovered part of a demoted node, in the same transaction as the demotion.
    - Test: the frontier lists nothing for those aspects, X's live writes reach a fresh node through the snapshot, and a backdated revoke compacts nothing.
-   - Owner choice (below): with or without this step.
+   - Tess's choice (below): with or without this step.
 4. **`Node` source kind deleted.** Mechanical; no behavior change.
    - crdt `stamp.rs`, `wire.rs`, `codec.rs`, `Frontiers { nodes }`, `pages.rs`, fuzz and test utils; crdt-model `Source::Node`; perm `Dots::Node` and walk overlap; commit `Form::Node`; engine `index.rs` meta form byte.
    - Spec: crdt.md §2.1-§2.2 source order, wire grammar.
@@ -179,15 +179,15 @@ Each step merges alone, passes the gate, and updates the spec sections it change
 
 Item 193 code: deleted in step 2, except `Form::Node`/`Source::Node` arms (step 4).
 
-**Steps 2 and 5 build together** (coordinator, after the session-2 worker stopped before coding). Session form alone makes every snapshot frontier carry one entry per session that ever wrote the aspect: frontier-only sources, which the owner rules out ("nothing grows permanently by number of app launches/sessions"). Pruning needs step 5's no-trace escapes, and step 5 alone breaks item 193's restore gate, which step 2 deletes. So both go in one branch, an exception to one-intricate-change-per-area. Also in step 2: the tie source gains a `Session` variant, and node form is refused, so every `Form::Node` test commit and the commit vector subjects change.
+**Steps 2 and 5 build together** (coordinator, after the session-2 worker stopped before coding). Session form alone makes every snapshot frontier carry one entry per session that ever wrote the aspect: frontier-only sources, which Tess rules out ("nothing grows permanently by number of app launches/sessions"). Pruning needs step 5's no-trace escapes, and step 5 alone breaks item 193's restore gate, which step 2 deletes. So both go in one branch, an exception to one-intricate-change-per-area. Also in step 2: the tie source gains a `Session` variant, and node form is refused, so every `Form::Node` test commit and the commit vector subjects change.
 
 **When session-25 rebases:** fold in issues/listed-by-anyone.md (devbox): `receipt::listed` counts a snapshot of any validity by anyone. Narrow it to snapshots by `Held::ever_admins`/writers (sync-oddities, monotone, so order independent). That also narrows the rule-5 amendment's honest-race widening. Keep-in-removal changed `required.0^`'s type (schema), so expect regenerated vectors.
 
-## Owner decisions (round 13)
+## Tess's decisions (round 13)
 - Rule 7 in place of the earlier candidate for decision (a): accepted ("seems fine"), with its 32 B per uncompacted commit and the double-removal residual.
 - Step 3 (compact before an explicit demotion): left to the coordinator, who chose **no** for now: nothing blinks out, and frontiers stay bounded by compaction cadence. Revisit if demotion frontiers measure large.
 - atomic-wait-carrierless-drop (built): count a carrierless-dropped dead part as held, accepted ("fine").
-- Owner earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.
+- Tess earlier: "if it all checks out feel free to implement": build steps 1, 2, 4, 5, 6 in order.
 
 ## Frontier study
 notes/frontier-study.md: rule 7 becomes "lists every received commit of X in scope that is not droppable now" (covered by a snapshot received by T, past keep-at-least, purgeable), with a head per (aspect, device) instead of IDs for aspects whose deltas are all permanent (keep forever, no keep-at-most, no expiry), followed through per-session predecessor links in X's own headers (needs step 2). Fixes issues/frontier-clobbers-history.md, dissolves both step-2 carry-overs (role commits follow the same rule; a commit with a part this node does not hold is listed). Rule 8 gains: a permanent delta's header is never forgotten, its purge residue stays must-hold. Step 3 now also bounds kick cost on compacting aspects. Chains across all aspects of a session are rejected (unwalkable across labels).

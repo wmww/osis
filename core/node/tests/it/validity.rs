@@ -206,7 +206,7 @@ fn of(b: Tid, d: Tid) -> DemotionScope {
     DemotionScope { roles: BTreeMap::from([(b, BTreeSet::from([d]))]), content: BTreeMap::from([(b, BTreeSet::from([d]))]) }
 }
 
-// spec/permissions.md §5.1 (a frontier lists commit IDs, never counters), §5.2, owner decision
+// spec/permissions.md §5.1 (a frontier lists commit IDs, never counters), §5.2, Tess's decision
 // (a): Bob writes, Alice overwrites it, compacts (Bob's write is dead, so the snapshot carries
 // nothing of his) and removes him, her frontier listing nothing (the snapshot covers his commit).
 // Bob then signs a newer commit on the counters his first one used. A fresh node holding the
@@ -1593,7 +1593,7 @@ fn late_invalid_part_unmerges_alike_spec_crdt_4_6() {
 }
 
 // spec/permissions.md §5.2 (a snapshot is trusted for what the content is now, never for who
-// wrote it or when; owner decision, notes/permissions.md Snapshots and history): Bob writes "real" (commit C); Carol,
+// wrote it or when; Tess's decision, notes/permissions.md Snapshots and history): Bob writes "real" (commit C); Carol,
 // a writer, sends a snapshot carrying C's dot and `ts` with "zzz forged". A node holding C (after
 // or before the snapshot) and one holding only the snapshot read the same: the snapshot's copy.
 // Only the holders of C attribute a change to Bob, and the change the snapshot made at C's
@@ -2310,7 +2310,7 @@ fn forged_copy_under_dropped_delta_alike_spec_perm_5_2() {
 }
 
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries; revocation is
-// exact where no valid snapshot carries the write; owner decision "Snapshots vouch",
+// exact where no valid snapshot carries the write; Tess's decision "Snapshots vouch",
 // notes/mvp-progress.md round 13), spec/requirements.md Permissions: Bob's "mon" reaches Alice;
 // his "x" reaches only Carol, who compacts the tags before she learns of his removal; his "y"
 // reaches only Carol after her compaction. Alice removes Bob with what she received. "x" stays,

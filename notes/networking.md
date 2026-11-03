@@ -1,5 +1,5 @@
 # Networking: transport, discovery, reachability
-> Summary: Decided with owner. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct host connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official host and relays. Addresses and relays are osis data, host addresses pin the host's key; transport keys are separate from node signing keys. Push wake-ups are a proposal; Tor a future option.
+> Summary: Decided with Tess. The sync protocol runs over any ordered, bidirectional byte stream behind our own transport abstraction; direct host connections (QUIC/TLS/WebSocket) need no iroh; iroh 1.0 is the P2P transport (LAN, hole punching, relays, later BLE), used without n0's infrastructure; we run an official host and relays. Addresses and relays are osis data, host addresses pin the host's key; transport keys are separate from node signing keys. Push wake-ups are a proposal; Tor a future option.
 
 ## What osis needs from the network (spec/requirements.md)
 - Long-lived connections with host push (subscriptions, relay-only signals), several labels per connection, one round trip for the common case.
@@ -8,7 +8,7 @@
 - A blind node must not learn authorship or role grants. It learns client IPs (accepted), not node identities.
 - Authorization is application-level (node signatures, label role keys), so the transport only needs confidentiality and a stable peer key to dial.
 
-## Decisions (owner)
+## Decisions (Tess)
 1. **Own transport abstraction.** Sync is framed messages over ordered streams; nothing depends on QUIC or iroh. Implementations: direct host connections (QUIC or TLS/TCP, WebSocket for browsers) without iroh; iroh for P2P; in-process for tests; file bundles for sneakernet (spec/sync.md §11).
 2. **iroh for P2P.** Dial by public key, QUIC multipath, hole punching with relay fallback, Rust-native, MIT/Apache-2.0; 1.0 has a stable wire protocol and API.
 3. **Official infrastructure, never required.** We run an official host (cheap services free, storage for paying accounts) and `iroh-relay`. Anyone may run their own; any host may relay. n0's public relays and DNS discovery are not used: n0 would see every node's key and IP.
@@ -24,10 +24,10 @@ A link (and so a contact card) may carry the sharer node's dialable key and rela
 - A sharer that syncs K and the target with nobody (no host, no other device) serves them through local passes (Implementation (node peers), Serving).
 
 ## Local and offline transports
-Owner wants "just works" across LAN, Bluetooth and similar. LAN works in iroh today. Custom transports (BLE, WiFi Aware, mixnets) use an iroh API that is unstable and outside 1.0 guarantees; the only BLE crate is experimental and AGPL, so BLE means our own transport on that API (owner's license call if the crate is used instead). Not MVP. Low-bandwidth links suit small commits and signals; large bodies wait for a fast path (chunk fetch is lazy, spec/sync.md §6). Recheck the iroh state before relying on any of this.
+Tess wants "just works" across LAN, Bluetooth and similar. LAN works in iroh today. Custom transports (BLE, WiFi Aware, mixnets) use an iroh API that is unstable and outside 1.0 guarantees; the only BLE crate is experimental and AGPL, so BLE means our own transport on that API (Tess's license call if the crate is used instead). Not MVP. Low-bandwidth links suit small commits and signals; large bodies wait for a fast path (chunk fetch is lazy, spec/sync.md §6). Recheck the iroh state before relying on any of this.
 
 ## Future option: Tor
-Hides IPs from hosts, relays and peers. Not needed now (owner). Paths: iroh custom transport, or a direct-host transport over Arti (onion services were not production-ready at last check).
+Hides IPs from hosts, relays and peers. Not needed now (Tess). Paths: iroh custom transport, or a direct-host transport over Arti (onion services were not production-ready at last check).
 
 ## Risks
 - **Single vendor.** iroh's NAT traversal is an n0 Internet-Draft on n0's own QUIC fork; open code, stable wire, no multi-implementation standard. Mitigated by decision 1; rust-libp2p is the fallback.
@@ -46,7 +46,7 @@ Mobile notifications need the host to wake a device with no live connection (spe
 - **UnifiedPush**: the host posts to per-label endpoint URLs directly, no proxy; an osis host can itself be a distributor. iOS needs APNs through the official proxy.
 - Rate limits: at most one wake per handle per short interval; events batch into one wake.
 - **Priority** (which writes wake): a per-upload wake bit (host learns which entries matter), a separate wake label per chat (overlap shows its pairing), or wake on everything with client-side filtering (battery). Undecided.
-- Owner calls when it comes up: official proxy beside the official host or separately operated; priority; who pays (accounts deferred, notes/sync.md Open).
+- Tess's calls when it comes up: official proxy beside the official host or separately operated; priority; who pays (accounts deferred, notes/sync.md Open).
 - Constraints to keep while implementing: per-entry upload-time attributes stay outside the hashed blob prefix (as the deposit flag does), so a wake bit never touches blob IDs; local-store root keys must be readable after first unlock while the device is locked, or a woken app cannot present the sync key.
 
 ## Implementation (osis-transport)

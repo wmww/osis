@@ -10,7 +10,7 @@
 - Blob key random per encryption (spec/crypto.md §5 "a fresh random 32-byte key per encryption"). Traced.
 - The wrap is stored at the host per entry (spec/sync.md §4 "entries (blob ID, wrap ...)") and is "AEAD under kdf("wrap", label read secret)" (spec/crypto.md §5); the label read secret derives from the group's read role secret (spec/sync.md §2). So the read secret opens every wrap of its epoch. Traced.
 - History boxes: "every distinct earlier secret_r of an established epoch the rotator holds, forks included" under the new epoch's secret, "written again unchanged" by every grant or re-seal (spec/crypto.md §4). So a current member opens every earlier epoch. Traced.
-- Rotation only on departures: spec/permissions.md §3; "No periodic rotation, no rotation policy (owner)" (notes/permissions.md Keys). Traced.
+- Rotation only on departures: spec/permissions.md §3; "No periodic rotation, no rotation policy (Tess)" (notes/permissions.md Keys). Traced.
 - Local shredding covers only the device: "Dropping a body means destroying every local copy ... its delta nonce" (spec/commits.md §5); wraps are a unit "a lingering wrap is a key" (notes/local-store.md Units). Nothing re-derives the blob key except the host's wrap plus a read secret. Traced.
 - Write and admin secrets open no wrap (only the read secret does, spec/crypto.md §5); delete keys derive from the level's secret: admin (level 1), the actor's write (2), the thing's write (3) (spec/crypto.md §7). So delete keys, stamps (write key, spec/sync.md §5) and registration (delete key = admin) survive erasing read-side chain keys. Traced.
 
@@ -48,12 +48,12 @@
 
 - Ratcheting the read role secret: the sync key is kdf(read secret) and "only an admin registers" a step (spec/sync.md §2); an hourly step per label per host, and certificates placed under earlier epochs become unreadable to newcomers (notes/permissions.md Certificates: counting only newest-epoch copies cost 40 KB per holder per rotation). Traced.
 - Per-sender chains: a per-sender marker in the clear links one author's blobs, which blind nodes must not learn (spec/requirements.md line 37); without it, readers trial-decrypt against every member's chain state (N members times skipped positions). Estimated.
-- Periodic re-seed: any writer may rotate read and write (spec/permissions.md §3); a re-seed alone is a smaller write (one box per holder, 1.2 KB). The owner rejected periodic rotation (notes/permissions.md Keys); offered as an option only.
+- Periodic re-seed: any writer may rotate read and write (spec/permissions.md §3); a re-seed alone is a smaller write (one box per holder, 1.2 KB). Tess rejected periodic rotation (notes/permissions.md Keys); offered as an option only.
 
 ## Requirements touched
 
 - Line 61 Deletion (forward secure where the platform offers erasable storage): strengthened, no text change.
-- Line 12 Decentralization "Total data may exceed what any node tracks": for chain actors, host content past the window is unreadable to anyone not already holding it. Needs an owner note.
+- Line 12 Decentralization "Total data may exceed what any node tracks": for chain actors, host content past the window is unreadable to anyone not already holding it. Needs a note from Tess.
 - Line 125 Out of scope (removed holder keeps its copies): unchanged.
 - Line 37 blind nodes: the hour index adds nothing beyond timing; a per-sender marker would.
 

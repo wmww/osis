@@ -178,7 +178,7 @@ fn expiring_write_before_entering_closure_goes_spec_sync_9() {
     assert_eq!(notes(&mut net, a, w), BTreeMap::new());
 }
 
-// notes/ephemeral.md Owner direction (the shared window): two holders keep editing while one is
+// notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
 // offline; on reconnect both converge on the merge, through a host
 #[test]
 fn shared_window_merges_after_offline_spec_sync_6() {

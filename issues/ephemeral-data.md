@@ -1,10 +1,10 @@
 # Ephemeral data: one state system for an app
-> Summary: Tracking issue for ephemeral data (in-memory things and schema-declared aspects; synced as ordinary signed commits marked ephemeral and kept in memory at nodes and hosts; values that live while their author is there are expiring writes the author renews (`osis::KeepAlive`, no lifetime of their own); signals folded in as `signal` aspects). The design is notes/ephemeral.md, revised after two owner reviews, with a four-step plan, all built.
+> Summary: Tracking issue for ephemeral data (in-memory things and schema-declared aspects; synced as ordinary signed commits marked ephemeral and kept in memory at nodes and hosts; values that live while their author is there are expiring writes the author renews (`osis::KeepAlive`, no lifetime of their own); signals folded in as `signal` aspects). The design is notes/ephemeral.md, revised after two reviews by Tess, with a four-step plan, all built.
 > Tags: api, node, sync
 
-Design and plan: notes/ephemeral.md (owner direction and reviews recorded there).
+Design and plan: notes/ephemeral.md (Tess's direction and reviews recorded there).
 
-## Owner reviews applied
+## Tess's reviews applied
 - Round 1: flags kept; ephemeral placements approved; state held by every holder, outlives its author, merges on reconnect; `presence` opt-in (since replaced: an expiring ephemeral write its author renews, notes/ephemeral.md Values that live while their author is there); no convergence exemption.
 - Round 2: `signal`, not `event`; ephemeral data like ordinary data, history "don't care"; simplification pass done: synced ephemeral data reuses commits, validity, sync and the host path (14 synced-only mechanisms down to 5; no new message types).
 - Round 3: no signal window: a signal is an ephemeral commit marked relay-only, pushed to current subscribers and held by nobody; late joiners see only ephemeral state.

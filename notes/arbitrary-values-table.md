@@ -1,7 +1,7 @@
 # Arbitrary values: audit table
-> Summary: Every picked number in core/, cli/ and spec/ with its class (notes/arbitrary-values.md), what 0 and infinity do, and why this value. The project's durable record of magic numbers: every change that adds, changes or removes a picked number updates its row in the same commit. Owner review of the tradeoff values: issues/magic-number-review.md.
+> Summary: Every picked number in core/, cli/ and spec/ with its class (notes/arbitrary-values.md), what 0 and infinity do, and why this value. The project's durable record of magic numbers: every change that adds, changes or removes a picked number updates its row in the same commit. Tess's review of the tradeoff values: issues/magic-number-review.md.
 
-Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** owner-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely), with the issue or fix. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, kit/ and app/.
+Classes: **P** performance switch between correct strategies (or a cache/batch size: only speed changes); **R** resource bound with a defined safe outcome past it; **M** minor consequence; **O** Tess-agreed tradeoff (protocol constant, spec); **X** not acceptable (only makes a bug unlikely), with the issue or fix. Left out: structural constants (CBOR tags, enum discriminants, byte lengths fixed by an algorithm, versions, table ids, values derived from listed ones), unit-test fixtures, kit/ and app/.
 
 ## Not acceptable
 | value | where | problem | status |
@@ -85,7 +85,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_STREAMS` 16, `MAX_INCOMING` 1024 (handshakes in progress; past it the oldest goes) | R | |
 | link `READ_CHUNK` 64 KiB, `READ_AHEAD` 16 | P | |
 | manage `Backoff` 0.5-60 s | M | |
-| quic `DEFAULT_PORT` 4040 (a `quic://` URL without a port; CLI `serve` listens on `quic://0.0.0.0:4040` when hosting without a listen URL) | O (owner pick; any free port works, spec/sync.md §10) | not a port (0 binds a random one, unreachable by URL) / no such port |
+| quic `DEFAULT_PORT` 4040 (a `quic://` URL without a port; CLI `serve` listens on `quic://0.0.0.0:4040` when hosting without a listen URL) | O (Tess's pick; any free port works, spec/sync.md §10) | not a port (0 binds a random one, unreachable by URL) / no such port |
 
 ### Node sync (`node/sync/`)
 | value | class | 0 / ∞ |

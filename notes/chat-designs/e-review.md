@@ -82,7 +82,7 @@ Read only, nothing run. Numbers marked "extrapolated" scale measured figures lin
   - Each message from that device needs listing. An unsynced chat loses that device's posts (§5.3).
   - The frontier is a chain certificate placed under every label the account writes to (issues/frontier-certificate-cost.md).
   - Routine phone replacement, not rare moderation, triggers this. Compaction cannot shrink it here.
-- **Possible core fix, for the owner:** per-session hash chains, where each commit names its session predecessor and the frontier lists heads. Costs 32 B per commit, and frontiers fall to 32 B per session.
+- **Possible core fix, for Tess:** per-session hash chains, where each commit names its session predecessor and the frontier lists heads. Costs 32 B per commit, and frontiers fall to 32 B per session.
 
 ## 6. Scale
 

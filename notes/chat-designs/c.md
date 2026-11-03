@@ -32,10 +32,10 @@ Who sent this, one rule: a message is shown as sent by the account owning its M,
 - **Add-only member list:** a new core aspect read as the member list for the closure; a non-admin delta holds only new elements; resets and compaction snapshots need admin. Required: without it one member's write makes hosts delete another member's history.
 - **Entry-level API:** key-range read, change events naming the keys touched, per-entry received time.
 - **Keep-read-only policy on removal** (product choice for kicked and leaving members, never for device removal).
-- **Sender card in invite requests** (owner: yes). **Wake relay** (owner: does not block).
+- **Sender card in invite requests** (Tess: yes). **Wake relay** (Tess: does not block).
 - Considered and dropped: delegated purge for moderators (binds only honest senders, so it matches hide plus cooperative purge).
 
-## Sorting into the owner's categories
+## Sorting into Tess's categories
 
 - **Default in the default app:** kicked members keep own messages and others keep their history; block is local; disappearing timer per chat; edits leave no old text; deletion shows a tombstone.
 - **Setting:** wipe on kick; show no deletion trace; read position private; members may invite; permanent chat (`nobody` retention, honest clients only).
