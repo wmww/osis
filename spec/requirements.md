@@ -112,7 +112,7 @@ Binds released formats only; until a stable release formats change in place (spe
 
 ## API
 - Plain values and listeners. No CRDT concepts, no conflict UI, no correctness that depends on "surfacing it to the user". Diagnostics are informational.
-- Atomic, not isolated: concurrent changes merge, so app invariants must hold under merge.
+- Atomic, not isolated: concurrent changes merge, so app invariants must hold under merge. Exception: a node may show a commit without a part that is still to arrive when a later snapshot of that part's aspect, by a possible writer of it, is held.
 - Untyped access always works on any stored data.
 - Large values are usable both materialized and streamed.
 - Never panic on peer input. A wrong local clock harms only that node's own writes.
