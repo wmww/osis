@@ -93,6 +93,51 @@ thread_local! {
     static FULL_PASSES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+/// When each upload, deposit, delete and registration first reached each host: (host, label,
+/// blob or step ID, 'U', 'P', 'D' or 'R') -> virtual ms (`with_arrivals`).
+pub type Arrivals = BTreeMap<(usize, LabelId, Vec<u8>, char), u64>;
+
+thread_local! {
+    static ARRIVALS: std::cell::RefCell<Option<Arrivals>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Runs `f`, noting what reaches the hosts of the sims it runs on this thread, and when.
+pub fn with_arrivals<T>(f: impl FnOnce() -> T) -> (T, Arrivals) {
+    ARRIVALS.with(|a| *a.borrow_mut() = Some(Arrivals::new()));
+    let r = f();
+    (r, ARRIVALS.with(|a| a.borrow_mut().take()).unwrap_or_default())
+}
+
+fn note_arrivals(s: usize, at: u64, bytes: &[u8]) {
+    use osis_proto::Message as M;
+    ARRIVALS.with(|a| {
+        let mut a = a.borrow_mut();
+        let Some(a) = a.as_mut() else { return };
+        let mut d = osis_proto::FrameDecoder::default();
+        d.push(bytes);
+        while let Ok(Some(f)) = d.next_frame() {
+            let mut add = |l: LabelId, id: Vec<u8>, op: char| {
+                a.entry((s, l, id, op)).or_insert(at);
+            };
+            match M::decode(&f) {
+                Ok(M::Upload { label, entries, .. } | M::Sync { label, entries, .. }) => {
+                    for e in entries {
+                        add(label, osis_label::blob_id(&e.blob).0.to_vec(), 'U');
+                    }
+                }
+                Ok(M::Deposit { label, blob, .. }) => add(label, osis_label::blob_id(&blob).0.to_vec(), 'P'),
+                Ok(M::Delete { label, items, .. }) => {
+                    for i in items {
+                        add(label, i.blob.0.to_vec(), 'D');
+                    }
+                }
+                Ok(M::Register { label, step, .. }) => add(label, step.id().0.to_vec(), 'R'),
+                _ => {}
+            }
+        }
+    });
+}
+
 /// Runs `f` with every node added meanwhile on this thread judging everything at each pass
 /// (`SyncConfig::full_passes`): the reference the work sets are compared against.
 pub fn with_full_passes<T>(f: impl FnOnce() -> T) -> T {
@@ -991,6 +1036,7 @@ impl NetSim {
             (End::Node(n, c), Payload::Up) if alive => self.feed(n, Event::Up { conn: c })?,
             (End::Node(n, c), Payload::Bytes(b)) if alive => self.feed(n, Event::Bytes { conn: c, bytes: b })?,
             (End::Hub(s, hc), Payload::Bytes(b)) if alive => {
+                note_arrivals(s, self.elapsed, &b);
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b)).unwrap_or_default();
                 self.hub_out(s, out)?;
             }

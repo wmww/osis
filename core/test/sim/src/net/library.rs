@@ -4,7 +4,7 @@
 //! outcome, and ends with the quiescent invariants (`check`).
 
 use super::scenarios::{DAY_MS, clock, newest_read, persons, shared_group, sim};
-use super::{NetSim, NetWeights, Party};
+use super::{NetConfig, NetSim, NetWeights, Party};
 use crate::dice::Dice;
 use crate::harness::{Report, Res};
 use crate::workload;
@@ -1118,5 +1118,91 @@ pub fn concurrent_writers(seed: u64) -> Res<Report> {
         }
     }
     sim.run_until_quiescent(40)?;
+    sim.finish()
+}
+
+/// Honest flows across labels, no faults (`work_sets::honest_flows_wait_for_no_resync`): each step
+/// settles with time standing still, then a few resyncs pass. A label a step concerns and that
+/// was left out of its marks shows as an upload at the next resync: a device paired, writes by
+/// each, grants, a thing's first label, removals of a person and of a device, a role lowered, a
+/// holder group and its reader removed, an invite made, redeemed and revoked.
+pub fn honest_flows(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x7a);
+    let mut sim = NetSim::new("honest_flows", seed, NetConfig { faults: Default::default(), weights: NetWeights::default(), ..NetConfig::default() });
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let e = sim.add_node(&[s], clock(&mut d))?;
+    let a2 = sim.add_node(&[s], clock(&mut d))?;
+    let b2 = sim.add_node(&[s], clock(&mut d))?;
+    let z = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc, pe, pz] = persons(&mut sim, [a, b, c, e, z], [s, s, s, s, s])?;
+    let g1 = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read)])?;
+    let g2 = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Write), (pc, Role::Read)])?;
+    let h = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
+    let g3 = sim.group_with(a, pa, &[s], true)?;
+    sim.item(a, g3)?;
+    let gb = shared_group(&mut sim, b, pb, &[s], &[(pa, Role::Read)])?;
+    let gb2 = shared_group(&mut sim, b, pb, &[s], &[(pc, Role::Write)])?;
+    let mut others = Vec::new();
+    for _ in 0..4 {
+        let o = shared_group(&mut sim, a, pa, &[s], &[(pe, Role::Read)])?;
+        sim.item(a, o)?;
+        others.push(o);
+    }
+    let t1 = sim.item(a, g1)?;
+    let t2 = sim.item(a, g2)?;
+    sim.item(b, gb)?;
+    sim.item(b, gb2)?;
+    sim.quiet(40)?;
+    macro_rules! op {
+        ($name:expr, $body:expr) => {{
+            sim.note(format!("step: {}", $name));
+            $body;
+            sim.settle()?;
+            for _ in 0..4 {
+                sim.advance(61_000)?;
+                sim.settle()?;
+            }
+        }};
+    }
+    op!("device paired a2", sim.pair(a, a2, pa)?);
+    op!("device paired b2", sim.pair(b, b2, pb)?);
+    op!("write by b2 acting for pb", { let mut m = Mutation::new(); m.act_as(pb); m.set(t2, &workload::REG, &Value::Str("x".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b2, m)?; });
+    op!("write by b", { let mut m = Mutation::new(); m.set(t2, &workload::REG, &Value::Str("y".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(b, m)?; });
+    op!("write by a2", add_tag(&mut sim, a2, t1, "x")?);
+    op!("grant g1 to c", sim.grant(a, g1, pc, Role::Read)?);
+    op!("grant g2 to e", sim.grant(a, g2, pe, Role::Write)?);
+    op!("write by e under g2", { let mut m = Mutation::new(); m.set(t2, &workload::REG, &Value::Str("e".into())).map_err(|e| sim.fail(e.to_string()))?; sim.commit(e, m)?; });
+    op!("grant g3 to group h", sim.grant(a, g3, h, Role::Read)?);
+    let u = sim.thing_with_secrets(a, pa)?;
+    op!("grant unlabeled u to h", sim.grant(a, u, h, Role::Read)?);
+    op!("first label of u", { let addrs = sim.addresses(&[s]); let r = sim.sync(a)?.create_label(&u, addrs); let (_, acts) = r.map_err(|e| sim.fail(e.to_string()))?; sim.after_node(a, acts)?; });
+    op!("remove pb from g1", sim.remove(a, g1, pb)?);
+    op!("write by a after", add_tag(&mut sim, a, t1, "after")?);
+    op!("lower pb on g2 to read", demote(&mut sim, a, g2, pb, Some(Role::Read), PreSync::Synced)?);
+    let bt2 = sim.tid(b2)?;
+    op!("remove device b2 from pb", demote(&mut sim, b, pb, bt2, None, PreSync::Synced)?);
+    op!("remove pc from h", sim.remove(a, h, pc)?);
+    op!("remove h from g3", sim.remove(a, g3, h)?);
+    let at2 = sim.tid(a2)?;
+    op!("remove device a2 from pa", demote(&mut sim, a, pa, at2, None, PreSync::Synced)?);
+    // an invite
+    let target = others.first().copied().ok_or_else(|| sim.fail("no group"))?;
+    let spec = LinkSpec { target, role: Role::Read, until: None, hosts: sim.addresses(&[s]), peers: Vec::new(), single_use: false };
+    let r = sim.engine(a)?.create_link(&pa, &spec);
+    let (link, _, done) = r.map_err(|e| sim.fail(format!("create_link: {e}")))?;
+    op!("create link", sim.carry(a, done)?);
+    let l = osis_node::Identity::from_seed(link.seed.clone()).tid();
+    op!("follow link", { let held = sim.engine(z)?.hold_key_actor(link.seed.clone()).map_err(|e| sim.fail(e.to_string()))?; let acts = sim.sync(z)?.follow(held, link.k, link.k_label, link.hosts.clone()); sim.actions(z, acts)?; });
+    let r = sim.engine(z)?.redeem(&link, &pz, false);
+    let done = r.map_err(|e| sim.fail(format!("redeem: {e}")))?;
+    op!("redeem", { sim.engine(z)?.drop_key_actor(&l); sim.carry(z, done)?; });
+    let r = sim.engine(a)?.finalize_link(&link.k, &l);
+    let done = r.map_err(|e| sim.fail(format!("finalize: {e}")))?;
+    op!("revoke link", sim.carry(a, done)?);
+    sim.excused.extend([a2, b2]);
+    sim.quiet(40)?;
     sim.finish()
 }

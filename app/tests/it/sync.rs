@@ -182,6 +182,7 @@ fn remote_delete_of_the_open_thing() {
 
 /// A synced thing may hold anything: wrong types, unknown enum cases. Every read the screens
 /// make treats such an aspect as absent instead of failing the whole screen.
+/// (Not core aspects: a commit whose value does not fit a core type is malformed.)
 #[test]
 fn malformed_aspects_do_not_break_reads() {
     let (a, _) = two();
@@ -194,8 +195,6 @@ fn malformed_aspects_do_not_break_reads() {
         Ok(())
     };
     a.db.write_with(|w| {
-        bad(w, "name.0", Value::Int(7))?;
-        bad(w, "body.0", Value::Bool(true))?;
         bad(w, "osis_app:view.0", Value::Enum(9, None))?;
         bad(w, "osis_app:color.0", Value::Int(1))?;
         bad(w, "event:start.0", Value::Str("tomorrow".into()))?;
@@ -203,7 +202,6 @@ fn malformed_aspects_do_not_break_reads() {
         bad(w, "event:end.0", Value::Enum(2, Some(Box::new(Value::Int(i64::MAX)))))?;
         bad(w, "contact:org.0", Value::Str("Acme".into()))?;
         bad(w, "contact:emails.0", Value::List(vec![]))?;
-        bad(w, "tag.0", Value::Int(3))?;
         Ok(())
     })
     .unwrap();
