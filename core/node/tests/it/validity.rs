@@ -3097,8 +3097,8 @@ fn inflated_snapshot_claims_count_nothing_spec_crdt_8() {
     }
 }
 
-// spec/commits.md §5 (a dropped snapshot keeps its frontiers and `Absorbed`), spec/crdt.md §8
-// (they are no receipts), spec/permissions.md §5.1, §5.2: Bob's map entries reach a fresh node
+// spec/commits.md §5 (a dropped snapshot stands in from its header), spec/crdt.md §8
+// (frontiers are no receipts), spec/permissions.md §5.1, §5.2: Bob's map entries reach a fresh node
 // only through Carol's snapshot S (it holds his header, not his part); Alice's overwrite of one
 // entry kills it in S, which drops at its keep-at-most bound with the other entry still live.
 // The node's frontier for Bob lists his received commit, the same before and after the drop
