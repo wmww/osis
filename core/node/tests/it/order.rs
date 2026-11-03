@@ -3181,14 +3181,16 @@ fn arrival_order_purge_import_large_spec_commits_5() {
     run("arrival_order_purge_import_large_spec_commits_5", 5000..5060, 40, LARGE, purge_import_history);
 }
 
-// spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the owner's snapshot #22
-// carries the moved copy's register write `m0` (an origin's dot) below B's `v4`; the re-import of
-// that origin is header-only (its author's earlier request on the origin dropped it at creation)
-// and a held request names it, so both nodes drop #22 and hold `m0` value-less. Where B's `reset` (#30) came valid and superseded `m0` before
-// the drop, then turned invalid (A's demotion of B came valid last), its un-merge has no body or
-// residue to give the value-less `m0` back, and B's older `v1` shows; where `m0` was the winner
-// when purged, the state keeps it value-less and reads nothing. Given #22 again (it joins
-// value-less, `both_dropped_flips`), both read nothing.
+// spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the copy holds two register
+// writes stamped alike under imported origins' dots, B's `v1` (import #27, its dot sorting above)
+// and the owner's `m0` (import #26). The owner's snapshot #22 carries `v1` below B's `v4`; #27 is
+// header-only (its author's earlier request on that origin dropped it at creation) and the held
+// request #28 names it, so both nodes drop #22 and hold `v1` value-less. Where B's `reset` (#30)
+// came valid and superseded `v1` before the drop, then turned invalid (A's demotion of B came valid
+// last), its un-merge has no body or residue to give the value-less `v1` back, and the older `m0`
+// shows (no purged value: nothing names #26); where `v1` was the winner when purged, the state
+// keeps it value-less and reads nothing. Given #22 again (it joins value-less,
+// `both_dropped_flips`), both read nothing.
 #[test]
 fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     use Step::*;
@@ -3199,7 +3201,8 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
     let differs = alike(&want, &got).expect("the reads differ");
-    assert!(differs.contains("reads on") && differs.contains("v1"), "{differs}");
+    assert!(differs.contains("reads on") && differs.contains("m0"), "{differs}");
+    assert_eq!(purged_import_held(&mut deliver(&played, &order)), None, "the stale value shown is no purged one");
     let copy = format!("{:?}", played.things[1]);
     assert!(flipped(&played, &order, Way::Plain, &copy, "t:reg.0"), "the order flips");
     assert!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false).is_some(), "no flip, nothing given");
