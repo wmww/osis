@@ -345,36 +345,44 @@ fn links(v: &Value, out: &mut Vec<osis::schema::osis_base::Link>) {
     }
 }
 
-// spec/data-model.md §6 (unreadable link): a message over CHUNK_THRESHOLD whose chunk is not here reads not fetched; when the chunk arrives the watch hears the entry again, with its text
+// spec/data-model.md §6 (unreadable link): a message over CHUNK_THRESHOLD whose chunk is not here reads not fetched; when the chunk arrives the watch hears the entry again, with its text. Two such messages: the first chunk's arrival re-delivers both, and the second, still missing, is noted again for its own chunk's arrival
 #[test]
 fn watch_hears_a_chunk_arrive_spec_dm_6() {
     use osis::internals::Internals;
     let Room { mut w, a, b, c, .. } = room(Options::default());
-    let big = "x".repeat(200 << 10);
-    let id = post(&a, c, &big).unwrap();
+    let bigs = ["x", "y"].map(|s| s.repeat(200 << 10));
+    let ids = bigs.clone().map(|t| post(&a, c, &t).unwrap());
     w.run();
-    // Bob loses the body's root blob
-    let ak = osis::Ak::new(format!("{MSGS}y{}.0", id.year)).unwrap();
-    let (rows, _) = b.engine(|e| e.history(&c, &ak, HistoryFrom::Newest, 1, usize::MAX)).unwrap();
-    let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &rows[0].body else { panic!("{:?}", rows[0].body) };
-    let mut ls = Vec::new();
-    links(v, &mut ls);
-    let blob = ls[0].blob;
-    let bytes = b.engine(|e| e.blob(&blob)).unwrap().unwrap();
-    b.engine(|e| {
-        e.run(|tx| {
-            tx.txn.delete_blob(&blob);
-            Ok(())
+    // Bob loses each body's root blob
+    let lost = ids.map(|id| {
+        let ak = osis::Ak::new(format!("{MSGS}y{}.0", id.year)).unwrap();
+        let row = b.engine(|e| e.history_entry(&c, &ak, &id.pos.id, usize::MAX)).unwrap().unwrap();
+        let osis::internals::node::engine::history::RowBody::Held(Some(v)) = &row.body else { panic!("{:?}", row.body) };
+        let mut ls = Vec::new();
+        links(v, &mut ls);
+        let blob = ls[0].blob;
+        let bytes = b.engine(|e| e.blob(&blob)).unwrap().unwrap();
+        b.engine(|e| {
+            e.run(|tx| {
+                tx.txn.delete_blob(&blob);
+                Ok(())
+            })
         })
-    })
-    .unwrap();
+        .unwrap();
+        (blob, bytes)
+    });
     let (tx, rx) = std::sync::mpsc::channel();
     let _s = watch(&b, c, move |_, e| tx.send(e).unwrap()).unwrap();
-    assert_eq!(entry_at(&b, c, &id).unwrap().unwrap().body, Body::NotFetched);
-    b.engine(|e| e.put_blobs(vec![(blob, bytes)])).unwrap();
-    b.settle();
-    let got: Vec<_> = rx.try_iter().collect();
-    assert!(got.iter().any(|e| matches!(e, Event::Entry(e) if e.id == id && e.body == Body::Text(big.clone()))), "{:?}", got.iter().map(|e| match e { Event::Entry(e) => format!("{:?}", e.body).chars().take(40).collect(), e => format!("{e:?}") }).collect::<Vec<String>>());
+    for id in &ids {
+        assert_eq!(entry_at(&b, c, id).unwrap().unwrap().body, Body::NotFetched);
+    }
+    for (i, (blob, bytes)) in lost.into_iter().enumerate() {
+        b.engine(|e| e.put_blobs(vec![(blob, bytes)])).unwrap();
+        b.settle();
+        let got: Vec<_> = rx.try_iter().collect();
+        let shown = || got.iter().map(|e| match e { Event::Entry(e) => format!("{:?}", e.body).chars().take(40).collect(), e => format!("{e:?}") }).collect::<Vec<String>>();
+        assert!(got.iter().any(|e| matches!(e, Event::Entry(e) if e.id == ids[i] && e.body == Body::Text(bigs[i].clone()))), "{i}: {:?}", shown());
+    }
 }
 
 // spec/requirements.md, notes/client-port.md §3: a restart reads the same; a thin client of a member reads and is its own sender
