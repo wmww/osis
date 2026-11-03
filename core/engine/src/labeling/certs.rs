@@ -171,9 +171,8 @@ impl Engine {
         }
         // and to each actor it has acted for (`validity::acts_for`): usually on the chain to
         // `g` already, the node reaching `g` through it
-        let actors: Vec<Tid> = self.core.acting().collect();
-        for a in actors {
-            let certs = self.chain_to(&me, &a);
+        for a in self.core.acting().iter() {
+            let certs = self.chain_to(&me, a);
             self.cert_parts(&certs, &mut out);
         }
         out

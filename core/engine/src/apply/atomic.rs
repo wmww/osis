@@ -575,6 +575,7 @@ fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize,
             }
             tx.txn.put_local(&key, &osis_base::encode(&rec.to_value()), Shred::No)?;
             tx.core.ix.held.create(rec);
+            tx.core.inbox_moved(&a.tid);
             if persisting {
                 continue;
             }

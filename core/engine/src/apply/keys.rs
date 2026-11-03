@@ -467,6 +467,8 @@ pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob
         tx.core.touch();
         if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new()) {
             crate::flows::save_epochs(tx, &a)?;
+        } else if tx.core.reading_full(&a) {
+            tx.core.waits.box_refused(*id);
         }
     }
     Ok(())
@@ -513,8 +515,6 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.core.touch();
         tx.core.ix.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
-        // room in the reading-only budget (`Core::ingest_view`)
-        tx.core.waits.wake_boxes();
     }
     crate::rotation::mark_lost_due(tx, lost)
 }
@@ -727,6 +727,43 @@ mod tests {
         let held = |lp: &LocalPeer, i: usize| lp.peers[i].engine.core.ix.secrets.get(&t).is_some_and(|e| e.read.holds_any());
         assert!(held(&lp, 2), "under the cap: read");
         assert!(!held(&lp, 1), "at the cap: not read");
+    }
+
+    // spec/crypto.md §4: a genuine grant past the cap reads its boxes once an applied one frees a
+    // place, or it waits for good on the label those secrets open.
+    #[test]
+    fn refused_boxes_read_when_a_grant_applies_spec_crypto_4() {
+        let mut lp = LocalPeer::new(2, 908, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let b = lp.peers[1].engine.tid();
+        let thing = |lp: &mut LocalPeer| {
+            let mut m = Mutation::new();
+            let t = lp.peers[0].engine.new_thing(&mut m, me);
+            m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+            let c = lp.peers[0].commit(m).unwrap().unwrap();
+            (t, c)
+        };
+        let ((t1, c1), (t2, _)) = (thing(&mut lp), thing(&mut lp));
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let g1 = *lp.peers[0].engine.grant(&t1, &b, &edge).unwrap().commits.last().unwrap();
+        let g2 = *lp.peers[0].engine.grant(&t2, &b, &edge).unwrap().commits.last().unwrap();
+        let (p1, p2) = (lp.peers[0].engine.package(&g1).unwrap().unwrap(), lp.peers[0].engine.package(&g2).unwrap().unwrap());
+        for n in 0..MAX_READING_ACTORS - 1 {
+            let n = u8::try_from(n).unwrap();
+            lp.peers[1].engine.core.ix.secrets.insert(Tid::from_bytes([n; 15]), reading_only(n, CommitId([n; 32])));
+        }
+        lp.deliver(1, &p1).unwrap();
+        lp.deliver(1, &p2).unwrap();
+        let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.core.ix.secrets.get(t).is_some_and(|e| e.read.holds_any());
+        assert!(held(&lp, &t1));
+        assert!(!held(&lp, &t2), "past the cap");
+        // the first grant's thing arrives: it applies, its secret is checked, a place is free
+        let created = lp.peers[0].engine.package(&c1).unwrap().unwrap();
+        lp.deliver(1, &created).unwrap();
+        lp.peers[1].engine.reexamine().unwrap();
+        assert!(!lp.peers[1].engine.pending().iter().any(|(c, _)| *c == g1), "applied");
+        assert!(held(&lp, &t2), "read once a place is free");
     }
 
     /// Peer 0 owns thing `t` (`x:a.0` = 1); peer 1 is the grantee, holding nothing of peer 0;

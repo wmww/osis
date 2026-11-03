@@ -369,7 +369,7 @@ fn local_work_sets_match_full_passes_spec_sync_5() {
         assert_eq!(w, f, "step {i}: work sets vs full passes");
     }
     assert_eq!(work.len(), full.len());
-    assert!(wp.iter().zip(&fp).all(|(w, f)| w.0 < f.0 && w.1 == f.1), "fewer full passes with work sets: {wp:?} vs {fp:?}");
+    assert!(wp.iter().zip(&fp).all(|(w, f)| w.0 < f.0 && w.1 <= f.1), "fewer full passes with work sets: {wp:?} vs {fp:?}");
 }
 
 

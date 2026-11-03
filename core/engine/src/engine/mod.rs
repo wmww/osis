@@ -32,7 +32,7 @@ use crate::events::{Event, Events, Origin};
 use crate::identity::Identity;
 use clock::Hlc;
 use osis_commit::{CommitBlob, Form, Header};
-use osis_base::{Ak, Clock, CommitId, Tid, Ts, WallMs};
+use osis_base::{Ak, Clock, CommitId, LabelId, Tid, Ts, WallMs};
 use osis_crdt::{Dot, Fragment, SourceKind};
 use osis_crypto::{CryptoRngCore, SeededRng};
 use osis_keys::ActorEpochs;
@@ -568,6 +568,14 @@ pub struct Core {
     /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster, same
     /// clock horizon); cleared with it.
     pub reseal_quiet: BTreeSet<Tid>,
+    /// `Engine::inbox_label`'s answers by actor, and the things on their owner chains above them:
+    /// a write there can move many answers (`inbox_moved`).
+    pub inbox_labels: BTreeMap<Tid, Option<LabelId>>,
+    pub inbox_uppers: BTreeSet<Tid>,
+    /// `acting` at this engine generation.
+    acting_memo: Option<(u64, Arc<Vec<Tid>>)>,
+    /// Actors with secrets held by inbox label, the topmost first (`Engine::inbox_actors`).
+    pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
@@ -765,15 +773,30 @@ impl Core {
     }
 
     /// The actors this node has acted for in a held commit: its chain certificates for them go
-    /// under every label it places in (spec/permissions.md §4). O(`by_actor` keys).
-    pub fn acting(&self) -> impl Iterator<Item = Tid> + '_ {
-        let me = self.id.tid();
-        self.ix.by_actor.keys().filter(move |(_, au)| *au == me).map(|(a, _)| *a)
+    /// under every label it places in (spec/permissions.md §4). O(`by_actor` keys) when the engine
+    /// moved, so a pass of a quiet node reads no index of every commit's author.
+    pub fn acting(&mut self) -> Arc<Vec<Tid>> {
+        let read = |c: &Core| -> Vec<Tid> {
+            let me = c.id.tid();
+            c.ix.by_actor.keys().filter(|(_, au)| *au == me).map(|(a, _)| *a).collect()
+        };
+        match &self.acting_memo {
+            Some((g, v)) if *g == self.generation => {
+                debug_assert_eq!(**v, read(self), "acting cached");
+                v.clone()
+            }
+            _ => {
+                let v = Arc::new(read(self));
+                self.acting_memo = Some((self.generation, v.clone()));
+                v
+            }
+        }
     }
 
     /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn role_changed(&mut self) {
+        self.inbox_actors = None;
         self.head_keys.clear();
         self.holders_named.clear();
         self.reseal_quiet.clear();
@@ -846,7 +869,21 @@ impl Core {
     }
 
     /// Notes that the running transaction writes the state of `k` (evicted on rollback).
+    /// Drops what `Engine::inbox_label` knew through `t`'s `keys.0`, `label.0` or creation record.
+    pub fn inbox_moved(&mut self, t: &Tid) {
+        self.inbox_actors = None;
+        if self.inbox_uppers.contains(t) {
+            self.inbox_labels.clear();
+            self.inbox_uppers.clear();
+        } else {
+            self.inbox_labels.remove(t);
+        }
+    }
+
     pub fn wrote(&mut self, k: (Tid, Ak)) {
+        if matches!(k.1.as_str(), "keys.0" | "label.0") {
+            self.inbox_moved(&k.0);
+        }
         if k.1.as_str() == "label.0" {
             self.labels.remove(&k.0);
         }
@@ -909,6 +946,9 @@ impl Core {
                 self.pages.remove(&k);
             }
         }
+        self.inbox_labels.clear();
+        self.inbox_uppers.clear();
+        self.inbox_actors = None;
         self.ix.rollback();
         // the timelines follow the restored held set; validity flags are restored with `commits`
         let touched = self.ix.held.take_touched();
@@ -929,6 +969,10 @@ impl Core {
             head_keys: HashMap::new(),
             holders_named: HashMap::new(),
             reseal_quiet: BTreeSet::new(),
+            inbox_labels: BTreeMap::new(),
+            inbox_uppers: BTreeSet::new(),
+            acting_memo: None,
+            inbox_actors: None,
             pages: HashMap::new(),
             timelines: Timelines::new(),
             walk_cache_min: index::WALK_CACHE_MIN,

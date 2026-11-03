@@ -435,6 +435,11 @@ impl RoleEpochs {
         v
     }
 
+    /// How many secrets are held, reading-only ones included.
+    pub fn secret_count(&self) -> usize {
+        self.map.values().filter(|i| i.secret.is_some()).count()
+    }
+
     /// Whether any secret is held, reading-only ones included.
     pub fn holds_any(&self) -> bool {
         self.map.values().any(|i| i.secret.is_some())

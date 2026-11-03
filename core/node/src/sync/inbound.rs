@@ -14,8 +14,8 @@ use osis_base::{BlobId, Classified, CommitId, ErrorClass, LabelId, Tid};
 use osis_crypto::{Secret32, VerifyingKey, role_kem};
 use osis_label::Step;
 use osis_proto::{Code, Command, Cursor, Event as LogEvent};
-use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// An opened inbox blob: its prefix expiry (none: never), the aspect indexes its commit
 /// carries, the things its payload names, and its commit's author and signature (an invite
@@ -391,7 +391,7 @@ impl SyncEngine {
         }
         // an inbox blob opens by its bytes (the read KEM key of an epoch learned later): kept,
         // under a smaller cap
-        let inbox = !self.inbox_of(&l).is_empty();
+        let inbox = self.inbox_label_here(&l);
         let cap = if inbox { self.cfg.unvouched_cap >> 4 } else { self.cfg.unvouched_cap };
         let mut held = self.state.present_at(&host, &l).into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| e.kind == Kind::Unknown && e.stamp.is_none())).count();
         let mut gone = Vec::new();
@@ -439,32 +439,18 @@ impl SyncEngine {
         self.engine.read_secrets(g)
     }
 
-    /// Actor `a`'s inbox label: named in its `keys.0`, or the nearest one named up its owner
-    /// chain; an ownerless thing that names none, its own label (spec/sync.md §2; bounded by
-    /// `MAX_OWNER_DEPTH`).
     pub(crate) fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
-        let chain: Vec<Tid> = self.engine.owner_chain(a).collect();
-        if let Some(i) = chain.iter().find_map(|t| self.engine.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)) {
-            return Some(i.label);
-        }
-        let top = chain.last().filter(|t| matches!(self.engine.core.created(t), Some(osis_base::CreationRecord::Ownerless { .. })))?;
-        self.engine.labels_of(top).iter().filter(|l| !l.replaced).max_by_key(|l| l.index).map(|l| l.id)
+        self.engine.inbox_label(a)
     }
 
-    /// Actors whose inbox is `l` (`inbox_label`), with their held read KEM secrets.
     /// Whether `l` is the inbox of an actor here: its unopened entries may be grants.
     pub(crate) fn inbox_label_here(&mut self, l: &LabelId) -> bool {
-        !self.inbox_of(l).is_empty()
+        self.engine.inbox_actors().contains_key(l)
     }
 
-    fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
-        self.inbox_actors(l).into_iter().map(|a| (a, self.read_secrets(&a))).collect()
-    }
-
-    /// Actors with held secrets whose inbox is `l`.
+    /// Actors with held secrets whose inbox is `l`, the topmost first.
     pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
-        let actors: Vec<Tid> = self.engine.core.ix.secrets.keys().copied().collect();
-        actors.into_iter().filter(|a| self.inbox_label(a) == Some(*l)).collect()
+        self.engine.inbox_actors().get(l).cloned().unwrap_or_default()
     }
 
     /// Opens entries of `l` not opened yet, ingests what they carry (role commits first), and
@@ -487,7 +473,7 @@ impl SyncEngine {
             if self.secrets_count() == before {
                 break;
             }
-            todo = self.state.entries.iter().filter(|(_, e)| e.kind == Kind::Unknown).map(|(k, _)| *k).collect();
+            todo = self.state.of_tag(0).into_iter().collect();
         }
         self.engine.reexamine()?;
         self.reread_boxes |= self.secrets_count() != start;
@@ -635,7 +621,20 @@ impl SyncEngine {
     }
 
     pub(crate) fn secrets_count(&self) -> usize {
-        self.engine.core.ix.secrets.values().map(|e| e.read.held_newest_first().len() + e.write.held_newest_first().len() + e.admin.held_newest_first().len()).sum()
+        let count = || self.engine.core.ix.secrets.values().map(|e| e.read.secret_count() + e.write.secret_count() + e.admin.secret_count()).sum();
+        // secrets move only with the engine
+        let at = (self.engine.core.generation, self.engine.core.memory_generation);
+        match self.secrets_counted.get() {
+            Some((k, n)) if k == at => {
+                debug_assert_eq!(n, count(), "secrets_count cached");
+                n
+            }
+            _ => {
+                let n = count();
+                self.secrets_counted.set(Some((at, n)));
+                n
+            }
+        }
     }
 
     fn open_one(&mut self, l: LabelId, b: BlobId, commits: &mut Vec<(Vec<u8>, osis_commit::CommitBlob)>) -> Result<()> {
@@ -681,12 +680,12 @@ impl SyncEngine {
             }
             return Ok(());
         }
-        let Some((prefix, payload)) = self.open_inbox(&l, &bytes) else { return Ok(()) };
+        let Some((actor, prefix, payload)) = self.open_inbox_as(&l, &bytes) else { return Ok(()) };
         let pt = osis_base::encode(&payload.commit);
         let c = osis_commit::CommitBlob::decode(&pt).ok();
         let o = c.as_ref().map(|c| Opened::new(&prefix, c, payload.things.clone()));
         // its labels are followed only once vetted (`vet_inbox_hints`)
-        self.inbox_opened.insert((l, b), o.clone());
+        self.inbox_opened.insert((l, b), o.clone().map(Arc::new));
         let (Some(c), Some(o)) = (c, o) else {
             e.kind = Kind::Inbox(None);
             self.state.set_entry(l, b, e);
@@ -704,9 +703,10 @@ impl SyncEngine {
             // thing read
             commits.extend(chain_commits(&payload));
             commits.push((pt, c));
-            // the home labels' passes place its copy (`inbox_certificates`); applying starts them only
-            // if the commit is new here, and a sender's own deposit under its own inbox is not
-            self.mark_dirty();
+            // the home label's pass of the actor it is sealed to places its copy
+            // (`inbox_certificates`); applying starts it only if the commit is new here, and a
+            // sender's own deposit under its own inbox is not
+            self.mark_dirty_of(&BTreeSet::from([actor]));
         }
         self.state.set_entry(l, b, e);
         Ok(())
@@ -754,10 +754,11 @@ impl SyncEngine {
 
     /// The request entries under the synced labels: (label, blob, commit).
     fn request_entries(&mut self) -> Vec<(LabelId, BlobId, CommitId)> {
-        let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
-        labels
-            .iter()
-            .flat_map(|l| self.state.of_kind(l, 5).into_iter().map(move |b| (*l, b)))
+        self.labels();
+        self.state
+            .of_tag(5)
+            .into_iter()
+            .filter(|(l, _)| self.synced.ids.contains(l))
             .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
                 Some(Kind::Request(c)) => Some((l, b, *c)),
                 _ => None,
@@ -850,17 +851,32 @@ impl SyncEngine {
     /// prefix no inbox blob has (an expiry, no commitments: spec/wire.md §9) costs no KEM: an
     /// ownerless group's label is its inbox too, with every chunk of its content under it.
     fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(osis_label::Prefix, osis_label::InboxPayload)> {
+        self.open_inbox_as(l, bytes).map(|x| (x.1, x.2))
+    }
+
+    /// `open_inbox`, with the actor it is sealed to.
+    fn open_inbox_as(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(Tid, osis_label::Prefix, osis_label::InboxPayload)> {
         let p = osis_label::Prefix::parse(bytes).ok()?;
         if p.expiry().is_none() || !p.commitments().is_empty() {
             return None;
         }
         self.stats.inbox_tries += 1;
-        self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)).ok())
+        let by_label = self.engine.inbox_actors();
+        // a KEM per try, so one at a time: a blob from outside can name any of them
+        for a in by_label.get(l)? {
+            for s in self.read_secrets(a) {
+                self.stats.inbox_keys += 1;
+                if let Ok((p, x)) = osis_label::open_inbox_blob(bytes, a, &role_kem(&s)) {
+                    return Some((*a, p, x));
+                }
+            }
+        }
+        None
     }
 
     /// What opened inbox blob `b` under `l` carries (cached; it opens again under the held keys
     /// of an actor whose inbox `l` is), if its bytes are held and its commit decodes.
-    pub(crate) fn inbox_opened(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<Opened>> {
+    pub(crate) fn inbox_opened(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<Arc<Opened>>> {
         if let Some(x) = self.inbox_opened.get(&(*l, *b)) {
             return Ok(x.clone());
         }
@@ -870,7 +886,7 @@ impl SyncEngine {
             self.inbox_opened.insert((*l, *b), None);
             return Ok(None);
         };
-        let x = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).ok().map(|c| Opened::new(&prefix, &c, payload.things));
+        let x = osis_commit::CommitBlob::decode(&osis_base::encode(&payload.commit)).ok().map(|c| Arc::new(Opened::new(&prefix, &c, payload.things)));
         self.inbox_opened.insert((*l, *b), x.clone());
         Ok(x)
     }
@@ -878,7 +894,7 @@ impl SyncEngine {
     /// The aspect indexes of the commit inbox blob `b` under `l` carries and the things it
     /// names, if its bytes are held.
     pub(crate) fn inbox_parts(&mut self, l: &LabelId, b: &BlobId) -> Result<Option<(BTreeSet<usize>, Vec<Tid>)>> {
-        Ok(self.inbox_opened(l, b)?.map(|o| (o.ais, o.things.iter().map(|t| t.tid).collect())))
+        Ok(self.inbox_opened(l, b)?.map(|o| (o.ais.clone(), o.things.iter().map(|t| t.tid).collect())))
     }
 
     /// Whether the `label.0` of a group here records `l`.
@@ -897,24 +913,55 @@ impl SyncEngine {
     /// never a hint (it would take the label's place on the connection under the wrong thing's
     /// secrets). Other inbox hints are dropped.
     pub(crate) fn vet_inbox_hints(&mut self) -> Result<()> {
+        // nothing it reads moved: the engine, the entries or the clock past an expiry
+        let (generation, version, now) = (self.engine.core.generation, self.state.version, self.now());
+        let quiet = self.vetted.is_some_and(|(g, v, at)| g == generation && v == version && now < at);
+        #[cfg(debug_assertions)]
+        let before = quiet.then(|| self.state.hints.iter().map(|(l, h)| (*l, format!("{h:?}"))).collect::<Vec<_>>());
+        #[cfg(not(debug_assertions))]
+        if quiet {
+            return Ok(());
+        }
+        let (expires, released) = self.vet_inbox_hints_now()?;
+        #[cfg(debug_assertions)]
+        if let Some(b) = before {
+            assert!(!released, "vet_inbox_hints skipped a request");
+            assert_eq!(b, self.state.hints.iter().map(|(l, h)| (*l, format!("{h:?}"))).collect::<Vec<_>>(), "vet_inbox_hints skipped");
+        }
+        let _ = released;
+        // what it did (a released request, hints written) is its own change: a second run settles
+        self.vetted = Some((generation, version, expires));
+        Ok(())
+    }
+
+    /// `vet_inbox_hints` itself. When the first inbox blob it counted expires, and whether it
+    /// released a request.
+    fn vet_inbox_hints_now(&mut self) -> Result<(u64, bool)> {
+        self.stats.vets += 1;
         // requests admitted since (the sender became connected, a sibling device accepted)
-        if self.release_requests(None)? {
+        let released = self.release_requests(None)?;
+        if released {
             self.engine.reexamine()?;
         }
         let now = self.now();
         // the synced labels' inbox entries (runs per `run_dirty`: never a scan of every entry)
-        let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
-        let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = labels
-            .iter()
-            .flat_map(|l| self.state.of_kind(l, 2).into_iter().map(move |b| (*l, b)))
+        self.labels();
+        let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = self
+            .state
+            .of_tag(2)
+            .into_iter()
+            .filter(|(l, _)| self.synced.ids.contains(l))
             .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
                 Some(Kind::Inbox(c)) => Some((l, b, *c)),
                 _ => None,
             })
             .collect();
-        let live: BTreeSet<(LabelId, BlobId)> = inbox.iter().map(|(l, b, _)| (*l, *b)).collect();
+        // a request waiting for the user keeps its opened payload too: a KEM per vet otherwise
+        let mut live: BTreeSet<(LabelId, BlobId)> = inbox.iter().map(|(l, b, _)| (*l, *b)).collect();
+        live.extend(self.state.of_tag(5));
         self.inbox_opened.retain(|k, _| live.contains(k));
         let mut want: BTreeMap<LabelId, Hint> = BTreeMap::new();
+        let mut expires = u64::MAX;
         for (l, b, c) in inbox {
             let Some(c) = c else { continue };
             if !self.engine.core.ix.commits.contains_key(&c) && !self.engine.core.ix.pending.contains_key(&c) {
@@ -924,6 +971,7 @@ impl SyncEngine {
             if o.until <= now {
                 continue;
             }
+            expires = expires.min(o.until);
             for t in &o.things {
                 let Some(at) = &t.label else { continue };
                 if !self.engine.labels_of(&t.tid).is_empty() || !self.engine.boxed_by(&c, &t.tid) || self.recorded(&at.id) {
@@ -962,7 +1010,7 @@ impl SyncEngine {
             }
             self.state.add_hint(l, h);
         }
-        Ok(())
+        Ok((expires, released))
     }
 
     /// Deletes the ciphertexts of opened inbox blobs naming a forgotten thing (they open under
@@ -1426,13 +1474,24 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// Entry `b` under `l` reached a host: when it holds a role commit of this node,
-    /// every label passes again (its held copies may go now, spec/sync.md §5).
+    /// Entry `b` under `l` reached a host: when it holds a body of a role commit of this node, the
+    /// labels it concerns and those with an entry of it pass again (its held copies may go now,
+    /// spec/sync.md §5). A certificate copy places nothing: the commit is placed by its bodies.
     fn reached(&mut self, l: &LabelId, b: &BlobId) {
-        let Some(Kind::Commit { commit, .. }) = self.state.entries.get(&(*l, *b)).map(|e| &e.kind) else { return };
-        if self.own(commit) && self.engine.header(commit).is_some_and(|h| h.kind.is_role()) {
-            self.mark_dirty();
+        let Some(Entry { kind: Kind::Commit { commit, .. }, cert: false, .. }) = self.state.entries.get(&(*l, *b)) else { return };
+        let commit = *commit;
+        if !self.own(&commit) {
+            return;
         }
+        let Some(h) = self.engine.header(&commit).filter(|h| h.kind.is_role()) else { return };
+        let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
+        if things.iter().any(|t| self.engine.core.is_key_actor(t)) {
+            return self.mark_dirty();
+        }
+        let scope = self.downstream(&things);
+        self.mark_dirty_of(&scope);
+        let holding = self.state.labels_of_commit(&commit);
+        self.mark_labels(&holding);
     }
 
     /// A deposit's answer; `entries_left` only when the host checked its signature under the

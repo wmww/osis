@@ -60,7 +60,11 @@ pub struct World {
     pub net: ManualNet,
     /// (db, conn) -> (host, hub conn)
     links: BTreeMap<(usize, ConnId), (usize, u64)>,
-    queue: VecDeque<Msg>,
+    queue: VecDeque<(u64, Msg)>,
+    /// Sizes where a settle is long by design (scale checks): no storm check.
+    pub no_storm: bool,
+    /// Generation of the last carried message (`hops`).
+    hop: u64,
     next_hub: u64,
     /// Databases cut off the network.
     offline: Vec<bool>,
@@ -99,6 +103,8 @@ impl World {
             net: ManualNet::new(),
             links: BTreeMap::new(),
             queue: VecDeque::new(),
+            no_storm: false,
+            hop: 0,
             next_hub: 1,
             offline: Vec::new(),
             asleep: BTreeSet::new(),
@@ -154,7 +160,7 @@ impl World {
                     if let Some(h) = self.hosts.get_mut(s) {
                         let _ = h.hub.closed(hc);
                     }
-                    self.queue.push_back(Msg::Down(db, c));
+                    self.send_msg(Msg::Down(db, c));
                 }
             }
             return;
@@ -372,6 +378,15 @@ impl World {
         }
     }
 
+    fn send_msg(&mut self, m: Msg) {
+        self.queue.push_back((self.hop + 1, m));
+    }
+
+    /// The longest chain of messages each caused by the last so far: twice the round trips.
+    pub fn hops(&self) -> u64 {
+        self.hop
+    }
+
     fn actions(&mut self, d: usize, acts: Vec<Action>) {
         for a in acts {
             match a {
@@ -379,13 +394,13 @@ impl World {
                     let want = HostAddr::new(&address.url, address.key).to_string();
                     let s = self.hosts.iter().position(|x| x.up && x.addr.to_string() == want).filter(|s| !self.is_offline(d) && !self.cut.contains(&(d, *s)));
                     let Some(s) = s else {
-                        self.queue.push_back(Msg::Down(d, conn));
+                        self.send_msg(Msg::Down(d, conn));
                         continue;
                     };
                     let hc = self.next_hub;
                     self.next_hub += 1;
                     self.links.insert((d, conn), (s, hc));
-                    self.queue.push_back(Msg::Up(d, conn));
+                    self.send_msg(Msg::Up(d, conn));
                     let now = self.now();
                     let out = match self.hosts.get_mut(s) {
                         Some(host) => host.hub.accept(now, hc, [0xe0; 32]),
@@ -399,7 +414,7 @@ impl World {
                             t.up += bytes.len() as u64;
                         }
                         self.count(d, conn, &bytes, false);
-                        self.queue.push_back(Msg::ToHub(s, hc, bytes));
+                        self.send_msg(Msg::ToHub(s, hc, bytes));
                     }
                 }
                 Action::Close { conn } => {
@@ -425,13 +440,13 @@ impl World {
             match o {
                 HubOutput::Send(hc, bytes) => {
                     if let Some((d, c)) = self.link_of(s, hc) {
-                        self.queue.push_back(Msg::ToDb(d, c, bytes));
+                        self.send_msg(Msg::ToDb(d, c, bytes));
                     }
                 }
                 HubOutput::Close(hc) => {
                     if let Some((d, c)) = self.link_of(s, hc) {
                         self.links.remove(&(d, c));
-                        self.queue.push_back(Msg::Down(d, c));
+                        self.send_msg(Msg::Down(d, c));
                     }
                 }
                 HubOutput::Diagnostic(_) => {}
@@ -447,6 +462,10 @@ impl World {
             if !self.step(None) {
                 return;
             }
+        }
+        if self.no_storm {
+            while self.step(None) {}
+            return;
         }
         let mut seen = BTreeMap::new();
         let mut settled = false;
@@ -493,9 +512,10 @@ impl World {
                 self.actions(d, acts);
             }
         }
-        let Some(m) = self.queue.pop_front() else {
+        let Some((hop, m)) = self.queue.pop_front() else {
             return moved;
         };
+        self.hop = self.hop.max(hop);
         if let Some(seen) = seen {
             let k = match &m {
                 Msg::Up(d, c) => format!("up db {d} conn {c:?}"),
@@ -643,7 +663,7 @@ mod tests {
     fn storm_panics_naming_messages() {
         let mut w = World::new();
         for _ in 0..STORM + STORM_TRACE {
-            w.queue.push_back(Msg::Down(7, 1));
+            w.queue.push_back((0, Msg::Down(7, 1)));
         }
         w.pump();
     }

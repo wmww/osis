@@ -1418,8 +1418,7 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     set_edge(net.engine(a), u, other, Role::Read);
     net.run();
     let s1 = net.sync(a).pass_stats();
-    assert!(s1.passes > s0.passes, "the change was looked at");
-    assert_eq!((s1.full - s0.full, s1.bodies - s0.bodies), (0, 0), "an unrelated edge judges nothing in full");
+    assert_eq!((s1.passes - s0.passes, s1.full - s0.full, s1.bodies - s0.bodies), (0, 0, 0), "an unrelated edge starts no pass");
     net.advance(61_000);
     let s2 = net.sync(a).pass_stats();
     set_edge(net.engine(a), g0, other, Role::Read);

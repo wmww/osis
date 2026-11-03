@@ -95,6 +95,61 @@ impl Engine {
         self.core.ix.labeled.iter().copied().collect()
     }
 
+    /// Actor `a`'s inbox label: named in its `keys.0`, or the nearest one named up its owner
+    /// chain; an ownerless thing that names none, its own label (spec/sync.md §2; bounded by
+    /// `MAX_OWNER_DEPTH`).
+    pub fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
+        if let Some(l) = self.core.inbox_labels.get(a).copied() {
+            #[cfg(debug_assertions)]
+            assert_eq!(l, self.inbox_label_read(a), "inbox_label({a}) cached");
+            return l;
+        }
+        let l = self.inbox_label_read(a);
+        let uppers: Vec<Tid> = self.owner_chain(a).filter(|t| t != a).collect();
+        self.core.inbox_uppers.extend(uppers);
+        self.core.inbox_labels.insert(*a, l);
+        l
+    }
+
+    fn inbox_label_read(&mut self, a: &Tid) -> Option<LabelId> {
+        let chain: Vec<Tid> = self.owner_chain(a).collect();
+        if let Some(i) = chain.iter().find_map(|t| self.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)) {
+            return Some(i.label);
+        }
+        let top = chain.last().filter(|t| matches!(self.core.created(t), Some(osis_base::CreationRecord::Ownerless { .. })))?;
+        self.labels_of(top).iter().filter(|l| !l.replaced).max_by_key(|l| l.index).map(|l| l.id)
+    }
+
+    /// The actors with secrets held here whose inbox is each label, the topmost first (a blob is
+    /// tried under each in turn, and most name a person, not one of its many things).
+    pub fn inbox_actors(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+        if let Some(m) = self.core.inbox_actors.clone() {
+            #[cfg(debug_assertions)]
+            assert_eq!(*m, *self.inbox_actors_read(), "inbox_actors cached");
+            return m;
+        }
+        let m = self.inbox_actors_read();
+        self.core.inbox_actors = Some(m.clone());
+        m
+    }
+
+    fn inbox_actors_read(&mut self) -> Arc<BTreeMap<LabelId, Vec<Tid>>> {
+        let mut by: BTreeMap<LabelId, Vec<(usize, Tid)>> = BTreeMap::new();
+        for a in self.core.ix.secrets.keys().copied().collect::<Vec<_>>() {
+            if let Some(l) = self.inbox_label(&a) {
+                by.entry(l).or_default().push((self.owner_chain(&a).count(), a));
+            }
+        }
+        let m: BTreeMap<LabelId, Vec<Tid>> = by
+            .into_iter()
+            .map(|(l, mut v)| {
+                v.sort();
+                (l, v.into_iter().map(|x| x.1).collect())
+            })
+            .collect();
+        Arc::new(m)
+    }
+
     /// Whether `g` has a live (unreplaced) label here.
     pub fn labeled(&mut self, g: &Tid) -> bool {
         self.labels_of(g).iter().any(|l| !l.replaced)

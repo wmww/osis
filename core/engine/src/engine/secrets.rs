@@ -223,12 +223,25 @@ impl Core {
         true
     }
 
+    /// Whether the reading-only budget has no room for `actor`, which holds nothing yet.
+    pub(crate) fn reading_full(&self, actor: &Tid) -> bool {
+        self.ix.secrets.get(actor).is_none_or(|e| !e.holds_any()) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && Self::reading_only(e)).count() >= MAX_READING_ACTORS
+    }
+
+    /// How many more actors the reading-only budget takes.
+    pub(crate) fn reading_room(&self) -> usize {
+        MAX_READING_ACTORS.saturating_sub(self.ix.secrets.values().filter(|e| Self::reading_only(e)).count())
+    }
+
+    fn reading_only(e: &ActorEpochs) -> bool {
+        ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any()
+    }
+
     /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them.
     pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> Option<ActorEpochs> {
         let before = self.ix.secrets.get(actor).cloned();
         // a bounded number of actors held through reading-only secrets alone
-        let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any();
-        if unchecked.is_some() && before.as_ref().is_none_or(|e| !e.holds_any()) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
+        if unchecked.is_some() && self.reading_full(actor) {
             return None;
         }
         let mut epochs = before.clone().unwrap_or_default();

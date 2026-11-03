@@ -22,7 +22,7 @@ pub const MAX_GAINED: usize = 4096;
 pub const MAX_LABELS: usize = 1024;
 pub const MAX_RECONCILE_RANGES: usize = 256;
 pub const MAX_RECONCILE_REPLY_RANGES: usize = 4096;
-pub const MAX_PATH_STEPS: usize = 1024;
+pub const MAX_PATH_STEPS: usize = 48;
 /// Open labels per connection a peer may refuse to exceed (code 4).
 pub const MAX_OPEN_LABELS: usize = 4096;
 /// A canonical `Step` is at most this long (spec/wire.md §8: nine fixed-size items).
@@ -175,11 +175,12 @@ pub enum Message {
     Budget { id: Id, code: Code, budget: Option<(u64, u64)> },
     /// Items with `at` above 2^63 - 1 cannot be encoded (check with `osis_label::delete_digest`).
     Delete { id: Id, label: LabelId, items: Vec<DeleteItem> },
-    Sync { id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId> },
+    /// `max_reply`: the reply's frame body bound, as for a Call.
+    Sync { id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, max_reply: u64, entries: Vec<Entry>, gained: Vec<BlobId> },
     SyncReply { id: Id, events: Vec<Event>, want: Vec<BlobId>, codes: Vec<Code>, cursor: Cursor, more: bool },
     Reconcile { id: Id, label: LabelId, ranges: Vec<Range> },
     ReconcileReply { id: Id, ranges: Vec<Range> },
-    Fetch { id: Id, label: LabelId, ids: Vec<BlobId> },
+    Fetch { id: Id, label: LabelId, max_reply: u64, ids: Vec<BlobId> },
     FetchReply { id: Id, items: Vec<Fetched> },
     Subscribe { id: Id, labels: Vec<LabelId> },
     Unsubscribe { id: Id, labels: Vec<LabelId> },
@@ -304,11 +305,11 @@ impl Message {
             M::Budget { code, budget, .. } => vec![k, id, Value::uint(code.0), Value::opt(budget.map(|(e, b)| Value::List(vec![Value::uint(e), Value::uint(b)])))],
             // An unencodable item (at above 2^63 - 1) becomes `[]`, which the peer rejects.
             M::Delete { label, items, .. } => vec![k, id, l(label), Value::List(items.iter().map(|i| i.to_value().unwrap_or(Value::List(vec![]))).collect())],
-            M::Sync { label, cursor, inline_limit, entries, gained, .. } => vec![k, id, l(label), Value::opt(cursor.as_ref().map(cursor_value)), Value::uint(*inline_limit), entries_value(entries), ids_value(gained)],
+            M::Sync { label, cursor, inline_limit, max_reply, entries, gained, .. } => vec![k, id, l(label), Value::opt(cursor.as_ref().map(cursor_value)), Value::uint(*inline_limit), Value::uint(*max_reply), entries_value(entries), ids_value(gained)],
             M::SyncReply { events, want, codes, cursor, more, .. } => vec![k, id, events_value(events), ids_value(want), codes_value(codes), cursor_value(cursor), Value::Bool(*more)],
             M::Reconcile { label, ranges, .. } => vec![k, id, l(label), ranges_value(ranges)],
             M::ReconcileReply { ranges, .. } => vec![k, id, ranges_value(ranges)],
-            M::Fetch { label, ids, .. } => vec![k, id, l(label), ids_value(ids)],
+            M::Fetch { label, max_reply, ids, .. } => vec![k, id, l(label), Value::uint(*max_reply), ids_value(ids)],
             M::FetchReply { items, .. } => vec![
                 k,
                 id,
@@ -363,10 +364,11 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
     let n = match kind {
         1 => 2,
         0 | 2 | 3 | 6 | 11 | 18 | 20 | 21 | 22 | 26 | 28 => 3,
-        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 19 | 24 | 27 | 29 => 4,
-        7 | 23 | 25 => 5,
+        4 | 5 | 8 | 9 | 10 | 13 | 14 | 17 | 24 | 27 | 29 => 4,
+        7 | 19 | 23 | 25 => 5,
         12 => 6,
-        15 | 16 => 7,
+        16 => 7,
+        15 => 8,
         _ => return Err(Error::UnknownKind(kind)),
     };
     // Push has no reply (id 0); every request and reply has a real id; an Error answering a
@@ -407,9 +409,10 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
             let label = label(&mut f)?;
             let cursor = f.opt()?.map(cursor).transpose()?;
             let inline_limit = f.uint()?;
+            let max_reply = max_reply(&mut f)?;
             let entries = entries(f.list(0, MAX_ITEMS, "sync entries")?)?;
             let gained = ids(f.list(0, MAX_GAINED, "gained")?)?;
-            Message::Sync { id, label, cursor, inline_limit, entries, gained }
+            Message::Sync { id, label, cursor, inline_limit, max_reply, entries, gained }
         }
         16 => Message::SyncReply {
             id,
@@ -421,7 +424,7 @@ fn decode_body(kind: u64, id: Id, v: Value) -> Result<Message, Error> {
         },
         17 => Message::Reconcile { id, label: label(&mut f)?, ranges: ranges(f.list(1, MAX_RECONCILE_RANGES, "ranges")?)? },
         18 => Message::ReconcileReply { id, ranges: ranges(f.list(0, MAX_RECONCILE_REPLY_RANGES, "ranges")?)? },
-        19 => Message::Fetch { id, label: label(&mut f)?, ids: ids(f.list(1, MAX_ITEMS, "fetch ids")?)? },
+        19 => Message::Fetch { id, label: label(&mut f)?, max_reply: max_reply(&mut f)?, ids: ids(f.list(1, MAX_ITEMS, "fetch ids")?)? },
         20 => Message::FetchReply { id, items: f.list(0, MAX_ITEMS, "fetch items")?.into_iter().map(fetched).collect::<Result<_, _>>()? },
         21 => Message::Subscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },
         22 => Message::Unsubscribe { id, labels: labels(f.list(1, MAX_LABELS, "labels")?)? },

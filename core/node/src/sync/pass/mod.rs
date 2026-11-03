@@ -114,7 +114,7 @@ enum AtMost {
 type TimedDue = Option<(Entry, u64)>;
 
 /// Aspects not settled yet (`None`: every aspect; `SyncEngine::unsettled_sets`).
-type Unsettled = BTreeSet<Option<(Tid, Ak)>>;
+pub(crate) type Unsettled = BTreeSet<Option<(Tid, Ak)>>;
 
 /// A judged entry: the rule's answer, whether it may carry live writes, its aspects.
 type Judged = (Hold, bool, Vec<(Tid, Ak)>);
@@ -1089,6 +1089,31 @@ impl SyncEngine {
     /// writers' pending commits otherwise withheld exactly what the other waited for), nor do
     /// entries that do not open as a commit or whose bytes no host delivers.
     pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(Unsettled, Unsettled)> {
+        // what pends moves only with the engine
+        let at = (self.engine.core.generation, self.engine.core.memory_generation);
+        let (mut all, mut snaps) = match self.unsettled_memo.clone().filter(|(k, ..)| *k == at) {
+            Some((_, all, snaps)) => {
+                #[cfg(debug_assertions)]
+                assert!(self.pending_sets()? == (all.clone(), snaps.clone()), "unsettled_sets cached");
+                (all, snaps)
+            }
+            None => {
+                let (all, snaps) = self.pending_sets()?;
+                self.unsettled_memo = Some((at, all.clone(), snaps.clone()));
+                (all, snaps)
+            }
+        };
+        if unopened {
+            all.insert(None);
+        }
+        if fetching {
+            snaps.insert(None);
+        }
+        Ok((all, snaps))
+    }
+
+    /// The aspects of pending commits, and of pending snapshots.
+    fn pending_sets(&mut self) -> Result<(Unsettled, Unsettled)> {
         let (mut all, mut snaps) = (BTreeSet::new(), BTreeSet::new());
         for (c, r) in self.engine.pending() {
             if r == crate::Reason::Parked {
@@ -1101,12 +1126,6 @@ impl SyncEngine {
                 snaps.extend(aspects.clone());
             }
             all.extend(aspects);
-        }
-        if unopened {
-            all.insert(None);
-        }
-        if fetching {
-            snaps.insert(None);
         }
         Ok((all, snaps))
     }
@@ -1361,7 +1380,7 @@ impl SyncEngine {
 
     /// Commit `c` of opened inbox blob `b` under `l`, applied here and valid in every part the
     /// blob carries, with what the blob opened to.
-    fn inbox_valid(&mut self, l: &LabelId, b: &BlobId, c: &CommitId) -> Result<Option<(osis_engine::engine::Meta, super::inbound::Opened)>> {
+    fn inbox_valid(&mut self, l: &LabelId, b: &BlobId, c: &CommitId) -> Result<Option<(osis_engine::engine::Meta, std::sync::Arc<super::inbound::Opened>)>> {
         if self.engine.core.ix.pending.contains_key(c) {
             return Ok(None);
         }
@@ -1698,7 +1717,14 @@ impl SyncEngine {
         let Some(li) = self.inbox_label(g) else { return Ok(out) };
         let now = self.now();
         let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, 2).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
+        // what the last passes found all there (`InboxCopied`): a pass walks only what is new
+        self.inbox_copied.lost(self.state.losses);
         for (b, c) in opened {
+            let copied = self.inbox_copied.has(&l, &b);
+            #[cfg(not(debug_assertions))]
+            if copied {
+                continue;
+            }
             let Some((m, o)) = self.inbox_valid(&li, &b, &c)? else { continue };
             if o.until < now.saturating_add(INBOX_COPY_MIN_LEFT) {
                 continue;
@@ -1734,8 +1760,18 @@ impl SyncEngine {
                 }
             }
             if held {
+                if !copied {
+                    // what moves the answer: an edge, record or label on these, or their holders
+                    let mut on: BTreeSet<Tid> = self.engine.holders_named(&c).values().flat_map(|ms| ms.iter().copied()).collect();
+                    on.extend(o.things.iter().map(|t| t.tid));
+                    for (x, _) in &copy {
+                        on.extend(self.engine.header(x).iter().flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()));
+                    }
+                    self.inbox_copied.add(l, b, on);
+                }
                 continue;
             }
+            debug_assert!(!copied, "inbox_certificates skipped blob {b:?} that wants a copy");
             for (x, xs) in copy {
                 let Some(h) = self.engine.header(&x) else { continue };
                 let parts = parts_of(&h, |i| xs.contains(&i));

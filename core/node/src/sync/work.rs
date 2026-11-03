@@ -47,6 +47,63 @@ pub(crate) struct Touched {
     pub keys: bool,
 }
 
+/// The inbox blobs whose copy a home label's pass found all there (`inbox_certificates`), so
+/// passes do not walk them again: a person's grants of 90 days per pass. Dropped when a thing that
+/// moves the answer changes, when an entry or a host's copy goes, and by a pass that judges all.
+#[derive(Default)]
+pub(crate) struct InboxCopied {
+    blobs: BTreeMap<(LabelId, BlobId), BTreeSet<Tid>>,
+    by_thing: BTreeSet<(Tid, LabelId, BlobId)>,
+    losses: u64,
+}
+
+impl InboxCopied {
+    pub fn has(&self, l: &LabelId, b: &BlobId) -> bool {
+        self.blobs.contains_key(&(*l, *b))
+    }
+
+    pub fn add(&mut self, l: LabelId, b: BlobId, on: BTreeSet<Tid>) {
+        self.by_thing.extend(on.iter().map(|t| (*t, l, b)));
+        self.blobs.insert((l, b), on);
+    }
+
+    fn remove(&mut self, l: LabelId, b: BlobId) {
+        for t in self.blobs.remove(&(l, b)).into_iter().flatten() {
+            self.by_thing.remove(&(t, l, b));
+        }
+    }
+
+    /// `t`'s roles, record or labels moved.
+    pub fn moved(&mut self, t: &Tid) {
+        let hit: Vec<(LabelId, BlobId)> = self.by_thing.range((*t, LabelId([0; 16]), BlobId([0; 32]))..=(*t, LabelId([0xff; 16]), BlobId([0xff; 32]))).map(|x| (x.1, x.2)).collect();
+        for (l, b) in hit {
+            self.remove(l, b);
+        }
+    }
+
+    /// The sync state's count of entries and copies gone (`State::losses`).
+    pub fn lost(&mut self, losses: u64) {
+        if self.losses != losses {
+            self.losses = losses;
+            self.blobs.clear();
+            self.by_thing.clear();
+        }
+    }
+
+    pub fn forget_label(&mut self, l: &LabelId) {
+        let hit: Vec<(LabelId, BlobId)> = self.blobs.keys().filter(|(x, _)| x == l).copied().collect();
+        for (x, b) in hit {
+            self.remove(x, b);
+        }
+    }
+}
+
+impl Touched {
+    pub fn is_empty(&self) -> bool {
+        !self.full && !self.keys && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.actors.is_empty()
+    }
+}
+
 /// What the pass's verdicts depend on beyond single commits: a change judges everything.
 #[derive(Clone, PartialEq, Eq)]
 pub(crate) struct Inputs {
@@ -413,6 +470,7 @@ impl SyncEngine {
     /// Readies `w` for a pass judging everything: what it named and waited on goes, the
     /// aggregates and the roster horizon are taken anew.
     pub(super) fn go_full(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
+        self.inbox_copied.forget_label(l);
         w.commits.clear();
         w.blobs.clear();
         w.aspects.clear();

@@ -1213,6 +1213,11 @@ impl Engine {
     /// `created.0` records, a change of what this node syncs, time passing, or an upgrade).
     /// Role commits are tried first. A commit whose examination's inputs have not changed
     /// since it was last examined is left out (`apply::waits`).
+    /// Pending commits `reexamine` read again so far (scale checks).
+    pub fn examined(&self) -> u64 {
+        self.core.waits.examined
+    }
+
     pub fn reexamine(&mut self) -> Result<()> {
         if self.core.frozen_pending {
             return Ok(());
@@ -1239,6 +1244,7 @@ impl Engine {
                         blobs.push((id, Turn::Waiting(w.key)));
                         continue;
                     }
+                    tx.core.waits.examined += 1;
                     if let Some(b) = read_pending(tx, &id)? {
                         blobs.push((id, Turn::Read(Box::new(b))));
                     }
@@ -1308,7 +1314,7 @@ impl Engine {
                     BTreeSet::new()
                 };
                 for (a, s, from) in keys::pending_boxes(tx, &b, id)? {
-                    debug_assert!(tx.core.ingest_view(&a, &s, Some(from), &osis_keys::HistoryAlts::new()).is_none(), "pending commit {id:?} left out of reexamine: its boxes teach {a:?} something");
+                    debug_assert!(tx.core.waits.is_refused(id) || tx.core.ingest_view(&a, &s, Some(from), &osis_keys::HistoryAlts::new()).is_none(), "pending commit {id:?} left out of reexamine: its boxes teach {a:?} something");
                 }
                 match examine(tx, &mut b, id, &skip) {
                     Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),

@@ -259,6 +259,13 @@ pub struct PassStats {
     /// Passes at hosts and local passes (labels served with no host), and how many judged
     /// everything.
     pub passes: u64,
+    /// `labels()` computed anew, inbox hints vetted, claim tries made, inbox keys tried.
+    pub label_reads: u64,
+    pub vets: u64,
+    pub claim_lists: u64,
+    pub inbox_keys: u64,
+    /// Pending commits read again (`Engine::examined`).
+    pub examined: u64,
     pub full: u64,
     /// Bodies judged for upload, entries judged for deletion.
     pub bodies: u64,
@@ -417,8 +424,13 @@ pub(crate) const RELINK_BACKOFF_MAX_MS: u64 = 7 * 24 * 3_600_000;
 /// The labels this node syncs (`SyncEngine::labels`) as last computed, valid within one step
 /// while the engine's generation, the retired labels and the time are unchanged.
 pub(crate) struct Synced {
-    key: (u64, usize, u64),
+    /// Engine generation, retired labels, the time if `labels` read it.
+    pub(crate) key: (u64, usize, u64),
+    /// A replaced label was judged: an admin edge's `until` makes the answer depend on the time.
+    timed: bool,
     labels: Vec<(Tid, Arc<GroupLabel>)>,
+    /// The IDs of `labels`.
+    pub(crate) ids: BTreeSet<LabelId>,
     /// Per label, the actor its keys derive from and its hosts, `peer://` nodes left out
     /// (`complete_pass`, `peers::host_keys`).
     pub actors: BTreeMap<LabelId, (Tid, Vec<HostKey>)>,
@@ -426,7 +438,7 @@ pub(crate) struct Synced {
 
 impl Default for Synced {
     fn default() -> Synced {
-        Synced { key: (u64::MAX, 0, 0), labels: Vec::new(), actors: BTreeMap::new() }
+        Synced { key: (u64::MAX, 0, 0), timed: false, labels: Vec::new(), ids: BTreeSet::new(), actors: BTreeMap::new() }
     }
 }
 
@@ -471,7 +483,15 @@ pub struct SyncEngine {
     pub(crate) body_links: BTreeMap<BodyKey, Vec<osis_base::BlobId>>,
     /// Opened inbox entries' payloads (`inbound::inbox_opened`): a blob never changes; one no
     /// entry names any more is dropped by `vet_inbox_hints`.
-    pub(crate) inbox_opened: BTreeMap<(LabelId, osis_base::BlobId), Option<inbound::Opened>>,
+    pub(crate) inbox_opened: BTreeMap<(LabelId, osis_base::BlobId), Option<Arc<inbound::Opened>>>,
+    /// What `vet_inbox_hints` last ran on: the engine, the entries, and when an inbox blob it
+    /// counted expires.
+    pub(crate) vetted: Option<(u64, u64, u64)>,
+    pub(crate) inbox_copied: work::InboxCopied,
+    /// `secrets_count` at this engine generation (both).
+    pub(crate) secrets_counted: std::cell::Cell<Option<((u64, u64), usize)>>,
+    /// `pass::pending_sets` at this engine generation (both).
+    pub(crate) unsettled_memo: Option<((u64, u64), pass::Unsettled, pass::Unsettled)>,
     /// Re-encrypting deleted chunks (`Engine::relink`) per aspect: when allowed next, and the
     /// interval after that (doubling, `RELINK_BACKOFF_MS` to `RELINK_BACKOFF_MAX_MS`).
     pub(crate) relink_backoff: BTreeMap<(Tid, osis_base::Ak), (u64, u64)>,
@@ -637,6 +657,10 @@ impl SyncEngine {
             tree_wants: BTreeSet::new(),
             body_links: BTreeMap::new(),
             inbox_opened: BTreeMap::new(),
+            vetted: None,
+            inbox_copied: work::InboxCopied::default(),
+            secrets_counted: std::cell::Cell::new(None),
+            unsettled_memo: None,
             relink_backoff: BTreeMap::new(),
             relink_pending: BTreeSet::new(),
             relink_at: 0,
@@ -803,7 +827,6 @@ impl SyncEngine {
             self.wake = None;
             self.last_tick = self.raw_now();
         }
-        self.synced.key.0 = u64::MAX;
         // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
         self.engine.core.defer_deaths = true;
         let r = self.step(ev, &mut out).and_then(|()| self.redeliver());
@@ -958,6 +981,8 @@ impl SyncEngine {
         let mut changed = false;
         // who wants a pass: every label (`wide`), or those holding what these aspects are on
         let (mut wide, mut narrow): (bool, BTreeSet<(Tid, Ak)>) = (false, BTreeSet::new());
+        // things whose roles or reader actors moved: labels downstream of them want a pass
+        let mut scoped: BTreeSet<Tid> = BTreeSet::new();
         // things whose roster or creation record changed
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         let mut own = false;
@@ -982,7 +1007,9 @@ impl SyncEngine {
                     // a creation record moves the roles downstream of the thing
                     roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid));
                     let role_commit = h.kind.is_role();
-                    wide |= role_commit;
+                    if role_commit {
+                        scoped.extend(h.aspects.iter().map(|a| a.tid));
+                    }
                     if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "label.0") {
                         self.served_cache = None;
                         self.holders_moved = true;
@@ -1029,9 +1056,9 @@ impl SyncEngine {
                     let h = self.engine.header(&id);
                     wide |= h.is_none();
                     if let Some(h) = h {
-                        wide |= h.kind.is_role();
                         narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                         if h.kind.is_role() {
+                            scoped.extend(h.aspects.iter().map(|a| a.tid));
                             self.touched.keys = true;
                         }
                         // a late creation record (`note_created`)
@@ -1040,7 +1067,7 @@ impl SyncEngine {
                 }
                 crate::Event::Roster { thing } => {
                     changed = true;
-                    wide = true;
+                    scoped.insert(thing);
                     self.tied.targets.insert(thing);
                     roots.insert(thing);
                     self.served_cache = None;
@@ -1057,10 +1084,11 @@ impl SyncEngine {
         // actors that got or lost secrets of their own: the reader actors under them moved
         if *self.engine.core.ix.own_keys != self.own_keys {
             let now: BTreeSet<Tid> = (*self.engine.core.ix.own_keys).clone();
-            self.touched.actors.extend(now.symmetric_difference(&self.own_keys).copied());
+            let moved: Vec<Tid> = now.symmetric_difference(&self.own_keys).copied().collect();
+            scoped.extend(moved.iter().copied());
+            self.touched.actors.extend(moved);
             self.own_keys = now;
             changed = true;
-            wide = true;
         }
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
@@ -1073,7 +1101,9 @@ impl SyncEngine {
             if let Some(h) = h {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                 self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
-                wide |= h.kind.is_role();
+                if h.kind.is_role() {
+                    scoped.extend(h.aspects.iter().map(|a| a.tid));
+                }
                 narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
             }
         }
@@ -1090,10 +1120,18 @@ impl SyncEngine {
             }
         }
         if changed {
-            if wide || narrow.is_empty() || self.touched.full || self.cfg.full_passes || !narrow.iter().all(|(t, a)| self.narrow_aspect(t, a)) {
+            scoped.extend(narrow.iter().filter(|(t, a)| !self.narrow_aspect(t, a)).map(|x| x.0));
+            for t in self.engine.core.ix.held.reach(&scoped) {
+                self.inbox_copied.moved(&t);
+            }
+            for (t, _) in narrow.iter().filter(|(_, a)| a.as_str() == "label.0") {
+                self.inbox_copied.moved(t);
+            }
+            if wide || (narrow.is_empty() && scoped.is_empty()) || self.touched.full || self.cfg.full_passes || narrow.iter().any(|(t, _)| self.engine.core.is_key_actor(t)) || scoped.iter().any(|t| self.engine.core.is_key_actor(t)) {
                 self.mark_dirty();
             } else {
-                let things: BTreeSet<Tid> = narrow.iter().map(|x| x.0).collect();
+                let mut things: BTreeSet<Tid> = narrow.iter().map(|x| x.0).collect();
+                things.extend(self.downstream(&scoped));
                 self.mark_dirty_of(&things);
             }
             let all = self.touched.full || self.cfg.full_passes;
@@ -1106,6 +1144,9 @@ impl SyncEngine {
     /// Hands the changes noted since the last pass to every label's work set: the engine's
     /// (`touched`) to all, the sync state's to the label's (`State::touched`).
     pub(crate) fn spread_touches(&mut self) {
+        if self.touched.is_empty() && self.state.touched.is_empty() && self.state.touched_commits.is_empty() {
+            return;
+        }
         let t = std::mem::take(&mut self.touched);
         let st = std::mem::take(&mut self.state.touched);
         let carriers = std::mem::take(&mut self.state.touched_commits);
@@ -1129,26 +1170,56 @@ impl SyncEngine {
     }
 
     /// Whether a change on `(t, a)` concerns only labels holding `t`: content of a thing, no role,
-    /// creation or group record and no node's card (which go under every label).
-    fn narrow_aspect(&self, t: &Tid, a: &Ak) -> bool {
+    /// creation or group record.
+    fn narrow_aspect(&self, _t: &Tid, a: &Ak) -> bool {
         let s = a.as_str();
-        !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~") && !self.engine.core.is_key_actor(t)
+        !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~")
+    }
+
+    /// What a role, creation or group change on `things` can concern: where authority flows from
+    /// them (`Held::reach`: owned things, things they are named on as a holder); up their owner
+    /// chains, whose home labels carry their `label.0` and `created.0` (spec/sync.md §3); and
+    /// their holders with those holders' owner chains, whose labels carry a route to them.
+    pub(crate) fn downstream(&self, things: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let held = &self.engine.core.ix.held;
+        let mut out = held.reach(things);
+        for t in things {
+            out.extend(self.engine.owner_chain(t));
+            for h in held.named_holders(t) {
+                out.extend(self.engine.owner_chain(&h));
+            }
+        }
+        out
     }
 
     /// `mark_dirty`, of the labels on connections whose closure holds one of `things`, and the
-    /// local ones: a content write on one thing leaves a label of another nothing new to judge.
-    /// Each still passes at its next resync (`timers`). O(labels), against a whole pass per label.
-    fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
+    /// local ones: a write on one thing leaves a label of another nothing new to judge. Each still
+    /// passes at its next resync (`timers`). O(labels), a set lookup each.
+    pub(crate) fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
         self.local_dirty = true;
-        let mut closures: BTreeMap<Tid, bool> = BTreeMap::new();
-        let engine = &self.engine;
+        let mut groups: BTreeSet<Tid> = things.clone();
+        for t in things {
+            groups.extend(self.engine.core.ix.groups.of.get(t).into_iter().flatten().copied());
+        }
+        #[cfg(debug_assertions)]
+        for l in self.conns.values().flat_map(|c| c.labels.values()) {
+            assert!(groups.contains(&l.group) || !self.engine.closure(&l.group).iter().any(|t| things.contains(t)), "groups.of misses {:?}", l.group);
+        }
         for c in self.conns.values_mut() {
             for l in c.labels.values_mut() {
-                let holds = *closures.entry(l.group).or_insert_with(|| {
-                    let cl = engine.closure(&l.group);
-                    things.iter().any(|t| cl.contains(t))
-                });
-                l.dirty |= holds && l.fill.is_none();
+                l.dirty |= groups.contains(&l.group) && l.fill.is_none();
+            }
+        }
+    }
+
+    /// These labels want a pass on every connection, as `mark_dirty`.
+    pub(crate) fn mark_labels<'a>(&mut self, ids: impl IntoIterator<Item = &'a LabelId> + Clone) {
+        self.local_dirty = true;
+        for c in self.conns.values_mut() {
+            for id in ids.clone() {
+                if let Some(l) = c.labels.get_mut(id) {
+                    l.dirty |= l.fill.is_none();
+                }
             }
         }
     }
@@ -1180,36 +1251,44 @@ impl SyncEngine {
     pub fn labels(&mut self) -> Vec<(Tid, Arc<GroupLabel>)> {
         // the inputs: engine state, retirements, and the time (an admin edge's `until`)
         let now = self.now();
-        let key = (self.engine.core.generation, self.state.retired.len(), now);
+        let key = (self.engine.core.generation, self.state.retired.len(), if self.synced.timed { now } else { 0 });
         if self.synced.key == key {
             #[cfg(debug_assertions)]
             {
                 let ids = |v: &[(Tid, Arc<GroupLabel>)]| v.iter().map(|(g, l)| (*g, l.id, l.replaced)).collect::<Vec<_>>();
-                let fresh = self.compute_labels(now);
+                let (fresh, _) = self.compute_labels(now);
                 assert_eq!(ids(&fresh), ids(&self.synced.labels), "labels() cached");
             }
         } else {
-            let labels = self.compute_labels(now);
+            self.stats.label_reads += 1;
+            let (labels, timed) = self.compute_labels(now);
             let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), peers::host_keys(&l.hosts).collect()))).collect();
-            self.synced = Synced { key, labels, actors };
+            let ids = labels.iter().map(|(_, l)| l.id).collect();
+            let key = (key.0, key.1, if timed { now } else { 0 });
+            self.synced = Synced { key, timed, labels, ids, actors };
         }
         self.synced.labels.clone()
     }
 
     /// `labels`, computed with roles at `now`.
-    fn compute_labels(&mut self, now: u64) -> Vec<(Tid, Arc<GroupLabel>)> {
+    /// Whether it asked for a role (a replaced label): only then does the time matter.
+    fn compute_labels(&mut self, now: u64) -> (Vec<(Tid, Arc<GroupLabel>)>, bool) {
         let ts = osis_base::Ts::make(osis_base::WallMs(now), 0).unwrap_or_default();
         let me = self.engine.tid();
-        let mut out = Vec::new();
+        let (mut out, mut timed) = (Vec::new(), false);
         for g in self.engine.labeled_groups() {
             // held for receipts only: read on demand (`read_receipts`), never synced
             if self.state.receipts_only.contains(&g) || self.engine.epochs(&g).is_none_or(|e| !e.read.holds_any()) {
                 continue;
             }
-            let admin = crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin);
-            out.extend(self.engine.labels_of(&g).into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
+            let labels = self.engine.labels_of(&g);
+            let admin = labels.iter().any(|l| l.replaced) && {
+                timed = true;
+                crate::engine::write::role_of(&self.engine.core, &me, &g, ts) == Some(osis_base::Role::Admin)
+            };
+            out.extend(labels.into_iter().filter(|l| !l.replaced || admin && !self.state.retired.contains(&l.id)).map(|l| (g, l)));
         }
-        out
+        (out, timed)
     }
 
     /// Retires the replaced labels an admin still syncs once `ROLE_KEEP_MS` passed since it
@@ -1973,7 +2052,7 @@ impl SyncEngine {
 
     /// What passes did so far (scale checks).
     pub fn pass_stats(&self) -> PassStats {
-        self.stats
+        PassStats { examined: self.engine.examined(), ..self.stats }
     }
 
     /// Whether every open label on every connection has completed a pass and nothing is
