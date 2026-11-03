@@ -2981,6 +2981,37 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
 
+// spec/permissions.md §5.2, §7 (order seed 86144, shrunk): 1's snapshot #29 copies the moved
+// origin's write `v1` value-less (1 had purged its import by a request not held here), so it
+// misstates the held imports #12 and #16 of that origin and its copy governs: the register reads
+// nothing. Delivered as made, 2's request #24 purged both imports and then fell (1 demoted 2),
+// leaving them missing; given again after #29, #12 is compared with it (its dots were carried)
+// but #16 is not (#12 had received them) and joined its value: a purged value shown, and an
+// in-place un-merge keeping what a rebuild strips.
+#[test]
+fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
+    use Step::*;
+    let h = vec![Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Reimport { by: 0, from: 0, copy: 1 }, Sync { from: 1, to: 2 }, PurgeImport { by: 2, t: 1, back: 1, reset: false }, PurgeImport { by: 1, t: 1, back: 0, reset: false }, Message { by: 0, t: 0, v: 3 }, Message { by: 0, t: 0, v: 1 }, Write { by: 2, t: 1, op: 0, k: 0, v: 9 }, Message { by: 0, t: 0, v: 7 }, Compact { by: 2, t: 1, op: 0 }, PurgeImport { by: 2, t: 1, back: 0, reset: false }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Compact { by: 2, t: 1, op: 0 }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: true }, Demote { by: 1, t: 1, holder: 2, at: 2, to_read: false }, Sync { from: 1, to: 2 }, Compact { by: 1, t: 1, op: 0 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }];
+    let played = with_syncs(play(86144, &h), 86144);
+    let (copy, reg) = (played.things[1], ak("t:reg.0"));
+    let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 19, 20, 21, 24, 26, 27, 28, 29, 30];
+    let rev: Vec<usize> = held.iter().rev().copied().collect();
+    let mut w = deliver(&played, &held);
+    let want = judged(&mut w, &played);
+    let mut g = deliver(&played, &rev);
+    let got = judged(&mut g, &played);
+    assert_eq!(g.engine.get(&copy, &reg).unwrap(), None);
+    assert_eq!(w.engine.get(&copy, &reg).unwrap(), None);
+    // the imports, missing at `w` since the fall, given again: each compared with the snapshot
+    for i in [12usize, 16] {
+        let pk = &played.packs[i];
+        w.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+        assert_eq!(w.engine.get(&copy, &reg).unwrap(), None, "import #{i} given again");
+    }
+    let flips = |t: &str, a: &str| flipped(&played, &held, None, t, a) || flipped(&played, &rev, None, t, a);
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, None, &flips), None);
+}
+
 // spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
 // whichever deltas and demotions come after them.
 #[test]
