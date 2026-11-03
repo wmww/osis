@@ -74,5 +74,5 @@ Prerequisite: session-sources step 2 (session form for durable content), since l
 Owner answers (relayed by devbox):
 1. Listing a device's kept writes inside a finite window by ID: fine if necessary.
 2. Permanent tombstones: accepted ("if history is on, the cost of keeping history is expected").
-3. Links, not per-session bounds: "nothing should grow permanently by number of app launches/sessions". `prev` must add nothing per session beyond a header already kept per write. Same line applies to growth.md's "Sequence sessions" row: brought back to the owner.
+3. Links, not per-session bounds. Owner, on `prev`: fine, including on every write if that helped; the rule is no per-session growth where there would otherwise be no growth (notes/growth.md). So `prev` passes where its write is kept anyway, and must leave nothing behind on an aspect that holds steady under compaction. growth.md's "Sequence sessions" row passes: it grows only with surviving inserts.
 4. Sanction the deliberate omission (option A), not the crypto-flow fork.

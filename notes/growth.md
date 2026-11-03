@@ -1,6 +1,8 @@
 # Growth census
 > Summary: Every known cause of permanent or unbounded growth of stored or synced data, at nodes and hosts. Each row says what it grows with, an approximate size, whether it is inherent or closable, and the issue that tracks it. Rows are ordered by how badly a "plain database, no history, frequent overwrites" workload grows. Every change that adds a new kind of permanent data adds or updates a row here.
 
+Owner's session rule: no per-session growth where there would otherwise be no growth. A write that adds permanent data anyway may carry more, whether the first of a session or every write. A leak is something that should hold steady growing with each session: a steady aspect overwritten and compacted, or a session that writes nothing.
+
 Marks: **M** = measured, **E** = estimated from encodings or spec, **C** = the code says so.
 
 The probe for the M rows: 400 overwrites of one register by one node, compacted after each 200. Store bytes are MemoryBackend `dump()` key+value totals, page overhead included, debug build. Measured before store rows were padded (notes/local-store.md, Row padding: about +4% on rows, small units at least 512 B), not re-measured. Results:
