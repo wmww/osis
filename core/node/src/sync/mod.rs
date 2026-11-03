@@ -124,10 +124,10 @@ pub struct SyncConfig {
     pub unvouched_cap: usize,
     /// Every pass judges everything (no work sets): a check that the work sets miss no trigger.
     pub full_passes: bool,
-    /// What a label's work set may hold waiting for its next pass: past it the set goes and that
-    /// pass judges everything. Memory bound, labels a post does not pass wait till their resync
-    /// (a performance switch: 0 makes every pass full, infinity holds 32 B per message since
-    /// that pass, per label).
+    /// Changes from elsewhere a label's work set may take in before its next pass: past it the
+    /// set goes and that pass judges everything. Memory bound, labels a post does not pass wait
+    /// till their resync (a performance switch: 0 makes a pass after any change full, infinity
+    /// holds 32 B per message since that pass, per label).
     pub work_max: usize,
     /// Ephemeral bytes per label this node holds from others (notes/ephemeral.md Bounds): past
     /// it, further ephemeral commits of that label are not applied (`EphemeralRefused`).
@@ -1169,6 +1169,7 @@ impl SyncEngine {
         let st = std::mem::take(&mut self.state.touched);
         let carriers = std::mem::take(&mut self.state.touched_commits);
         let max = self.cfg.work_max;
+        let elsewhere = t.commits.len() + carriers.len() + t.states.len() + t.whole.len() + t.blobs.len() + t.moved.len() + t.roles.reached.len();
         let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
         for (l, w) in conns.chain(self.local_work.iter_mut()) {
             w.full |= t.full;
@@ -1186,7 +1187,7 @@ impl SyncEngine {
                     state::Touch::Blob(b) => w.blobs.insert(*b),
                 };
             }
-            w.bound(max);
+            w.bound(elsewhere, max);
         }
     }
 

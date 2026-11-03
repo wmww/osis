@@ -2032,6 +2032,7 @@ fn answers(inc: &Timelines, nodes: &BTreeSet<Tid>, things: &BTreeSet<Tid>, point
             for p in points {
                 let _ = write!(a, " {:?}", tl.and_then(|tl| tl.role(n, t, At::before(*p))));
                 for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
+                    let _ = write!(a, " {:?}", tl.and_then(|tl| tl.valid_from(n, t, r)));
                     let any = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..*p };
                     let _ = write!(a, " {:?}", tl.map_or(none, |tl| tl.delta_valid(any, t, r)));
                     if p.node == *n {
@@ -2147,9 +2148,56 @@ fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osi
     c
 }
 
+/// Late rises of an invite holder over its writes on others' edges: the same edge's write turns
+/// from an invite grant to an audited one, so a holder that gave its edge up is demoted (§5.1 step 4).
+fn invite_turns(samples: u64, seed: u64) {
+    use osis_base::Role::{Admin, Read, Write};
+    let seed = seeded(seed);
+    let mut rng = Rng(seed);
+    for s in 0..samples {
+        let mut w = World::new();
+        let n = w.nodes(5);
+        let (k, a, hs) = (n[0], n[1], &n[2..]);
+        let g = w.thing(k);
+        w.set(k, g, a, edge_inv(Read, Some(Read), None), 1, &[]);
+        for h in hs {
+            w.set(k, g, *h, edge(Write), 1, &[]);
+        }
+        let mut late = Vec::new();
+        for _ in 0..8 + rng.below(8) {
+            let t = 2 + rng.below(30) as u64;
+            let h = hs[rng.below(hs.len())];
+            let id = match rng.below(6) {
+                0 | 1 => w.set(h, g, h, None, t, &[]),
+                2 | 3 => w.set(a, g, h, edge(Read), t, &[]),
+                4 => w.set(k, g, a, edge(Admin), t, &[]),
+                _ => w.set(k, g, a, edge_inv(Read, Some(Read), None), t, &[]),
+            };
+            if rng.below(2) == 0 {
+                late.push(id);
+            }
+        }
+        let order = rng.perm(late.len());
+        let mut skip: BTreeSet<_> = late.iter().copied().collect();
+        let mut prev = w.held_without(&skip);
+        let mut inc = Timelines::new();
+        inc.update(&prev);
+        for (step, i) in order.into_iter().enumerate() {
+            skip.remove(&late[i]);
+            let held = w.held_without(&skip);
+            update_moved(&mut inc, &held, &prev);
+            if let Some(d) = check(&held, &inc, &n) {
+                panic!("seed {seed:#x} sample {s} step {step}: {d}");
+            }
+            prev = held;
+        }
+    }
+}
+
 /// A role moves only as `Changed` says (`update_moved`) under each generator's histories.
 fn moves_on(samples: u64, seed: u64) {
     MOVES.set(true);
+    invite_turns(16 * samples, seed ^ 6);
     run(samples, seed);
     adversarial(samples, seed ^ 1);
     adversarial_shapes(samples, seed ^ 2);
