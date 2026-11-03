@@ -823,11 +823,11 @@ fn open_equals_rebuild_random_histories_unheld_part_dies() {
 // storage"); spec/permissions.md §5.2: as above, with nodes taking hostile snapshots that copy a
 // held tag's dot and `ts` with another value, sent on like any commit, and compactors dropping
 // what they cover: open equals rebuild, and once every node holds everything the tags agree
-// (a valid snapshot's copy governs where the original is held too). Seeds 0..16; more in
+// (a valid snapshot's copy governs where the original is held too). Seeds 0..4; more in
 // `_large`.
 #[test]
 fn open_equals_rebuild_random_histories_forged() {
-    let seeds: Vec<u64> = (0..16).collect();
+    let seeds: Vec<u64> = (0..4).collect();
     osis_base::testenv::run_seeds("walks::open_equals_rebuild_random_histories_forged", &seeds, false, forged_replay, |seed| random_history(seed, 1, false, true));
 }
 

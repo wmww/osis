@@ -808,6 +808,12 @@ impl Pager {
 
 /// Opens a stored row with a candidate key: the plaintext, or `None`. Shredding tests only.
 pub fn forensic_open(row: &[u8], value: &[u8], key: &[u8; 32]) -> Option<Vec<u8>> {
+    // a padded row ends in 0x80 or 0x00 (`open`): another last byte rules the key out without
+    // the whole AEAD pass (an attack tries every key on every row)
+    let (nonce, ct) = value.split_at_checked(NONCE_LEN)?;
+    if !matches!(aead::last_plain_byte(key, nonce.try_into().ok()?, ct), Some(0 | 0x80)) {
+        return None;
+    }
     open(&Secret32::from_bytes(*key), row, value).ok()
 }
 

@@ -171,7 +171,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
     }
     for (id, k, bytes) in pend {
         // unreadable by this build: its header names nothing we can judge
-        let Ok(blob) = CommitBlob::decode(&bytes) else { continue };
+        let Ok(blob) = CommitBlob::decode_stored(&bytes) else { continue };
         // a kept copy's content takes nothing new: what waits goes too
         let mut ais: BTreeSet<usize> = blob.header.aspects.iter().enumerate().filter(|(_, a)| frozen(tx.core, &a.tid, &a.ak)).map(|(ai, _)| ai).collect();
         ais.extend(lost_aspects(tx.core, &lost, &blob.header, &mut memo));

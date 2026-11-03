@@ -1160,10 +1160,10 @@ fn snapshot_of_removed_entry_no_live_write_spec_commits_5() {
 // and recomputes batched. Node 5 takes the same commits keeping every body (`keep_bodies`) and
 // recomputes: each write's earliest superseder. Every body node 4 holds is dated no earlier:
 // a body with writes of its own dies iff node 5's does, first and last no earlier; a snapshot's
-// last death no earlier. Seeds 0..24; more in `_large`.
+// last death no earlier. Seeds 0..8; more in `_large`.
 #[test]
 fn deaths_never_early_random_spec_commits_5() {
-    let seeds: Vec<u64> = (0..24).collect();
+    let seeds: Vec<u64> = (0..8).collect();
     osis_base::testenv::run_seeds("retention::deaths_never_early_random_spec_commits_5", &seeds, false, dating_replay, dating_history);
 }
 
@@ -1530,10 +1530,10 @@ fn snapshot_carrying_write_past_frontier_dated_spec_commits_5() {
 // a map of structs (puts, removes, nested edits, inserts, deletes; most with a random expiry),
 // undos and redos of any held commit by any node (its own from the undo buffer, others' from
 // held bodies), syncs and time passing. Every written value is unique; after each step no node
-// reads one past the expiry of the write that first wrote it. Seeds 0..24; more in `_large`.
+// reads one past the expiry of the write that first wrote it. Seeds 0..8; more in `_large`.
 #[test]
 fn undo_never_outlives_expiry_random_spec_crdt_4_6() {
-    let seeds: Vec<u64> = (0..24).collect();
+    let seeds: Vec<u64> = (0..8).collect();
     osis_base::testenv::run_seeds("retention::undo_never_outlives_expiry_random_spec_crdt_4_6", &seeds, false, undo_replay, undo_expiry_history);
 }
 

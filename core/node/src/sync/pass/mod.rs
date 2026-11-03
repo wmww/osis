@@ -1093,7 +1093,7 @@ impl SyncEngine {
                 continue;
             }
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
-            let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            let Ok(cb) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
             let aspects = cb.header.aspects.iter().map(|a| Some((a.tid, a.ak.clone())));
             if is_snapshot(cb.header.kind) {
                 snaps.extend(aspects.clone());

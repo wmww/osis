@@ -1654,19 +1654,20 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
 /// received there (spec/permissions.md §8), as `drop_flips` for keep bounds.
 fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String> {
     let (Some(w), Some(g)) = (&want.index, &got.index) else { return BTreeSet::new() };
-    let header = |p: &Package| osis_commit::CommitBlob::decode(&p.bytes).ok().map(|b| b.header);
-    let named: BTreeSet<(Tid, osis_base::Ak)> = played.packs.iter().filter_map(header).flat_map(|h| h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect::<Vec<_>>()).collect();
+    // packages the harness made: no delete-key point checks (`decode_stored`)
+    let headers: Vec<Option<osis_commit::Header>> = played.packs.iter().map(|p| osis_commit::CommitBlob::decode_stored(&p.bytes).ok().map(|b| b.header)).collect();
+    let named: BTreeSet<(Tid, osis_base::Ak)> = headers.iter().flatten().flat_map(|h| h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect::<Vec<_>>()).collect();
     let ((wf, _), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
     let missing_now = |id: &str, a: &osis_commit::AspectEntry| {
         let k = (id.to_string(), format!("{:?}", a.tid), a.ak.as_str().to_string());
         wf.get(&k).map(|f| f.missing) != gf.get(&k).map(|f| f.missing)
     };
-    played.packs.iter().filter(|p| {
-        let (Some(x), Some(y), Some(h)) = (w.commits.get(&p.id), g.commits.get(&p.id), header(p)) else { return false };
+    played.packs.iter().zip(&headers).filter(|&(p, h)| {
+        let (Some(x), Some(y), Some(h)) = (w.commits.get(&p.id), g.commits.get(&p.id), h.as_ref()) else { return false };
         let id = format!("{:?}", p.id);
         let on_named = |a: &osis_commit::AspectEntry| named.contains(&(a.tid, a.ak.clone()));
         x.missing.symmetric_difference(&y.missing).any(|ai| h.aspects.get(*ai).is_some_and(on_named)) || h.aspects.iter().any(|a| on_named(a) && missing_now(&id, a))
-    }).map(|p| format!("{:?}", p.id)).collect()
+    }).map(|(p, _)| format!("{:?}", p.id)).collect()
 }
 
 const FRESH: u64 = 0x5eed_f00d;
@@ -2020,8 +2021,8 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
 /// `held` as a first sync fetches it (spec/sync.md §6): what judging needs, then newest first.
 fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
     let mut o = held.to_vec();
-    let rank = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).map_or(0, |b| osis_node::labeling::fetch_order(&b.header));
-    o.sort_by_key(|&i| {
+    let rank = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map_or(0, |b| osis_node::labeling::fetch_order(&b.header));
+    o.sort_by_cached_key(|&i| {
         let r = rank(i);
         (r != 0, std::cmp::Reverse(r))
     });
@@ -2686,10 +2687,18 @@ fn arrival_order_alike_small_spec_permissions_5_2() {
 }
 
 // spec/commits.md §5, spec/permissions.md §5.2: required retention judged by the setting in force
-// at the delta's key, every arrival order and held subset alike.
+// at the delta's key, every arrival order and held subset alike. Seeds 2..4: 3 breaks a required
+// retention, 2 lets one fall; more in `_large`.
 #[test]
 fn arrival_order_required_spec_commits_5() {
-    run("arrival_order_required_spec_commits_5", 0..4, 12, EXHAUST_SMALL, required_history);
+    run("arrival_order_required_spec_commits_5", 2..4, 12, EXHAUST_SMALL, required_history);
+}
+
+// The same over more histories.
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_required_large_spec_commits_5() {
+    run("arrival_order_required_large_spec_commits_5", 0..40, 12, EXHAUST_SMALL, required_history);
 }
 
 /// Every arrival order, a node dropping what `drop_broken` lets it after each commit (its clock
@@ -2779,10 +2788,11 @@ fn run_drops(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, gene
 }
 
 // spec/permissions.md §8: what a node may drop without a right changes nothing it reads once the
-// body is held again, whichever arrived first.
+// body is held again, whichever arrived first. Seeds 2..4 (3 breaks a required retention); more
+// in `_large`.
 #[test]
 fn required_drops_read_alike_spec_perm_8() {
-    run_drops("required_drops_read_alike_spec_perm_8", 0..4, 12, EXHAUST_SMALL, required_history);
+    run_drops("required_drops_read_alike_spec_perm_8", 2..4, 12, EXHAUST_SMALL, required_history);
 }
 
 // The same over the general histories.
@@ -2927,7 +2937,7 @@ fn arrival_order_purge_import_pinned_spec_commits_5() {
 // nothing with purges of imports, and no node holds their values whatever came first.
 #[test]
 fn arrival_order_purge_import_small_spec_commits_5() {
-    run("arrival_order_purge_import_small_spec_commits_5", 0..8, 16, SMALL, purge_import_history);
+    run("arrival_order_purge_import_small_spec_commits_5", 0..4, 16, SMALL, purge_import_history);
 }
 
 #[test]
@@ -2940,7 +2950,7 @@ fn arrival_order_purge_import_large_spec_commits_5() {
 // whichever deltas and demotions come after them.
 #[test]
 fn arrival_order_purge_author_small_spec_perm_8() {
-    run("arrival_order_purge_author_small_spec_perm_8", 0..6, 24, SMALL, purge_author_history);
+    run("arrival_order_purge_author_small_spec_perm_8", 0..3, 24, SMALL, purge_author_history);
 }
 
 #[test]

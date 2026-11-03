@@ -55,7 +55,7 @@ Quiet machine, warm worktree, after the fixes this note records. If your numbers
 |---|---|
 | no-op `cargo build --workspace` / `--all-targets` | 0.4 s / 2 s |
 | one-line edit, `cargo test --workspace --no-run`: osis-node (`sync/`) / osis-engine | 2.5 s (4 crates) / 5.5 s (5 crates); before the split either was 5.5-7.5 s |
-| `cargo test --workspace` tests, built | 45 s, 476 CPU-s quiet (osis-node `it`, 459 tests, 23 s of it); CPU-bound, so it scales with load (2-4x at load 25-35); notes/testing.md, Tier-1 cost |
+| `cargo test --workspace` tests, built | 45 s, 476 CPU-s quiet when osis-node `it` had 459 tests; since grown to about 1000 there: 208 s wall, 2400 CPU-s at load 16 after tier1-trim-r4. CPU-bound, so it scales with load (2-4x at load 25-35); per-test numbers: notes/testing.md, Tier-1 cost |
 | edit osis-crdt or osis-base (bottom of the stack), all targets | 10-16 s |
 | clippy / clippy-net after a one-line edit | 3-7 s / 3.5 s |
 | clean `cargo build --workspace`; then `--all-targets`; first clippy; first clippy-net | 82 s; +53 s; +17 s; +69 s |

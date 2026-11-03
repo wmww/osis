@@ -120,34 +120,35 @@ impl Schema {
         self.aspects.get(ak).map(|a| AspectDefaults { retention: a.retention, expires: a.expires })
     }
 
-    /// One expansion step of a named type (standard or declared).
-    fn instantiate(&self, n: &str, args: &[Type]) -> Result<Type, String> {
+    /// One expansion step of a named type (standard or declared): a declared one without
+    /// parameters is its body as declared (typed reads expand every node they walk).
+    fn instantiate<'a>(&'a self, n: &str, args: &[Type]) -> Result<Cow<'a, Type>, String> {
         let arity = |k: usize| if args.len() == k { Ok(()) } else { Err(format!("{n} takes {k} type argument(s)")) };
         match n {
             "option" => {
                 arity(1)?;
-                Ok(Type::option_body(args.first().cloned().unwrap_or(Type::Any)))
+                Ok(Cow::Owned(Type::option_body(args.first().cloned().unwrap_or(Type::Any))))
             }
-            "markdown" => arity(0).map(|_| Type::Text),
-            "timestamp" | "duration" | "date" | "localtime" => arity(0).map(|_| Type::Int),
+            "markdown" => arity(0).map(|_| Cow::Owned(Type::Text)),
+            "timestamp" | "duration" | "date" | "localtime" => arity(0).map(|_| Cow::Owned(Type::Int)),
             _ => {
                 let def = self.types.get(n).ok_or_else(|| format!("unknown type {n}"))?;
                 arity(def.params.len())?;
-                Ok(def.body.subst(&def.params, args))
+                Ok(if def.params.is_empty() { Cow::Borrowed(&def.body) } else { Cow::Owned(def.body.subst(&def.params, args)) })
             }
         }
     }
 
     /// Expands named types at the head until a structure (or a parameter of an enclosing
     /// definition). Fails on an unknown name, a wrong argument count or non-productive recursion.
-    pub fn expand<'a>(&self, ty: &'a Type) -> Result<Cow<'a, Type>, String> {
+    pub fn expand<'a>(&'a self, ty: &'a Type) -> Result<Cow<'a, Type>, String> {
         let mut cur = Cow::Borrowed(ty);
         for _ in 0..MAX_EXPAND {
-            let next = match cur.as_ref() {
-                Type::Named(n, args) => self.instantiate(n, args)?,
+            cur = match cur {
+                Cow::Borrowed(Type::Named(n, args)) => self.instantiate(n, args)?,
+                Cow::Owned(Type::Named(n, args)) => Cow::Owned(self.instantiate(&n, &args)?.into_owned()),
                 _ => return Ok(cur),
             };
-            cur = Cow::Owned(next);
         }
         Err(format!("named type does not reach a structure within {MAX_EXPAND} expansions (alias chain too long, or recursion through aliases only)"))
     }
@@ -161,7 +162,7 @@ impl Schema {
                 return true;
             }
             match self.instantiate(n, args) {
-                Ok(t) => cur = Cow::Owned(t),
+                Ok(t) => cur = Cow::Owned(t.into_owned()),
                 Err(_) => return false,
             }
         }

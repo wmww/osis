@@ -488,7 +488,7 @@ fn gap_snapshot_run(name: &str, seeds: std::ops::Range<u64>, len: u64) {
 // part counted as held joins on arrival, or never): `gap_snapshot_check`.
 #[test]
 fn gap_snapshots_converge_spec_crdt_8() {
-    gap_snapshot_run("gap_snapshots_converge_spec_crdt_8", 0..12, 14);
+    gap_snapshot_run("gap_snapshots_converge_spec_crdt_8", 0..4, 14);
 }
 
 // The same over more histories, longer.
