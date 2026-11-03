@@ -665,8 +665,12 @@ impl Io {
         });
     }
 
-    /// The handle is gone.
-    fn close(&mut self) {
+}
+
+/// The handle is gone, or the thread died of a panic: calls and writes fail, subscriptions
+/// (a `remote_task` waiting) hear `Closed`.
+impl Drop for Io {
+    fn drop(&mut self) {
         self.calls.clear();
         self.writes.clear();
         for (_, mut s) in std::mem::take(&mut self.subs) {
@@ -711,13 +715,13 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
     let wait = io.wait;
     let link = io.link.clone();
     loop {
-        let Some(dialed) = io.while_down(&mut rx, dial_via(&via, &addr, wait)).await else { return io.close() };
+        let Some(dialed) = io.while_down(&mut rx, dial_via(&via, &addr, wait)).await else { return };
         match dialed {
             Err(e) => link.tried(Err(net(e))),
             Ok(l) => {
                 let osis_transport::Link { tx, rx: mut lrx, .. } = l;
                 match io.start(&tx, &mut lrx, &mut rx).await {
-                    Started::HandleGone => return io.close(),
+                    Started::HandleGone => return,
                     Started::Failed(e) => link.tried(Err(e)),
                     Started::Refused(e) => {
                         drop((tx, lrx));
@@ -727,13 +731,13 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
                         while let Some(c) = rx.recv().await {
                             io.command_down(c);
                         }
-                        return io.close();
+                        return;
                     }
                     Started::Up => {
                         link.tried(Ok(()));
                         backoff = RETRY_MIN;
                         if !io.connected(&tx, &mut lrx, &mut rx).await {
-                            return io.close();
+                            return;
                         }
                         link.tried(Err(net("connection to the node ended")));
                         io.dropped();
@@ -744,7 +748,7 @@ async fn run(via: Via, addr: Address, mut io: Io, mut rx: mpsc::UnboundedReceive
         let pause = tokio::time::sleep(backoff);
         backoff = (backoff * 2).min(RETRY_MAX);
         if io.while_down(&mut rx, pause).await.is_none() {
-            return io.close();
+            return;
         }
     }
 }

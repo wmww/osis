@@ -613,3 +613,51 @@ async fn own_host_device_in_process_spec_data_model_9() {
     alice.make_link(g, osis::Role::Write, Default::default()).unwrap();
     tokio::time::timeout(GUARD, alice.wait_synced(SyncScope::All, GUARD)).await.unwrap().unwrap();
 }
+
+// notes/api.md Handle and sync: a sync driver that panics (inside an engine call, under the lock)
+// fails the waits pending on it and every later one with `Network` naming the panic, at once
+// rather than at their deadline (a dead driver fires no timer), and reports `SyncStopped`.
+// spec: none (an API property)
+#[test]
+fn driver_panic_fails_waiters() {
+    let net = osis_transport::Net::new(12);
+    let mut c = Config::at(StoreAt::Memory(MemStore::new()));
+    c.seed = Some(3);
+    c.runtime = Runtime::Own;
+    c.transport = Some(Transport::InProcess(net.endpoint("dp")));
+    // a host nobody answers at: `wait_synced(All)` waits
+    c.hosts = vec![HostAddr::new("mem://nobody", [7; 32])];
+    let (db, _) = Osis::create(c).unwrap();
+    let (dtx, drx) = std::sync::mpsc::channel();
+    let _sub = db.on_diagnostic(move |_, d| {
+        let _ = dtx.send(d);
+    });
+    let far = Duration::from_secs(600);
+    let (tx, rx) = std::sync::mpsc::channel();
+    let d2 = db.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(common::block_on(d2.wait_synced(SyncScope::All, far)));
+    });
+    let t0 = std::time::Instant::now();
+    while db.waiting() == 0 {
+        assert!(t0.elapsed() < GUARD, "the wait never registered");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    db.panic_driver();
+    let r = rx.recv_timeout(GUARD).expect("a wait hung on a dead driver");
+    let died = |r: osis::Result<()>| match r {
+        Err(osis::Error::Network(m)) => assert!(m.contains("sync driver panicked: test: the sync driver panics"), "{m}"),
+        r => panic!("{r:?}"),
+    };
+    died(r);
+    // a later wait fails at once too
+    died(common::block_on(db.wait_synced(SyncScope::All, far)));
+    let d = loop {
+        let d = drx.recv_timeout(GUARD).expect("no SyncStopped diagnostic");
+        if d.kind == osis::DiagnosticKind::SyncStopped {
+            break d;
+        }
+    };
+    assert!(d.detail.contains("test: the sync driver panics"), "{}", d.detail);
+    db.close().unwrap();
+}

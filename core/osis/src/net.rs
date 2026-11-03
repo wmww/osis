@@ -75,7 +75,9 @@ impl std::fmt::Debug for Transport {
 pub(crate) enum Net {
     Off,
     Manual(Mutex<Vec<Action>>),
-    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, stop: Mutex<Option<Stop>> },
+    /// `died`: why the driver task ended while the database was open (set under the engine
+    /// lock, `driver_died`).
+    Driver { ctl: mpsc::UnboundedSender<Control>, handle: tokio::runtime::Handle, stop: Mutex<Option<Stop>>, died: Mutex<Option<String>> },
 }
 
 /// Ends the driver's runtime use after the driver task ended. An engine call runs in
@@ -165,7 +167,7 @@ impl Net {
             (tx, Arc::new(Mutex::new(rx)))
         });
         let (ctl, rx) = mpsc::unbounded_channel();
-        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Arc::new(Mutex::new(ended)), task: Some(task), freed })) }, Some(rx)))
+        Ok((Net::Driver { ctl, handle, stop: Mutex::new(Some(Stop { own, ended: Arc::new(Mutex::new(ended)), task: Some(task), freed })), died: Mutex::new(None) }, Some(rx)))
     }
 
     /// What disconnects once the driver is gone (`close` waits on it): on osis's own runtime,
@@ -214,8 +216,8 @@ impl Net {
     /// (registered at `relays`) and publishes `reach.0`; with feature `lan` and QUIC it also runs
     /// the LAN loop. Without a co-reader transport no co-reader is dialed.
     pub fn spawn_driver(&self, rx: mpsc::UnboundedReceiver<Control>, cfg: &crate::Config, clock: Arc<dyn Clock>, db: WeakOsis) -> Result<()> {
-        let Net::Driver { handle, ctl, stop } = self else { return Ok(()) };
-        let shared = OsisShared(db, cfg.store.clone());
+        let Net::Driver { handle, ctl, stop, .. } = self else { return Ok(()) };
+        let shared = OsisShared(db.clone(), cfg.store.clone());
         let (transport, p2p, relays) = (cfg.transport.clone(), cfg.peers, cfg.relays.clone());
         let log: driver::Log = Arc::new(|m: &str| log_line(m));
         // the client port's unix socket (`Osis::listen_unix`)
@@ -241,7 +243,7 @@ impl Net {
         let alive = lock(stop).as_mut().and_then(|s| s.task.take());
         handle.spawn(async move {
             let _alive = alive;
-            driver::run_shared(shared, multi, Vec::new(), clock, rx, log).await;
+            Watched { f: Box::pin(driver::run_shared(shared, multi, Vec::new(), clock, rx, log)), db, done: false }.await;
         });
         match reach {
             Some(url) if p2p => {
@@ -264,11 +266,11 @@ impl Net {
     pub fn listen(&self, url: String) -> Result<()> {
         let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client port needs one (Config.runtime)".into())) };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        ctl.send(Control::Listen { url, reply: Some(tx) }).map_err(|_| Error::Network("sync stopped".into()))?;
+        ctl.send(Control::Listen { url, reply: Some(tx) }).map_err(|_| self.stopped())?;
         match blocking(|| rx.blocking_recv()) {
             Ok(Ok(_)) => Ok(()),
             Ok(Err(e)) => Err(Error::Network(e)),
-            Err(_) => Err(Error::Network("sync stopped".into())),
+            Err(_) => Err(self.stopped()),
         }
     }
 
@@ -276,10 +278,29 @@ impl Net {
     pub fn client_listen(&self, urls: driver::ClientUrls) -> Result<Vec<osis_transport::Address>> {
         let Net::Driver { ctl, .. } = self else { return Err(Error::Network("no runtime: the client listener needs one (Config.runtime)".into())) };
         let (tx, rx) = tokio::sync::oneshot::channel();
-        ctl.send(Control::ClientListen { urls, reply: tx }).map_err(|_| Error::Network("sync stopped".into()))?;
+        ctl.send(Control::ClientListen { urls, reply: tx }).map_err(|_| self.stopped())?;
         match blocking(|| rx.blocking_recv()) {
             Ok(r) => r.map_err(Error::Network),
-            Err(_) => Err(Error::Network("sync stopped".into())),
+            Err(_) => Err(self.stopped()),
+        }
+    }
+
+    /// Why the driver is gone: how it died, else "sync stopped".
+    fn stopped(&self) -> Error {
+        self.died().unwrap_or_else(|| Error::Network("sync stopped".into()))
+    }
+
+    /// How the driver task died while the database was open (`driver_died`).
+    pub fn died(&self) -> Option<Error> {
+        let Net::Driver { died, .. } = self else { return None };
+        lock(died).clone().map(Error::Network)
+    }
+
+    /// A test's way to panic the driver task: its next control panics inside an engine call.
+    #[allow(clippy::panic)]
+    pub fn panic_driver(&self) {
+        if let Net::Driver { ctl, .. } = self {
+            let _ = ctl.send(Control::Call(Box::new(|_| panic!("test: the sync driver panics"))));
         }
     }
 
@@ -307,6 +328,63 @@ impl Net {
             });
         }
     }
+}
+
+/// The driver task's future. A panic in it, or its runtime dropping it unfinished (the app shut
+/// its runtime down with the database open), ends the database's sync: `driver_died`. The panic
+/// then goes on to the runtime as before, so its message shows where task panics do.
+struct Watched<F> {
+    f: Pin<Box<F>>,
+    db: WeakOsis,
+    done: bool,
+}
+
+impl<F: Future> Future for Watched<F> {
+    type Output = F::Output;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<F::Output> {
+        let me = &mut *self;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| me.f.as_mut().poll(cx))) {
+            Ok(Poll::Pending) => Poll::Pending,
+            Ok(Poll::Ready(v)) => {
+                me.done = true;
+                Poll::Ready(v)
+            }
+            Err(p) => {
+                me.done = true;
+                let msg = p.downcast_ref::<&str>().map(|s| s.to_string()).or_else(|| p.downcast_ref::<String>().cloned()).unwrap_or_default();
+                driver_died(&me.db, format!("sync driver panicked: {msg}"));
+                std::panic::resume_unwind(p)
+            }
+        }
+    }
+}
+
+impl<F> Drop for Watched<F> {
+    fn drop(&mut self) {
+        if !self.done {
+            driver_died(&self.db, "sync stopped: its runtime shut down".into());
+        }
+    }
+}
+
+/// The driver is gone while the database may be open: every waiter fails with `why`, and so does
+/// every later wait (`Net::died`, looked at under the same lock); reported as
+/// `DiagnosticKind::SyncStopped`.
+fn driver_died(db: &WeakOsis, why: String) {
+    let Some(db) = db.hold() else { return };
+    let Net::Driver { died, .. } = &db.inner.net else { return };
+    {
+        // the engine is not touched: it may be what panicked
+        let mut g = lock(&db.inner.eng);
+        *lock(died) = Some(why.clone());
+        for w in g.waiters.drain(..) {
+            w.slot.put(Err(Error::Network(why.clone())));
+        }
+    }
+    // best effort, for the same reason (a second panic was already printed by the hook)
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        db.locked(|l| l.engine().report(osis_node::Diagnostic { kind: osis_node::DiagnosticKind::SyncStopped, tids: Vec::new(), commit: None, peer: None, detail: why.clone() }));
+    }));
 }
 
 fn log_line(m: &str) {
@@ -450,11 +528,16 @@ impl crate::Osis {
         let deadline = timeout.map(|d| now.saturating_add(u64::try_from(d.as_millis()).unwrap_or(u64::MAX)));
         let mut w = Waiter { check, deadline, slot: slot.clone() };
         let waiting = self.locked(|l| {
-            let done = w.poll(&mut l.sync, &l.status, now);
-            if !done {
-                l.waiters.push(w);
+            if w.poll(&mut l.sync, &l.status, now) {
+                return false;
             }
-            !done
+            // the driver died: nothing would answer or time this out
+            if let Some(e) = self.inner.net.died() {
+                w.slot.put(Err(e));
+                return false;
+            }
+            l.waiters.push(w);
+            true
         });
         if let (true, Some(d)) = (waiting, timeout) {
             self.inner.net.timer(d);
