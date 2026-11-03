@@ -1,3 +1,0 @@
-# A history watch does not re-fire when a body's missing chunk arrives
-> Summary: A kept write whose body links a large value (above `CHUNK_THRESHOLD`, e.g. a chat message over 128 KiB) reads `NotFetched` while a chunk is not held. Aspect watches re-read when such a blob arrives (`Cause::Fetched`, `Engine::missed_blob`), but history reads (`history.rs` `entry_of` via `Reader::materialized`) note nothing and `Event::History` is not raised for chunk arrival, so a history watch (chat feed) keeps showing "not here yet" until something else changes the entry. Fix: note the (tid, ak, commit) on a missed history read and raise `Event::History` for it in `put_blobs`.
-> Tags: api, chat

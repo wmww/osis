@@ -82,10 +82,10 @@ pub enum HistoryEvent<T> {
 
 /// `row` as an API entry (`limit`: the bound its links materialize under). A link whose value
 /// cannot be read here reads as not fetched, a store failure aside.
-fn entry_of(r: &mut Reader<'_>, tid: &Tid, row: HistoryRow, limit: usize) -> Result<HistoryEntry<Value>> {
+fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usize) -> Result<HistoryEntry<Value>> {
     let body = match row.body {
         RowBody::Held(None) => HistoryBody::Held(None),
-        RowBody::Held(Some(v)) => match r.materialized(tid, v, limit) {
+        RowBody::Held(Some(v)) => match r.materialized(tid, ak, row.id, v, limit) {
             Ok(v) => HistoryBody::Held(Some(v)),
             Err(Error::TooLarge { .. }) => HistoryBody::TooLarge { limit },
             Err(e @ Error::Storage(_)) => return Err(e),
@@ -132,7 +132,7 @@ impl Osis {
             let mut entries = Vec::with_capacity(n);
             // links count once materialized: a page fits what a reply carries
             for (i, row) in rows.into_iter().enumerate() {
-                let e = entry_of(&mut r, &t, row, budget)?;
+                let e = entry_of(&mut r, &t, ak, row, budget)?;
                 if let HistoryBody::Held(Some(v)) = &e.body {
                     used = used.saturating_add(osis_base::cbor::encode(v).len());
                 }
@@ -157,7 +157,7 @@ impl Osis {
                 return Ok(None);
             }
             let Some(row) = r.e.history_entry(&t, ak, id, mat)? else { return Ok(None) };
-            entry_of(&mut r, &t, row, mat).map(Some)
+            entry_of(&mut r, &t, ak, row, mat).map(Some)
         })
     }
 }
