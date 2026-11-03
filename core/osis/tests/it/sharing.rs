@@ -360,6 +360,80 @@ fn redeem_after_a_device_removal_spec_permissions_9() {
     assert_eq!(x(&carol, t), Some(s("from alice")));
 }
 
+// spec/permissions.md §9: the common race: a link passed on before its label reached the host is no ended link: the redeemer waits for it
+#[test]
+fn redeem_waits_for_a_link_still_uploading_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&alice);
+    let t = item(&alice, g, g, "from alice");
+    w.run();
+    w.set_reachable(&alice, host, false);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    let mut redeem = std::pin::pin!(carol.redeem(&link));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for _ in 0..10 {
+        assert!(redeem.as_mut().poll(&mut cx).is_pending(), "still uploading, not ended");
+        w.advance(1000);
+        w.run();
+    }
+    w.set_reachable(&alice, host, true);
+    assert_eq!(w.until(redeem, 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(x(&carol, t), Some(s("from alice")));
+}
+
+// spec/permissions.md §9: one host refusing L's entry (here a child step taken without its claim set, past its cap) is no end of the link while another of its hosts has not answered; every host refusing is
+#[test]
+fn one_host_refusing_is_no_end_spec_permissions_9() {
+    let mut w = World::new();
+    let (capped, other, own) = (w.add_host(), w.add_host(), w.add_host());
+    let (alice, _) = w.person(1, &[capped, other]);
+    let (bob, _) = w.person(2, &[other]);
+    let (carol, _) = w.person(3, &[own]);
+    let g = group(&alice);
+    let t = item(&alice, g, g, "from alice");
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    w.until(bob.redeem(&link), 1000, 30).unwrap();
+    w.run();
+    let policy = osis_host::HostPolicy { cap_bytes: 1, ..osis_host::HostPolicy::default() };
+    w.hosts[capped].hub.store_mut().set_policy(policy);
+    let k = alice.links(g)[0].id;
+    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    w.set_reachable(&carol, other, false);
+    let mut redeem = std::pin::pin!(carol.redeem(&link));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    for _ in 0..10 {
+        assert!(redeem.as_mut().poll(&mut cx).is_pending(), "the other host may still serve it");
+        w.advance(1000);
+        w.run();
+    }
+    w.set_reachable(&carol, other, true);
+    assert_eq!(w.until(redeem, 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(x(&carol, t), Some(s("from alice")));
+    // revoked: a redeemer with one host down waits it out, with every host refusing is told at once
+    w.until(alice.revoke_link(alice.links(g)[0].id, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.hosts[capped].hub.store_mut().set_policy(osis_host::HostPolicy::default());
+    w.advance(70_000);
+    w.run();
+    let (dave, _) = w.person(4, &[own]);
+    w.set_reachable(&dave, other, false);
+    let mut redeem = std::pin::pin!(dave.redeem(&link));
+    w.advance(1000);
+    w.run();
+    assert!(redeem.as_mut().poll(&mut cx).is_pending());
+    w.set_reachable(&dave, other, true);
+    assert!(matches!(w.until(redeem, 1000, 10), Err(Error::Invalid(_))));
+}
+
 // spec/permissions.md §5.3, notes/api.md Demotion: offline, `Required` fails `Unsynced` after
 // `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
 #[test]
