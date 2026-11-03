@@ -48,9 +48,9 @@ Fallback, no core change: **segments**. The app's chat is a chain of osis chats;
 
 Message about 0.5 KB on the wire, about 1.2 KB stored at every device for good; join about 35 KB; kick 2.7 KB per remaining member plus a few 60 B heads. Expired or purged: about 33 B residue; a purged permanent delta 300 B for its header, and 300 B for its purge commit's unless that is permanent too. Open is O(all commits): about 6 s at 10^6 messages, first sync about 15 min (extrapolated, e-review §6); re-adding a member rebuilds the year's aspect, about 70 s at 10^6. A hostile 10^7-message flood costs every member about 5 GB until purged by author.
 
-## Ownership open point
+## Ownership
 
-Lodestar (coordinator on ostrich) confirms: recovery from a vandal writer needs only an admin able to demote, owned or not; an ownerless thing can own things. Roster snapshots of N need an admin of N's owner actor or above (permissions §6), so an ownerless chat's own roster never compacts, and role history grows with member churn. A chat owned by an ownerless faction can compact, but the faction's admins then outrank the chat's own admins. Undecided: a lone chat stays ownerless and accepts the growth, or gets a one-chat parent faction. Bring this to the owner with the Factions rollout.
+Owner: no hard rule that a chat is ownerless; it is the default app's default. A chat may be owned, by a faction or anyone. A chat keeps all messages, so it keeps its member history too, and needs no roster compaction: its own roster never compacting is no loss. Recovery from a vandal writer needs only an admin able to demote, owned or not. An ownerless thing can own things; a chat owned by an ownerless faction can compact, and the faction's admins outrank its own. Roster compaction by an ownerless thing's own admins: "seems maybe fine ... really not a big deal either way", for other uses: not planned.
 
 ## Rules leaned on
 
