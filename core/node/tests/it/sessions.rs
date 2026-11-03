@@ -596,13 +596,15 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
     use osis_schema::Codec;
     let f = osis_schema::core_types::Frontier { commits: by_w };
     let dm = set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Read)), Some(f.to_value()));
-    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == dm).unwrap();
+    let at_admin = packages(&mut lp, 0);
+    let pk = at_admin.iter().find(|p| p.id == dm).unwrap();
     for p in [2, 3] {
-        lp.deliver(p, &pk).unwrap();
+        lp.deliver(p, pk).unwrap();
         lp.peers[p].engine.reexamine().map_err(|e| e.to_string())?;
     }
+    // (the thing's first commit too: the `packs` start after it, and it may have gone as covered)
     for p in [2, 3] {
-        for pk in &packs {
+        for pk in packs.iter().chain(&at_admin) {
             let _ = lp.deliver(p, pk);
         }
         lp.peers[p].engine.reexamine().map_err(|e| e.to_string())?;
