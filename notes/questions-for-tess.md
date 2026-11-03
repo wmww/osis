@@ -1,0 +1,25 @@
+# Questions for Tess
+> Summary: Open requirement and edge-case decisions, written for Tess to answer when she has time; each with a recommendation. Coordinators append; remove an entry once answered (record the answer in spec or notes).
+
+Background for all of these: notes/core-triage.md §2.
+
+## 1. Changes that touch two things: all at once, or per thing?
+Today: when one change touches two things (say, moving an item from one group to another), a device shows all of it or none of it. This already has three written exceptions, and it keeps causing bugs (about 10 fix rounds, 8 open issues).
+Proposal: all of a change's parts on one thing still appear together, but across things each part appears as soon as its thing arrives. An app could briefly see the item in the new group before it leaves the old one.
+Gain: deletes a lot of waiting code and most "which part arrived first" bugs.
+Recommendation: yes, unless you rely on cross-thing all-or-nothing for something.
+
+## 2. Devices agreeing after rare access changes on short-lived data
+Today: two devices with the same data must always show the same thing. This is about 45 fix rounds so far, the largest source of bugs.
+Part A (no change to requirements, we'll just do it): our tests also compare internal details you already said needn't match (exactly when a value counts as dead). We stop checking those.
+Part B (your call): on data with a time limit or "keep at most", if someone's access changes or a purge lands after a value was dropped, two devices may show one old item differently until any writer of that data comes online (that writer then fixes it automatically).
+Recommendation: accept B. It is rare, it heals itself, and it closes about 6 issues plus every future bug of that shape.
+
+## 3. Cost of removing someone from a group with long history
+Requirement: removing a member never costs more as history grows. Removal works correctly; meeting the cost goal needs a second, more complex format.
+Proposal: the removing admin compacts first, and the removal carries 32 bytes per message the removed device wrote that nobody has compacted yet. For data nobody ever compacts, that grows (3 MB at 100,000 messages), and removal fails past about 240,000 until someone compacts.
+Recommendation: accept, with the number written down.
+
+## 4. A hostile writer's own map key surviving a purge
+A hostile writer can make one of their own map keys (for example a field named "secret") still show up, empty, after their data is purged. Honest writers never cause this. Removing that writer, or deleting the entry or the map, still clears it.
+Options: write it down as a known limit (recommended; no code), or make an entry show only while its creation is held. That closes it fully, but a deleted entry could then no longer come back when someone else edits inside it.
