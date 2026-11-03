@@ -1571,14 +1571,18 @@ fn keyed(text: &str) -> BTreeMap<(String, String), String> {
 }
 
 /// The commits (as `facts_text` prints them) of the bodies dropped at both nodes, under keep at
-/// most or copies (a snapshot or import: dropped for carrying purged writes, seed 34000), on an
-/// aspect whose reads or states differ and that flipped on the way (`flips`): what the state
-/// alone held of such a body and lost to an un-merge comes back only with a copy (spec/crdt.md
-/// §4.6), which joins as a late part or, purged, value-less (spec/commits.md §5), so both are
-/// given them again (`alike_exchanged`).
-fn both_dropped_flips(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
+/// most or snapshots on an aspect a purge request names (dropped for carrying purged writes, seed
+/// 34000; an import so dropped keeps its residue), on an aspect whose reads or states differ and
+/// that flipped on the way (`flips`): what the state alone held of such a body and lost to an
+/// un-merge comes back only with a copy (spec/crdt.md §4.6), which joins as a late part or, purged,
+/// value-less (spec/commits.md §5), so both are given them again (`alike_exchanged`).
+fn both_dropped_flips(played: &Played, want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
     let ((wf, _), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
-    let dropped = |k: &BodyKey, f: &Fact| (f.at_most || f.copies) && !f.held && gf.get(k).is_some_and(|g| !g.held);
+    let headers: Vec<(String, osis_commit::Header)> = played.packs.iter().filter_map(|p| Some((format!("{:?}", p.id), osis_commit::CommitBlob::decode_stored(&p.bytes).ok()?.header))).collect();
+    let named: BTreeSet<(String, String)> = headers.iter().flat_map(|(_, h)| h.purge.iter().map(|i| (format!("{:?}", i.tid()), i.ak().as_str().to_string()))).collect();
+    let snapshots: BTreeSet<&str> = headers.iter().filter(|(_, h)| h.kind.is_compaction()).map(|(id, _)| id.as_str()).collect();
+    let purged_snapshot = |k: &BodyKey| snapshots.contains(k.0.as_str()) && named.contains(&(k.1.clone(), k.2.clone()));
+    let dropped = |k: &BodyKey, f: &Fact| (f.at_most || purged_snapshot(k)) && !f.held && gf.get(k).is_some_and(|g| !g.held);
     let mut apart: BTreeSet<(String, String)> = BTreeSet::new();
     for name in ["reads", "states"] {
         let (a, b) = (keyed(want.part(name)), keyed(got.part(name)));
@@ -1614,7 +1618,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
     let fallen = purge_flips(played, want, got);
     let mut apart = drop_flips(want, got);
     apart.extend(fallen.iter().cloned());
-    apart.extend(both_dropped_flips(want, got, flips));
+    apart.extend(both_dropped_flips(played, want, got, flips));
     if apart.is_empty() {
         return alike(want, got);
     }
