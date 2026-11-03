@@ -78,7 +78,8 @@ impl SyncEngine {
     }
 
     /// A digest of this node's sync state (simulator comparisons): what commits and parts its
-    /// entries, presence and blob records name, certificates, carriers, and what the store holds.
+    /// entries, presence, deposits, timed deletes and blob records name, certificates, carriers, and
+    /// what the store holds.
     pub fn state_digest(&mut self) -> [u8; 32] {
         let s = &self.state;
         // a blob by what it carries: its ID, wrap, salt and stamp are the luck of when its sealing
@@ -98,8 +99,11 @@ impl SyncEngine {
         for (l, b) in s.entries.keys() {
             lines.insert(format!("e{}", name(Some(l), b)));
         }
-        for (host, l, b) in &s.present {
-            lines.insert(format!("p{host:?}{}", name(Some(l), b)));
+        let sets = [("p", &s.present), ("d", &s.deposited), ("t", &s.timed)];
+        for (k, set) in sets {
+            for (host, l, b) in set {
+                lines.insert(format!("{k}{host:?}{}", name(Some(l), b)));
+            }
         }
         for (_, c) in &s.certs {
             lines.insert(format!("k{c:?}"));

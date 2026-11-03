@@ -759,6 +759,31 @@ fn lost_access_wakes_when_pending_grant_ages_out_spec_permissions_3() {
     }
 }
 
+// spec/sync.md §6 (sim host_loses_data once, seed 41): a host's data lost, a node restarted over its
+// disk: every must-hold body goes up again.
+#[test]
+fn wiped_host_gets_bodies_back_from_restarted_node_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "v1");
+    let c = net.write(a, t, "v2");
+    net.run();
+    let l = net.label(a);
+    let held = blobs_of(&mut net, a, &l, &c);
+    assert!(!held.is_empty() && held.iter().all(|id| net.host_ids(host, &l).contains(id)));
+    net.set_online(a, false);
+    net.wipe_host(host);
+    net.restart(a, 7);
+    net.set_online(a, true);
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let again = blobs_of(&mut net, a, &l, &c);
+    assert!(!again.is_empty() && again.iter().all(|id| net.host_ids(host, &l).contains(id)), "{again:?}");
+}
+
 // spec/sync.md §6 (no upload of a body a delete removed, keyed per body): commit c writes a plain
 // register and a keep-at-most-1h one, two bodies; both are overwritten, the second's body is
 // deleted past its bound, and the host is wiped: the first's body (must-hold, uncovered) goes up

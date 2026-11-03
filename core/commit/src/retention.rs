@@ -112,7 +112,8 @@ pub fn write_expires(ak: &str, ts: Ts, defaults: Option<&AspectDefaults>, set: O
     if t.is_some_and(|t| t > FOREVER) {
         return Err(Error::Build("expiry out of range"));
     }
-    Ok(t)
+    // a `ts` ahead of the clock (a peer's fast clock read) has passed a short expiry: just after it
+    Ok(t.map(|t| t.max(ts.wall_ms().0.saturating_add(1))))
 }
 
 /// Keep-at-least bound of a body (wall ms; 0 = none): the later of `abs` and last death plus

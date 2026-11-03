@@ -1429,6 +1429,34 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     assert!(s3.bodies - s2.bodies < 8, "the add's bodies alone: {}", s3.bodies - s2.bodies);
 }
 
+// spec/sync.md §6: what a step's passes mark (their own writes, what a refetch applied) passes in
+// that step: another step right after has nothing to pass.
+#[test]
+fn marked_by_a_pass_passes_in_the_same_step_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let addr = net.address(host);
+    let g = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 1);
+    for i in 0..3 {
+        let t = net.item(a, g, g, &format!("t{i}"));
+        net.write(a, t, "v");
+    }
+    net.run();
+    net.pair(c, a);
+    net.advance(61_000);
+    let other = net.tid(c);
+    set_edge(net.engine(a), g, other, Role::Read);
+    let before = net.sync(a).pass_stats().passes;
+    let _ = net.sync(a).handle(osis_node::sync::Event::Local);
+    let first = net.sync(a).pass_stats().passes;
+    assert!(first > before + 1, "a pass and the one its writes mark: {} passes", first - before);
+    let _ = net.sync(a).handle(osis_node::sync::Event::Local);
+    assert_eq!(net.sync(a).pass_stats().passes, first, "nothing left for the next step");
+}
+
 // spec: none (memory, spec/requirements.md Scale): posts leave work at the labels they do not pass
 // only up to `work_max`; past it that label's next pass judges everything, and the set is empty after.
 #[test]
