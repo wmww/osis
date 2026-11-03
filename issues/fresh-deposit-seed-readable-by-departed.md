@@ -12,7 +12,7 @@ Exact windows, for X departing actor M (rotation by an admin writing M's fresh s
 
 Why no fix: a seed-only commit wrapped under the new epoch would become M's certificate `keys.0` (certificates carry only `latest_on(actor, "keys.0")`) and drop the keysets from later chain certificates; deriving the seed from the newest read secret plus a public nonce breaks inbox deposits (the inbox is by default the home label, and granters hold only `keys.0`); making certificates carry the newest writer of each `keys.0` field still leaves the certificate window. The refresh therefore only stops a departed party that sees none of the above.
 
-Where: core/engine/src/rotation/mod.rs `refreshes_deposit` / `fresh_deposit_seed`; core/engine/src/labeling/certs.rs `inside_holder_revokes`; core/node/src/sync/pass/mod.rs `reregister`.
+Where: core/engine/src/rotation/mod.rs `refreshes_deposit` / `fresh_deposit_seed`; core/engine/src/labeling/certs.rs `inside_holder_revokes`; core/node/src/sync/pass/register.rs `reregister`.
 
 ## Worse than junk deposits (chat design review)
 A departed writer's deposit can be a valid commit, e.g. an edit of its own old content on a thing it still owns, placed in the shared space: promotion checks no authority (`pass/mod.rs` promote/`due_deposits`, by reading) and readers apply it. Proposed smallest fix: a deposited entry's content deltas on closure things are not applied from that entry and not promoted. Honest non-writers never deposit closure content (spec/sync.md §3, `may_deposit`: role commits only), so this matches requirements ("posting into a shared space needs write on its actor") and leaves only junk deposits, the severity above. Apply path not traced.
