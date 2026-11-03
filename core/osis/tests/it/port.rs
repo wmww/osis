@@ -477,6 +477,11 @@ fn attached_wait_synced_as_at_the_node() {
     c.grant(g, n.node(), Role::Read, Default::default()).unwrap();
     let link = c.make_link(g, Role::Read, Default::default()).unwrap();
     assert!(!link.to_string().is_empty());
+    // `share` through the port: the node syncs a thing nothing carries, and it has a label there
+    let lone = c.write_with(|w| w.create(c.me())).unwrap();
+    c.share(lone, n.node(), Role::Read, Default::default()).unwrap();
+    assert_eq!(n.status().unwrap().groups[&lone].labels.len(), 1);
+    block_on(c.wait_synced(SyncScope::Group(lone), W)).unwrap();
     // the sharing reads agree with the node's
     assert_eq!(c.links(g).len(), 1);
     assert_eq!(c.links(g), n.links(g));

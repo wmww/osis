@@ -393,6 +393,35 @@ fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>
     status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::ReceiptsOnly | SyncState::NoRoute)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
+/// Whether a route to `t`, which no group here holds yet, may still arrive: a hint names its label,
+/// or this node does not administer it (it could `sync` it itself, nothing is coming) and a label
+/// it reads has more to bring (a grant or a copy not read yet, a first sync).
+fn route_arriving(sync: &mut SyncEngine, t: &Tid) -> bool {
+    if sync.hinted(t) {
+        return true;
+    }
+    if sync.engine().role_on(t) == Some(Role::Admin) {
+        return false;
+    }
+    let skip = sync.receipts_only().clone();
+    sync.label_status().iter().any(|s| !skip.contains(&s.group) && matches!(label_state(s), SyncState::Syncing | SyncState::Unreachable))
+}
+
+/// The labels' check of `wait_synced(Group(t))`, over the groups holding `t` now and the
+/// deliveries about `t`, what it holds or those groups; `Unsynced` when none holds it and none
+/// will (`route_arriving`).
+fn group_synced(sync: &mut SyncEngine, me: Tid, t: Tid, late: bool) -> Option<Result<()>> {
+    let st = status_of(sync, me);
+    let groups = groups_holding(sync, &st, &[t].into_iter().collect());
+    if groups.is_empty() {
+        return (!route_arriving(sync, &t)).then(|| Err(Error::Unsynced { groups: vec![t] }));
+    }
+    let mut about: BTreeSet<Tid> = sync.engine().closure(&t).iter().copied().collect();
+    about.insert(t);
+    about.extend(groups.iter().copied());
+    synced(sync, Some(&groups), &[], Some(&about), late)
+}
+
 /// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
 /// (all their labels but a replaced hostless one beside another) or `None` (every label with hosts), then the pending deliveries about
 /// `deliveries` (every one when `groups` is `None`). `late` (the deadline passed): a refused
@@ -1407,8 +1436,10 @@ impl Osis {
     /// after `timeout` or without a
     /// runtime. `Group(t)`: the labels of the groups holding `t` (a hostless one fails
     /// `Unsynced`, unless replaced beside another) and the deliveries about `t`, a thing it holds or one of those groups (a
-    /// grant on one, a non-writer's write under its label). `All`: every label with hosts
-    /// (`status` shows the `NoHosts` ones) and every delivery.
+    /// grant on one, a non-writer's write under its label). With no group holding `t` it fails
+    /// `Unsynced` at once, unless a route may still arrive: a grant named its label, or this node
+    /// does not administer `t` and a label of its own has more to bring (a first sync). `All`:
+    /// every label with hosts (`status` shows the `NoHosts` ones) and every delivery.
     ///
     /// On an attached handle the node waits (a subscription, notes/client-port.md §2), with the
     /// same outcomes.
@@ -1430,7 +1461,7 @@ impl Osis {
     pub(crate) fn wait_synced_pending(&self, scope: SyncScope, timeout: Duration) -> crate::net::Pending<Result<()>> {
         let me = self.inner.me;
         use crate::net::Pending;
-        let (groups, about) = match scope {
+        match scope {
             SyncScope::All => {
                 // nothing to wait for: done, also without a runtime
                 let idle = self.locked(|x| {
@@ -1440,27 +1471,20 @@ impl Osis {
                 if idle {
                     return Pending::ready(Ok(()));
                 }
-                (None, BTreeSet::new())
+                self.sync_labels();
+                self.groups_synced(None, Vec::new(), timeout, Some(BTreeSet::new()))
             }
             SyncScope::Group(t) => {
-                let (groups, about) = self.locked(|x| {
-                    let st = status_of(&mut x.sync, me);
-                    let t = x.engine().resolve(&t, &t);
-                    let groups = groups_holding(&mut x.sync, &st, &[t].into_iter().collect());
-                    // deliveries about t, what it holds, or a group holding it
-                    let mut about: BTreeSet<Tid> = x.sync.engine().closure(&t).iter().copied().collect();
-                    about.insert(t);
-                    about.extend(groups.iter().copied());
-                    (groups, about)
-                });
-                if groups.is_empty() {
-                    return Pending::ready(Err(Error::Unsynced { groups: vec![t] }));
+                // first, so that a label with more to bring counts as such
+                self.sync_labels();
+                let t = self.resolved(t);
+                // a failure at once needs no runtime
+                if let Some(Err(e)) = self.locked(|x| group_synced(&mut x.sync, me, t, false)).filter(Result::is_err) {
+                    return Pending::ready(Err(e));
                 }
-                (Some(groups), about)
+                self.wait_until(Some(timeout), Box::new(move |sync, _, late| group_synced(sync, me, t, late)))
             }
-        };
-        self.sync_labels();
-        self.groups_synced(groups, Vec::new(), timeout, Some(about))
+        }
     }
 
     /// Catches up now and waits for nothing: labels not live at a host sync, live ones (their host

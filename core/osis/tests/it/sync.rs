@@ -1941,3 +1941,109 @@ fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
     w.run();
     assert_eq!(x(bob, t), Some(s("dave's")));
 }
+
+/// `f`'s outcome if it has one now.
+fn poll_now<F: std::future::Future + Unpin>(f: &mut F) -> Option<F::Output> {
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::Pin::new(f).poll(&mut cx) {
+        std::task::Poll::Ready(v) => Some(v),
+        std::task::Poll::Pending => None,
+    }
+}
+
+// spec/sync.md §3, notes/api.md (`wait_synced`): a holder whose grant names a label it has not read yet (its host out of reach for now) waits for it; its grant is pending there, so no missing route shows
+#[test]
+fn a_holder_waits_for_the_label_its_grant_names() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let h1 = w.add_host();
+    w.set_reachable(bob, h1, false);
+    let t = plain(&alice, "there");
+    alice.sync(t, &[w.addr(h1).unwrap()]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(unrouted(bob, t).is_empty(), "{:?}", bob.status().unwrap().groups.get(&t));
+    let mut f = Box::pin(bob.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)));
+    assert!(poll_now(&mut f).is_none(), "the route is on its way");
+    w.run();
+    w.advance(1000);
+    w.run();
+    assert!(poll_now(&mut f).is_none(), "still waiting");
+    w.set_reachable(bob, h1, true);
+    w.until(f, 1000, 30).unwrap();
+    assert_eq!(x(bob, t), Some(s("there")));
+}
+
+// spec/sync.md §3, notes/api.md (`wait_synced`): right after accepting a grant the holder waits for the label it names; before accepting nothing is on its way
+#[test]
+fn a_wait_right_after_accepting_a_grant() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    w.holds_invites.insert(1);
+    let t = plain(&alice, "there");
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.until(alice.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30).unwrap();
+    w.run();
+    let r = w.until(bob.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30);
+    assert!(matches!(r, Err(osis::Error::Unsynced { .. })), "{r:?}");
+    let reqs = bob.invite_requests().unwrap();
+    assert_eq!(reqs.len(), 1);
+    bob.accept_invite(reqs[0]).unwrap();
+    let mut f = Box::pin(bob.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)));
+    assert!(poll_now(&mut f).is_none(), "accepted: the route is on its way");
+    w.until(f, 1000, 30).unwrap();
+    assert_eq!(x(bob, t), Some(s("there")));
+}
+
+// spec/sync.md §3, notes/api.md (`wait_synced`): a brand new device of a holder, on a thing granted to its person before it existed and on one its person owns: its first sync brings both, and it waits
+#[test]
+fn a_new_devices_first_wait_on_a_shared_thing() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let t = plain(&alice, "alice's");
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    let mine = plain(bob, "bob's");
+    bob.sync(mine, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("alice's")));
+    let join = Osis::pair(w.cfg(9, &[0]), &bob.pair_offer().unwrap()).unwrap();
+    let (_, reply) = bob.pair_accept(join.request()).unwrap();
+    let bob2 = join.finish(&reply).unwrap();
+    let mut a = Box::pin(bob2.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)));
+    let mut b = Box::pin(bob2.wait_synced(SyncScope::Group(mine), Duration::from_secs(3600)));
+    if let Some(r) = poll_now(&mut a) {
+        panic!("new device, granted thing: {r:?}");
+    }
+    if let Some(r) = poll_now(&mut b) {
+        panic!("new device, own thing: {r:?}");
+    }
+    w.until(a, 1000, 30).unwrap();
+    w.until(b, 1000, 30).unwrap();
+    assert_eq!(x(&bob2, t), Some(s("alice's")));
+    assert_eq!(x(&bob2, mine), Some(s("bob's")));
+    assert!(no_routes(&bob2));
+}
+
+// spec/sync.md §2 (Route): `share` of a whole group: it gets the label, its items go along; the holder has a route to both
+#[test]
+fn share_of_a_group_carries_its_items() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = alice.write_with(|w| {
+        let g = w.create(alice.me())?;
+        w.make_group(g)?;
+        Ok(g)
+    })
+    .unwrap();
+    let t = item(&alice, g, g, "in g");
+    alice.share(g, ids[0], Role::Read, Default::default()).unwrap();
+    assert!(no_routes(&alice));
+    w.until(alice.wait_synced(SyncScope::Group(t), Duration::from_secs(3600)), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g")));
+    assert!(no_routes(bob));
+}
