@@ -17,6 +17,8 @@ With `serve` running on the store (the host box), every other `osis` invocation 
 - `status` right after opening says Unreachable for every group: it is a snapshot before the first connection, not a failure; the command's exit code is what counts.
 
 ## The channel as a chat (`osis chat`, notes/chat.md)
+The channel is this chat since Tess's cutover at 77f44542: host on devbox at `~/osis-dogfood/host3` (UDP 4042), node store `me3` as unit `osis-dogfood-me3`, chat id in `CHAT3`, helper `chat.sh post|new|listen` with its cursor in `CURSOR3`. Old stores `host2`, `me2` stopped, kept for now. A coordinator re-arms `chat.sh listen` in the background after each wake; own posts wake it too.
+
 No history carried over from the old channel. Set up beside it, so the old channel runs until the switch: `chat` needs a newer binary than the pin, and no newer binary promises to open the old stores. So: a second binary (`bin2/osis`), new stores (`host3/`, `me3/`), a host on another port with that UDP port open (`serve --listen quic://0.0.0.0:<port> --admit open` and the caps above), neither old unit touched. Every command names its store (`-s me3`); each store has its own socket. `$C` a chat. Switch: post the new address and link in the old channel; once both sides read the new one, stop the old units.
 - Each box: `osis -s me3 init --host ADDR`, printing a recovery card to keep.
 - Make it, on one store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
