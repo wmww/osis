@@ -514,6 +514,12 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
     for x in [a, b, c2] {
         assert!(net.engine(x).purged_on(&t, &k()).unwrap().is_empty(), "at {x}");
     }
+    // the request's lasting note stays where it dropped one; history shows no purge
+    for x in [a, b] {
+        let row = net.engine(x).history_entry(&t, &k(), &osis_node::ChangeId::Commit(m), usize::MAX).unwrap().unwrap();
+        assert!(!matches!(row.body, osis_node::engine::history::RowBody::Purged(_)), "at {x}: {:?}", row.body);
+    }
+    assert!(net.engine(b).named_permanent_count().unwrap() > 0, "a fallen request stays lasting there");
     assert!(net.engine(a).body_not_dropped(&m, &t, &k()));
     net.set_online(n, true);
     net.run();
@@ -738,7 +744,7 @@ fn a_holder_that_saw_a_fallen_purges_delete_uploads_again_spec_sync_6() {
     assert!(net.engine(h).body_not_dropped(&m, &t, &k()));
     net.set_online(a, false);
     net.set_online(h, false);
-    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     net.engine(a).demote(&g, &d).unwrap();
     let packs: Vec<_> = net.engine(a).commit_ids().into_iter().filter_map(|id| net.engine(a).package(&id).unwrap()).collect();
     for pk in &packs {
@@ -855,7 +861,7 @@ fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_8() {
         net.run();
         assert_eq!(net.engine(f).commit_ids().contains(&p), lasting, "what the fresh device holds of the request");
         let holder = net.tid(x);
-        let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
+        let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, keep: None };
         let done = net.engine(f).demote(&g, &d).unwrap();
         let acts = net.sync(f).carry_out(done).unwrap();
         net.actions(f, acts);
