@@ -241,3 +241,55 @@ fn ephemeral_seed_21054() {
 fn grant_to_group() {
     ok("grant_to_group", 1);
 }
+
+// spec/commits.md §4, spec/sync.md §6: what a device does with what phase A's oracle relayed in
+// parts: a reader of two labels, one host out of reach, holds the commit back whole (atomic
+// apply, things it syncs), across a restart, and applies it whole once that host is back.
+#[test]
+fn commit_across_labels_waits_whole_across_restart_spec_commits_4() {
+    use osis_base::{Role, Value};
+    use osis_node::{Mutation, Reason};
+    use osis_sim::dice::Dice;
+    use osis_sim::net::Party;
+    use osis_sim::net::scenarios::{clock, persons, shared_group, sim};
+    use osis_sim::workload::REG;
+
+    let mut d = Dice::new(1);
+    let mut s = sim("across_labels", 1, Default::default());
+    let (s0, s1) = (s.add_host().unwrap(), s.add_host().unwrap());
+    let a = s.add_node(&[s0, s1], clock(&mut d)).unwrap();
+    let r = s.add_node(&[s0, s1], clock(&mut d)).unwrap();
+    // a third reader on one group only: different readers, so a body per label
+    let b = s.add_node(&[s0, s1], clock(&mut d)).unwrap();
+    let [pa, pr, pb] = persons(&mut s, [a, r, b], [s0, s0, s0]).unwrap();
+    let g0 = shared_group(&mut s, a, pa, &[s0], &[(pr, Role::Read)]).unwrap();
+    let g1 = shared_group(&mut s, a, pa, &[s1], &[(pr, Role::Read), (pb, Role::Read)]).unwrap();
+    let (i0, i1) = (s.item(a, g0).unwrap(), s.item(a, g1).unwrap());
+    s.quiet(40).unwrap();
+    let before = s.engine(r).unwrap().get_typed(&i0, &REG).unwrap();
+
+    s.partition(Party::N(r), Party::S(s1));
+    let word = Value::Str("both".into());
+    let mut m = Mutation::new();
+    m.set(i0, &REG, &word).unwrap();
+    m.set(i1, &REG, &word).unwrap();
+    let id = s.commit(a, m).unwrap().unwrap();
+    for restart in [false, true] {
+        if restart {
+            s.restart_node(r).unwrap();
+        }
+        s.advance(61_000).unwrap();
+        s.settle().unwrap();
+        let e = s.engine(r).unwrap();
+        assert!(e.pending().contains(&(id, Reason::WaitDeltas)), "restart {restart}: waits for the other label");
+        assert_eq!(e.get_typed(&i0, &REG).unwrap(), before, "restart {restart}: nothing of it read");
+    }
+
+    s.heal(Party::N(r), Party::S(s1));
+    s.run_until_quiescent(60).unwrap();
+    let e = s.engine(r).unwrap();
+    assert_eq!(e.commit_parts_missing().get(&id).map(|g| g.len()), Some(0), "whole");
+    assert_eq!(e.get_typed(&i0, &REG).unwrap(), Some(word.clone()));
+    assert_eq!(e.get_typed(&i1, &REG).unwrap(), Some(word.clone()));
+    s.finish().unwrap();
+}

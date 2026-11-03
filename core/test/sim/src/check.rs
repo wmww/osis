@@ -95,15 +95,19 @@ pub fn reads(e: &mut Engine) -> Result<Reads> {
     Ok(out)
 }
 
-/// The applied commit set of a node.
-pub fn held(e: &Engine) -> BTreeSet<CommitId> {
-    e.commit_ids().into_iter().collect()
+/// A node's applied commits, each with the parts it has not received.
+pub type Held = BTreeMap<CommitId, BTreeSet<usize>>;
+
+/// What a node holds: a part can wait alone (spec/commits.md §4) while the rest of its commit
+/// applies and is relayed, so holding a commit does not mean holding all of it.
+pub fn held(e: &Engine) -> Held {
+    e.commit_parts_missing()
 }
 
-/// spec/requirements.md (convergence): within every group of nodes holding the same commits,
-/// reads agree. `nodes` are (index, engine) of the nodes that are up.
+/// spec/requirements.md (convergence): within every group of nodes holding the same parts of
+/// the same commits, reads agree. `nodes` are (index, engine) of the nodes that are up.
 pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<(), String> {
-    let mut groups: BTreeMap<BTreeSet<CommitId>, Vec<usize>> = BTreeMap::new();
+    let mut groups: BTreeMap<Held, Vec<usize>> = BTreeMap::new();
     for (k, (_, e)) in nodes.iter().enumerate() {
         groups.entry(held(e)).or_default().push(k);
     }
@@ -126,7 +130,7 @@ pub fn convergence(nodes: &mut [(usize, &mut Engine)]) -> std::result::Result<()
                             }
                         }
                     }
-                    return Err(format!("divergence: nodes {j} and {i} hold the same commits but read differently: {d}\n{dump}"));
+                    return Err(format!("divergence: nodes {j} and {i} hold the same parts but read differently: {d}\n{dump}"));
                 }
                 Some(_) => {}
             }
@@ -148,9 +152,14 @@ fn diff(a: &[(Tid, Ak, Option<Value>)], b: &[(Tid, Ak, Option<Value>)]) -> (Stri
     (String::new(), None)
 }
 
-/// At quiescence with full delivery: every node holds the same commits and nothing pends.
+/// The first commit two nodes hold differently.
+fn first_difference(a: &Held, b: &Held) -> Option<CommitId> {
+    a.keys().chain(b.keys()).find(|c| a.get(c) != b.get(c)).copied()
+}
+
+/// At quiescence with full delivery: every node holds the same parts and nothing pends.
 pub fn quiescent(nodes: &[(usize, &Engine)]) -> std::result::Result<(), String> {
-    let mut first: Option<(usize, BTreeSet<CommitId>)> = None;
+    let mut first: Option<(usize, Held)> = None;
     for (i, e) in nodes {
         let p = e.pending();
         if !p.is_empty() {
@@ -159,7 +168,7 @@ pub fn quiescent(nodes: &[(usize, &Engine)]) -> std::result::Result<(), String> 
         let h = held(e);
         match &first {
             None => first = Some((*i, h)),
-            Some((j, f)) if *f != h => return Err(format!("nodes {j} and {i} hold different commits at quiescence ({} vs {})", f.len(), h.len())),
+            Some((j, f)) if *f != h => return Err(format!("nodes {j} and {i} hold different commits or parts at quiescence ({} vs {} commits; first differing: {:?})", f.len(), h.len(), first_difference(f, &h))),
             Some(_) => {}
         }
     }
