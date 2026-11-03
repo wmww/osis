@@ -1,4 +1,0 @@
-# add-cost review 2
-- A test hand-building a role commit needs `m.unchecked` plus `skip_writer_rules`: `grant` at an invite holder refuses once it has heard a departure ("another node must rotate first"), so the honest flow cannot reach this history.
-- The first `work_max` fix (subtracting what the pass left) passed reading and failed its test: refused uploads touch their blobs each pass. A counter of changes from elsewhere was simpler than either.
-- The gate failed twice for reasons outside the branch. The disk filled (0 free on /, tttt 88 G, wt4 29 G, wt6 25 G): I deleted my own `target/debug/incremental` (17 G). Then the GUI steps failed: 6ca677b8 (core-aspect deltas must fit) broke `sync::malformed_aspects_do_not_break_reads` and its own gate skipped the GUI steps, as no `osis` API changed.
