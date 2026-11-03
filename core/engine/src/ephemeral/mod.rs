@@ -197,8 +197,7 @@ impl Engine {
             m.aspects.insert((g, gak.clone()), am);
         }
         eph_ops.extend(plan.eph);
-        let refused = plan.refused;
-        m.synced.extend(plan.converted);
+        let refused = plan.refused;        m.synced.extend(plan.converted);
         let persisted = plan.persisted;
         // the drafts this batch saves: ephemeral things made before it that it persists, and
         // drafts again it writes durably
@@ -262,17 +261,25 @@ impl Engine {
                 }
             }
         }
-        // the ephemeral things this batch frees: deleted, held as memory class and in no labeled
-        // closure (a synced one keeps its record and tombstones while held: an older copy
-        // elsewhere would revive the values), with the ephemeral things they own
-        let gone = self.freeable(&std::mem::take(&mut m.free));
-        // one memory commit per expiry class (spec/crdt.md §2.1: plain writes under this
-        // open's session, expiring ones under its second session, so an expired commit leaves
-        // no gap in the plain writes' counters); writes on things freed go with them
-        let (mut plain, mut expiring) = (Mutation::new(), Mutation::new());
-        for (x, ts_) in [(&mut plain, ts), (&mut expiring, ts)] {
-            x.act_as(actor);
-            x.ts = Some(ts_);
+        // the ephemeral things this batch frees: deleted, held as memory class and, after the
+        // batch's own unplacings, in no labeled closure (a synced one keeps its record and
+        // tombstones while held: an older copy elsewhere would revive the values), with the
+        // ephemeral things they own
+        let unplaced: BTreeSet<(Tid, Tid)> = eph_ops.iter().filter(|op| op.ak.as_str() == PLACED.ak()).flat_map(|op| op.am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (op.tid, x)))).chain(m.aspects.iter().filter(|((_, ak), _)| ak.as_str() == GROUP.ak()).flat_map(|((g, _), am)| am.ops.iter().filter_map(|o| place::member_removal(o).map(|x| (*g, x))))).collect();
+        let free = std::mem::take(&mut m.free);
+        let gone = self.freeable(&free, &unplaced);
+        // one memory commit per thing and expiry class (spec/crdt.md §2.1: plain writes under
+        // this open's session, expiring ones under its second session, so an expired commit
+        // leaves no gap in the plain writes' counters; per thing, so a thing deleted later is
+        // freed with its commits whole, `apply::free`); writes on things freed go with them
+        let mut batches: BTreeMap<(bool, Tid), Mutation> = BTreeMap::new();
+        fn batch(batches: &mut BTreeMap<(bool, Tid), Mutation>, expiring: bool, tid: Tid, actor: Tid, ts: Ts) -> &mut Mutation {
+            batches.entry((expiring, tid)).or_insert_with(|| {
+                let mut x = Mutation::new();
+                x.act_as(actor);
+                x.ts = Some(ts);
+                x
+            })
         }
         for op in eph_ops {
             let EphOp { tid, ak, mut am } = op;
@@ -285,7 +292,7 @@ impl Engine {
             }
             am.expires = expires;
             am.default_expiry = None;
-            let target = if expires.is_some() { &mut expiring } else { &mut plain };
+            let target = batch(&mut batches, expires.is_some(), tid, actor, ts);
             match target.aspects.get_mut(&(tid, ak.clone())) {
                 Some(e) => e.ops.extend(am.ops),
                 None => {
@@ -296,12 +303,17 @@ impl Engine {
         // their entries leave every `placed.0~` listing them (a reset that goes with them
         // otherwise, at a group that stays)
         for (g, ops) in self.unplace_freed(&gone) {
-            let e = plain.aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
+            let e = batch(&mut batches, false, g, actor, ts).aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
             e.ops.extend(ops);
         }
-        plain.creates = fresh.iter().filter(|(t, _)| !gone.contains(t)).map(|(t, r)| (*t, r.clone())).collect();
+        // a new thing's record goes with its first write, else alone (known all the same)
+        for (t, r) in fresh.iter().filter(|(t, _)| !gone.contains(t)) {
+            batch(&mut batches, false, *t, actor, ts).creates.insert(*t, r.clone());
+        }
         let making = log::Making { made: fresh.keys().filter(|t| !gone.contains(t)).copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
         let made_now: BTreeSet<Tid> = fresh.keys().copied().collect();
+        // a freed thing's aspects change to absent (their rows go with it)
+        let gone_aspects: Vec<(Tid, Ak)> = gone.iter().flat_map(|t| self.core.aspects_of(t).map(|(k, _)| k.clone())).collect();
         let batch = self.run(|tx| {
             let commit = if durable {
                 let mut m = m;
@@ -311,13 +323,17 @@ impl Engine {
                 None
             };
             let mut memory = Vec::new();
-            for x in [plain, expiring] {
-                if x.is_empty() && x.creates.is_empty() {
-                    continue;
-                }
-                if let Some(c) = tx.in_class(true, |tx| commit_in(tx, x))? {
-                    memory.push(c);
-                }
+            // things created first: a commit placing one carries its record only once it is
+            // known (`memory_records`)
+            let mut batches: Vec<Mutation> = batches.into_values().collect();
+            batches.sort_by_key(|x| x.creates.is_empty());
+            for x in batches {
+                // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
+                let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
+                    Error::Commit(osis_commit::Error::Delta(_)) => Error::Misuse("an ephemeral delta does not fit a blob"),
+                    e => e,
+                })?;
+                memory.extend(c);
             }
             if !gone.is_empty() {
                 tx.in_class(true, |tx| crate::apply::free::free(tx, &gone))?;
@@ -328,19 +344,25 @@ impl Engine {
         for t in &made_now {
             self.eph.deleted.remove(t);
         }
+        // a deleted draft again is no draft any more (`knows` is false until its record is)
+        for t in &free {
+            self.eph.drafts.remove(t);
+        }
         for (item, group) in refused {
             self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
         }
-        Ok(self.finish_batch(batch, signals, making, &gone, ts, actor, None))
+        Ok(self.finish_batch(batch, signals, making, &gone, gone_aspects, ts, actor, None))
     }
 
     /// Ends a batch written by `write` or a revert (its commits applied): drafts and deleted
     /// marks, the undo log, the history and change events. Its id: the commit when it had a
     /// durable half, else a fresh `EphemeralId`; `None` when nothing changed.
-    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    #[allow(clippy::too_many_arguments)]
+    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, gone_aspects: Vec<(Tid, Ak)>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
         let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
+        changed.extend(gone_aspects);
         for (t, ak, v) in &signals {
             self.note_signal(t, ak, v, ts, actor);
         }
@@ -373,9 +395,6 @@ impl Engine {
             }
         }
         for t in gone {
-            if let Some(m) = self.core.aspects_of(t).next().map(|_| ()) {
-                let _ = m;
-            }
             changed.push((*t, place::placed_ak().unwrap_or_else(|_| unreachable!("a core key"))));
         }
         logged.retain(|a| !gone.contains(&a.tid));
@@ -403,11 +422,13 @@ impl Engine {
     }
 
     /// Of `free`, the ephemeral things this node may free at once: held as memory class and in
-    /// no labeled closure, with the ephemeral things they own, to a fixpoint.
-    fn freeable(&self, free: &BTreeSet<Tid>) -> BTreeSet<Tid> {
-        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !self.ephemeral_synced(t)).copied().collect();
+    /// no labeled closure once the batch's removals `unplaced` (group, member) apply, with the
+    /// ephemeral things they own, to a fixpoint.
+    fn freeable(&self, free: &BTreeSet<Tid>, unplaced: &BTreeSet<(Tid, Tid)>) -> BTreeSet<Tid> {
+        let synced = |t: &Tid| self.core.syncs(t) || self.groups_of(t).iter().any(|g| self.core.syncs(g) && !unplaced.contains(&(*g, *t)));
+        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !synced(t)).copied().collect();
         loop {
-            let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !self.ephemeral_synced(x)).copied().collect();
+            let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !synced(x)).copied().collect();
             if more.is_empty() {
                 return gone;
             }
@@ -452,10 +473,19 @@ impl Engine {
     #[doc(hidden)]
     pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
         m.commit_form = false;
-        self.run(|tx| {
+        let actor = m.actor.unwrap_or(self.tid());
+        let id = self.run(|tx| {
             tx.set_memory();
             commit_in(tx, m)
-        })
+        })?;
+        if let Some(c) = id
+            && let Some(h) = self.header(&c)
+        {
+            let now = self.now();
+            self.core.events.queue(Event::Ephemeral { id: ChangeId::Commit(c), origin: Origin::Local, author: self.tid(), actor, ts: h.ts, received: now, changed: h.aspects.iter().map(|a| (a.tid, a.ak.clone())).collect(), signals: Vec::new() });
+            self.core.events.flush();
+        }
+        Ok(id)
     }
 }
 

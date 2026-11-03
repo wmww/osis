@@ -34,7 +34,7 @@ mod snapshot;
 mod oracle;
 pub(crate) mod forget;
 pub(crate) mod memory;
-pub(crate) use snapshot::memory_state;
+pub(crate) use snapshot::{frontiers_now, memory_state};
 pub mod suspect;
 
 pub(crate) use bounds::drop_from;

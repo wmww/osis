@@ -185,7 +185,7 @@ impl Engine {
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
         let core = &self.core;
-        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).collect();
+        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).filter(|c| !core.ix.commits.get(c).is_some_and(|m| m.view.memory)).collect();
         for t in ctx.published.iter() {
             for ak in ["label.0", "created.0"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
@@ -193,7 +193,7 @@ impl Engine {
             }
         }
         #[cfg(debug_assertions)]
-        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
+        debug_assert_eq!(ids, core.ix.commits.iter().filter(|(_, m)| !m.view.memory && ctx.touches(&m.view)).map(|(id, _)| *id).collect::<BTreeSet<_>>(), "label commits by index");
         let mut out = Vec::new();
         for id in ids {
             out.extend(self.commit_bodies_under(&ctx, &id)?);
@@ -213,7 +213,9 @@ impl Engine {
         let id = *id;
         // the view: the header is decoded only to project bodies the cache misses
         let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };
-        if !ctx.touches(&h) {
+        // a memory commit's bodies are the ephemeral lane's (node-sync `ephemeral`), never the
+        // durable path's
+        if h.memory || !ctx.touches(&h) {
             return Ok(Vec::new());
         }
         let touches = h.aspects.iter().any(|a| ctx.closure.contains(&a.tid));

@@ -25,10 +25,10 @@ fn setup(seed: u64) -> (Osis, std::sync::Arc<osis::ManualClock>) {
     (db, c)
 }
 
-/// (held commits, engine generation): a store transaction that changes anything moves the
-/// generation.
-fn durable_marks(db: &Osis) -> (usize, u64) {
-    db.engine(|e| (e.commit_ids().len(), e.core.generation))
+/// The held commits: a batch that fails leaves none (its transaction rolls back; the engine
+/// generation moves with the rollback, so it is no mark).
+fn durable_marks(db: &Osis) -> usize {
+    db.engine(|e| e.commit_ids().len())
 }
 
 fn field(id: u64) -> osis::Path {
@@ -223,12 +223,12 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     let (tx, rx) = channel();
     let _sub = db.at(t, typing.clone()).on_change(move |_, c| tx.send(c).unwrap()).unwrap();
     recv(&rx);
-    assert_eq!(db.engine(|e| e.next_ephemeral_timer()), Some(T0 + 5_000));
+    assert_eq!(db.engine(|e| e.next_timer().unwrap()), Some(T0 + 5_000));
     c.advance(4_000);
-    db.engine(|e| e.tick_ephemeral());
+    db.engine(|e| e.tick().unwrap());
     assert_eq!(db.get(t, typing.clone()).unwrap(), Some(Value::Bool(true)));
     c.advance(2_000);
-    db.engine(|e| e.tick_ephemeral());
+    db.engine(|e| e.tick().unwrap());
     let ch = recv(&rx);
     assert_eq!((ch.source, ch.value), (Source::Derived(osis::Cause::Expiry), Ok(None)));
     assert_eq!(db.get(t, note.clone()).unwrap(), Some(s("bye")));
@@ -236,7 +236,7 @@ fn ephemeral_expiry_spec_crdt_4_7() {
     db.write_with(|w| w.at(t, typing.clone()).expires_in(Duration::from_secs(30)).set(&Value::Bool(true))).unwrap();
     assert_eq!(db.get(t, typing).unwrap(), Some(Value::Bool(true)));
     c.advance(60_000);
-    db.engine(|e| e.tick_ephemeral());
+    db.engine(|e| e.tick().unwrap());
     assert_eq!(db.get(t, note).unwrap(), None);
     assert_eq!(durable_marks(&db), before);
     let mut w = db.write();
@@ -412,6 +412,22 @@ fn bench_btreemap_sets() {
 
 
 /// Alice's synced group `g` with Bob granted `role` on it, through one host.
+/// `shared` with a second group of alice's, `bob` holding `role2` on it.
+fn shared_two(role: Role, role2: Role) -> (World, Osis, Osis, osis::Tid, osis::Tid) {
+    let (mut w, alice, bob, g) = shared(role);
+    let card = bob.contact_card().unwrap();
+    let b = w.until(alice.import_contact(&card), 1000, 10).unwrap();
+    let mut wr = alice.write();
+    let g2 = wr.create(alice.me()).unwrap();
+    wr.place(g2, alice.home()).unwrap();
+    wr.make_group(g2).unwrap();
+    wr.commit().unwrap();
+    alice.sync(g2, &[]).unwrap();
+    alice.grant(g2, b, role2, Default::default()).unwrap();
+    w.run();
+    (w, alice, bob, g, g2)
+}
+
 fn shared(role: Role) -> (World, Osis, Osis, osis::Tid) {
     let mut w = World::new();
     let host = w.add_host();
@@ -767,26 +783,28 @@ fn durable_item_persists_ephemeral_group_spec_data_model_8() {
         })
         .unwrap();
     db.write_with(|w| w.at(e, ak("app:kept.0")).set(&Value::Int(1))).unwrap();
-    assert!(db.engine(|x| x.has_durable(&e, &ak("group.0"))));
+    assert!(db.engine(|x| x.core.ix.by_aspect.get(&(e, ak("group.0"))).is_some_and(|s| !s.is_empty())));
 }
 
-// notes/ephemeral.md Ephemeral placements: a node that may write a persisting thing but no
-// longer the group it placed it in ephemerally keeps that placement ephemeral and reports
-// `PlacementNotPersisted` naming item and group. spec/permissions.md §1
+// spec/permissions.md §1, notes/ephemeral.md Ephemeral placements: persisting an item converts
+// its ephemeral placements, but only in groups the node may write: one placed by a writer of a
+// group this node only reads stays ephemeral there, reported once (`PlacementNotPersisted`)
 #[test]
 fn placement_not_persisted_without_write_on_group_spec_permissions_1() {
-    let (mut w, alice, bob, g) = shared(Role::Write);
+    let (mut w, alice, bob, g1, g2) = shared_two(Role::Write, Role::Read);
     let t = bob
         .write_with(|x| {
-            let t = x.create(bob.me())?;
-            x.place(t, g)?;
+            let t = x.create(g1)?;
+            x.place(t, g1)?;
             Ok(t)
         })
         .unwrap();
-    assert!(group_of(&bob, g).items.contains(&t));
-    w.until(alice.demote(g, bob.me(), osis::Lower::To(Role::Read), osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 10).unwrap();
     w.run();
-    assert_eq!(bob.role_on(g), Some(Role::Read));
+    // alice places it in g2 too (ephemerally: t is ephemeral at alice, its record carried
+    // under g1's label, whose reader t's owner chain reaches)
+    alice.write_with(|x| x.place(t, g2)).unwrap();
+    w.run();
+    assert!(group_of(&bob, g2).items.contains(&t) && !durable_items(&bob, g2).contains(&t), "placed ephemerally by alice");
     let (tx, rx) = channel();
     let _sub = bob.on_diagnostic(move |_, d| {
         if d.kind == osis::DiagnosticKind::PlacementNotPersisted {
@@ -795,9 +813,10 @@ fn placement_not_persisted_without_write_on_group_spec_permissions_1() {
     });
     bob.write_with(|x| x.at(t, ak("app:kept.0")).set(&Value::Int(1))).unwrap();
     assert!(bob.created(t).unwrap().commit.is_some());
-    assert_eq!(recv(&rx), vec![t, g]);
-    assert!(group_of(&bob, g).items.contains(&t), "still placed, ephemerally");
-    assert!(!durable_items(&bob, g).contains(&t));
+    assert_eq!(recv(&rx), vec![t, g2]);
+    assert!(group_of(&bob, g2).items.contains(&t), "still placed, ephemerally");
+    assert!(!durable_items(&bob, g2).contains(&t));
+    assert!(durable_items(&bob, g1).contains(&t), "the placement bob may write converted");
 }
 
 // notes/ephemeral.md Ephemeral placements: persisting an item placed with an expiry in an
@@ -822,10 +841,7 @@ fn expiring_placement_persists_ephemeral_group_spec_data_model_8() {
         assert!(db.created(g).unwrap().commit.is_some(), "order {order}");
         assert_eq!(durable_items(&db, g), vec![x]);
         c.advance(120_000);
-        db.engine(|e| {
-            e.tick().unwrap();
-            e.tick_ephemeral();
-        });
+        db.engine(|e| e.tick().unwrap());
         assert_eq!(db.get(g, osis::core::GROUP).unwrap(), Some(Default::default()), "order {order}: still a group");
     }
 }

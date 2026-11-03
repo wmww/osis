@@ -397,7 +397,7 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
     let mut defaults = schema.and_then(|s| s.defaults(ak.as_str()));
     // the thing's required retention fills what the writer did not, and refuses what breaks it
     // (spec/commits.md §5); a hostile test writer writes what it is told
-    if plan.kind == Kind::Content && !core.skip_writer_rules && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, plan.signer, plan.ts) {
+    if plan.kind == Kind::Content && !core.skip_writer_rules && ak.lifetime() != osis_schema::Lifetime::Ephemeral && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && let Some(q) = crate::apply::validity::required_now(core, tid, ak, plan.signer, plan.ts) {
         let want = q.expires_at(plan.ts.wall_ms().0).ok_or(Error::Misuse("expiry out of range"))?;
         if r.is_some_and(|x| x != q.retention()) || e.is_some_and(|x| Some(x) != want) {
             return Err(Error::Misuse("a retention or expiry other than the thing requires"));
@@ -406,10 +406,15 @@ pub(crate) fn framing_for(core: &Core, plan: &CommitPlan, published: &BTreeMap<(
         e = want;
         defaults = None;
     }
-    let retention = match plan.kind {
-        // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
-        Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
-        _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+    let retention = if ak.lifetime() == osis_schema::Lifetime::Ephemeral {
+        // an ephemeral delta's retention is `writer` with no bounds (spec/commits.md §2)
+        Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }
+    } else {
+        match plan.kind {
+            // a compaction snapshot's own (`Engine::snapshot`), never from schema defaults
+            Kind::ContentSnapshot | Kind::RoleSnapshot => r.unwrap_or_else(|| osis_commit::retention::snapshot_retention(ak.as_str(), [], 0)),
+            _ => osis_commit::retention::write_retention(ak.as_str(), defaults.as_ref(), r)?,
+        }
     };
     let expires = match plan.kind {
         Kind::Content => osis_commit::retention::write_expires(ak.as_str(), plan.ts, defaults.as_ref(), e)?,
@@ -459,9 +464,15 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
             // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
             let (fr, sink): (_, &mut dyn osis_crdt::PageSink) = (frontiers.take(), if memory { &mut Unpaged } else { &mut bw });
-            bytes.push(match fr {
-                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink))?,
-                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink))?,
+            let encoded = match fr {
+                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink)),
+                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink)),
+            };
+            bytes.push(match encoded {
+                Ok(b) => b,
+                // past what one unpaged delta may hold (spec/commits.md §2): refused
+                Err(_) if memory => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+                Err(e) => return Err(e.into()),
             });
         }
         let mut chunks = std::mem::take(&mut blobs.written);
@@ -510,12 +521,14 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
     let built = match built {
-        // an ephemeral delta past a blob is refused (spec/commits.md §2): no page carries it
-        Err(osis_commit::Error::Build(osis_commit::DELTA_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+        // an ephemeral delta past a blob, or past what one unpaged delta may hold, is refused
+        // (spec/commits.md §2): no page carries it
+        Err(osis_commit::Error::Build(osis_commit::DELTA_PAST_BLOB) | osis_commit::Error::Delta(_)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
         b => b?,
     };
     let id = built.commit.id();
-    if !tx.core.forge_bad.is_empty() {
+    // hostile test authors: the blob as sent, whatever this node's own copy drops of it
+    if !tx.core.forge_bad.is_empty() || tx.core.skip_writer_rules {
         tx.core.forged = Some(built.commit.encode());
     }
     let received = tx.now();
@@ -557,8 +570,10 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     let core_schema = Arc::new(osis_schema::core_schema().clone());
     let memory = tx.txn.is_memory();
+    // a memory-class record carried by a durable commit is the thing persisting
+    // (spec/data-model.md §1)
     for &t in m.creates.keys() {
-        if tx.core.created(&t).is_some() {
+        if tx.core.created_for(&t, memory).is_some() {
             return Err(Error::Misuse("thing already exists"));
         }
     }
@@ -740,6 +755,11 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         deltas.push(Resolved { tid, ak, fragment, lo: range.lo, hi: range.hi, schema: am.schema, retention: am.retention, expires: am.expires, frontiers: None, chunks, split: kind == Kind::RosterSnapshot, records });
     }
     if deltas.is_empty() && plan.purge.is_empty() {
+        // a memory thing made with no write touched its timeline: judged before the
+        // transaction ends (nothing written on it yet, so nothing to rebuild)
+        if tx.core.stale() {
+            crate::apply::validity::rejudge_all(tx, true)?;
+        }
         return Ok(None);
     }
     if deltas.is_empty() {

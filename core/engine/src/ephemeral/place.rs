@@ -19,6 +19,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 /// `group.0` field ids (spec/data-model.md §8).
+/// Per ephemeral placement (group, field, member) the expiry it converts with: `None` when it
+/// does not convert, else its `expires` (`None`: none).
+type Expiries = BTreeMap<(Tid, u64, Tid), Option<Option<u64>>>;
+
 pub(crate) const ITEMS: u64 = 0;
 pub(crate) const SUBGROUPS: u64 = 1;
 
@@ -42,6 +46,14 @@ fn member_op(op: &PathOp) -> Option<(u64, Tid, bool)> {
     match &op.op {
         Op::Add(Value::Tid(x)) => Some((*f, *x, true)),
         Op::Remove(Value::Tid(x)) => Some((*f, *x, false)),
+        _ => None,
+    }
+}
+
+/// The member a group op removes.
+pub(super) fn member_removal(op: &PathOp) -> Option<Tid> {
+    match member_op(op) {
+        Some((_, x, false)) => Some(x),
         _ => None,
     }
 }
@@ -197,11 +209,9 @@ impl Engine {
             if !d.is_empty() {
                 out.durable.insert(g, AspectMut { ops: d, ..am });
             }
-        }
-        for t in &converting {
+        }        for t in &converting {
             for (g, field) in self.ephemeral_placements(t) {
-                let exp = converts(&g, field, t);
-                if !may_place(&g) {
+                let exp = converts(&g, field, t);                if !may_place(&g) {
                     // no write on the group: not even the reset (the timer or the unplace's own
                     // check deals with a placement that does not convert)
                     if exp.is_some() {
@@ -257,7 +267,7 @@ impl Engine {
     /// never, `None` already past (its timer has not run yet). With several writes placing it,
     /// the last to go counts: the held expiring memory commits' writes are stripped from the
     /// state in expiry order until the element goes.
-    fn placement_expiries(&mut self) -> Result<BTreeMap<(Tid, u64, Tid), Option<Option<u64>>>> {
+    fn placement_expiries(&mut self) -> Result<Expiries> {
         let mut out = BTreeMap::new();
         if self.core.ix.placed.is_empty() {
             return Ok(out);

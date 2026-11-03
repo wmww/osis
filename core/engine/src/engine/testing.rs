@@ -56,6 +56,24 @@ impl Engine {
         r
     }
 
+    /// `commit_hostile` as a memory commit (`Engine::commit_in_memory`): a forged ephemeral
+    /// write, to test receivers.
+    #[doc(hidden)]
+    pub fn commit_in_memory_hostile(&mut self, mut m: crate::Mutation) -> Result<Option<CommitId>> {
+        m.unchecked();
+        let was = std::mem::replace(&mut self.core.skip_writer_rules, true);
+        let r = self.commit_in_memory(m);
+        self.core.skip_writer_rules = was;
+        r
+    }
+
+    /// The last commit built while `skip_writer_rules` or `forge_bad` was set, as sent (tests:
+    /// what this node's own copy may have dropped of it).
+    #[doc(hidden)]
+    pub fn take_forged(&mut self) -> Option<Vec<u8>> {
+        self.core.forged.take()
+    }
+
     /// `commit_hostile` with every delta on the aspects `bad` replaced by bytes that do not decode
     /// (the header hashing them), and the blob as sent: this node's own copy drops them.
     #[doc(hidden)]

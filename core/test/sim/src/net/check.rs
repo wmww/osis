@@ -112,7 +112,10 @@ fn aspect_view(e: &mut Engine) -> Result<AspectView, String> {
     for (t, a) in e.all_aspects().map_err(|x| x.to_string())? {
         // an aspect with ephemeral state (`placed.0~`): its durable side alone (ephemeral state
         // converges only where host caps let it through, `ephemeral::check`)
-        let v = if e.has_ephemeral(&t, &a) { e.get_durable(&t, &a) } else { e.get(&t, &a) }.map_err(|x| x.to_string())?;
+        if !osis_schema::AspectKey::lifetime(&a).is_durable() {
+            continue;
+        }
+        let v = e.get(&t, &a).map_err(|x| x.to_string())?;
         let k = (t, a.as_str().to_string());
         out.insert(k.clone(), (deltas.remove(&k).unwrap_or_default(), format!("{v:?}")));
     }

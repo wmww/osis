@@ -551,7 +551,10 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
         minted_record(h, id, p, &a.tid, interner)?;
     }
     let mut blobs = TxBlobs::new(&mut tx.txn);
-    let mut reader = BlobReader::new(dedup, &mut blobs);
+    let mut paged = BlobReader::new(dedup, &mut blobs);
+    // a memory commit's parts hold everything inline (spec/crdt.md §8)
+    let mut unpaged = osis_crdt::Unpaged;
+    let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
     // a snapshot's or an import's carried writes stamped after the commit (spec/crdt.md §8, §7: a
     // node's next stamp exceeds every stamp it holds, §2.2)
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
@@ -571,7 +574,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     #[cfg(not(test))]
     let whole = whole_part(a.ak.as_str());
     let r = if whole {
-        verify_part(h, id, p, dedup, interner, Some(&mut reader)).map(|d| {
+        verify_part(h, id, p, dedup, interner, Some(reader)).map(|d| {
             late = carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);
             foreign = outside(d.fragment());
             Some(d)
@@ -583,7 +586,7 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
             foreign |= outside(&f);
             Ok(())
         };
-        osis_commit::stream_part(h, id, p, dedup, interner, Some(&mut reader), &mut each).map(|gives| {
+        osis_commit::stream_part(h, id, p, dedup, interner, Some(reader), &mut each).map(|gives| {
             out.streamed.push(Streamed { ai: p.ai, di: p.di, dedup: dedup.clone(), gives: gives.map(|x| (x.frontiers, x.absorbed.into_iter().collect())) });
             None
         })
@@ -1770,8 +1773,10 @@ fn examine_stored(tx: &mut Tx<'_>, blob: &CommitBlob, id: &CommitId) -> Result<V
         let a = h.aspects.get(p.ai).ok_or(Error::Corrupt("part index"))?;
         let dedup = tx.core.dedup(&a.tid).ok_or(Error::Corrupt("dedup"))?;
         let mut blobs = TxBlobs::new(&mut tx.txn);
-        let mut reader = BlobReader::new(&dedup, &mut blobs);
-        out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(&mut reader)).map_err(|_| Error::Corrupt("stored delta"))?));
+        let mut paged = BlobReader::new(&dedup, &mut blobs);
+        let mut unpaged = osis_crdt::Unpaged;
+        let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+        out.push((p.ai, p.di, verify_part(&h, id, p, &dedup, &mut interner, Some(reader)).map_err(|_| Error::Corrupt("stored delta"))?));
     }
     Ok(out)
 }

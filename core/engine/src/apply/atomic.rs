@@ -245,8 +245,11 @@ pub(super) fn stream_stored(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis
     let cell = RefCell::new(tx);
     let mut failed = None;
     let mut pages = SharedPages { tx: &cell, dedup };
+    // a memory commit's parts hold everything inline (spec/crdt.md §8)
+    let mut unpaged = osis_crdt::Unpaged;
+    let source: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut pages };
     let mut interner = osis_crdt::Interner::new();
-    let r = osis_commit::stream_part(h, id, p, dedup, &mut interner, Some(&mut pages), &mut |piece| {
+    let r = osis_commit::stream_part(h, id, p, dedup, &mut interner, Some(source), &mut |piece| {
         // counted: tests read how many pieces streamed
         let _s = crate::costs::span("apply: piece");
         let mut tx = cell.try_borrow_mut().map_err(|_| STOPPED)?;
@@ -1144,12 +1147,8 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "was.0" | "moved.0" | "group.0" | "placed.0~") {
         return Ok(());
     }
-    // `placed.0~` reads field by field (an add carries no presence of the struct)
+    // `placed.0~` follows every state write (`Tx::placed_from`)
     if ak.as_str() == "placed.0~" {
-        match tx.state(tid, ak)?.and_then(crate::ephemeral::def_of) {
-            Some(d) => tx.core.ix.placed.insert(*tid, d),
-            None => tx.core.ix.placed.remove(tid),
-        };
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);

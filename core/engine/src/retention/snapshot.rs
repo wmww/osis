@@ -136,6 +136,48 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
     fr.lists(&src) && fr.of(&src).saturating_add(1) < hi
 }
 
+/// The frontiers a snapshot of `(tid, ak)` built now carries, and the session-form commits
+/// they reflect: per source the held valid commits (not `left_out`) in counter order from the
+/// held valid snapshots' frontiers on (memory: a covered commit is forgotten with its counters,
+/// so their frontiers count as reflected) while they join without a hole; an invalid, missing
+/// or left-out body stops its source's frontier below it (the snapshot does not carry its
+/// writes, so it must not claim them), and what follows in that source is not reflected.
+pub(crate) fn frontiers_now(tx: &Tx<'_>, tid: &Tid, ak: &Ak, memory: bool, valid_on: &dyn Fn(&CommitId) -> bool, left_out: &dyn Fn(&CommitId) -> bool) -> (Frontiers, BTreeSet<CommitId>) {
+    let mut frontiers = Frontiers::default();
+    let mut reflected = BTreeSet::new();
+    if memory {
+        for (_, s, fr, _) in tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten() {
+            if valid_on(s) {
+                for (src, f) in fr.sources() {
+                    if f > frontiers.of(&src) {
+                        frontiers.insert(&src, f);
+                    }
+                }
+            }
+        }
+    }
+    let from = (*tid, ak.clone(), osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([0; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }));
+    for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| t == tid && a == ak) {
+        let mut next = frontiers.of(n).saturating_add(1);
+        for (lo, (hi, c)) in ranges {
+            if memory && *hi <= next {
+                continue;
+            }
+            // contiguous (a memory range may start below a snapshot's frontier)
+            let joins = *lo == next || (memory && *lo < next);
+            if !joins || !valid_on(c) || left_out(c) {
+                break;
+            }
+            next = *hi;
+            reflected.insert(*c);
+        }
+        if next > 1 {
+            frontiers.insert(n, next - 1);
+        }
+    }
+    (frontiers, reflected)
+}
+
 /// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
 /// writes it holds as absorbed) rather than by counters under a frontier. An import has no writes
 /// of its own (they sit under its origins' sources) and is in neither table.
@@ -306,7 +348,9 @@ impl Engine {
             // one a receiver judges invalid)
             let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
             if !(memory && tx.core.skip_writer_rules) {
-                crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
+                let core = &*tx.core;
+                let records: crate::engine::write::Records<'_> = &|t| core.created_for(t, true).filter(|_| core.ix.held.is_memory(t));
+                crate::engine::write::check_role_with(core, core.id.tid(), records, &tid, ak.as_str(), need, ts)?;
             }
             if tx.state(&tid, &ak)?.is_none() {
                 return Ok(None);
@@ -347,36 +391,7 @@ impl Engine {
             // is forgotten once covered, its counters with it: there the held valid snapshots'
             // frontiers count as reflected (their writes are joined), and own ranges continue
             // from them
-            let mut frontiers = Frontiers::default();
-            if memory {
-                for (_, s, fr, _) in tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten() {
-                    if valid_on(s) {
-                        for (src, f) in fr.sources() {
-                            if f > frontiers.of(&src) {
-                                frontiers.insert(&src, f);
-                            }
-                        }
-                    }
-                }
-            }
-            let from = (tid, ak.clone(), osis_crdt::Source::session(osis_crdt::Session { node: Tid::from_bytes([0; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }));
-            for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
-                let mut next = frontiers.of(n).saturating_add(1);
-                for (lo, (hi, c)) in ranges {
-                    if memory && *hi <= next {
-                        continue;
-                    }
-                    // contiguous (a memory range may start below a snapshot's frontier)
-                    let joins = *lo == next || (memory && *lo < next);
-                    if !joins || !valid_on(c) || left_out(c) {
-                        break;
-                    }
-                    next = *hi;
-                }
-                if next > 1 {
-                    frontiers.insert(n, next - 1);
-                }
-            }
+            let (mut frontiers, _) = frontiers_now(tx, &tid, &ak, memory, &valid_on, &left_out);
             // commit-form commits whose valid writes the state reflects (an import's sit under
             // its origins' sources: it has no entry)
             let mut absorbed = std::collections::BTreeMap::new();

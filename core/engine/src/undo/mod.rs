@@ -400,6 +400,11 @@ impl Engine {
         ids.into_iter()
             .rev()
             .filter_map(|(_, id)| {
+                // this session's own memory commits are listed as the batches that made them
+                // (the undo log), not as commits
+                if self.own_memory_commit(&id) {
+                    return None;
+                }
                 let m = self.core.ix.commits.get(&id)?;
                 let header = m.header.decoded()?;
                 let aspects: Vec<(Tid, Ak, bool)> = header

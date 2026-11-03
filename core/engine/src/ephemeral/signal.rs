@@ -121,14 +121,16 @@ impl Engine {
         osis_commit::verify_signature(&id, &blob.signature, &VerifyingKey::from_slice(public_key)?)?;
         h.validate()?;
         let carried: BTreeMap<Tid, CreationRecord> = blob.parts.iter().flat_map(|p| &p.records).map(|r| (r.tid(), r.clone())).collect();
+        // the records of things not durable here: carried, or held memory ones (the role on a
+        // durable one is its timeline's, `role_with`)
         let core = &self.core;
-        let record = |t: &Tid| core.created(t).or_else(|| carried.get(t));
+        let record = |t: &Tid| carried.get(t).or_else(|| self.memory_record(t));
         let mut interner = Interner::new();
         let mut decoded = Vec::new();
         for p in &blob.parts {
             let Some(a) = h.aspects.get(p.ai) else { continue };
-            let Some(rec) = record(&a.tid) else { continue };
-            match osis_commit::verify_part(h, &id, p, &dedup_secret(rec.nonce()), &mut interner, Some(&mut Unpaged))? {
+            let Some(dedup) = core.dedup(&a.tid).or_else(|| carried.get(&a.tid).map(|r| dedup_secret(r.nonce()))) else { continue };
+            match osis_commit::verify_part(h, &id, p, &dedup, &mut interner, Some(&mut Unpaged))? {
                 osis_commit::Decoded::Snapshot(s) => decoded.push((p.ai, s)),
                 osis_commit::Decoded::Delta(_) => return Err(Error::BadInput("relay-only commit with a writer delta")),
             }
