@@ -2169,7 +2169,8 @@ struct Cfg {
     subsets: usize,
     /// How many of each held set's orders are tried again with late parts.
     split: usize,
-    /// How many of each held set's orders are tried again at an earlier clock (`Clock`).
+    /// How many of each held set's orders are tried again at an earlier clock (`Clock`): as made
+    /// and reversed, then a sample spread evenly over the rest.
     clock: usize,
     /// A seed's orders are independent tasks (each late-parts order split by its own rng), run
     /// on `threads` threads; else they run in turn, split by one rng.
@@ -2183,8 +2184,9 @@ struct Cfg {
 const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false };
 const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false };
 /// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
-/// every order with late parts too (6 commits: up to 720 orders).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: usize::MAX, par_orders: true, threads: 1, sync: false };
+/// every order with late parts too (6 commits: up to 720 orders), 24 of them at an earlier clock
+/// (every order clocked cost +50%; `OSIS_ORDER_CLOCK=720` gives that back).
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: 24, par_orders: true, threads: 1, sync: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 
@@ -2500,7 +2502,10 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // order `k` with its first commits delivered at an earlier clock (`clock_of`, drawn from
         // its own rng: the main stream, and so pinned replays, unchanged) alike
         let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
-        let clocked = |k: usize| -> Result<(), String> {
+        let clocks = cfg.clock.min(orders.len());
+        // the `i`th clocked order: as made, reversed, then evenly spread over the rest
+        let clocked = |i: usize| -> Result<(), String> {
+            let k = if i < 2 || clocks <= 2 { i } else { 2 + (i - 2) * (orders.len() - 2) / (clocks - 2) };
             let order = &orders[k];
             let c = clock_of(played, order, &mut Rng(clock_base ^ (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1));
             let mut p = deliver_with(played, order, None, Some(c), &mut |_| {});
@@ -2513,7 +2518,6 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // late parts only matter when a commit has parts on several aspects; without one the
         // sequential modes still deliver the first two again and re-examine (as before)
         let splits = if split || !cfg.par_orders { cfg.split.min(orders.len()) } else { 0 };
-        let clocks = cfg.clock.min(orders.len());
         seen.orders += clocks;
         seen.clocked += clocks as u64;
         if cfg.par_orders {
