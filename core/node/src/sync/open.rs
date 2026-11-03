@@ -521,7 +521,7 @@ impl SyncEngine {
                     lc.step_refusals = lc.step_refusals.saturating_add(1);
                     lc.dirty = true;
                     let at = lc.step_retry;
-                    self.settle_by(at);
+                    self.settle_by(at, l);
                 }
                 self.diag(format!("label {l:?}: step refused for now (code {})", code.0));
                 Ok(())

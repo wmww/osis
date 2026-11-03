@@ -138,6 +138,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a host deleting fresh chunks) | |
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |
+| a quiet label's slowest pass: `HEARTBEAT_MIN_INTERVAL_MS` from its last (`schedule_pass`), no number of its own | M (a trigger missed waits that long; 0: every resync passes every label; infinity: a missed trigger waits for a reconnect) | |
 | `SyncConfig` defaults: `resync_ms` 60 s, `retry_ms` 5 s, `peer_retry_ms` 60 s, `tight_budget` 16, `peer_pass_wait_ms` 5 min, `heartbeat_lifetime_ms` 2 days | M | |
 | `SyncConfig` defaults: `max_peers_per_label` 8, `max_peers` 64, `peer_bytes` 64 MiB, `peer_total_bytes` 1 GiB, `unvouched_cap` 2^16, `ephemeral_bytes` 16 MiB (memory held, decoded: `Engine::ephemeral_charge`; kept at 16 MiB when it switched from encoded bytes: about 4,000 tiny map entries or 7,000 small parts per label, far above cursors and selections, while 0 holds nothing of others and infinity lets a writer fill memory; a commit is decoded part by part only within the room left, each part's pre-decode bound `part_bound` fitting, else refused with a diagnostic) | R | |
 | diagnostics kept 256 | M | |

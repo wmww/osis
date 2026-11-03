@@ -1,11 +1,10 @@
-# Every label passes each resync, and a pass still grows slowly with labels
-> Summary: after the labels-cost work a change, a connect and one write cost by what changed, but an idle node still runs one pass per label and connection per `resync_ms`, about 0.5 ms each at 500 labels (2.4 ms at 1000): most of a CPU core at 10^4 labels, idle.
+# What is left of per-label cost on an idle or quiet node
+> Summary: an idle subscribed label now costs no pass, but a node's tick still walks every label (about 3.5 µs per label and node a minute), each event has O(labels) bookkeeping, and one pass still grows slowly with labels (0.12 ms at 100, 0.4 ms at 1000).
 > Tags: node, performance
 
-`timers` marks every subscribed label dirty each `resync_ms` (heartbeats, timed bounds, entries refused for the cap). Measured with `scale::many_labels` (`OSIS_SCALE_SPANS=1`).
+Idle: notes/sync.md Idle labels; measured with `scale::many_labels` (notes/testing.md).
 
-Two parts:
-- How many passes: a label with an empty work set and nothing due could skip. It needs what is per pass anyway (`certificates`, heartbeat, promotion, reseal) to name its own next time, as `Work::due` does for bodies; then a tick costs what is due. Not tried: the harness in `work_sets.rs` should tell whether a trigger is missed.
-- Cost per pass: at 500 labels `pass: certificates` is 0.32 of 0.5 ms; `tl.certificates` plus `cert_parts` for the label's chain 120 us and for each acting actor 75 us. The timeline reached from a label grows with what its owner holds.
-
-Also O(labels) per event with a small constant: `add_new_labels`, `next_wake`, `labels()` per engine generation (about 75 us each at 500). They add to a connect's about 5 ms per label at 500, not to its round trips.
+- The tick: `timers` and `next_wake` walk every label, `next_wake` at every event. A due index (an ordered set of times) would make them follow what is due, at the price of more sites to keep it right; at 10^4 labels this is about 35 ms per node a minute, not noticed yet.
+- `spread_touches` copies each change into every label's work set, and `add_new_labels` and `labels()` walk them all: O(labels) per event. A set that waits long goes `full` past `work_max`, so a quiet label with busy neighbours judges everything at its next resync. Spreading a change only to labels it concerns would end both, but the marks' exactness would then carry the verdicts too.
+- A pass: `pass: certificates` is most of it. The rest of the growth was not found.
+- Heartbeats stay per label: a pass and an upload per `HEARTBEAT_MIN_INTERVAL` for each label, which is what a node with 10^4 labels idles on now.

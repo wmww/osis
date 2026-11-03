@@ -461,6 +461,14 @@ fn many_labels() {
     phase(&mut w, "idle tick", n, &[&a, &b], |w| w.run());
     phase(&mut w, "idle resync", n, &[&a, &b], |w| w.advance(61_000));
     phase(&mut w, "idle again", n, &[&a, &b], |w| w.advance(61_000));
+    // what one pass costs at this many labels, now that idle runs none: a refresh judges all
+    for name in ["pass each", "pass again"] {
+        phase(&mut w, name, n, &[&a, &b], |w| {
+            a.sync_now().unwrap();
+            b.sync_now().unwrap();
+            w.run();
+        });
+    }
     phase(&mut w, "one write", n, &[&a, &b], |w| {
         write(&a, things[n / 2], n + 1);
         w.run();
@@ -558,6 +566,89 @@ fn label_costs_do_not_grow_with_labels() {
     assert!(large.1.passes <= small.1.passes, "write: {} passes against {}", large.1.passes, small.1.passes);
     assert_eq!(large.2.claim_lists, 0, "connect: the held sync keys open every label");
     assert!(large.2.label_reads <= small.2.label_reads + 8, "connect: {} label reads against {}", large.2.label_reads, small.2.label_reads);
+}
+
+// spec/sync.md §6: resyncs of settled, subscribed labels run no pass, however many there are;
+// what time alone wants still comes, for the labels it is due on: a heartbeat interval later,
+// each label passes about once. Counted.
+#[test]
+fn idle_labels_pass_only_when_due() {
+    const N: usize = 6;
+    let (mut w, a, b, _, things) = labels_world(N);
+    // past the wait for peers (`peer_pass_wait_ms`), which brings a last pass
+    w.advance(310_000);
+    w.advance(61_000);
+    let idle = counted_work(&[&a, &b], || {
+        for _ in 0..5 {
+            w.advance(61_000);
+        }
+    });
+    assert_eq!(idle.passes, 0, "idle resyncs ran passes");
+    // nothing marks another label: a write passes its own alone, and the rest stay quiet after it
+    let wrote = counted_work(&[&a, &b], || {
+        write(&a, things[0], N + 1);
+        w.run();
+        w.advance(61_000);
+        w.advance(61_000);
+    });
+    assert!(wrote.passes <= 16, "{} passes for a write with {N} labels", wrote.passes);
+    assert_eq!(read(&b, things[0]), Some(Value::Bytes(format!("text {}", N + 1).into_bytes())));
+    let idle = counted_work(&[&a, &b], || w.advance(61_000));
+    assert_eq!(idle.passes, 0, "resyncs after a write ran passes");
+    // labels at both nodes, each with its heartbeat due once in the interval
+    let day = counted_work(&[&a, &b], || {
+        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
+        w.advance(61_000);
+    });
+    assert!(day.passes >= 2 * N as u64, "{} passes a heartbeat interval on", day.passes);
+    let idle = counted_work(&[&a, &b], || {
+        w.advance(61_000);
+        w.advance(61_000);
+    });
+    assert_eq!(idle.passes, 0, "resyncs after the heartbeats ran passes");
+}
+
+// spec/sync.md §6, spec/permissions.md §3: an edge's `until` is a time only the clock brings: the
+// label it departs from passes then, though nothing else marks it (counted).
+#[test]
+fn an_edge_ending_passes_its_quiet_label() {
+    let (mut w, a, _, p, things) = labels_world(2);
+    // past the wait for peers (`peer_pass_wait_ms`), which brings a last pass
+    w.advance(310_000);
+    w.advance(61_000);
+    let until = w.now() + 300_000;
+    a.share(things[0], p, Role::Read, EdgeOpts { until: Some(osis_base::WallMs(until)), ..EdgeOpts::default() }).unwrap();
+    w.run();
+    w.advance(61_000);
+    w.advance(61_000);
+    let idle = counted_work(&[&a], || w.advance(61_000));
+    assert_eq!(idle.passes, 0, "quiet before the edge ends");
+    let ended = counted_work(&[&a], || {
+        w.advance(120_000);
+    });
+    assert!(ended.passes >= 1, "the edge ended and no pass came");
+}
+
+// spec/sync.md §5: what a label waits for by time (a copy left to its author, a relay wait) brings
+// back that label, not every label of the node (counted).
+#[test]
+fn a_timed_wait_passes_its_label_alone() {
+    let measure = |n: usize| {
+        let (mut w, a, b, p, _) = labels_world(n);
+        // past the wait for peers (`peer_pass_wait_ms`), which brings a last pass
+        w.advance(310_000);
+        w.advance(61_000);
+        share_new(&mut w, &a, p, n);
+        let settled = counted_work(&[&a, &b], || {
+            for _ in 0..3 {
+                w.advance(20_000);
+            }
+            w.advance(61_000);
+        });
+        settled.passes
+    };
+    let (small, large) = (measure(2), measure(10));
+    assert!(large <= small + 4, "{large} passes at 10 labels against {small} at 2");
 }
 
 // spec/crypto.md §4, spec/sync.md §3: a burst of grants reads each pending one about once, however

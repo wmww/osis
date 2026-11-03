@@ -51,6 +51,19 @@ impl Timeline {
         })
     }
 
+    /// What `n` ever reaches: O(what it reaches) once while this timeline stands.
+    fn forward_of(&self, n: &Tid) -> Arc<BTreeSet<Tid>> {
+        if let Some(x) = self.memo.forward.lock().ok().and_then(|m| m.get(n).cloned()) {
+            return x;
+        }
+        self.memo.forward_walks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let x = Arc::new(self.input.ever_forward([*n]));
+        if let Ok(mut m) = self.memo.forward.lock() {
+            m.insert(*n, x.clone());
+        }
+        x
+    }
+
     /// The chain certificates of `node` for writes on `thing` (§4).
     pub fn certificates(&self, node: &Tid, thing: &Tid) -> Certificates {
         self.closure(vec![(*node, *thing)])
@@ -85,7 +98,7 @@ impl Timeline {
         let index = self.cert_index();
         let mut todo: BTreeSet<(Tid, Tid)> = seeds.into_iter().collect();
         let mut seen: BTreeSet<(Tid, Tid)> = BTreeSet::new();
-        let mut ups: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+        let mut ups: BTreeMap<Tid, Arc<BTreeSet<Tid>>> = BTreeMap::new();
         let mut downs: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         let mut on_paths: BTreeSet<Tid> = BTreeSet::new();
         let mut edges_in: BTreeSet<(Tid, Tid)> = BTreeSet::new();
@@ -93,7 +106,7 @@ impl Timeline {
             if !seen.insert((n, t)) {
                 continue;
             }
-            let up = ups.entry(n).or_insert_with(|| self.input.ever_forward([n]));
+            let up = ups.entry(n).or_insert_with(|| self.forward_of(&n));
             let down = downs.entry(t).or_insert_with(|| self.input.ever_back([t]));
             let mut things: BTreeSet<Tid> = up.intersection(down).copied().collect();
             things.insert(n);
@@ -110,7 +123,8 @@ impl Timeline {
                 }
             }
             for (m, by_target) in things.iter().filter_map(|m| index.by_edge.get(m).map(|x| (*m, x))) {
-                for (tg, ws) in by_target.iter().filter(|(tg, _)| things.contains(tg)) {
+                // a holder's edges may be many, the things on these paths few
+                for (tg, ws) in things.iter().filter_map(|tg| by_target.get(tg).map(|ws| (tg, ws))) {
                     if !edges_in.insert((m, *tg)) {
                         continue;
                     }

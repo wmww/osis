@@ -37,7 +37,7 @@ pub struct Verdicts {
 }
 
 /// How long another node's fresh demotion or `keys.0` is left to its author before this node
-/// places it as its own chain certificate (ms; the periodic pass picks it up after).
+/// places it as its own chain certificate (ms; `settle_by` brings the pass back after).
 const SETTLE_MS: u64 = 30_000;
 
 /// The least lifetime an inbox blob must have left for its grant to be copied under the home
@@ -194,6 +194,26 @@ fn inside(h: &osis_commit::Header, closure: &BTreeSet<Tid>) -> BTreeSet<usize> {
 impl SyncEngine {
     pub(crate) fn pass(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let _s = crate::costs::span("pass");
+        let r = self.pass_at_host(conn, l, out);
+        self.schedule_pass(Some(conn), l);
+        r
+    }
+
+    /// When time alone next wants a pass of `l` (`Work::pass_at`): a due time of the work set, the
+    /// roster's clock horizon, the next heartbeat. With none of those, one heartbeat interval from
+    /// now: what no trigger names, should anything, waits no longer than a heartbeat does.
+    fn schedule_pass(&mut self, conn: Option<ConnId>, l: LabelId) {
+        let (now, raw) = (self.now(), self.raw_now());
+        let beats: Vec<u64> = self.state.beats.get(&l).into_iter().chain(self.state.stranded.get(&l)).map(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS)).collect();
+        let full_passes = self.cfg.full_passes;
+        let Some(w) = self.work_mut(conn, l) else { return };
+        let due = w.due.keys().next().into_iter().chain(w.due_blobs.keys().next()).chain(w.until.as_ref()).copied();
+        let t = due.chain(beats).fold(now.saturating_add(HEARTBEAT_MIN_INTERVAL_MS), u64::min);
+        w.pass_at = if full_passes { 0 } else { raw.saturating_add(t.saturating_sub(now)) };
+    }
+
+    /// `pass`, at a host.
+    fn pass_at_host(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l).filter(|x| !x.receipts) else { return Ok(()) };
@@ -309,6 +329,10 @@ impl SyncEngine {
         let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id));
         self.send(conn, p, sends, &mut left, out)?;
         self.clear_inbox(conn, p, out)?;
+        // a commit deposited there this writer has not promoted yet: its chain may come
+        if keys.write.is_some() {
+            left.again |= self.state.deposited_at(&host, &l).into_iter().any(|b| self.promotable(&l, &b));
+        }
         let settled = unsettled.is_empty();
         self.pull(Some(conn), &g, l, &mut scope, w);
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
@@ -316,7 +340,7 @@ impl SyncEngine {
         if quiet && settled {
             self.retire_at(host, &g, l)?;
         }
-        self.reseal(&g, w)?;
+        self.reseal(&g, l, w)?;
         // a snapshot from a state not whole yet repairs nothing
         if !self.filling(&l) {
             self.repair_suspects(w)?;
@@ -365,7 +389,10 @@ impl SyncEngine {
                 match o.of {
                     Some(Touch::Commit(c)) => left.commits.insert(c),
                     Some(Touch::Blob(b)) => left.blobs.insert(b),
-                    None => false,
+                    None => {
+                        left.again = true;
+                        false
+                    }
                 };
             }
             if !seen.insert(o.id) || settled || self.conns.get(&conn).is_some_and(|c| super::in_flight(c, &c.req.sent, (l, o.id), raw) || c.req.replacing.contains_key(&(l, o.id))) {
@@ -539,6 +566,7 @@ impl SyncEngine {
             if let Err(e) = self.local_pass(g, l, index, head) {
                 self.diag(format!("local pass of {l:?}: {e}"));
             }
+            self.schedule_pass(None, l);
         }
         Ok(())
     }
@@ -567,13 +595,13 @@ impl SyncEngine {
     /// register first (a second admin's step, issued before the author's reaches it, would be a
     /// sibling); a wake brings the pass back then. Other role writes (an admin recording
     /// a step in `label.0`, a `keys.0` update) get no step from their author and delay nothing.
-    fn step_settled(&mut self, g: &Tid) -> bool {
+    fn step_settled(&mut self, g: &Tid, l: LabelId) -> bool {
         let a = self.engine.core.secret_actor(g).unwrap_or(*g);
         let Some(t) = self.rotation_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
         if t <= self.raw_now() {
             return true;
         }
-        self.settle_by(t);
+        self.settle_by(t, l);
         false
     }
 
@@ -588,7 +616,7 @@ impl SyncEngine {
         let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
-        if recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g) {
+        if recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g, l) {
             let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
             self.take_done(done)?;
             if let Some((step, _)) = step {
@@ -638,7 +666,7 @@ impl SyncEngine {
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         // a node serving the label alone decides here: nobody runs a pass at a host for it
-        self.reseal(&g, w)?;
+        self.reseal(&g, l, w)?;
         self.repair_suspects(w)?;
         w.leave(left);
         Ok(())
@@ -796,7 +824,7 @@ impl SyncEngine {
                 continue;
             }
             // another node's commit not at this host: its author (or a co-writer) first
-            if !here && !self.relay_due(&b.commit) {
+            if !here && !self.relay_due(p.l, &b.commit) {
                 left.commits.insert(b.commit);
                 continue;
             }
@@ -922,9 +950,16 @@ impl SyncEngine {
     /// §3): holders seen without a box at a current epoch (`Engine::reseal_due`) and holders
     /// whose node's heartbeat under the label reports it stranded (§4); delivered by inbox and
     /// placed under the actor's labels like any role commit.
-    fn reseal(&mut self, g: &Tid, w: &mut Work) -> Result<()> {
+    fn reseal(&mut self, g: &Tid, l: LabelId, w: &mut Work) -> Result<()> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
-        if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
+        if self.engine.core.is_key_actor(&a) {
+            return Ok(());
+        }
+        if !self.complete_pass(&a) {
+            // the wait for peers ending may be all it lacks
+            if !self.peers_waited(&a) {
+                self.settle_by(self.peer_wait_end(&a), l);
+            }
             return Ok(());
         }
         // the complete pass was checked just above
@@ -1145,7 +1180,7 @@ impl SyncEngine {
             let seen = *self.deposit_seen.entry((host, l, id)).or_insert(raw);
             let due = seen.saturating_add(self.relay_delay(&id.0));
             if raw < due {
-                self.settle_by(due);
+                self.settle_by(due, l);
                 continue;
             }
             out.push((id, e));
@@ -1166,6 +1201,16 @@ impl SyncEngine {
             out.push((id, e, commit, parts));
         }
         out
+    }
+
+    /// Whether entry `b` under `l`, deposited, is one a writer may yet promote: a commit, never a
+    /// heartbeat (`due_deposits`).
+    fn promotable(&self, l: &LabelId, b: &BlobId) -> bool {
+        match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
+            Some(Kind::Commit { commit, .. }) => !self.engine.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")),
+            Some(Kind::Parked(_)) => true,
+            _ => false,
+        }
     }
 
     /// A promoter completes the chain it holds (spec/sync.md §5; spec/permissions.md §4): for
@@ -1222,7 +1267,7 @@ impl SyncEngine {
             if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")) {
                 continue;
             }
-            if let Some(t) = self.relay_at(&commit) {
+            if let Some(t) = self.relay_at(l, &commit) {
                 left.at(t, commit);
                 continue;
             }
@@ -1441,12 +1486,12 @@ impl SyncEngine {
     /// Whether this node uploads or relays commit `c` at a host lacking it now: its own (made
     /// here, a held key actor's included, or placed first by a flow) at once, another node's once `relay_delay` has passed since it
     /// arrived here (else a wake is set for then).
-    fn relay_due(&mut self, c: &CommitId) -> bool {
-        self.relay_at(c).is_none()
+    fn relay_due(&mut self, l: LabelId, c: &CommitId) -> bool {
+        self.relay_at(l, c).is_none()
     }
 
     /// `relay_due` as the time (corrected wall ms) it comes, `None` once due.
-    fn relay_at(&mut self, c: &CommitId) -> Option<u64> {
+    fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {
         let me = self.engine.tid();
         let m = self.engine.core.ix.commits.get(c)?;
         if m.origin == crate::events::Origin::Local || m.header.author == me || self.first.contains(c) {
@@ -1458,7 +1503,7 @@ impl SyncEngine {
             return None;
         }
         let at = self.raw_now().saturating_add(due - now);
-        self.settle_by(at);
+        self.settle_by(at, l);
         Some(due)
     }
 
@@ -1855,7 +1900,7 @@ impl SyncEngine {
                 && (h.frontier.is_some() || missing.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == "keys.0")))
             {
                 let at = self.raw_now().saturating_add(t - now);
-                self.settle_by(at);
+                self.settle_by(at, l);
                 continue;
             }
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
@@ -2079,7 +2124,7 @@ impl SyncEngine {
         let (step, set) = match self.recorded_child(&g, &l, &head.id()) {
             Some(x) => x,
             None => {
-                if !self.step_settled(&g) {
+                if !self.step_settled(&g, l) {
                     return Ok(false);
                 }
                 let (step, done) = self.engine.issue_step(&g, &l, &head.id(), false)?;
