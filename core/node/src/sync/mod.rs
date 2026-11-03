@@ -381,6 +381,11 @@ impl SyncEngine {
         &mut self.engine
     }
 
+    /// Certificate copies waiting for a rotation or a re-seal (`deferred`).
+    pub fn deferred_copies(&self) -> usize {
+        self.deferred.len()
+    }
+
     pub fn config(&self) -> &SyncConfig {
         &self.cfg
     }

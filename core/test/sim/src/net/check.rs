@@ -31,11 +31,26 @@ pub fn quiescent(sim: &mut NetSim) -> Res<()> {
     super::ephemeral::check(sim)?;
     convergence(sim)?;
     pending(sim)?;
+    copies_waiting(sim)?;
     labels(sim)?;
     groups(sim)?;
     purged(sim)?;
     state_size(sim)?;
     no_ping_pong(sim)
+}
+
+/// No certificate copy still waits at rest (`SyncEngine::deferred`): what it waited for came, or
+/// its wait never ends and the flow's record stays on disk.
+fn copies_waiting(sim: &mut NetSim) -> Res<()> {
+    for n in 0..sim.nodes.len() {
+        if !sim.excused.contains(&n) && sim.nodes.get(n).is_some_and(|x| x.up && !x.lost) {
+            let left = sim.sync(n)?.deferred_copies();
+            if left > 0 {
+                return Err(sim.fail(format!("node {n}: {left} certificate copies still wait")));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Bound on a node's stored bytes: `STATE_FACTOR` times what it must hold, plus `STATE_PER_ENTRY`

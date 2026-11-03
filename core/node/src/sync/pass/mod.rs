@@ -227,17 +227,8 @@ impl SyncEngine {
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.keys = keys.clone();
         }
-        // certificate copies that waited for the rotation just run
         if read_ok {
-            let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|x| x.0 == g);
-            self.deferred = later;
-            let owed: BTreeSet<[u8; 32]> = now.iter().filter_map(|x| x.3).collect();
-            for (x, c, ais, k) in now {
-                self.place_certificate_in(&x, &c, &ais, k)?;
-            }
-            for k in owed {
-                self.settle_owed(k);
-            }
+            self.place_deferred(&g)?;
         }
         // a complete pass and still no secret of the head's read epoch: stranded
         if keys.epochs[0].is_none() {
@@ -248,6 +239,20 @@ impl SyncEngine {
         }
         let p = Head { g, l, host: Some(host), id: head.id(), keys, read_ok };
         self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, host, &p, ctx, w, out))
+    }
+
+    /// Certificate copies of `g` that waited for the rotation just run, or for a read secret.
+    fn place_deferred(&mut self, g: &Tid) -> Result<()> {
+        let (now, later): (Vec<_>, Vec<_>) = std::mem::take(&mut self.deferred).into_iter().partition(|x| x.0 == *g);
+        self.deferred = later;
+        let owed: BTreeSet<[u8; 32]> = now.iter().filter_map(|x| x.3).collect();
+        for (x, c, ais, k) in now {
+            self.place_certificate_in(&x, &c, &ais, k)?;
+        }
+        for k in owed {
+            self.settle_owed(k);
+        }
+        Ok(())
     }
 
     /// Runs a pass of `l` of `g` over its work set (`conn` `None`: the local pass): the closure
@@ -598,6 +603,9 @@ impl SyncEngine {
                 self.served_cache = None;
                 keys = self.usable_keys(&g, index, &step)?.0;
             }
+        }
+        if read_ok {
+            self.place_deferred(&g)?;
         }
         if !read_ok || keys.epochs[0].is_none() || !(keys.is_writer() || keys.deposit.is_some()) {
             return Ok(());
