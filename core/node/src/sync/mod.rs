@@ -630,7 +630,7 @@ impl SyncEngine {
     /// Wraps an engine. `clock` is the uncorrected wall clock the engine was built on (Hellos
     /// carry it; the correction goes to the engine).
     pub fn new(mut engine: Engine, clock: Arc<dyn Clock>, rng: Box<dyn CryptoRngCore + Send>, cfg: SyncConfig) -> Result<SyncEngine> {
-        // ephemeral writes reach node-sync as unsent commits (`Engine::take_ephemeral`), not events
+        // ephemeral writes reach node-sync as unsent memory commits (`Engine::take_memory_commits`), not events
         let events = engine.subscribe_durable();
         engine.set_sync_records(&state::Records);
         // keeps the changed commits from now on (`Engine::take_changed`)
@@ -823,7 +823,6 @@ impl SyncEngine {
         }
         // what the timers dropped: blobs forgotten, judged again (spec/commits.md §5)
         self.engine.tick()?;
-        self.engine.tick_ephemeral();
         self.engine_events()
     }
 
@@ -1046,7 +1045,7 @@ impl SyncEngine {
                     }
                 }
                 // an expiry of ephemeral state only: nothing to sync
-                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(t, a)| self.engine.only_ephemeral(t, a)) => {}
+                crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(_, a)| !osis_schema::AspectKey::lifetime(a).is_durable()) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
                     wide |= cause == crate::events::Cause::LostAccess;
@@ -1887,9 +1886,6 @@ impl SyncEngine {
             at(o.after);
         }
         if let Ok(Some(x)) = self.engine.next_timer() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
-        }
-        if let Some(x) = self.engine.next_ephemeral_timer() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
         }
         if let Some(x) = self.engine.next_wait_due() {

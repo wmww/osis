@@ -9,7 +9,7 @@
 
 use super::EphOp;
 use crate::engine::write::{AspectMut, Records, check_authority_with};
-use crate::engine::{Engine, Mutation};
+use crate::engine::{Engine, Mutation, Owned};
 use crate::error::{Error, Result};
 use osis_base::{Ak, ChainStep, CreationRecord, Tid, Ts, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
@@ -104,12 +104,13 @@ impl Engine {
     /// persists: the things its durable aspects and `persist` name, groups getting a durable
     /// add, and the groups each persisted thing's (or saved draft's) ephemeral placements
     /// convert into, each with its ephemeral owner chain, to a fixpoint.
-    pub(super) fn place_plan(&self, m: &Mutation, gops: Vec<(Tid, AspectMut)>) -> Result<Placed> {
+    pub(super) fn place_plan(&mut self, m: &Mutation, gops: Vec<(Tid, AspectMut)>) -> Result<Placed> {
         let node = self.tid();
         let ts = Ts::make(self.now(), 0).unwrap_or_default();
-        let things = &self.eph.things;
+        // the expiry each ephemeral placement converts with (read once: the states behind them)
+        let expiries = self.placement_expiries()?;
         let creates = &m.creates;
-        let records: Records<'_> = &|t| creates.get(t).or_else(|| things.get(t).map(|e| &e.record));
+        let records: Records<'_> = &|t| creates.get(t).or_else(|| self.memory_record(t));
         let chain = |roots: &BTreeSet<Tid>| {
             let mut out = BTreeSet::new();
             for t in roots {
@@ -132,16 +133,16 @@ impl Engine {
         let removed: BTreeSet<(Tid, u64, Tid)> = gops.iter().flat_map(|(g, am)| am.ops.iter().filter_map(|op| member_op(op).filter(|x| !x.2).map(|(f, x, _)| (*g, f, x)))).collect();
         // the expiry a placement converts with; `None` when it does not convert (unplaced by
         // this batch, or expired with its timer not yet run)
-        let converts = |g: &Tid, field: u64, t: &Tid| if removed.contains(&(*g, field, *t)) { None } else { self.placement_expiry(g, &pak, field, t) };
+        let converts = |g: &Tid, field: u64, t: &Tid| if removed.contains(&(*g, field, *t)) { None } else { expiries.get(&(*g, field, *t)).copied().unwrap_or(Some(None)) };
         let mut roots: BTreeSet<Tid> = m.aspects.keys().map(|k| k.0).chain(m.persist.iter().copied()).collect();
         // the things whose ephemeral placements convert: the ephemeral things persisted, and
         // every durable thing written durably (a draft again, `Eph::drafts`, or one placed
         // ephemerally while it persisted elsewhere or before a restart); none without defs
         let placed = |persisted: &BTreeSet<Tid>, roots: &BTreeSet<Tid>| -> BTreeSet<Tid> {
-            if self.eph.defs.is_empty() {
+            if self.core.ix.placed.is_empty() {
                 return BTreeSet::new();
             }
-            persisted.iter().filter(|t| things.contains_key(t)).chain(roots.iter().filter(|t| records(t).is_none())).copied().collect()
+            persisted.iter().filter(|t| self.core.ix.held.is_memory(t)).chain(roots.iter().filter(|t| records(t).is_none())).copied().collect()
         };
         let persisted = loop {
             let persisted = chain(&roots);
@@ -182,7 +183,7 @@ impl Engine {
                 };
                 // a durable removal also removes an ephemeral placement of the item (a durable
                 // thing placed ephemerally: see `placed`)
-                let listed = || matches!(member_op(op), Some((f, x, false)) if self.eph.defs.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
+                let listed = || matches!(member_op(op), Some((f, x, false)) if self.core.ix.placed.get(&g).is_some_and(|(i, s)| if f == ITEMS { i.contains(&x) } else { s.contains(&x) }));
                 if !durable || listed() {
                     e.push(op.clone());
                 }
@@ -228,7 +229,7 @@ impl Engine {
             // a group ephemerally: its (empty) `group.0` persists, its ephemeral items do not;
             // after the conversions, whose expiry it takes: an empty group has no value for
             // expiry to remove (spec/crdt.md §4.7), so it stays a group
-            if self.eph.defs.contains_key(t) && !self.has_durable(t, &gak) {
+            if self.core.ix.placed.contains_key(t) && !self.core.ix.by_aspect.get(&(*t, gak.clone())).is_some_and(|s| !s.is_empty()) {
                 let d = out.durable.entry(*t).or_insert_with(|| AspectMut { schema: core_schema(), ..AspectMut::default() });
                 d.ops.insert(0, PathOp { path: Vec::new(), op: Op::Set(GROUP.encode(&Group::default())) });
             }
@@ -241,7 +242,7 @@ impl Engine {
     /// (group, field) of each ephemeral placement of `t`.
     fn ephemeral_placements(&self, t: &Tid) -> Vec<(Tid, u64)> {
         let mut out = Vec::new();
-        for (g, (items, subs)) in &self.eph.defs {
+        for (g, (items, subs)) in self.core.ix.placed.iter() {
             if items.contains(t) {
                 out.push((*g, ITEMS));
             }
@@ -252,40 +253,67 @@ impl Engine {
         out
     }
 
-    /// The expiry of `t`'s ephemeral placement in `field` of `g`: `Some(None)` never, `None`
-    /// already past (its timer has not run yet). With several, the last to go counts.
-    fn placement_expiry(&self, g: &Tid, gak: &Ak, field: u64, t: &Tid) -> Option<Option<u64>> {
-        let Some(a) = self.eph.aspects.get(g).and_then(|m| m.get(gak)) else { return Some(None) };
-        if a.expiring.is_empty() {
-            return Some(None);
+    /// Per ephemeral placement `(group, field, item)`, the expiry it converts with: `Some(None)`
+    /// never, `None` already past (its timer has not run yet). With several writes placing it,
+    /// the last to go counts: the held expiring memory commits' writes are stripped from the
+    /// state in expiry order until the element goes.
+    fn placement_expiries(&mut self) -> Result<BTreeMap<(Tid, u64, Tid), Option<Option<u64>>>> {
+        let mut out = BTreeMap::new();
+        if self.core.ix.placed.is_empty() {
+            return Ok(out);
         }
-        let src = &self.eph.src;
-        let holds = |f: &Fragment| f.at(&[PathSeg::Field(field)]).and_then(|x| x.read()).is_some_and(|v| matches!(v, Value::Set(s) if s.contains(&Value::Tid(*t))));
-        let mut f = a.state.clone();
-        for (time, ranges) in &a.expiring {
-            f.strip(&|d| super::in_ranges(d, src, ranges));
-            if !holds(&f) {
-                return (*time > self.now().0).then_some(Some(*time));
+        let pak = placed_ak()?;
+        let now = self.now().0;
+        let groups: Vec<(Tid, Def)> = self.core.ix.placed.iter().map(|(g, d)| (*g, d.clone())).collect();
+        for (g, (items, subs)) in groups {
+            let expiring: Vec<(u64, Owned)> = self
+                .core
+                .ix
+                .by_aspect
+                .get(&(g, pak.clone()))
+                .into_iter()
+                .flatten()
+                .filter_map(|(_, c)| {
+                    let m = self.core.ix.commits.get(c)?;
+                    let ai = m.aspect(&g, &pak)?;
+                    let t = m.header.aspects.get(ai)?.expires?;
+                    Some((t, Owned::of(&m.header, c, ai)?))
+                })
+                .collect();
+            let members = items.iter().map(|t| (ITEMS, *t)).chain(subs.iter().map(|t| (SUBGROUPS, *t)));
+            if expiring.is_empty() {
+                out.extend(members.map(|(f, t)| ((g, f, t), Some(None))));
+                continue;
+            }
+            let Some(st) = self.state(&g, &pak)? else { continue };
+            let holds = |f: &Fragment, field: u64, t: &Tid| f.at(&[PathSeg::Field(field)]).and_then(|x| x.read()).is_some_and(|v| matches!(v, Value::Set(s) if s.contains(&Value::Tid(*t))));
+            let mut by_time: BTreeMap<u64, Vec<Owned>> = BTreeMap::new();
+            for (t, o) in expiring {
+                by_time.entry(t).or_default().push(o);
+            }
+            for (field, t) in members {
+                let mut f = st.clone();
+                let mut exp = Some(None);
+                for (time, owned) in &by_time {
+                    f.strip(&|d| owned.iter().any(|o| o.owns(d)));
+                    if !holds(&f, field, &t) {
+                        exp = (*time > now).then_some(Some(*time));
+                        break;
+                    }
+                }
+                out.insert((g, field, t), exp);
             }
         }
-        Some(None)
-    }
-
-    /// Re-reads `g`'s `placed.0~` (`pak`; `groups_of`).
-    pub(super) fn refresh_def(&mut self, g: &Tid, pak: &Ak) {
-        match self.eph.state(g, pak).and_then(def_of) {
-            Some(d) => self.eph.defs.insert(*g, d),
-            None => self.eph.defs.remove(g),
-        };
+        Ok(out)
     }
 
     /// Groups containing the thing, transitively, through `group.0` and `placed.0~` (`groups.0`).
     pub fn groups_of(&self, tid: &Tid) -> BTreeSet<Tid> {
         let durable = self.durable_groups_of(tid);
-        if self.eph.defs.is_empty() {
+        if self.core.ix.placed.is_empty() {
             return durable;
         }
-        let defs = &self.eph.defs;
+        let defs = &self.core.ix.placed;
         let mut stack: Vec<Tid> = durable.into_iter().chain(defs.iter().filter(|(_, d)| d.0.contains(tid)).map(|(g, _)| *g)).collect();
         let mut out = BTreeSet::new();
         while let Some(g) = stack.pop() {
@@ -307,7 +335,7 @@ impl Engine {
                 continue;
             }
             stack.extend(self.closure(&x).iter().copied());
-            if let Some((items, subs)) = self.eph.defs.get(&x) {
+            if let Some((items, subs)) = self.core.ix.placed.get(&x) {
                 stack.extend(items.iter().chain(subs).copied());
             }
         }
@@ -321,7 +349,7 @@ impl Engine {
         // a group listing it as an item contains it: `of` is a superset of those
         let mut items: BTreeSet<Tid> = ix.of.get(tid).into_iter().flatten().filter(|g| ix.defs.get(g).is_some_and(|d| d.0.contains(tid))).copied().collect();
         let mut subs: BTreeSet<Tid> = ix.parents_of(tid).collect();
-        for (g, d) in &self.eph.defs {
+        for (g, d) in self.core.ix.placed.iter() {
             if d.0.contains(tid) {
                 items.insert(*g);
             }

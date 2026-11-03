@@ -1,34 +1,38 @@
-//! Ephemeral data (notes/ephemeral.md Local engine): things whose creation record no durable
-//! commit holds and aspects whose key is `ephemeral` or `signal`, held in memory
-//! beside `Core`, never in the store or the journaled indexes. A local ephemeral write is an HLC
-//! tick, the ops resolved by `osis_crdt` against the joined state, a join and an event: no store
-//! transaction, signature, hash or encryption. `Engine::write` splits a `Mutation` into its
-//! durable half (committed first, carrying the creation records of the ephemeral things it
-//! persists) and its ephemeral half (applied after; nothing applies if the commit fails).
-//! Restart forgets everything here.
+//! Ephemeral data (notes/ephemeral.md Local engine): things whose creation record is held as
+//! memory class and aspects whose key is `ephemeral` or `signal`. Their commits, bodies and every
+//! row derived from them live in Core's memory class (the store's overlay), forgotten at restart;
+//! everything else is as for durable data (issues/eph-unify.md). `Engine::write` splits a
+//! `Mutation` into its durable half (one commit, carrying the creation records of the ephemeral
+//! things it persists) and its ephemeral half: one memory commit per expiry class (plain writes
+//! under this open's session, expiring ones under its second session, spec/crdt.md §2.1), all in
+//! one transaction, so a batch applies whole or not at all. Signal writes go as relay-only
+//! commits (`signal`). Reads come from Core as for any aspect. This module keeps only what
+//! belongs to the local write path: the undo log of own batches (`log`), drafts again, things
+//! deleted by undoing their creation, unsent signals and delivered relay-only commits.
 
 mod history;
 mod log;
 mod place;
-mod remote;
+mod signal;
 
+pub use crate::apply::memory::{ENTRY_CHARGE, FACTOR};
 pub use log::{LoggedChange, Reverted};
 pub(crate) use place::gains;
 pub(crate) use place::{ITEMS, SUBGROUPS, def_of};
-pub use remote::{COVER_FACTOR, EphCommit, EphIngest};
+pub use signal::{EphCommit, MAX_DELIVERED};
 
-use crate::engine::write::{AspectMut, Records, check_authority_with, role_with, run_ops};
-use crate::engine::{Engine, Mutation};
+use crate::engine::write::{AspectMut, Records, check_authority_with, commit_in};
+use crate::engine::{Engine, MemoryThing, Mutation, Tx};
 use crate::error::{Error, Result};
-use crate::events::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
+use crate::events::{ChangeId, Diagnostic, DiagnosticKind, EphemeralId, Event, Origin};
 use osis_base::{Ak, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs};
-use osis_crdt::{AnyView, CounterRange, Fragment, Op, PathOp, Session, Source, Writer};
+use osis_crdt::{Fragment, Source};
 use osis_schema::core_types::{CREATED, GROUP, PLACED};
-use osis_schema::{AspectKey, Lifetime, Schema};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
-use std::sync::Arc;
+use osis_schema::{AspectKey, Lifetime};
+use std::collections::{BTreeMap, BTreeSet};
 
-/// An ephemeral thing: its creation record and the batch that made it (`Engine::creation`).
+/// An ephemeral thing as this node holds it: its memory-class record and creation
+/// (`Engine::creation`).
 #[derive(Clone, Debug)]
 pub struct EphThing {
     pub record: CreationRecord,
@@ -43,96 +47,25 @@ pub struct EphThing {
     pub deleted: bool,
 }
 
-/// One ephemeral aspect: its joined state and which of its writes expire when. Expiry classes
-/// are kept as the counter ranges of this session's writes to it per expiry time (asked by
-/// dot); a class past its time stays in `expired`, so a later own write repeating one of its
-/// records (an undo) does not bring it back.
-///
-/// Invariant (spec/crdt.md §4.7, ephemeral data): `state` is the join of the live own writes
-/// (`own`, every class not expired) and the valid held parts. An expired or superseded write
-/// vanishes whole, resets and removals included, so two nodes holding the same ephemeral commits
-/// read the same whatever expired when and whoever held what at expiry. Writes only join into
-/// it; a removal rebuilds it (`remote::rebuild_aspect`), since a reset that goes no longer
-/// prunes what it pruned.
-#[derive(Clone, Debug, Default)]
-struct EphAspect {
-    state: Fragment,
-    expiring: BTreeMap<u64, Vec<(u64, u64)>>,
-    expired: Vec<(u64, u64)>,
-    /// The own writes of this session, per expiry class (`None`: without expiry), each joined
-    /// apart so a class that goes at its expiry takes only its own writes with it.
-    own: BTreeMap<Option<u64>, Fragment>,
-    /// Held ephemeral commit parts on this aspect: (commit, aspect index).
-    parts: BTreeSet<(CommitId, usize)>,
-}
-
-impl EphAspect {
-    /// The live own writes, joined.
-    fn own_writes(&self) -> Fragment {
-        let mut f = Fragment::default();
-        for o in self.own.values() {
-            f.join(o.clone());
-        }
-        f
-    }
-
-    /// Joins own write `delta` of expiry class `expires` into the own writes and the state.
-    fn join_own(&mut self, delta: Fragment, expires: Option<u64>) {
-        self.own.entry(expires).or_default().join(delta.clone());
-        self.state.join(delta);
-    }
-
-    /// Removes the own writes whose dots `gone` names (superseded, spec/sync.md §9); the state
-    /// is rebuilt after.
-    fn remove_own(&mut self, gone: &dyn Fn(&osis_crdt::Dot) -> bool) {
-        for o in self.own.values_mut() {
-            if o.holds_dots(gone) {
-                o.remove_dots(gone);
-                o.prune(None, &mut osis_crdt::Changes::new());
-            }
-        }
-        self.own.retain(|_, o| !o.is_empty());
-    }
-}
-
-/// Whether dot `d` is one of this session's (`src`) writes in counter `ranges` (an expiry class).
-fn in_ranges(d: &osis_crdt::Dot, src: &Source, ranges: &[(u64, u64)]) -> bool {
-    d.src == *src && ranges.iter().any(|(lo, hi)| *lo <= d.ctr && d.ctr < *hi)
-}
-
-/// The engine's ephemeral state.
+/// The local ephemeral write path's own state (everything else is Core's).
+#[derive(Default)]
 pub struct Eph {
-    session: Session,
-    /// Source of every local ephemeral write: `Session(node, nonce)` (spec/crdt.md §2.1).
-    src: Source,
-    /// Per aspect written this session, its next counter (contiguous from 1, as a durable commit's; a
-    /// write's counters are taken when it applies, so a refused one takes none). Kept for the
-    /// whole session, freed things' too (a freed thing's writes may be held elsewhere and the
-    /// thing received again): a counter used twice would make two writes one dot.
-    next: HashMap<Tid, HashMap<Ak, u64>>,
+    /// Own ephemeral-only batches so far: their `EphemeralId`s.
     batches: u64,
-    things: HashMap<Tid, EphThing>,
-    /// Ephemeral records added to `things` so far (`Engine::records_seen`).
-    records: u64,
-    aspects: HashMap<Tid, BTreeMap<Ak, EphAspect>>,
-    /// Expiry times and the aspects with writes expiring then.
-    timers: BTreeMap<u64, BTreeSet<(Tid, Ak)>>,
-    /// Each `placed.0~` held, as read (`groups_of`).
-    defs: BTreeMap<Tid, place::Def>,
     /// Own batches for undo.
     log: log::Log,
     /// Drafts again: durable things whose save an undo reverted (`log::Making`), known and
     /// undone like the ephemeral things they were (scope, deletion by undoing their creation:
-    /// the flag, like `EphThing.deleted`) until saved again; in memory, like the draft. At most
-    /// one entry per own undone save this session.
+    /// the flag, like `deleted`) until saved again; in memory, like the draft. At most one entry
+    /// per own undone save this session.
     drafts: BTreeMap<Tid, bool>,
-    /// Synced ephemeral data: unsent writes, held ephemeral commits.
-    remote: remote::Remote,
-    /// Held ephemeral commits dropped (covered or expired), for the sync layer.
-    dropped: Vec<CommitId>,
-    /// Held ephemeral commits let go because a change of the held durable set made every part
-    /// invalid, for the sync layer (it forgets their blobs, deletes them nowhere, reconciles).
-    unheld: Vec<CommitId>,
+    /// Memory things deleted by an undo of their creation, or deleted while a commit on them
+    /// also touches a thing not freed (`apply::free`): they read unknown.
+    deleted: BTreeSet<Tid>,
+    /// Signal writes not yet sent: (thing, aspect, value, `ts`, actor).
+    signals: Vec<(Tid, Ak, Value, Ts, Tid)>,
+    /// Relay-only commits delivered (`signal`).
+    relays: signal::Delivered,
 }
 
 /// A batch written by `Engine::write`.
@@ -142,42 +75,6 @@ pub struct Written {
     pub ts: Ts,
 }
 
-impl Eph {
-    /// Empty, under a new session.
-    pub fn new(session: Session) -> Eph {
-        Eph { session, src: Source::session(session), next: HashMap::new(), batches: 0, things: HashMap::new(), records: 0, aspects: HashMap::new(), timers: BTreeMap::new(), defs: BTreeMap::new(), log: log::Log::default(), drafts: BTreeMap::new(), remote: remote::Remote::default(), dropped: Vec::new(), unheld: Vec::new() }
-    }
-
-    /// The next session counter of `(tid, ak)`.
-    fn ctr(&self, tid: &Tid, ak: &Ak) -> u64 {
-        self.next.get(tid).and_then(|m| m.get(ak)).copied().unwrap_or(1)
-    }
-
-    /// Takes the session counters of `(tid, ak)` below `hi`.
-    fn take_ctrs(&mut self, tid: &Tid, ak: &Ak, hi: u64) {
-        let n = self.next.entry(*tid).or_default();
-        match n.get_mut(ak) {
-            Some(c) => *c = (*c).max(hi),
-            None => {
-                n.insert(ak.clone(), hi);
-            }
-        }
-    }
-
-    fn state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
-        self.aspects.get(tid)?.get(ak).map(|a| &a.state)
-    }
-
-    /// An ephemeral thing, or a draft again (`drafts`).
-    fn draft_like(&self, tid: &Tid) -> bool {
-        self.things.contains_key(tid) || self.drafts.contains_key(tid)
-    }
-
-    fn present(&self, tid: &Tid) -> Vec<Ak> {
-        self.aspects.get(tid).map(|m| m.iter().filter(|(_, a)| a.state.present()).map(|(ak, _)| ak.clone()).collect()).unwrap_or_default()
-    }
-}
-
 /// One ephemeral aspect write of a batch, before resolution.
 pub(crate) struct EphOp {
     pub tid: Tid,
@@ -185,27 +82,28 @@ pub(crate) struct EphOp {
     pub am: AspectMut,
 }
 
-/// One resolved ephemeral aspect write of a batch.
-pub(crate) struct Resolved {
-    tid: Tid,
-    ak: Ak,
-    delta: Fragment,
-    range: (u64, u64),
-    expires: Option<u64>,
-    /// For the undo log: the touched positions before the write and the writer's schema.
-    log: Option<(Fragment, Option<Arc<Schema>>)>,
+impl Eph {
+    /// An ephemeral thing, or a draft again (`drafts`).
+    fn draft_like(&self, core: &crate::engine::Core, tid: &Tid) -> bool {
+        core.ix.held.is_memory(tid) || self.drafts.contains_key(tid)
+    }
 }
 
 impl Engine {
-    /// The ephemeral thing `tid`, if it is one here.
-    pub fn ephemeral_thing(&self, tid: &Tid) -> Option<&EphThing> {
-        self.eph.things.get(tid)
+    /// The ephemeral thing `tid`, if it is one here (its record held as memory class).
+    pub fn ephemeral_thing(&self, tid: &Tid) -> Option<EphThing> {
+        if !self.core.ix.held.is_memory(tid) {
+            return None;
+        }
+        let record = self.core.created(tid)?.clone();
+        let now = self.now();
+        let m = self.core.memory.things.get(tid).copied().unwrap_or(MemoryThing { ts: Ts::default(), node: self.tid(), actor: self.tid(), received: now, made_here: false });
+        Some(EphThing { record, ts: m.ts, node: m.node, actor: m.actor, received: m.received, made_here: m.made_here, deleted: self.eph.deleted.contains(tid) })
     }
 
-    /// The steps up `tid`'s owner chain through the ephemeral things' records
-    /// (`osis_base::owner_chain`).
-    pub(crate) fn ephemeral_chain(&self, tid: &Tid) -> osis_base::OwnerChain<impl FnMut(&Tid) -> Option<osis_base::Owner> + '_> {
-        osis_base::owner_chain(*tid, |t| self.eph.things.get(t).map(|e| e.record.owner_link()))
+    /// The memory-class record of `t` (`Records` of the local write path).
+    pub(crate) fn memory_record(&self, t: &Tid) -> Option<&CreationRecord> {
+        self.core.created_for(t, true).filter(|_| self.core.ix.held.is_memory(t))
     }
 
     /// Whether `tid` is a draft again here (`Eph::drafts`), not deleted.
@@ -213,60 +111,59 @@ impl Engine {
         self.eph.drafts.get(tid) == Some(&false)
     }
 
-    /// This open's session (spec/crdt.md §2.1): the source of its ephemeral writes.
-    pub fn ephemeral_session(&self) -> Session {
-        self.eph.session
+    /// This open's session (spec/crdt.md §2.1): the source of its plain writes.
+    pub fn ephemeral_session(&self) -> osis_crdt::Session {
+        self.core.session
     }
 
-    /// Tests: the ephemeral state of `(tid, ak)` (own writes joined with the valid held parts).
-    #[doc(hidden)]
-    pub fn ephemeral_state(&self, tid: &Tid, ak: &Ak) -> Option<&Fragment> {
-        self.eph.state(tid, ak)
+    /// The own sources of this open's writes: its session and its expiring session.
+    pub(crate) fn own_sources(&self) -> [Source; 2] {
+        [Source::session(self.core.session), Source::session(self.core.expiring)]
     }
 
-    /// Whether `(tid, ak)` has ephemeral state here.
-    pub fn has_ephemeral(&self, tid: &Tid, ak: &Ak) -> bool {
-        self.eph.state(tid, ak).is_some()
+    /// Whether `tid` is in some labeled closure here: synced itself, or in a group that is, through
+    /// either side of `group.0`.
+    pub fn ephemeral_synced(&self, tid: &Tid) -> bool {
+        self.core.syncs(tid) || self.groups_of(tid).iter().any(|g| self.core.syncs(g))
     }
 
-    /// Whether `(tid, ak)` has ephemeral state and no durable delta held.
-    pub fn only_ephemeral(&self, tid: &Tid, ak: &Ak) -> bool {
-        self.has_ephemeral(tid, ak) && !self.has_durable(tid, ak)
+    /// Whether `t` is in the closure of `g` (`Engine::closure` and the ephemeral things placed in
+    /// it, transitively through `placed.0~`), without walking it.
+    pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
+        t == g || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }
 
-    /// Whether a durable delta of `(tid, ak)` is held.
-    pub fn has_durable(&self, tid: &Tid, ak: &Ak) -> bool {
-        self.core.ix.by_aspect.get(&(*tid, ak.clone())).is_some_and(|s| !s.is_empty())
+    /// Whether own memory commits or signals wait to be handed to the ephemeral lane
+    /// (`take_memory_commits`, `take_signals`).
+    pub fn has_unsent(&self) -> bool {
+        !self.core.memory.unsent.is_empty() || !self.eph.signals.is_empty()
     }
 
-    /// The role this node has on an ephemeral thing: its role on a new thing owned by the
-    /// nearest durable thing of its chain (spec/permissions.md §1).
-    pub(crate) fn ephemeral_role(&self, tid: &Tid) -> Option<Role> {
-        let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-        let things = &self.eph.things;
-        role_with(&self.core, self.tid(), &|t| things.get(t).map(|e| &e.record), tid, ts)
+    /// The reader actor of thing `t` (`Engine::reader_of`), through the records of ephemeral
+    /// things up to the nearest durable one.
+    pub fn ephemeral_reader(&self, t: &Tid) -> Tid {
+        self.core.reader_of(t)
     }
 
-    /// AKs with present ephemeral state on `tid`.
-    pub(crate) fn ephemeral_aspects(&self, tid: &Tid) -> Vec<Ak> {
-        self.eph.present(tid)
+    /// The nearest durable thing up `t`'s chain of ephemeral records (`t` when durable; where the
+    /// chain stops otherwise).
+    fn nearest_durable(&self, t: &Tid) -> Tid {
+        self.core.owner_chain(t).filter_map(|s| s.thing()).find(|x| !self.core.ix.held.is_memory(x)).unwrap_or(*t)
     }
 
-    /// The read state of `(tid, ak)` when it has ephemeral state: the join with its durable
-    /// state, which is loaded only when a durable delta of it is held. `None` without
-    /// ephemeral state.
-    pub(crate) fn joined_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-        let Some(mut f) = self.eph.state(tid, ak).cloned() else { return Ok(None) };
-        if let Some(d) = self.durable_state(tid, ak)? {
-            f.join(d);
-        }
-        Ok(Some(f))
+    /// The delete secrets this node holds for delete keys `keys` of an ephemeral commit's part
+    /// on `tid` acting for `actor` (spec/crypto.md §7): those of the chain of `tid`'s nearest
+    /// durable thing.
+    pub fn ephemeral_delete_secrets_for(&self, tid: &Tid, actor: &Tid, keys: &[osis_commit::DeleteKey]) -> Vec<(u8, osis_crypto::DeleteSecret)> {
+        let thing = self.core.delete_chain(&self.nearest_durable(tid));
+        let author = self.core.delete_chain(actor);
+        keys.iter().filter_map(|k| crate::engine::Core::delete_secret(k.level, &k.key, &thing, &author).map(|d| (k.level, d))).collect()
     }
 
     /// Writes `m`: its durable half as one commit (with the creation records of the ephemeral
-    /// things it persists and their placements made durable, spec/data-model.md §1, §8),
-    /// then its ephemeral half in memory. Validated as a whole: when the commit or any op
-    /// fails, nothing applies. `None` when nothing changes.
+    /// things it persists and their placements made durable, spec/data-model.md §1, §8) and its
+    /// ephemeral half as memory commits, one per expiry class, in one transaction. Validated as
+    /// a whole: when the commit or any op fails, nothing applies. `None` when nothing changes.
     pub fn write(&mut self, mut m: Mutation) -> Result<Option<Written>> {
         let node = self.tid();
         let actor = m.actor.unwrap_or(node);
@@ -274,8 +171,8 @@ impl Engine {
             self.check_confined(&m, &actor)?;
         }
         if !m.unchecked {
-            let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
-            crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t), &actor, ts)?;
+            let ts = Ts::make(self.now(), 0).unwrap_or_default();
+            crate::engine::write::check_acts(&self.core, node, &|t| m.creates.get(t).or_else(|| self.memory_record(t)), &actor, ts)?;
         }
         let mut eph_ops: Vec<EphOp> = Vec::new();
         let mut gops: Vec<(Tid, AspectMut)> = Vec::new();
@@ -308,9 +205,9 @@ impl Engine {
         let mut saved = plan.saved;
         for t in &persisted {
             if !m.creates.contains_key(t)
-                && let Some(e) = self.eph.things.get(t)
+                && let Some(r) = self.memory_record(t)
             {
-                m.creates.insert(*t, e.record.clone());
+                m.creates.insert(*t, r.clone());
                 saved.insert(*t);
             }
         }
@@ -320,7 +217,7 @@ impl Engine {
         if fresh.keys().any(|t| self.core.created(t).is_some()) {
             return Err(Error::Misuse("thing already exists"));
         }
-        // peers never take one as ephemeral (`eph_write_valid`)
+        // an ownerless thing is a durable thing: its first admin's edge persists it at once
         if fresh.values().any(|r| matches!(r, CreationRecord::Ownerless { .. })) {
             return Err(Error::Misuse("an ownerless thing is created durably"));
         }
@@ -329,21 +226,15 @@ impl Engine {
         if eph_ops.is_empty() && fresh.is_empty() && m.free.is_empty() && refused.is_empty() && saved.is_empty() {
             // the common durable write: no ephemeral half
             let Some(id) = self.commit(m)? else { return Ok(None) };
-            for t in &persisted {
-                self.eph.things.remove(t);
-            }
             let ts = self.core.ix.commits.get(&id).map(|c| c.view.ts).unwrap_or_default();
             return Ok(Some(Written { id: ChangeId::Commit(id), ts }));
         }
         let ts = self.core.hlc.next();
         let now = self.now();
-        let mut resolved: Vec<Resolved> = Vec::new();
         let mut signals = Vec::new();
-        let mut unfull = Vec::new();
         {
-            let things = &self.eph.things;
             let creates = &m.creates;
-            let records: Records<'_> = &|t| creates.get(t).or_else(|| fresh.get(t)).or_else(|| things.get(t).map(|e| &e.record));
+            let records: Records<'_> = &|t| creates.get(t).or_else(|| fresh.get(t)).or_else(|| self.memory_record(t));
             // a new ephemeral thing needs what its creation would need
             for t in fresh.keys() {
                 check_authority_with(&self.core, node, records, t, CREATED.ak(), ts)?;
@@ -363,7 +254,7 @@ impl Engine {
                 if ak.lifetime() == Lifetime::Signal {
                     match am.ops.as_slice() {
                         [op] if op.path.is_empty() && am.expires.is_none() => match &op.op {
-                            Op::Set(v) => signals.push((*tid, ak.clone(), v.clone())),
+                            osis_crdt::Op::Set(v) => signals.push((*tid, ak.clone(), v.clone())),
                             _ => return Err(Error::Misuse("a signal takes one set at the root")),
                         },
                         _ => return Err(Error::Misuse("a signal takes one set at the root")),
@@ -371,122 +262,96 @@ impl Engine {
                 }
             }
         }
-        for op in &eph_ops {
-            let (tid, ak, am) = (&op.tid, &op.ak, &op.am);
-            if ak.lifetime() == Lifetime::Signal {
+        // the ephemeral things this batch frees: deleted, held as memory class and in no labeled
+        // closure (a synced one keeps its record and tombstones while held: an older copy
+        // elsewhere would revive the values), with the ephemeral things they own
+        let gone = self.freeable(&std::mem::take(&mut m.free));
+        // one memory commit per expiry class (spec/crdt.md §2.1: plain writes under this
+        // open's session, expiring ones under its second session, so an expired commit leaves
+        // no gap in the plain writes' counters); writes on things freed go with them
+        let (mut plain, mut expiring) = (Mutation::new(), Mutation::new());
+        for (x, ts_) in [(&mut plain, ts), (&mut expiring, ts)] {
+            x.act_as(actor);
+            x.ts = Some(ts_);
+        }
+        for op in eph_ops {
+            let EphOp { tid, ak, mut am } = op;
+            if ak.lifetime() == Lifetime::Signal || gone.contains(&tid) {
                 continue;
             }
             let expires = am.expires.or_else(|| am.default_expiry.map(|d| ts.wall_ms().0.saturating_add(d)));
             if expires.is_some_and(|t| t <= now.0) {
                 return Err(Error::Misuse("an expiry must be in the future"));
             }
-            // resolved against the joined state; the ephemeral side alone (borrowed) when no
-            // durable delta is held
-            let durable = self.durable_state(tid, ak)?;
-            let empty = Fragment::default();
-            let joined;
-            let base = match (durable, self.eph.state(tid, ak)) {
-                (None, e) => e.unwrap_or(&empty),
-                (Some(mut d), e) => {
-                    if let Some(e) = e {
-                        d.join(e.clone());
-                    }
-                    joined = d;
-                    &joined
+            am.expires = expires;
+            am.default_expiry = None;
+            let target = if expires.is_some() { &mut expiring } else { &mut plain };
+            match target.aspects.get_mut(&(tid, ak.clone())) {
+                Some(e) => e.ops.extend(am.ops),
+                None => {
+                    target.aspects.insert((tid, ak), am);
                 }
-            };
-            // counters taken at apply (`apply_ephemeral`): after an earlier write of the batch to
-            // the aspect, else the session's next
-            let lo = resolved.iter().rev().find(|r| r.tid == *tid && r.ak == *ak).map_or_else(|| self.eph.ctr(tid, ak), |r| r.range.1);
-            let w = Writer::new(ts, self.eph.src.clone(), lo);
-            let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));
-            let out = match &view {
-                Some(v) => run_ops(base, w, &am.ops, v)?,
-                None => run_ops(base, w, &am.ops, &AnyView)?,
-            };
-            if let Some((delta, r)) = out {
-                let log = Some((base.footprint(&delta), am.schema.clone()));
-                // an aspect whose own delta did not fit a blob takes only writes that make it fit
-                // (spec/sync.md §9)
-                match self.check_full(tid, ak, &delta) {
-                    None => return Err(Error::Misuse("an ephemeral aspect's own state does not fit a blob")),
-                    Some(true) => unfull.push((*tid, ak.clone())),
-                    Some(false) => {}
-                }
-                resolved.push(Resolved { tid: *tid, ak: ak.clone(), delta, range: (r.lo, r.hi), expires, log });
             }
         }
-        let free = std::mem::take(&mut m.free);
-        let commit = if durable {
-            m.ts = Some(ts);
-            self.commit(m)?
-        } else {
-            None
-        };
-        // the ephemeral half: cannot fail from here on
-        for k in &unfull {
-            self.eph.remote.full.remove(k);
+        // their entries leave every `placed.0~` listing them (a reset that goes with them
+        // otherwise, at a group that stays)
+        for (g, ops) in self.unplace_freed(&gone) {
+            let e = plain.aspects.entry((g, place::placed_ak()?)).or_insert_with(|| AspectMut { schema: Some(std::sync::Arc::new(osis_schema::core_schema().clone())), ..AspectMut::default() });
+            e.ops.extend(ops);
         }
-        for t in &persisted {
-            self.eph.things.remove(t);
-        }
-        let making = log::Making { made: fresh.keys().copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
-        for (t, record) in fresh {
-            self.eph.things.insert(t, EphThing { record, ts, node, actor, received: now, made_here: true, deleted: false });
-            self.eph.records += 1;
-            self.note_created(&t);
+        plain.creates = fresh.iter().filter(|(t, _)| !gone.contains(t)).map(|(t, r)| (*t, r.clone())).collect();
+        let making = log::Making { made: fresh.keys().filter(|t| !gone.contains(t)).copied().collect(), saved: saved.into_iter().collect(), ..Default::default() };
+        let made_now: BTreeSet<Tid> = fresh.keys().copied().collect();
+        let batch = self.run(|tx| {
+            let commit = if durable {
+                let mut m = m;
+                m.ts = Some(ts);
+                commit_in(tx, m)?
+            } else {
+                None
+            };
+            let mut memory = Vec::new();
+            for x in [plain, expiring] {
+                if x.is_empty() && x.creates.is_empty() {
+                    continue;
+                }
+                if let Some(c) = tx.in_class(true, |tx| commit_in(tx, x))? {
+                    memory.push(c);
+                }
+            }
+            if !gone.is_empty() {
+                tx.in_class(true, |tx| crate::apply::free::free(tx, &gone))?;
+            }
+            let logged = log_aspects(tx, &memory)?;
+            Ok((commit, memory, logged))
+        })?;
+        for t in &made_now {
+            self.eph.deleted.remove(t);
         }
         for (item, group) in refused {
-            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
+            self.report(Diagnostic { kind: DiagnosticKind::PlacementNotPersisted, tids: vec![item, group], commit: batch.0, peer: None, detail: "a persisted thing's placement stays ephemeral: this node may not write the group".into() });
         }
-        Ok(self.apply_ephemeral(commit, resolved, free, signals, making, ts, actor, None))
+        Ok(self.finish_batch(batch, signals, making, &gone, ts, actor, None))
     }
 
-    /// Applies a batch's resolved ephemeral writes (cannot fail), frees `free`, logs the batch
-    /// for undo and queues its event. Its id: the commit when it had a durable half.
-    #[allow(clippy::too_many_arguments)]
-    fn apply_ephemeral(&mut self, commit: Option<CommitId>, resolved: Vec<Resolved>, free: BTreeSet<Tid>, signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
+    /// Ends a batch written by `write` or a revert (its commits applied): drafts and deleted
+    /// marks, the undo log, the history and change events. Its id: the commit when it had a
+    /// durable half, else a fresh `EphemeralId`; `None` when nothing changed.
+    fn finish_batch(&mut self, (commit, memory, mut logged): (Option<CommitId>, Vec<CommitId>, Vec<log::LogAspect>), signals: Vec<(Tid, Ak, Value)>, mut making: log::Making, gone: &BTreeSet<Tid>, ts: Ts, actor: Tid, reverts: Option<ChangeId>) -> Option<Written> {
         let node = self.tid();
         let now = self.now();
-        let mut changed = Vec::new();
-        let mut logged = Vec::new();
-        let mut written = Vec::new();
-        for mut r in resolved {
-            self.eph.take_ctrs(&r.tid, &r.ak, r.range.1);
-            let src = self.eph.src.clone();
-            let a = self.eph.aspects.entry(r.tid).or_default().entry(r.ak.clone()).or_default();
-            // an own write repeating a record of an expired own write (an undo's re-add) does
-            // not bring it back: taken out before it is joined or sent, so every holder
-            // joins what this node joins (spec/crdt.md §4.7)
-            let expired = &a.expired;
-            if !expired.is_empty() && r.delta.holds_dots(&|d| in_ranges(d, &src, expired)) {
-                r.delta.remove_dots(&|d| in_ranges(d, &src, expired));
-                r.delta.prune(None, &mut osis_crdt::Changes::new());
-            }
-            if let Some((pre, schema)) = r.log {
-                logged.push(log::LogAspect { tid: r.tid, ak: r.ak.clone(), delta: r.delta.clone(), range: CounterRange { lo: r.range.0, hi: r.range.1 }, pre, schema });
-            }
-            written.push((r.tid, r.ak.clone(), r.delta.clone(), r.expires));
-            a.join_own(r.delta, r.expires);
-            if let Some(t) = r.expires {
-                a.expiring.entry(t).or_default().push(r.range);
-                self.eph.timers.entry(t).or_default().insert((r.tid, r.ak.clone()));
-            }
-            if r.ak.as_str() == PLACED.ak() {
-                self.refresh_def(&r.tid, &r.ak);
-            }
-            changed.push((r.tid, r.ak));
-        }
-        for (t, ak, delta, expires) in &written {
-            self.note_written(t, ak, delta, *expires, actor);
-        }
+        let mut changed: Vec<(Tid, Ak)> = logged.iter().map(|a| (a.tid, a.ak.clone())).collect();
         for (t, ak, v) in &signals {
             self.note_signal(t, ak, v, ts, actor);
         }
         for (list, del) in [(&making.unmade, true), (&making.made, false)] {
             for t in list {
-                if let Some(e) = self.eph.things.get_mut(t) {
-                    e.deleted = del;
+                if self.core.ix.held.is_memory(t) {
+                    if del {
+                        self.eph.deleted.insert(*t);
+                    } else {
+                        self.eph.deleted.remove(t);
+                    }
                 }
                 if let Some(d) = self.eph.drafts.get_mut(t) {
                     *d = del;
@@ -498,20 +363,32 @@ impl Engine {
         }
         self.eph.drafts.extend(making.unsaved.iter().map(|t| (*t, false)));
         // `delete` ends a draft again too (an undo of it restores content and placements, which
-        // convert at the next durable write)
-        for t in &free {
+        // convert at the next durable write); a freed thing still under a commit that touches
+        // a thing not freed reads unknown until it goes (`apply::free`)
+        for t in gone {
             self.eph.drafts.remove(t);
+            self.eph.deleted.remove(t);
+            if self.core.ix.freeing.contains(t) {
+                self.eph.deleted.insert(*t);
+            }
         }
-        let gone = self.free_things(&free, ts, &mut changed);
+        for t in gone {
+            if let Some(m) = self.core.aspects_of(t).next().map(|_| ()) {
+                let _ = m;
+            }
+            changed.push((*t, place::placed_ak().unwrap_or_else(|_| unreachable!("a core key"))));
+        }
         logged.retain(|a| !gone.contains(&a.tid));
         making.made.retain(|t| !gone.contains(t));
         making.unmade.retain(|t| !gone.contains(t));
+        changed.sort();
+        changed.dedup();
         let id = match commit {
             Some(c) => ChangeId::Commit(c),
-            None if changed.is_empty() && signals.is_empty() && making.is_empty() => return None,
+            None if memory.is_empty() && signals.is_empty() && making.is_empty() && gone.is_empty() => return None,
             None => {
                 self.eph.batches += 1;
-                ChangeId::Ephemeral(EphemeralId { session: self.eph.session.nonce, n: self.eph.batches })
+                ChangeId::Ephemeral(EphemeralId { session: self.core.session.nonce, n: self.eph.batches })
             }
         };
         let cap = self.cfg.ephemeral_history;
@@ -525,133 +402,80 @@ impl Engine {
         Some(Written { id, ts })
     }
 
-    /// The durable state of `(tid, ak)` when a delta of it is held (no store access otherwise).
-    pub(crate) fn durable_state(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-        if !self.has_durable(tid, ak) {
-            return Ok(None);
-        }
-        let (t, a) = (*tid, ak.clone());
-        self.run(|tx| Ok(tx.state(&t, &a)?.cloned()))
-    }
-
-    /// Frees ephemeral things deleted by a batch, with the ephemeral things they own: records,
-    /// states, timers, undo entries and their ephemeral placements go (resets at `ts`), the tids
-    /// read unknown (notes/ephemeral.md Step 1 as built). A thing in a labeled closure keeps its record
-    /// and tombstones while held: an older copy elsewhere would revive the values.
-    fn free_things(&mut self, free: &BTreeSet<Tid>, ts: Ts, changed: &mut Vec<(Tid, Ak)>) -> BTreeSet<Tid> {
-        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.eph.things.contains_key(t) && !self.ephemeral_synced(t)).copied().collect();
-        if gone.is_empty() {
-            return gone;
-        }
+    /// Of `free`, the ephemeral things this node may free at once: held as memory class and in
+    /// no labeled closure, with the ephemeral things they own, to a fixpoint.
+    fn freeable(&self, free: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut gone: BTreeSet<Tid> = free.iter().filter(|t| self.core.ix.held.is_memory(t) && !self.ephemeral_synced(t)).copied().collect();
         loop {
-            let more: Vec<Tid> = self.eph.things.iter().filter(|(t, e)| !gone.contains(t) && !self.ephemeral_synced(t) && matches!(&e.record, CreationRecord::Thing { owner, .. } if gone.contains(owner))).map(|(t, _)| *t).collect();
+            let more: Vec<Tid> = gone.iter().flat_map(|t| self.core.ix.held.owned(t)).filter(|x| !gone.contains(x) && self.core.ix.held.is_memory(x) && !self.ephemeral_synced(x)).copied().collect();
             if more.is_empty() {
-                break;
+                return gone;
             }
             gone.extend(more);
         }
-        for t in &gone {
-            self.eph.things.remove(t);
-            self.eph.remote.local.remove(t);
-            self.eph.defs.remove(t);
-            if let Some(m) = self.eph.aspects.remove(t) {
-                for (ak, a) in m {
-                    if a.state.present() {
-                        changed.push((*t, ak));
-                    }
-                }
-            }
-        }
-        self.eph.log.forget(&|t| gone.contains(t));
-        // their ephemeral placements in groups that stay
-        let unplace: Vec<(Tid, Vec<PathOp>)> = self
-            .eph
-            .defs
-            .iter()
-            .filter(|(g, _)| !gone.contains(g))
-            .map(|(g, (items, subs))| (*g, place::unplace_ops(items, subs, &gone)))
-            .filter(|(_, ops)| !ops.is_empty())
-            .collect();
-        let core = osis_schema::core_schema();
-        let view = core.view(PLACED.ak());
-        for (g, ops) in unplace {
-            let Some((gak, a)) = self.eph.aspects.get(&g).and_then(|m| m.iter().find(|(k, _)| k.as_str() == PLACED.ak())) else { continue };
-            let gak = gak.clone();
-            let w = Writer::new(ts, self.eph.src.clone(), self.eph.ctr(&g, &gak));
-            let out = match &view {
-                Some(v) => run_ops(&a.state, w, &ops, v),
-                None => run_ops(&a.state, w, &ops, &AnyView),
-            };
-            if let Ok(Some((delta, r))) = out {
-                self.eph.take_ctrs(&g, &gak, r.hi);
-                let Some(a) = self.eph.aspects.get_mut(&g).and_then(|m| m.get_mut(&gak)) else { continue };
-                a.join_own(delta, None);
-                self.refresh_def(&g, &gak);
-                changed.push((g, gak));
-            }
-        }
-        changed.sort();
-        changed.dedup();
-        gone
     }
 
-    /// When the next ephemeral expiry is due (corrected wall ms).
-    pub fn next_ephemeral_timer(&self) -> Option<u64> {
-        let r = &self.eph.remote;
-        [self.eph.timers.keys().next().copied(), r.timers.keys().next().copied()].into_iter().flatten().min()
+    /// Per group that stays, the removals of `gone` from its `placed.0~`.
+    fn unplace_freed(&self, gone: &BTreeSet<Tid>) -> Vec<(Tid, Vec<osis_crdt::PathOp>)> {
+        if gone.is_empty() {
+            return Vec::new();
+        }
+        self.core.ix.placed.iter().filter(|(g, _)| !gone.contains(g)).map(|(g, (items, subs))| (*g, place::unplace_ops(items, subs, gone))).filter(|(_, ops)| !ops.is_empty()).collect()
     }
 
-    /// Runs the ephemeral expiries due by the corrected clock: the expired writes vanish whole
-    /// (spec/crdt.md §4.7, ephemeral data), own ones and held parts alike, and the aspects
-    /// they were on are rebuilt.
-    pub fn tick_ephemeral(&mut self) {
-        let now = self.now().0;
-        let mut changed = BTreeSet::new();
-        while let Some(entry) = self.eph.timers.first_entry() {
-            if *entry.key() > now {
-                break;
-            }
-            let (t, keys) = entry.remove_entry();
-            for (tid, ak) in keys {
-                let Some(a) = self.eph.aspects.get_mut(&tid).and_then(|m| m.get_mut(&ak)) else { continue };
-                let Some(ranges) = a.expiring.remove(&t) else { continue };
-                a.own.remove(&Some(t));
-                a.expired.extend(ranges);
-                changed.insert((tid, ak));
-            }
-        }
-        // own batches gone with them read as gone
-        if self.core.history_watched {
-            let gone: Vec<(Tid, Ak, ChangeId)> = self.eph.log.entries.iter().flat_map(|e| e.aspects.iter().filter(|a| changed.contains(&(a.tid, a.ak.clone())) && self.own_expired(&a.tid, &a.ak, &a.delta)).map(|a| (a.tid, a.ak.clone(), e.id))).collect();
-            self.memory_touched(gone);
-        }
-        self.tick_remote(now, &mut changed);
-        if !changed.is_empty() {
-            self.core.events.queue(Event::Changed { cause: Cause::Expiry, changed: changed.into_iter().collect() });
-            self.core.events.flush();
-        }
+    /// The role this node has on an ephemeral thing: its role on a new thing owned by the
+    /// nearest durable thing of its chain (spec/permissions.md §1).
+    pub(crate) fn ephemeral_role(&self, tid: &Tid) -> Option<Role> {
+        let ts = Ts::make(self.now(), 0).unwrap_or_default();
+        crate::engine::write::role_with(&self.core, self.tid(), &|t| self.memory_record(t), tid, ts)
     }
 
-    /// The value of an ephemeral thing's aspect, synthetic ones included (`Engine::get`).
-    pub(crate) fn ephemeral_get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
-        let Some(th) = self.eph.things.get(tid) else { return Ok(None) };
-        Ok(match ak.as_str() {
-            "tid.0" => Some(Value::Tid(*tid)),
+    /// The value of a core aspect of an ephemeral thing (`Engine::get`): what its memory-class
+    /// record gives, since no `created.0` or `roles.0` state is held for it.
+    pub(crate) fn ephemeral_core_value(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Option<Value>>> {
+        let Some(th) = self.ephemeral_thing(tid) else { return Ok(None) };
+        Ok(Some(match ak.as_str() {
             "created.0" => Some(th.record.to_value()),
-            "aspects.0" => Some(Value::Set(self.eph.present(tid).into_iter().map(|a| Value::Str(a.as_str().to_string())).collect())),
-            "groups.0" => Some(Value::Set(self.groups_of(tid).into_iter().map(Value::Tid).collect())),
             "roles.0" => None,
-            _ => self.ephemeral_value(tid, ak)?,
+            _ => return Ok(None),
+        }))
+    }
+
+    /// The read value of `placed.0~` of `tid`: the group its items and subgroups make (its
+    /// adds carry no presence of the struct).
+    pub(crate) fn placed_value(&self, tid: &Tid) -> Option<Value> {
+        self.core.ix.placed.get(tid).map(|(items, subgroups)| PLACED.encode(&osis_schema::core_types::Group { items: items.clone(), subgroups: subgroups.clone() }))
+    }
+
+    /// Tests: an own memory commit of `m` (what `write` makes of a batch's ephemeral half; the
+    /// batch's log, drafts and event aside).
+    #[doc(hidden)]
+    pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
+        m.commit_form = false;
+        self.run(|tx| {
+            tx.set_memory();
+            commit_in(tx, m)
         })
     }
+}
 
-    /// The read value of `(tid, ak)` when it has ephemeral state. `placed.0~` reads as the group
-    /// its items and subgroups make (its adds carry no presence of the struct).
-    pub(crate) fn ephemeral_value(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
-        let Some(f) = self.joined_state(tid, ak)? else { return Ok(None) };
-        if ak.as_str() == PLACED.ak() {
-            return Ok(place::def_of(&f).map(|(items, subgroups)| PLACED.encode(&osis_schema::core_types::Group { items, subgroups })));
+/// The undo log's view of memory commits `ids` just applied: per aspect its delta (the held
+/// part) and the pre-write footprint the apply remembered (`undo::remember`).
+fn log_aspects(tx: &mut Tx<'_>, ids: &[CommitId]) -> Result<Vec<log::LogAspect>> {
+    let mut out = Vec::new();
+    for c in ids {
+        let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
+        let h = m.header.clone();
+        let src = h.form.own_source(h.author, *c);
+        for (ai, a) in h.aspects.iter().enumerate() {
+            let mut delta = Fragment::default();
+            for f in crate::apply::held_fragments(tx, c, ai)? {
+                delta.join(f);
+            }
+            let pre = crate::undo::remembered(tx, c, &a.tid, &a.ak)?.unwrap_or_default();
+            let schema = tx.core.schemas.get(a.ak.as_str()).cloned().or_else(|| osis_schema::core_types::is_core_key(a.ak.as_str()).then(|| std::sync::Arc::new(osis_schema::core_schema().clone())));
+            out.push(log::LogAspect { tid: a.tid, ak: a.ak.clone(), delta, range: osis_crdt::CounterRange { lo: a.lo, hi: a.hi }, src: src.clone(), pre, schema });
         }
-        Ok(f.read())
     }
+    Ok(out)
 }

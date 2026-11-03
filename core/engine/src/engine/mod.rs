@@ -499,6 +499,9 @@ indexes! {
     pub moved: JMap<Tid, Tid>,
     /// `group.0` definitions and `groups.0` (thing -> groups containing it, transitively).
     pub groups: groups::Groups,
+    /// Each `placed.0~` state as read: a group's ephemeral placements (`Engine::groups_of` reads
+    /// them with `groups`; the closure node-sync uses reads `groups` alone).
+    pub placed: JMap<Tid, groups::Def>,
     /// Keyed `roles.0` entries seen: (target, entry dot) -> (holder, created value).
     pub holder_keys: JMap<(Tid, Dot), Tid>,
     /// Role commits whose removed keys are not known yet.
@@ -542,6 +545,73 @@ indexes! {
 
 /// A held compaction snapshot of an aspect: `ts`, ID, frontiers, `Absorbed` (commit, author).
 pub(crate) type HeldSnapshot = (Ts, CommitId, osis_crdt::Frontiers, Vec<(CommitId, Tid)>);
+
+/// Why a memory commit was forgotten (`MemorySync::dropped`): what the ephemeral lane does with
+/// its entries at hosts (notes/ephemeral.md Deletes).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemoryDrop {
+    /// Every held body covered by held valid memory snapshots (spec/commits.md §5): a writer
+    /// deletes its entries at a host once one of `by` is held there.
+    Covered { by: BTreeSet<CommitId> },
+    /// Superseded by its author's later expiring writes (spec/sync.md §9): its author deletes
+    /// its entries once one of `by` is held there.
+    Superseded { by: BTreeSet<CommitId> },
+    /// Expired, freed with its things, or replaced by a coalescing snapshot of its own node's
+    /// unsent writes (never uploaded): its entries, if any, are deleted at once.
+    Gone,
+}
+
+/// A memory-class thing's creation as `Engine::creation` reports it (the record is in `Held`).
+#[derive(Clone, Copy, Debug)]
+pub struct MemoryThing {
+    pub ts: Ts,
+    pub node: Tid,
+    pub actor: Tid,
+    pub received: WallMs,
+    /// Made by this node in this session, not received.
+    pub made_here: bool,
+}
+
+/// What memory commits report to the ephemeral lane (node-sync) and to the local write path.
+/// Lists grow inside transactions and are cut back to their length at the start of one that
+/// aborts (`commit`, `rollback`); a reader checks a listed commit is still held before acting.
+#[derive(Default)]
+pub struct MemorySync {
+    /// Own memory commits applied and not yet taken by the lane (`Engine::take_memory_commits`),
+    /// in apply order.
+    pub unsent: Vec<CommitId>,
+    /// Memory commits forgotten since the last take, with why (`Engine::take_memory_drops`).
+    pub dropped: Vec<(CommitId, MemoryDrop)>,
+    /// Memory commits applied since the last take, any origin (`Engine::take_memory_applied`).
+    pub applied: Vec<CommitId>,
+    /// Memory aspects a held memory snapshot turned invalid on since the last take
+    /// (`Engine::take_memory_invalidated`).
+    pub invalidated: BTreeSet<(Tid, Ak)>,
+    /// Memory aspects changed since the compaction trigger last weighed them.
+    pub dirty: BTreeSet<(Tid, Ak)>,
+    /// Per aspect the snapshot cost last weighed (`Engine::memory_compactions`).
+    pub weighed: BTreeMap<(Tid, Ak), usize>,
+    /// Why the memory commits about to be forgotten go (`unindex_commit` reads and clears it;
+    /// `Gone` when unsaid).
+    pub reasons: BTreeMap<CommitId, MemoryDrop>,
+    /// Memory-class things' creations (`MemoryThing`), by tid.
+    pub things: BTreeMap<Tid, MemoryThing>,
+    marks: (usize, usize, usize),
+}
+
+impl MemorySync {
+    fn commit(&mut self) {
+        self.marks = (self.unsent.len(), self.dropped.len(), self.applied.len());
+        self.reasons.clear();
+    }
+
+    fn rollback(&mut self) {
+        self.unsent.truncate(self.marks.0);
+        self.dropped.truncate(self.marks.1);
+        self.applied.truncate(self.marks.2);
+        self.reasons.clear();
+    }
+}
 
 /// A decoded commit record: its head (received, origin, dropped parts) and blob.
 pub(crate) type CommitRecord = (index::RecordHead, CommitBlob);
@@ -629,6 +699,12 @@ pub struct Core {
     /// This open's session (spec/crdt.md §2.1): the own source of its content commits, durable
     /// and memory; its counters live in the store's memory overlay.
     pub session: osis_crdt::Session,
+    /// This open's second session: the own source of its expiring memory commits (spec/crdt.md
+    /// §2.1), so an expired commit, forgotten with its counters, leaves no gap in `session`'s
+    /// ranges that a snapshot frontier could not pass (issues/eph-unify.md, decision 2).
+    pub expiring: osis_crdt::Session,
+    /// What memory commits and things report to the ephemeral lane and the local write path.
+    pub memory: MemorySync,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
     /// fails (`Error::Corrupt`).
     pub header_fault: Arc<std::sync::atomic::AtomicBool>,
@@ -980,6 +1056,7 @@ impl Core {
     /// The running transaction committed: its journal is forgotten.
     fn commit_journal(&mut self) {
         self.ix.commit();
+        self.memory.commit();
         self.written.clear();
         self.dirty = false;
     }
@@ -1014,6 +1091,7 @@ impl Core {
         self.inbox_uppers.clear();
         self.inbox_actors = None;
         self.ix.rollback();
+        self.memory.rollback();
         // the timelines follow the restored held set; validity flags are restored with `commits`
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
@@ -1025,7 +1103,7 @@ impl Core {
         self.stale_commits.clear();
     }
 
-    fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session) -> Core {
+    fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
             id,
@@ -1064,6 +1142,8 @@ impl Core {
             forged: None,
             frozen_pending: false,
             session,
+            expiring,
+            memory: MemorySync::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
             check_ingest: false,
@@ -1730,7 +1810,8 @@ pub struct Engine {
     pub(crate) rng: Box<dyn CryptoRngCore + Send>,
     #[doc(hidden)]
     pub core: Core,
-    /// Ephemeral things and aspects, in memory (`crate::ephemeral`).
+    /// The local ephemeral write path's own state (`crate::ephemeral`): the undo log, drafts,
+    /// unsent signals, delivered relay-only commits.
     pub(crate) eph: crate::ephemeral::Eph,
     clock: Arc<dyn Clock>,
     pub(crate) cfg: Config,
@@ -1753,8 +1834,8 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let session = session(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session), eph: crate::ephemeral::Eph::new(session), clock, cfg };
+        let (session, expiring) = (session(id.tid(), &mut *rng), session(id.tid(), &mut *rng));
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
         e.run(|tx| {
@@ -1777,8 +1858,8 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
-        let session = session(id.tid(), &mut *rng);
-        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session), eph: crate::ephemeral::Eph::new(session), clock, cfg };
+        let (session, expiring) = (session(id.tid(), &mut *rng), session(id.tid(), &mut *rng));
+        let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
         e.reload()?;
         e.reexamine()?;
         e.core.timer_floor = e.next_timer()?.unwrap_or(u64::MAX);
@@ -1827,14 +1908,13 @@ impl Engine {
 
     /// The owner of `tid` (`None`: a key actor, an ownerless thing or an unknown thing).
     pub fn owner(&self, tid: &Tid) -> Option<Tid> {
-        self.core.owner(tid).or_else(|| self.ephemeral_thing(tid)?.record.owner())
+        self.core.owner(tid)
     }
 
-    /// `tid`, then its owners up the chain (durable and ephemeral records): at most
+    /// `tid`, then its owners up the chain (durable and memory-class records): at most
     /// `MAX_OWNER_DEPTH` owner links (`osis_base::owner_chain`).
     pub fn owner_chain(&self, tid: &Tid) -> impl Iterator<Item = Tid> + '_ {
-        let record = |t: &Tid| self.core.created(t).or_else(|| Some(&self.ephemeral_thing(t)?.record));
-        osis_base::owner_chain(*tid, move |t| record(t).map(osis_base::CreationRecord::owner_link)).filter_map(|s| s.thing())
+        self.core.owner_chain(tid).filter_map(|s| s.thing())
     }
 
     /// This node's tid.
@@ -1946,7 +2026,8 @@ impl Engine {
     /// it was rebuilt from the commit records.
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         let id = Identity::from_seed(self.core.id.seed().clone());
-        let mut fresh = Core::new(id, self.clock.clone(), self.core.session);
+        let mut fresh = Core::new(id, self.clock.clone(), self.core.session, self.core.expiring);
+        fresh.memory = std::mem::take(&mut self.core.memory);
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());
         fresh.events = std::mem::take(&mut self.core.events);

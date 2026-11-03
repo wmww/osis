@@ -5,7 +5,7 @@
 
 mod atomic;
 pub(crate) mod copies;
-mod free;
+pub(crate) mod free;
 pub(crate) mod gates;
 pub(crate) mod memory;
 mod waits;
@@ -1425,6 +1425,9 @@ impl Engine {
     pub fn creation(&self, tid: &Tid) -> Option<Creation> {
         if let Some(e) = self.ephemeral_thing(tid) {
             return Some(Creation { commit: None, ts: e.ts, node: e.node, actor: e.actor, received: e.received });
+        }
+        if self.core.ix.held.is_memory(tid) {
+            return None;
         }
         let ak = osis_base::Ak::new("created.0").ok()?;
         self.core.ix.by_aspect.get(&(*tid, ak.clone()))?.iter().find_map(|(_, id)| {

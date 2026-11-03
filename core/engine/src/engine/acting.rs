@@ -26,7 +26,7 @@ impl Engine {
     /// The effective role of `actor` on `t` now; a thing ephemeral here takes its owner's
     /// (spec/permissions.md §1).
     pub fn actor_role(&self, actor: &Tid, t: &Tid) -> Option<Role> {
-        let records: Records<'_> = &|x| self.ephemeral_thing(x).map(|e| &e.record);
+        let records: Records<'_> = &|x| self.memory_record(x);
         role_with(&self.core, *actor, records, t, self.acting_ts())
     }
 
@@ -53,7 +53,7 @@ impl Engine {
     /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its owner
     /// chain. False for what this node does not know.
     pub fn entitled(&self, actor: &Tid, t: &Tid) -> bool {
-        if self.ephemeral_thing(t).is_some() {
+        if self.core.ix.held.is_memory(t) {
             return self.actor_role(actor, t) >= Some(Role::Read);
         }
         self.core.may_read(actor, t)
@@ -69,7 +69,7 @@ impl Engine {
     pub(crate) fn check_confined(&self, m: &Mutation, actor: &Tid) -> Result<()> {
         let ts = self.acting_ts();
         let creates = &m.creates;
-        let records: Records<'_> = &|t| creates.get(t).or_else(|| self.ephemeral_thing(t).map(|e| &e.record));
+        let records: Records<'_> = &|t| creates.get(t).or_else(|| self.memory_record(t));
         let created = "created.0";
         for (t, ak) in m.aspects.keys() {
             check_authority_with(&self.core, *actor, records, t, ak.as_str(), ts)?;
@@ -118,7 +118,7 @@ impl Engine {
         }
         let shown = touched.iter().map(|(t, _)| *t).find(|t| self.readable_by(&actor, t));
         let ts = self.acting_ts();
-        let records: Records<'_> = &|t| self.ephemeral_thing(t).map(|e| &e.record);
+        let records: Records<'_> = &|t| self.memory_record(t);
         let check = touched.iter().try_for_each(|(t, ak)| check_authority_with(&self.core, actor, records, t, ak.as_str(), ts));
         let r = check.and_then(|()| self.revert_inner(id, actor, true));
         r.map_err(|e| match (e, shown) {

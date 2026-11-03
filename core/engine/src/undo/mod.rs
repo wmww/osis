@@ -29,6 +29,17 @@ fn decode_buffer(b: &[u8]) -> Result<Vec<(CommitId, Vec<u8>)>> {
     Ok(out)
 }
 
+/// The pre-write footprint `remember` kept for commit `c` on `(tid, ak)` (the ephemeral undo
+/// log copies it when a batch applies).
+pub(crate) fn remembered(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+    let buffer = decode_buffer(&tx.unit(tid, ak)?.undo)?.into_iter().find(|x| x.0 == *c).map(|x| x.1);
+    match buffer {
+        Some(b) if !b.is_empty() => Ok(Some(crate::engine::state::decode(&b)?)),
+        Some(_) => Ok(Some(Fragment::default())),
+        None => Ok(None),
+    }
+}
+
 /// Joins into `acc` the part of the state of `(tid, ak)` that undoing `piece` of a delta reads
 /// (`Fragment::footprint`; of a delta's pieces, their join is the delta's): a paged state loads
 /// what the piece touches, then drops it again. `acc` stays `None` while there is no state.
@@ -194,7 +205,7 @@ pub(crate) fn undo_in(tx: &mut Tx<'_>, target: CommitId, actor: Tid, ts: Option<
         tx.ensure_touch(&a.tid, &a.ak, &touch)?;
         // a nested edit reads only its own entries (by dot: `osis_crdt::undo`), on the pages
         // holding the delta's dots; the pre-commit side comes from the buffer or held bodies
-        let lo = tx.txn.counter(&a.tid, &a.ak)?;
+        let lo = tx.txn.counter(&a.tid, &a.ak, &tx.core.session.nonce)?;
         // read in place: the undo reads the current state along the delta's paths only
         let empty = Fragment::default();
         let state = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).unwrap_or(&empty);
@@ -294,7 +305,7 @@ fn unmake_one(tx: &mut Tx<'_>, (tid, ak): (Tid, Ak), ops: Vec<PathOp>, ts: Ts, o
             (d.lo, d.hi)
         }
         _ => {
-            let c = tx.txn.counter(&tid, &ak)?;
+            let c = tx.txn.counter(&tid, &ak, &crate::engine::write::nonce_of(Form::Session(tx.core.session.nonce)))?;
             (c, c)
         }
     };

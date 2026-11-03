@@ -155,8 +155,9 @@ impl Engine {
         let k = (*tid, ak.clone());
         let memory = !ak.lifetime().is_durable();
         let mut places = if memory {
+            // this session's own batches from the log; their commits are the same writes
             let mut set = self.memory_places(tid, ak);
-            set.extend(self.core.ix.by_aspect.get(&k).into_iter().flatten().map(|(ts, c)| HistoryPos { ts: *ts, id: ChangeId::Commit(*c) }));
+            set.extend(self.core.ix.by_aspect.get(&k).into_iter().flatten().filter(|(_, c)| !self.own_memory_commit(c)).map(|(ts, c)| HistoryPos { ts: *ts, id: ChangeId::Commit(*c) }));
             walk(&set, from, limit.saturating_add(1), |p| p, |p| *p)
         } else {
             let empty = BTreeSet::new();

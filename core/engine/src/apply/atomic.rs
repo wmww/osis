@@ -567,11 +567,13 @@ pub(crate) fn strip_valueless(core: &Core, tid: &Tid, ak: &Ak, st: &mut Fragment
 fn note_created(tx: &mut Tx<'_>, h: &Header, blob: &CommitBlob, parts: &[(usize, usize, Decoded)]) -> Result<bool> {
     let mut any = false;
     if h.ephemeral.is_some() {
+        let received = tx.now();
         for r in blob.parts.iter().flat_map(|p| &p.records) {
             let t = r.tid();
             if tx.core.created(&t).is_none() {
                 tx.in_class(true, |tx| Ok(tx.txn.put_local(&[records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&r.to_value()), Shred::No)?))?;
                 tx.core.ix.held.create_memory(r.clone());
+                tx.core.memory.things.insert(t, crate::engine::MemoryThing { ts: h.ts, node: h.author, actor: h.actor, received, made_here: false });
                 any = true;
             }
         }
@@ -724,9 +726,17 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         let copies: Vec<Tid> = h.aspects.iter().filter(|a| a.ak.as_str() == "secrets.0" && tx.core.ix.kept.contains_key(&a.tid)).map(|a| a.tid).collect();
         crate::rotation::mark_lost_due(tx, copies)?;
     }
-    // a memory commit is ephemeral state to watchers and nothing to node-sync
+    // a memory commit is ephemeral state to watchers (a local one's batch queues its own event,
+    // `Engine::write`) and to the ephemeral lane (`MemorySync`), nothing to the durable sync path
     if h.ephemeral.is_some() {
-        tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
+        tx.core.memory.applied.push(id);
+        if origin == Origin::Local && h.author == tx.core.id.tid() {
+            tx.core.memory.unsent.push(id);
+        }
+        tx.core.memory.dirty.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+        if origin != Origin::Local {
+            tx.core.events.queue(Event::Ephemeral { id: id.into(), origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect(), signals: Vec::new() });
+        }
     } else {
         tx.core.events.queue(Event::Applied { id, origin, author: h.author, actor: h.actor, ts: h.ts, received, changed: changed.into_iter().collect() });
     }
@@ -1131,7 +1141,15 @@ fn observe_secrets_keys(tx: &mut Tx<'_>, actor: &Tid, boxes: &[Value], history: 
 /// Keeps the indexes derived from states current: secrets opened from `secrets.0`, delete keys
 /// and keyset epochs from `keys.0`, the `was.0` and `moved.0` indexes, group definitions.
 pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
-    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "was.0" | "moved.0" | "group.0") {
+    if !matches!(ak.as_str(), "secrets.0" | "keys.0" | "was.0" | "moved.0" | "group.0" | "placed.0~") {
+        return Ok(());
+    }
+    // `placed.0~` reads field by field (an add carries no presence of the struct)
+    if ak.as_str() == "placed.0~" {
+        match tx.state(tid, ak)?.and_then(crate::ephemeral::def_of) {
+            Some(d) => tx.core.ix.placed.insert(*tid, d),
+            None => tx.core.ix.placed.remove(tid),
+        };
         return Ok(());
     }
     let v = tx.state(tid, ak)?.and_then(Fragment::read);

@@ -13,6 +13,29 @@ use osis_crdt::{Fragment, Frontiers};
 use osis_schema::core_types::is_role_class;
 use std::collections::BTreeSet;
 
+/// The state of memory aspect `(tid, ak)` a snapshot of it carries: rebuilt without the
+/// expiring deltas (an expiring memory write vanishes whole at T, spec/crdt.md §4.7: no
+/// snapshot carries it, nor counts it received, so it goes from every holder alike).
+pub(crate) fn memory_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
+    let expiring: Vec<(CommitId, Owned)> = tx
+        .core
+        .ix
+        .by_aspect
+        .get(&(*tid, ak.clone()))
+        .into_iter()
+        .flatten()
+        .filter_map(|(_, c)| {
+            let m = tx.core.ix.commits.get(c)?;
+            let ai = m.aspect(tid, ak)?;
+            m.header.aspects.get(ai)?.expires?;
+            Some((*c, Owned::of(&m.header, c, ai)?))
+        })
+        .collect();
+    let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
+    let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
+    Ok(crate::apply::rebuilt(tx, tid, ak, &gone, &skip)?.0)
+}
+
 /// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
 /// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the session-form delta
 /// whose counter range holds it, the commit-form commit it names, the imports listing that commit
@@ -154,6 +177,15 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
         return Ok(Some(false));
     }
+    // a session-form body the snapshot's frontier (indexed) does not reach: judged before either
+    // body is decoded (a memory apply weighs every held body against every held snapshot)
+    if m.header.form.counted()
+        && m.header.kind.has_own_writes()
+        && let Some(a) = m.header.aspects.get(cai)
+        && tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|x| x.1 == *s && unseen_by(&x.2, &m.header, c, a.hi))
+    {
+        return Ok(Some(false));
+    }
     let held = crate::apply::held_parts(tx, c, cai)?;
     let is_snapshot = m.header.kind.is_compaction();
     let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
@@ -293,12 +325,7 @@ impl Engine {
                 })
                 .collect();
             let st = if memory {
-                // an expiring memory write vanishes whole at T (spec/crdt.md §4.7): no snapshot
-                // carries it, nor counts it received, so it goes from every holder alike
-                let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
-                let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
-                let (st, _) = crate::apply::rebuilt(tx, &tid, &ak, &gone, &skip)?;
-                let Some(st) = st else { return Ok(None) };
+                let Some(st) = memory_state(tx, &tid, &ak)? else { return Ok(None) };
                 st
             } else {
                 let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
@@ -384,6 +411,50 @@ impl Engine {
             };
             let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
             let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
+            build_and_apply(tx, plan, vec![d]).map(Some)
+        })
+    }
+
+    /// Writes a memory snapshot of `(tid, ak)` carrying only the join of this node's own unsent
+    /// plain commits `ids` on it (spec/commits.md §2, the coalescing snapshot): its frontier
+    /// reaches the last of their counters, so it covers exactly them (and nothing another
+    /// session wrote, which joining would change). One entry goes up per round trip instead of
+    /// one per write; the covered commits are forgotten here at once (`drop_covered`) and never
+    /// uploaded. `None` when nothing of them is held.
+    pub fn coalesce(&mut self, tid: &Tid, ak: &Ak, ids: &[CommitId]) -> Result<Option<CommitId>> {
+        let (tid, ak) = (*tid, ak.clone());
+        let ids = ids.to_vec();
+        self.run(|tx| {
+            tx.set_memory();
+            let node = tx.core.id.tid();
+            let ts = tx.core.hlc.next();
+            let own = osis_crdt::Source::session(tx.core.session);
+            let mut st: Option<Fragment> = None;
+            let mut hi = 0u64;
+            for c in &ids {
+                let Some(m) = tx.core.ix.commits.get(c).cloned() else { continue };
+                let Some(ai) = m.aspect(&tid, &ak).filter(|ai| m.holds(*ai)) else { continue };
+                if m.header.form != Form::Session(tx.core.session.nonce) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()) {
+                    return Err(Error::Misuse("coalescing takes this session's plain commits"));
+                }
+                hi = hi.max(m.header.aspects.get(ai).map_or(0, |a| a.hi));
+                for f in crate::apply::held_fragments(tx, c, ai)? {
+                    st.get_or_insert_with(Fragment::default).join(f);
+                }
+            }
+            let Some(st) = st else { return Ok(None) };
+            let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
+            let traced = osis_crdt::sources_of(&st, &osis_commit::writer_ctx(Form::Commit, kind, ts, node, 0, 0))?;
+            let mut frontiers = Frontiers::default();
+            if hi > 1 {
+                frontiers.insert(&own, hi - 1);
+            }
+            frontiers.retain(&traced);
+            let retention = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() };
+            let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
+            let records = crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter());
+            let plan = CommitPlan { kind, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, std::collections::BTreeMap::new())), chunks: Vec::new(), split: false, records };
             build_and_apply(tx, plan, vec![d]).map(Some)
         })
     }
