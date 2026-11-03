@@ -1645,7 +1645,7 @@ fn unmerge_sees_undelete_char_of_bare_record_spec_4_7() {
 // the records with its dots, not the sequence: a `covered` costs about the body's records.
 #[test]
 fn part_at_a_sequence_is_the_deltas_records() {
-    let src = Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let src = sess(osis_base::Tid::from_bytes([1; 15]));
     let dot = |ctr: u64| Dot { src: src.clone(), ctr };
     let rec = |ctr: u64| {
         let st = Stamp { ts: ts(ctr + 1), dot: dot(ctr) };
