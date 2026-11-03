@@ -2,12 +2,12 @@
 //! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
 //! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
 //! end alike: faults and writes, when each upload, deposit and registration first reached each
-//! host (`osis_sim::net::with_arrivals`), and what each node and host ends up with
-//! (`Report::parts`). Not every message: a pass the work sets leave out saves what it would have
-//! sent again, and the sim's dice do not look at what is sent (`osis_sim::net`). Not blob IDs, the
-//! copy of a commit that stayed (the lower ID) or log order within a moment: all are the luck of
-//! the order a pass drew from its random stream. A trigger the work sets miss shows as a later
-//! arrival.
+//! host and when a delete took a host's last copy of a commit (`osis_sim::net::with_arrivals`),
+//! and what each node and host ends up with (`Report::parts`). Not every message: a pass the work
+//! sets leave out saves what it would have sent again, and the sim's dice do not look at what is
+//! sent (`osis_sim::net`). Not blob IDs, the copy of a commit that stayed (the lower ID), how many
+//! deletes that took or log order within a moment: all are the luck of the order a pass drew from
+//! its random stream. A trigger the work sets miss shows as a later arrival or a later delete.
 
 use osis_sim::net::{Arrivals, with_arrivals, with_full_passes};
 use osis_sim::{Failure, Report, replay};
@@ -32,7 +32,9 @@ fn parted((work, at): (&Report, &Arrivals), (full, ref_at): (&Report, &Arrivals)
     if counters(work) != counters(full) {
         out.push(format!("counters: work sets {:?}, full passes {:?}", counters(work), counters(full)));
     }
-    if work.sent > full.sent {
+    // only of runs alike to the bit: another seal order alone moves the count, by a hundred
+    // messages in a run (`compared_runs_ignore_the_random_stream`)
+    if work.digest == full.digest && work.sent > full.sent {
         out.push(format!("work sets send more: {} against {}", work.sent, full.sent));
     }
     let names: std::collections::BTreeSet<_> = work.parts.keys().chain(full.parts.keys()).collect();

@@ -272,6 +272,31 @@ mod tests {
         assert_eq!(e.get(&g, &ak("t:m.0~")).unwrap(), None);
     }
 
+    // spec/commits.md §6: an HLC ahead of the clock (a peer's fast clock read, here the clock set
+    // back) has passed a short expiry: the write goes through, expiring just after its `ts`.
+    #[test]
+    fn short_expiry_behind_hlc_is_raised_spec_commits_6() {
+        let mut lp = LocalPeer::new(1, 955, WallMs(1_700_000_000_000)).unwrap();
+        let e = &mut lp.peers[0].engine;
+        let me = e.tid();
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, me);
+        m.set(g, &ak("t:reg.0"), &Value::Str("g".into())).unwrap();
+        e.commit(m).unwrap();
+        e.set_clock_offset(-60_000);
+        let mut m = Mutation::new();
+        m.set(g, &ak("t:m.0"), &Value::Str("typing".into())).unwrap();
+        m.expires(g, &ak("t:m.0"), WallMs(e.now().0 + 5_000)).unwrap();
+        let c = e.commit(m).unwrap().unwrap();
+        let h = e.header(&c).unwrap();
+        assert_eq!(h.aspects.iter().find_map(|a| a.expires), Some(h.ts.wall_ms().0 + 1));
+        assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), Some(Value::Str("typing".into())));
+        lp.advance(60_002);
+        let e = &mut lp.peers[0].engine;
+        e.tick().unwrap();
+        assert_eq!(e.get(&g, &ak("t:m.0")).unwrap(), None);
+    }
+
     // review (eph-unify-a): a memory body is never dropped for its keep-at-most bound, so its
     // header (and expiry timer) is never forgotten while its live writes stay in the state; they
     // vanish at its expiry. spec: none (internal)

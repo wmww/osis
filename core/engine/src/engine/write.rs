@@ -191,7 +191,8 @@ impl Mutation {
         Ok(self)
     }
 
-    /// Expiry T (wall ms) for this aspect's delta (spec/commits.md §6).
+    /// Expiry T (wall ms) for this aspect's delta, raised to just after the commit's `ts` if that
+    /// has passed it (spec/commits.md §6).
     pub fn expires<K: AspectKey>(&mut self, tid: Tid, key: &K, t: WallMs) -> Result<&mut Self> {
         self.entry(tid, key)?.expires = Some(t.0);
         Ok(self)

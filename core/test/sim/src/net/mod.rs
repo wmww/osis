@@ -7,11 +7,11 @@
 //! durable state; a host may lose its data; a node may lose its disk (recovery from the card).
 //! Hosts replicate to their peers (push).
 //!
-//! No roll depends on what was sent, so a message more or less moves nothing else
-//! (`work_sets`): each step has its own `Dice`; the network runs on its own clock (`net`), moved
-//! only by deliver steps, a stream's messages going at release times keyed by (link, direction,
-//! bucket) and links cut at times keyed by (link, bucket); boots and duplicates have keys of
-//! their own.
+//! No roll depends on what was sent, so in compared runs (`work_sets`) a message more or less
+//! moves nothing else: each step has its own `Dice`; the network runs on its own clock (`net`),
+//! moved only by deliver steps, a stream's messages going at release times keyed by (link,
+//! direction, bucket) and links cut at times keyed by (link, bucket); boots and duplicates have
+//! keys of their own. Other runs deliver one message a deliver step, so a burst is taken apart.
 
 pub mod adversary;
 pub mod check;
@@ -115,10 +115,11 @@ pub fn with_other_stream<T>(f: impl FnOnce() -> T) -> T {
     r
 }
 
-/// When each upload, deposit and registration first reached each host: (host, label, what, 'U',
-/// 'P' or 'R') -> virtual ms (`with_arrivals`). What: a commit blob by its commit and parts, a step
-/// by its ID, anything else by its size: a blob's ID is the luck of when its sealing drew from the
-/// node's random stream. No deletes: which copies of a commit go, and how many, is that luck too.
+/// When each upload, deposit and registration first reached each host, and when a delete took
+/// its last copy of a commit: (host, label, what, 'U', 'P', 'R' or 'G') -> virtual ms
+/// (`with_arrivals`). What: a commit blob by its commit and parts, a step by its ID, anything else
+/// by its size: a blob's ID is the luck of when its sealing drew from the node's random stream.
+/// Not each delete: which copies of a commit go, and how many, is that luck too; a 'G' has no label.
 pub type Arrivals = BTreeMap<(usize, LabelId, Vec<u8>, char), u64>;
 
 thread_local! {
@@ -130,6 +131,11 @@ pub fn with_arrivals<T>(f: impl FnOnce() -> T) -> (T, Arrivals) {
     ARRIVALS.with(|a| *a.borrow_mut() = Some(Arrivals::new()));
     let r = f();
     (r, ARRIVALS.with(|a| a.borrow_mut().take()).unwrap_or_default())
+}
+
+/// Whether this run is one of two compared by their arrivals (`work_sets`).
+fn compared() -> bool {
+    ARRIVALS.with(|a| a.borrow().is_some())
 }
 
 fn note_arrivals(names: &BTreeMap<osis_base::BlobId, Vec<u8>>, s: usize, at: u64, bytes: &[u8]) {
@@ -541,8 +547,8 @@ impl NetSim {
     pub fn add_node_with(&mut self, mut cfg: SyncConfig, mut spec: ClockSpec) -> Res<usize> {
         cfg.full_passes |= FULL_PASSES.with(|x| x.get());
         // a drifting clock corrected by pings moves with when they went, and they go when a
-        // session has been quiet: runs compared by their arrivals drift not
-        if ARRIVALS.with(|a| a.borrow().is_some()) {
+        // session has been quiet: compared runs drift not
+        if compared() {
             spec.drift_ppm = 0;
         }
         let i = self.nodes.len();
@@ -662,7 +668,7 @@ impl NetSim {
             match a {
                 Action::Dial { conn, address } => self.dial(n, conn, &address)?,
                 Action::Send { conn, bytes } => {
-                    if ARRIVALS.with(|a| a.borrow().is_some()) {
+                    if compared() {
                         self.note_names(n, &bytes);
                     }
                     if let Some(x) = self.nodes.get_mut(n) {
@@ -696,6 +702,35 @@ impl NetSim {
             }
         }
         Ok(())
+    }
+
+    /// A host just took `bytes`: what they delete of which it now holds no copy under any label
+    /// goes in `Arrivals` as 'G', when a delete took effect, whichever copy went last.
+    fn note_gone(&self, s: usize, bytes: &[u8]) {
+        use osis_proto::{LabelStore, Message as M};
+        if !compared() {
+            return;
+        }
+        let Some(hub) = self.hosts.get(s).and_then(|x| x.hub.as_ref()) else { return };
+        let mut d = osis_proto::FrameDecoder::default();
+        d.push(bytes);
+        while let Ok(Some(f)) = d.next_frame() {
+            let items: Vec<_> = match M::decode(&f) {
+                Ok(M::Delete { items, .. }) => items,
+                Ok(M::Upload { entries, .. }) => entries.into_iter().flat_map(|e| e.replaces).collect(),
+                _ => continue,
+            };
+            for name in items.iter().filter_map(|i| self.names.get(&i.blob)) {
+                let held = hub.store().labels_after(None, 4096).unwrap_or_default().into_iter().any(|l| hub.store().live_ids(&l).unwrap_or_default().iter().any(|b| self.names.get(b) == Some(name)));
+                if !held {
+                    ARRIVALS.with(|a| {
+                        if let Some(a) = a.borrow_mut().as_mut() {
+                            a.entry((s, LabelId([0; 16]), name.clone(), 'G')).or_insert(self.elapsed);
+                        }
+                    });
+                }
+            }
+        }
     }
 
     /// Names the commit blobs among what node `n` is sending (`Arrivals`), from its entries.
@@ -802,7 +837,7 @@ impl NetSim {
         }
         if !self.calm
             && let Payload::Bytes(b) = &what
-            && Dice::keyed(self.seed, "dup", &[id, dir as u64, at]).pct(self.cfg.faults.dup_pct)
+            && Dice::keyed(self.seed, "dup", &[id, dir as u64, if compared() { at } else { self.seq }]).pct(self.cfg.faults.dup_pct)
         {
             self.report.duplicated = self.report.duplicated.saturating_add(1);
             let copy = Payload::Bytes(b.clone());
@@ -1113,7 +1148,8 @@ impl NetSim {
             (End::Node(n, c), Payload::Bytes(b)) if alive => self.feed(n, Event::Bytes { conn: c, bytes: b })?,
             (End::Hub(s, hc), Payload::Bytes(b)) if alive => {
                 note_arrivals(&self.names, s, self.elapsed, &b);
-                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b)).unwrap_or_default();
+                let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b.clone())).unwrap_or_default();
+                self.note_gone(s, &b);
                 self.hub_out(s, out)?;
             }
             _ => {}
@@ -1141,8 +1177,11 @@ impl NetSim {
         self.advance(dt)?;
         let seq = self.seq;
         let mut cuts = self.cuts_between(from, until);
+        // compared, all that is due goes: which of a burst a later event caught would depend on what
+        // else was sent. Otherwise a message a step, so events and cuts fall inside a burst.
+        let mut more = true;
         loop {
-            let k = self.next_head(until, seq);
+            let k = self.next_head(until, seq).filter(|_| more);
             let due = k.and_then(|k| self.queue.get(k)).map(|m| m.at);
             match (cuts.first().copied(), k) {
                 (Some((t, id)), _) if due.is_none_or(|d| t <= d) => {
@@ -1153,7 +1192,10 @@ impl NetSim {
                         self.cut(id);
                     }
                 }
-                (_, Some(k)) => self.deliver(k)?,
+                (_, Some(k)) => {
+                    self.deliver(k)?;
+                    more = compared();
+                }
                 _ => return Ok(()),
             }
         }
@@ -1761,24 +1803,48 @@ mod tests {
     #[test]
     fn one_more_message_moves_nothing_else_spec_sync_6() {
         let run = |extra: bool| {
+            with_arrivals(|| {
+                let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+                sim.calm = false;
+                let to = End::Node(0, 1);
+                sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2] });
+                sim.links.insert(2, Link { dialer: End::Node(0, 2), acceptor: End::Node(1, 2), last: [0; 2] });
+                let mut out = Vec::new();
+                for i in 0..40u8 {
+                    if extra {
+                        sim.send(1, to, Payload::Bytes(vec![0, i]));
+                    }
+                    sim.send(1, to, Payload::Bytes(vec![1, i]));
+                    let m = sim.queue.iter().find(|m| matches!(&m.what, Payload::Bytes(b) if *b == vec![1, i]));
+                    out.push(m.map(|m| m.at));
+                    sim.step().unwrap();
+                }
+                (out, sim.elapsed, sim.net, sim.report.dropped, sim.links.len())
+            })
+            .0
+        };
+        assert_eq!(run(false), run(true));
+    }
+
+    // spec/sync.md §6 (ordered streams): a burst goes whole in compared runs and a message a step
+    // in others, so an event or a cut can fall inside it there (or a sweep never sees part of one).
+    #[test]
+    fn a_burst_parts_unless_compared_spec_sync_6() {
+        let left_at_first = || {
             let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
             sim.calm = false;
             let to = End::Node(0, 1);
             sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2] });
-            sim.links.insert(2, Link { dialer: End::Node(0, 2), acceptor: End::Node(1, 2), last: [0; 2] });
-            let mut out = Vec::new();
-            for i in 0..40u8 {
-                if extra {
-                    sim.send(1, to, Payload::Bytes(vec![0, i]));
-                }
-                sim.send(1, to, Payload::Bytes(vec![1, i]));
-                let m = sim.queue.iter().find(|m| matches!(&m.what, Payload::Bytes(b) if *b == vec![1, i]));
-                out.push(m.map(|m| m.at));
-                sim.step().unwrap();
+            for i in 0..8u8 {
+                sim.send(1, to, Payload::Bytes(vec![i]));
             }
-            (out, sim.elapsed, sim.net, sim.report.dropped, sim.links.len())
+            while sim.queue.len() == 8 {
+                sim.deliver_step().unwrap();
+            }
+            sim.queue.len()
         };
-        assert_eq!(run(false), run(true));
+        assert_eq!(left_at_first(), 7);
+        assert_eq!(with_arrivals(left_at_first).0, 0);
     }
 
     // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due
