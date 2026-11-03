@@ -1,7 +1,0 @@
-# A session's bodies behind a permanently invalid one are never covered
-> Summary: a memory snapshot's frontier stops below an invalid body of a session (`frontiers_now`), so after a node is demoted and granted again within one run, its later valid bodies pile up uncovered at every holder and host until it restarts; bounded by the caps, cleared by its restart. Own covers listed absorbed commits by ID and had no such hole.
-> Tags: ephemeral, engine, growth
-
-A snapshot must not claim (by frontier) a write it does not carry, and an invalid body may turn valid later (a grant arriving), so a session's frontier stops below its first invalid or missing body. Transient holes close (the grant arrives, the missing body is fetched). A permanent one: a demotion's frontier lists no ephemeral commit, so a demoted node's earlier bodies are invalid for good; granted again within the same run, its later bodies are valid but behind the hole, held uncovered at every holder (within the node and host caps; `held_cost` leaves them out of the trigger). The stated limit is in spec/sync.md §9 Compaction.
-
-Simple fix if wanted: a node whose own memory write turns invalid (`validity.rs` `own_fell`, diagnostic `OwnWriteInvalid`) starts fresh sessions (plain and expiring nonces), so what it writes after a regrant has no hole; the undo log's `own_sources` would have to keep the earlier nonces of the run, and the rng draw moves later tids for seed-pinned tests in demotion scenarios only.

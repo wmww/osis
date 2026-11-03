@@ -26,7 +26,7 @@ impl Engine {
     /// the log as the batch that made it, not as a commit) or a compaction snapshot this node
     /// wrote (no change).
     pub(crate) fn own_memory_commit(&self, c: &osis_base::CommitId) -> bool {
-        self.core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.view.author == self.tid() && (m.view.kind.is_compaction() || matches!(m.view.form, osis_commit::Form::Session(n) if n == self.core.session.nonce || n == self.core.expiring.nonce)))
+        self.core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.view.author == self.tid() && (m.view.kind.is_compaction() || matches!(m.view.form, osis_commit::Form::Session(n) if self.core.own_session(&n))))
     }
 
     /// The places of this session's own batches on `(tid, ak)`.

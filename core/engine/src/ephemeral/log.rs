@@ -145,11 +145,9 @@ impl Log {
 
     /// Whether undo may step back through the write stamped `s` into `(tid, ak)` (spec/crdt.md
     /// §4.6, `Undone::restored`): written by a logged revert in effect, with every logged change
-    /// of the aspect after entry `after` out of effect.
-    fn restored(&self, s: &Stamp, own: &[Source], tid: &Tid, ak: &Ak, after: usize, undoers: &BTreeMap<ChangeId, Vec<ChangeId>>) -> bool {
-        if !own.contains(&s.dot.src) {
-            return false;
-        }
+    /// of the aspect after entry `after` out of effect. The log holds own writes only, of any
+    /// session of this open (`Core::fresh_session`).
+    fn restored(&self, s: &Stamp, tid: &Tid, ak: &Ak, after: usize, undoers: &BTreeMap<ChangeId, Vec<ChangeId>>) -> bool {
         let touches = |e: &Entry| e.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak);
         let Some(by) = self.entries.iter().find(|e| e.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && a.src == s.dot.src && a.range.contains(s.dot.ctr))) else { return false };
         by.reverts.is_some() && in_effect(&by.id, undoers) && self.entries.iter().skip(after + 1).filter(|e| touches(e)).all(|e| e.reverts.is_some() || !in_effect(&e.id, undoers))
@@ -225,7 +223,7 @@ impl Engine {
         if let ChangeId::Ephemeral(e) = id
             && at.is_none()
         {
-            return if e.session == self.core.session.nonce && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
+            return if self.core.own_plain(&e.session) && e.n <= self.eph.batches { Ok(Reverted::Compacted) } else { Err(Error::Misuse("no undo log for this ephemeral change (another node's, or from before a restart)")) };
         }
         // undoing a creation deletes the thing, undoing that brings it back (spec/crdt.md §4.6):
         // the things a commit created are deleted by its undo commit, their ephemeral side here;
@@ -297,7 +295,10 @@ impl Engine {
                 if deltas.is_empty() {
                     continue;
                 }
-                let nonce = if expiring { tx.core.expiring.nonce } else { tx.core.session.nonce };
+                // the sessions the inverse writes were stamped under (a fresh session begun
+                // meanwhile, `Core::fresh_session`, takes the next batch)
+                let [plain, exp] = &own;
+                let nonce = if expiring { exp } else { plain }.as_session().map(|s| s.nonce).unwrap_or_default();
                 let plan = CommitPlan { kind: Kind::Content, ts, actor, form: Form::Session(nonce), creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
                 memory.push(tx.in_class(true, |tx| crate::engine::write::build_and_apply(tx, plan, deltas))?);
             }
@@ -322,11 +323,11 @@ impl Engine {
         if let Some(e) = core.write_expiry(tid, ak, d) {
             return e;
         }
-        // no commit holds the write: one of this session's plain writes never expires (its
+        // no commit holds the write: a plain write of this open's sessions never expires (its
         // commit was covered by a snapshot, or reverted); any other session write whose commit
         // is gone expired or was superseded (spec/crdt.md §4.7)
         match d.src.author().kind() {
-            osis_crdt::SourceKind::Session(s) if s.nonce == core.session.nonce => None,
+            osis_crdt::SourceKind::Session(s) if core.own_plain(&s.nonce) => None,
             osis_crdt::SourceKind::Session(_) => Some(0),
             _ => None,
         }
@@ -348,7 +349,7 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
             let nonce = nonce_of(Form::Session(src.as_session().map(|s| s.nonce).unwrap_or_default()));
             let lo = tx.txn.counter(&la.tid, &la.ak, &nonce)?;
             let w = Writer::new(ts, src.clone(), lo);
-            let restored = |s: &Stamp| log.restored(s, own, &la.tid, &la.ak, at, &undoers);
+            let restored = |s: &Stamp| log.restored(s, &la.tid, &la.ak, at, &undoers);
             let undone = Undone { delta: &la.delta, source: &la.src, range: la.range, restored: &restored };
             let core = &*tx.core;
             let expiry = |d: &Dot| Engine::copied_expiry(core, &la.tid, &la.ak, d);

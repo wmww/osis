@@ -1055,11 +1055,14 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     let me = tx.core.id.tid();
     let mut own_fell: Vec<(CommitId, Vec<Tid>)> = Vec::new();
+    let mut fresh = false;
+    let current = [tx.core.session.nonce, tx.core.expiring.nonce];
     for (id, now) in news {
         let Some(m) = tx.core.ix.commits.get_mut(&id) else { continue };
         let h = m.header.clone();
         if h.author == me && h.kind.has_own_writes() && m.valid.iter().zip(&now).any(|(a, b)| *a && !*b) {
             own_fell.push((id, h.aspects.iter().map(|a| a.tid).collect::<BTreeSet<_>>().into_iter().collect()));
+            fresh |= matches!(h.form, osis_commit::Form::Session(n) if current.contains(&n));
         }
         for (ai, (a, b)) in m.valid.iter().zip(&now).enumerate() {
             if a != b
@@ -1091,6 +1094,11 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         tx.core.mark_changed(id);
     }
     drop(judge);
+    // an own write of the current sessions fell: later writes go under fresh ones, past the hole
+    // (`Core::fresh_session`)
+    if fresh {
+        tx.core.fresh_session();
+    }
     let at = tx.now();
     for (id, tids) in own_fell {
         tx.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::OwnWriteInvalid, tids, commit: Some(id), peer: None, detail: "a write of this node turned invalid".into() }, at);
