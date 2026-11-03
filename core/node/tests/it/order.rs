@@ -1148,6 +1148,8 @@ struct Oracle {
     /// against what the node's own held set gives, or against the oracle's final date where that
     /// is earlier: before taking, it played the taken commits' writes at their snapshot's `ts`, not
     /// their own, which the node uses (spec/crdt.md §4.8; seed 9410015). None before: not judged.
+    /// A gap: a taken commit's write on the aspect that no held snapshot copies may date the final
+    /// one before the node's due date, which then lets a node's early date in between pass.
     took: Deaths,
     /// `register_deaths`: bodies judged and how many died, or the first mismatch.
     registers: Result<(u64, u64), String>,
