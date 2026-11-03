@@ -32,6 +32,8 @@ pub trait Internals {
     fn port_panic_next(&self, after_call: bool);
     /// The sync driver task panics at its next control (inside an engine call, under the lock).
     fn panic_driver(&self);
+    /// On an attached handle (the one hook that wants one): its connection thread panics.
+    fn panic_client_thread(&self);
     /// Pads the next pairing reply the port sends by `n` bytes.
     fn port_pad_pair_reply(&self, n: usize);
     /// Runs `f` between each local write's route and its lock.
@@ -72,6 +74,9 @@ impl Internals for Osis {
     fn panic_driver(&self) {
         here(self);
         self.inner.net.panic_driver();
+    }
+    fn panic_client_thread(&self) {
+        Osis::panic_client_thread(self);
     }
     fn port_pad_pair_reply(&self, n: usize) {
         self.inner.port.pad_pair_reply.store(n, std::sync::atomic::Ordering::Release);
