@@ -4457,10 +4457,9 @@ fn drops_alike_undeleted_char_after_reopen_spec_crdt_5_7() {
 
 // spec/crdt.md §4.6, §4.7, seed 7340007 of `arrival_order_alike_large`: 2 puts k0 with its expiry
 // past (held value-less: the record is key-erased), then is demoted; 1 puts into k0 (its body
-// names the record by key) and 0's valid snapshot holds the key-erased record. A dot held
-// value-less has one record, so the snapshot's copy keeps 1's valid writes in it whichever of
-// 2's expired delta, 1's put, the demotion and the snapshot came first, and on arrival of the
-// expired delta before `retention::on_apply` lists it value-less.
+// names the record by key) and 0's valid snapshot holds the key-erased record. A key-erased
+// record keeps every record of its dot, so it keeps 1's valid writes whichever of 2's expired
+// delta, 1's put, the demotion and the snapshot came first.
 #[test]
 fn expired_record_keeps_keyed_valid_writes_seed_7340007_spec_crdt_4_6() {
     use Step::*;
@@ -4497,4 +4496,39 @@ fn nested_write_dies_under_unmerged_record_seed_52040_spec_crdt_4_8() {
 /// The thing an aspect `ak` is written on in `played` (one thing per aspect name in a history).
 fn tid_of(played: &Played, ak: &str) -> Tid {
     played.packs.iter().find_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()?.header.aspects.iter().find(|a| a.ak.as_str() == ak).map(|a| a.tid)).unwrap()
+}
+
+// spec/crdt.md §4.6, §4.7: 2 puts k0 expiring in a second, 1 writes inside it, 0 passes the
+// expiry and compacts (its copy of 2's record key-erased), then demotes 2 below the put. A node
+// that held all of it before the expiry and one given it after read alike once both are past
+// it: the key-erased copy keeps 1's write whether or not the node holds 2's put value-less yet
+// (no rebuild runs when it goes value-less).
+#[test]
+fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
+    use Step::*;
+    let h = vec![
+        Write { by: 2, t: 0, op: 28, k: 0, v: 0 },
+        Sync { from: 2, to: 0 },
+        Sync { from: 2, to: 1 },
+        Write { by: 1, t: 0, op: 4, k: 0, v: 5 },
+        Advance { who: Some(0), ms: 2000 },
+        Compact { by: 0, t: 0, op: 3 },
+        Demote { by: 0, t: 0, holder: 2, at: 0, to_read: false },
+        Sync { from: 1, to: 0 },
+    ];
+    let played = play(1, &h);
+    let all: Vec<usize> = (0..played.packs.len()).collect();
+    let mut after = deliver(&played, &all);
+    let mut before = Peer::new(FRESH, T0).unwrap();
+    for pk in &played.packs {
+        let _ = before.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    before.clock.set(played.now);
+    before.engine.tick().unwrap();
+    let (a, b) = (judged_now(&mut after, &played.things), judged_now(&mut before, &played.things));
+    let map = |j: &Judged, i: usize| j.parts[i].1.lines().filter(|l| l.contains(" t:map.0 ")).collect::<Vec<_>>().join("\n");
+    for i in 0..2 {
+        assert_eq!(map(&a, i), map(&b, i), "{}", a.parts[i].0);
+    }
+    assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
 }
