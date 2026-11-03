@@ -165,7 +165,9 @@ pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai
             }
             for mut f in crate::apply::held_fragments(tx, &s, sai)? {
                 f.remove_writes(&|d| !o.owns(d));
-                bodies.push(f);
+                if f != Fragment::default() {
+                    bodies.push(f);
+                }
             }
         }
     }
