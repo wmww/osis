@@ -390,11 +390,11 @@ impl Engine {
 
     /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
     /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
-    /// unchanged, and the snapshot's frontier for a session-form body's session, when it lists
-    /// one, holds its counters (a session it does not list left no write in it, spec/crdt.md
-    /// §8, so every holder of the snapshot counts the dropped body's delta as listed in atomic
-    /// apply). A carrier only covers none, nor does a snapshot cover one stamped later. `None`
-    /// when either is not held (nothing is established).
+    /// unchanged, whatever its tables say. A body not held here: covered, unless the snapshot's
+    /// frontier lists its session short of its counters, so a body dropped here as covered past
+    /// a gap reads uncovered from then on (`Dropped::covered_by` keeps what covered it). A carrier
+    /// only covers none, nor does a snapshot cover one stamped later. `None` when either is not
+    /// held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {
