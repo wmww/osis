@@ -203,6 +203,9 @@ fn rejects_non_canonical_forms_spec_3_3() {
     rejects(&delta(vec![], vec![], set_with(vec![elem(i(4), 1), elem(i(3), 2)])), &wcx(), ErrorClass::BadInput);
     // a source the fragment does not use
     rejects(&delta(vec![Value::Bytes(vec![9; 31])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
+    // a source entry of neither 31 nor 32 bytes (a bare tid)
+    let e = decode_delta(&delta(vec![Value::Bytes(vec![9; 15])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), &mut Interner::new(), None).unwrap_err();
+    assert!(e.to_string().contains("source length"), "{e}");
     // the own source repeated in Sources
     let own = sess_value(tid(1));
     rejects(&delta(vec![own], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
@@ -213,10 +216,11 @@ fn rejects_non_canonical_forms_spec_3_3() {
 
 #[test]
 fn rejects_foreign_stamps_in_writer_delta_spec_3_3() {
-    let src = Value::Bytes(vec![9; 15]);
+    let src = sess_value(tid(9));
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(1)])])])];
     let f = l(vec![i(0), l(vec![]), i(1), i(1)]);
-    rejects(&delta(vec![src], commits, f), &wcx(), ErrorClass::BadInput);
+    let e = decode_delta(&delta(vec![src], commits, f), &wcx(), &mut Interner::new(), None).unwrap_err();
+    assert!(e.to_string().contains("foreign stamps"), "{e}");
 }
 
 #[test]

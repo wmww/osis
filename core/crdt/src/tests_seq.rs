@@ -984,7 +984,8 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
     assert_eq!(records(&deleted), len as usize, "a range write splits nothing into a per-element state");
     for (what, f) in [("bare", &bare), ("deleted", &deleted)] {
         let bytes = snapshot_of(f);
-        assert!(bytes.len() < 150, "{what}: {} bytes", bytes.len());
+        // `deleted` is 138 bytes, 66 of them its two session sources
+        assert!(bytes.len() < 144, "{what}: {} bytes", bytes.len());
         let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
         assert_eq!(records(&back), 1, "{what}");
         assert_eq!(back, as_carried(f), "{what}");
