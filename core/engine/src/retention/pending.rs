@@ -1,7 +1,8 @@
 //! Parts held while their commit waits (spec/commits.md §5): past their expiry they go, named by a
 //! held purge request they are held value-less.
 
-use super::{DropFor, T_EXPIRY, drop_part_for, known_purged, make_valueless, suspect};
+use crate::engine::DropFor;
+use super::{T_EXPIRY, drop_part_for, known_purged, make_valueless, suspect};
 use crate::engine::records;
 use crate::engine::{Owned, Tx};
 use crate::error::{Error, Result};
@@ -21,7 +22,7 @@ pub(crate) fn pending_expired(tx: &Tx<'_>, h: &Header, ai: usize) -> bool {
 /// as never received (spec/commits.md §5: no copy past T): they leave the stored copy before it
 /// is kept, and their aspects are flagged suspect (`suspect`: their non-value writes never join
 /// here, where a node that applied them before T keeps them). The others get a timer doing the
-/// same at T (`expire`). One a held purge request names is held value-less instead
+/// same at T (`hold_valueless`). One a held purge request names is held value-less instead
 /// (`strip_purged`), as an applied one is: the request is a held commit, so nodes holding the same
 /// commits read alike; one applied later wakes the commit (`on_apply`). A header whose aspects
 /// are not resolved yet is judged once they are. The commit's other parts apply when they would
@@ -173,7 +174,7 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 }
 
 /// Part `ai` of the stored pending copy of `c` (waiting or parked), if any, goes (`pending_drops`,
-/// `expire`), flagged suspect (`flag`); node-sync then forgets the blobs holding it
+/// `hold_valueless`), flagged suspect (`flag`); node-sync then forgets the blobs holding it
 /// (`mark_changed`).
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool) -> Result<()> {
     // also of a commit no longer pending: `apply::pend_aside` judges its parts after `unpend`

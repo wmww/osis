@@ -87,7 +87,7 @@ fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: Wall
     let Some(m) = tx.core.ix.commits.get(c) else { return Ok(false) };
     let Some(ai) = m.aspect(tid, ak) else { return Ok(false) };
     if let Some(d) = m.dropped.get(&ai) {
-        return Ok(d.as_cover && crate::retention::coverers(tx.core, c, ai).iter().all(|s| by_then(tx.core, s)));
+        return Ok(d.as_cover() && crate::retention::coverers(tx.core, c, ai).iter().all(|s| by_then(tx.core, s)));
     }
     if m.missing.contains(&ai) {
         return Ok(false);

@@ -85,6 +85,23 @@ pub struct Meta {
     pub missing: BTreeSet<usize>,
 }
 
+/// Why a part dropped, where that decides whether it can come back.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DropFor {
+    /// For its bounds or expiry.
+    #[default]
+    Other,
+    /// As covered (compaction, `Engine::drop_body`, with a coverer): it comes back as missing once
+    /// no coverer carries it.
+    Cover,
+    /// For breaking the thing's required retention (`Engine::drop_broken`): it comes back as missing
+    /// when it turns valid.
+    Broke,
+    /// For a purge request (`retention::rejudge_purges`): it comes back as missing when no held
+    /// request drops it any more. A delta with own writes is also in the value-less list.
+    Purge,
+}
+
 /// What a dropped part keeps in its commit record (spec/commits.md §5).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Dropped {
@@ -92,13 +109,11 @@ pub struct Dropped {
     /// writes are its writes (`apply::rebuild`); once none carries it, a part dropped as
     /// covered is missing again (`retention::uncover`).
     pub covered_by: BTreeSet<CommitId>,
-    /// Dropped as covered (compaction, `Engine::drop_body`, with a coverer), not for its bounds,
-    /// a purge or expiry: only these come back as missing.
-    pub as_cover: bool,
+    pub why: DropFor,
     /// A compaction snapshot whose body had a write in the state when dropped (what it carried
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
-    /// A compaction snapshot dropped other than as covered (never with `as_cover`: a covered
+    /// A compaction snapshot dropped other than as covered (never as covered: a covered
     /// one's coverers reach them): the frontiers and `Absorbed` its body had (counters and IDs,
     /// no content), which still stand in for the deltas they list in atomic apply
     /// (`receipt::listed`; indexed by `ix.dropped_snapshots`).
@@ -107,12 +122,6 @@ pub struct Dropped {
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
     pub overreach: bool,
-    /// Dropped for breaking the thing's required retention (`retention::drop_broken`): it comes
-    /// back as missing when it turns valid.
-    pub broke: bool,
-    /// Dropped for a purge request (`retention::rejudge_purges`): it comes back as missing when
-    /// no held request drops it any more. A delta with own writes is also in the value-less list.
-    pub purged: bool,
     /// The keysets a `keys.0` body wrote (`apply::keys::keysets_of`): each role's epoch and the
     /// epochs it lists as superseded. A role commit's are `epoch_intro` candidates (which commit
     /// introduced an epoch is a judgment the box judgement of a holder actor's keyset needs); every valid one's count in
@@ -122,6 +131,12 @@ pub struct Dropped {
     /// grant's, spec/crypto.md §4): what the part was judged to carry stays (spec/commits.md
     /// §5), so a boxer of their holder still holds them (`rotation::departures::grant_names`).
     pub names: Vec<NamesRec>,
+}
+
+impl Dropped {
+    pub(crate) fn as_cover(&self) -> bool {
+        self.why == DropFor::Cover
+    }
 }
 
 /// A box's sealed names a `secrets.0` body wrote, by the box's key: holder, role, epoch.

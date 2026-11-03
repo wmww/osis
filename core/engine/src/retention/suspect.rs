@@ -12,13 +12,13 @@
 //! §5.2), so the flag it had settled shows again. A snapshot that lists none of them (any
 //! writer's compaction, stamped whenever) settles nothing. A PendingExpiry entry is never
 //! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
-//! snapshot holds tells whether they repaired it (order seed 5288: a listing snapshot carrying
-//! nothing of the part; a copy key-erased at expiry, spec/crdt.md §4.7, lands outside the entry
-//! the part wrote; writes of one delta share a dot). The heartbeat's digests say whether nodes
+//! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
+//! a copy key-erased at expiry, spec/crdt.md §4.7, lands outside the entry the part wrote; writes
+//! of one delta share a dot). The heartbeat's digests say whether nodes
 //! agree; such an entry goes only with its thing (`forget`).
 
 use crate::engine::records;
-use crate::engine::{Core, Engine, Tx};
+use crate::engine::{Core, DropFor, Engine, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
 use osis_store::Shred;
@@ -124,7 +124,7 @@ pub(crate) fn keep_dropped(core: &Core, tid: &Tid, ak: &Ak) -> Vec<(CommitId, us
         .filter_map(|(_, c)| {
             let m = core.ix.commits.get(c)?;
             let ai = m.aspect(tid, ak)?;
-            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| !d.as_cover && !d.broke) && !super::valueless(core, c, ai)).then_some((*c, ai))
+            (!m.view.memory && m.dropped.get(&ai).is_some_and(|d| matches!(d.why, DropFor::Other | DropFor::Purge)) && !super::valueless(core, c, ai)).then_some((*c, ai))
         })
         .collect()
 }

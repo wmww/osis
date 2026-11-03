@@ -172,7 +172,7 @@ pub(crate) fn given_by(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, snap: &CommitId) -> 
 /// `never_received` per dropped part (a store read).
 fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(CommitId, usize), bool>) -> Result<bool> {
     let core = &*tx.core;
-    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover));
+    let residue = |s: &CommitId| core.ix.commits.get(s).is_some_and(|m| m.aspect(tid, ak).and_then(|ai| m.dropped.get(&ai)).is_some_and(|x| !x.as_cover()));
     // the owner parts dropped other than as covered; any other owner not giving decides `false`
     let (dropped, refused) = (std::cell::RefCell::new(Vec::new()), std::cell::Cell::new(false));
     let given = !owner_received(core, tid, ak, d)
@@ -180,8 +180,8 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
             !m.missing.contains(&ai)
                 && match m.dropped.get(&ai) {
                     None => true,
-                    Some(x) if x.as_cover => {
-                        let gives = !crate::retention::any_coverer(core, c, ai, &residue);
+                    Some(x) if x.as_cover() => {
+                        let gives = !crate::retention::coverers(core, c, ai).iter().any(residue);
                         refused.set(refused.get() || !gives);
                         gives
                     }
