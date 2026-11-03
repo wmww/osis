@@ -42,6 +42,9 @@ enum Val {
 
 type Key = (Vec<Step>, Kind, Stamp);
 
+/// Writes by position, kind and stamp, with their values.
+type Writes = Vec<(Key, Option<Val>)>;
+
 /// Collects the writes whose owner dot `keep` accepts, by position, kind and stamp. `Derived`
 /// writes and the copies of a register's write inside its embeddings (§7) are skipped: they
 /// repeat the register's.
@@ -175,7 +178,7 @@ impl Fragment {
     }
 
     /// `copies`, and the keyed map records walked.
-    fn copies_and_records(&self, keep: &dyn Fn(&Dot) -> bool) -> (Vec<(Key, Option<Val>)>, Vec<(Dot, Value)>) {
+    fn copies_and_records(&self, keep: &dyn Fn(&Dot) -> bool) -> (Writes, Vec<(Dot, Value)>) {
         let mut c = Copies { keep, path: Vec::new(), out: Vec::new(), embedded: Vec::new(), records: Vec::new() };
         c.frag(self);
         (c.out, c.records)
