@@ -373,6 +373,30 @@ fn local_work_sets_match_full_passes_spec_sync_5() {
 }
 
 
+// spec/permissions.md §3: a label served with no host counts as passed once the wait for peers
+// is over, and only a pass looks: that wait ending wants one, with nothing else due (counted).
+#[test]
+fn peer_wait_ending_passes_a_quiet_local_label_spec_permissions_3() {
+    let mut net = Net::new();
+    let a = net.node(1, &[]);
+    let acts = net.sync(a).publish_reach([0xa1; 32], Vec::new()).unwrap();
+    net.actions(a, acts);
+    let (_, done) = net.engine(a).create_person(&[]).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let wait = net.sync(a).config_mut().peer_pass_wait_ms;
+    let passes = |net: &mut Net| net.sync(a).pass_stats().passes;
+    // settled: resyncs before the wait ends run none
+    net.advance(60_000);
+    net.advance(60_000);
+    let before = passes(&mut net);
+    net.advance(60_000);
+    assert_eq!(passes(&mut net), before, "a resync of a quiet local label passed it");
+    net.advance(wait);
+    assert!(passes(&mut net) > before, "the wait for peers ended and no pass came");
+}
+
 /// A person created with no host at dialable node `a`, and an inbox blob delivered to it
 /// (its home label is served with no host, so the blob is logged there); the served state of
 /// the home label after delivery, then after each of `waits` advances.

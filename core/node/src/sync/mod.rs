@@ -523,7 +523,7 @@ pub struct SyncEngine {
     pub redelivered: u64,
     /// When a certificate left to its author (`SETTLE_MS`), or another node's body or deposit
     /// left to a co-writer (`RELAY_MIN_MS`), is due again (raw ms).
-    pub(crate) settle_at: Option<u64>,
+    pub(crate) settle_at: BTreeMap<u64, BTreeSet<LabelId>>,
     /// Labels synced with nobody want a local pass (`local_passes`); when the last ran (raw
     /// ms), and whether there were any (the periodic pass's wake).
     pub(crate) local_dirty: bool,
@@ -679,7 +679,7 @@ impl SyncEngine {
             reread_boxes: true,
             start_look: true,
             redelivered: 0,
-            settle_at: None,
+            settle_at: BTreeMap::new(),
             local_dirty: true,
             local_last: 0,
             local_any: false,
@@ -754,9 +754,9 @@ impl SyncEngine {
         &mut self.cfg
     }
 
-    /// Asks for a Tick at raw ms `t` at the latest (`settle_at`).
-    pub(crate) fn settle_by(&mut self, t: u64) {
-        self.settle_at = Some(self.settle_at.map_or(t, |x| x.min(t)));
+    /// Asks for a pass of `l` at raw ms `t` (`settle_at`).
+    pub(crate) fn settle_by(&mut self, t: u64, l: LabelId) {
+        self.settle_at.entry(t).or_default().insert(l);
     }
 
     /// Whether blob `b` was asked for on some connection and not received yet.
@@ -1106,6 +1106,7 @@ impl SyncEngine {
                 self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
                 if h.kind.is_role() {
                     scoped.extend(h.aspects.iter().map(|a| a.tid));
+                    self.touched.clock |= h.ts.wall_ms().0 > self.state.now;
                 }
                 narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
             }
@@ -1151,7 +1152,9 @@ impl SyncEngine {
         if edges.is_empty() && records.is_empty() {
             return;
         }
-        let held = &self.engine.core.ix.held;
+        let core = &self.engine.core;
+        self.touched.clock |= edges.iter().any(|(h, t)| core.timelines.get(&core.reader_of(t)).is_none_or(|tl| tl.edges_at(None).get(h, t).is_some_and(|e| e.until.is_some())));
+        let held = &core.ix.held;
         let holders = edges.iter().map(|p| p.0).chain(records.iter().copied()).collect();
         let targets = edges.iter().map(|p| p.1).chain(records.iter().copied()).collect();
         self.touched.roles.merge(&work::RoleMoves { subjects: held.upstream(&holders), reached: held.reach(&targets) });
@@ -1172,6 +1175,7 @@ impl SyncEngine {
         let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
         for (l, w) in conns.chain(self.local_work.iter_mut()) {
             w.full |= t.full;
+            w.again |= w.woken_by(&t);
             w.commits.extend(t.commits.iter().chain(&carriers).copied());
             w.states.extend(t.states.iter().cloned());
             w.whole.extend(t.whole.iter().cloned());
@@ -1180,7 +1184,9 @@ impl SyncEngine {
             w.roles.merge(&t.roles);
             w.actors.extend(t.actors.iter().copied());
             w.keys |= t.keys;
+            w.clock |= t.clock;
             for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
+                w.again = true;
                 match x {
                     state::Touch::Commit(c) => w.commits.insert(*c),
                     state::Touch::Blob(b) => w.blobs.insert(*b),
@@ -1214,8 +1220,8 @@ impl SyncEngine {
     }
 
     /// `mark_dirty`, of the labels on connections whose closure holds one of `things`, and the
-    /// local ones: a write on one thing leaves a label of another nothing new to judge. Each still
-    /// passes at its next resync (`timers`). O(labels), a set lookup each.
+    /// local ones: a write on one thing leaves a label of another nothing new to judge: what it
+    /// took in waits for its next pass (`Work::quiet`). O(labels), a set lookup each.
     pub(crate) fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
         if self.cfg.full_passes {
             return self.mark_dirty();
@@ -1336,6 +1342,7 @@ impl SyncEngine {
     /// synced (raw wall ms).
     pub fn label_status(&mut self) -> Vec<LabelStatus> {
         let mut out = Vec::new();
+        let now = self.raw_now();
         for (g, l) in self.labels() {
             let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
             let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
@@ -1358,7 +1365,9 @@ impl SyncEngine {
                             st.idle += 1;
                         }
                         if x.synced {
-                            st.last_sync = st.last_sync.max(Some(x.last_sync));
+                            // live on an open subscription: as of now, passes or not
+                            let live = self.cfg.subscribe && c.up && x.idle();
+                            st.last_sync = st.last_sync.max(Some(if live { now } else { x.last_sync }));
                         }
                     }
                     _ => {}
@@ -1771,10 +1780,14 @@ impl SyncEngine {
     /// Session pings, periodic re-syncs, heartbeats and retries.
     fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
         let now = self.raw_now();
-        // certificates left to their author are due: every label judges again
-        if self.settle_at.is_some_and(|t| t <= now) {
-            self.settle_at = None;
-            self.mark_dirty();
+        // what waited for a time (a copy left to its author, a relay wait, a step's back-off)
+        let later = self.settle_at.split_off(&now.saturating_add(1));
+        let due: BTreeSet<LabelId> = std::mem::replace(&mut self.settle_at, later).into_values().flatten().collect();
+        if !due.is_empty() {
+            self.local_dirty = true;
+            for l in self.conns.values_mut().flat_map(|c| c.labels.iter_mut()).filter(|(id, _)| due.contains(*id)).map(|x| x.1) {
+                l.dirty |= l.fill.is_none();
+            }
         }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
@@ -1809,7 +1822,7 @@ impl SyncEngine {
             }
             self.start_label(conn, g, label, out)?;
         }
-        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now {
+        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(now))) {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
@@ -1824,17 +1837,18 @@ impl SyncEngine {
                 self.sync_label(conn, label, out)?;
                 self.eph_retry_deletes(conn, label, out)?;
             } else if let Some(l) = self.lc_mut(conn, &label) {
-                // subscribed: a pass now and then (heartbeats, timed bounds, entries refused for
-                // the cap; unsubscribed, the Sync's end uploads those)
+                // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
+                // left, a heartbeat, a timed bound); unsubscribed, the Sync's end uploads those
                 l.last_sync = now;
-                l.dirty = true;
+                l.dirty |= l.fill.is_some() || l.work.resync_due(now);
                 self.eph_retry(conn, label, out)?;
             }
         }
         Ok(())
     }
 
-    /// When the next Tick is wanted (raw wall ms): session timers, re-syncs, served sessions'
+    /// When the next Tick is wanted (raw wall ms): session timers, one tick per `resync_ms` while
+    /// anything is open (a label's own resync only when something waits for it), served sessions'
     /// idle ends, redials, inbox retries and the engine's expiry, keep-at-most and lost-access
     /// timers. Never before `MIN_WAKE_MS` after the last Tick, so an item due but not
     /// serviceable yet cannot spin (and later events do not push a due wake back).
@@ -1842,14 +1856,19 @@ impl SyncEngine {
         let now = self.raw_now();
         let mut t: Option<u64> = None;
         let mut at = |x: u64| t = Some(t.map_or(x, |y: u64| y.min(x)));
+        let resync = self.cfg.resync_ms;
+        if self.local_any || self.conns.values().any(|c| !c.labels.is_empty()) {
+            at(self.last_tick.saturating_add(resync));
+        }
         for c in self.conns.values() {
             if let Some(x) = c.timer {
                 at(x);
             }
             for l in c.labels.values() {
-                // a label waiting for a reply re-syncs after it
-                if (l.phase == Phase::Open && !l.syncing) || l.phase == Phase::Failed {
-                    at(l.last_sync.saturating_add(self.cfg.resync_ms));
+                // a label waiting for a reply re-syncs after it; a quiet one needs no time of its
+                // own, what comes due for it waits for the next tick
+                if (l.phase == Phase::Open && !l.syncing && (!l.synced || !self.cfg.subscribe || l.fill.is_some() || !l.work.quiet())) || l.phase == Phase::Failed {
+                    at(l.last_sync.saturating_add(resync));
                 }
                 if let Phase::Refused { retry_at } = l.phase {
                     at(retry_at);
@@ -1862,8 +1881,8 @@ impl SyncEngine {
         for (_, x) in self.retry.values() {
             at(*x);
         }
-        if let Some(x) = self.settle_at {
-            at(x);
+        if let Some(x) = self.settle_at.keys().next() {
+            at(*x);
         }
         let skew = self.now() as i64 - now as i64;
         // a pending grant keeping a leaver's actor ages out (`drop_left`)
@@ -1873,9 +1892,6 @@ impl SyncEngine {
         // a pending grant keeping a lost actor ages out (`drop_lost_due`)
         if let Some(x) = self.engine.next_lost_due() {
             at((x as i64).saturating_sub(skew).max(0) as u64);
-        }
-        if self.local_any {
-            at(self.local_last.saturating_add(self.cfg.resync_ms));
         }
         // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
         if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {

@@ -775,3 +775,51 @@ fn demotion_scope_covers_audits_spec_permissions_5_1() {
 fn demotion_scope_covers_audits_large_spec_permissions_5_1() {
     sharded(64_000, 0x5eed_0302, scope_run);
 }
+
+/// §1: a role on the current edges is walked once per node, at any later ts, until an edge the
+/// walk followed ends (counted); then the answer follows the clock.
+#[test]
+fn roles_now_walk_once_until_an_edge_ends() {
+    let mut w = World::new();
+    let n = w.nodes(3);
+    let (k, x, y) = (n[0], n[1], n[2]);
+    let p = w.thing(k);
+    let t = w.thing(p);
+    let all: Vec<(Tid, u64)> = n.iter().map(|m| (*m, 0)).collect();
+    w.set(k, p, x, edge(Write), 0, &all);
+    w.set(k, t, y, edge_inv(Read, None, Some(50)), 1, &all);
+    let tl = Timeline::evaluate(&w.held());
+    let start = tl.roles_walks();
+    for at in [10, 20, 30, 40] {
+        assert_eq!(tl.role(&x, &t, At::now(ts(at))), Some(Write));
+        assert_eq!(tl.role(&y, &t, At::now(ts(at))), Some(Read));
+    }
+    assert_eq!(tl.roles_walks() - start, 2, "a walk per node");
+    assert_eq!(tl.role(&y, &t, At::now(ts(60))), None, "past the until");
+    assert_eq!(tl.role(&x, &t, At::now(ts(60))), Some(Write));
+    assert_eq!(tl.roles_walks() - start, 3, "only the walk that followed the edge goes again");
+    // an earlier ts is not answered from a later one
+    assert_eq!(tl.role(&y, &t, At::now(ts(40))), Some(Read));
+}
+
+/// §4: what a node reaches is walked once for its certificates, however many it asks for: a pass
+/// per label asks for its own (counted).
+#[test]
+fn certificates_walk_the_askers_reach_once() {
+    let mut w = World::new();
+    let n = w.nodes(2);
+    let (k, x) = (n[0], n[1]);
+    let p = w.thing(k);
+    let things: Vec<Tid> = (0..8).map(|_| w.thing(p)).collect();
+    let all: Vec<(Tid, u64)> = n.iter().map(|m| (*m, 0)).collect();
+    w.set(k, p, x, edge(Write), 0, &all);
+    let tl = Timeline::evaluate(&w.held());
+    let first = tl.certificates(&x, &things[0]);
+    let start = tl.forward_walks();
+    for t in &things {
+        assert!(!tl.certificates(&x, t).commits.is_empty());
+    }
+    assert_eq!(tl.certificates(&x, &things[0]).commits, first.commits);
+    assert_eq!(tl.forward_walks() - start, 0, "what a node reaches walked once per timeline");
+    assert!(start >= 1);
+}

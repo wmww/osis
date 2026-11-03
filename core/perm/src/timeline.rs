@@ -6,7 +6,7 @@ use osis_base::Owner;
 use crate::held::HeldSet;
 use crate::types::{Edge, RoleCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
-use osis_base::{CommitId, CreationRecord, Role, Tid, Ts};
+use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
 
@@ -65,6 +65,9 @@ type FirstHeld = BTreeMap<(Tid, Tid, Role), Option<Option<Point>>>;
 /// `delta_valid` by its arguments.
 type Valid = BTreeMap<(Point, Tid, Role), crate::content::Validity>;
 
+/// One `Memo::roles_now` entry.
+type RolesNow = (Arc<BTreeMap<Tid, Role>>, Ts, Option<WallMs>);
+
 /// Memoized layer-2 answers.
 #[derive(Default)]
 pub(crate) struct Memo {
@@ -74,6 +77,15 @@ pub(crate) struct Memo {
     pub valid: Mutex<Valid>,
     /// `roles_of` at `At::END`, per node.
     pub roles_end: Mutex<BTreeMap<Tid, Arc<BTreeMap<Tid, Role>>>>,
+    /// `roles_of` on the current edges, per node: (the answer, from what ts, the earliest `until`
+    /// it followed). A walk per node while the edges stay and no followed edge ends.
+    pub roles_now: Mutex<BTreeMap<Tid, RolesNow>>,
+    /// Walks made for `roles_now` (a measure).
+    pub roles_walks: std::sync::atomic::AtomicU64,
+    /// `ever_forward` per node `closure` met: the asker (a node asks for its own certificates at
+    /// every pass) and the authors on its chains; and the walks made for it (a measure).
+    pub forward: Mutex<BTreeMap<Tid, Arc<BTreeSet<Tid>>>>,
+    pub forward_walks: std::sync::atomic::AtomicU64,
     /// Held records by the edges and things they write, for certificates.
     pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
 }
@@ -327,8 +339,10 @@ impl Timeline {
         }
         let mut new = new.to_vec();
         new.sort_by_key(|c| c.point());
-        // chain certificates list held writes
+        // chain certificates list held writes; what is ever reached and owned moves
         self.memo.certs = std::sync::OnceLock::new();
+        *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
+        *self.memo.roles_now.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         self.placed = 0;
         for (j, c) in new.iter().enumerate() {
             let p = c.point();
@@ -605,6 +619,11 @@ impl Timeline {
 
     /// Effective role (§1).
     pub fn role(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
+        if at.point.is_none()
+            && let Some(ts) = at.ts
+        {
+            return self.roles_now(node, ts).get(thing).copied();
+        }
         if at != At::END {
             return self.roles_of(node, at).get(thing).copied();
         }
@@ -617,6 +636,34 @@ impl Timeline {
             m.insert(*node, r);
         }
         out
+    }
+
+    /// `node`'s roles on the current edges at `ts`, walked once per node while the answer holds:
+    /// at any later ts before an `until` the walk followed (`View::roles_expiring`).
+    fn roles_now(&self, node: &Tid, ts: Ts) -> Arc<BTreeMap<Tid, Role>> {
+        use std::sync::atomic::Ordering;
+        let held = |e: &RolesNow| e.1 <= ts && e.2.is_none_or(|u| ts.wall_ms() < u);
+        if let Some(r) = self.memo.roles_now.lock().ok().and_then(|m| m.get(node).filter(|e| held(e)).map(|e| e.0.clone())) {
+            return r;
+        }
+        self.memo.roles_walks.fetch_add(1, Ordering::Relaxed);
+        let edges = self.edges_at(None);
+        let (r, expires) = View::at(&self.input.owners, &edges, Some(ts)).roles_expiring(node);
+        let r = Arc::new(r);
+        if let Ok(mut m) = self.memo.roles_now.lock() {
+            m.insert(*node, (r.clone(), ts, expires));
+        }
+        r
+    }
+
+    /// Walks of `Memo::forward` so far (a measure).
+    pub fn forward_walks(&self) -> u64 {
+        self.memo.forward_walks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Walks of `roles_now` so far (a measure).
+    pub fn roles_walks(&self) -> u64 {
+        self.memo.roles_walks.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Authority class (§5.1 step 3).

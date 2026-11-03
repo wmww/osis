@@ -561,8 +561,13 @@ impl SyncEngine {
     /// after its last remote role commit, or after the start when none applied in this run
     /// (`roles_at` is memory only; spec/permissions.md §3 bounds the wait after the change):
     /// a restarted node first hears its peers out.
-    fn peers_waited(&self, actor: &Tid) -> bool {
-        self.roles_at.get(actor).copied().unwrap_or(self.started).saturating_add(self.cfg.peer_pass_wait_ms) <= self.raw_now()
+    pub(crate) fn peers_waited(&self, actor: &Tid) -> bool {
+        self.peer_wait_end(actor) <= self.raw_now()
+    }
+
+    /// When the wait of `peers_waited` ends (raw ms).
+    pub(crate) fn peer_wait_end(&self, actor: &Tid) -> u64 {
+        self.roles_at.get(actor).copied().unwrap_or(self.started).saturating_add(self.cfg.peer_pass_wait_ms)
     }
 
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of

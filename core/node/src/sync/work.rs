@@ -47,6 +47,9 @@ pub(crate) struct Touched {
     pub actors: BTreeSet<Tid>,
     /// Held epochs may have changed (delete keys a waiting delete lacked).
     pub keys: bool,
+    /// A changed edge with an `until`, or a role write ahead of the clock: the roster's clock
+    /// horizon may be nearer (`Work::until`).
+    pub clock: bool,
 }
 
 /// The inbox blobs whose copy a home label's pass found all there (`inbox_certificates`), so
@@ -102,7 +105,7 @@ impl InboxCopied {
 
 impl Touched {
     pub fn is_empty(&self) -> bool {
-        !self.full && !self.keys && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
+        !self.full && !self.keys && !self.clock && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
     }
 }
 
@@ -165,6 +168,8 @@ pub(crate) struct Work {
     pub roles: RoleMoves,
     pub actors: BTreeSet<Tid>,
     pub keys: bool,
+    /// The roster's clock horizon is to be taken again (`Touched::clock`).
+    pub clock: bool,
     /// Commits whose delete waits for a delete key this node lacks: judged again when held
     /// epochs may have changed.
     pub keyless: BTreeSet<CommitId>,
@@ -206,6 +211,12 @@ pub(crate) struct Work {
     pub beats_reseal: BTreeSet<Tid>,
     /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
     pub cards: BTreeSet<CommitId>,
+    /// The last pass left something only another pass finds out about (`Left`), or the label's
+    /// own records were touched or a wait woken since: passes at its next resync.
+    pub again: bool,
+    /// When time alone next wants a pass (raw ms; `SyncEngine::schedule_pass`). 0: at the next
+    /// resync.
+    pub pass_at: u64,
 }
 
 impl Work {
@@ -214,9 +225,27 @@ impl Work {
         Work { full: true, ..Work::default() }
     }
 
+    /// Whether no pass is wanted but at `pass_at`: nothing left, nothing touched, nothing
+    /// unsettled or unopened. A change from elsewhere waiting here (`spread_touches`) is no
+    /// reason: the label's marks would have passed it if it concerned the label.
+    pub fn quiet(&self) -> bool {
+        !self.full && !self.again && self.unopened.is_empty() && self.held_back.is_empty() && self.unsettled.is_empty() && self.settled.is_none_or(|s| s == (true, true))
+    }
+
+    /// Whether a resync at raw ms `now` passes this label.
+    pub fn resync_due(&self, now: u64) -> bool {
+        !self.quiet() || self.pass_at <= now
+    }
+
+    /// Whether changes `t` wake a verdict waiting here (`prepare`): the next resync judges it.
+    pub fn woken_by(&self, t: &Touched) -> bool {
+        t.states.iter().any(|k| self.waits.contains_key(k)) || t.whole.iter().any(|k| self.at_most.contains_key(k)) || t.blobs.iter().any(|b| self.links.contains_key(b)) || t.keys && !self.keyless.is_empty()
+    }
+
     /// Takes in what another set collected meanwhile (a pass's own touches).
     pub fn merge(&mut self, o: Work) {
         self.full |= o.full;
+        self.again |= o.again;
         self.commits.extend(o.commits);
         self.blobs.extend(o.blobs);
         self.aspects.extend(o.aspects);
@@ -227,6 +256,7 @@ impl Work {
         self.roles.merge(&o.roles);
         self.actors.extend(o.actors);
         self.keys |= o.keys;
+        self.clock |= o.clock;
         self.elsewhere = self.elsewhere.saturating_add(o.elsewhere);
     }
 
@@ -255,6 +285,7 @@ impl Work {
     /// Takes what pass left to do (`Left`) as the next pass's set.
     pub fn leave(&mut self, left: Left) {
         self.full = false;
+        self.again = left.again || !left.commits.is_empty() || !left.blobs.is_empty();
         self.commits = left.commits;
         self.blobs = left.blobs;
         self.elsewhere = 0;
@@ -310,6 +341,9 @@ pub(crate) struct Left {
     pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     pub keyless: BTreeSet<CommitId>,
     pub held_back: BTreeSet<CommitId>,
+    /// Something outside the set waits for a later pass: a relay the host lacks, a deposit not
+    /// promoted.
+    pub again: bool,
 }
 
 impl Left {
@@ -404,6 +438,9 @@ impl SyncEngine {
             self.go_full(g, l, w, closure);
         } else {
             self.roles_moved(g, l, w, closure);
+            if std::mem::take(&mut w.clock) {
+                w.until = self.roster_horizon(closure, g);
+            }
             // an unchanged closure is the same `Arc` (`Groups::closures`)
             if !same_closure(closure, &w.closure) {
                 w.things.extend(closure.symmetric_difference(&w.closure).copied());
@@ -542,6 +579,7 @@ impl SyncEngine {
         w.roles = RoleMoves::default();
         w.actors.clear();
         w.keys = false;
+        w.clock = false;
         w.keyless.clear();
         w.held_back.clear();
         self.rebuild(g, l, w);
