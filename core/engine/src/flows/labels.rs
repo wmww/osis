@@ -177,7 +177,10 @@ pub(crate) fn labels_of(tx: &mut Tx<'_>, group: &Tid) -> Result<ct::Labels> {
 
 impl Engine {
     /// Gives `group` a label (its home label, for an actor) on `hosts`: genesis step at its
-    /// newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it.
+    /// newest epochs, recorded in `label.0` (spec/sync.md §2). node-sync registers it. The
+    /// thing's first live label is a route for the holders of roles on it: the write goes to
+    /// each of them as an inbox blob naming the thing and its label (spec/sync.md §3), so a
+    /// holder granted before anything carried the thing finds it now.
     pub fn create_label(&mut self, group: &Tid, hosts: &[Address]) -> Result<(LabelId, Done)> {
         let g = *group;
         self.run(|tx| {
@@ -189,9 +192,23 @@ impl Engine {
             let deposit = deposit_seed(tx, &g)?;
             let (re, _) = epochs.role(Role::Read).newest_held().ok_or(Error::Misuse("no read secret"))?;
             let rs = readers(tx, &g, &re)?;
+            let first = !labels_of(tx, &g)?.values().any(|l| !l.replaced);
             let mut m = Mutation::new();
             let id = new_label(tx, &mut m, g, &epochs, &rs, &deposit, hosts)?;
-            done.add(Engine::commit_tx(tx, m)?);
+            let c = Engine::commit_tx(tx, m)?;
+            done.add(c);
+            if let Some(c) = c
+                && first
+            {
+                // the roster's actors: not the owner chain (its devices read `label.0` under the
+                // owner's home label), not a key actor (a node reads the thing's labels or has no
+                // route; a recovery or link key reads by static entry)
+                let owner = tx.core.owner(&g);
+                let holders: Vec<Tid> = tx.core.current_holders(&g).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != owner && !tx.core.is_key_actor(m)).collect();
+                for h in holders {
+                    done.deliveries.extend(super::edges::deliver_to(tx, h, c, &[g])?);
+                }
+            }
             Ok((id, done))
         })
     }

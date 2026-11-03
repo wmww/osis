@@ -3,7 +3,7 @@
 
 use crate::engine::{Core, Engine};
 use crate::error::Result;
-use osis_base::{ChainStep, LabelId, Role, Tid};
+use osis_base::{Ak, ChainStep, LabelId, Role, Tid};
 use osis_label::{Address, ClaimSet, Step, StepId};
 use osis_schema::core_types as ct;
 use std::collections::{BTreeMap, BTreeSet};
@@ -93,6 +93,76 @@ impl Engine {
     /// Things with a `label.0` held.
     pub fn labeled_groups(&self) -> Vec<Tid> {
         self.core.ix.labeled.iter().copied().collect()
+    }
+
+    /// Whether `g` has a live (unreplaced) label here.
+    pub fn labeled(&mut self, g: &Tid) -> bool {
+        self.labels_of(g).iter().any(|l| !l.replaced)
+    }
+
+    /// Whether the label of a group whose actor is `a` and whose closure is `c` carries `t` to
+    /// holder `x`: `t` is in the closure and `a` may read it (else it is excluded: no writer of
+    /// the label holds it there), and `x` reads the label, or is read through it (a subgroup's
+    /// edge on its item: `a` holds `x`, so whoever reads `x` that way reads `t`).
+    fn carries(&self, a: &Tid, c: &BTreeSet<Tid>, x: &Tid, t: &Tid) -> bool {
+        // `a` itself is the usual holder: a thing shared into a group, its edge is what may read
+        c.contains(t) && (x == a || (self.core.may_read(a, t) && (self.core.may_read(x, a) || self.core.may_read(a, x))))
+    }
+
+    /// Whether holder `x` of a role on `t` has a **route** to it (spec/sync.md §2): a live label
+    /// it can open carries `t`: `t`'s own (every holder of `t` derives its sync key), or one of a
+    /// group that carries it to `x` (`carries`). Labels as this node knows them: a label of a
+    /// group it does not read is not counted, so another node may see a route this one does not.
+    pub fn routed(&mut self, x: &Tid, t: &Tid) -> bool {
+        if self.labeled(t) {
+            return true;
+        }
+        let groups = self.labeled_groups();
+        groups.into_iter().any(|g| g != *t && self.labeled(&g) && self.carries(&self.group_actor(&g), &self.closure(&g), x, t))
+    }
+
+    /// Per thing this node has a role on, whose roster this node holds and that has no live label
+    /// of its own, its direct holders without a route (`routed`): the roster's actors and nodes,
+    /// not its owner (a thing placed nowhere is local to its owner by design), not a recovery or
+    /// link key (a link always has its target's label), not a person's devices (nodes on a thing
+    /// a key actor owns: its home label is theirs, known only to them). Empty when every holder
+    /// has one. A thing this node has no role on is no business of its status, and its labels are
+    /// not known here: rosters arrive as a writer's chain, and stay after a removal. Every status
+    /// asks, so kept until a role, label or placement is written: an edge expiring shows at the
+    /// next such write.
+    pub fn unrouted(&mut self) -> Arc<BTreeMap<Tid, Vec<Tid>>> {
+        if let Some(u) = &self.core.unrouted {
+            return u.clone();
+        }
+        let u = Arc::new(self.find_unrouted());
+        self.core.unrouted = Some(u.clone());
+        u
+    }
+
+    fn find_unrouted(&mut self) -> BTreeMap<Tid, Vec<Tid>> {
+        let node = Ak::new("node.0").ok();
+        let things: Vec<Tid> = self.core.timelines.things().copied().collect();
+        let mut live: Vec<(Tid, Arc<BTreeSet<Tid>>)> = Vec::new();
+        for g in self.labeled_groups() {
+            if self.labeled(&g) {
+                live.push((self.group_actor(&g), self.closure(&g)));
+            }
+        }
+        let mut out = BTreeMap::new();
+        for t in things {
+            if self.labeled(&t) {
+                continue;
+            }
+            let owner = self.core.owner(&t);
+            let person = owner.is_some_and(|o| self.core.is_key_actor(&o));
+            let is_node = |m: &Tid| node.as_ref().is_some_and(|n| self.core.ix.by_aspect.contains_key(&(*m, n.clone())));
+            let skip = |m: &Tid| self.core.is_key_actor(m) && (person || !is_node(m));
+            let holders: Vec<Tid> = self.core.current_holders(&t).into_iter().map(|(m, _, _)| m).filter(|m| Some(*m) != owner && !skip(m) && !live.iter().any(|(a, c)| self.carries(a, c, m, &t))).collect();
+            if !holders.is_empty() && self.role_on(&t).is_some() {
+                out.insert(t, holders);
+            }
+        }
+        out
     }
 
     /// The labels `label.0` of `g` records, replaced ones included; records that do not parse

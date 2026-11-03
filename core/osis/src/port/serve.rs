@@ -569,9 +569,13 @@ impl Worker {
                 db.unsync(a.tid()?)?;
                 Value::List(vec![])
             }
-            method::GRANT | method::CHANGE_EDGE => {
+            method::GRANT | method::CHANGE_EDGE | method::SHARE => {
                 let (t, h, r, o) = (a.tid()?, a.tid()?, c::role(&a.next()?)?, c::edge_opts(a.next()?)?);
-                if m == method::GRANT { db.grant(t, h, r, o)? } else { db.change_edge(t, h, r, o)? }
+                match m {
+                    method::GRANT => db.grant(t, h, r, o)?,
+                    method::SHARE => db.share(t, h, r, o)?,
+                    _ => db.change_edge(t, h, r, o)?,
+                }
                 Value::List(vec![])
             }
             method::SHARE_INTO => {

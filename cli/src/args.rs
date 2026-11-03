@@ -316,7 +316,18 @@ pub enum Cmd {
     Via { t: String, holder: String },
     /// The database's corrected clock
     Now,
-    /// Grant HOLDER ROLE (read, write, admin) on T
+    /// Grant HOLDER ROLE (read, write, admin) on T, and sync T first when nothing carries it to
+    /// HOLDER (`grant` alone records the role and leaves it with no route)
+    Share {
+        t: String,
+        holder: String,
+        role: String,
+        #[arg(long, value_name = "TS")]
+        until: Option<String>,
+        #[arg(long, value_name = "ROLE")]
+        invite: Option<String>,
+    },
+    /// Grant HOLDER ROLE (read, write, admin) on T: the permission alone (see `share`)
     Grant {
         t: String,
         holder: String,

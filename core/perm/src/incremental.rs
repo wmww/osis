@@ -650,6 +650,11 @@ impl Timelines {
     }
 
     /// The timeline of the component holding `thing` (and every node with a path to it).
+    /// Every thing with a timeline (one with edge writes held).
+    pub fn things(&self) -> impl Iterator<Item = &Tid> {
+        self.of.keys()
+    }
+
     pub fn get(&self, thing: &Tid) -> Option<&Timeline> {
         self.of.get(thing).and_then(|i| self.comps.get(i)).map(|c| &c.tl)
     }

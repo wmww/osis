@@ -16,6 +16,7 @@ pub fn inbox() -> VecFile {
     let kem = KemSecret::derive(&kem_seed);
     let recipient = Tid::from_bytes([0x02; 15]);
     let payload = InboxPayload {
+        chain: Vec::new(),
         commit: Value::List(vec![Value::List(vec![]), Value::Bytes(vec![0; 64]), Value::List(vec![])]),
         things: vec![InboxThing { tid: Tid::from_bytes([0x03; 15]), label: Some(InboxLabel { id: LabelId([0x04; 16]), index: 3, hosts: vec![Address { url: "quic://host.example:4433".into(), key: [0x06; 32] }] }), delete_keys: Some((osis_crypto::DeleteSecret::derive(&s32(0x07)).verifying_key(), osis_crypto::DeleteSecret::derive(&s32(0x08)).verifying_key())) }],
     };

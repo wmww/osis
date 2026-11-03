@@ -221,6 +221,37 @@ fn linked_blobs_of_gone_copy_leave_local_label_spec_sync_5() {
     assert!(linked.iter().all(|b| !ids.contains(b)), "the linked blobs went with the copy");
 }
 
+// spec/permissions.md §4, spec/sync.md §3: certificate copies by part: a copy of one aspect of a commit (a chain's edge) leaves the next copy of another aspect placed, not skipped; the same aspect again places nothing
+#[test]
+fn certificate_copies_of_one_commit_add_up_spec_permissions_4() {
+    let (mut net, a, _, g, l) = setup();
+    let me = net.tid(a);
+    let e = net.engine(a);
+    let mut m = osis_node::Mutation::new();
+    let u = e.new_thing(&mut m, me);
+    for ak in ["u:a.0", "u:b.0"] {
+        m.set(u, &Ak::new(ak).unwrap(), &s("v")).unwrap();
+    }
+    let c = e.commit(m).unwrap().unwrap();
+    let h = net.engine(a).header(&c).unwrap();
+    let at = |k: &str| h.aspects.iter().position(|x| x.tid == u && x.ak.as_str() == k).unwrap();
+    let (x, y) = (at("u:a.0"), at("u:b.0"));
+    let held = |net: &mut Net| -> BTreeSet<usize> {
+        net.sync(a).entries(&l).into_iter().flat_map(|(_, k)| if let EntryKind::Commit { commit, parts, .. } = k { if commit == c { parts.into_iter().map(|p| p.0).collect() } else { Vec::new() } } else { Vec::new() }).collect()
+    };
+    let acts = net.sync(a).place_certificate(&g, &c, &[x].into()).unwrap();
+    net.actions(a, acts);
+    assert_eq!(held(&mut net), [x].into());
+    let n = net.sync(a).entries(&l).len();
+    let acts = net.sync(a).place_certificate(&g, &c, &[x].into()).unwrap();
+    net.actions(a, acts);
+    assert_eq!(net.sync(a).entries(&l).len(), n, "already there");
+    let acts = net.sync(a).place_certificate(&g, &c, &[x, y].into()).unwrap();
+    net.actions(a, acts);
+    assert_eq!(held(&mut net), [x, y].into());
+    assert_eq!(net.sync(a).entries(&l).len(), n + 1, "only what was missing");
+}
+
 /// The served state of label `l` at nodes `ns`: each entry with its kind and whether its bytes
 /// are held.
 fn served(net: &mut Net, ns: &[usize], l: &LabelId) -> Vec<String> {

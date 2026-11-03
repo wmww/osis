@@ -229,13 +229,20 @@ impl SyncEngine {
                 // a lagging projection: the superset goes up first
                 return Ok(None);
             } else {
-                // another node's card nobody needs any more goes (spec/permissions.md §4), and
-                // a certificate copy nobody completes (`orphan`)
-                if settled && (self.stale_card(at, commit, &h, parts) || self.orphan(at, id, commit, &h, parts, note)?) {
+                // another node's card nobody needs any more goes (spec/permissions.md §4). A copy
+                // is not judged by its author's chain: the chain moves after it (the granter's
+                // edge lowered, a removal of him), a judge cannot tell a chain that will not come
+                // from one still uploading, and a copy deleted is a grant its group's later
+                // readers never find
+                if settled && self.stale_card(at, commit, &h, parts) {
                     return Ok(Some((Hold::MustNot(Why::Outside), false, aspects)));
                 }
-                // other certificates (role-class, node cards, heartbeats) are not ours to judge
-                let card = h.aspects.iter().all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0" | "created.0"));
+                // other certificates (role-class, node cards, heartbeats, creation records of
+                // things outside the closure) are not ours to judge; by this entry's parts: a
+                // creation record's commit usually writes more (a group's first placement, a
+                // thing's first value)
+                let closure = self.engine.closure(g);
+                let card = parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).all(|a| matches!(a.ak.as_str(), "keys.0" | "node.0" | "reach.0" | "seen.0") || a.ak.as_str() == "created.0" && !closure.contains(&a.tid));
                 if h.kind.is_role() || card {
                     return Ok(None);
                 }
@@ -331,26 +338,6 @@ impl SyncEngine {
             let ids: Vec<BlobId> = self.state.entries_of(l, &x).filter(|(id, _)| host.is_none_or(|s| self.state.holds_at(s, l, id))).map(|(id, _)| id).collect();
             ids.into_iter().any(|id| self.genuine(&id))
         })
-    }
-
-    /// Whether entry `id` of commit `c` holding `parts`, outside the label's closure, is a
-    /// certificate copy whose author no longer reads the label's actor and whose author's chain
-    /// no entry under `l` at `host` completes: outside the required set (spec/sync.md §6),
-    /// since nobody is obliged to complete it and a verifier would hold it pending for ever.
-    /// Judged only on a commit this node applied (it knows the author and the chain), and not on
-    /// a deposit there: promotion completes or leaves those (spec/sync.md §5).
-    fn orphan(&mut self, at: &At, id: &BlobId, c: &CommitId, h: &osis_commit::Header, parts: &[(usize, usize)], note: &mut Note) -> Result<bool> {
-        let (g, l) = (&at.g, &at.l);
-        // this node's own served state: deposits get their chains completed (`local_promote`);
-        // another writer's stamped copy with an incomplete chain stays (issues/node-sync-gaps.md)
-        let Some(host) = &at.host else { return Ok(false) };
-        let actor = self.engine.group_actor(g);
-        if h.author == self.engine.tid() || self.state.deposited.contains(&(*host, *l, *id)) || self.engine.core.may_read(&h.author, &actor) {
-            return Ok(false);
-        }
-        // the chain's entries are other commits': judged again each pass
-        note.unsure = true;
-        Ok(self.chain_missing(Some(*host), g, *l, c, parts)?.is_some_and(|m| !m.is_empty()))
     }
 
     /// Deletes must-not-hold entries present at the host, carriers first (spec/sync.md §6,

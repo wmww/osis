@@ -356,6 +356,83 @@ pub fn offline_rotation(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
+/// A grant to a group (spec/sync.md §3): a thing granted to group H, with H's admin away at the
+/// grant, reaches H's readers through the copy under H's label, a later reader too; a reader
+/// removed from H holds no later epoch of the thing, the others do.
+pub fn grant_to_group(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0x93);
+    let mut sim = sim("grant_to_group", seed, NetWeights::default());
+    let s = sim.add_host()?;
+    let a = sim.add_node(&[s], clock(&mut d))?;
+    let b = sim.add_node(&[s], clock(&mut d))?;
+    let c = sim.add_node(&[s], clock(&mut d))?;
+    let e = sim.add_node(&[s], clock(&mut d))?;
+    let [pa, pb, pc, pe] = persons(&mut sim, [a, b, c, e], [s, s, s, s])?;
+    let h = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Read), (pc, Role::Read)])?;
+    let t = sim.group_with(a, pa, &[s], true)?;
+    sim.item(a, t)?;
+    sim.quiet(40)?;
+    sim.grant(a, t, h, Role::Read)?;
+    sim.run(30)?;
+    sim.node_down(a)?;
+    sim.run(20)?;
+    sim.restart_node(a)?;
+    sim.quiet(40)?;
+    let now = newest_read(&mut sim, a, &t)?;
+    if newest_read(&mut sim, b, &t)? != now || newest_read(&mut sim, c, &t)? != now {
+        return Err(sim.fail("a reader of the group holds not the thing's newest epoch"));
+    }
+    sim.grant(a, h, pe, Role::Read)?;
+    sim.run(30)?;
+    sim.quiet(40)?;
+    if newest_read(&mut sim, e, &t)? != now {
+        return Err(sim.fail("a later reader of the group holds not the thing's newest epoch"));
+    }
+    sim.remove(a, h, pb)?;
+    sim.excused.insert(b);
+    sim.item(a, t)?;
+    sim.run(40)?;
+    sim.run_until_quiescent(40)?;
+    let now = newest_read(&mut sim, a, &t)?;
+    if newest_read(&mut sim, b, &t)?.is_some_and(|x| Some(x) >= now) {
+        return Err(sim.fail("a reader removed from the group holds the thing's epoch after it"));
+    }
+    if newest_read(&mut sim, c, &t)? != now || newest_read(&mut sim, e, &t)? != now {
+        return Err(sim.fail("a staying reader of the group holds not the thing's newest epoch"));
+    }
+    // a grant of a thing with no label (spec/sync.md §2): the group's readers hold the role and
+    // no route, shown at the granter and at a reader alike; the thing's first label is delivered
+    // to the group and copied under its label, and they read it
+    let u = sim.thing_with_secrets(a, pa)?;
+    sim.grant(a, u, h, Role::Read)?;
+    sim.run(30)?;
+    sim.quiet(40)?;
+    for n in [a, c] {
+        if sim.engine(n)?.unrouted().get(&u).is_none_or(|hs| *hs != vec![h]) {
+            return Err(sim.fail(format!("node {n} does not show the group without a route to the unsynced thing")));
+        }
+    }
+    if newest_read(&mut sim, c, &u)?.is_some() {
+        return Err(sim.fail("a reader of the group reads a thing nothing carries"));
+    }
+    let addrs = sim.addresses(&[s]);
+    let r = sim.sync(a)?.create_label(&u, addrs);
+    let (_, acts) = r.map_err(|e| sim.fail(format!("node {a} create_label: {e}")))?;
+    sim.after_node(a, acts)?;
+    sim.run(30)?;
+    sim.run_until_quiescent(40)?;
+    let now = newest_read(&mut sim, a, &u)?;
+    if newest_read(&mut sim, c, &u)? != now || newest_read(&mut sim, e, &u)? != now {
+        return Err(sim.fail("a reader of the group holds not the synced thing's epoch"));
+    }
+    for n in [a, c] {
+        if sim.engine(n)?.unrouted().contains_key(&u) {
+            return Err(sim.fail(format!("node {n} still shows the synced thing without a route")));
+        }
+    }
+    sim.finish()
+}
+
 /// Disk loss and recovery from the card (spec/permissions.md §9): one of a person's two devices
 /// loses its disk; a fresh device holding the card follows the home label, recovers (grants
 /// itself admin, removes the lost device with the person's rotation) and converges with the

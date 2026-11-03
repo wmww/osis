@@ -262,6 +262,8 @@ pub struct PassStats {
     /// Bodies judged for upload, entries judged for deletion.
     pub bodies: u64,
     pub entries: u64,
+    /// Blobs tried as inbox blobs (a KEM per held key of each actor whose inbox the label is).
+    pub inbox_tries: u64,
 }
 
 /// One label on one connection.

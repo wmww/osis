@@ -6,4 +6,6 @@ An honest sender no longer does this (spec/wire.md §9: a thing names only its o
 
 In `sync/inbound.rs` `vet_inbox_hints`: two blobs naming one label under different things: `want.get_mut` keeps the first by blob ID, so the genuine grant's hint never runs and its label.0 never arrives. A label left Failed under the hint's thing gives way once `wanted_labels` names it under another (`add_new_labels`; `hint_under_another_thing_gives_way_to_the_group_spec_sync_3`).
 
+An ownerless group's inbox is its own label, so one such blob delays the label for all its readers, not one person.
+
 Needs: a hint per (label, thing), each tried in turn. Cost of the attack: one admitted blob, one grant delayed; the sender must be connected and know the label.

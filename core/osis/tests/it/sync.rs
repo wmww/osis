@@ -1014,29 +1014,64 @@ fn plain(db: &Osis, v: &str) -> Tid {
     .unwrap()
 }
 
-// spec/sync.md §2, spec/permissions.md §3: a grant on a thing placed nowhere reaches its holder: the thing gets a label of its own on its first holder, which the inbox payload names; Bob reads it and his write comes back; no second label on a second grant
+/// The holders `status` at `db` lists as without a route to `t` (`SyncState::NoRoute`); empty
+/// when every holder has one.
+fn unrouted(db: &Osis, t: Tid) -> Vec<Tid> {
+    db.status().unwrap().groups.get(&t).filter(|g| g.state == SyncState::NoRoute).map(|g| g.unrouted.clone()).unwrap_or_default()
+}
+
+fn no_routes(db: &Osis) -> bool {
+    db.status().unwrap().groups.values().all(|g| g.state != SyncState::NoRoute)
+}
+
+// spec/sync.md §2 (Route), §3: a grant on a thing placed nowhere records the role and no more: the holder holds it, reads nothing, and both sides show him without a route; `sync` then gives the thing a label, delivered to him, and he reads and writes; a later holder of the labeled thing needs no second label
 #[test]
-fn a_grant_on_a_plain_item_reaches_the_holder() {
+fn a_grant_then_a_sync_gives_the_route() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
     let t = plain(&alice, "for bob");
     alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
     w.run();
-    assert_eq!(x(&others[0], t), Some(s("for bob")));
-    others[0].write_with(|o| o.at(t, ak("t:x.0")).set(&s("from bob"))).unwrap();
+    assert_eq!(x(bob, t), None);
+    assert_eq!(bob.roster(t).get(&ids[0]).map(|e| e.role), Some(Role::Write), "the role is held: the blob carried the granter's chain");
+    assert_eq!(unrouted(&alice, t), vec![ids[0]]);
+    assert_eq!(unrouted(bob, t), vec![ids[0]]);
+    assert!(alice.status().unwrap().groups[&t].labels.is_empty(), "no label on a grant");
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("for bob")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    assert_eq!(bob.status().unwrap().groups[&t].state, SyncState::Synced);
+    bob.write_with(|o| o.at(t, ak("t:x.0")).set(&s("from bob"))).unwrap();
     w.run();
     assert_eq!(x(&alice, t), Some(s("from bob")));
     let label = alice.status().unwrap().groups[&t].labels.clone();
     assert_eq!(label.len(), 1);
     alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
+    assert!(unrouted(&alice, t).is_empty(), "a labeled thing is a route for every holder");
     w.run();
-    assert_eq!(x(&others[1], t), Some(s("from bob")));
+    assert_eq!(x(carol, t), Some(s("from bob")));
     assert_eq!(alice.status().unwrap().groups[&t].labels, label);
 }
 
-// spec/sync.md §2: a holder who shares no label with an item in Alice's group gets it all the same; a holder who reads a label that carries it needs none of its own
+// spec/sync.md §2: synced first, then granted: a route from the start
 #[test]
-fn a_grant_makes_a_label_only_when_the_holder_reads_none_that_carries_it() {
+fn a_sync_then_a_grant() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let t = plain(&alice, "for bob");
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    assert!(unrouted(&alice, t).is_empty());
+    w.run();
+    assert_eq!(x(&others[0], t), Some(s("for bob")));
+    assert!(unrouted(&others[0], t).is_empty());
+}
+
+// spec/sync.md §2 (Route), notes/api.md Sharing: `share` syncs the thing only when the holder reads no label carrying it; a holder who reads a label that carries it, this node's own client on this person's thing, need none
+#[test]
+fn share_syncs_only_when_the_holder_has_no_route() {
     let mut w = World::new();
     let (alice, others, ids) = people(&mut w, 2);
     let g = group(&alice);
@@ -1044,28 +1079,128 @@ fn a_grant_makes_a_label_only_when_the_holder_reads_none_that_carries_it() {
     let t = item(&alice, g, g, "in g");
     w.run();
     assert_eq!(x(&others[0], t), Some(s("in g")));
-    alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
+    alice.share(t, ids[0], Role::Write, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t), "bob reads g, which carries it");
-    alice.grant(t, ids[1], Role::Read, Default::default()).unwrap();
-    assert!(alice.status().unwrap().groups.contains_key(&t), "carol reads no label of it");
+    alice.share(t, ids[1], Role::Read, Default::default()).unwrap();
+    assert!(alice.status().unwrap().groups.contains_key(&t), "carol reads no label of it: synced");
     w.run();
     assert_eq!(x(&others[1], t), Some(s("in g")));
+    let u = plain(&alice, "local");
+    let (a, _) = alice.add_client(None).unwrap();
+    alice.share(u, a, Role::Read, Default::default()).unwrap();
+    assert!(!alice.status().unwrap().groups.contains_key(&u), "a client reads what this node holds");
+    assert!(matches!(alice.share(u, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
+    assert!(!alice.status().unwrap().groups.contains_key(&u), "nothing synced for a refused share");
 }
 
-// spec/sync.md §2, spec/permissions.md §9: a link to a thing placed nowhere resolves: redeem returns and the thing reads
+// spec/sync.md §2: `unsync` after a share cuts the route, shown at both sides; synced again, the new label reaches the holder
+#[test]
+fn an_unsync_after_a_share_cuts_the_route() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let t = plain(&alice, "one");
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("one")));
+    alice.unsync(t).unwrap();
+    w.run();
+    assert_eq!(unrouted(&alice, t), vec![ids[0]]);
+    assert_eq!(unrouted(bob, t), vec![ids[0]]);
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("two"))).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("one")), "nothing carries the write");
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("two")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+}
+
+// spec/sync.md §2: a thing leaving the group that carried it leaves its holder with the role and no route; placed back, the route is back
+#[test]
+fn a_thing_leaving_its_group_loses_the_route() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "in g");
+    alice.grant(t, ids[0], Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    alice.write_with(|w| w.unplace(t, g)).unwrap();
+    w.run();
+    assert_eq!(unrouted(&alice, t), vec![ids[0]]);
+    assert_eq!(unrouted(bob, t), vec![ids[0]]);
+    alice.write_with(|w| w.place(t, g)).unwrap();
+    w.run();
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("back"))).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("back")));
+}
+
+// spec/sync.md §2: kicked from the group but keeping an edge on its item: the role stays, the route goes, `sync` of the item brings one
+#[test]
+fn losing_the_group_but_keeping_the_edge_loses_the_route() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "in g");
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g")));
+    w.until(alice.demote(g, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    assert!(bob.roster(t).contains_key(&ids[0]) && !bob.roster(g).contains_key(&ids[0]));
+    assert_eq!(unrouted(&alice, t), vec![ids[0]]);
+    assert_eq!(unrouted(bob, t), vec![ids[0]]);
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("after")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+}
+
+// spec/sync.md §2 (owner's example): T in synced G shared with Bob alone, who reads no part of G: a plain grant leaves him without a route (a reader of T alone cannot open G's label); `share` gives T its own label
+#[test]
+fn a_thing_in_a_synced_group_shared_with_an_outsider() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = group(&alice);
+    let t = item(&alice, g, g, "in g");
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), None);
+    assert_eq!(unrouted(&alice, t), vec![ids[0]]);
+    assert_eq!(unrouted(bob, t), vec![ids[0]]);
+    assert!(!bob.knows(g));
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    assert!(!bob.knows(g), "G's label stays closed to him");
+}
+
+// spec/sync.md §2, spec/permissions.md §9: a link to a thing placed nowhere resolves: the link syncs the thing (K reads its label alone), redeem returns and the thing reads
 #[test]
 fn a_link_to_a_plain_item_resolves() {
     let mut w = World::new();
     let (alice, others, _) = people(&mut w, 1);
     let t = plain(&alice, "linked");
     let link = alice.make_link(t, Role::Read, Default::default()).unwrap();
+    assert!(alice.status().unwrap().groups.contains_key(&t));
     w.run();
     assert_eq!(w.until(others[0].redeem(&link), 2000, 10).unwrap(), t);
     w.run();
     assert_eq!(x(&others[0], t), Some(s("linked")));
 }
 
-// spec/sync.md §2: a thing owned by someone else: an admin by an edge makes the label for his own grant, on his hosts; an invite edge alone cannot (`label.0` is an admin's), and the call says so and writes nothing
+// spec/sync.md §2: a thing owned by someone else: an admin by an edge shares it (the label on his hosts); an invite edge alone grants the role, cannot sync (`share` says so and writes nothing) and leaves the holder without a route
 #[test]
 fn a_grant_on_someone_elses_item() {
     let mut w = World::new();
@@ -1089,55 +1224,473 @@ fn a_grant_on_someone_elses_item() {
     let d = w.until(carol.import_contact(&card), 1000, 10).unwrap();
     w.until(bob.import_contact(&card), 1000, 10).unwrap();
     w.run();
-    let r = carol.grant(u, d, Role::Read, Default::default());
+    let r = carol.share(u, d, Role::Read, Default::default());
     assert!(matches!(r, Err(osis::Error::Permission { tid, .. }) if tid == u), "{r:?}");
-    assert!(!carol.status().unwrap().groups.contains_key(&u));
-    assert!(!carol.roster(u).contains_key(&d));
-    bob.grant(t, d, Role::Read, Default::default()).unwrap();
+    assert!(!carol.roster(u).contains_key(&d), "nothing written");
+    carol.grant(u, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(unrouted(carol, u), vec![d]);
+    assert_eq!(x(dan, u), None);
+    bob.share(t, d, Role::Read, Default::default()).unwrap();
     w.run();
     assert_eq!(x(dan, t), Some(s("alice's")));
+    assert!(unrouted(bob, t).is_empty());
 }
 
-// spec/sync.md §2: a grant to a client of this node, or a refused grant, makes no label: the thing stays as local as it was
+// spec/sync.md §3: a grant to a group, the item placed nowhere: the admin's copy under the group's label tells its readers of the role and the missing route; `sync` of the item is delivered to the group and copied too, so they read it, a later reader as well; no placement, nothing split; and the edge's end reaches them
+#[test]
+fn a_grant_to_a_group_reaches_its_readers() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let h = group(&alice);
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    let t = plain(&alice, "for h");
+    alice.grant(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), None);
+    assert!(bob.roster(t).contains_key(&h), "the group's reader learns the role under its label");
+    assert_eq!(unrouted(&alice, t), vec![h]);
+    assert_eq!(unrouted(bob, t), vec![h]);
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("for h")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    assert!(bob.groups_of(t).item_of.is_empty() && alice.groups_of(t).item_of.is_empty(), "no placement");
+    assert!(bob.status().unwrap().split.is_empty() && alice.status().unwrap().split.is_empty());
+    assert!(write_refused(bob, t), "read only");
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("later"))).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("later")));
+    // a later reader finds it under the group's label
+    alice.grant(h, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(carol, t), Some(s("later")));
+    // and the edge's end reaches them
+    w.until(alice.demote(t, h, Lower::Remove, Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.run();
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    w.run();
+    assert_ne!(x(bob, t), Some(s("after")));
+    assert_ne!(x(carol, t), Some(s("after")));
+}
+
+// spec/sync.md §3: the grant's blob long gone from the group's inbox, the thing's first `label.0` write comes as a blob of its own and the admin copies the label from it: a sync long after the grant still reaches the group's readers
+#[test]
+fn a_sync_long_after_the_grant_reaches_the_groups_readers() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let h = group(&alice);
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    let t = plain(&alice, "for h");
+    alice.grant(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(unrouted(bob, t), vec![h]);
+    for _ in 0..4 {
+        w.advance(osis::schema::osis_base::format::INBOX_LIFETIME_MS / 2 + 3_600_000);
+        w.run();
+    }
+    assert_eq!(x(bob, t), None);
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("for h")));
+    assert!(unrouted(bob, t).is_empty());
+}
+
+// spec/sync.md §3: a co-admin who never met the group syncs the thing: no blob reaches the group (he cannot seal to it), but the owner's device learns the label under a group that carries the thing and copies it from the grant's blob: the group's readers read
+#[test]
+fn a_sync_by_a_co_admin_who_never_met_the_group_reaches_its_readers() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let h = group(&alice);
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    let g2 = group(&alice);
+    alice.grant(g2, ids[1], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g2, g2, "in g2");
+    alice.grant(t, ids[1], Role::Admin, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(carol, t), Some(s("in g2")));
+    alice.grant(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(unrouted(bob, t), vec![h], "bob reads h, not g2");
+    assert!(!carol.knows(h));
+    carol.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in g2")));
+    assert!(unrouted(bob, t).is_empty() && unrouted(&alice, t).is_empty());
+}
+
+// spec/sync.md §2 (Home label): a grant to one's own group with no label records the role; the group's readers (there are none yet) have no route until `sync`; synced, the group's label carries the copy and its items
+#[test]
+fn a_grant_to_a_group_with_no_label() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let h = alice.write_with(|w| {
+        let g = w.create(alice.me())?;
+        w.make_group(g)?;
+        Ok(g)
+    })
+    .unwrap();
+    let private = alice.write_with(|w| {
+        let t = w.create_in(h, &[h])?;
+        w.at(t, ak("t:x.0")).set(&s("private"))?;
+        Ok(t)
+    })
+    .unwrap();
+    let t = plain(&alice, "before");
+    alice.grant(t, h, Role::Read, Default::default()).unwrap();
+    assert!(!alice.status().unwrap().groups.contains_key(&h), "not lifted");
+    assert!(unrouted(&alice, t).is_empty(), "nobody but Alice reads her group: nothing is missed");
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    assert_eq!(unrouted(&alice, t), vec![h], "Bob reads it, and nothing carries it");
+    assert_eq!(unrouted(&alice, h), vec![ids[0]]);
+    alice.sync(h, &[]).unwrap();
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("before")));
+    assert_eq!(x(bob, private), Some(s("private")));
+}
+
+// spec/sync.md §2 (Route): a thing placed in a synced group its actor may not read is not carried there (it is excluded): a holder who reads the group has no route to it, the status says so, and `share` makes the route
+#[test]
+fn an_excluded_thing_is_no_route_through_its_group() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let g = alice.write_with(|w| {
+        let g = w.create(alice.me())?;
+        w.make_group(g)?;
+        Ok(g)
+    })
+    .unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    let t = plain(&alice, "excluded");
+    alice.write_with(|w| w.place(t, g)).unwrap();
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(x(bob, t), None);
+    assert_eq!(unrouted(&alice, t), vec![ids[0]], "the granter");
+    assert_eq!(unrouted(bob, t), vec![ids[0]], "the holder");
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("excluded")));
+}
+
+// spec/sync.md §2 (Route): a subgroup holding an item, the subgroup synced only through its parent: the parent's readers read the item through it, so nobody lacks a route (the subgroup's edge is what looks unrouted: it reads no label, the label reads it)
+#[test]
+fn a_holder_read_through_a_synced_group_has_a_route() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let group = |text: &str| {
+        alice
+            .write_with(|w| {
+                let g = w.create(alice.me())?;
+                w.make_group(g)?;
+                w.at(g, ak("t:x.0")).set(&s(text))?;
+                Ok(g)
+            })
+            .unwrap()
+    };
+    let g = group("parent");
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    let sub = group("sub");
+    let t = plain(&alice, "deep");
+    alice.share_into(sub, g, Role::Read, osis::ShareOpts { subgroup: true, ..Default::default() }).unwrap();
+    alice.share_into(t, sub, Role::Read, Default::default()).unwrap();
+    alice.write_with(|w| w.place(sub, g)).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("deep")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+    assert!(unrouted(&alice, sub).is_empty() && unrouted(bob, sub).is_empty());
+}
+
+// spec/sync.md §2 (Route): what nobody misses shows no missing route: an ownerless thing and a local group's items here, at their only reader; a thing a removed reader's node still holds the roster of; a thing whose roster reached a reader as a writer's chain, its label unknown there
+#[test]
+fn no_missing_route_where_nobody_misses_one() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, frank) = (&others[0], &others[1]);
+    let o = alice.create_ownerless(alice.me()).unwrap();
+    w.run();
+    assert!(unrouted(&alice, o).is_empty(), "local, as any thing placed nowhere");
+    let p = crate::scenario::private_tag(&alice, "private").unwrap();
+    let t = plain(&alice, "tagged");
+    alice.share_into(t, p, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(unrouted(&alice, t).is_empty(), "a private tag in home");
+    // a group Bob leaves behind: he read its item; he has no business with its route now
+    let g = alice.write_with(|w| {
+        let g = w.create(alice.me())?;
+        w.make_group(g)?;
+        Ok(g)
+    })
+    .unwrap();
+    alice.sync(g, &[]).unwrap();
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    let item = plain(&alice, "item");
+    alice.share_into(item, g, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, item), Some(s("item")));
+    w.until(alice.demote(g, ids[0], osis::Lower::Remove, osis::Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 20).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(x(bob, item), None);
+    assert!(unrouted(bob, item).is_empty(), "no business of Bob's now");
+    assert!(no_routes(bob));
+    // a writer's chain through a thing whose label Bob does not read
+    let owner = alice.write_with(|w| {
+        let g = w.create(alice.me())?;
+        w.make_group(g)?;
+        Ok(g)
+    })
+    .unwrap();
+    alice.sync(owner, &[]).unwrap();
+    alice.grant(owner, ids[1], Role::Admin, Default::default()).unwrap();
+    w.run();
+    let shared = alice
+        .write_with(|w| {
+            let c = w.create(owner)?;
+            w.at(c, ak("t:x.0")).set(&s("shared"))?;
+            Ok(c)
+        })
+        .unwrap();
+    alice.sync(shared, &[]).unwrap();
+    alice.grant(shared, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    frank.write_with(|w| w.at(shared, ak("t:x.0")).set(&s("by frank"))).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(x(bob, shared), Some(s("by frank")));
+    assert!(no_routes(bob), "Frank's edge on the owner reached Bob as his chain");
+}
+
+// spec/sync.md §2, notes/api.md (`wait_synced`): a thing with no route has no label to wait for: `Unsynced` at once, not a wait for its row in the status
+#[test]
+fn waiting_on_a_thing_with_no_route_fails_at_once() {
+    let mut w = World::new();
+    let (alice, _, ids) = people(&mut w, 1);
+    let t = plain(&alice, "t");
+    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
+    let f = alice.wait_synced(SyncScope::Group(t), std::time::Duration::from_secs(3600));
+    assert!(matches!(w.until(f, 1, 1), Err(osis::Error::Unsynced { .. })));
+}
+
+// spec/sync.md §2: a grant to a node that reads nothing of the thing is recorded and shown without a route (no inbox can tell it; a node is reached through its person); one that reads it sees the edge
+#[test]
+fn a_grant_to_a_bare_node() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let t = plain(&alice, "t");
+    alice.grant(t, bob.node(), Role::Read, Default::default()).unwrap();
+    assert!(alice.roster(t).contains_key(&bob.node()));
+    assert_eq!(unrouted(&alice, t), vec![bob.node()]);
+    alice.share(t, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("t")));
+    assert!(unrouted(&alice, t).is_empty(), "its person reads it");
+    alice.grant(t, bob.node(), Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(bob.roster(t).get(&bob.node()).map(|e| e.role), Some(Role::Write));
+}
+
+// spec/permissions.md §1, spec/sync.md §2: an ownerless group's inbox is its own label: its readers read the grant from there, and the admin's copy serves later ones
+#[test]
+fn a_grant_to_an_ownerless_group() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, carol) = (&others[0], &others[1]);
+    let f = alice.create_ownerless(alice.me()).unwrap();
+    alice.sync(f, &[]).unwrap();
+    alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    let t = plain(&alice, "for f");
+    alice.share(t, f, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("for f")));
+    alice.grant(f, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(carol, t), Some(s("for f")));
+}
+
+// spec/sync.md §3: a reader's share to an ownerless group reaches the other readers from its inbox with the admin offline; only an admin copies it, so what the label takes is the same with more readers
+#[test]
+fn a_grant_to_a_group_is_copied_only_by_its_admin() {
+    let took = |readers: usize| {
+        let mut w = World::new();
+        let (alice, others, ids) = people(&mut w, readers);
+        let f = alice.create_ownerless(alice.me()).unwrap();
+        alice.sync(f, &[]).unwrap();
+        for id in &ids {
+            alice.grant(f, *id, Role::Read, Default::default()).unwrap();
+        }
+        w.run();
+        w.set_online(&alice, false);
+        let label = alice.status().unwrap().groups[&f].labels[0];
+        let log = |w: &World| osis_proto::store::LabelStore::log_head(w.hosts[0].hub.store(), &label).unwrap().1;
+        let before = log(&w);
+        let t = plain(&others[0], "for f");
+        others[0].share(t, f, Role::Read, Default::default()).unwrap();
+        w.run();
+        for o in &others {
+            assert_eq!(x(o, t), Some(s("for f")));
+        }
+        log(&w) - before
+    };
+    assert_eq!(took(2), took(4));
+}
+
+// spec/sync.md §3, notes/chat-designs/e-factions.md: factions nest by grants to groups: a reader of the top reads the child and what the child holds, whichever grant came first
+#[test]
+fn grants_to_groups_nest() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let (p, k) = (group(&alice), group(&alice));
+    let t = plain(&alice, "in k");
+    alice.share(t, k, Role::Read, Default::default()).unwrap();
+    alice.grant(k, p, Role::Read, Default::default()).unwrap();
+    w.run();
+    alice.grant(p, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("in k")));
+    let u = plain(&alice, "later in k");
+    alice.share(u, k, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, u), Some(s("later in k")));
+}
+
+// spec/sync.md §2: an ownerless group's label is its inbox, with every chunk of its content: a reader tries none of them as an inbox blob
+#[test]
+fn chunks_under_an_inbox_label_cost_no_kem() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let bob = &others[0];
+    let f = alice.create_ownerless(alice.me()).unwrap();
+    alice.sync(f, &[]).unwrap();
+    alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    let before = bob.sync_engine(|e| e.pass_stats().inbox_tries);
+    let big: String = (0..3_000_000u32).map(|i| char::from(b'a' + ((i.wrapping_mul(2654435761) >> 13) % 26) as u8)).collect();
+    let t = alice
+        .write_with(|w| {
+            let t = w.create_in(f, &[f])?;
+            w.at(t, ak("t:x.0")).set(&Value::Str(big.clone()))?;
+            Ok(t)
+        })
+        .unwrap();
+    w.run();
+    assert!(x(bob, t).is_some());
+    assert_eq!(bob.sync_engine(|e| e.pass_stats().inbox_tries), before);
+}
+
+// spec/sync.md §3, spec/wire.md §9: a grant to a group by someone who reads no part of it: the inbox blob carries his chain, so the group's admin applies it with the thing still unsynced and copies it, and a reader who never met him verifies it; synced later, they read it
+#[test]
+fn a_grant_to_a_group_by_an_outsider() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 2);
+    let (bob, dave) = (&others[0], &others[1]);
+    let h = group(&alice);
+    // dave learns the group's keys and meets alice through a thing the group held, and is gone before bob comes
+    let m = plain(&alice, "meeting");
+    alice.share(m, h, Role::Read, Default::default()).unwrap();
+    alice.share(m, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dave, m), Some(s("meeting")));
+    w.until(alice.demote(m, h, Lower::Remove, Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }), 1000, 10).unwrap();
+    w.run();
+    let t = plain(dave, "dave's");
+    dave.grant(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(alice.invite_requests().unwrap().is_empty(), "connected");
+    assert!(alice.roster(t).contains_key(&h), "applied without a label of the thing");
+    assert_eq!(unrouted(&alice, t), vec![h]);
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(bob.roster(t).contains_key(&h), "copied under the group's label with his chain");
+    dave.sync(t, &[]).unwrap();
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("dave's")));
+    assert_eq!(x(bob, t), Some(s("dave's")));
+    assert!(unrouted(&alice, t).is_empty() && unrouted(bob, t).is_empty());
+}
+
+// spec/sync.md §2: a grant to a holder whose inbox is not known here (an outsider knows the ownerless group's keys, not its label) is recorded all the same: nothing can tell the holder, and `status` shows it without a route
+#[test]
+fn a_grant_to_a_holder_nothing_reaches() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let dave = &others[0];
+    let f = alice.create_ownerless(alice.me()).unwrap();
+    alice.sync(f, &[]).unwrap();
+    let m = plain(&alice, "meeting");
+    alice.share(m, f, Role::Read, Default::default()).unwrap();
+    alice.share(m, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dave, m), Some(s("meeting")));
+    let t = plain(dave, "dave's");
+    dave.grant(t, f, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert!(dave.roster(t).contains_key(&f));
+    assert_eq!(unrouted(dave, t), vec![f]);
+    assert!(!alice.knows(t));
+}
+
+// spec/sync.md §6, spec/permissions.md §4: an admin by an edge on a group's item reaches a holder outside the group: he keeps the creation records of its owner chain under the item's label, though their commit wrote more
+#[test]
+fn a_grant_on_a_group_owned_item_by_an_admin_edge() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 3);
+    let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
+    let t = item(&alice, g, g, "group's");
+    alice.sync(t, &[]).unwrap();
+    alice.grant(t, ids[0], Role::Admin, Default::default()).unwrap();
+    let card = dan.contact_card().unwrap();
+    w.run();
+    let d = w.until(bob.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    bob.grant(t, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dan, t), Some(s("group's")));
+    assert_eq!(x(carol, t), Some(s("group's")));
+    // the same with the label made by bob's share
+    let u = item(&alice, g, g, "u");
+    alice.grant(u, ids[0], Role::Admin, Default::default()).unwrap();
+    w.run();
+    bob.share(u, d, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dan, u), Some(s("u")));
+}
+
+// spec/sync.md §2: a grant to a client of this node, or a refused grant, makes no label and shows no missing route: the thing stays as local as it was
 #[test]
 fn a_grant_to_a_client_or_a_refused_one_makes_no_label() {
     let mut w = World::new();
-    let (alice, _, _) = people(&mut w, 1);
+    let (alice, _, ids) = people(&mut w, 1);
     let t = plain(&alice, "local");
     let (a, _) = alice.add_client(None).unwrap();
     alice.grant(t, a, Role::Read, Default::default()).unwrap();
     assert!(!alice.status().unwrap().groups.contains_key(&t));
     assert!(matches!(alice.grant(t, Tid::from_bytes([9; 15]), Role::Read, Default::default()), Err(osis::Error::UnknownActor { .. })));
-    assert!(!alice.status().unwrap().groups.contains_key(&t));
-}
-
-// spec/sync.md §2: a grant refused for any reason makes no label
-#[test]
-fn a_refused_grant_makes_no_label() {
-    let mut w = World::new();
-    let (alice, _, ids) = people(&mut w, 1);
-    let t = plain(&alice, "local");
     let r = alice.grant(t, ids[0], Role::Read, osis::EdgeOpts { invite: Some(Role::Write), ..Default::default() });
     assert!(matches!(r, Err(osis::Error::Invalid(_))), "{r:?}");
     assert!(!alice.status().unwrap().groups.contains_key(&t));
-}
-
-// spec/sync.md §2: a crash between a grant's edge and its label leaves the edge alone: the call was never acknowledged, the holder reads nothing, and the same grant again makes the label and reaches him
-#[test]
-fn a_grant_again_makes_the_label_a_crash_left_out() {
-    let mut w = World::new();
-    let (alice, others, ids) = people(&mut w, 1);
-    let t = plain(&alice, "for bob");
-    // the first half of `Osis::grant`, its result dropped as a crash would
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
-    alice.engine(|e| e.grant(&t, &ids[0], &edge).map(drop)).unwrap();
-    w.run();
-    assert_eq!(x(&others[0], t), None);
-    assert!(!alice.status().unwrap().groups.contains_key(&t));
-    alice.grant(t, ids[0], Role::Read, Default::default()).unwrap();
-    assert!(alice.status().unwrap().groups.contains_key(&t));
-    w.run();
-    assert_eq!(x(&others[0], t), Some(s("for bob")));
 }
 
 // spec/permissions.md §3, Keep: a removal keeping leaves the holder's database a read-only copy it
@@ -1248,4 +1801,143 @@ fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
     w.run();
     assert_eq!(x(&db, t), None, "the device erases");
     assert!(db.kept_copies().unwrap().is_empty());
+}
+
+fn skip() -> Demotion {
+    Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }
+}
+
+// spec/permissions.md §2, §3: a reader removed from a group a thing was granted to reads nothing written after; another reader and a later one do
+#[test]
+fn kicked_from_a_group_ends_what_it_holds() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 4);
+    let (bob, carol, dan, erin) = (&others[0], &others[1], &others[2], &others[3]);
+    let h = group(&alice);
+    alice.grant(h, ids[0], Role::Write, Default::default()).unwrap();
+    alice.grant(h, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    let t = plain(&alice, "one");
+    alice.share(t, h, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(bob, t), Some(s("one")));
+    bob.write_with(|w| w.at(t, ak("t:x.0")).set(&s("bob's"))).unwrap();
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("bob's")));
+    w.until(alice.demote(h, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    w.run();
+    assert_ne!(x(bob, t), Some(s("after")));
+    assert_eq!(x(carol, t), Some(s("after")));
+    assert!(write_refused(bob, t), "write role went with the group");
+    // the group's later reader reads the newest, and through history
+    alice.grant(h, ids[2], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dan, t), Some(s("after")));
+    // the edge's end is under the group's label too: a reader after it reads nothing later
+    w.until(alice.demote(t, h, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("edge gone"))).unwrap();
+    w.run();
+    alice.grant(h, ids[3], Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(erin.role_on(t), None);
+    assert_ne!(x(erin, t), Some(s("edge gone")));
+    assert_ne!(x(dan, t), Some(s("edge gone")));
+}
+
+// spec/permissions.md §2, §3: the same two levels down, and a link joiner of the group
+#[test]
+fn kicked_from_a_nested_group_or_by_link_ends_what_it_holds() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 3);
+    let (bob, carol, dan) = (&others[0], &others[1], &others[2]);
+    let (p, k) = (group(&alice), group(&alice));
+    let t = plain(&alice, "one");
+    alice.share(t, k, Role::Read, Default::default()).unwrap();
+    alice.grant(k, p, Role::Read, Default::default()).unwrap();
+    alice.grant(p, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(p, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    let link = alice.make_link(p, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(dan.redeem(&link), 1000, 10).unwrap(), p);
+    w.run();
+    assert_eq!(x(bob, t), Some(s("one")));
+    assert_eq!(x(dan, t), Some(s("one")), "joiner");
+    w.until(alice.demote(p, ids[0], Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("after"))).unwrap();
+    w.run();
+    assert_ne!(x(bob, t), Some(s("after")));
+    assert_eq!(x(carol, t), Some(s("after")));
+    assert_eq!(x(dan, t), Some(s("after")));
+    w.until(alice.demote(p, dan.me(), Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    alice.write_with(|w| w.at(t, ak("t:x.0")).set(&s("last"))).unwrap();
+    w.run();
+    assert_ne!(x(dan, t), Some(s("last")));
+    assert_eq!(x(carol, t), Some(s("last")));
+}
+
+// spec/sync.md §3: with both admins away a reader's grant to the group waits under its label: back, they apply it and copy it, and a later reader reads it
+#[test]
+fn a_grant_to_a_group_with_the_admin_away_and_two_admins() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 3);
+    let (bob, eve, dave) = (&others[0], &others[1], &others[2]);
+    let f = alice.create_ownerless(alice.me()).unwrap();
+    alice.sync(f, &[]).unwrap();
+    alice.grant(f, ids[0], Role::Read, Default::default()).unwrap();
+    alice.grant(f, ids[1], Role::Admin, Default::default()).unwrap();
+    w.run();
+    // bob, a reader, grants with both admins away: readers read it; later readers need an admin
+    w.set_online(&alice, false);
+    w.set_online(eve, false);
+    let t = plain(bob, "for f");
+    bob.share(t, f, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.set_online(&alice, true);
+    w.set_online(eve, true);
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("for f")));
+    assert_eq!(x(eve, t), Some(s("for f")));
+    alice.grant(f, ids[2], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dave, t), Some(s("for f")));
+}
+
+// spec/sync.md §3: two admins copy an outsider's grant from the inbox with his chain just received: a later reader finds it whatever order they went in
+#[test]
+fn a_grant_to_a_group_by_an_outsider_with_two_admins() {
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 3);
+    let (bob, dave, eve) = (&others[0], &others[1], &others[2]);
+    let h = group(&alice);
+    alice.grant(h, ids[2], Role::Admin, Default::default()).unwrap();
+    w.run();
+    let m = plain(&alice, "meeting");
+    alice.share(m, h, Role::Read, Default::default()).unwrap();
+    alice.share(m, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(dave, m), Some(s("meeting")));
+    w.until(alice.demote(m, h, Lower::Remove, skip()), 1000, 10).unwrap();
+    w.run();
+    let t = plain(dave, "dave's");
+    dave.share(t, h, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(x(&alice, t), Some(s("dave's")));
+    assert_eq!(x(eve, t), Some(s("dave's")));
+    w.advance(60_000);
+    w.run();
+    alice.grant(h, ids[0], Role::Read, Default::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(x(bob, t), Some(s("dave's")));
 }

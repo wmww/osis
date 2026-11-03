@@ -56,6 +56,20 @@ impl Engine {
         Some((c, ais))
     }
 
+    /// Every applied commit with a valid delta on `(tid, ak)`, with its aspects there.
+    pub fn aspect_commits(&self, tid: &Tid, ak: &str) -> Vec<(CommitId, BTreeSet<usize>)> {
+        let Some(held) = Ak::new(ak).ok().and_then(|k| self.core.ix.by_aspect.get(&(*tid, k))) else { return Vec::new() };
+        let mut out = Vec::new();
+        for (_, c) in held {
+            let Some(m) = self.core.ix.commits.get(c).filter(|_| !self.core.ix.pending.contains_key(c)) else { continue };
+            let ais: BTreeSet<usize> = m.header.aspects.iter().enumerate().filter(|(i, a)| a.tid == *tid && a.ak.as_str() == ak && m.valid_at(*i)).map(|(i, _)| i).collect();
+            if !ais.is_empty() {
+                out.push((*c, ais));
+            }
+        }
+        out
+    }
+
     /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
     /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
@@ -326,8 +340,10 @@ impl Engine {
     /// a verifier needs to judge them as this node does (their own authors' chain certificates;
     /// spec/permissions.md §4): applied edge writes lowering an author's edge on a thing outside
     /// `closure` (inside it they are closure bodies), and roster snapshots of such things naming
-    /// an author, projected to the authors.
-    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {
+    /// an author, projected to the authors. Keysets only of actors reading `actor`, the label's:
+    /// its rotators seal to those; a verifier needs none, and a thing the author left has a fresh
+    /// deposit seed that is not for the label's readers.
+    pub fn revoke_certificates(&mut self, authors: &BTreeSet<Tid>, closure: &BTreeSet<Tid>, actor: &Tid) -> BTreeMap<CommitId, Parts> {
         let mut found: Vec<osis_perm::Certificates> = Vec::new();
         for m in authors {
             let Some(tl) = self.core.timelines.get(m) else { continue };
@@ -352,6 +368,7 @@ impl Engine {
                     for holders in cs.snapshots.values_mut() {
                         holders.retain(|x| authors.contains(x));
                     }
+                    cs.keys.retain(|t| self.core.may_read(t, actor));
                     found.push(cs);
                 }
             }

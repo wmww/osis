@@ -41,6 +41,10 @@ pub struct InboxPayload {
     /// recipient).
     pub commit: Value,
     pub things: Vec<InboxThing>,
+    /// The author's chain certificates for the commit's carried parts (spec/permissions.md §4), as
+    /// `CommitBlobPlaintext` values each projected to its chain deltas, so the recipient verifies
+    /// the commit without reading any label of the things it names (spec/wire.md §9).
+    pub chain: Vec<Value>,
 }
 
 impl InboxPayload {
@@ -57,12 +61,15 @@ impl InboxPayload {
                 Value::List(t.delete_keys.iter().map(|(a, w)| Value::List(vec![Value::bytes(&a.to_bytes()), Value::bytes(&w.to_bytes())])).collect()),
             ]));
         }
-        Ok(Value::List(vec![self.commit.clone(), Value::List(things)]))
+        Ok(Value::List(vec![self.commit.clone(), Value::List(things), Value::List(self.chain.clone())]))
     }
 
     pub fn from_value(v: &Value) -> Result<InboxPayload, Error> {
         let Value::List(items) = v else { return Err(Error::Malformed("inbox payload")) };
-        let [commit @ Value::List(_), Value::List(things)] = items.as_slice() else { return Err(Error::Malformed("inbox payload")) };
+        let [commit @ Value::List(_), Value::List(things), Value::List(chain)] = items.as_slice() else { return Err(Error::Malformed("inbox payload")) };
+        if !chain.iter().all(|c| matches!(c, Value::List(_))) {
+            return Err(Error::Malformed("inbox chain"));
+        }
         let mut out: Vec<InboxThing> = Vec::with_capacity(things.len());
         for t in things {
             let Value::List(f) = t else { return Err(Error::Malformed("inbox thing")) };
@@ -91,7 +98,7 @@ impl InboxPayload {
             }
             out.push(InboxThing { tid, label, delete_keys });
         }
-        Ok(InboxPayload { commit: commit.clone(), things: out })
+        Ok(InboxPayload { commit: commit.clone(), things: out, chain: chain.clone() })
     }
 }
 
@@ -126,6 +133,7 @@ mod tests {
     fn payload() -> InboxPayload {
         let a = Address { url: "quic://s".into(), key: [1; 32] };
         InboxPayload {
+            chain: vec![Value::List(vec![Value::List(vec![]), Value::Int(1), Value::List(vec![])])],
             commit: Value::List(vec![Value::List(vec![]), Value::Int(0), Value::List(vec![])]),
             things: vec![
                 InboxThing { tid: Tid::from_bytes([1; 15]), label: Some(InboxLabel { id: LabelId([2; 16]), index: 0, hosts: vec![a.clone()] }), delete_keys: None },

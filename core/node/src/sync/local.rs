@@ -169,13 +169,18 @@ impl SyncEngine {
         }
         let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
         let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
+        let want = self.engine.header(c).map(|h| super::pass::parts_of(&h, |i| aspects.contains(&i))).unwrap_or_default();
         for (l, hosts) in labels {
-            if self.state.certs.contains(&(l, *c)) {
+            // by part: a chain may have copied this commit's edge here, and a later copy wants its
+            // boxes. A copy placed and gone since is not placed again
+            let mine: BTreeSet<(usize, usize)> = self.state.entries_of(&l, c).filter(|(_, e)| e.cert).filter_map(|(_, e)| if let Kind::Commit { parts, .. } = &e.kind { Some(parts.clone()) } else { None }).flatten().collect();
+            if self.state.certs.contains(&(l, *c)) && (mine.is_empty() || want.is_subset(&mine)) {
                 continue;
             }
+            let parts: BTreeSet<(usize, usize)> = want.difference(&mine).copied().collect();
             let deposit = seed.as_ref().map(|s| osis_crypto::deposit_key(s, &l));
             // nothing to place once its parts are dropped here (`State::sweep_certs`)
-            let bodies = self.engine.partial_bodies(c, aspects)?;
+            let bodies = self.engine.part_bodies(c, &parts)?;
             if bodies.is_empty() {
                 continue;
             }
@@ -192,7 +197,6 @@ impl SyncEngine {
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
                 self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt } });
             }
-            let parts = self.engine.header(c).map(|h| super::pass::parts_of(&h, |i| aspects.contains(&i))).unwrap_or_default();
             self.place_linked(l, c, &parts)?;
             if let Some(d) = &deposit {
                 for id in self.engine.linked_blobs(c, &parts)? {
@@ -277,7 +281,7 @@ impl SyncEngine {
         }
         let commit = osis_base::decode(&cut.encode(), &osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_MESSAGE })
             .map_err(|_| Error::Corrupt("commit blob"))?;
-        let payload = InboxPayload { commit, things };
+        let payload = InboxPayload { commit, things, chain: Vec::new() };
         let blob = osis_label::seal_inbox_blob(recipient, &kem, &payload, self.engine.now(), &mut *self.rng)?;
         self.queue_inbox(&owner, inbox.label, &inbox.hosts, blob, None)?;
         Ok(self.handle(super::Event::Local))
@@ -305,7 +309,20 @@ impl SyncEngine {
             // a re-sent removal notice names no label: a removed holder must not learn the
             // target's current one
             let things = if s.edge_only && !first { Vec::new() } else { s.things.clone() };
-            let r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts));
+            // with the author's chain for what it carries when a named thing has no label (the
+            // holder has nothing to read the chain from, so it would hold the grant pending and
+            // show no state; a labeled thing's label carries it, as before); a chain that does
+            // not fit the blob goes without (the holder then waits for the thing's label)
+            let unlabeled = things.iter().any(|t| !self.engine.labeled(t));
+            let carried = self.engine.header(&s.commit).map(|h| super::pass::parts_of(&h, |ai| !s.edge_only || h.aspects.get(ai).is_some_and(|a| a.ak.as_str() == "roles.0"))).unwrap_or_default();
+            // a grant's or re-seal's recipient reads the thing: its `keys.0` goes along (a
+            // removal's does not: the fresh deposit seed is not for the departed)
+            let keys_of: Vec<Tid> = if s.edge_only { Vec::new() } else { s.things.clone() };
+            let chain = if unlabeled { self.inbox_chain(&s.commit, &carried, &keys_of)? } else { Vec::new() };
+            let mut r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, chain));
+            if r.is_err() {
+                r = self.engine.run(|tx| crate::flows::edges::deliver_parts(tx, s.holder, s.commit, &things, parts, Vec::new()));
+            }
             // a new seal replaces the earlier one still queued
             self.drop_delivery_out(&s.holder, &s.commit);
             let mut sent = false;
@@ -378,12 +395,39 @@ impl SyncEngine {
         Ok(true)
     }
 
-    /// Whether `holder` is still a current holder of a thing whose edges or secrets commit `c`
-    /// writes (a grant or re-seal is re-sent only while the holder holds what it gave; a removal
-    /// since then must not hand it the target's current label).
+    /// The author's chain certificates for `parts` of `c` (`chain_under`: without any `keys.0`
+    /// but the author's own) and the current `keys.0` of each of `keys_of` (the things a grant
+    /// boxes the recipient on: it reads them, and judges them by their keyset) as plaintext commit
+    /// values, each projected to those deltas: an inbox payload's `chain` (spec/wire.md §9).
+    /// Empty for a commit not applied here.
+    fn inbox_chain(&mut self, c: &CommitId, parts: &BTreeSet<(usize, usize)>, keys_of: &[Tid]) -> Result<Vec<osis_base::Value>> {
+        let mut out = Vec::new();
+        let mut chain = self.chain_under(c, parts).unwrap_or_default();
+        for t in keys_of {
+            if let Some((x, ais)) = self.engine.aspect_commit(t, "keys.0")
+                && let Some(h) = self.engine.header(&x)
+            {
+                chain.entry(x).or_default().extend(super::pass::parts_of(&h, |i| ais.contains(&i)));
+            }
+        }
+        for (x, q) in chain {
+            let Some(mut blob) = self.engine.run(|tx| tx.get_commit(&x))? else { continue };
+            blob.parts.retain(|p| q.contains(&(p.ai, p.di)));
+            if blob.parts.is_empty() {
+                continue;
+            }
+            let limits = osis_base::Limits { max_depth: osis_base::format::MAX_OBJECT_DEPTH, max_bytes: osis_base::format::MAX_BLOB };
+            out.push(osis_base::decode(&blob.encode(), &limits).map_err(|_| Error::Corrupt("commit blob"))?);
+        }
+        Ok(out)
+    }
+
+    /// Whether `holder` is still a current holder of a thing whose edges, secrets or labels
+    /// commit `c` writes (a grant, re-seal or new label is re-sent only while the holder holds
+    /// what it gave; a removal since then must not hand it the target's current label).
     fn still_holder(&self, holder: &Tid, c: &CommitId) -> bool {
         let Some(h) = self.engine.header(c) else { return false };
-        let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0")).map(|a| a.tid).collect();
+        let targets: BTreeSet<Tid> = h.aspects.iter().filter(|a| matches!(a.ak.as_str(), "roles.0" | "secrets.0" | "label.0")).map(|a| a.tid).collect();
         targets.iter().any(|t| self.engine.core.current_holders(t).iter().any(|(m, _, _)| m == holder))
     }
 
