@@ -17,5 +17,6 @@ workspace = true
 osis.workspace = true
 
 [dev-dependencies]
+osis-label.workspace = true
 osis-sim.workspace = true
 osis-transport.workspace = true
