@@ -263,6 +263,31 @@ fn request_outside_the_frontier_drops_nothing_spec_perm_8() {
     assert!(e.purged_on(&t, &ak("t:reg.0")).unwrap().is_empty());
 }
 
+// spec/commits.md §5: a purge request naming role-class deltas is refused on arrival, signed or not;
+// the purge judgments (`retention::purge`) rely on never seeing one.
+#[test]
+fn forged_role_class_purge_refused_spec_commits_5() {
+    let mut lp = net(2, 0x63);
+    let t = new_thing(&mut lp, 0);
+    lp.sync_all().unwrap();
+    let c = set(&mut lp, 0, t, &KEPT, "one");
+    lp.advance(1);
+    let ts = lp.peers[0].engine.header(&c).unwrap().ts;
+    let key = ak("t:kept.0");
+    let forged = |lp: &mut LocalPeer, on: &str| {
+        let bytes = forge_snapshot(lp, 1, t, &key, ts, osis_crdt::Fragment::default());
+        let mut blob = osis_commit::CommitBlob::decode(&bytes).unwrap();
+        blob.header.purge = vec![PurgeItem::Aspect { tid: t, ak: ak(on) }];
+        blob.signature = blob.header.sign(&lp.peers[1].engine.identity().keys().signing);
+        blob.encode()
+    };
+    let role = forged(&mut lp, "roles.0");
+    let err = lp.peers[0].engine.ingest(&role, Vec::new()).unwrap_err();
+    assert!(err.to_string().contains("role-class"), "{err}");
+    let content = forged(&mut lp, "t:kept.0");
+    lp.peers[0].engine.ingest(&content, Vec::new()).unwrap();
+}
+
 // spec/permissions.md §8: a node that dropped the body before it heard of the demotion: the purge
 // falls, the part counts as never received, and a copy brings the value back; as the order that had
 // the demotion first reads.
