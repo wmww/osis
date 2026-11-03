@@ -20,7 +20,7 @@ fn open(dir: &std::path::Path, clock: Arc<ManualClock>, policy: HostPolicy, seed
 }
 
 fn put(b: &[u8]) -> Put<'_> {
-    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; 49], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 }
+    Put { blob_id: osis_label::blob_id(b), blob: b, wrap: [1; osis_crypto::WRAP_LEN], stamp: Some(Signature([2; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 }
 }
 
 // spec/sync.md §4: registration path, entries, pending deletions, tombstones and the log persist in the file; a reopened node resumes sweeps

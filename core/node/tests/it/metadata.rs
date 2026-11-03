@@ -20,7 +20,7 @@ fn contains(hay: &[u8], needle: &[u8]) -> bool {
 }
 
 /// Every live blob a host holds, per label, with its wrap.
-fn stored(net: &Net, host: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; 49])> {
+fn stored(net: &Net, host: usize) -> Vec<(LabelId, BlobId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])> {
     let s = &net.hosts[host];
     let mut out = Vec::new();
     for l in net.labels_at(host) {
@@ -161,7 +161,7 @@ fn no_linkage_across_labels() {
     let of = |l: LabelId| blobs.iter().filter(move |x| x.0 == l);
     let ids1: BTreeSet<BlobId> = of(l1).map(|x| x.1).collect();
     let salts1: BTreeSet<Vec<u8>> = of(l1).map(|x| x.2[1..17].to_vec()).collect();
-    let wraps1: BTreeSet<[u8; 49]> = of(l1).map(|x| x.3).collect();
+    let wraps1: BTreeSet<[u8; osis_crypto::WRAP_LEN]> = of(l1).map(|x| x.3).collect();
     assert!(ids1.len() > 3);
     for (_, id, b, w) in of(l2) {
         assert!(!ids1.contains(id), "a blob shared by both labels");

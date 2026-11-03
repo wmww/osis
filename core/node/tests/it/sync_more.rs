@@ -979,7 +979,7 @@ fn forged_certificate_copy_ignored_spec_commits_4() {
         }
         let fake = osis_node::labeling::Body { plaintext: blob.encode(), ..b };
         let s = osis_node::labeling::seal_body(&fake, &mut osis_crypto::SeededRng::from_u64(7)).unwrap();
-        let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
         let put = osis_proto::Put { blob_id: s.id, blob: &s.blob, wrap, stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
         osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &l, put).unwrap();
         forged.push(s.id);

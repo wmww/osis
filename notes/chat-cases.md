@@ -268,7 +268,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **l** History read API (E): the held bodies of an aspect with author, time, received time, validity and the sender flag, paged by time, memory commits included, and a change event per commit.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
-- **o** Partial and newest-first fetch of a label (issues/partial-history-fetch.md).
+- **o** Newest-first fetch of a label: built (spec/sync.md §6); a device that stops fetching: issues/partial-history-fetch.md.
 - **p** Verified actor: a commit is invalid unless its author could write as its `actor` (built: spec/permissions.md §5.2, Acting).
 - **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (factions past a few thousand members).
 - **s** Default-off sync: a device holding a faction's secret does not sync its children's labels until the app chooses (today `compute_labels` syncs every label whose secret the node holds).

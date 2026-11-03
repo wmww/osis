@@ -51,6 +51,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `OFFSET_DIAGNOSTIC_MS` 5 s | M (diagnostic only) | always reported / never |
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
 | `STALL_TIMEOUT_MS` 2 min | M (liveness: nothing moved either way while requests are in flight) | every session closes / a hung peer holds it; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
+| `FILL_BATCH` 128 (`node/sync/fill.rs`) | M (a first sync's order and the lock held per batch, against a round trip per batch; only speed changes) | at least 1 is taken; order lost to what a reply fits, node's lock held minutes |
 | `WINDOW` 16 MiB (spec), `SMALL_REPLY` 64 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `MAX_RECONCILE_MESSAGES` 4096, `MAX_RECONCILE_IDS` 2^21, `MAX_RECONCILE_QUEUED` 2^17 | R (abandon as peer error) | no reconciliation / a splitting responder holds us forever |
 | `MAX_EMPTY_PAGES` 16 | R | first empty page fails / a cursor-only peer loops forever |
@@ -177,4 +178,4 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | seed runner `SEED_TIMEOUT_SECS` 600 (`osis_base::testenv`, CPU-seconds a seed's thread uses, or seconds it uses none; `OSIS_SEED_TIMEOUT_SECS` overrides; slowest seeds take a few CPU-s) | M | 0: every seed is hung; ∞: a hung seed hangs the run silently |
 
 ## Counts
-Table rows (a row may group several related values): P 17, R 33, M 35, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.
+Table rows (a row may group several related values): P 17, R 33, M 36, O 2 rows covering the 13 sign-off items, X 7 rows (9 values: 2 fixed, 7 in 4 issues), 1 measured.

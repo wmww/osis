@@ -189,7 +189,7 @@ impl SyncEngine {
                 // holders take it as the body's entry
                 let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
                 let s = seal_body(&b, &mut *self.rng)?;
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
                 if let Some(d) = &deposit {
                     self.queue_deposit(l, &hosts, d, s.blob.clone(), wrap, None);
                 }

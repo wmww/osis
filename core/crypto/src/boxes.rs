@@ -2,7 +2,7 @@
 //! The `box` value itself (spec/data-model.md §9) is osis-keys'; this module builds the AD
 //! tuples and seals, wraps and opens the payloads.
 
-use crate::aead::{self, WRAP_LEN, ZERO_NONCE};
+use crate::aead::{self, SUITE_KEY_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
 use crate::{Error, KemPublicKey, KemSecret, SUITE_1, Secret32, open_sealed, seal};
 use osis_base::cbor::{Limits, decode, encode};
@@ -178,7 +178,7 @@ fn parse_box_item(v: &Value, actor: &Tid) -> Result<BoxItem, Error> {
 
 /// Symmetric form at `slot`: wrap of `secret` under `kdf("box", s)`, s of epoch `epoch_s`;
 /// nonce = BLAKE3(AD)[..24]. At a `secrets.0` slot, `secret` must name the key's epoch.
-pub fn wrap_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, secret: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
+pub fn wrap_symmetric_box(s: &Secret32, slot: &BoxSlot, epoch_s: Epoch, secret: &Secret32) -> Result<[u8; SUITE_KEY_LEN], Error> {
     check_names(slot, secret)?;
     let ad = slot.ad(BoxForm::Symmetric { epoch_s })?;
     aead::seal_suite_key(kdf(kdf::BOX, s.expose(), b"").expose(), &ad_nonce(&ad), &ad, secret)

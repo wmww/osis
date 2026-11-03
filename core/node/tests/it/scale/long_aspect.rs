@@ -726,8 +726,9 @@ fn first_sync() {
     let c = net.node(3, &[host]);
     let g = net.group(a, &[(c, Role::Read)], &[host]);
     let t = net.item(a, g, g, "chat");
-    net.run();
+    // a new device: it never met the host, so no cursor
     net.set_online(c, false);
+    net.run();
     let t0 = Instant::now();
     for i in 0..n {
         let mut m = Mutation::new();
@@ -752,12 +753,39 @@ fn first_sync() {
     net.set_online(c, true);
     reset_peak();
     let (t1, c1) = (Instant::now(), cpu());
-    net.advance(61_000);
+    // the fill (spec/sync.md §6): until the newest page reads, as a chat opening would
+    let k = ak_msg();
+    let page = n.min(50);
+    let want = body(n - 1);
+    let (mut listed, mut steps) = (None, 0u64);
+    net.tick(61_000);
+    loop {
+        let top = net.engine(c).body_page(&t, &k, true, 0, page).unwrap();
+        if listed.is_none() && !top.is_empty() {
+            listed = Some((t1.elapsed(), cpu() - c1));
+        }
+        if top.len() == page && top[0].value.as_ref() == Some(&Value::Str(want.clone())) {
+            break;
+        }
+        if net.queue_len() == 0 {
+            net.tick(1_000);
+        }
+        net.round();
+        steps += 1;
+    }
+    println!(
+        "LONG sync n={n}: first body {:?} (cpu {:.1} s), newest page {page} {:?} (cpu {:.1} s), {steps} rounds, status: {:?}",
+        listed.map(|x| x.0),
+        listed.map_or(0.0, |x| x.1),
+        t1.elapsed(),
+        cpu() - c1,
+        net.sync(c).label_status().iter().map(|s| (s.open, s.idle)).collect::<Vec<_>>()
+    );
     net.run();
+    net.advance(61_000);
     println!("LONG sync n={n}: the reader holds {} commits", net.engine(c).commit_ids().len());
     let (first, cp) = (t1.elapsed(), cpu() - c1);
     let phases = osis_node::costs::take();
-    let k = ak_msg();
     assert_eq!(net.engine(c).held_bodies(&t, &k), n, "every body held");
     let p = net.engine(c).body_page(&t, &k, false, 0, 1).unwrap();
     assert_eq!(p[0].value, Some(Value::Str(body(0))));

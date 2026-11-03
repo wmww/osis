@@ -1942,7 +1942,7 @@ const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 /// unless `every_held`), and `random` shuffles of everything.
 fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = held.len();
-    let mut out = vec![held.to_vec(), held.iter().rev().copied().collect()];
+    let mut out = vec![held.to_vec(), held.iter().rev().copied().collect(), fill_order(played, held)];
     let rest: Vec<usize> = held.iter().copied().filter(|&i| i >= played.base).collect();
     if (n == played.packs.len() || cfg.every_held) && rest.len() <= cfg.all_up_to {
         for p in perms(rest.len()) {
@@ -1959,12 +1959,33 @@ fn orders(played: &Played, held: &[usize], cfg: Cfg, rng: &mut Rng) -> Vec<Vec<u
     out
 }
 
-/// The held sets tried: everything, then `subsets` partial ones (alternately without one
+/// `held` as a first sync fetches it (spec/sync.md §6): what judging needs, then newest first.
+fn fill_order(played: &Played, held: &[usize]) -> Vec<usize> {
+    let mut o = held.to_vec();
+    let rank = |i: usize| osis_commit::CommitBlob::decode(&played.packs[i].bytes).map_or(0, |b| osis_node::labeling::fetch_order(&b.header));
+    o.sort_by_key(|&i| {
+        let r = rank(i);
+        (r != 0, std::cmp::Reverse(r))
+    });
+    o
+}
+
+/// The held sets tried: everything, a first sync part way (the setup and its first half and three
+/// quarters: it reads as if the rest never came), then `subsets` partial ones (alternately without one
 /// writer's commits after the setup, as a node that never heard from it, and without a random
 /// third of them); `usize::MAX`: every held set (all of the setup, any of the rest).
 fn held_sets(played: &Played, subsets: usize, rng: &mut Rng) -> Vec<Vec<usize>> {
     let n = played.packs.len();
     let mut out = vec![(0..n).collect::<Vec<_>>()];
+    let fill = fill_order(played, &(0..n).collect::<Vec<_>>());
+    for part in [n / 2, n * 3 / 4] {
+        let mut keep: Vec<usize> = fill[..part].iter().copied().chain(0..played.base).collect();
+        keep.sort();
+        keep.dedup();
+        if !out.contains(&keep) {
+            out.push(keep);
+        }
+    }
     if subsets == usize::MAX {
         // every subset of what follows the setup
         let rest = n - played.base;

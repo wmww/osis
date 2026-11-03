@@ -116,7 +116,8 @@ impl SyncEngine {
         let host: Option<HostKey> = conn.and_then(|c| self.conns.get(&c)).map(|c| c.host);
         let mut blobs = Vec::new();
         let mut touched = Vec::new();
-        let mut fetch = Vec::new();
+        let mut fetch: Vec<BlobId> = Vec::new();
+        let mut announced = false;
         // entries new here that no writer vouched for (a deposit, or a host's junk): no stamp
         // under the head's write key, or before a head is known any step's this node knows (a
         // host cannot make one; a superseded step's key may be a removed writer's)
@@ -189,6 +190,7 @@ impl SyncEngine {
                     // a stamp counts only if it verifies under the head's write key (it is relayed);
                     // a bundle's stamps were checked against its path by the importer
                     let stamp = stamp.filter(|_| if cur.is_some() { by_head } else { conn.is_none() });
+                    let listed = self.state.entries.contains_key(&(l, blob_id));
                     match self.state.entries.get(&(l, blob_id)).cloned() {
                         None => {
                             if host.is_some() && stamp.is_none() && !vouched {
@@ -212,9 +214,18 @@ impl SyncEngine {
                     match blob {
                         Some(b) => {
                             self.fetched(&blob_id);
+                            // listed before its bytes: judged as they come (`drop_unvouched`)
+                            if listed && host.is_some() && !vouched && stamp.is_none() && !self.engine.has_blob(&blob_id) {
+                                unvouched.push((blob_id, true));
+                            }
                             blobs.push((blob_id, b));
                         }
-                        None if !self.engine.has_blob(&blob_id) => fetch.push(blob_id),
+                        // nothing to open: only the entry changed
+                        None if !self.engine.has_blob(&blob_id) => {
+                            fetch.push(blob_id);
+                            announced = true;
+                            continue;
+                        }
                         None => {}
                     }
                     touched.push(blob_id);
@@ -243,13 +254,17 @@ impl SyncEngine {
             self.relink_at = 0;
             self.relink_lost()?;
         }
-        if let (Some(s), Some(c)) = (host, cursor) {
+        let filling = conn.is_some_and(|c| self.lc(c, &l).is_some_and(|x| x.fill.is_some()));
+        if let (Some(s), Some(c)) = (host, cursor)
+            && !conn.is_some_and(|x| self.fill_cursor(x, &l, c))
+        {
             self.state.set_cursor(s, l, Some(c));
         }
         // a push (no Sync running) brings the log to its end: a pass end
-        let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && !x.syncing);
-        // the label changed under us: a pass decides again (carriers, retags)
-        if !touched.is_empty()
+        let pushed = conn.and_then(|c| self.conns.get(&c)).and_then(|c| c.labels.get(&l)).is_some_and(|x| x.synced && !x.syncing && x.fill.is_none());
+        // the label changed under us: a pass decides again (carriers, retags); not per batch of a fill
+        if (!touched.is_empty() || announced)
+            && !filling
             && let Some(lc) = conn.and_then(|c| self.conns.get_mut(&c)).and_then(|c| c.labels.get_mut(&l))
         {
             lc.dirty = true;
@@ -265,9 +280,15 @@ impl SyncEngine {
         if let Some(c) = conn {
             let g = self.group_of(&l);
             let secrets = g.map(|g| self.read_secrets(&g)).unwrap_or_default();
-            let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
-            self.fetch_on(c, l, want, out)?;
-            self.fetch_waiting(c, l, out)?;
+            if filling {
+                self.fill_add(c, l, &fetch);
+                self.fetch_waiting(c, l, out)?;
+                self.fill_more(c, l, out)?;
+            } else {
+                let want: Vec<BlobId> = fetch.into_iter().filter(|b| self.state.entries.get(&(l, *b)).is_some_and(|e| osis_label::unwrap_any(secrets.iter(), b, &e.wrap).is_some())).collect();
+                self.fetch_on(c, l, want, out)?;
+                self.fetch_waiting(c, l, out)?;
+            }
         }
         if pushed && let Some(s) = host {
             self.bump_pass(s, l)?;
@@ -431,6 +452,11 @@ impl SyncEngine {
     }
 
     /// Actors whose inbox is `l` (`inbox_label`), with their held read KEM secrets.
+    /// Whether `l` is the inbox of an actor here: its unopened entries may be grants.
+    pub(crate) fn inbox_label_here(&mut self, l: &LabelId) -> bool {
+        !self.inbox_of(l).is_empty()
+    }
+
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
         let actors: Vec<Tid> = self.engine.core.ix.secrets.keys().copied().collect();
         let mut out = Vec::new();
@@ -992,6 +1018,10 @@ impl SyncEngine {
     /// A Sync ran through its last page: the pass at this host is complete.
     pub(crate) fn synced(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Ok(()) };
+        // a fill's pass ends with the fill
+        if self.fill_listed(conn, l, out)? {
+            return self.fetch_waiting(conn, l, out);
+        }
         if let Some(lc) = self.lc_mut(conn, &l) {
             lc.syncing = false;
             lc.synced = true;

@@ -288,8 +288,8 @@ pub(crate) mod tests {
         let (k1, b1) = frame(&p, b"one", rng).unwrap();
         let (_, b2) = frame(&p, b"two", rng).unwrap();
         let (i1, i2) = (blob_id(&b1), blob_id(&b2));
-        let w1 = wrap(&g.read, &i1, &k1).unwrap();
-        let w1h = wrap(&h.read, &i1, &k1).unwrap();
+        let w1 = wrap(&g.read, &i1, &k1, 1).unwrap();
+        let w1h = wrap(&h.read, &i1, &k1, 1).unwrap();
         let st = sign_stamp(&label_role_key(LabelRole::Write, &g.write, 0), &s0.label, &i1, &w1);
         let sth = sign_stamp(&label_role_key(LabelRole::Write, &h.write, 0), &t0.label, &i1, &w1h);
         let recs = vec![

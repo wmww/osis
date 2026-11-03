@@ -1,12 +1,13 @@
 //! Blob encryption with Padmé padding, wraps and inbox blobs (spec/crypto.md §5, spec/wire.md §5,
 //! §9). The clear prefix layout is osis-label's: this module takes its bytes.
 
-use crate::aead::{self, TAG_LEN, WRAP_LEN, ZERO_NONCE};
+use crate::aead::{self, TAG_LEN, ZERO_NONCE};
 use crate::kdf::{self, kdf};
-use crate::{Error, KemPublicKey, KemSecret, SEALED_OVERHEAD, Secret32, open_sealed, seal};
+use crate::{Error, KemPublicKey, KemSecret, SEALED_OVERHEAD, SUITE_1, Secret32, open_sealed, seal};
 use osis_base::format::MAX_BLOB;
 use osis_base::{BlobId, Tid, Value, encode};
 use rand_core::CryptoRngCore;
+use zeroize::Zeroizing;
 
 /// Padmé length for `l = len(P) + 1` (spec/wire.md §5).
 pub fn padme(l: usize) -> usize {
@@ -75,17 +76,44 @@ pub fn decrypt_blob(blob: &[u8], prefix_len: usize, key: &Secret32) -> Result<Ve
     Ok(padded)
 }
 
+/// A wrap: `suite (1) || blob key (32) || order (8)` sealed (spec/wire.md §5).
+pub const WRAP_LEN: usize = 1 + 32 + 8 + TAG_LEN;
+
 /// Wrap of a blob key under a label read secret: nonce = blob ID[..24], empty AD (spec/wire.md §5).
-pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
-    aead::seal_suite_key(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", blob_key)
+/// `order` is the fetch order (spec/crypto.md §5).
+pub fn wrap(read_secret: &Secret32, blob: &BlobId, blob_key: &Secret32, order: u64) -> Result<[u8; WRAP_LEN], Error> {
+    let mut pt = Zeroizing::new([SUITE_1; 41]);
+    if let Some(k) = pt.get_mut(1..33) {
+        k.copy_from_slice(blob_key.expose());
+    }
+    if let Some(o) = pt.get_mut(33..) {
+        o.copy_from_slice(&order.to_le_bytes());
+    }
+    aead::seal(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", &pt[..])?.try_into().map_err(|_| Error::Malformed("wrap length"))
 }
 
 /// Opens a wrap; a reader tries its read secrets newest first.
 pub fn unwrap(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<Secret32, Error> {
-    aead::open_suite_key(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", wrap)
+    unwrap_order(read_secret, blob, wrap).map(|x| x.0)
 }
 
-/// 49 random bytes: the wrap of an inbox blob.
+/// `unwrap`, with the wrap's fetch order; an unknown suite parks.
+pub fn unwrap_order(read_secret: &Secret32, blob: &BlobId, wrap: &[u8]) -> Result<(Secret32, u64), Error> {
+    if wrap.len() != WRAP_LEN {
+        return Err(Error::Malformed("wrap length"));
+    }
+    let pt = Zeroizing::new(aead::open(kdf(kdf::WRAP, read_secret.expose(), b"").expose(), &wrap_nonce(blob), b"", wrap)?);
+    let (suite, rest) = pt.split_first().ok_or(Error::Decrypt)?;
+    if *suite != SUITE_1 {
+        return Err(Error::UnknownSuite(u64::from(*suite)));
+    }
+    let (k, o) = rest.split_at_checked(32).ok_or(Error::Decrypt)?;
+    let k: [u8; 32] = k.try_into().map_err(|_| Error::Decrypt)?;
+    let o: [u8; 8] = o.try_into().map_err(|_| Error::Decrypt)?;
+    Ok((Secret32::from_bytes(k), u64::from_le_bytes(o)))
+}
+
+/// Random bytes in a wrap's place: an inbox, chunk, tree or page blob.
 pub fn filler_wrap(rng: &mut dyn CryptoRngCore) -> [u8; WRAP_LEN] {
     let mut w = [0u8; WRAP_LEN];
     rng.fill_bytes(&mut w);
@@ -218,8 +246,9 @@ mod tests {
     #[test]
     fn wraps() {
         let (s, k, id) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]), BlobId([3; 32]));
-        let w = wrap(&s, &id, &k).unwrap();
-        assert_eq!(w, wrap(&s, &id, &k).unwrap());
+        let w = wrap(&s, &id, &k, 7).unwrap();
+        assert_eq!(w, wrap(&s, &id, &k, 7).unwrap());
+        assert_eq!(unwrap_order(&s, &id, &w), Ok((k.clone(), 7)));
         assert_eq!(unwrap(&s, &id, &w), Ok(k));
         assert_eq!(unwrap(&s, &BlobId([4; 32]), &w), Err(Error::Decrypt));
         assert_eq!(unwrap(&Secret32::from_bytes([5; 32]), &id, &w), Err(Error::Decrypt));

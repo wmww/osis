@@ -38,7 +38,7 @@ fn junk_entry_does_not_stall_uploads_spec_versioning_2() {
     let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), None, Vec::new()).unwrap();
     let (key, blob) = osis_label::frame(&prefix, &[0x42; 64], &mut rng).unwrap();
     let id = osis_label::blob_id(&blob);
-    let wrap = osis_crypto::wrap(&read, &id, &key).unwrap();
+    let wrap = osis_crypto::wrap(&read, &id, &key, 1).unwrap();
     let stamp = osis_label::sign_stamp(keys.write.as_ref().unwrap(), &gl.id, &id, &wrap);
     let e = Entry { blob, wrap, stamp, replaces: Vec::new() };
     let put = Put { blob_id: id, blob: &e.blob, wrap: e.wrap, stamp: Some(e.stamp), expiry: None, ephemeral: false, replaces: &[], now: 0 };

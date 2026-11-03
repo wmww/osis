@@ -63,7 +63,7 @@ pub fn messages() -> VecFile {
     // Rejections: `reject` names the broken rule, `answer` the Error code sent back.
     let label = bytes(16, 0x0a);
     let id = bytes(32, 0x01);
-    let entry = Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3)]);
+    let entry = Value::List(vec![bytes(30, 1), bytes(57, 2), bytes(64, 3)]);
     let item = Value::List(vec![bytes(32, 1), Value::List(vec![]), Value::List(vec![]), bytes(64, 3)]);
     let range = Value::List(vec![Value::Bytes(vec![]), Value::Bytes(vec![]), Value::List(vec![int(0), bytes(16, 0)])]);
     let cursor = Value::List(vec![bytes(16, 0x1c), int(0)]);
@@ -75,7 +75,7 @@ pub fn messages() -> VecFile {
         ("upload of 1025 entries", Value::List(vec![int(10), int(1), label.clone(), list(&entry, 1025)]), entry.clone(), 1025, vec![]),
         (
             "upload of 1025 replaces",
-            Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), list(&Value::List(vec![id.clone()]), 1025)])])]),
+            Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(57, 2), bytes(64, 3), list(&Value::List(vec![id.clone()]), 1025)])])]),
             Value::List(vec![id.clone()]),
             1025,
             vec![],
@@ -129,11 +129,11 @@ pub fn messages() -> VecFile {
             ])),
         ),
         ("empty upload", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), empty.clone()]))),
-        ("entry with an empty replace list", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), empty.clone()])])]))),
+        ("entry with an empty replace list", "count", cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(57, 2), bytes(64, 3), empty.clone()])])]))),
         (
             "replace of three items",
             "shape",
-            cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(49, 2), bytes(64, 3), Value::List(vec![Value::List(vec![id.clone(), int(3), bytes(64, 4)])])])])])),
+            cbor::encode(&Value::List(vec![int(10), int(1), label.clone(), Value::List(vec![Value::List(vec![bytes(30, 1), bytes(57, 2), bytes(64, 3), Value::List(vec![Value::List(vec![id.clone(), int(3), bytes(64, 4)])])])])])),
         ),
         (
             "overlapping ranges",

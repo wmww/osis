@@ -9,6 +9,7 @@ mod corrupt;
 mod crash;
 mod deletion;
 mod deposit_queue;
+mod fill;
 #[cfg(feature = "driver")]
 mod driver;
 mod encodings;
