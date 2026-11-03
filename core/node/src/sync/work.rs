@@ -232,7 +232,7 @@ impl Work {
 
     /// What the set holds (a measure).
     pub fn waiting(&self) -> usize {
-        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len()
+        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len() + self.roles.subjects.len()
     }
 
     /// Notes `n` more changes from elsewhere. Past `max` since the last pass, the next pass judges
