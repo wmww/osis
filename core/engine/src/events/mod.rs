@@ -142,6 +142,9 @@ pub enum DiagnosticKind {
     /// yet, or named by no blob) or failing verification. That position read as absent
     /// (spec/data-model.md §6; `tids`: the thing).
     Unreadable,
+    /// The `osis` sync driver died (a panic, or its runtime shut down with the database open):
+    /// nothing syncs until the database is opened again; waits fail `Network` (`detail`: why).
+    SyncStopped,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

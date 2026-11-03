@@ -1120,8 +1120,18 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyh
     let db = ctx.db.clone();
     let json_out = ctx.g.json;
     let (tx, rx) = mpsc::channel::<String>();
+    // a dead sync driver ends the stream (after its line) and the command fails
+    let stopped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let st = stopped.clone();
+    let mut tx = Some(tx);
     let _sub = db.on_diagnostic(move |_, d| {
-        let _ = tx.send(diag_line(&d, json_out));
+        if let Some(t) = &tx {
+            let _ = t.send(diag_line(&d, json_out));
+        }
+        if d.kind == osis::DiagnosticKind::SyncStopped {
+            st.store(true, std::sync::atomic::Ordering::Release);
+            tx = None;
+        }
     });
     db.settle();
     if timeout == Some(Duration::ZERO) {
@@ -1130,7 +1140,11 @@ fn diag(ctx: &mut Ctx<'_>, timeout: Option<Duration>, best_effort: bool) -> anyh
         }
         return Ok(());
     }
-    stream(ctx, &rx, None, timeout, "line", best_effort, |_, l| (l, true))
+    stream(ctx, &rx, None, timeout, "line", best_effort, |_, l| (l, true))?;
+    if stopped.load(std::sync::atomic::Ordering::Acquire) {
+        return Err(exit(6, "sync stopped"));
+    }
+    Ok(())
 }
 
 /// Copies diagnostics to `err` while it lives (`-v` on a command that syncs): best effort.
