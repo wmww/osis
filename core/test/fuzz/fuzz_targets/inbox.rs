@@ -9,6 +9,6 @@ use osis_label::InboxPayload;
 fuzz_target!(|data: &[u8]| {
     let Ok(v) = decode(data, &Limits { max_depth: 512, max_bytes: 1 << 23 }) else { return };
     if let Ok(p) = InboxPayload::from_value(&v) {
-        assert_eq!(p.to_value(), v);
+        assert_eq!(p.to_value().ok(), Some(v));
     }
 });
