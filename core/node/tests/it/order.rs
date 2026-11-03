@@ -1293,14 +1293,12 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let approx = a.retention.at_most.rel.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
             let held = e.body_not_dropped(&id, &a.tid, &a.ak);
-            // the session counters its writes own (`-`: commit form, a snapshot)
-            let owns = if h.form.counted() && a.lo < a.hi { format!("{:?}:{}-{}", h.form.own_source(h.author, id), a.lo, a.hi) } else { "-".into() };
             let copies = !h.kind.has_own_writes();
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
             let orphan = !copies && orphan_here(e, &id, a.tid, &a.ak);
             let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}|{missing}|{ai}", a.tid, a.ak.as_str(), h.ts);
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{copies}|{low}|{orphan}|{missing}|{ai}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1415,8 +1413,6 @@ struct Fact {
     /// Under a relative keep at most: dropped by the node's own dating (at most 0 with a live
     /// write: at its grace bound; without one `dating` checks it dropped).
     approx: bool,
-    /// The session counters its writes own: `source:lo-hi`, or `-`.
-    owns: String,
     /// A snapshot or import body (copies): its carried writes die for it at its `ts` when
     /// killed by a lower-stamped write (spec/commits.md §5).
     copies: bool,
@@ -1428,70 +1424,6 @@ struct Fact {
     missing: bool,
     /// Its aspect's index in the commit.
     ai: usize,
-}
-
-impl Fact {
-    /// Whether a dot as a state prints it (`STid(..)/sess:ctr`) is one of this body's.
-    fn owns_dot(&self, dot: &str) -> bool {
-        let (Some((src, r)), Some((d, ctr))) = (self.owns.rsplit_once(':'), dot.rsplit_once(':')) else { return false };
-        let (Some((lo, hi)), Ok(ctr)) = (r.split_once('-'), ctr.parse::<u64>()) else { return false };
-        src == d && lo.parse::<u64>().is_ok_and(|lo| lo <= ctr) && hi.parse::<u64>().is_ok_and(|hi| ctr < hi)
-    }
-}
-
-/// The dots of the creation stamps in a state's text (`created: Some((ts, dot))`), and the text
-/// with every one of them blanked.
-fn creations(state: &str) -> (Vec<String>, String) {
-    const AT: &str = "created: Some((";
-    let (mut dots, mut out, mut rest) = (Vec::new(), String::new(), state);
-    while let Some(i) = rest.find(AT) {
-        out.push_str(&rest[..i]);
-        let tail = &rest[i + AT.len()..];
-        let Some(j) = tail.find("))") else { break };
-        dots.push(tail[..j].split_once(", ").map_or("", |x| x.1).to_string());
-        out.push_str("created: None");
-        rest = &tail[j + 2..];
-    }
-    out.push_str(rest);
-    (dots, out)
-}
-
-/// The dots of the records with no write left in a state's text (sequence elements that are bare
-/// anchors, then map entries holding only those), and the text without them. An un-merge takes
-/// those a delta created; a body of it dropped under keep at most gives them no more when the
-/// delta turns valid again (spec/crdt.md §4.6).
-fn bare_records(state: &str) -> (Vec<String>, String) {
-    const ELEM: &str = ": SeqElem { created: None, content: None, pos: [], deleted: None, undel: None, span: ";
-    const ENTRY: &str = "elems: {} })), created: None }";
-    let mut dots = Vec::new();
-    let mut out = state.to_string();
-    // each found record removed with its own text only, the map's separators mended after
-    let cut = |out: &mut String, start: usize, end: usize| {
-        out.replace_range(start..end, "");
-        *out = out.replace("{, ", "{").replace(", }", "}").replace(", , ", ", ");
-    };
-    while let Some(i) = out.find(ELEM) {
-        // the element's dot follows the map's `{` or the previous element's `, `
-        let start = out[..i].rfind('{').map_or(0, |j| j + 1).max(out[..i].rfind(", ").map_or(0, |j| j + 2));
-        let Some(end) = out[i..].find('}').map(|j| i + j + 1) else { break };
-        dots.push(out[start..i].to_string());
-        cut(&mut out, start, end);
-    }
-    let mut from = 0;
-    while let Some(i) = out[from..].find(ENTRY).map(|j| from + j) {
-        let end = i + ENTRY.len();
-        let Some(start) = out[..i].rfind("Eid { dot: ") else { break };
-        let head = &out[start..i];
-        if head.matches("Eid {").count() != 1 || !head.contains("}: Entry { reset: None, frag: Some(Seq(Seq { text: ") {
-            from = end;
-            continue;
-        }
-        let dot = head["Eid { dot: ".len()..].split(", key:").next().unwrap_or("").to_string();
-        dots.push(dot);
-        cut(&mut out, start, end);
-        from = start;
-    }
-    (dots, out)
 }
 
 type BodyKey = (String, String, String);
@@ -1511,7 +1443,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11), missing: b(12), ai: f[13].parse().unwrap() });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), copies: b(8), low: (f[9] != "-").then(|| ts_of(f[9])), orphan: b(10), missing: b(11), ai: f[12].parse().unwrap() });
     }
     (out, inv)
 }
@@ -1549,16 +1481,11 @@ fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
 /// Values, validity, rosters, pending sets, timelines and the index a day later are compared
 /// exactly; held bodies too, except under a relative keep at most (deaths are dated per node;
 /// `dating` checks them, and that a dead body under at most 0 with no live write is dropped).
-/// A body dropped before a validity flip is no exception: callers give both nodes such bodies
-/// again first (`alike_exchanged`). Also a drop, then a validity flip and back (`flips`: one of
-/// the two orders judged a body of the aspect valid and invalid on the way, `flipped`): the
-/// states may then differ in the creation stamps of map entries whose body (keep at most) the
-/// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
-/// creation; the flip back gave the content alone), and in the records with no write left such a
-/// body created (`bare_records`), reads alike (spec/crdt.md §4.6). A body held for want of a death
+/// A body dropped before a validity flip, at one node or both, is no exception: callers give both
+/// nodes such bodies again first (`alike_exchanged`). A body held for want of a death
 /// whose killer the node dropped before it arrived (spec/commits.md §5, `orphan_here`) may be held
 /// where the other node dropped it. Anything else is a failure.
-fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+fn alike(want: &Judged, got: &Judged) -> Option<String> {
     // a part held pending at its expiry counts as never received at that node (spec/commits.md
     // §5; Tess: nodes may read differently when a part expired before a node could apply it):
     // what such an aspect reads, its states, its bodies and the index lines of its commits (that
@@ -1619,29 +1546,11 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
         if x == y || *name == "facts" {
             continue;
         }
-        let (xl, yl): (Vec<&str>, Vec<&str>) = (x.lines().collect(), y.lines().collect());
         if *name == "reads" || *name == "states" {
             // keyed by thing and aspect: one may lack an aspect the other shows
-            let keyed = |ls: &[&str]| -> BTreeMap<(String, String), String> {
-                ls.iter().map(|l| {
-                    let f: Vec<&str> = l.splitn(3, ' ').collect();
-                    ((f[0].into(), f.get(1).copied().unwrap_or("").into()), f.get(2).copied().unwrap_or("").into())
-                }).collect()
-            };
-            let (a, b) = (keyed(&xl), keyed(&yl));
-            // only creation stamps and records with no write left (`bare_records`) of bodies
-            // dropped where they are missing, after a flip
-            let stamps_only = |k: &(String, String)| -> bool {
-                let (Some(x), Some(y)) = (a.get(k), b.get(k)) else { return false };
-                let ((mut xd, xs), (mut yd, ys)) = (creations(x), creations(y));
-                let ((xb, xs), (yb, ys)) = (bare_records(&xs), bare_records(&ys));
-                xd.extend(xb);
-                yd.extend(yb);
-                let dropped = |dot: &String, facts: &Facts| facts.iter().any(|(b, f)| b.1 == k.0 && b.2 == k.1 && f.at_most && !f.held && f.owns_dot(dot));
-                *name == "states" && xs == ys && xd.iter().filter(|d| !yd.contains(d)).all(|d| dropped(d, &gf)) && yd.iter().filter(|d| !xd.contains(d)).all(|d| dropped(d, &wf)) && flips(&k.0, &k.1)
-            };
+            let (a, b) = (keyed(x), keyed(y));
             for k in a.keys().chain(b.keys()) {
-                if a.get(k) != b.get(k) && !stamps_only(k) && !expired.contains(k) {
+                if a.get(k) != b.get(k) && !expired.contains(k) {
                     return Some(format!("{name} on {k:?}:\n  want {:?}\n  got  {:?}", a.get(k), b.get(k)));
                 }
             }
@@ -1650,6 +1559,30 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
         return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
     None
+}
+
+/// Reads or states as `judged_now` prints them, by (thing, aspect).
+fn keyed(text: &str) -> BTreeMap<(String, String), String> {
+    text.lines().map(|l| {
+        let f: Vec<&str> = l.splitn(3, ' ').collect();
+        ((f[0].into(), f.get(1).copied().unwrap_or("").into()), f.get(2).copied().unwrap_or("").into())
+    }).collect()
+}
+
+/// The commits (as `facts_text` prints them) of the bodies under keep at most dropped at both
+/// nodes on an aspect whose reads or states differ and that flipped on the way (`flips`): what an
+/// un-merge took of such a body's delta comes back only with a copy (spec/crdt.md §4.6), which
+/// joins as a late part (spec/commits.md §5), so both are given them again (`alike_exchanged`).
+fn both_dropped_flips(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
+    let ((wf, _), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
+    let dropped = |k: &BodyKey, f: &Fact| f.at_most && !f.held && gf.get(k).is_some_and(|g| !g.held);
+    let mut apart: BTreeSet<(String, String)> = BTreeSet::new();
+    for name in ["reads", "states"] {
+        let (a, b) = (keyed(want.part(name)), keyed(got.part(name)));
+        apart.extend(a.keys().chain(b.keys()).filter(|k| a.get(*k) != b.get(*k)).cloned());
+    }
+    apart.retain(|k| wf.iter().any(|(b, f)| (&b.1, &b.2) == (&k.0, &k.1) && dropped(b, f)) && flips(&k.0, &k.1));
+    wf.iter().filter(|(k, f)| apart.contains(&(k.1.clone(), k.2.clone())) && dropped(k, f)).map(|(k, _)| k.0.clone()).collect()
 }
 
 /// `bounded_held` as the index prints it, keyed as `facts_text` prints thing and aspect.
@@ -1670,15 +1603,17 @@ fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
 
 /// `alike` of the judgements `want` (a node given `want_order`) and `got` (one given `got_order`,
 /// split by `rng` as `deliver_split`), after both nodes are given once more the commits of
-/// every body one dropped before a validity flip and the other holds (`drop_flips`): a copy that
+/// every body one dropped before a validity flip and the other holds (`drop_flips`), and of the
+/// bodies both dropped on an aspect read apart after a flip (`both_dropped_flips`): a copy that
 /// arrives again joins (spec/commits.md §5), so they then hold the same bodies and judge alike
 /// with no exception for the drop.
 fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], rng: Option<Rng>, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     let fallen = purge_flips(played, want, got);
     let mut apart = drop_flips(want, got);
     apart.extend(fallen.iter().cloned());
+    apart.extend(both_dropped_flips(want, got, flips));
     if apart.is_empty() {
-        return alike(want, got, flips);
+        return alike(want, got);
     }
     let again = packs_of(played, &apart);
     let mut rng = rng;
@@ -1706,7 +1641,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
         }
         (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
     }
-    let diff = alike(&wj, &gj, flips).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
+    let diff = alike(&wj, &gj).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
     if diff.is_none() {
         played.restored.fetch_add(fallen.len() as u64, std::sync::atomic::Ordering::Relaxed);
     }
@@ -2303,7 +2238,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         p.engine.rebuild_index().unwrap();
         p.engine.reexamine().unwrap();
         // a rebuild recomputes deaths from the held bodies: dated otherwise, never earlier
-        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things), &|_, _| false).or_else(|| dating(&mut p, &o, played.now)) {
+        if let Some(d) = alike(&now, &judged_now(&mut p, &played.things)).or_else(|| dating(&mut p, &o, played.now)) {
             return Err(format!("{of}, as made: rebuild differs: {d}"));
         }
         let mut want = now;
@@ -3703,7 +3638,7 @@ fn keep_at_most_drop_joins_again_after_flip_spec_commits_5() {
     let made: Vec<usize> = (0..played.packs.len()).collect();
     let rev: Vec<usize> = made.iter().rev().copied().collect();
     let (want, got) = (judged(&mut deliver(&played, &made), &played), judged(&mut deliver(&played, &rev), &played));
-    assert!(alike(&want, &got, &|_, _| false).is_some(), "the orders differ until the body is given again");
+    assert!(alike(&want, &got).is_some(), "the orders differ until the body is given again");
     let apart = drop_flips(&want, &got);
     assert_eq!(apart.len(), 1, "one body dropped before the flip: {apart:?}");
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
@@ -3790,16 +3725,15 @@ fn next_perm(v: &[usize]) -> Option<Vec<usize>> {
     Some(v)
 }
 
-// spec/commits.md §5 (a body dropped at both nodes, no copy left to join again: their states
-// may differ in a dropped body's creation stamp, reads alike), order seeds 47289, 583188 and
-// 845143. B's entry in a
-// keep-at-most-0 map (its body dropped once B's own later write inside it killed the value, the
-// bound passed); B's later write is valid with every commit held, invalid before the re-grant:
-// where it arrived valid, then turned invalid and valid again, the un-merge left the entry no
-// content and so took its creation, and the write came back alone. Reads agree; `alike`
-// accepts the states' creation stamps only where one of the two orders flipped a body.
+// spec/crdt.md §4.6, spec/commits.md §5 (a body dropped at both nodes: their states may differ in
+// a dropped body's creation stamp until a copy joins again), order seeds 47289, 583188 and
+// 845143. B's entry in a keep-at-most-0 map (its body dropped once B's own later write inside it
+// killed the value, the bound passed); B's later write is valid with every commit held, invalid
+// before the re-grant: where it arrived valid, then turned invalid and valid again, the un-merge
+// left the entry no content and so took its creation, and the write came back alone. Given the
+// dropped body again (`both_dropped_flips`), both judge alike.
 #[test]
-fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
+fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
     use Step::*;
     let h = vec![Write { by: 1, t: 6, op: 19, k: 0, v: 3 }, Demote { by: 0, t: 4, holder: 1, at: 5, to_read: false }, Write { by: 1, t: 4, op: 19, k: 0, v: 1 }, Advance { who: None, ms: 4484944 }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }];
     let h2 = vec![Demote { by: 0, t: 5, holder: 2, at: 3, to_read: true }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Roster { by: 0, t: 0 }, Roster { by: 0, t: 5 }, Write { by: 2, t: 0, op: 19, k: 2, v: 1 }, New { by: 2, parent: 6, write: false }, Roster { by: 2, t: 1 }, Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Compact { by: 1, t: 0, op: 0 }, Sync { from: 2, to: 0 }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Write { by: 2, t: 1, op: 6, k: 0, v: 5 }, Send { from: 2, to: 1, back: 2 }, Write { by: 1, t: 3, op: 6, k: 1, v: 0 }, Write { by: 1, t: 6, op: 6, k: 2, v: 7 }, Edge { by: 0, t: 6, holder: 2, role: Some(Role::Admin) }, Edge { by: 2, t: 3, holder: 1, role: Some(Role::Write) }, Sync { from: 0, to: 1 }, Write { by: 1, t: 4, op: 19, k: 2, v: 6 }, Advance { who: None, ms: 5488242 }];
@@ -3814,7 +3748,7 @@ fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
         }
     }
     // B's later write first, the demotion, the re-grant: only the creation stamp differs, and
-    // only a reachable flip excuses it
+    // only a reachable flip gives the body again
     let played = play(47289, &h);
     let b = played.base;
     let made: Vec<usize> = (0..played.packs.len()).collect();
@@ -3822,10 +3756,11 @@ fn creation_lost_by_drop_then_flip_tolerated_spec_commits_5() {
     order.extend([b, b + 2, b + 1, b + 3]);
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
-    let differs = alike(&want, &got, &|_, _| false).expect("the creation stamp differs");
+    let differs = alike(&want, &got).expect("the creation stamp differs");
     assert!(differs.contains("states on") && differs.contains("created: None"), "{differs}");
+    assert!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false).is_some(), "no flip, nothing given");
     assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "t:gonemap.0")), "the order flips");
-    assert_eq!(alike(&want, &got, &|t, a| flipped(&played, &order, None, t, a)), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
 
 // spec/commits.md §5, the shape of seed 2700027 in a map: B's snapshot of a keep-at-most-0 map
@@ -4325,9 +4260,10 @@ fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
     check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
 
-// spec/crdt.md §4.6 (stated limit): an un-merge takes the records a delta created; one whose body
-// was dropped under keep at most gives them no more when it turns valid again, so the states differ
-// in records with no write left, read alike (`bare_records`) (seed 733028, shrunk on that failure).
+// spec/crdt.md §4.6: an un-merge takes the records a delta created; one whose body was dropped
+// under keep at most gives them back only with a copy, so the states differ in records with no
+// write left until both nodes are given it again (`both_dropped_flips`) (seed 733028, shrunk on
+// that failure).
 #[test]
 fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
     use Step::*;
@@ -4401,4 +4337,16 @@ fn purge_commit_body_kept_under_at_most_0_seed_32014_spec_commits_5() {
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(New { by: 0, parent: 2, write: true }), aim(Breaking { by: 0, t: 2, op: 24, v: 5, fits: false }), aim(Breaking { by: 1, t: 0, op: 18, v: 5, fits: false }), NewTop { by: 2 }, aim(Nested { by: 2, other: 0, t: 7, k: 2, text: false, compact: true, also: true }), Forged { by: 1, a: 0, b: 1, how: 1, op: 23, k: 2, v: 2 }, aim(Require { by: 2, t: 1, op: 20, rule: 3 }), Forged { by: 0, a: 6, b: 3, how: 4, op: 9, k: 0, v: 6 }, aim(Purge { by: 2, t: 1, of: 1, back: 1, v: 6 }), NewTop { by: 2 }, aim(Demote { by: 2, t: 1, holder: 2, at: 0, to_read: false }), aim(Require { by: 2, t: 0, op: 26, rule: 1 })];
     check(32014, &h, Cfg { sync: true, ..LARGE }).unwrap();
+}
+
+// spec/crdt.md §4.6, spec/commits.md §5: a keep-at-most-0 body dropped with its write live, then
+// its delta turned invalid (the un-merge took the write) and valid again: the write comes back
+// only with a copy, so the harness gives both nodes the body dropped at both (`both_dropped_flips`)
+// and compares reads exactly (seed 733028, shrunk).
+#[test]
+fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), Forged { by: 0, a: 5, b: 7, how: 2, op: 19, k: 0, v: 6 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
+    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
