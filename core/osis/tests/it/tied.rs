@@ -666,7 +666,9 @@ fn grant_lost_and_regained_with_the_admin_away() {
 #[test]
 #[ignore = "tier 2: 40 seeds, about 3 minutes"]
 fn grant_and_removal_orders_large() {
-    for seed in 0..40u64 {
+    let seeds = osis_base::testenv::Seeds::from_env("OSIS_TIED_START", "OSIS_TIED_SEEDS", 0..40);
+    seeds.announce("grant_and_removal_orders_large");
+    for seed in seeds.range {
         let mut r = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
         let mut next = move |m: u64| {
             r ^= r << 13;
