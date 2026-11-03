@@ -986,6 +986,9 @@ fn delivery(v: Value) -> Result<Delivered> {
     Ok((t, ak, r, s, fired))
 }
 
+/// More than one history entry's encoding takes beside its body (IDs, times, kind, validity).
+const HISTORY_ENTRY_HEAD: usize = 256;
+
 /// A history subscription's Notify.
 fn history_note(v: Value) -> Result<(osis_node::ChangeId, Option<crate::HistoryEntry<Value>>)> {
     let mut a = c::Args::new(v)?;
@@ -1065,7 +1068,9 @@ impl Osis {
 
     /// A page of history at the attached node, within what one reply carries.
     pub(crate) fn remote_history(&self, r: &Remote, tid: Tid, ak: &osis_base::Ak, from: crate::HistoryFrom, limit: usize) -> Result<crate::HistoryPage<Value>> {
-        let bytes = self.inner.limit.min(REPLY_BUDGET / 2);
+        // a page ends past this, so it holds up to twice it, and every entry's header: it must fit
+        // one reply, or nothing could page past those entries
+        let bytes = self.inner.limit.min(REPLY_BUDGET.saturating_sub(crate::HISTORY_PAGE * HISTORY_ENTRY_HEAD) / 2);
         c::hist_page(r.call(method::HISTORY, vec![Value::Tid(tid), c::ak_v(ak), c::from_v(&from), u(limit as u64), u(bytes as u64)])?)
     }
 

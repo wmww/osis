@@ -263,3 +263,20 @@ fn page_bound_counts_large_values() {
     let huge = db.at(t, k.clone()).history(HistoryFrom::After(last), 10).unwrap();
     assert_eq!(huge.entries[0].body, HistoryBody::TooLarge { limit: 3 << 20 });
 }
+
+// spec/commits.md §5 (fixed retention, a request carries no `expires`): a required retention with
+// an expiry on every aspect reaches no `purge.0`, so delete for everyone still works in a
+// disappearing chat, and a kept-for-good one adds no permanent delta per delete.
+#[test]
+fn purge_answers_to_no_required_retention_spec_commits_5() {
+    use osis::schema::core_types as ct;
+    let db = db(11);
+    let t = thing(&db);
+    let a = say(&db, t, "x");
+    let rules: ct::RequiredRules = [(String::new(), ct::Required::new(osis::Retention::default(), Some(60_000)))].into_iter().collect();
+    db.write_with(|w| w.at(t, ct::REQUIRED).set(&rules)).unwrap();
+    let mut w = db.write();
+    w.at(t, msgs()).purge_commit(a).unwrap();
+    let rq = w.commit().unwrap().unwrap().id;
+    assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq });
+}

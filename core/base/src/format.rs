@@ -121,6 +121,12 @@ pub const MAX_AK_BYTES: usize = 1024;
 /// every such delta. 0: no setting can say anything; unbounded: `MAX_VALUE_BYTES` of prefixes in
 /// every node's memory per delta. fixed.
 pub const MAX_REQUIRED_ENTRIES: usize = 64;
+
+/// Items by author in one purge request. Each walks its aspect's history, whoever asks (its right is
+/// judged per delta), so this bounds one commit's cost to a few walks against one per item of a whole
+/// list. 0: no purge by author; infinity: one small commit stalls every node for its items times the
+/// aspect's length. More goes in further commits, at a write's price each.
+pub const MAX_AUTHOR_ITEMS: usize = 32;
 /// Longest URL (spec/wire.md §10, §13). fixed.
 pub const MAX_URL_BYTES: usize = 256;
 

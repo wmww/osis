@@ -666,7 +666,7 @@ impl Worker {
                 // a client's diagnostics: those naming only what its actor reads
                 Delivery::Diagnostic(x) if acting.is_some_and(|a| x.tids.is_empty() || !db.engine(|e| x.tids.iter().all(|t| e.readable_by(&a, t)))) => return,
                 // a signal of what it may not read takes none of its budget (a lapse would tell)
-                Delivery::Fired { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
+                Delivery::Fired { tid, .. } | Delivery::History { tid, .. } if acting.is_some_and(|a| !db.engine(|e| e.readable_by(&a, &tid))) => return,
                 Delivery::Aspect { ak, source, .. } => {
                     lock(&p).aks.insert(ak, source);
                 }
@@ -723,6 +723,7 @@ impl Worker {
         let mut notes: Vec<(Id, Payload)> = Vec::new();
         let mut used = 0usize;
         let mut left = false;
+        let mut more_history = false;
         let mut gone = Vec::new();
         for (id, s) in &mut cn.subs {
             let mut g = lock(&s.pending);
@@ -776,7 +777,8 @@ impl Worker {
                         cn.held.fetch_sub(HISTORY_DIRTY_BYTES, Ordering::AcqRel);
                     }
                 }
-                left |= !g.history.is_empty();
+                // read at the next send: no reason to hold back the other subscriptions now
+                more_history |= !g.history.is_empty();
             }
             if sent == out.len() {
                 g.dirty = false;
@@ -794,6 +796,7 @@ impl Worker {
         for id in gone {
             cn.end_sub(id);
         }
+        left |= more_history;
         let settles = if left { Vec::new() } else { std::mem::take(&mut cn.settles) };
         if !notes.is_empty() {
             self.feed(db, Event::Notify { conn, notes });

@@ -106,7 +106,7 @@ The core aspects form the core schema, evolving under spec/versioning.md. Exact 
 | `host.0^` | struct { listen, admit, labels, replicate, policy, caps } | on a node thing: the node hosts (spec/sync.md §4); absent: it does not, and holds no host store (stopping erases it, at the latest when the node next runs sync; a later start begins empty). `admit` `own`: it takes registrations of the labels of groups its person owns whose hosts name its host address, and of `labels`; a group its person owns: the node or its person (the person it was created or paired for) is on the group's owner chain; no role edge, on the group or an owner above it, held by the node or the person, qualifies; `open`: of any label. The node judges `own` from what it holds (the label records it synced), so a label it has not learned yet is refused for now (code 14, spec/sync.md §5). `replicate`: peer hosts; `policy`, `caps`: local policy. Never part of the node card (spec/permissions.md §4) |
 | `clients.0^` | map<client actor tid, struct { secret_hash, until }> | on a node thing: the thin clients it serves (spec/sync.md §10). `secret_hash`: BLAKE3 of the client's 32-byte bearer secret; `until`: when its sessions end. The client actor is a thing the node's person owns, with secrets of its own, and what the client may do is that actor's roles. Never part of the node card |
 | `required.0^` | map<string, struct { by, at_least: bound, at_most: bound, expires: option<duration> }> | the retention the thing requires, by AK prefix (spec/commits.md §5); fixed retention `nobody`, kept forever; a separate setting per thing, never carried by a move |
-| `purge.0` | timestamp | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5) |
+| `purge.0` | timestamp | when a purge request naming no aspect to reset was made here: the delta such a commit carries (spec/commits.md §5); fixed retention, so no required retention reaches it |
 | `group.0` | struct { items: set<tid>, subgroups: set<tid> } | §8 |
 | `placed.0~` | struct { items: set<tid>, subgroups: set<tid> } | ephemeral: the ephemeral placements, §8 |
 | `groups.0` | set<tid> | synthetic, guaranteed, local |
@@ -170,7 +170,7 @@ aspect body.0: markdown;
 aspect tag.0: struct { 0 color: option<string> };
 ```
 - `creation` holds exactly one of fields 0, 1 and 4 and field 3 needs field 0 (spec/wire.md §3): `created.0` is typed by that rule, not by the missing-field rule of spec/versioning.md §5.
-- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `purge.0`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0` and `required.0^` have the fixed retention of spec/commits.md §5.
+- `option` fields default to `none`. Default retention of `node.0`, `reach.0`, `seen.0`, `host.0^`, `clients.0^`, `group.0`, `name.0`, `body.0` and `tag.0`: `author_or_admin`, no keep bounds; role-class aspects, `created.0`, `required.0^` and `purge.0` have the fixed retention of spec/commits.md §5.
 - Box payloads, history box layout and AD tuples: spec/wire.md §7.
 
 ## 10. Schemas

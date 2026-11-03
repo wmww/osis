@@ -1417,3 +1417,73 @@ fn history_watch_past_its_budget_lapses() {
     let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
     assert!(matches!(e, HistoryEvent::Commit { id: i, .. } if i == id), "{e:?}");
 }
+
+// spec/wire.md §11.2, notes/client-port.md §3 (nothing of what its actor may not read), §2 (budget): commits on a hidden
+// thing take none of the connection's budget: a watch it may read does not lapse for them, which
+// would tell of activity there.
+#[test]
+fn history_watch_of_a_hidden_thing_takes_no_budget() {
+    use osis::HistoryEvent;
+    let x = node();
+    let k = ak("t:msgs.0");
+    let (_, _, c) = x.client(Role::Write);
+    let (tx, rx) = channel();
+    let _s = c.at(x.t, k.clone()).on_history(move |_, e| tx.send(e).unwrap()).unwrap();
+    let (htx, _hrx) = channel();
+    let _h = c.at(x.u, k.clone()).on_history(move |_, e| htx.send(e).unwrap()).unwrap();
+    // a client's write holds the worker in the hook
+    let (busy_tx, busy) = channel();
+    let (go, wait) = channel::<()>();
+    let (busy_tx, wait) = (Mutex::new(busy_tx), Mutex::new(wait));
+    x.n.set_route(x.h, None);
+    x.n.after_route(Box::new(move || {
+        busy_tx.lock().unwrap().send(()).unwrap();
+        let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
+    }));
+    let c2 = c.clone();
+    let (t, k2) = (x.t, ak("name.0"));
+    let writer = std::thread::spawn(move || c2.write_with(|w| w.at(t, k2).set(&Value::Int(7))).map(|_| ()));
+    busy.recv_timeout(Duration::from_secs(60)).unwrap();
+    let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };
+    let flood = osis::SIGNAL_BYTES / osis::HISTORY_DIRTY_BYTES;
+    x.n.engine(|e| {
+        e.core.events.queue(osis_node::Event::History(Arc::new(ids(flood, x.u))));
+        e.core.events.queue(osis_node::Event::History(Arc::new(ids(1, x.t))));
+        e.core.events.flush();
+    });
+    x.n.settle();
+    drop(go);
+    writer.join().unwrap().unwrap();
+    x.n.after_route(Box::new(|| {}));
+    let e = rx.recv_timeout(Duration::from_secs(20)).unwrap();
+    assert!(matches!(e, HistoryEvent::Commit { .. }), "{e:?}");
+}
+
+// spec/wire.md §11.2, notes/api.md History: a client pages past large bodies: what a page takes fits
+// one reply, and a body past that reads as too large; else every read from there would fail.
+#[test]
+fn history_pages_past_large_bodies() {
+    use osis::{HistoryBody, HistoryFrom};
+    let x = node();
+    let k = ak("t:big.0");
+    let (_, _, c) = x.client(Role::Read);
+    let half = osis_proto::api::REPLY_BUDGET / 2;
+    let fits = half - osis::HISTORY_PAGE * 256 / 2 - 60;
+    for (b, n) in [(0u8, half - 60), (1, half - 60), (2, fits), (3, fits), (4, fits)] {
+        x.n.write_with(|w| w.at(x.t, k.clone()).set(&Value::Bytes(vec![b; n]))).unwrap();
+    }
+    let p = c.at(x.t, k.clone()).history(HistoryFrom::Newest, 10).unwrap();
+    assert_eq!((p.entries.len(), p.more), (2, true));
+    assert_eq!(p.entries[0].body, HistoryBody::Held(Some(Value::Bytes(vec![4; fits]))));
+    let mut from = p.entries[1].pos();
+    let mut rest = Vec::new();
+    loop {
+        let p = c.at(x.t, k.clone()).history(HistoryFrom::Before(from), 10).unwrap();
+        rest.extend(p.entries.iter().map(|e| matches!(e.body, HistoryBody::TooLarge { .. })));
+        if !p.more {
+            break;
+        }
+        from = p.entries.last().unwrap().pos();
+    }
+    assert_eq!(rest, [false, true, true]);
+}

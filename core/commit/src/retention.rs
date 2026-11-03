@@ -22,10 +22,18 @@ pub const CREATED: &str = "created.0";
 /// The AK of a thing's required retention.
 pub const REQUIRED: &str = "required.0^";
 
-/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`, `required.0^`).
+/// The AK of the delta a purge request with nothing to reset carries.
+pub const PURGE: &str = "purge.0";
+
+/// Fixed retention of an AK, if it has one (role-class aspects, `created.0`, `required.0^`,
+/// `purge.0`).
 pub fn fixed_retention(ak: &str) -> Option<Retention> {
     if ak == CREATED || ak == REQUIRED {
         Some(CREATED_RETENTION)
+    } else if ak == PURGE {
+        // no required retention reaches it: a required expiry would forbid every purge request
+        // (a commit with one carries no `expires`)
+        Some(Retention { by: PurgeBy::AuthorOrAdmin, at_least: Bound { abs: None, rel: None }, at_most: Bound { abs: None, rel: None } })
     } else if is_role_class(ak) {
         Some(ROLE_RETENTION)
     } else {
