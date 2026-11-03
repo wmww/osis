@@ -115,6 +115,7 @@ fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fragment, sna
         } else {
             un.strip(&mut delta);
         }
+        crate::retention::mark_if_bounded(tx, tid, ak)?;
     }
     strip_valueless(tx.core, tid, ak, &mut delta);
     let touch = crate::engine::pages::touch_of(&delta, tx.core.pages.get(&(*tid, ak.clone())));

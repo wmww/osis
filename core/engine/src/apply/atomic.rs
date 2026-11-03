@@ -142,6 +142,9 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
         } else {
             un.strip(&mut delta);
         }
+        // the writes stripped (others' nested under an invalid creation) still die at a valid
+        // superseder (spec/crdt.md §4.8), which this join cannot meet: dated from the bodies
+        crate::retention::mark_if_bounded(tx, tid, ak)?;
     }
     // the state is held stripped and stripping commutes with join (spec/crdt.md §4.7)
     strip_valueless(tx.core, tid, ak, &mut delta);
@@ -422,6 +425,9 @@ fn copies_before(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, 
 pub(crate) struct Unmerge {
     owned: OwnedSet,
     vouched: BTreeSet<(osis_crdt::Dot, Option<osis_base::Value>)>,
+    /// The owners held value-less on the aspect (`ix.valueless`): a dot of theirs has one map
+    /// record, the key-erased one (spec/crdt.md §4.7), whatever key a body names it by.
+    valueless: OwnedSet,
 }
 
 /// A list of `Owned` for a lookup per dot in O(log its length): a fall lists every fallen delta,
@@ -479,14 +485,26 @@ impl Unmerge {
     pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
         let vouched = copies::vouched(tx, tid, ak, &owned)?;
-        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched })
+        let mut valueless = tx.core.ix.valueless.get(&(*tid, ak.clone())).cloned().unwrap_or_default();
+        // and the invalid deltas value-less by right but not listed yet: one arriving past its
+        // expiry or named by a held purge request un-merges on arrival, before
+        // `retention::on_apply` lists it (only an invalid delta's records are asked about)
+        let now = tx.now().0;
+        for c in tx.core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect::<Vec<_>>() {
+            let Some((h, Some(ai))) = tx.core.ix.commits.get(&c).map(|m| (m.header.clone(), m.aspect(tid, ak).filter(|ai| !m.valid_at(*ai)))) else { continue };
+            let expired = h.aspects.get(ai).and_then(|a| a.expires).is_some_and(|t| t <= now);
+            if expired || crate::retention::purged_by(tx, &h, &c, ai)?.is_some() {
+                valueless.extend(crate::retention::writes_of(tx.core, &h, &c, ai));
+            }
+        }
+        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched, valueless: OwnedSet::of(&valueless) })
     }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
     /// invalid delta.
     pub(crate) fn probe(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
         if owned.is_empty() || !f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
-            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new() });
+            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new(), valueless: OwnedSet::default() });
         }
         Unmerge::of(tx, tid, ak)
     }
@@ -500,10 +518,14 @@ impl Unmerge {
     /// Whether a held valid snapshot holds a write in the record of dot `d` and key `key`: of
     /// a keyed map entry, its creation's copy under that key or the record itself (its
     /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
+    /// A dot held value-less here has one record whatever key a body names it by (its records
+    /// are joined into the key-erased one, spec/crdt.md §4.7), so a copy of it under no key or
+    /// another vouches too (seed 7340007: an expired creation's valid snapshot copy, keyed by
+    /// a valid later put into it).
     fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
         match key {
-            Some(k) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
-            None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
+            Some(k) if !self.valueless.owns(d) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
+            _ => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
         }
     }
     /// Whether what a valid snapshot's body holds under owner dot `d` goes.

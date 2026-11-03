@@ -402,7 +402,10 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<(Death, T
 /// valid, and a snapshot's of a held valid import's writes, removed, so they play at their own
 /// commit), a body dropped value-less (expired, purged) as its residue, then the state (live
 /// writes of bodies dropped otherwise); every held body with a relative bound gets the first and
-/// last of its writes' deaths. A superseder whose body was dropped for its keep bounds dates
+/// last of its writes' deaths. Only the invalid deltas' own writes are left out: a valid write
+/// nested in a record they created is un-merged from the state (spec/crdt.md §4.6) but dies
+/// like any other at a valid superseder (§4.8, judged against the write alone: a reset on that
+/// record), whether the record was un-merged before or after it joined (seed 52040). A superseder whose body was dropped for its keep bounds dates
 /// nothing unless its write is live: a write it superseded dies at a later one here.
 ///
 /// A valid snapshot's copy of a write whose own delta is invalid supersedes from the snapshot on,
@@ -425,7 +428,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             // a body dropped value-less (expired, purged) plays as its residue: its writes
             // supersede like any held (spec/crdt.md §4.7)
             if let Some(mut f) = residue_of(tx, c, tid, ak)? {
-                un.strip(&mut f);
+                f.remove_writes(&|d| un.bad(d));
                 // a write a vouched copy killed dies no earlier than the body's `ts`, as below
                 let ts = tx.core.ix.commits.get(c).map(|m| m.header.ts);
                 join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels), |d| if un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at });
@@ -444,11 +447,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         crate::apply::each_held_piece(tx, c, ai, &mut |tx, mut f| {
             let core = &*tx.core;
             // a valid snapshot's copies all play (spec/permissions.md §5.2)
-            if snap {
-                f.remove_dots(&|d| un.unvouched(d));
-            } else {
-                un.strip(&mut f);
-            }
+            f.remove_writes(&|d| if snap { un.unvouched(d) } else { un.bad(d) });
             // (a valid snapshot's copy of an invalid delta's write plays at the snapshot: the
             // delta's own writes are un-merged, the copy is what the state holds)
             if cp {
