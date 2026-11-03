@@ -1582,13 +1582,6 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
     };
     match (&want.index, &got.index) {
         (Some(w), Some(g)) => {
-            // a snapshot dropped for a purge that fell and dropped for another before a copy came
-            // gives nothing more at that node (spec/permissions.md §8): its index lines only
-            let no_gives = |s: Option<String>| s.map(|s| match (s.find(", gives: {"), s.find("}, missing:")) {
-                (Some(a), Some(b)) if a < b => format!("{}{}", &s[..a], &s[b + 1..]),
-                _ => s,
-            });
-            let gave = |c: &CommitId| no_gives(w.show(&IndexField::Commit(*c))) == no_gives(g.show(&IndexField::Commit(*c))) && w.show(&IndexField::Commit(*c)) != g.show(&IndexField::Commit(*c));
             // a body held for want of a death whose killer this node dropped before it arrived, a
             // stated limit (spec/commits.md §5; `dating` checks the death): dropped by its bound where it died
             let orphan = |c: &CommitId| {
@@ -1608,9 +1601,8 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
             };
             let exempt = |f: &IndexField| match f {
                 IndexField::Table("bounded_held") => orphans_counted(),
-                IndexField::Commit(c) => on_expired(c) || gave(c) || orphan(c),
-                IndexField::DroppedSnapshots(c) => on_expired(c) || gave(c),
-                IndexField::Snapshots(c) | IndexField::Carried(c) => on_expired(c),
+                IndexField::Commit(c) => on_expired(c) || orphan(c),
+                IndexField::DroppedSnapshots(c) | IndexField::Snapshots(c) | IndexField::Carried(c) => on_expired(c),
                 IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
             };
             if let Some(f) = w.diff(g).into_iter().find(|f| !exempt(f)) {
@@ -4364,5 +4356,26 @@ fn class_drop_leaves_missing_part_missing_seed_106342_spec_commits_5() {
     let want = digest(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 17, 19, 20, 21, 22, 26, 27, 28, 29, 30, 31, 32]);
     let got = digest(&[5, 10, 32, 20, 31, 6, 8, 13, 29, 19, 21, 2, 15, 26, 0, 30, 9, 4, 27, 3, 12, 14, 1, 28, 17, 7, 22]);
     assert_eq!(want.missing, [1].into(), "the t:docs.0 part never came");
+    assert_eq!(want, got);
+}
+
+// spec/commits.md §4, spec/permissions.md §8: a snapshot's part dropped for a purge, reopened as
+// missing when the purge fell, then dropped for another with no copy come still stands in (a bit
+// of its header, no body needed), as at a node that dropped it once (seed 32032 of the purge-rows
+// mix, shrunk).
+#[test]
+fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, aim(Demote { by: 1, t: 0, holder: 2, at: 1, to_read: false }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 3 }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Typed { by: 1, t: 0, op: 0, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 1 }), aim(PurgeNamed { by: 2, t: 0, of: 2, back: 2, v: 9 }), aim(PurgeNamed { by: 2, t: 0, of: 1, back: 1, v: 3 }), aim(Compact { by: 1, t: 0, op: 0 }), Edge { by: 1, t: 0, holder: 0, role: Some(Role::Admin) }, aim(Compact { by: 1, t: 0, op: 0 }), aim(Message { by: 2, t: 0, v: 0 }), Edge { by: 1, t: 0, holder: 2, role: Some(Role::Write) }, aim(PurgeNamed { by: 0, t: 0, of: 2, back: 2, v: 7 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 6 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }];
+    let played = with_syncs(play(32032, &h), 32032);
+    let digest = |order: &[usize]| {
+        let mut p = deliver(&played, order);
+        let ix = index_later(&mut p, &played);
+        played.packs.iter().filter(|pk| ix.commits.get(&pk.id).is_some_and(|c| c.kind == osis_commit::Kind::ContentSnapshot && !c.dropped.is_empty())).map(|pk| (pk.id, ix.commits[&pk.id].clone())).collect::<Vec<_>>()
+    };
+    let want = digest(&(0..played.packs.len()).collect::<Vec<_>>());
+    let got = digest(&[18, 15, 8, 6, 7, 1, 0, 21, 2, 24, 3, 19, 9, 12, 11, 16, 20, 25, 17, 5, 4, 26, 22, 23, 13, 10, 14]);
+    assert!(want.iter().any(|(_, c)| c.stands_in == [0].into()), "a dropped snapshot stands in: {want:?}");
     assert_eq!(want, got);
 }

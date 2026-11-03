@@ -288,8 +288,10 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // as covered only with a coverer: the others come back on arrival alone
     let why = if why == DropFor::Cover && covered_by.is_empty() { DropFor::Other } else { why };
     // a snapshot dropped other than as covered still stands in for what it was stamped after
-    // (spec/commits.md §4, §5); a coverer, stamped no earlier, does for a covered one
-    let stands_in = snapshot && why != DropFor::Cover && tx.core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *c));
+    // (spec/commits.md §4, §5), held when it dropped or not (a part missing, as after a purge
+    // fell, needs no body for that: its header says it all); a coverer, stamped no earlier,
+    // does for a covered one
+    let stands_in = snapshot && why != DropFor::Cover;
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::copies::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
