@@ -282,6 +282,13 @@ impl Engine {
         self.core.ix.commits.values().map(|m| m.header.aspects.iter().enumerate().filter(|(ai, a)| a.ak.as_str() == osis_commit::retention::REQUIRED && !m.valid_at(*ai)).count()).sum()
     }
 
+    /// Every applied durable commit with its parts not received here (`commit_ids` with
+    /// `Meta::missing`): two nodes holding one commit may hold different parts of it.
+    #[doc(hidden)]
+    pub fn commit_parts_missing(&self) -> BTreeMap<CommitId, std::collections::BTreeSet<usize>> {
+        self.core.ix.commits.iter().filter(|(_, m)| !m.view.memory).map(|(id, m)| (*id, m.missing.clone())).collect()
+    }
+
     /// The indexes open rebuilds, field by field (tests: a load from the persisted index equals a
     /// rebuild from the commit records; harnesses compare with `IndexDigest::diff`).
     #[doc(hidden)]

@@ -3,7 +3,9 @@
 //! near 10 s), the rest tier 2 (`-- --ignored`); the sweep is tier 3 (`#[ignore]`, or `sim-sweep`).
 //! A failure prints its seed and the `osis_sim::replay` call that reproduces it.
 
-use osis_sim::{Report, SCENARIOS, replay};
+use osis_base::{CommitId, Role, Value};
+use osis_node::Mutation;
+use osis_sim::{Config, Report, SCENARIOS, Sim, replay, workload};
 
 fn ok(name: &str, seed: u64) -> Report {
     replay(name, seed).unwrap_or_else(|f| panic!("{f}"))
@@ -33,6 +35,58 @@ fn crash_and_restart() {
     let r = ok("crash_restart", 1);
     assert!(r.crashes > 0 && r.restarts > 0, "{r:?}");
     assert_eq!(ok("crash_restart", 1), r);
+}
+
+// spec/commits.md §4: a sweep seed where a node relayed a commit with a part waiting alone; the
+// receiver held the commit, so the oracle never sent the rest (fixed in the oracle: it goes by parts).
+#[test]
+fn crash_restart_partial_relay_seeds() {
+    for seed in [623023, 7000260] {
+        ok("crash_restart", seed);
+    }
+}
+
+// spec/commits.md §4: a commit on two things, one unknown at node 2, which syncs neither: its part
+// there waits alone, the rest applies. Node 2's relay leaves node 1 without that part until a whole copy comes.
+#[test]
+fn partial_relay_gets_its_rest_spec_commits_4() {
+    fn carry(sim: &mut Sim, from: usize, to: usize, ids: &[CommitId]) {
+        for id in ids {
+            let p = sim.engine(from).unwrap().package(id).unwrap().unwrap();
+            sim.deliver(to, &p).unwrap();
+        }
+    }
+    let cfg = Config { nodes: 3, ..Config::default() };
+    let mut sim = Sim::new("partial_relay", 1, cfg).unwrap();
+    let a = sim.create_thing(0, None).unwrap();
+    sim.grant(0, a, 1, Role::Write).unwrap();
+    sim.grant(0, a, 2, Role::Write).unwrap();
+    let b = sim.create_thing(1, None).unwrap();
+    sim.grant(1, b, 0, Role::Write).unwrap();
+    sim.grant(1, b, 2, Role::Write).unwrap();
+    let (of0, of1) = (sim.engine(0).unwrap().commit_ids(), sim.engine(1).unwrap().commit_ids());
+    carry(&mut sim, 0, 1, &of0);
+    carry(&mut sim, 0, 2, &of0);
+    carry(&mut sim, 1, 0, &of1);
+
+    let word = Value::Str("both".into());
+    let mut m = Mutation::new();
+    m.set(a, &workload::REG, &word).unwrap();
+    m.set(b, &workload::REG, &word).unwrap();
+    let id = sim.commit(0, m).unwrap().unwrap();
+    carry(&mut sim, 0, 2, &[id]);
+    carry(&mut sim, 2, 1, &[id]);
+    for n in [1, 2] {
+        let e = sim.engine(n).unwrap();
+        assert!(e.commit_parts_missing().get(&id).is_some_and(|gaps| gaps.len() == 1), "node {n} holds part of it");
+    }
+    assert_ne!(sim.read(1, b, "s:reg.0").unwrap(), Some(word.clone()));
+
+    sim.run_until_quiescent(50).unwrap();
+    for n in 0..3 {
+        assert_eq!(sim.read(n, a, "s:reg.0").unwrap(), Some(word.clone()), "node {n}");
+        assert_eq!(sim.read(n, b, "s:reg.0").unwrap(), Some(word.clone()), "node {n}");
+    }
 }
 
 // spec/crdt.md §2.2: commits beyond MAX_DRIFT park until local time catches up.

@@ -346,11 +346,14 @@ impl Sim {
         Ok(out)
     }
 
-    /// Packages of the commits node `from` holds that `to` does not (anti-entropy oracle; the
-    /// sync protocol's reconciliation replaces it in phase B).
+    /// Packages of the commits node `from` holds that `to` lacks, wholly or by a part `from`
+    /// holds (anti-entropy oracle; phase B's nodes fetch entries by blob, so parts come the same
+    /// way there).
     fn missing(&mut self, from: usize, to: usize) -> Res<Vec<Package>> {
         let theirs = check::held(&self.node(to)?.peer.engine);
-        let ids: Vec<CommitId> = self.engine(from)?.commit_ids().into_iter().filter(|c| !theirs.contains(c)).collect();
+        let ours = check::held(self.engine(from)?);
+        let lacks = |c: &CommitId| theirs.get(c).is_none_or(|gaps| ours.get(c).is_some_and(|mine| gaps.difference(mine).next().is_some()));
+        let ids: Vec<CommitId> = self.engine(from)?.commit_ids().into_iter().filter(lacks).collect();
         let mut out = Vec::new();
         for id in ids {
             match self.engine(from)?.package(&id) {
@@ -592,8 +595,8 @@ impl Sim {
         Err(self.fail(format!("not quiescent after {max_rounds} rounds; pending per node {p:?}")))
     }
 
-    fn fingerprint(&self) -> Vec<(usize, usize)> {
-        self.nodes.iter().map(|n| (n.peer.engine.commit_ids().len(), n.peer.engine.pending().len())).collect()
+    fn fingerprint(&self) -> Vec<(check::Held, usize)> {
+        self.nodes.iter().map(|n| (check::held(&n.peer.engine), n.peer.engine.pending().len())).collect()
     }
 
     /// Quiescent invariants: same commits everywhere, nothing pending, reads converge.
