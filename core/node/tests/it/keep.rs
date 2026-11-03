@@ -512,6 +512,22 @@ fn device_removal_erases_what_its_person_kept_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().is_empty());
 }
 
+// spec/permissions.md §3, Keep: a default arriving late, ordered before an `until` ending, ends the copy
+// at the next judging; the setting does not wait on it.
+#[test]
+fn a_late_default_may_end_an_until_copy_spec_perm_3() {
+    let at = osis_base::WallMs(T0.0 + 3_600_000);
+    let mut x = setup(9601, (ct::Edge { until: Some(at), ..edge_of(Role::Read) }, true));
+    let late = set_default(&mut x.lp, 0, x.d, false);
+    x.lp.peers[0].clock.set(osis_base::WallMs(at.0 + 1_000));
+    x.lp.peers[1].clock.set(osis_base::WallMs(at.0 + 1_000));
+    x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+    assert_kept(&mut x);
+    send(&mut x.lp, 0, 1, &[late]);
+    x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+    assert_erased(&mut x);
+}
+
 // spec/permissions.md §3, Keep: the removal that decides is of the edge the node lost: removed from P
 // (no default) C goes though C's default keeps; the same with the default on P keeps C though C has
 // none, since P's edge did not end.
@@ -865,7 +881,7 @@ fn a_links_key_takes_the_targets_default_spec_perm_9() {
 }
 
 /// A random history of edge writes by alice over C, P and bob (`nested`), in the order it was made.
-fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) {
+fn random_history(seed: u64, untils: bool) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) {
     let mut rng = crate::order::Rng(seed);
     let (mut lp, bob, p, c) = nested(seed, (rng.below(2) == 0, rng.below(2) == 0));
     lp.peers[0].engine.grant(&c, &bob, &edge_of(Role::Read)).unwrap();
@@ -878,8 +894,12 @@ fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) 
         let keep = rng.below(2) == 0;
         let role = if t == p { Role::Admin } else { Role::Read };
         let live = lp.peers[0].engine.roster(&t).contains_key(&h);
-        let done = match (rng.below(4), live) {
+        let done = match (rng.below(if untils { 5 } else { 4 }), live) {
             (0, _) => lp.peers[0].engine.grant(&t, &h, &edge_of(role)).ok(),
+            (4, _) => {
+                let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 1_500);
+                lp.peers[0].engine.grant(&t, &h, &ct::Edge { until: Some(until), ..edge_of(role) }).ok()
+            }
             (1, true) => lp.peers[0].engine.demote(&t, &remove(h)).ok(),
             (2, true) => lp.peers[0].engine.demote(&t, &saying(h, keep)).ok(),
             // a removal's fill changes; no receiver reads this
@@ -895,10 +915,29 @@ fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) 
 }
 
 fn any_order_seed(seed: u64) -> u64 {
-    let (mut whole, p, c, ids) = random_history(seed);
+    any_order(seed, false)
+}
+
+/// `untils`: every `until` passed before anything arrives, each arrival judged by hand as well (no
+/// role commit need follow one).
+fn any_order(seed: u64, untils: bool) -> u64 {
+    let judge = |lp: &mut LocalPeer| {
+        lp.peers[1].engine.drop_lost_due().unwrap();
+        if untils {
+            lp.peers[1].engine.drop_lost_secrets().unwrap();
+        }
+    };
+    let past = |lp: &mut LocalPeer| {
+        for p in &mut lp.peers {
+            p.clock.advance(if untils { 10_000 } else { 0 });
+        }
+    };
+    let (mut whole, p, c, ids) = random_history(seed, untils);
+    past(&mut whole);
     send(&mut whole, 0, 1, &ids);
-    whole.peers[1].engine.drop_lost_due().unwrap();
-    let (mut x, _, _, same) = random_history(seed);
+    judge(&mut whole);
+    let (mut x, _, _, same) = random_history(seed, untils);
+    past(&mut x);
     assert_eq!(ids, same, "the history repeats at a seed");
     let mut order = same;
     let mut rng = crate::order::Rng(seed ^ 0x55);
@@ -907,7 +946,7 @@ fn any_order_seed(seed: u64) -> u64 {
     }
     for id in &order {
         send(&mut x, 0, 1, &[*id]);
-        x.peers[1].engine.drop_lost_due().unwrap();
+        judge(&mut x);
     }
     if !x.peers[1].engine.pending().is_empty() || !whole.peers[1].engine.pending().is_empty() {
         return 0;
@@ -923,6 +962,30 @@ fn any_order_seed(seed: u64) -> u64 {
         assert!(!found(&mut x, D_MARK), "erased content in the store");
     }
     u64::from(here.contains(&c))
+}
+
+fn any_order_until_seed(seed: u64) -> u64 {
+    any_order(seed, true)
+}
+
+fn any_order_until_replay(s: u64) -> String {
+    format!("OSIS_KEEP_START={s} OSIS_KEEP_SEEDS=1 cargo test --workspace --test it keep::any_order_until_keeps_no_more_large -- --ignored --exact")
+}
+
+// spec/permissions.md §3, Keep: the same with `until` endings, which read the default in force at
+// their key, among the writes and settings. Seeds with teeth: a mark not ending when its way's default
+// now says erase (133, 162).
+#[test]
+fn any_order_until_keeps_no_more_spec_perm_3() {
+    let seeds = [133, 162, 0, 1, 2, 3, 4, 5];
+    osis_base::testenv::run_seeds("keep::any_order_until_keeps_no_more", &seeds, false, any_order_until_replay, any_order_until_seed);
+}
+
+/// Seeds: OSIS_KEEP_START, OSIS_KEEP_SEEDS (default 0..200).
+#[test]
+#[ignore = "tier 2"]
+fn any_order_until_keeps_no_more_large() {
+    osis_base::testenv::Seeds::from_env("OSIS_KEEP_START", "OSIS_KEEP_SEEDS", 0..200).run("keep::any_order_until_keeps_no_more_large", any_order_until_replay, any_order_until_seed);
 }
 
 fn any_order_replay(s: u64) -> String {

@@ -999,6 +999,25 @@ fn cascade_two_hops_spec_perm_3() {
     assert_eq!(sealed_write(&mut lp, 1, t, "after"), BTreeSet::from([2]), "nor on T");
 }
 
+// spec/permissions.md §2, §9: recovery removes a device with erase, whatever the person's default.
+#[test]
+fn recovery_erases_whatever_the_default_spec_perm_2() {
+    let (mut lp, p, _pa, card) = devices_and_alice(5081);
+    let d1 = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    m.set(p, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep: true }).unwrap();
+    lp.peers[1].engine.commit(m).unwrap();
+    spread(&mut lp);
+    let mut fresh = net(1, 5091);
+    lp.peers.push(fresh.peers.remove(0));
+    sync(&mut lp, 1, 3);
+    lp.advance(1000);
+    lp.peers[3].engine.recover(&card, &[d1], PreSync::Synced).unwrap();
+    spread(&mut lp);
+    lp.peers[0].engine.drop_lost_due().unwrap();
+    assert!(!lp.peers[0].engine.kept_copies().contains(&p));
+}
+
 // spec/permissions.md §9 (recovery card), §5.1: a fresh device holding the card claims the
 // person (as the recovery key: grants itself admin) and removes the stolen device with the
 // person's rotation; the stolen device's later removal of the honest device is invalid.
