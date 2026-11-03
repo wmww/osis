@@ -50,6 +50,10 @@ fn laws(s: &[Fragment]) {
             if x.contains(y) {
                 assert_eq!(&join(x, y), x, "contains only what joins in unchanged");
             }
+            // a sequence joins record by record, so its piece decides exactly
+            if matches!(x, Fragment::Seq(_)) {
+                assert_eq!(x.contains(y), &join(x, y) == x, "a sequence's piece judges as the whole");
+            }
         }
         assert!(ab.contains(x) || x == c, "a join contains its parts");
     }

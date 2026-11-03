@@ -227,6 +227,18 @@ impl Fragment {
         ix
     }
 
+    /// `copy_index`, of the writes under a dot in `ranges` (sorted): all `outside` and `misstated`
+    /// read of `ranges`, without indexing the rest.
+    pub fn copy_index_in(&self, ranges: &[(Source, u64, u64)]) -> CopyIndex {
+        let pick = |d: &Dot| {
+            // the last range starting at or before the dot, or an earlier one reaching it
+            ranges.iter().take(ranges.partition_point(|r| (&r.0, r.1) <= (&d.src, d.ctr))).rev().take_while(|r| r.0 == d.src).any(|r| d.ctr < r.2)
+        };
+        let mut ix = CopyIndex::default();
+        ix.add_picked(self, &pick);
+        ix
+    }
+
     /// Removes every write whose owner dot `pred` accepts, element and entry creations with
     /// their chars and anchors included, keeping others' writes nested in what they created,
     /// with the entry's key (their records repeat it, spec/crdt.md §3.2): what an invalid
@@ -326,7 +338,10 @@ impl CopyIndex {
     /// union of its pieces'; a write two pieces repeat, such as the creation of the entry a
     /// page lies under, counts once).
     pub fn add(&mut self, f: &Fragment) {
-        let (copies, records) = f.copies_and_records(&|_| true);
+        self.add_picked(f, &|_| true);
+    }
+    fn add_picked(&mut self, f: &Fragment, pick: &dyn Fn(&Dot) -> bool) {
+        let (copies, records) = f.copies_and_records(pick);
         for (d, k) in records {
             self.1.entry(d).or_default().insert(k);
         }

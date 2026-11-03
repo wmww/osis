@@ -577,6 +577,12 @@ impl World {
 
     /// Moves time on by `ms`: host ticks, database ticks, then everything settles.
     pub fn advance(&mut self, ms: u64) {
+        self.tick(ms);
+        self.pump();
+    }
+
+    /// `advance` without settling: messages stay queued, for stepping (`step`).
+    pub fn tick(&mut self, ms: u64) {
         self.clock.advance(ms);
         let now = self.now();
         for s in 0..self.hosts.len() {
@@ -587,7 +593,6 @@ impl World {
             self.hub_out(s, out);
         }
         self.tick_all();
-        self.pump();
     }
 
     fn tick_all(&mut self) {

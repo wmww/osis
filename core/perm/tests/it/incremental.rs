@@ -387,6 +387,62 @@ fn late_write_mid_history_keeps_states_exact() {
     assert!(check(&all, &inc, &n).is_none(), "{:?}", check(&all, &inc, &n));
 }
 
+// spec: none (costs, spec/requirements.md Scale): an edge joining a person's component to a chat's
+// of T things finds the region reading each component's things once: T, not T^2.
+#[test]
+fn region_reads_each_component_once() {
+    use osis_base::Role::{Admin, Write};
+    let mut w = World::new();
+    let n = w.nodes(42);
+    let (k, y) = (n[0], n[41]);
+    let g = w.thing(k);
+    for (i, m) in n[1..41].iter().enumerate() {
+        w.set(k, g, *m, edge(Write), 10 + i as u64, &[]);
+    }
+    // a person of its own, with a commit: not a lone node, so the general path
+    let p = w.thing(y);
+    w.set(y, p, y, edge(Admin), 100, &[]);
+    let held = w.held();
+    let mut inc = Timelines::new();
+    let all: BTreeSet<Tid> = held.things().into_iter().collect();
+    inc.update_touched(&held, &all);
+    w.set(k, g, p, edge(Write), 200, &[]);
+    let joined = w.held();
+    inc.update_touched(&joined, &touched_of(&held, &joined));
+    assert_eq!(inc.appended(), 0, "the general path");
+    assert!(inc.region_queued() <= 2 * n.len(), "{} things queued for {} things", inc.region_queued(), n.len());
+    assert!(check(&joined, &inc, &n).is_none(), "{:?}", check(&joined, &inc, &n));
+}
+
+// spec: none (costs, spec/requirements.md Scale): the edge writes on each of a component's things
+// are read off one index, so departures below a chat of M members read M writes, not M^2; a write
+// after it moves them.
+#[test]
+fn applied_on_indexes_a_timeline_once() {
+    use osis_base::Role::Write;
+    let mut w = World::new();
+    let n = w.nodes(30);
+    let k = n[0];
+    let things: Vec<Tid> = (0..10).map(|_| w.thing(k)).collect();
+    for (i, t) in things.iter().enumerate() {
+        w.set(k, *t, n[1 + i], edge(Write), 10 + i as u64, &[]);
+    }
+    let held = w.held();
+    let mut inc = Timelines::new();
+    inc.update(&held);
+    let tl = inc.get(&things[0]).unwrap();
+    for t in &things {
+        assert_eq!(tl.applied_on(t).count(), 1);
+    }
+    assert_eq!(tl.applied_on_built(), 1, "one index for all the things");
+    let prev = w.held();
+    w.set(k, things[3], n[20], edge(Write), 100, &[]);
+    let held = w.held();
+    inc.update_touched(&held, &touched_of(&prev, &held));
+    let tl = inc.get(&things[3]).unwrap();
+    assert_eq!(tl.applied_on(&things[3]).count(), 2, "the write after it");
+}
+
 fn touched_of(a: &osis_perm::MemoryHeldSet, b: &osis_perm::MemoryHeldSet) -> BTreeSet<Tid> {
     touched(a, b)
 }

@@ -7,7 +7,7 @@ use crate::fragment::Meta;
 use crate::linearize::place;
 use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
 use crate::seq_span::{expand, nth};
-use crate::stamp::{Dot, Stamp};
+use crate::stamp::{Dot, Source, Stamp};
 use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
 use crate::testutil::{frag, history, history_with, mapply, source, ts};
@@ -1572,4 +1572,26 @@ fn long_runs_match_model_spec_3_3() {
 #[test]
 fn unmerge_sees_undelete_char_of_bare_record_spec_4_7() {
     hostile_lockstep(12048209148398675115, false, true);
+}
+
+// spec: none (costs, spec/requirements.md Scale): a sequence's part at a delta's positions holds
+// the records with its dots, not the sequence: a `covered` costs about the body's records.
+#[test]
+fn part_at_a_sequence_is_the_deltas_records() {
+    let src = Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let dot = |ctr: u64| Dot { src: src.clone(), ctr };
+    let rec = |ctr: u64| {
+        let st = Stamp { ts: ts(ctr + 1), dot: dot(ctr) };
+        SeqElem { created: Some((st.clone(), Anchor::Head)), content: SeqContent::Char('x'), pos: vec![(st, Anchor::Head, None)], deleted: None, undel: None, span: 1 }
+    };
+    let whole: BTreeMap<Dot, SeqElem> = (0..1000).map(|c| (dot(2 * c), rec(2 * c))).collect();
+    let delta: BTreeMap<Dot, SeqElem> = [(dot(1000), rec(1000)), (dot(1002), rec(1002))].into();
+    let (whole, delta) = (Fragment::Seq(Seq::new(true, Meta::default(), whole)), Fragment::Seq(Seq::new(true, Meta::default(), delta)));
+    let Fragment::Seq(part) = whole.part_at(&delta) else { panic!("a sequence's part is one") };
+    assert_eq!(part.elems().keys().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1002)]);
+    assert!(whole.contains(&delta));
+    // and the index of its copies holds what the ranges name, not the sequence's
+    let ranges = [(src.clone(), 1000, 1001), (src.clone(), 1100, 1104)];
+    let ix = whole.copy_index_in(&ranges);
+    assert_eq!(ix.dots().cloned().collect::<Vec<_>>(), vec![dot(1000), dot(1100), dot(1102)]);
 }
