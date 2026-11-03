@@ -1773,6 +1773,73 @@ fn roster_snapshot_learned_late_stays_until_the_rest_comes_spec_commits_4() {
     assert_eq!(first.1, late.1);
 }
 
+// spec/commits.md §4 (the exception's impact): a holder's certificate copy of a roster snapshot,
+// naming that holder, and the rest away. The node syncing the thing first keeps the earlier roster,
+// its holders' writes and new writes; the one that applied the copy first shows only the holder
+// named, the other's writes gone, old and new. The rest, or a later whole snapshot, ends it.
+#[test]
+fn roster_copy_reads_at_each_node_spec_commits_4() {
+    let strs = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<BTreeSet<String>>();
+    let all = strs(&["bob", "carol", "bob2", "carol2", "owner2"]);
+    // (syncs first, ends with a later snapshot)
+    for (sync_first, later) in [(true, false), (false, false), (false, true)] {
+        let (mut lp, ps) = people(4, 601);
+        let t = thing_of(&mut lp, 0, ps[0]);
+        lp.peers[0].engine.grant(&t, &ps[1], &edge_of(Role::Write)).unwrap();
+        lp.peers[0].engine.grant(&t, &ps[2], &edge_of(Role::Write)).unwrap();
+        spread(&mut lp);
+        add_tag(&mut lp, 1, t, "bob");
+        add_tag(&mut lp, 2, t, "carol");
+        spread(&mut lp);
+        lp.advance(1000);
+        let c = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        lp.peers[1].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+        let named = lp.peers[1].engine.certificates(&t).remove(&c).unwrap();
+        let mut copy = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+        copy.parts.retain(|p| named.contains(&(p.ai, p.di)));
+        let holders = |lp: &LocalPeer| lp.peers[3].engine.roster(&t).into_keys().collect::<BTreeSet<Tid>>();
+        let (both, bob) = (BTreeSet::from([ps[1], ps[2]]), BTreeSet::from([ps[1]]));
+        assert_eq!(holders(&lp), both);
+
+        let e = &mut lp.peers[3].engine;
+        if sync_first {
+            e.set_syncing(t, true).unwrap();
+        }
+        let r = e.ingest(&copy.encode(), Vec::new()).unwrap();
+        assert_eq!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), sync_first, "{r:?}");
+        e.set_syncing(t, true).unwrap();
+        assert_eq!(holders(&lp), if sync_first { both.clone() } else { bob.clone() });
+        assert_eq!(tags(&mut lp, 3, t), if sync_first { strs(&["bob", "carol"]) } else { strs(&["bob"]) });
+
+        // new writes, by holders that have not the snapshot (carol) or have (bob), and the owner
+        lp.advance(1000);
+        add_tag(&mut lp, 1, t, "bob2");
+        add_tag(&mut lp, 2, t, "carol2");
+        add_tag(&mut lp, 0, t, "owner2");
+        for i in 0..3 {
+            for id in lp.peers[i].engine.commit_ids().into_iter().filter(|id| *id != c) {
+                let p = lp.peers[i].engine.package(&id).unwrap().unwrap();
+                lp.peers[3].engine.ingest(&p.bytes, p.blobs).unwrap();
+            }
+        }
+        assert_eq!(holders(&lp), if sync_first { both.clone() } else { bob.clone() });
+        assert_eq!(tags(&mut lp, 3, t), if sync_first { all.clone() } else { strs(&["bob", "bob2", "owner2"]) });
+
+        if later {
+            lp.advance(1000);
+            let c2 = lp.peers[0].engine.roster_snapshot(&t, None).unwrap().commits[0];
+            let p = lp.peers[0].engine.package(&c2).unwrap().unwrap();
+            lp.peers[3].engine.ingest(&p.bytes, p.blobs).unwrap();
+        } else {
+            lp.peers[3].engine.ingest(&pk.bytes, Vec::new()).unwrap();
+        }
+        assert!(lp.peers[3].engine.pending().is_empty());
+        assert_eq!(holders(&lp), both);
+        assert_eq!(tags(&mut lp, 3, t), all);
+    }
+}
+
 // spec/permissions.md §7: moving a doc to another owner copies it with its history, re-grants
 // its holders on the copy and points the old thing at it; a second move is refused.
 // spec/permissions.md §7 (one import)
