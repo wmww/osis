@@ -177,9 +177,16 @@ pub fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> Result<osis::Sha
     db.make_link(c, role, osis::LinkOpts { until: None, single_use, direct: false })
 }
 
-/// Joins by link: the chat, once it is here. Kicks reach a joiner like any member (`kick`).
+/// Joins by link: the chat, once it is here. Kicks reach a joiner like any member (`kick`). A chat
+/// already held (`chats`) is returned as is, also when redeeming failed because it is: the link
+/// may be used up, or its maker or a member pasted it.
 pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
-    db.redeem(l).await
+    let c = l.target()?;
+    let held = || chats(db).is_ok_and(|x| x.contains(&c));
+    if held() {
+        return Ok(c);
+    }
+    db.redeem(l).await.or_else(|e| if held() { Ok(c) } else { Err(e) })
 }
 
 /// Removes this person: every edge it holds the chat through (a link joiner's is on the link's key).

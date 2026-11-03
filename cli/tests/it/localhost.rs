@@ -243,7 +243,7 @@ fn daemon(store: &Path) -> Host {
     Host(c)
 }
 
-// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other, `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
+// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other (again by either: the chat), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
 #[test]
 #[ignore]
 fn chat_channel_localhost() {
@@ -261,6 +261,9 @@ fn chat_channel_localhost() {
     let db = daemon(&b);
     let bc = osis(&b, &["chat", "join", &link]);
     assert_eq!(bc, c);
+    // already held: the chat again, for the joiner and the maker
+    assert_eq!(osis(&b, &["chat", "join", &link]), c);
+    assert_eq!(osis(&a, &["chat", "join", &link]), c);
     let read = osis(&b, &["--json", "chat", "read", &c]);
     let line = read.lines().next().unwrap();
     assert_eq!(field(line, "id"), first);

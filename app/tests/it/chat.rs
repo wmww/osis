@@ -1,5 +1,6 @@
 //! Chats across two people (commits delivered by hand, as in `share`): list, open, send, receive,
-//! replies and the sender's name. Joining by link needs a host: checked by hand (notes/app.md Chat).
+//! replies and the sender's name. Joining a new chat by link needs a host: checked by hand (notes/app.md
+//! Chat); a link to a chat already here does not.
 use osis::internals::Internals as _;
 use osis::{Config, ManualClock, MemStore, Osis, Role, StoreAt, WallMs};
 use osis_app::chat;
@@ -115,4 +116,27 @@ fn hostless_store_sends_without_a_name() {
     assert!(chat::set_name(&a, "Alice").is_err());
     chat::send(&a, c, "", "hi", None).unwrap();
     assert_eq!(chat::recent(&a, c, 20).unwrap()[0].text, "hi");
+}
+
+/// A link to a chat already here (pasted by its maker or a member) opens it without the link's
+/// host; text that is no link still fails.
+#[test]
+fn join_held_chat_opens_it() {
+    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let a = Osis::create(cfg(1, &clock)).unwrap().0;
+    let b = Osis::create(cfg(2, &clock)).unwrap().0;
+    sync(&a, &b);
+    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
+    let link = osis_chat::link(&a, c, Role::Write, false).unwrap().to_string();
+    sync(&a, &b);
+    for db in [a, b] {
+        // the host never answers: before, this waited on it
+        let (tx, rx) = std::sync::mpsc::channel();
+        let l = link.clone();
+        std::thread::spawn(move || tx.send(chat::join(&db, &format!(" {l}\n")).map_err(|e| e.to_string())));
+        assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(20)).expect("join returns at once"), Ok(c));
+    }
+    let a = Osis::create(cfg(3, &clock)).unwrap().0;
+    assert!(chat::join(&a, "osis://nonsense").unwrap_err().to_string().contains("not a chat link"));
 }

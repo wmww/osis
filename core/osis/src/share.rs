@@ -180,6 +180,12 @@ text_type!(
     /// A share link (`osis://link/...`): holds the link key's seed.
     ShareLink, osis_label::ShareLink, osis_label::ShareLink::from_text, "link"
 );
+impl ShareLink {
+    /// The thing the link shares.
+    pub fn target(&self) -> Result<Tid> {
+        Ok(self.parse()?.target)
+    }
+}
 text_type!(
     /// A contact card: a read link to the person's profile (spec/sync.md §3).
     ContactCard, osis_label::ShareLink, osis_label::ShareLink::from_text, "contact card"
