@@ -3,3 +3,4 @@
 - Tier 1 took 813 s wall at load ~40 (documented ~45 s quiet).
 - A python `str.replace(..., 1)` aimed at the new test hit an identical line in the test above it first; anchor such edits to the function.
 - Review: `git rebase main` said up to date while origin/main was 4 commits ahead (local main lagged); `git fetch && git rebase origin/main` was needed, as coordination.md says.
+- Review gate took 1464 s at load 37-40 (documented about 90 s quiet).
