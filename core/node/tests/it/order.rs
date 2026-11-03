@@ -1215,17 +1215,20 @@ const REGISTERS: [&str; 3] = ["t:kept.0", "t:short.0", "t:gone.0"];
 /// A death check independent of `retention::deaths` (whose `replay_all` the oracle's
 /// `replay_deaths` runs), on `REGISTERS` alone: a held body there with its own write valid
 /// dies (first and last) at the earliest `ts` above its own among the valid writes the node
-/// holds there (spec/crdt.md §4.8): applied bodies with their own writes, and a valid
-/// snapshot's copy of a write whose own delta is held invalid, at the snapshot's `ts`. `e`
+/// holds there (spec/crdt.md §4.8): applied bodies with their own writes, purged ones included
+/// (a purged write stays in the state value-less, §4.7), and a valid snapshot's copy of a write
+/// whose own delta is held invalid, at the snapshot's `ts`. `e`
 /// holds every body (the oracle); `deaths` are its recomputed ones. Aspects in `skip` (writes
 /// carried whose own commit is not held, `Oracle::carried`) and bodies with a `ts` tie are not
 /// judged. Returns how many bodies it judged and how many of them died, or the first mismatch.
 fn register_deaths(e: &mut osis_node::Engine, deaths: &Deaths, skip: &BTreeSet<(Tid, Ak)>) -> Result<(u64, u64), String> {
     use osis_base::Ts;
     let pending: BTreeSet<CommitId> = e.pending().into_iter().map(|x| x.0).collect();
-    // per aspect: (ts, commit, own writes, valid, relative keep bound) of each applied held body
-    type Body = (Ts, CommitId, bool, bool, bool);
+    // per aspect: (ts, commit, own writes, valid, relative keep bound, held) of each applied body
+    // held or purged
+    type Body = (Ts, CommitId, bool, bool, bool, bool);
     let mut on: BTreeMap<(Tid, Ak), Vec<Body>> = BTreeMap::new();
+    let mut purged: BTreeMap<(Tid, Ak), BTreeMap<CommitId, CommitId>> = BTreeMap::new();
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
         if pending.contains(&id) {
@@ -1233,26 +1236,30 @@ fn register_deaths(e: &mut osis_node::Engine, deaths: &Deaths, skip: &BTreeSet<(
         }
         for (ai, a) in h.aspects.iter().enumerate() {
             let missing = e.core.ix.commits.get(&id).is_none_or(|m| m.missing.contains(&ai));
-            if !REGISTERS.contains(&a.ak.as_str()) || skip.contains(&(a.tid, a.ak.clone())) || missing || !e.body_not_dropped(&id, &a.tid, &a.ak) {
+            if !REGISTERS.contains(&a.ak.as_str()) || skip.contains(&(a.tid, a.ak.clone())) || missing {
+                continue;
+            }
+            let held = e.body_not_dropped(&id, &a.tid, &a.ak);
+            if !held && !purged.entry((a.tid, a.ak.clone())).or_insert_with(|| e.purged_on(&a.tid, &a.ak).unwrap()).contains_key(&id) {
                 continue;
             }
             let Some(valid) = e.body_valid(&id, &a.tid, &a.ak) else { continue };
             let bounded = a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some();
-            on.entry((a.tid, a.ak.clone())).or_default().push((h.ts, id, h.kind.has_own_writes(), valid, bounded));
+            on.entry((a.tid, a.ak.clone())).or_default().push((h.ts, id, h.kind.has_own_writes(), valid, bounded, held));
         }
     }
     let (mut judged, mut died) = (0, 0);
     for ((tid, ak), bodies) in &on {
         // the valid writes' `ts`
         let mut killers: Vec<Ts> = bodies.iter().filter(|b| b.2 && b.3).map(|b| b.0).collect();
-        for b in bodies.iter().filter(|b| !b.2 && b.3) {
+        for b in bodies.iter().filter(|b| !b.2 && b.3 && b.5) {
             let low = e.body_min_ts(&b.1, tid, ak).unwrap();
             if bodies.iter().any(|o| o.2 && !o.3 && Some(o.0) == low) {
                 killers.push(b.0);
             }
         }
-        for &(ts, id, own, valid, bounded) in bodies {
-            if !own || !valid || !bounded || bodies.iter().any(|o| o.1 != id && o.0 == ts) {
+        for &(ts, id, own, valid, bounded, held) in bodies {
+            if !own || !valid || !bounded || !held || bodies.iter().any(|o| o.1 != id && o.0 == ts) {
                 continue;
             }
             let want = killers.iter().filter(|k| **k > ts).min().map(|k| (*k, *k));
@@ -3827,6 +3834,50 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // every failing case, not the first
     let fails: Vec<String> = results.into_iter().zip(&cases).filter_map(|(r, (seed, ..))| r.err().map(|e| format!("seed {seed}: {e}"))).collect();
     assert!(fails.is_empty(), "{}", fails.join("\n\n"));
+}
+
+// spec/crdt.md §4.7-4.8: a purged register write stays in the state value-less (its residue), so
+// it still kills the write before it: the oracle's register death check counts it
+// (`register_deaths`), as the replay does.
+#[test]
+fn register_deaths_purged_killer_spec_crdt_4_8() {
+    let mut lp = LocalPeer::new(1, 1, T0).unwrap();
+    let me = lp.peers[0].engine.tid();
+    let mut m = Mutation::new();
+    let t = lp.peers[0].engine.new_thing(&mut m, me);
+    m.set(t, &REG, &s("g")).unwrap();
+    lp.peers[0].commit(m).unwrap();
+    // each commit packaged as made, before a later purge drops its body
+    let mut packs: Vec<Package> = lp.peers[0].engine.commit_ids().iter().map(|id| lp.peers[0].engine.package(id).unwrap().unwrap()).collect();
+    let mut put = |v: &str, purge: Option<CommitId>| {
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        if let Some(commit) = purge {
+            m.purge(osis_commit::PurgeItem::Commit { commit, tid: t, ak: ak("t:kept.0") });
+        }
+        m.retention(t, &KEPT, keep_of(16).unwrap()).unwrap();
+        m.set(t, &KEPT, &s(v)).unwrap();
+        let id = lp.peers[0].commit(m).unwrap().unwrap();
+        packs.push(lp.peers[0].engine.package(&id).unwrap().unwrap());
+        id
+    };
+    let w1 = put("1", None);
+    let w2 = put("2", None);
+    put("3", Some(w2));
+    let mut p = Peer::new(FRESH, lp.peers[0].engine.now()).unwrap();
+    p.engine.keep_bodies(true);
+    for pk in &packs {
+        p.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    assert!(!p.engine.body_not_dropped(&w2, &t, &ak("t:kept.0")), "the purge dropped w2");
+    for (t, a) in p.engine.all_aspects().unwrap() {
+        p.engine.replay_deaths(&t, &a).unwrap();
+    }
+    let deaths = deaths_of(&mut p.engine);
+    let w2_ts = p.engine.header(&w2).unwrap().ts;
+    assert_eq!(deaths.get(&(w1, t, ak("t:kept.0"))).copied().flatten(), Some((w2_ts, w2_ts)));
+    // w1 dead at w2, w3 live
+    assert_eq!(register_deaths(&mut p.engine, &deaths, &BTreeSet::new()), Ok((2, 1)));
 }
 
 // spec/crdt.md §4.8 (a write dies once, at its earliest superseder), spec/commits.md §5: order
