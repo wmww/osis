@@ -12,7 +12,7 @@ use osis_label::{Address, InboxLabel, InboxPayload, InboxThing};
 use osis_perm::At;
 use osis_proto::Command;
 use osis_schema::core_types as ct;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Longest wait between sends of a queued deposit refused for now (`retry_ms` doubling per
 /// refusal up to this). Minor consequence: at 0 a refused deposit is resent on every tick, at
@@ -501,11 +501,24 @@ impl SyncEngine {
             .filter(|(_, o)| o.sent.is_none() && o.after <= now)
             .filter_map(|(k, _)| ready.iter().find(|(_, s)| *s == k.0).map(|(c, _)| (*k, *c)))
             .collect();
+        // what the host last said fits (`deposit_room`, unknown: all), with one unanswered at any
+        // time to find out when a full budget frees: a deposit is its whole body, and a refused
+        // one costs that again. A host lying low only slows its own label to one per round trip.
+        let mut unanswered: BTreeMap<(HostKey, LabelId), u64> = BTreeMap::new();
+        for k in self.outbox.iter().filter(|(_, o)| o.sent.is_some()).map(|(k, _)| k) {
+            *unanswered.entry((k.0, k.1)).or_default() += 1;
+        }
         for (k, conn) in due {
             let Some(o) = self.state.outbox.get(&k) else { continue };
             if o.delivery.is_some_and(|d| self.names_label_opening(&d)) {
                 continue;
             }
+            let at = (k.0, k.1);
+            let n = unanswered.entry(at).or_default();
+            if *n > 0 && *n >= self.deposit_room.get(&at).copied().unwrap_or(u64::MAX) {
+                continue;
+            }
+            *n += 1;
             let Some(o) = self.state.outbox.get(&k) else { continue };
             let cmd = Command::Deposit { label: o.label, blob: o.blob.clone(), wrap: o.wrap, sig: o.sig };
             if let Some(m) = self.outbox.get_mut(&k) {

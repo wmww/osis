@@ -703,10 +703,12 @@ impl SyncEngine {
             // thing read
             commits.extend(chain_commits(&payload));
             commits.push((pt, c));
-            // the home label's pass of the actor it is sealed to places its copy
-            // (`inbox_certificates`); applying starts it only if the commit is new here, and a
-            // sender's own deposit under its own inbox is not
-            self.mark_dirty_of(&BTreeSet::from([actor]));
+            // the pass of the inbox's label stamps it, the home label's of the actor it is sealed
+            // to or one above it places its copy (`inbox_certificates`); applying starts them only
+            // if the commit is new here, and a sender's own deposit under its own inbox is not
+            let scope: BTreeSet<Tid> = self.engine.owner_chain(&actor).collect();
+            self.mark_dirty_of(&scope);
+            self.mark_labels(&[l]);
         }
         self.state.set_entry(l, b, e);
         Ok(())
@@ -1500,10 +1502,11 @@ impl SyncEngine {
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         c.req.sent.remove(&(l, b));
-        if let Some(n) = entries_left
-            && let Some(lc) = self.lc_mut(conn, &l)
-        {
-            lc.budget = Some(n);
+        if let Some(n) = entries_left {
+            self.deposit_room.insert((host, l), n);
+            if let Some(lc) = self.lc_mut(conn, &l) {
+                lc.budget = Some(n);
+            }
         }
         // a queued deposit's answer
         let now = self.raw_now();
@@ -1522,6 +1525,13 @@ impl SyncEngine {
                 if let Some(o) = self.outbox.get_mut(&(host, l, b)) {
                     o.after = now.saturating_add(back);
                 }
+                // a full budget refuses the rest as well: they wait with this one, bodies unsent
+                if code == Code::BUDGET_FULL {
+                    let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
+                    for o in self.outbox.range_mut(span).map(|(_, o)| o).filter(|o| o.sent.is_none()) {
+                        o.after = o.after.max(now.saturating_add(back));
+                    }
+                }
             } else {
                 if retry || code == Code::NOT_HEAD {
                     self.diag(format!("deposit under {l:?} moot after {tries} refusals (code {})", code.0));
@@ -1529,6 +1539,10 @@ impl SyncEngine {
                 self.outbox.remove(&(host, l, b));
                 self.state.remove_out(&host, &l, &b);
             }
+        }
+        let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
+        if self.outbox.range(span).next().is_none() {
+            self.deposit_room.remove(&(host, l));
         }
         match code {
             Code::OK => {

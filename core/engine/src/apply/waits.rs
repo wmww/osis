@@ -376,6 +376,8 @@ pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
     let records = core.ix.held.take_records();
     let moved = core.ix.held.take_moved();
     if !core.waits.refused.is_empty() {
+        let pending = &core.ix.pending;
+        core.waits.refused.retain(|id| pending.contains_key(id));
         let room = core.reading_room();
         core.waits.wake_refused(room);
     }

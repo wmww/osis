@@ -852,17 +852,20 @@ impl ServingSession {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
         let mut items = Vec::new();
-        let mut used = 0;
+        let mut used = 0usize;
         for blob_id in ids {
-            let entry = match store.entry(&label, &blob_id)? {
+            // the size first: a small `max_reply` lets a thousand of these go per round trip, and
+            // one that does not fit reads no blob
+            let meta = store.entry(&label, &blob_id)?;
+            let size = 120 + meta.as_ref().map_or(0, |m| usize::try_from(m.size).unwrap_or(usize::MAX));
+            if used.saturating_add(size) > reply_bound(max_reply) {
+                break;
+            }
+            let entry = match meta {
                 Some(m) => store.blob(&blob_id)?.map(|b| (b, m.wrap, m.stamp)),
                 None => None,
             };
-            let size = 120 + entry.as_ref().map_or(0, |e| e.0.len());
-            if used + size > reply_bound(max_reply) {
-                break;
-            }
-            used += size;
+            used += 120 + entry.as_ref().map_or(0, |e| e.0.len());
             if entry.is_some() {
                 self.cross(blob_id);
             }
@@ -882,6 +885,13 @@ impl ServingSession {
             LogRecord::Pending(b, at) => Some(Event::Pending { blob_id: b, at }),
             LogRecord::Head(s) => Some(Event::Head(s)),
         })
+    }
+
+    /// `event_size` of `added`'s event, without reading the blob: a small `max_reply` lets a
+    /// thousand Syncs go per round trip, and a page that does not fit it reads none.
+    fn added_size(&self, blob_id: &BlobId, m: &EntryMeta, inline_limit: u64) -> usize {
+        let inline = m.size <= inline_limit && !self.crossed.contains(blob_id);
+        180 + if inline { usize::try_from(m.size).unwrap_or(usize::MAX) } else { 0 }
     }
 
     fn added(&self, store: &dyn LabelStore, blob_id: BlobId, m: EntryMeta, inline_limit: u64) -> Result<Event, StoreError> {
@@ -952,7 +962,7 @@ impl ServingSession {
         // under the whole budget a first event goes whatever its size; under a smaller one a page
         // may hold none, and the requester asks on under the whole budget
         let may_empty = max_reply < REPLY_BUDGET as u64;
-        let (mut events, mut used, mut more) = (Vec::new(), 0, false);
+        let (mut events, mut used, mut more) = (Vec::new(), 0usize, false);
         let cursor = match from {
             From::Log(seq) => {
                 let mut pos = seq;
@@ -962,6 +972,16 @@ impl ServingSession {
                         break;
                     }
                     for (seq, rec) in recs {
+                        if let LogRecord::Added(b) = &rec
+                            && let Some(m) = store.entry(&label, b)?
+                            && m.add_seq == seq
+                            && !gained.contains(b)
+                            && used.saturating_add(self.added_size(b, &m, inline_limit)) > budget
+                            && (may_empty || !events.is_empty())
+                        {
+                            more = true;
+                            break 'log;
+                        }
                         if let Some(e) = self.event(store, &label, seq, rec, inline_limit, &gained)? {
                             let size = event_size(&e);
                             if used + size > budget && (may_empty || !events.is_empty()) {
@@ -985,12 +1005,12 @@ impl ServingSession {
                     }
                     for (b, m) in live {
                         if !gained.contains(&b) {
-                            let e = self.added(store, b, m, inline_limit)?;
-                            let size = event_size(&e);
-                            if used + size > budget && (may_empty || !events.is_empty()) {
+                            if used.saturating_add(self.added_size(&b, &m, inline_limit)) > budget && (may_empty || !events.is_empty()) {
                                 more = true;
                                 break 'live;
                             }
+                            let e = self.added(store, b, m, inline_limit)?;
+                            let size = event_size(&e);
                             used += size;
                             self.take(&e);
                             events.push(e);
@@ -1594,6 +1614,39 @@ mod tests {
         let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&Message::Delete { id: 2, label: f.label, items: vec![item; 64] }.encode())));
         let codes = out.iter().find_map(|o| if let ServingOutput::Send(b) = o { if let Ok(Message::Status { codes, .. }) = Message::decode(&b[4..]) { Some(codes) } else { None } } else { None }).unwrap();
         assert_eq!(codes, vec![Code::REFUSED; 64]);
+        assert_eq!(store.blob_reads.get(), 0);
+    }
+
+    // spec/wire.md §11.2 (`max_reply`), spec/requirements.md (peer input never causes unbounded
+    // work): a blob over a small `max_reply` is not read, or a thousand small requests per round
+    // trip each read a whole blob and answer nothing
+    #[test]
+    fn what_does_not_fit_max_reply_reads_no_blob() {
+        let f = Fixture::new(0x10);
+        let mut store = MemoryLabelStore::new([1; 32]);
+        store.push_step(&f.label, f.genesis.clone(), Some(f.genesis_claims.clone())).unwrap();
+        let blob = vec![7u8; 1 << 20];
+        let blob_id = osis_label::blob_id(&blob);
+        let put = Put { blob_id, blob: &blob, wrap: [0; WRAP_LEN], stamp: Some(Signature([0; 64])), expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        assert_eq!(store.put(&f.label, put).unwrap(), Code::OK);
+        let mut c = opened(&f, &mut store);
+        let small = crate::client::SMALL_REPLY as u64;
+        store.blob_reads.set(0);
+        let reqs = [
+            Message::Fetch { id: 10, label: f.label, max_reply: small, ids: vec![blob_id] },
+            Message::Sync { id: 11, label: f.label, cursor: None, inline_limit: 1 << 21, max_reply: small, entries: vec![], gained: vec![] },
+        ];
+        for m in reqs {
+            let out = c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
+            assert!(out.iter().any(|o| matches!(o, ServingOutput::Send(_))), "answered");
+            assert_eq!(store.blob_reads.get(), 0, "{m:?}");
+        }
+        // the log too
+        let (_, head) = store.log_head(&f.label).unwrap();
+        assert!(head > 0);
+        let cursor = Cursor { log_id: store.log_head(&f.label).unwrap().0, seq: 0 };
+        let m = Message::Sync { id: 12, label: f.label, cursor: Some(cursor), inline_limit: 1 << 21, max_reply: small, entries: vec![], gained: vec![] };
+        c.handle(0, &mut store, ServingInput::Bytes(encode_frame(&m.encode())));
         assert_eq!(store.blob_reads.get(), 0);
     }
 

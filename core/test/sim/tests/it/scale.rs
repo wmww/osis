@@ -569,3 +569,44 @@ fn a_burst_of_shares_costs_each_about_once() {
     assert!(accepted.examined <= 4 * BURST as u64, "{} pending commits read for {BURST} grants", accepted.examined);
     assert!(accepted.inbox_keys <= 2 * BURST as u64, "{} inbox keys tried for {BURST} accepted", accepted.inbox_keys);
 }
+
+// spec/sync.md §5 (Deposit): shares past an inbox's budget wait with the one refused, their bodies
+// unsent, and go as it frees, not all at each deposit it takes.
+#[test]
+#[ignore = "tier 2, minutes in debug"]
+fn a_burst_past_the_budget_sends_each_body_about_once() {
+    const BURST: usize = 150;
+    let (mut w, a, b, p, _) = labels_world(0);
+    // each knows the other: a stranger's shares are requests, at most `INBOX_WAITING` of them
+    let card = a.contact_card().unwrap();
+    w.run();
+    w.until(b.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    w.start_tally();
+    let things: Vec<Tid> = (0..BURST)
+        .map(|i| {
+            let t = a
+                .write_with(|x| {
+                    let t = x.create(a.me())?;
+                    x.make_group(t)?;
+                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
+                    Ok(t)
+                })
+                .unwrap();
+            a.sync(t, &[]).unwrap();
+            a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+            t
+        })
+        .collect();
+    w.no_storm = true;
+    w.run();
+    let mut waits = 0;
+    while things.iter().any(|t| read(&b, *t).is_none()) {
+        assert!(waits < 100, "b lacks {} of {BURST}", things.iter().filter(|t| read(&b, **t).is_none()).count());
+        w.advance(61_000);
+        waits += 1;
+    }
+    let deposits = w.tally(&a).get("Deposit").map_or(0, |x| x.0);
+    println!("{deposits} deposits for {BURST} shares, {waits} resyncs");
+    assert!(deposits <= 2 * BURST as u64, "{deposits} deposits for {BURST} shares");
+}

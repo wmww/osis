@@ -472,6 +472,8 @@ pub struct SyncEngine {
     /// Where each queued deposit (`State::outbox`: inbox blobs, a non-writer's own writes)
     /// stands: waiting for its host, or sent and not answered yet.
     pub(crate) outbox: BTreeMap<(HostKey, LabelId, osis_base::BlobId), local::Outgoing>,
+    /// Entries left in each deposit budget as a host last reported it (`send_outbox`).
+    pub(crate) deposit_room: BTreeMap<(HostKey, LabelId), u64>,
     /// Deposits for a label this node syncs with nobody: logged here, as a peer's deposit would
     /// be (`send_outbox`).
     pub(crate) local_inbox: Vec<(LabelId, Vec<u8>, [u8; osis_crypto::WRAP_LEN])>,
@@ -651,6 +653,7 @@ impl SyncEngine {
             last_tick: 0,
             diagnostics: Vec::new(),
             outbox,
+            deposit_room: BTreeMap::new(),
             local_inbox: Vec::new(),
             left: Some(deliver::LeftCheck::default()),
             first: BTreeSet::new(),
@@ -1196,6 +1199,9 @@ impl SyncEngine {
     /// local ones: a write on one thing leaves a label of another nothing new to judge. Each still
     /// passes at its next resync (`timers`). O(labels), a set lookup each.
     pub(crate) fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
+        if self.cfg.full_passes {
+            return self.mark_dirty();
+        }
         self.local_dirty = true;
         let mut groups: BTreeSet<Tid> = things.clone();
         for t in things {
@@ -1214,6 +1220,9 @@ impl SyncEngine {
 
     /// These labels want a pass on every connection, as `mark_dirty`.
     pub(crate) fn mark_labels<'a>(&mut self, ids: impl IntoIterator<Item = &'a LabelId> + Clone) {
+        if self.cfg.full_passes {
+            return self.mark_dirty();
+        }
         self.local_dirty = true;
         for c in self.conns.values_mut() {
             for id in ids.clone() {
