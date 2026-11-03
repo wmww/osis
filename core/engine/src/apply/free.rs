@@ -43,7 +43,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             .iter()
             .filter(|t| {
                 core.ix.held.owned(t).any(|x| !freed.contains(x))
-                    || core.ix.by_thing.get(t).into_iter().flatten().any(|c| core.ix.commits.get(c).is_some_and(|m| !m.view.memory || m.view.aspects.iter().any(|a| !freed.contains(&a.tid))))
+                    || core.on_thing(t).any(|c| core.ix.commits.get(&c).is_some_and(|m| !m.view.memory || m.view.aspects.iter().any(|a| !freed.contains(&a.tid))))
             })
             .copied()
             .collect();
@@ -65,7 +65,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
             tx.core.waits.unpended(&c);
         }
     }
-    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
+    let cands: BTreeSet<CommitId> = freed.iter().flat_map(|t| tx.core.on_thing(t)).collect();
     for c in cands {
         unindex_commit(tx, &c)?;
     }
@@ -109,7 +109,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         let k = (a.tid, a.ak.clone());
         core.ix.by_aspect.remove(&k, &(v.ts, *id));
         core.ix.invalid.remove(&k, id);
-        core.ix.by_thing.remove(&a.tid, id);
+        core.ix.by_thing.remove(&(a.tid, v.author), id);
         core.ix.dropped_snapshots.remove(&k, id);
         if v.form.counted() && v.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.remove(&(a.tid, a.ak.clone(), v.form.own_source(v.author, *id)), &a.lo);

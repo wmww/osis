@@ -509,6 +509,7 @@ impl SyncEngine {
         }
         if full {
             self.stats.full += 1;
+            drop(crate::costs::span("pass: full"));
         }
         full
     }
@@ -2048,7 +2049,7 @@ impl SyncEngine {
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
         let a = self.engine.core.secret_actor(&g).unwrap_or(g);
         let core = &self.engine.core;
-        let ids: Vec<CommitId> = core.ix.by_thing.get(&a).into_iter().flatten().filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).copied().collect();
+        let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
         let mut uploads = Vec::new();
         for id in ids {
             for b in self.engine.bodies(&id)? {

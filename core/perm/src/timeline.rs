@@ -527,6 +527,16 @@ impl Timeline {
         self.input.snaps.get(id)
     }
 
+    /// The walk's edge changes, in order.
+    pub(crate) fn history(&self) -> &[crate::walk::Change] {
+        &self.walked.history
+    }
+
+    /// The current edge state.
+    pub(crate) fn edges(&self) -> &crate::graph::Edges {
+        &self.walked.edges
+    }
+
     /// The edge state just before `point` (`None`: the current state).
     pub fn edges_at(&self, point: Option<Point>) -> EdgesAt<'_> {
         let Some(p) = point else { return EdgesAt::new(&self.walked.edges) };

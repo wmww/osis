@@ -206,21 +206,42 @@ fn chat_members() {
     let (member0, host0) = held(&w);
     println!("STORE m={m} after the joins: a member {member0} B ({} B per member), host {host0} B", member0 / m.max(1) as u64);
     assert_eq!(last.roster(c).len(), m + 1);
+    let (rows, blobs, nblobs) = stores[0].held_split();
+    println!("STORE a member, per member: rows {} B, {nblobs} blobs {} B", rows / m.max(1) as u64, blobs / m.max(1) as u64);
+    for (what, n, bytes) in osis::internals::Internals::engine(&members[0], |e| e.held_report()).unwrap() {
+        println!("STORE a member, per member: {:.1} x {what} {} B", n as f64 / m.max(1) as f64, bytes / m.max(1) as u64);
+    }
     posts(&mut w, &a, &members, c, m, n);
     let (member1, host1) = held(&w);
     println!("STORE m={m} n={n} per message: a member {} B, host {} B", (member1 - member0) / n.max(1) as u64, (host1 - host0) / n.max(1) as u64);
-    // one more member, with the messages there: a full pass of the label at each node
+    // one more member, with the messages there
     let (b, _) = w.person(50, &[host]);
     w.run();
     let p = meet(&mut w, &a, &b);
     let before = w.busy_all();
     let t = Instant::now();
+    osis_node::costs::take();
     a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
     w.run();
+    println!("SPANS of the add after the messages at all nodes: {}", show_spans(osis_node::costs::take(), 1));
     let d = since(&mut w, &before);
     let joiner = w.index(&b).unwrap();
     let others: Vec<Duration> = d.iter().enumerate().filter(|(j, _)| *j != 0 && *j != joiner && *j <= env("OSIS_SCALE_ACTIVE", m)).map(|(_, t)| *t).collect();
     println!("JOIN after the {n} messages m={m}: other member median {:.1?}, joiner {:.1?}, joiner down {} B, sim {:.1?}", median(others), d[joiner], w.traffic(&b).down, t.elapsed());
+    // and one with its joiner asleep: what the others spend
+    let (b2, _) = w.person(51, &[host]);
+    w.run();
+    let p = meet(&mut w, &a, &b2);
+    w.sleep(&b2);
+    w.run();
+    let before = w.busy_all();
+    a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+    w.spans_by_db();
+    w.run();
+    println!("SPANS of an add at a member, its joiner asleep: {}", show_spans(w.take_db_spans(1), 1));
+    let d = since(&mut w, &before);
+    let others: Vec<Duration> = d.iter().enumerate().filter(|(j, _)| *j != 0 && *j != joiner && *j <= env("OSIS_SCALE_ACTIVE", m)).map(|(_, t)| *t).collect();
+    println!("ADD with its joiner asleep m={m}: admin {:.1?}, other member median {:.1?}", d[0], median(others));
     let down = w.traffic(last).down;
     println!("TOTAL m={m}: joiner's whole down {down} B, wall {:.1?}", start.elapsed());
 }
@@ -609,4 +630,41 @@ fn a_burst_past_the_budget_sends_each_body_about_once() {
     let deposits = w.tally(&a).get("Deposit").map_or(0, |x| x.0);
     println!("{deposits} deposits for {BURST} shares, {waits} resyncs");
     assert!(deposits <= 2 * BURST as u64, "{deposits} deposits for {BURST} shares");
+}
+
+// spec: none (costs, spec/requirements.md Scale): an add judges nothing per message at any node
+// that has them (it moves roles only upstream of the new holder, who wrote nothing and reads no
+// body for them): no full pass, no more commits judged by a pass or re-judged by the engine; and
+// `secrets.0` is not decoded again for it.
+#[test]
+fn add_judges_nothing_per_message() {
+    let judged = |k: usize| {
+        let (mut w, host, a, members, c, _) = chat_of(2);
+        for i in 0..k {
+            post(&a, c, i);
+            w.advance(1);
+        }
+        w.run();
+        // one add passes the labels no post did: what they had waiting is a post's cost
+        let (d, _) = w.person(51, &[host]);
+        w.run();
+        let p = meet(&mut w, &a, &d);
+        a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+        w.run();
+        // the joiner asleep: it has all to judge (its first pass)
+        let (b, _) = w.person(50, &[host]);
+        w.run();
+        let p = meet(&mut w, &a, &b);
+        w.sleep(&b);
+        let n = counted(&mut w, |w| {
+            a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
+            w.run();
+        });
+        assert_eq!(members[0].roster(c).len(), 5);
+        let of = |k: &str| n.get(k).copied().unwrap_or(0);
+        (of("pass: full"), of("pass: bodies of a commit"), of("rejudge: a commit"), of("secrets: decode"))
+    };
+    let (quiet, busy) = (judged(0), judged(12));
+    assert_eq!(busy, quiet, "(full passes, commits judged, re-judged, decodes) with 12 messages, and none");
+    assert_eq!((busy.0, busy.3), (0, 0), "no full pass, no decode");
 }

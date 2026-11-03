@@ -14,7 +14,7 @@ use std::collections::{BTreeMap, BTreeSet};
 /// `Engine::body_live` in `tx`, through `Core::live_bodies`.
 fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
     let key = (*c, *tid, ak.clone());
-    if let Some(v) = tx.core.live_bodies.get(&key) {
+    if let Some(v) = tx.core.live_bodies.get(&key.0).and_then(|m| m.get(&(key.1, key.2.clone()))) {
         return Ok(*v);
     }
     // an unknown commit counts live, uncached (its apply may change nothing here)
@@ -22,7 +22,7 @@ fn body_live(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> 
     let r = live(tx, c, ai)?;
     #[cfg(test)]
     assert_eq!(r, oracle::live(tx, c, ai)?, "live streamed vs whole");
-    tx.core.live_bodies.insert(key, r);
+    tx.core.live_bodies.entry(key.0).or_default().insert((key.1, key.2), r);
     Ok(r)
 }
 
@@ -160,7 +160,7 @@ impl Engine {
     /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
     /// until its aspect's state changes (`Core::live_bodies`).
     pub fn body_live(&mut self, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<bool> {
-        if let Some(v) = self.core.live_bodies.get(&(*c, *tid, ak.clone())) {
+        if let Some(v) = self.core.live_bodies.get(c).and_then(|m| m.get(&(*tid, ak.clone()))) {
             return Ok(*v);
         }
         let (c, tid, ak) = (*c, *tid, ak.clone());

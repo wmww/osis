@@ -1072,17 +1072,11 @@ impl SyncEngine {
                     changed = true;
                     scoped.insert(thing);
                     self.tied.targets.insert(thing);
-                    roots.insert(thing);
                     self.served_cache = None;
                     self.holders_moved = true;
                 }
                 _ => {}
             }
-        }
-        // roles change only where authority flows from a changed roster or owner link
-        // (`Held::reach`: owned things, things named on as a holder, transitively)
-        if !roots.is_empty() {
-            self.touched.moved.extend(self.engine.core.ix.held.reach(&roots));
         }
         // actors that got or lost secrets of their own: the reader actors under them moved
         if *self.engine.core.ix.own_keys != self.own_keys {
@@ -1097,6 +1091,7 @@ impl SyncEngine {
         // waiting on a linked blob), and the blobs of their dropped parts
         let ch = self.engine.take_changed();
         self.reopen_undropped(Some(&ch.undropped));
+        self.note_role_moves(&roots, &ch.edges);
         for c in &ch.commits {
             let h = self.engine.header(c);
             // a commit gone from here names no thing: the labels with its entries are unknown
@@ -1144,6 +1139,20 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Whose roles changed where (`work::RoleMoves`, for each label to judge): the edges that
+    /// changed, the things with a new record (whose owner chains also moved). A role comes from
+    /// a holder up: it changes only upstream of the edge, and only below it.
+    fn note_role_moves(&mut self, records: &BTreeSet<Tid>, edges: &BTreeSet<(Tid, Tid)>) {
+        if edges.is_empty() && records.is_empty() {
+            return;
+        }
+        let held = &self.engine.core.ix.held;
+        let holders = edges.iter().map(|p| p.0).chain(records.iter().copied()).collect();
+        let targets = edges.iter().map(|p| p.1).chain(records.iter().copied()).collect();
+        self.touched.roles.merge(&work::RoleMoves { subjects: held.upstream(&holders), reached: held.reach(&targets) });
+        self.touched.moved.extend(held.below(records));
+    }
+
     /// Hands the changes noted since the last pass to every label's work set: the engine's
     /// (`touched`) to all, the sync state's to the label's (`State::touched`).
     pub(crate) fn spread_touches(&mut self) {
@@ -1161,6 +1170,7 @@ impl SyncEngine {
             w.whole.extend(t.whole.iter().cloned());
             w.blobs.extend(t.blobs.iter().copied());
             w.moved.extend(t.moved.iter().copied());
+            w.roles.merge(&t.roles);
             w.actors.extend(t.actors.iter().copied());
             w.keys |= t.keys;
             for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {

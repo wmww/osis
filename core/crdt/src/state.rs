@@ -560,7 +560,7 @@ impl Fragment {
     }
 
     /// Own reset; for `Slots` the greatest slot reset (§7).
-    pub(crate) fn reset(&self) -> Option<Stamp> {
+    pub fn reset(&self) -> Option<Stamp> {
         match self {
             Fragment::Register(r) => r.reset.clone(),
             Fragment::Slots(s) => slots_reset(s.reg.as_ref(), &s.slots, None),
@@ -798,7 +798,7 @@ impl SlotRef<'_> {
     fn present(&self) -> bool {
         self.by(|r| reg_written(r).is_some(), Fragment::present)
     }
-    fn reset(&self) -> Option<Stamp> {
+    pub fn reset(&self) -> Option<Stamp> {
         self.by(|r| r.reset.clone(), Fragment::reset)
     }
     fn all_max(&self) -> Option<Stamp> {

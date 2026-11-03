@@ -203,6 +203,24 @@ impl Edges {
             }
         }
     }
+    /// Adds `from`'s per-target maps (another component's: their targets are not here).
+    pub(crate) fn take_targets(&mut self, from: &Edges) {
+        self.by_target.extend(from.by_target.iter().map(|(t, m)| (*t, m.clone())));
+    }
+    /// The (holder, target) edges that differ from `old`. O(targets), plus the holders of the
+    /// targets whose maps differ: an unwritten map is shared with its clone.
+    pub(crate) fn diff(&self, old: &Edges, out: &mut BTreeSet<(Tid, Tid)>) {
+        let empty = Arc::new(BTreeMap::new());
+        let targets = self.by_target.keys().chain(old.by_target.keys().filter(|t| !self.by_target.contains_key(*t)));
+        for t in targets {
+            let (a, b) = (self.by_target.get(t).unwrap_or(&empty), old.by_target.get(t).unwrap_or(&empty));
+            if Arc::ptr_eq(a, b) {
+                continue;
+            }
+            out.extend(a.iter().filter(|(h, e)| b.get(*h) != Some(*e)).map(|(h, _)| (*h, *t)));
+            out.extend(b.keys().filter(|h| !a.contains_key(*h)).map(|h| (*h, *t)));
+        }
+    }
     /// Edges on `target`, by holder.
     pub fn holders(&self, target: &Tid) -> impl Iterator<Item = (&Tid, &Edge)> {
         self.by_target.get(target).into_iter().flat_map(|m| m.iter())

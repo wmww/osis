@@ -977,14 +977,19 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let mut secrets_flips: Vec<(CommitId, usize, bool)> = Vec::new();
     let mut keyset_flips: BTreeSet<Tid> = BTreeSet::new();
     let mut things = std::mem::take(&mut tx.core.stale_things);
+    let authors = std::mem::take(&mut tx.core.stale_authors);
+    let under = std::mem::take(&mut tx.core.stale_under);
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
+    // the commits whose author's role may have moved on a thing they write
+    let authored: BTreeSet<CommitId> = under.iter().flat_map(|t| authors.iter().map(move |a| (*t, *a))).flat_map(|k| tx.core.ix.by_thing.get(&k).into_iter().flatten().copied()).collect();
     // re-judged whole: those named, and those acting for a thing whose timeline changed
     // (`acts_for`); deltas on a thing answer to its `required.0^` deltas (`in_force`), so where
     // one of those is judged again they are too
     let mut whole = explicit;
     whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));
-    for id in &whole {
+    whole.extend(under.iter().flat_map(|t| authors.iter().map(move |a| (*t, *a))).flat_map(|k| tx.core.ix.by_actor.get(&k).into_iter().flatten().copied()));
+    for id in whole.iter().chain(&authored) {
         let Some(m) = tx.core.ix.commits.get(id) else { continue };
         things.extend(m.view.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED).map(|a| a.tid));
     }
@@ -996,10 +1001,11 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
         let core: &Core = tx.core;
         let mut judge = Judge::new(core);
         let mut one = |id: &CommitId, m: &Meta, whole: bool| {
+            drop(crate::costs::span("rejudge: a commit"));
             let mut now: Option<Vec<bool>> = None;
             for (ai, a) in m.header.aspects.iter().enumerate() {
                 // parts on things not re-judged keep their flag
-                if !(whole || things.contains(&a.tid)) {
+                if !(whole || things.contains(&a.tid) || under.contains(&a.tid) && authors.contains(&m.view.author)) {
                     continue;
                 }
                 let v = judge.part(&m.header, id, ai);
@@ -1024,11 +1030,17 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
             // things in order: a commit is met first under the first re-judged thing it writes
             let mut met: BTreeSet<CommitId> = BTreeSet::new();
             for t in &things {
-                for id in core.ix.by_thing.get(t).into_iter().flatten() {
-                    let Some(m) = core.ix.commits.get(id) else { continue };
-                    if !whole.contains(id) && met.insert(*id) {
-                        one(id, m, false);
+                for id in core.on_thing(t) {
+                    let Some(m) = core.ix.commits.get(&id) else { continue };
+                    if !whole.contains(&id) && met.insert(id) {
+                        one(&id, m, false);
                     }
+                }
+            }
+            for id in &authored {
+                let Some(m) = core.ix.commits.get(id) else { continue };
+                if !whole.contains(id) && met.insert(*id) {
+                    one(id, m, false);
                 }
             }
             for id in whole.iter() {
@@ -1143,6 +1155,7 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     }
     // a request's right rests on the same timelines (spec/permissions.md §8)
     if rebuild {
+        let things: BTreeSet<Tid> = things.union(&under).copied().collect();
         for (tid, ak) in crate::retention::purged_aspects(tx, &things, &whole)? {
             crate::retention::rejudge_purges(tx, &tid, &ak, &mut flipped)?;
         }

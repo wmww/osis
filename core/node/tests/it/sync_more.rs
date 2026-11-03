@@ -1387,8 +1387,8 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
 }
 
 // spec/sync.md §3, §6; spec/permissions.md §4: a role change re-judges only the labels
-// whose verdicts can read it: an edge on an actor no closure reaches judges no body and no
-// pass judges everything; one on a label's group judges that label in full, not the other.
+// whose verdicts can read it: a new holder, on an actor no closure reaches or on a label's group,
+// judges no body and no pass judges everything.
 #[test]
 fn role_change_judges_only_its_labels_spec_sync_6() {
     let mut net = Net::new();
@@ -1424,7 +1424,8 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     set_edge(net.engine(a), g0, other, Role::Read);
     net.run();
     let s3 = net.sync(a).pass_stats();
-    assert_eq!(s3.full - s2.full, 1, "only g0's label judges everything");
+    assert_eq!(s3.full - s2.full, 0, "a new holder moves no role this label's verdicts read");
+    assert!(s3.bodies - s2.bodies < 6, "the add's bodies alone: {}", s3.bodies - s2.bodies);
 }
 
 // spec/sync.md §5 (an open holds under the head's sync key): a removed reader still connected

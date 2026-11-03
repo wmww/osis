@@ -113,7 +113,7 @@ impl Engine {
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
                 && let Some(owner) = self.owner(&t)
             {
-                let ids: Vec<osis_base::CommitId> = self.core.ix.by_thing.get(&t).into_iter().flatten().copied().collect();
+                let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
                 out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), owner, here });
             }

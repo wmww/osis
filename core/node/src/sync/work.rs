@@ -6,8 +6,8 @@
 //! newer card write of its aspects changed under the label, its thing entered or left the
 //! closure, a time bound passed (keep at least, expiry; a local pass: an entry's prefix expiry), the state of an aspect its verdict
 //! waits on changed (liveness; a keep-at-most body: other than by a valid write's join), a role it reads changed (`roles_moved`), or it was
-//! judged while unsettled and that ended. Anything else (open, a change of the label actor's
-//! roster or own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
+//! judged while unsettled and that ended. Anything else (open, a role or owner chain of the label's
+//! actor moving, its own secrets, lost access, a forget, other inputs of the pass: keys and epochs, the
 //! home label's published things) judges everything. A commit or blob leaves the set only once its pass did
 //! nothing for it and found nothing waiting (no send, delete or relay wait outstanding); so a
 //! pass over the set acts as a full pass would.
@@ -39,8 +39,10 @@ pub(crate) struct Touched {
     pub whole: BTreeSet<(Tid, Ak)>,
     /// Blobs that arrived or came with a changed commit (a body linking them uploads them now).
     pub blobs: BTreeSet<BlobId>,
-    /// Things whose roles changed (`Held::reach` of changed rosters and owner links).
+    /// Things whose owner chains changed (`Held::below` of new owner links), or those `roles` reach.
     pub moved: BTreeSet<Tid>,
+    /// Whose roles changed and where.
+    pub roles: RoleMoves,
     /// Actors that got or lost secrets of their own (the reader actors under them).
     pub actors: BTreeSet<Tid>,
     /// Held epochs may have changed (delete keys a waiting delete lacked).
@@ -100,7 +102,29 @@ impl InboxCopied {
 
 impl Touched {
     pub fn is_empty(&self) -> bool {
-        !self.full && !self.keys && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.actors.is_empty()
+        !self.full && !self.keys && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
+    }
+}
+
+/// A change of edges or owner links: only `subjects` (`Held::upstream` of the changed edges'
+/// holders, and of the things with a new record) gain or lose a role, and only on `reached`
+/// (`Held::reach` of the targets and those things). A pass's verdicts read roles as the label's
+/// actor, its group or this node, and for another node's card as its author: whom a departure
+/// makes stale, and a departure brings a rotation, which judges everything (`Inputs`).
+#[derive(Clone, Default)]
+pub(crate) struct RoleMoves {
+    pub subjects: BTreeSet<Tid>,
+    pub reached: BTreeSet<Tid>,
+}
+
+impl RoleMoves {
+    pub fn is_empty(&self) -> bool {
+        self.subjects.is_empty() && self.reached.is_empty()
+    }
+
+    pub fn merge(&mut self, o: &RoleMoves) {
+        self.subjects.extend(o.subjects.iter().copied());
+        self.reached.extend(o.reached.iter().copied());
     }
 }
 
@@ -136,6 +160,7 @@ pub(crate) struct Work {
     pub whole: BTreeSet<(Tid, Ak)>,
     pub things: BTreeSet<Tid>,
     pub moved: BTreeSet<Tid>,
+    pub roles: RoleMoves,
     pub actors: BTreeSet<Tid>,
     pub keys: bool,
     /// Commits whose delete waits for a delete key this node lacks: judged again when held
@@ -197,6 +222,7 @@ impl Work {
         self.whole.extend(o.whole);
         self.things.extend(o.things);
         self.moved.extend(o.moved);
+        self.roles.merge(&o.roles);
         self.actors.extend(o.actors);
         self.keys |= o.keys;
     }
@@ -338,9 +364,14 @@ impl SyncEngine {
             }
         }
         w.commits.extend(self.commits_of(l, &w.blobs));
-        // a change of the label's own actor's roster (every entry's author may stand anew on
-        // it) or of whether it has secrets of its own
         let x = self.engine.group_actor(g);
+        // roles the pass reads as the actor, the group or this node
+        let RoleMoves { subjects, reached } = std::mem::take(&mut w.roles);
+        if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) {
+            w.moved.extend(reached);
+        }
+        // a change of the owner chain or of a role of the label's own actor (every entry's
+        // reader may stand anew), or of whether it has secrets of its own
         let own = w.moved.contains(&x) || w.actors.contains(&x);
         let full = w.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
         if full {
@@ -482,6 +513,7 @@ impl SyncEngine {
         w.due.clear();
         w.due_blobs.clear();
         w.moved.clear();
+        w.roles = RoleMoves::default();
         w.actors.clear();
         w.keys = false;
         w.keyless.clear();

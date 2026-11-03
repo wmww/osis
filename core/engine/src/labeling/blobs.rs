@@ -179,13 +179,13 @@ impl Engine {
     }
 
     /// `label_bodies` without plaintexts, from a per-commit cache (`Core::bodies`): a pass after a
-    /// change projects only the commits it changed. The commits are found through `by_thing` and
+    /// change projects only the commits it changed. The commits are found through `on_thing` and
     /// `by_aspect` (O(the closure's commits), no header decoded when the cache holds them), in ID
     /// order.
     pub fn label_bodies_meta(&mut self, g: &Tid) -> Result<Vec<Body>> {
         let ctx = self.body_ctx(g);
         let core = &self.core;
-        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.ix.by_thing.get(t).into_iter().flatten().copied()).collect();
+        let mut ids: BTreeSet<CommitId> = ctx.closure.iter().flat_map(|t| core.on_thing(t)).collect();
         for t in ctx.published.iter() {
             for ak in ["label.0", "created.0"] {
                 let Ok(ak) = osis_base::Ak::new(ak) else { continue };
@@ -209,6 +209,7 @@ impl Engine {
 
     /// The bodies of commit `id` a label of the group of `ctx` must hold (`label_bodies_meta`).
     pub fn commit_bodies_under(&mut self, ctx: &BodyCtx, id: &CommitId) -> Result<Vec<Body>> {
+        drop(crate::costs::span("pass: bodies of a commit"));
         let id = *id;
         // the view: the header is decoded only to project bodies the cache misses
         let Some(h) = self.core.ix.commits.get(&id).map(|m| m.view.clone()) else { return Ok(Vec::new()) };

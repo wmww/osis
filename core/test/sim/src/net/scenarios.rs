@@ -670,6 +670,92 @@ pub fn work_sets(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
+/// Role moves against work sets and the re-judged set (spec/sync.md §6, §7; the differential is
+/// `core/test/sim/tests/it/work_sets.rs`): members added one by one under writes at skewed clocks,
+/// a guest whose edge ends by the clock, a device paired to a member, a change of role, two
+/// admins adding apart while one is removed (writes late, mid-history, flipped), a removal and a
+/// new add of the one removed.
+pub fn member_churn(seed: u64) -> Res<Report> {
+    let mut d = Dice::new(seed ^ 0xadd);
+    let mut sim = sim("member_churn", seed, NetWeights { partition: 1, heal: 2, ..NetWeights::default() });
+    let s = sim.add_host()?;
+    let ns: [usize; 6] = [
+        sim.add_node(&[s], clock(&mut d))?,
+        sim.add_node(&[s], clock(&mut d))?,
+        sim.add_node(&[s], clock(&mut d))?,
+        sim.add_node(&[s], clock(&mut d))?,
+        sim.add_node(&[s], clock(&mut d))?,
+        sim.add_node(&[s], clock(&mut d))?,
+    ];
+    let [a, b, c, e, f, h] = ns;
+    let [pa, pb, pc, pe, pf, ph] = persons(&mut sim, ns, [s; 6])?;
+    let g = shared_group(&mut sim, a, pa, &[s], &[(pb, Role::Admin)])?;
+    let t = sim.item(a, g)?;
+    let write = |sim: &mut NetSim, d: &mut Dice, n: usize, k: u64| -> Res<()> {
+        let mut m = Mutation::new();
+        m.op(t, &workload::TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Str(format!("n{n} {k}"))) }).map_err(|e| sim.fail(e.to_string()))?;
+        sim.commit(n, m)?;
+        sim.run(d.below(4))
+    };
+    sim.quiet(40)?;
+    // added one by one, with writes between
+    for (i, (p, n)) in [(pc, c), (pe, e)].into_iter().enumerate() {
+        write(&mut sim, &mut d, a, i as u64)?;
+        sim.grant(a, g, p, Role::Write)?;
+        sim.run(10)?;
+        sim.quiet(40)?;
+        write(&mut sim, &mut d, n, 10 + i as u64)?;
+        write(&mut sim, &mut d, b, 20 + i as u64)?;
+    }
+    sim.quiet(40)?;
+    // a guest: its edge ends by the clock
+    let at = sim.engine(a)?.now().0 + 600_000;
+    let edge = osis_schema::core_types::Edge { role: Role::Write, until: Some(WallMs(at)), invite: None, since: None, tied: None, keyset: None };
+    let r = sim.engine(a)?.grant(&g, &pf, &edge);
+    let done = r.map_err(|e| sim.fail(format!("guest: {e}")))?;
+    sim.carry(a, done)?;
+    sim.quiet(40)?;
+    write(&mut sim, &mut d, f, 30)?;
+    sim.advance(700_000)?;
+    sim.excused.insert(f);
+    sim.run(20)?;
+    sim.quiet(40)?;
+    // one of a member's devices more, then a role lowered and raised
+    let extra = sim.add_node(&[s], clock(&mut d))?;
+    sim.pair(c, extra, pc)?;
+    sim.quiet(40)?;
+    write(&mut sim, &mut d, extra, 40)?;
+    let lower = osis_node::flows::Demotion { holder: pe, new: Some(osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }), presync: PreSync::Synced, keep: None };
+    let r = sim.engine(a)?.demote(&g, &lower);
+    let done = r.map_err(|e| sim.fail(format!("lower: {e}")))?;
+    sim.carry(a, done)?;
+    sim.quiet(40)?;
+    sim.grant(a, g, pe, Role::Write)?;
+    sim.quiet(40)?;
+    // two admins apart: one adds, the other adds and is removed by the first
+    sim.partition(Party::N(b), Party::S(s));
+    sim.grant(a, g, ph, Role::Write)?;
+    sim.grant(b, g, pf, Role::Write)?;
+    write(&mut sim, &mut d, a, 50)?;
+    write(&mut sim, &mut d, b, 51)?;
+    sim.run(10)?;
+    sim.remove(a, g, pb)?;
+    sim.run(10)?;
+    sim.heal(Party::N(b), Party::S(s));
+    sim.excused.insert(b);
+    sim.run(40)?;
+    sim.quiet(40)?;
+    write(&mut sim, &mut d, h, 60)?;
+    // out and back
+    sim.remove(a, g, pc)?;
+    sim.quiet(40)?;
+    sim.grant(a, g, pc, Role::Write)?;
+    sim.run(30)?;
+    write(&mut sim, &mut d, a, 70)?;
+    sim.run_until_quiescent(60)?;
+    sim.finish()
+}
+
 /// A snapshot dropped under a cover that turns invalid (spec/permissions.md §5.2, spec/sync.md
 /// §6, §7): A compacts the tags (S1); while A is away, C writes and compacts over it (S2) and W
 /// drops S1 under S2's cover, deleting it at the host; A, not having seen S2, removes C (S2
