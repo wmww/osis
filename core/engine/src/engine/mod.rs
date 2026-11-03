@@ -1113,7 +1113,11 @@ impl Core {
     /// snapshot's frontier for its session below it for good (spec/sync.md §9), so what this
     /// node writes after a grant again starts a session with no such hole. The plain nonce's
     /// count steps by one (`nonce_count`, no random draw), so `own_plain` recognises every
-    /// session of the open.
+    /// session of the open. Unique: within the open the first 8 bytes stay fixed (the flip tells
+    /// plain from expiring) and the count is distinct below 2^64 steps; another open of this node
+    /// collides only if its random first 8 bytes equal these (or their flip) and the count
+    /// windows overlap, about steps/2^127 a pair. A step needs a fallen write under the current
+    /// sessions, so steps never outnumber writes, and a session costs holders only through them.
     pub(crate) fn fresh_session(&mut self) {
         let mut n = self.session.nonce;
         let count = nonce_count(&n).wrapping_add(1);
