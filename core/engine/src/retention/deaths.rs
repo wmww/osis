@@ -412,7 +412,8 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<(Death, T
 /// and dates there (spec/commits.md §5): its stamp's `ts` is an invalid commit's, which says
 /// nothing of when a valid write superseded anything. The invariant, which needs no window or
 /// cache: a date is never an invalid commit's `ts` (the state holds such a write only while a
-/// valid snapshot vouches for it, and that snapshot's body plays first), so a valid superseder
+/// valid snapshot vouches for it, and that snapshot's body plays first: a body after it dates at
+/// its own `ts`, later), so a valid superseder
 /// arriving later never shows a date earlier than the earliest valid one. Cost: the aspect's held
 /// bodies, residues and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
@@ -428,7 +429,9 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             // supersede like any held (spec/crdt.md §4.7)
             if let Some(mut f) = residue_of(tx, c, tid, ak)? {
                 un.strip(&mut f);
-                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels), |d| d.at);
+                // a write a vouched copy killed dies no earlier than the body's `ts`, as below
+                let ts = tx.core.ix.commits.get(c).map(|m| m.header.ts);
+                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels), |d| if un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at });
             }
             continue;
         };
@@ -455,7 +458,9 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 let plays_own = |x: &CommitId, ai: usize| x != c && core.ix.commits.get(x).is_some_and(|m| m.valid_at(ai));
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, ai)| plays_own(x, *ai)) } else { core.commit_of(tid, ak, d).is_some_and(|x| held_part(core, &x, tid, ak).is_some_and(|ai| plays_own(&x, ai))) });
             }
-            let date = |d: &Death| if snap && un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at };
+            // (a body played after it, an import of older writes, meets the copy already joined:
+            // its own `ts`, no earlier than the snapshot's)
+            let date = |d: &Death| if un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at };
             join(&mut st, f, cp, &mut deaths, &mut dead, Some(&mut dels), date);
             Ok(())
         })?;
