@@ -122,12 +122,31 @@ pub(crate) struct Work {
     pub beats_reseal: BTreeSet<Tid>,
     /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
     pub cards: BTreeSet<CommitId>,
+    /// Inbox blobs `inbox_certificates` has done with, and those it would judge anew by the
+    /// things they hang on. Stale pairs only wake a blob early; a full pass empties both.
+    pub inbox_done: BTreeSet<BlobId>,
+    pub inbox_on: BTreeMap<Tid, BTreeSet<BlobId>>,
 }
 
 impl Work {
     /// A set that judges everything at its first pass (a label opened, a local pass begun).
     pub fn fresh() -> Work {
         Work { full: true, ..Work::default() }
+    }
+
+    /// Inbox blob `b` is done until something moves on one of `things`.
+    pub fn inbox_rest(&mut self, b: BlobId, things: impl Iterator<Item = Tid>) {
+        self.inbox_done.insert(b);
+        for t in things {
+            self.inbox_on.entry(t).or_default().insert(b);
+        }
+    }
+
+    /// The inbox blobs resting on thing `t` are judged again.
+    fn inbox_wake(&mut self, t: &Tid) {
+        for b in self.inbox_on.remove(t).into_iter().flatten() {
+            self.inbox_done.remove(&b);
+        }
     }
 
     /// Takes in what another set collected meanwhile (a pass's own touches).
@@ -313,6 +332,11 @@ impl SyncEngine {
             for t in std::mem::take(&mut w.things) {
                 w.commits.extend(self.commits_on_thing(&t));
             }
+            if !w.inbox_on.is_empty() {
+                for t in w.commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).collect::<BTreeSet<Tid>>() {
+                    w.inbox_wake(&t);
+                }
+            }
             let (cs, bs) = (w.commits.clone(), w.blobs.clone());
             self.aggregate(g, l, w, &cs, &bs);
         }
@@ -335,6 +359,13 @@ impl SyncEngine {
         let actors = std::mem::take(&mut w.actors);
         if moved.is_empty() && actors.is_empty() {
             return;
+        }
+        for t in &moved {
+            w.inbox_wake(t);
+        }
+        if !actors.is_empty() {
+            w.inbox_done.clear();
+            w.inbox_on.clear();
         }
         let published = self.engine.published_under(g);
         let engine = &self.engine;
@@ -428,6 +459,8 @@ impl SyncEngine {
         w.keys = false;
         w.keyless.clear();
         w.held_back.clear();
+        w.inbox_done.clear();
+        w.inbox_on.clear();
         self.rebuild(g, l, w);
         w.until = self.roster_horizon(closure, g);
     }

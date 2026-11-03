@@ -213,6 +213,8 @@ pub struct State {
     /// Indexes over `entries`, kept by the setters (`index`): commit entries by (label,
     /// commit), other kinds by (label, `Kind::tag`), certificate copies, labels naming a blob.
     pub by_label_commit: BTreeMap<(LabelId, CommitId), BTreeSet<BlobId>>,
+    /// Inbox entries with a stamp, by the commit they carry.
+    pub stamped_inbox: BTreeSet<(LabelId, CommitId, BlobId)>,
     pub by_kind: BTreeSet<(LabelId, u8, BlobId)>,
     pub cert_entries: BTreeSet<(LabelId, BlobId)>,
     pub blob_labels: BTreeSet<(BlobId, LabelId)>,
@@ -583,6 +585,9 @@ impl State {
             (_, Some(t)) => set(&mut self.by_kind, (l, t, b), add),
             _ => {}
         }
+        if let (Kind::Inbox(Some(c)), Some(_)) = (&e.kind, &e.stamp) {
+            set(&mut self.stamped_inbox, (l, *c, b), add);
+        }
         if e.cert {
             set(&mut self.cert_entries, (l, b), add);
         }
@@ -612,6 +617,11 @@ impl State {
     pub fn entries_of<'a>(&'a self, l: &LabelId, c: &CommitId) -> impl Iterator<Item = (BlobId, &'a Entry)> + 'a {
         let l = *l;
         self.by_label_commit.get(&(l, *c)).into_iter().flatten().filter_map(move |b| self.entries.get(&(l, *b)).map(|e| (*b, e)))
+    }
+
+    /// Whether an inbox entry under `l` other than `b` carrying commit `c` has a stamp.
+    pub fn stamped_inbox_other(&self, l: &LabelId, c: &CommitId, b: &BlobId) -> bool {
+        self.stamped_inbox.range((*l, *c, BlobId([0; 32]))..=(*l, *c, BlobId([0xff; 32]))).any(|x| x.2 != *b)
     }
 
     /// The entries under `l` of a kind other than `Commit` (`Kind::tag`).

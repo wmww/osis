@@ -458,14 +458,13 @@ impl SyncEngine {
     }
 
     fn inbox_of(&mut self, l: &LabelId) -> Vec<(Tid, Vec<Secret32>)> {
+        self.inbox_actors(l).into_iter().map(|a| (a, self.read_secrets(&a))).collect()
+    }
+
+    /// Actors with held secrets whose inbox is `l`.
+    pub(crate) fn inbox_actors(&mut self, l: &LabelId) -> Vec<Tid> {
         let actors: Vec<Tid> = self.engine.core.ix.secrets.keys().copied().collect();
-        let mut out = Vec::new();
-        for a in actors {
-            if self.inbox_label(&a) == Some(*l) {
-                out.push((a, self.read_secrets(&a)));
-            }
-        }
-        out
+        actors.into_iter().filter(|a| self.inbox_label(a) == Some(*l)).collect()
     }
 
     /// Opens entries of `l` not opened yet, ingests what they carry (role commits first), and
@@ -890,8 +889,9 @@ impl SyncEngine {
     /// Follows the labels opened inbox blobs name (spec/sync.md §3) as hints, from scratch: per
     /// unexpired blob whose commit is applied or pending, the first payload thing with no known
     /// label that the commit gave this node a read secret of (`Engine::boxed_by`), one per blob
-    /// (a delivery names one thing), so the hints a sender makes are bounded by the inbox's
-    /// deposit budget and go with the blob. The payload is the sender's word: hosts only, never
+    /// (a delivery names one thing), so the hints a stranger makes are bounded by the inbox's
+    /// deposit budget and go with the blob (a connected sender's stamped ones: by what the host
+    /// takes, notes/sync.md Limits). The payload is the sender's word: hosts only, never
     /// a node to dial (`peer://`); a label a key actor's entry is followed for (`via`) is left
     /// to that follow. A label a group here records is that group's, whether synced now or not:
     /// never a hint (it would take the label's place on the connection under the wrong thing's
