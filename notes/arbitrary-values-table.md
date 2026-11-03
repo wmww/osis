@@ -136,6 +136,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `LAN_CHECK` 5 s, `LAN_ANNOUNCE` 30 s, `LAN_REJOIN_MIN` 30 s (provisional) | M | |
 | `LAN_FRESH_MS` 2 windows, `PEERS_TTL_MS` 60 s | M (dialing only; opens check access) | |
 | `SETTLE_MS` 30 s, `RELAY_MIN_MS` 5 s | M (co-writers both upload: duplicate work, idempotent) | |
+| `PASS_AGAIN` 8 (sync/mod.rs) | M (past it a marked label waits for the next event, a resync at the latest) | |
 | `RELINK_BACKOFF_MS` 1 h - 7 days | R (a host deleting fresh chunks) | |
 | `sync_now` pings a connection quiet for `retry_ms`, nothing outstanding (`SyncEngine::refresh`) | M (existing knob) | a ping per poll per connection / a dead connection found only by the periodic ping |
 | a quiet label's slowest pass: `HEARTBEAT_MIN_INTERVAL_MS` from its last (`schedule_pass`), no number of its own | M (a trigger missed waits that long; 0: every resync passes every label; infinity: a missed trigger waits for a reconnect) | |

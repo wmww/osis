@@ -6,6 +6,8 @@
 //! deposit promotion, tombstones, purges, no ping-pong). A failure prints its seed and the
 //! `osis_sim::replay` call that reproduces it. Scenarios an engine bug breaks are ignored with
 //! the issue's name.
+//! A `_seed_N` test names what that seed once hit: a seed keeps a run only while the sim's dice and
+//! the code it runs stay, so most are plain runs by now, and the fix's own test is what pins it.
 
 use osis_sim::{Report, replay};
 

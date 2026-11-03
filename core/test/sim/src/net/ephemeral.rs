@@ -191,7 +191,9 @@ impl NetSim {
             }
             6 => {
                 let key = self.eph_ak(TYPING)?;
-                let at = self.engine(n)?.now().0.saturating_add(5_000 + self.dice.below(25_000));
+                // from the HLC: a clock behind what it has read fails the write (issues/expiry-behind-hlc.md)
+                let e = self.engine(n)?;
+                let at = e.now().0.max(e.core.hlc.last().wall_ms().0).saturating_add(5_000 + self.dice.below(25_000));
                 m.set(t, &key, &Value::Bool(true)).map_err(|e| self.fail(e.to_string()))?;
                 m.expires(t, &key, WallMs(at)).map_err(|e| self.fail(e.to_string()))?;
                 format!("typing {t} until {at}")

@@ -8,6 +8,17 @@ impl Dice {
     pub fn new(seed: u64) -> Dice {
         Dice(SeededRng::from_u64(seed))
     }
+    /// The stream of `(seed, purpose, key)`: what it rolls depends on nothing rolled elsewhere.
+    pub fn keyed(seed: u64, purpose: &str, key: &[u64]) -> Dice {
+        let mut h = osis_base::hash::Hasher::new();
+        h.update(&seed.to_le_bytes());
+        h.update(purpose.as_bytes());
+        for k in key {
+            h.update(&k.to_le_bytes());
+        }
+        let d = h.finalize();
+        Dice::new(d.iter().take(8).fold(0, |x, b| x << 8 | u64::from(*b)))
+    }
     pub fn u64(&mut self) -> u64 {
         self.0.next_u64()
     }

@@ -1,11 +1,17 @@
 //! Phase B harness: real node sync engines (`SyncEngine`) and hosts (osis-host `Hub`
 //! over `HostStore` on a `MemoryBackend`) exchanging proto bytes engine to engine, no tokio
 //! (notes/architecture.md §2). Connections are ordered byte streams: a fault cuts one (a lost
-//! message on a stream is a broken stream), delays a message (per-stream order kept), duplicates
-//! one, or reorders deliveries across streams. Partitions block (node, host) and (host,
+//! message on a stream is a broken stream), delays what is sent (per-stream order kept, streams
+//! overtaking each other) or duplicates a message. Partitions block (node, host) and (host,
 //! host) pairs; nodes and hosts crash (now, or at a durable write) and restart over their
 //! durable state; a host may lose its data; a node may lose its disk (recovery from the card).
-//! Hosts replicate to their peers (push). Everything is driven from one `Dice`.
+//! Hosts replicate to their peers (push).
+//!
+//! No roll depends on what was sent, so a message more or less moves nothing else
+//! (`work_sets`): each step has its own `Dice`; the network runs on its own clock (`net`), moved
+//! only by deliver steps, a stream's messages going at release times keyed by (link, direction,
+//! bucket) and links cut at times keyed by (link, bucket); boots and duplicates have keys of
+//! their own.
 
 pub mod adversary;
 pub mod check;
@@ -35,19 +41,25 @@ use std::sync::mpsc::Receiver;
 const TRACE: usize = 60;
 /// Messages one settle may deliver before it calls the run a storm.
 const STORM: u64 = 5_000;
-/// Extra delay of a slow host's messages, at most (off while calm).
-const SLOW_MS: u64 = 30_000;
+/// Extra delay of a slow host's messages (off while calm). Picked for the mix of events (as the
+/// two below), no outcome leans on it: 0, no slow hosts; huge, they wait for quiescence.
+const SLOW_MS: u64 = 15_000;
+/// A deliver step moves the network clock by up to `max_delay_ms` over this: higher, more steps
+/// per message on its way and more races with other events; 1, a hop or so per step.
+const DELIVER_DIV: u64 = 3;
+/// A link's chances to be cut per `max_delay_ms` of the network clock: more, more reconnects.
+const CUTS_PER_DELAY: u64 = 4;
 
-/// Faults on connections, per message sent (off during quiescence).
+/// Faults on connections (off during quiescence), on the network clock.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct LinkFaults {
-    /// The message is lost and its connection cut.
+    /// Chance of each of a link's chances to be cut, what is on its way lost with it.
     pub cut_pct: u32,
-    /// The message arrives twice.
+    /// A message arrives twice.
     pub dup_pct: u32,
+    /// A direction of a link releases what was sent once per this, at a random moment: what is
+    /// sent waits up to twice this. 0: no delay.
     pub max_delay_ms: u64,
-    /// Deliver any due message, not the earliest (each stream stays in order).
-    pub reorder: bool,
 }
 
 /// Relative weights of the scheduler's events (0 disables one).
@@ -91,10 +103,22 @@ impl Default for NetConfig {
 
 thread_local! {
     static FULL_PASSES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static OTHER_STREAM: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// When each upload, deposit, delete and registration first reached each host: (host, label,
-/// blob or step ID, 'U', 'P', 'D' or 'R') -> virtual ms (`with_arrivals`).
+/// Runs `f` with the nodes' sync engines drawing another random stream: seals, so blob IDs, come
+/// out otherwise (`work_sets`: what is compared may not see that).
+pub fn with_other_stream<T>(f: impl FnOnce() -> T) -> T {
+    OTHER_STREAM.with(|x| x.set(0x57_12ea));
+    let r = f();
+    OTHER_STREAM.with(|x| x.set(0));
+    r
+}
+
+/// When each upload, deposit and registration first reached each host: (host, label, what, 'U',
+/// 'P' or 'R') -> virtual ms (`with_arrivals`). What: a commit blob by its commit and parts, a step
+/// by its ID, anything else by its size: a blob's ID is the luck of when its sealing drew from the
+/// node's random stream. No deletes: which copies of a commit go, and how many, is that luck too.
 pub type Arrivals = BTreeMap<(usize, LabelId, Vec<u8>, char), u64>;
 
 thread_local! {
@@ -108,7 +132,7 @@ pub fn with_arrivals<T>(f: impl FnOnce() -> T) -> (T, Arrivals) {
     (r, ARRIVALS.with(|a| a.borrow_mut().take()).unwrap_or_default())
 }
 
-fn note_arrivals(s: usize, at: u64, bytes: &[u8]) {
+fn note_arrivals(names: &BTreeMap<osis_base::BlobId, Vec<u8>>, s: usize, at: u64, bytes: &[u8]) {
     use osis_proto::Message as M;
     ARRIVALS.with(|a| {
         let mut a = a.borrow_mut();
@@ -119,18 +143,14 @@ fn note_arrivals(s: usize, at: u64, bytes: &[u8]) {
             let mut add = |l: LabelId, id: Vec<u8>, op: char| {
                 a.entry((s, l, id, op)).or_insert(at);
             };
+            let name = |id: osis_base::BlobId, size: usize| names.get(&id).cloned().unwrap_or_else(|| size.to_le_bytes().to_vec());
             match M::decode(&f) {
                 Ok(M::Upload { label, entries, .. } | M::Sync { label, entries, .. }) => {
                     for e in entries {
-                        add(label, osis_label::blob_id(&e.blob).0.to_vec(), 'U');
+                        add(label, name(osis_label::blob_id(&e.blob), e.blob.len()), 'U');
                     }
                 }
-                Ok(M::Deposit { label, blob, .. }) => add(label, osis_label::blob_id(&blob).0.to_vec(), 'P'),
-                Ok(M::Delete { label, items, .. }) => {
-                    for i in items {
-                        add(label, i.blob.0.to_vec(), 'D');
-                    }
-                }
+                Ok(M::Deposit { label, blob, .. }) => add(label, name(osis_label::blob_id(&blob), blob.len()), 'P'),
                 Ok(M::Register { label, step, .. }) => add(label, step.id().0.to_vec(), 'R'),
                 _ => {}
             }
@@ -262,9 +282,13 @@ pub struct Group {
 pub struct NetSim {
     pub scenario: String,
     pub seed: u64,
+    /// The scheduler's: a stream per step (`step`), what a step and the scenario roll.
     pub dice: Dice,
     /// Virtual time since T0 (ms); hosts run on true time.
     pub elapsed: u64,
+    /// The network's clock (ms): what messages are due by. Deliver steps move it, ticks not, so
+    /// messages stay on their way across events; only they deliver messages under faults.
+    net: u64,
     host_clock: Arc<ManualClock>,
     pub nodes: Vec<NetNode>,
     pub hosts: Vec<NetHost>,
@@ -309,6 +333,8 @@ pub struct NetSim {
     pub count_uploads: bool,
     /// Held-back messages of evil hosts per connection.
     held: BTreeMap<(usize, u64), Vec<u8>>,
+    /// What a commit blob is, when noting arrivals (`Arrivals`), from what senders held.
+    names: BTreeMap<osis_base::BlobId, Vec<u8>>,
     /// Blobs whose uploads and deposits by nodes are counted in `sent_watched` (adversaries).
     pub watched: BTreeSet<osis_base::BlobId>,
     pub sent_watched: u64,
@@ -328,6 +354,7 @@ fn frames(b: &[u8]) -> String {
                 let es: Vec<String> = entries.iter().map(|e| format!("{:?} {:?} {} B", osis_label::blob_id(&e.blob), osis_label::Prefix::parse(&e.blob).map(|p| p.class()), e.blob.len())).collect();
                 format!("Upload {label:?} {es:?}")
             }
+            Ok(osis_proto::Message::Deposit { id, label, blob, .. }) => format!("Deposit {id} {label:?} {:?} {:?} {} B", osis_label::blob_id(&blob), osis_label::Prefix::parse(&blob).map(|p| p.class()), blob.len()),
             Ok(m) => format!("{m:?}"),
             Err(_) => format!("<{} bytes>", f.len()),
         };
@@ -375,6 +402,7 @@ impl NetSim {
             seed,
             dice: Dice::new(seed),
             elapsed: 0,
+            net: 0,
             host_clock: Arc::new(ManualClock::new(WallMs(T0))),
             nodes: Vec::new(),
             hosts: Vec::new(),
@@ -404,6 +432,7 @@ impl NetSim {
             uploads: Vec::new(),
             count_uploads: false,
             held: BTreeMap::new(),
+            names: BTreeMap::new(),
             watched: BTreeSet::new(),
             sent_watched: 0,
             eph: ephemeral::Track::default(),
@@ -451,8 +480,18 @@ impl NetSim {
         Ok(i)
     }
 
+    /// The seed of a boot of `who`, its `boots` counted by `eph.boots`.
+    fn boot_seed(&self, what: &str, who: Party) -> u64 {
+        let (kind, i) = match who {
+            Party::N(i) => (0, i),
+            Party::S(i) => (1, i),
+        };
+        let boots = self.eph.boots.get(&who).copied().unwrap_or(0);
+        Dice::keyed(self.seed, what, &[kind, i as u64, boots]).u64()
+    }
+
     fn start_host(&mut self, s: usize) -> Res<()> {
-        let seed = self.dice.u64();
+        let seed = self.boot_seed("host", Party::S(s));
         let clock: Arc<dyn Clock> = self.host_clock.clone();
         let host = self.host(s)?;
         let policy = host.policy.clone();
@@ -499,14 +538,19 @@ impl NetSim {
         self.add_node_with(cfg, spec)
     }
 
-    pub fn add_node_with(&mut self, mut cfg: SyncConfig, spec: ClockSpec) -> Res<usize> {
+    pub fn add_node_with(&mut self, mut cfg: SyncConfig, mut spec: ClockSpec) -> Res<usize> {
         cfg.full_passes |= FULL_PASSES.with(|x| x.get());
+        // a drifting clock corrected by pings moves with when they went, and they go when a
+        // session has been quiet: runs compared by their arrivals drift not
+        if ARRIVALS.with(|a| a.borrow().is_some()) {
+            spec.drift_ppm = 0;
+        }
         let i = self.nodes.len();
         let faults = Faults::new();
         let backend = MemoryBackend::with_faults(faults.clone());
         let root = MemoryRoot::with_faults(faults.clone());
         let clock = Arc::new(ManualClock::new(WallMs(wall_of(spec, self.elapsed))));
-        let seed = self.dice.u64();
+        let seed = self.boot_seed("engine", Party::N(i));
         let engine = open_engine(&backend, &root, &clock, seed, true).map_err(|e| self.fail(format!("node {i} create: {e}")))?;
         let tid = engine.tid();
         self.nodes.push(NetNode { sync: None, events: None, backend, root, faults, clock, spec, cfg, wake: None, up: false, lost: false, tid, sent_bytes: 0 });
@@ -515,7 +559,7 @@ impl NetSim {
     }
 
     fn boot(&mut self, n: usize, mut engine: Engine) -> Res<()> {
-        let seed = self.dice.u64();
+        let seed = self.boot_seed("sync", Party::N(n)) ^ OTHER_STREAM.with(|x| x.get());
         let events = engine.subscribe();
         let node = self.node(n)?;
         let c: Arc<dyn Clock> = node.clock.clone();
@@ -618,6 +662,9 @@ impl NetSim {
             match a {
                 Action::Dial { conn, address } => self.dial(n, conn, &address)?,
                 Action::Send { conn, bytes } => {
+                    if ARRIVALS.with(|a| a.borrow().is_some()) {
+                        self.note_names(n, &bytes);
+                    }
                     if let Some(x) = self.nodes.get_mut(n) {
                         x.sent_bytes = x.sent_bytes.saturating_add(bytes.len() as u64);
                     }
@@ -651,6 +698,25 @@ impl NetSim {
         Ok(())
     }
 
+    /// Names the commit blobs among what node `n` is sending (`Arrivals`), from its entries.
+    fn note_names(&mut self, n: usize, bytes: &[u8]) {
+        use osis_proto::Message as M;
+        let Some(s) = self.nodes.get(n).and_then(|x| x.sync.as_ref()) else { return };
+        let mut d = osis_proto::FrameDecoder::default();
+        d.push(bytes);
+        while let Ok(Some(f)) = d.next_frame() {
+            let label = match M::decode(&f) {
+                Ok(M::Upload { label, .. } | M::Deposit { label, .. }) => label,
+                _ => continue,
+            };
+            for (b, k) in s.entries(&label) {
+                if let osis_node::sync::EntryKind::Commit { commit, parts, .. } = k {
+                    self.names.insert(b, format!("{commit:?} {parts:?}").into_bytes());
+                }
+            }
+        }
+    }
+
     fn dial(&mut self, n: usize, conn: ConnId, address: &Address) -> Res<()> {
         let s = self.hosts.iter().position(|x| x.key == address.key);
         let ok = s.filter(|s| self.hosts.get(*s).is_some_and(|x| x.up) && !self.is_blocked(Party::N(n), Party::S(*s)));
@@ -665,7 +731,7 @@ impl NetSim {
         self.links.insert(id, Link { dialer: End::Node(n, conn), acceptor: End::Hub(s, hc), last: [0; 2] });
         self.send(id, End::Node(n, conn), Payload::Up);
         let mut peer = [0u8; 32];
-        peer[..8].copy_from_slice(&self.dice.u64().to_le_bytes());
+        peer[..8].copy_from_slice(&Dice::keyed(self.seed, "peer", &[id]).u64().to_le_bytes());
         let now = self.now();
         let out = match self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()) {
             Some(h) => h.accept(now, hc, peer),
@@ -693,8 +759,25 @@ impl NetSim {
 
     fn push(&mut self, link: u64, to: End, at: u64, what: Payload) {
         self.seq += 1;
-        let at = at.max(self.elapsed);
+        let at = at.max(self.net);
         self.queue.push(Msg { link, to, at, seq: self.seq, what });
+    }
+
+    /// The next release of a direction of a link after `from` on the network clock: a function
+    /// of the link alone, so a message sent cannot hold back another.
+    fn release(&self, id: u64, dir: usize, from: u64) -> u64 {
+        let w = self.cfg.faults.max_delay_ms;
+        if w == 0 {
+            return from;
+        }
+        let mut b = from / w;
+        loop {
+            let at = b.saturating_mul(w).saturating_add(Dice::keyed(self.seed, "release", &[id, dir as u64, b]).below(w));
+            if at > from {
+                return at;
+            }
+            b = b.saturating_add(1);
+        }
     }
 
     /// Queues a message on a stream, through the faults.
@@ -705,28 +788,21 @@ impl NetSim {
         {
             self.note(format!("link {id} -> {to:?}: {}", frames(b)));
         }
-        let f = self.cfg.faults;
-        let faulty = !self.calm && matches!(what, Payload::Bytes(_));
-        if faulty && self.dice.pct(f.cut_pct) {
-            self.report.dropped = self.report.dropped.saturating_add(1);
-            self.note(format!("link {id} cut"));
-            self.cut(id);
-            return;
-        }
-        let mut delay = if self.calm { 0 } else { self.dice.below(f.max_delay_ms.saturating_add(1)) };
-        if !self.calm && self.slow_sender(id, to) {
-            delay = delay.saturating_add(self.dice.below(SLOW_MS));
-        }
         let dir = usize::from(self.links.get(&id).is_some_and(|l| l.acceptor == to));
-        let mut at = self.elapsed.saturating_add(delay);
+        let mut at = self.net;
+        if !self.calm {
+            let slow = if self.slow_sender(id, to) { SLOW_MS } else { 0 };
+            at = self.release(id, dir, at.saturating_add(slow));
+        }
         if let Some(l) = self.links.get_mut(&id)
             && let Some(last) = l.last.get_mut(dir)
         {
             at = at.max(*last);
             *last = at;
         }
-        if faulty && self.dice.pct(f.dup_pct)
+        if !self.calm
             && let Payload::Bytes(b) = &what
+            && Dice::keyed(self.seed, "dup", &[id, dir as u64, at]).pct(self.cfg.faults.dup_pct)
         {
             self.report.duplicated = self.report.duplicated.saturating_add(1);
             let copy = Payload::Bytes(b.clone());
@@ -753,8 +829,10 @@ impl NetSim {
     fn notify_closed(&mut self, e: End) {
         match e {
             End::Node(..) => {
-                let d = if self.calm { 0 } else { self.dice.below(self.cfg.faults.max_delay_ms.saturating_add(1)) };
-                let at = self.elapsed.saturating_add(d);
+                let at = match e {
+                    End::Node(n, c) if !self.calm => self.release(u64::MAX - n as u64, c as usize, self.net),
+                    _ => self.net,
+                };
                 self.push(0, e, at, Payload::Down);
             }
             End::Hub(s, hc) => {
@@ -807,10 +885,14 @@ impl NetSim {
     /// What an evil host sends instead of `bytes` on connection `hc`.
     fn evil_send(&mut self, s: usize, hc: u64, e: Evil, bytes: Vec<u8>) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
-        if self.dice.pct(e.drop_pct) {
+        // a function of the message's size and how many like it went here: its bytes are the luck
+        // of what the node's random stream gave, its number of what else went
+        let times = self.hosts.get(s).and_then(|x| x.sent.get(&hc)).map_or(0, |v| v.iter().filter(|m| m.len() == bytes.len()).count());
+        let mut dice = Dice::keyed(self.seed, "evil", &[s as u64, hc, bytes.len() as u64, times as u64]);
+        if dice.pct(e.drop_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
             self.note(format!("host {s} drops a message on conn {hc}"));
-        } else if !self.calm && !self.held.contains_key(&(s, hc)) && self.dice.pct(e.hold_pct) {
+        } else if !self.calm && !self.held.contains_key(&(s, hc)) && dice.pct(e.hold_pct) {
             self.report.evil = self.report.evil.saturating_add(1);
             self.held.insert((s, hc), bytes.clone());
         } else {
@@ -819,8 +901,8 @@ impl NetSim {
                 out.push(h);
             }
         }
-        if self.dice.pct(e.replay_pct) {
-            let old = self.hosts.get(s).and_then(|x| x.sent.get(&hc)).and_then(|v| self.dice.pick(v).cloned());
+        if dice.pct(e.replay_pct) {
+            let old = self.hosts.get(s).and_then(|x| x.sent.get(&hc)).and_then(|v| dice.pick(v).cloned());
             if let Some(o) = old {
                 self.report.evil = self.report.evil.saturating_add(1);
                 out.push(o);
@@ -869,17 +951,17 @@ impl NetSim {
 
     /// Powers node `n` up again over its durable state.
     pub fn restart_node(&mut self, n: usize) -> Res<()> {
-        let seed = self.dice.u64();
         let node = self.node(n)?;
         if node.lost {
             return Ok(());
         }
         node.faults.revive();
         let (b, r, c) = (node.backend.clone(), node.root.clone(), node.clock.clone());
+        *self.eph.boots.entry(Party::N(n)).or_default() += 1;
+        let seed = self.boot_seed("engine", Party::N(n));
         let engine = open_engine(&b, &r, &c, seed, false).map_err(|e| self.fail(format!("node {n} reopen: {e}")))?;
         self.report.restarts = self.report.restarts.saturating_add(1);
         self.note(format!("node {n} restarted"));
-        *self.eph.boots.entry(Party::N(n)).or_default() += 1;
         self.boot(n, engine)
     }
 
@@ -1006,27 +1088,21 @@ impl NetSim {
 
     // ---- delivery
 
-    /// Delivers one due message (the earliest, or under reorder any due stream head); waits for
-    /// the earliest stream head when none is due (a message sent on a stream after its cut may
-    /// be due before its predecessors). False when nothing is queued.
-    fn deliver_next(&mut self) -> Res<bool> {
-        let heads: Vec<usize> = (0..self.queue.len())
-            .filter(|k| {
-                let Some(m) = self.queue.get(*k) else { return false };
-                !self.queue.iter().any(|o| o.link == m.link && o.link != 0 && o.to == m.to && o.seq < m.seq)
-            })
-            .collect();
-        let Some(first) = heads.iter().filter_map(|k| self.queue.get(*k)).map(|m| m.at).min() else { return Ok(false) };
-        if first > self.elapsed {
-            self.advance(first - self.elapsed)?;
+    /// The stream heads among what is queued, up to `until` on the network clock and sent
+    /// before `seq`: the first by due time and send order.
+    fn next_head(&self, until: u64, seq: u64) -> Option<usize> {
+        let mut best: Option<(u64, u64, usize)> = None;
+        for (k, m) in self.queue.iter().enumerate() {
+            let head = m.link == 0 || !self.queue.iter().any(|o| o.link == m.link && o.to == m.to && o.seq < m.seq);
+            if head && m.at <= until && m.seq <= seq && best.is_none_or(|b| (m.at, m.seq) < (b.0, b.1)) {
+                best = Some((m.at, m.seq, k));
+            }
         }
-        let heads: Vec<usize> = heads.into_iter().filter(|k| self.queue.get(*k).is_some_and(|m| m.at <= self.elapsed)).collect();
-        let pick = if self.cfg.faults.reorder && !self.calm {
-            self.dice.pick(&heads).copied()
-        } else {
-            heads.iter().copied().min_by_key(|k| self.queue.get(*k).map(|m| (m.at, m.seq)))
-        };
-        let Some(k) = pick else { return Ok(true) };
+        best.map(|b| b.2)
+    }
+
+    /// Delivers the queued message `k`.
+    fn deliver(&mut self, k: usize) -> Res<()> {
         let m = self.queue.remove(k);
         self.report.delivered = self.report.delivered.saturating_add(1);
         let alive = self.links.contains_key(&m.link);
@@ -1036,16 +1112,76 @@ impl NetSim {
             (End::Node(n, c), Payload::Up) if alive => self.feed(n, Event::Up { conn: c })?,
             (End::Node(n, c), Payload::Bytes(b)) if alive => self.feed(n, Event::Bytes { conn: c, bytes: b })?,
             (End::Hub(s, hc), Payload::Bytes(b)) if alive => {
-                note_arrivals(s, self.elapsed, &b);
+                note_arrivals(&self.names, s, self.elapsed, &b);
                 let out = self.hosts.get_mut(s).and_then(|x| x.hub.as_mut()).map(|h| h.input(now, hc, b)).unwrap_or_default();
                 self.hub_out(s, out)?;
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Delivers the first queued message, whenever it is due (each stream in order). False when
+    /// nothing is queued. The clocks stand still.
+    fn deliver_next(&mut self) -> Res<bool> {
+        let Some(k) = self.next_head(u64::MAX, u64::MAX) else { return Ok(false) };
+        self.deliver(k)?;
         Ok(true)
     }
 
-    /// Delivers everything queued (time moving to each message), then what that queued.
+    /// A deliver step: both clocks move on, what they brought is due: links cut and what was
+    /// sent before now and is released by then goes, in the order of its time. What it causes
+    /// goes later.
+    fn deliver_step(&mut self) -> Res<()> {
+        let w = self.cfg.faults.max_delay_ms;
+        let dt = self.dice.below(w / DELIVER_DIV + 1);
+        let from = self.net;
+        let until = from.saturating_add(dt);
+        self.net = until;
+        self.advance(dt)?;
+        let seq = self.seq;
+        let mut cuts = self.cuts_between(from, until);
+        loop {
+            let k = self.next_head(until, seq);
+            let due = k.and_then(|k| self.queue.get(k)).map(|m| m.at);
+            match (cuts.first().copied(), k) {
+                (Some((t, id)), _) if due.is_none_or(|d| t <= d) => {
+                    cuts.remove(0);
+                    if self.links.contains_key(&id) {
+                        self.report.dropped = self.report.dropped.saturating_add(1);
+                        self.note(format!("link {id} cut"));
+                        self.cut(id);
+                    }
+                }
+                (_, Some(k)) => self.deliver(k)?,
+                _ => return Ok(()),
+            }
+        }
+    }
+
+    /// The cuts of live links after `from`, up to `until` on the network clock, in time order:
+    /// each link has its chances, whatever goes over it.
+    fn cuts_between(&self, from: u64, until: u64) -> Vec<(u64, u64)> {
+        let f = self.cfg.faults;
+        let w = f.max_delay_ms / CUTS_PER_DELAY;
+        let mut cuts = Vec::new();
+        if w == 0 || f.cut_pct == 0 {
+            return cuts;
+        }
+        for id in self.links.keys() {
+            for b in from / w..=until / w {
+                let mut d = Dice::keyed(self.seed, "cut", &[*id, b]);
+                let at = b.saturating_mul(w).saturating_add(d.below(w));
+                if at > from && at <= until && d.pct(f.cut_pct) {
+                    cuts.push((at, *id));
+                }
+            }
+        }
+        cuts.sort();
+        cuts
+    }
+
+    /// Delivers everything queued, then what that queued (no fault or clock moves here).
     pub fn drain_queue(&mut self) -> Res<()> {
         let mut k = 0u64;
         while self.deliver_next()? {
@@ -1077,6 +1213,7 @@ impl NetSim {
 
     pub fn step(&mut self) -> Res<()> {
         self.report.steps = self.report.steps.saturating_add(1);
+        self.dice = Dice::keyed(self.seed, "step", &[self.report.steps]);
         let w = self.cfg.weights;
         let calm = self.calm;
         let any_down = self.nodes.iter().any(|n| !n.up && !n.lost);
@@ -1084,7 +1221,7 @@ impl NetSim {
         let gate = |on: bool, x: u32| if on { x } else { 0 };
         let options: [(u32, u8); 11] = [
             (gate(!calm, w.write), 0),
-            (gate(!self.queue.is_empty(), w.deliver), 1),
+            (w.deliver, 1),
             (w.tick.max(1), 2),
             (gate(!calm, w.crash), 3),
             (gate(any_down, w.restart), 4),
@@ -1107,9 +1244,7 @@ impl NetSim {
         }
         match pick {
             0 => self.random_write()?,
-            1 => {
-                self.deliver_next()?;
-            }
+            1 => self.deliver_step()?,
             3 => self.random_crash()?,
             4 => {
                 let down: Vec<usize> = (0..self.nodes.len()).filter(|i| self.nodes.get(*i).is_some_and(|n| !n.up && !n.lost)).collect();
@@ -1566,25 +1701,31 @@ impl NetSim {
     }
 
     pub fn finish(&mut self) -> Res<Report> {
+        self.observe()?;
+        let text = |s: String| osis_base::hash::hash(s.as_bytes());
+        let mut parts = BTreeMap::new();
         let mut h = osis_base::hash::Hasher::new();
         let mut commits = BTreeSet::new();
         for n in 0..self.nodes.len() {
             let Some(s) = self.nodes.get_mut(n).and_then(|x| x.sync.as_mut()) else { continue };
-            for c in s.engine().commit_ids() {
-                h.update(&c.0);
-                commits.insert(c);
-            }
+            let ids = s.engine().commit_ids();
+            parts.insert(format!("node {n} commits"), text(format!("{ids:?}")));
+            commits.extend(ids);
             // what the node keeps locally: entries, presence, blob records, held bytes
-            h.update(&s.state_digest());
+            parts.insert(format!("node {n} sync state"), s.state_digest());
             let r = crate::check::reads(s.engine_mut()).map_err(|x| x.to_string());
             let r = r.map_err(|x| self.fail(format!("read: {x}")))?;
-            h.update(format!("{r:?}").as_bytes());
+            parts.insert(format!("node {n} reads"), text(format!("{r:?}")));
         }
-        for s in &self.hosts {
+        for (i, s) in self.hosts.iter().enumerate() {
             let Some(hub) = &s.hub else { continue };
             use osis_proto::LabelStore;
+            // the commits it holds, not under which label: which copy stayed is the lower blob ID
+            let mut holds = BTreeSet::new();
             for l in hub.store().labels_after(None, 4096).unwrap_or_default() {
-                for b in hub.store().live_ids(&l).unwrap_or_default() {
+                let live = hub.store().live_ids(&l).unwrap_or_default();
+                holds.extend(live.iter().filter_map(|b| self.known.get(&(l, *b))).cloned());
+                for b in &live {
                     h.update(&b.0);
                 }
                 // the whole log: every upload and delete, in order
@@ -1597,9 +1738,15 @@ impl NetSim {
                     after = last;
                 }
             }
+            parts.insert(format!("host {i} holds"), text(format!("{holds:?}")));
+        }
+        for (k, v) in &parts {
+            h.update(k.as_bytes());
+            h.update(v);
         }
         self.report.commits = commits.len();
         self.report.digest = h.finalize();
+        self.report.parts = parts;
         Ok(self.report.clone())
     }
 }
@@ -1608,6 +1755,31 @@ impl NetSim {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    // spec/sync.md §6 (work sets, `work_sets`): one more message moves nothing else: not when
+    // another goes, not the clocks, not the cuts.
+    #[test]
+    fn one_more_message_moves_nothing_else_spec_sync_6() {
+        let run = |extra: bool| {
+            let mut sim = NetSim::new("t", 7, NetConfig { faults: scenarios::lossy(), ..NetConfig::default() });
+            sim.calm = false;
+            let to = End::Node(0, 1);
+            sim.links.insert(1, Link { dialer: to, acceptor: End::Node(1, 1), last: [0; 2] });
+            sim.links.insert(2, Link { dialer: End::Node(0, 2), acceptor: End::Node(1, 2), last: [0; 2] });
+            let mut out = Vec::new();
+            for i in 0..40u8 {
+                if extra {
+                    sim.send(1, to, Payload::Bytes(vec![0, i]));
+                }
+                sim.send(1, to, Payload::Bytes(vec![1, i]));
+                let m = sim.queue.iter().find(|m| matches!(&m.what, Payload::Bytes(b) if *b == vec![1, i]));
+                out.push(m.map(|m| m.at));
+                sim.step().unwrap();
+            }
+            (out, sim.elapsed, sim.net, sim.report.dropped, sim.links.len())
+        };
+        assert_eq!(run(false), run(true));
+    }
 
     // spec/sync.md §6 (ordered streams): a message sent on a stream after its cut can be due
     // before its predecessors; delivery waits for the stream's head instead of spinning
@@ -1619,6 +1791,5 @@ mod tests {
         sim.push(7, End::Node(0, 1), 10, Payload::Bytes(vec![2]));
         sim.drain_queue().unwrap();
         assert!(sim.queue.is_empty());
-        assert_eq!(sim.elapsed, 500);
     }
 }

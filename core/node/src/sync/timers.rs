@@ -4,6 +4,18 @@
 use super::*;
 
 impl SyncEngine {
+    /// The open, synced labels marked dirty that may pass now.
+    pub(super) fn dirty_labels(&self) -> Vec<(ConnId, LabelId)> {
+        let todo: Vec<(ConnId, LabelId)> = self
+            .conns
+            .iter()
+            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| !l.receipts && l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
+            .collect();
+        // no pass before a fill has what judging needs, on any connection: it would call this node
+        // stranded
+        todo.into_iter().filter(|(_, l)| !self.fill_first_waits(l)).collect()
+    }
+
     /// Runs passes for open, synced labels marked dirty.
     pub(super) fn run_dirty(&mut self, out: &mut Vec<Action>) -> Result<()> {
         self.add_new_labels(out)?;
@@ -15,15 +27,7 @@ impl SyncEngine {
                 self.state.remove_hint(&l);
             }
         }
-        let todo: Vec<(ConnId, LabelId)> = self
-            .conns
-            .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| !l.receipts && l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
-            .collect();
-        // no pass before a fill has what judging needs, on any connection: it would call this node
-        // stranded
-        let todo: Vec<(ConnId, LabelId)> = todo.into_iter().filter(|(_, l)| !self.fill_first_waits(l)).collect();
-        for (conn, label) in todo {
+        for (conn, label) in self.dirty_labels() {
             if let Some(l) = self.lc_mut(conn, &label) {
                 l.dirty = false;
             }

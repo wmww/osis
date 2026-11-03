@@ -1425,7 +1425,8 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     net.run();
     let s3 = net.sync(a).pass_stats();
     assert_eq!(s3.full - s2.full, 0, "a new holder moves no role this label's verdicts read");
-    assert!(s3.bodies - s2.bodies < 6, "the add's bodies alone: {}", s3.bodies - s2.bodies);
+    // the add's bodies alone, judged again by the pass its first pass's writes mark
+    assert!(s3.bodies - s2.bodies < 8, "the add's bodies alone: {}", s3.bodies - s2.bodies);
 }
 
 // spec: none (memory, spec/requirements.md Scale): posts leave work at the labels they do not pass

@@ -135,8 +135,12 @@ pub struct Report {
     pub rogue_sent: u64,
     pub rogue_refused: u64,
     pub commits: usize,
-    /// BLAKE3 of every node's final held commits and reads.
+    /// BLAKE3 of every node's final held commits and reads and, on a net sim, the hosts' logs
+    /// and `parts`: replays alike to the bit.
     pub digest: [u8; 32],
+    /// What ended where, each named and free of blob IDs (`NetSim::finish`): what two runs must
+    /// share even if a node's random stream served its seals in another order.
+    pub parts: std::collections::BTreeMap<String, [u8; 32]>,
 }
 
 pub struct Sim {

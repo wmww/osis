@@ -77,37 +77,46 @@ impl SyncEngine {
         out
     }
 
-    /// A digest of this node's sync state (simulator determinism checks): entries with their
-    /// wraps, stamps and kinds, presence, deposits, tombstones, timed deletes, certificates,
-    /// carriers, blob records, and which of the blobs they name the store holds.
+    /// A digest of this node's sync state (simulator comparisons): what commits and parts its
+    /// entries, presence and blob records name, certificates, carriers, and what the store holds.
     pub fn state_digest(&mut self) -> [u8; 32] {
         let s = &self.state;
-        let mut h = osis_base::hash::Hasher::new();
-        for ((l, b), e) in &s.entries {
-            h.update(format!("e{l:?}{b:?}{:?}{:?}{}{:?}", e.wrap, e.stamp.map(|x| x.0), e.cert, e.kind).as_bytes());
-        }
-        for x in &s.gone {
-            h.update(format!("g{x:?}").as_bytes());
-        }
-        let sets = [("p", &s.present), ("d", &s.deposited), ("t", &s.timed)];
-        for (k, set) in sets {
-            for x in set {
-                h.update(format!("{k}{x:?}").as_bytes());
+        // a blob by what it carries: its ID, wrap, salt and stamp are the luck of when its sealing
+        // drew from the random stream, so two runs doing the same in another order differ there
+        let name = |l: Option<&LabelId>, b: &osis_base::BlobId| {
+            let kind = l.and_then(|l| s.entries.get(&(*l, *b))).map(|e| &e.kind);
+            match (kind, s.blobs.get(b)) {
+                (Some(state::Kind::Commit { commit, parts, .. }), _) => format!("{commit:?}{parts:?}"),
+                (Some(k), _) => format!("{k:?}"),
+                (None, Some(r)) => format!("{:?}{:?}", r.commit, r.parts),
+                (None, None) => String::new(),
             }
+        };
+        // and by what, not where: two copies of a commit under a label are settled by the lower ID,
+        // so which holder's copy stays, under which label, is that luck too
+        let mut lines = BTreeSet::new();
+        for (l, b) in s.entries.keys() {
+            lines.insert(format!("e{}", name(Some(l), b)));
         }
-        for x in &s.certs {
-            h.update(format!("k{x:?}").as_bytes());
+        for (host, l, b) in &s.present {
+            lines.insert(format!("p{host:?}{}", name(Some(l), b)));
         }
-        for x in &s.carriers {
-            h.update(format!("s{x:?}").as_bytes());
+        for (_, c) in &s.certs {
+            lines.insert(format!("k{c:?}"));
         }
-        for (id, r) in &s.blobs {
-            h.update(format!("b{id:?}{:?}{:?}{}", r.commit, r.parts, r.cert).as_bytes());
+        for (c, x) in &s.carriers {
+            lines.insert(format!("s{c:?}{:?}", x.by));
         }
-        let ids: BTreeSet<osis_base::BlobId> = s.entries.keys().map(|(_, b)| *b).chain(s.blobs.keys().copied()).collect();
-        for b in ids {
-            let held = self.engine.has_blob(&b);
-            h.update(format!("h{b:?}{held}").as_bytes());
+        for id in s.blobs.keys() {
+            lines.insert(format!("b{}", name(None, id)));
+        }
+        let ids: BTreeSet<(Option<LabelId>, osis_base::BlobId)> = s.entries.keys().map(|(l, b)| (Some(*l), *b)).chain(s.blobs.keys().map(|b| (None, *b))).collect();
+        for (l, b) in ids {
+            lines.insert(format!("h{}{}", name(l.as_ref(), &b), self.engine.has_blob(&b)));
+        }
+        let mut h = osis_base::hash::Hasher::new();
+        for x in lines {
+            h.update(x.as_bytes());
         }
         h.finalize()
     }
