@@ -445,6 +445,27 @@ fn oversized_upload_refused_spec_sync_5() {
     assert_eq!(net.store.log_head(&l.id).unwrap().1, seq);
 }
 
+// spec/sync.md §5: an Error reply to a deposit (the host's store failed) is a refusal for now: the
+// node holds it as unanswered otherwise, and `send_outbox` paces the label's others behind it
+#[test]
+fn deposit_answered_by_an_error_is_refused_for_now_spec_sync_5() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    let (b, wrap): (Vec<u8>, Wrap) = (blob(0), [7; osis_crypto::WRAP_LEN]);
+    let blob_id = osis_label::blob_id(&b);
+    let sig = sign_deposit(&l.head_keys().deposit, &l.id, &blob_id, &wrap);
+    let co = net.clients[0].handle(net.now, ClientInput::Command(Command::Deposit { label: l.id, blob: b, wrap, sig }));
+    net.client_out(0, co);
+    let mut d = FrameDecoder::default();
+    d.push(&net.to_host[0].pop_front().unwrap());
+    let id = Message::decode(&d.next_frame().unwrap().unwrap()).unwrap().id();
+    let co = net.clients[0].handle(net.now, ClientInput::Bytes(encode_frame(&Message::Error { id, code: Code::REFUSED }.encode())));
+    net.client_out(0, co);
+    let ev = std::mem::take(&mut net.events[0]);
+    assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::RATE_LIMITED, budget: None, blob_id: x, .. }] if *x == blob_id), "{ev:?}");
+}
+
 // spec/sync.md §5: deposits by the deposit key within the budget (64 + 4 x claim slots), refused when full
 #[test]
 fn deposit_budget() {

@@ -799,6 +799,9 @@ impl ClientSession {
                     self.api_subs.remove(&sub);
                 }
             }
+            // an Error is no answer to a deposit (the host's store failed): refused for now, it goes
+            // again after a back-off, and the deposits paced behind it go on (`send_outbox`)
+            (Pending::Deposit(label, blob_id), M::Error { .. }) => event(out, E::Budget { label, blob_id, code: Code::RATE_LIMITED, budget: None }),
             (p, M::Error { code, .. }) => event(out, E::Refused { label: p.label(), kind: p.kind(), code, fetch: Vec::new() }),
             (Pending::Open(label), M::Opened { head, entry_box, .. }) => event(out, E::Opened { label, head, entry_box }),
             (Pending::Open(label), M::Step { step, .. }) => event(out, E::Step { label, step }),
