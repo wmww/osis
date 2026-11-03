@@ -20,7 +20,7 @@ use osis_base::testenv::{caught, par_map, threads};
 use osis_base::{Ak, CommitId, Role, Tid, Value, WallMs};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
-use osis_node::engine::{IndexDigest, IndexField};
+use osis_node::engine::{CommitDigest, IndexDigest, IndexField};
 use osis_node::local_peer::{LocalPeer, Package, Peer};
 use osis_perm::DemotionScope;
 use osis_schema::{Bound, Codec, PurgeBy, Retention};
@@ -1241,7 +1241,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                     (x, Some(y), true) => o.took.get(&k).map_or(Some(y), |b| *b).is_none_or(|y| x.is_some_and(|x| x.1 >= y.1)),
                     _ => false,
                 };
-                if !ok {
+                if !ok && !(x.is_none() && orphaned(e, &id, a.tid, &a.ak, y)) {
                     return Some(format!("death dated early or missing: {what}"));
                 }
                 if r.at_most.rel == Some(0) && x.is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
@@ -1257,6 +1257,26 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
         }
     }
     None
+}
+
+/// The stated limit of spec/commits.md §5 (a killer dropped before the write arrived), as node
+/// `e` sees it: held body `(tid, ak)` of `c` under a relative keep at most has no death, holds a
+/// live write, and a later-stamped body of the aspect under one was dropped here. `dating` checks
+/// (with the oracle) that the dropped one was its first superseder; `alike` lets such a body stay
+/// held where a node holding its killer dropped it.
+fn orphan_here(e: &mut osis_node::Engine, c: &CommitId, tid: Tid, ak: &Ak) -> bool {
+    let rel = |h: &osis_commit::Header| h.aspects.iter().any(|a| a.tid == tid && a.ak == *ak && a.retention.at_most.rel.is_some());
+    let Some(ts) = e.header(c).filter(|h| rel(h)).map(|h| h.ts) else { return false };
+    if !e.body_not_dropped(c, &tid, ak) || e.deaths(c, &tid, ak).unwrap().is_some() || !e.body_live(c, &tid, ak).unwrap() {
+        return false;
+    }
+    e.commit_ids().iter().any(|k| e.header(k).is_some_and(|h| h.ts > ts && rel(&h)) && !e.body_not_dropped(k, &tid, ak))
+}
+
+/// `orphan_here`, the dropped body being the oracle's first superseder (stamped `y`'s first).
+fn orphaned(e: &mut osis_node::Engine, c: &CommitId, tid: Tid, ak: &Ak, y: Option<(osis_base::Ts, osis_base::Ts)>) -> bool {
+    let Some((first, _)) = y else { return false };
+    orphan_here(e, c, tid, ak) && e.commit_ids().iter().any(|k| e.header(k).is_some_and(|h| h.ts == first && h.aspects.iter().any(|a| a.tid == tid && a.ak == *ak && a.retention.at_most.rel.is_some())) && !e.body_not_dropped(k, &tid, ak))
 }
 
 /// The facts `alike` reads per body (commit, thing, aspect, under keep at most, held, valid,
@@ -1276,7 +1296,8 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let copies = !h.kind.has_own_writes();
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}", a.tid, a.ak.as_str(), h.ts);
+            let orphan = !copies && orphan_here(e, &id, a.tid, &a.ak);
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1398,6 +1419,8 @@ struct Fact {
     copies: bool,
     /// Held there, a copies body's lowest carried write `ts` (a killer is stamped after it).
     low: Option<u64>,
+    /// Held with no death for want of a killer dropped before it arrived (`orphan_here`).
+    orphan: bool,
 }
 
 impl Fact {
@@ -1426,6 +1449,43 @@ fn creations(state: &str) -> (Vec<String>, String) {
     (dots, out)
 }
 
+/// The dots of the records with no write left in a state's text (sequence elements that are bare
+/// anchors, then map entries holding only those), and the text without them. An un-merge takes
+/// those a delta created; a body of it dropped under keep at most gives them no more when the
+/// delta turns valid again (spec/crdt.md §4.6).
+fn bare_records(state: &str) -> (Vec<String>, String) {
+    const ELEM: &str = ": SeqElem { created: None, content: None, pos: [], deleted: None, undel: None, span: ";
+    const ENTRY: &str = "elems: {} })), created: None }";
+    let mut dots = Vec::new();
+    let mut out = state.to_string();
+    // each found record removed with its own text only, the map's separators mended after
+    let cut = |out: &mut String, start: usize, end: usize| {
+        out.replace_range(start..end, "");
+        *out = out.replace("{, ", "{").replace(", }", "}").replace(", , ", ", ");
+    };
+    while let Some(i) = out.find(ELEM) {
+        let Some(start) = out[..i].rfind("NTid(") else { break };
+        let Some(end) = out[i..].find('}').map(|j| i + j + 1) else { break };
+        dots.push(out[start..i].to_string());
+        cut(&mut out, start, end);
+    }
+    let mut from = 0;
+    while let Some(i) = out[from..].find(ENTRY).map(|j| from + j) {
+        let end = i + ENTRY.len();
+        let Some(start) = out[..i].rfind("Eid { dot: ") else { break };
+        let head = &out[start..i];
+        if head.matches("Eid {").count() != 1 || !head.contains("}: Entry { reset: None, frag: Some(Seq(Seq { text: ") {
+            from = end;
+            continue;
+        }
+        let dot = head["Eid { dot: ".len()..].split(", key:").next().unwrap_or("").to_string();
+        dots.push(dot);
+        cut(&mut out, start, end);
+        from = start;
+    }
+    (dots, out)
+}
+
 type BodyKey = (String, String, String);
 
 /// A `Ts(n)`'s n.
@@ -1443,7 +1503,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11) });
     }
     (out, inv)
 }
@@ -1486,7 +1546,10 @@ fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
 /// the two orders judged a body of the aspect valid and invalid on the way, `flipped`): the
 /// states may then differ in the creation stamps of map entries whose body (keep at most) the
 /// node lacking the stamp dropped (an un-merge leaving the entry with no content took the
-/// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
+/// creation; the flip back gave the content alone), and in the records with no write left such a
+/// body created (`bare_records`), reads alike (spec/crdt.md §4.6). A body held for want of a death
+/// whose killer the node dropped before it arrived (spec/commits.md §5, `orphan_here`) may be held
+/// where the other node dropped it. Anything else is a failure.
 fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     // a part held pending at its expiry counts as never received at that node (spec/commits.md
     // §5; Tess: nodes may read differently when a part expired before a node could apply it):
@@ -1520,8 +1583,24 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
                 _ => s,
             });
             let gave = |c: &CommitId| no_gives(w.show(&IndexField::Commit(*c))) == no_gives(g.show(&IndexField::Commit(*c))) && w.show(&IndexField::Commit(*c)) != g.show(&IndexField::Commit(*c));
+            // a body held for want of a death whose killer this node dropped before it arrived, a
+            // stated limit (spec/commits.md §5; `dating` checks the death): dropped by its bound where it died
+            let orphan = |c: &CommitId| {
+                let (Some(x), Some(y)) = (w.commits.get(c), g.commits.get(c)) else { return false };
+                let id = format!("{c:?}");
+                let held_orphan = |a: &Facts, b: &Facts| a.iter().any(|(k, f)| k.0 == id && f.orphan && b.get(k).is_some_and(|o| !o.orphan));
+                x.dropped != y.dropped && CommitDigest { dropped: y.dropped.clone(), ..x.clone() } == *y && (held_orphan(&wf, &gf) || held_orphan(&gf, &wf))
+            };
+            // ... and counted held there: `bounded_held` differs per aspect by those bodies alone
+            let orphans_counted = || {
+                let count = |a: &Facts, b: &Facts, k: &(String, String)| a.iter().filter(|(x, f)| (&x.1, &x.2) == (&k.0, &k.1) && f.orphan && b.get(*x).is_some_and(|o| !o.orphan)).count() as i64;
+                let (x, y) = (bounded_counts(w.tables.get("bounded_held")), bounded_counts(g.tables.get("bounded_held")));
+                x.keys().chain(y.keys()).all(|k| y.get(k).unwrap_or(&0) - x.get(k).unwrap_or(&0) == count(&gf, &wf, k) - count(&wf, &gf, k))
+            };
             let exempt = |f: &IndexField| match f {
-                IndexField::Commit(c) | IndexField::DroppedSnapshots(c) => on_expired(c) || gave(c),
+                IndexField::Table("bounded_held") => orphans_counted(),
+                IndexField::Commit(c) => on_expired(c) || gave(c) || orphan(c),
+                IndexField::DroppedSnapshots(c) => on_expired(c) || gave(c),
                 IndexField::Snapshots(c) | IndexField::Carried(c) => on_expired(c),
                 IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
             };
@@ -1546,10 +1625,14 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
                 }).collect()
             };
             let (a, b) = (keyed(&xl), keyed(&yl));
-            // only creation stamps of bodies dropped where they are missing, after a flip
+            // only creation stamps and records with no write left (`bare_records`) of bodies
+            // dropped where they are missing, after a flip
             let stamps_only = |k: &(String, String)| -> bool {
                 let (Some(x), Some(y)) = (a.get(k), b.get(k)) else { return false };
-                let ((xd, xs), (yd, ys)) = (creations(x), creations(y));
+                let ((mut xd, xs), (mut yd, ys)) = (creations(x), creations(y));
+                let ((xb, xs), (yb, ys)) = (bare_records(&xs), bare_records(&ys));
+                xd.extend(xb);
+                yd.extend(yb);
                 let dropped = |dot: &String, facts: &Facts| facts.iter().any(|(b, f)| b.1 == k.0 && b.2 == k.1 && f.at_most && !f.held && f.owns_dot(dot));
                 *name == "states" && xs == ys && xd.iter().filter(|d| !yd.contains(d)).all(|d| dropped(d, &gf)) && yd.iter().filter(|d| !xd.contains(d)).all(|d| dropped(d, &wf)) && flips(&k.0, &k.1)
             };
@@ -1563,6 +1646,17 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
         return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
     None
+}
+
+/// `bounded_held` as the index prints it, keyed as `facts_text` prints thing and aspect.
+fn bounded_counts(text: Option<&String>) -> BTreeMap<(String, String), i64> {
+    let mut out = BTreeMap::new();
+    for e in text.map_or("", |t| t.as_str()).split("(Tid(").skip(1) {
+        let (Some((tid, rest)), Some(n)) = (e.split_once("), Ak(\""), e.rsplit(": ").next()) else { continue };
+        let ak = rest.split('"').next().unwrap_or("");
+        out.insert((format!("Tid({tid})"), ak.to_string()), n.trim_end_matches([',', ' ', '}']).parse().unwrap());
+    }
+    out
 }
 
 /// The packs of the commits `ids` (as `facts_text` prints them).
@@ -4197,6 +4291,28 @@ fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
 #[ignore = "tier 2"]
 fn purged_fell_purged_leaves_its_residue_seed_872030() {
     run("purged_fell_purged_leaves_its_residue_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
+}
+
+// spec/commits.md §5 (stated limit): a text creation arriving under an undelete whose delete's body
+// this node dropped (keep at most 0, no live write left) has no death here and stays held; the
+// oracle excuses exactly that (`orphaned`, `alike`'s index and `bounded_held`) (seed 733028, shrunk).
+#[test]
+fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Leave { by: 1, t: 7 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), aim(Typed { by: 1, t: 0, op: 1, k: 0, v: 4 }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
+    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/crdt.md §4.6 (stated limit): an un-merge takes the records a delta created; one whose body
+// was dropped under keep at most gives them no more when it turns valid again, so the states differ
+// in records with no write left, read alike (`bare_records`) (seed 733028, shrunk on that failure).
+#[test]
+fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Breaking { by: 1, t: 2, op: 11, v: 9, fits: false }), aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
+    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
 
 // spec/commits.md §5: a body dropped under keep at most whose other part is still missing leaves that
