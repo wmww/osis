@@ -1512,3 +1512,13 @@ fn history_pages_past_large_bodies() {
     }
     assert_eq!(rest, [false, true, true]);
 }
+
+// spec/wire.md §11.2, notes/client-port.md §3: a thin client's list of links is refused like any row not for it
+#[test]
+fn a_client_lists_no_links() {
+    let x = node();
+    let (_a, _s, c) = x.client(Role::Read);
+    x.n.make_link(x.u, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
+    assert_eq!(x.n.all_links().len(), 1);
+    assert!(c.all_links().is_empty());
+}

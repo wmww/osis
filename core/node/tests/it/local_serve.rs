@@ -632,3 +632,35 @@ fn hostless_reseal(restart: bool) {
     net.advance(wait);
     assert_eq!(newest(&mut net, c), Some(e1), "c reads b's epoch");
 }
+
+// spec/permissions.md §4: with no host, a certificate copy with no current read secret to wrap it
+// waits for the local pass after the re-seal, as at a host
+#[test]
+fn copy_waiting_for_a_wrap_placed_by_local_pass_spec_permissions_4() {
+    let (mut net, a, b, g, l) = setup();
+    let acts = net.sync(b).publish_reach([2; 32], Vec::new()).unwrap();
+    net.actions(b, acts);
+    net.run();
+    let (at, tb) = (net.tid(a), net.tid(b));
+    let rotate = |net: &mut Net, who: &[(Tid, Role)], seed: u64| {
+        let e = net.engine(a);
+        let rs = recipients_of(e, who);
+        let rot = rotation(e, g, &rs, seed, false);
+        let p = net.engine(a).package(&rot).unwrap().unwrap();
+        net.engine(b).ingest(&p.bytes, p.blobs).unwrap();
+    };
+    rotate(&mut net, &[(at, Role::Admin)], 77);
+    assert!(net.engine(b).wrap_secret(&g, None).unwrap().is_none(), "b holds no current read secret");
+    let mut m = osis_node::Mutation::new();
+    m.set(tb, &GONE, &s("x")).unwrap();
+    let c = net.engine(b).commit(m).unwrap().unwrap();
+    let copies = |net: &mut Net| net.sync(b).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == c)).count();
+    let acts = net.sync(b).place_certificate(&g, &c, &[0].into()).unwrap();
+    net.actions(b, acts);
+    assert_eq!(copies(&mut net), 0, "nothing wraps it");
+    rotate(&mut net, &[(at, Role::Admin), (tb, Role::Write)], 78);
+    net.run();
+    net.advance(30_000);
+    assert!(net.engine(b).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
+    assert!(copies(&mut net) > 0, "placed");
+}

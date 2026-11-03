@@ -727,3 +727,140 @@ fn removing_a_device_lists_its_links_spec_permissions_9() {
     assert_eq!(w.until(carol.redeem(&made_here), 1000, 30).unwrap(), g, "the other still works");
     assert_eq!(da.all_links().iter().map(|l| l.id).collect::<Vec<_>>(), vec![here]);
 }
+
+fn pair_device(w: &mut World, da: &Osis, seed: u64) -> Osis {
+    let offer = da.pair_offer().unwrap();
+    let join = Osis::pair(w.cfg(seed, &[]), &offer).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    w.run();
+    db
+}
+
+// spec/permissions.md §9, §3: a removed device's revocation of a link does not stand, written
+// before it hears of the removal (its commit is past the removal's frontier) or after (it lists
+// nothing and is refused); the link goes on working
+#[test]
+fn removed_device_revokes_no_link_spec_permissions_9() {
+    for aware in [false, true] {
+        let mut w = World::new();
+        let host = w.add_host();
+        let (da, _) = w.person(1, &[host]);
+        let (bob, _) = w.person(2, &[host]);
+        let g = group(&da);
+        let db = pair_device(&mut w, &da, 4);
+        let link = da.make_link(g, Role::Read, Default::default()).unwrap();
+        w.run();
+        let k = db.links(g)[0].id;
+        w.set_online(&db, aware);
+        w.until(da.remove_device(db.node(), skip_sync()), 1000, 10).unwrap();
+        w.run();
+        if aware {
+            assert!(db.all_links().is_empty());
+            assert!(matches!(w.until(db.revoke_link(k, skip_sync()), 1000, 10), Err(Error::Invalid(_))));
+        } else {
+            w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+            w.set_online(&db, true);
+        }
+        for _ in 0..3 {
+            w.advance(60_000);
+            w.run();
+        }
+        assert_eq!(da.links(g).len(), 1, "aware {aware}");
+        assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    }
+}
+
+// spec/permissions.md §9: both devices act on K, each not having heard the other: they agree on
+// K's roster and the links, whatever the order. A revocation that has not seen a redemption
+// judges it as any other device's would (spec/permissions.md §3: `Skip`).
+#[test]
+fn two_devices_act_on_a_link_spec_permissions_9() {
+    for order in 0..4 {
+        let mut w = World::new();
+        let host = w.add_host();
+        let (da, _) = w.person(1, &[host]);
+        let (bob, _) = w.person(2, &[host]);
+        let (carol, _) = w.person(3, &[host]);
+        let g = group(&da);
+        let db = pair_device(&mut w, &da, 4);
+        let link = da.make_link(g, Role::Read, Default::default()).unwrap();
+        w.run();
+        let k = db.links(g)[0].id;
+        match order {
+            0 => {
+                w.set_online(&db, false);
+                assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+                w.run();
+                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.set_online(&db, true);
+            }
+            1 => {
+                w.set_online(&db, false);
+                w.until(da.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.set_online(&db, true);
+            }
+            2 => {
+                assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+                assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+                w.run();
+                w.set_online(&da, false);
+                w.until(db.demote(g, bob.me(), Lower::Remove, skip_sync()), 1000, 20).unwrap();
+                w.set_online(&da, true);
+            }
+            _ => {
+                assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+                w.run();
+                w.set_online(&db, false);
+                w.until(da.demote(g, bob.me(), Lower::Remove, skip_sync()), 1000, 20).unwrap();
+                w.until(db.revoke_link(k, skip_sync()), 1000, 10).unwrap();
+                w.set_online(&db, true);
+            }
+        }
+        for _ in 0..4 {
+            w.advance(60_000);
+            w.run();
+        }
+        let r = da.roster(k);
+        assert_eq!(r, db.roster(k), "order {order}");
+        assert!(da.links(g).is_empty() && db.links(g).is_empty(), "order {order}");
+        assert!(!r.contains_key(&bob.me()), "order {order}");
+        if order == 2 {
+            assert!(r.contains_key(&carol.me()));
+            let after = item(&da, g, g, "after");
+            w.run();
+            assert_eq!(x(&carol, after), Some(s("after")));
+            assert_eq!(x(&bob, after), None);
+        }
+    }
+}
+
+// spec/permissions.md §9: every device of the person lists its links, a restored one too, to a
+// thing without a label of its own before the link as well, and revokes them
+#[test]
+fn links_listed_on_every_device_and_after_restore_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (da, card) = w.person(1, &[host]);
+    let g = group(&da);
+    let t = item(&da, da.me(), da.home(), "plain");
+    let db = pair_device(&mut w, &da, 4);
+    da.make_link(g, Role::Read, Default::default()).unwrap();
+    da.make_link(t, Role::Read, Default::default()).unwrap();
+    da.make_link(t, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
+    w.run();
+    assert_eq!(db.all_links().len(), 3);
+    let cfg = w.cfg(5, &[host]);
+    let re = w.until(Osis::restore(cfg, &card), 1000, 30).unwrap();
+    for _ in 0..3 {
+        w.advance(60_000);
+        w.run();
+    }
+    assert_eq!(re.all_links().len(), 3);
+    let id = re.links(t).iter().find(|l| !l.single_use).unwrap().id;
+    w.until(re.revoke_link(id, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    assert_eq!(da.all_links().len(), 2);
+    assert_eq!(db.all_links().len(), 2);
+}
