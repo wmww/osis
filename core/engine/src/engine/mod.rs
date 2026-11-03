@@ -1833,12 +1833,16 @@ pub struct Engine {
     pub(crate) cfg: Config,
 }
 
-/// A new session of node `node` for this open's writes (spec/crdt.md §2.1): a random nonce,
-/// so no two opens of one store (a restored copy, two live copies) share a source.
-fn session(node: Tid, rng: &mut dyn CryptoRngCore) -> osis_crdt::Session {
+/// This open's two sessions of node `node` (spec/crdt.md §2.1): the plain writes' under a random
+/// nonce, so no two opens of one store (a restored copy, two live copies) share a source, and
+/// the expiring writes' under that nonce with its first bit flipped (distinct from it, and
+/// across opens as it is; drawing a second nonce would move every later draw).
+fn sessions(node: Tid, rng: &mut dyn CryptoRngCore) -> (osis_crdt::Session, osis_crdt::Session) {
     let mut nonce = [0u8; osis_crdt::SESSION_NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    osis_crdt::Session { node, nonce }
+    let mut expiring = nonce;
+    expiring[0] ^= 0x80;
+    (osis_crdt::Session { node, nonce }, osis_crdt::Session { node, nonce: expiring })
 }
 
 impl Engine {
@@ -1850,7 +1854,7 @@ impl Engine {
         rng.fill_bytes(&mut seed);
         let store_rng = SeededRng::from_seed(seed);
         let id = Identity::generate(&mut *rng);
-        let (session, expiring) = (session(id.tid(), &mut *rng), session(id.tid(), &mut *rng));
+        let (session, expiring) = sessions(id.tid(), &mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
         let seed_bytes = e.core.id.seed().expose().to_vec();
         // a new store: its (empty) persisted index is current
@@ -1874,7 +1878,7 @@ impl Engine {
         };
         let s: [u8; 32] = s.as_slice().try_into().map_err(|_| Error::Corrupt("seed"))?;
         let id = Identity::from_seed(osis_crypto::Secret32::from_bytes(s));
-        let (session, expiring) = (session(id.tid(), &mut *rng), session(id.tid(), &mut *rng));
+        let (session, expiring) = sessions(id.tid(), &mut *rng);
         let mut e = Engine { store, store_rng, rng, core: Core::new(id, clock.clone(), session, expiring), eph: crate::ephemeral::Eph::default(), clock, cfg };
         e.reload()?;
         e.reexamine()?;

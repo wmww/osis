@@ -323,10 +323,18 @@ impl Engine {
                 None
             };
             let mut memory = Vec::new();
-            // things created first: a commit placing one carries its record only once it is
-            // known (`memory_records`)
+            // things created first, owners before what they own (a thing's commit is judged
+            // and carries records by its chain as known then), then the rest
+            let depth = |t: &Tid| {
+                let (mut d, mut cur) = (0usize, *t);
+                while let Some(o) = fresh.get(&cur).and_then(CreationRecord::owner).filter(|o| fresh.contains_key(o)) {
+                    d += 1;
+                    cur = o;
+                }
+                d
+            };
             let mut batches: Vec<Mutation> = batches.into_values().collect();
-            batches.sort_by_key(|x| x.creates.is_empty());
+            batches.sort_by_key(|x| x.creates.keys().next().map_or((1, 0), |t| (0, depth(t))));
             for x in batches {
                 // a delta past what one unpaged delta may hold is refused (spec/commits.md §2)
                 let c = tx.in_class(true, |tx| commit_in(tx, x)).map_err(|e| match e {
