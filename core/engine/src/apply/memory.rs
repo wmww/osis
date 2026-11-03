@@ -273,7 +273,8 @@ impl Engine {
     /// the old entries does not stop it) and, stamped after every held snapshot, nothing held
     /// covers it away here. The lane also reconciles the aspects' labels for the rest.
     pub fn take_memory_invalidated(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
-        let out = std::mem::take(&mut self.core.memory.invalidated);
+        // taken only once every snapshot is written: an error leaves them for the next step
+        let out = self.core.memory.invalidated.clone();
         for (tid, ak) in &out {
             let holds_valid = self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
                 self.core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.aspect(tid, ak).is_some_and(|ai| m.holds(ai) && m.valid_at(ai)))
@@ -287,6 +288,7 @@ impl Engine {
                 Err(e) => return Err(e),
             }
         }
+        self.core.memory.invalidated.retain(|x| !out.contains(x));
         Ok(out)
     }
 
