@@ -1,0 +1,193 @@
+//! What the API, tests and the simulator read of the engine.
+
+use super::*;
+
+impl SyncEngine {
+    /// Where each synced label stands (the API's status): per label, its group, its hosts,
+    /// how many connections are up and have it open, whether every one of those finished a pass
+    /// with nothing outstanding, whether any could not open it (stranded), and when it last
+    /// synced (raw wall ms).
+    pub fn label_status(&mut self) -> Vec<LabelStatus> {
+        let mut out = Vec::new();
+        let now = self.raw_now();
+        for (g, l) in self.labels() {
+            let leaving = self.leaving().any(|a| *a == self.engine.group_actor(&g));
+            let mut st = LabelStatus { group: g, label: l.id, hosts: l.hosts.len(), connected: 0, open: 0, idle: 0, stranded: false, refused: false, not_admitted: Vec::new(), leaving, last_sync: None, replaced: l.replaced };
+            for c in self.conns.values().filter(|c| l.hosts.iter().any(|a| a.key == c.host)) {
+                if c.up {
+                    st.connected += 1;
+                }
+                if c.req.refusals.get(&l.id).is_some_and(|(_, code)| *code == Code::NOT_ADMITTED)
+                    && let Some(a) = l.hosts.iter().find(|a| a.key == c.host)
+                {
+                    st.not_admitted.push(a.clone());
+                }
+                let Some(x) = c.labels.get(&l.id) else { continue };
+                match x.phase {
+                    Phase::Failed => st.stranded = true,
+                    Phase::Refused { .. } => st.refused = true,
+                    Phase::Open => {
+                        st.open += 1;
+                        if x.idle() && c.session.outstanding() == 0 {
+                            st.idle += 1;
+                        }
+                        if x.synced {
+                            // live on an open subscription: as of now, passes or not
+                            let live = self.cfg.subscribe && c.up && x.idle();
+                            st.last_sync = st.last_sync.max(Some(if live { now } else { x.last_sync }));
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            out.push(st);
+        }
+        out
+    }
+
+    /// Whether a hint names a label of `t` not read yet (an inbox blob or a link's: `vet_inbox_hints`).
+    pub fn hinted(&self, t: &Tid) -> bool {
+        self.state.hints.values().any(|h| h.thing == *t)
+    }
+
+    /// Hosts with a connection up.
+    pub fn connected(&self) -> usize {
+        self.conns.values().filter(|c| c.up).count()
+    }
+
+    /// Inbox blobs (grants, notices) not yet sent or not yet answered by a host (the outbox
+    /// and the delivery records are stored and restored at open).
+    pub fn deliveries_pending(&self) -> usize {
+        self.outbox.len() + self.state.sent_inbox.values().filter(|s| s.at == 0).count()
+    }
+
+    /// What each pending delivery (`deliveries_pending`) is about, for `wait_synced`'s scope:
+    /// an inbox delivery's things (a grant's target), a non-writer's deposit its label's group;
+    /// empty when none is known (an inbox blob outside a delivery record).
+    pub fn pending_about(&mut self) -> Vec<Vec<Tid>> {
+        let unsent = self.state.sent_inbox.values().filter(|s| s.at == 0).map(|s| s.things.clone());
+        let mut out: Vec<Vec<Tid>> = unsent.collect();
+        let queued: Vec<(LabelId, Option<(Tid, osis_base::CommitId)>)> = self.outbox.keys().map(|k| (k.1, self.state.outbox.get(k).and_then(|o| o.delivery))).collect();
+        for (l, d) in queued {
+            out.push(match d {
+                Some(k) => self.state.sent_inbox.get(&k).map(|s| s.things.clone()).unwrap_or_default(),
+                None => self.group_of(&l).into_iter().collect(),
+            });
+        }
+        out
+    }
+
+    /// A digest of this node's sync state (simulator determinism checks): entries with their
+    /// wraps, stamps and kinds, presence, deposits, tombstones, timed deletes, certificates,
+    /// carriers, blob records, and which of the blobs they name the store holds.
+    pub fn state_digest(&mut self) -> [u8; 32] {
+        let s = &self.state;
+        let mut h = osis_base::hash::Hasher::new();
+        for ((l, b), e) in &s.entries {
+            h.update(format!("e{l:?}{b:?}{:?}{:?}{}{:?}", e.wrap, e.stamp.map(|x| x.0), e.cert, e.kind).as_bytes());
+        }
+        for x in &s.gone {
+            h.update(format!("g{x:?}").as_bytes());
+        }
+        let sets = [("p", &s.present), ("d", &s.deposited), ("t", &s.timed)];
+        for (k, set) in sets {
+            for x in set {
+                h.update(format!("{k}{x:?}").as_bytes());
+            }
+        }
+        for x in &s.certs {
+            h.update(format!("k{x:?}").as_bytes());
+        }
+        for x in &s.carriers {
+            h.update(format!("s{x:?}").as_bytes());
+        }
+        for (id, r) in &s.blobs {
+            h.update(format!("b{id:?}{:?}{:?}{}", r.commit, r.parts, r.cert).as_bytes());
+        }
+        let ids: BTreeSet<osis_base::BlobId> = s.entries.keys().map(|(_, b)| *b).chain(s.blobs.keys().copied()).collect();
+        for b in ids {
+            let held = self.engine.has_blob(&b);
+            h.update(format!("h{b:?}{held}").as_bytes());
+        }
+        h.finalize()
+    }
+
+    /// What passes did so far (scale checks).
+    pub fn pass_stats(&self) -> PassStats {
+        PassStats { examined: self.engine.examined(), ..self.stats }
+    }
+
+    /// The most any label's work set holds waiting for its pass (`SyncConfig::work_max`).
+    pub fn work_waiting(&self) -> usize {
+        self.conns.values().flat_map(|c| c.labels.values().map(|l| &l.work)).chain(self.local_work.iter().map(|x| x.1)).map(work::Work::waiting).max().unwrap_or(0)
+    }
+
+    /// Whether every open label on every connection has completed a pass and nothing is
+    /// outstanding (tests, simulator quiescence).
+    pub fn is_idle(&self) -> bool {
+        self.conns.values().all(|c| c.session.outstanding() == 0 && c.labels.values().all(|l| l.receipts || l.phase != Phase::Open || l.idle()))
+    }
+
+    /// A one-line summary of each label on each connection (tests, diagnostics).
+    pub fn describe(&self) -> Vec<String> {
+        let mut v = Vec::new();
+        for (id, c) in &self.conns {
+            for (l, x) in &c.labels {
+                v.push(format!(
+                    "conn {id} {l:?}: {:?} synced {} syncing {} dirty {} registering {} writer {} reader {} outstanding {} head {:?}",
+                    x.phase,
+                    x.synced,
+                    x.syncing,
+                    x.dirty,
+                    x.registering.is_some(),
+                    x.keys.is_writer(),
+                    x.keys.epochs[0].is_some(),
+                    c.session.outstanding(),
+                    x.head.as_ref().map(|h| h.id().0[0])
+                ));
+            }
+        }
+        v
+    }
+
+    /// Diagnostics since the last call (tests).
+    pub fn take_diagnostics(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Whether a stranded heartbeat went under a label (tests).
+    pub fn stranded_at(&self, l: &LabelId) -> bool {
+        self.state.stranded.contains_key(l)
+    }
+
+    /// Entries this node knows under a label (tests).
+    pub fn entries(&self, l: &LabelId) -> Vec<(osis_base::BlobId, EntryKind)> {
+        self.state.label_entries(l).map(|(b, e)| (b, e.kind.clone())).collect()
+    }
+
+    /// The wrap and stamp this node keeps for an entry (tests).
+    #[doc(hidden)]
+    pub fn entry_meta(&self, l: &LabelId, b: &osis_base::BlobId) -> Option<([u8; osis_crypto::WRAP_LEN], Option<osis_crypto::Signature>)> {
+        self.state.entries.get(&(*l, *b)).map(|e| (e.wrap, e.stamp))
+    }
+
+    /// Sync records stored under `y/<tag>` (tests: growth after a lifecycle).
+    #[doc(hidden)]
+    pub fn sync_rows(&mut self, tag: u8) -> usize {
+        let _ = self.state.flush(&mut self.engine);
+        let mut n = 0;
+        let _ = self.engine.run(|tx| {
+            tx.scan(&[b'y', b'/', tag], |_, _| {
+                n += 1;
+                Ok(())
+            })
+        });
+        n
+    }
+
+    /// Whether this node still holds a commit blob's key or ciphertext (tests: a dropped body
+    /// leaves neither).
+    pub fn holds_blob(&mut self, b: &osis_base::BlobId) -> bool {
+        self.state.blobs.contains_key(b) || self.engine.has_blob(b)
+    }
+}
