@@ -1139,10 +1139,11 @@ struct Oracle {
     /// role commit, a creation, or one not played): a recompute plays those at the
     /// snapshot, not at their own `ts`, so the oracle does not judge them.
     carried: BTreeSet<(Tid, Ak)>,
-    /// Aspects of the commits the oracle took beyond the node's: a write only it holds may die
-    /// later than any the node knows, under a stamp a held snapshot shares (a creation's), so a
-    /// snapshot's last death there is not judged (nodes holding other commits date otherwise).
-    took: BTreeSet<(Tid, Ak)>,
+    /// On aspects of the commits the oracle took beyond the node's, its deaths of held snapshots
+    /// before it took them: a write only it holds may die later than any the node knows, under a
+    /// stamp a held snapshot shares (a creation's), so a snapshot's last death there is judged
+    /// against what the node's own held set gives.
+    took: Deaths,
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
@@ -1174,7 +1175,12 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     // those aspects either (a node holds no superseder it could date a death at)
     let mut carried: BTreeSet<(Tid, Ak)> = BTreeSet::new();
     let mut took = Vec::new();
+    let mut before = Deaths::new();
     if !want.is_empty() {
+        for (t, a) in &aspects {
+            p.engine.replay_deaths(t, a).unwrap();
+        }
+        before = deaths_of(&mut p.engine);
         let whole = deliver(played, &(0..played.packs.len()).collect::<Vec<_>>());
         for (i, pk) in played.packs.iter().enumerate() {
             let Some(h) = whole.engine.header(&pk.id) else { continue };
@@ -1186,12 +1192,13 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
         }
     }
     carried.extend(took.iter().flat_map(|(c, h)| h.aspects.iter().filter(|a| p.engine.body_valid(c, &a.tid, &a.ak) == Some(false)).map(|a| (a.tid, a.ak.clone()))));
-    let took: BTreeSet<(Tid, Ak)> = took.iter().flat_map(|(_, h)| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+    let took_on: BTreeSet<(Tid, Ak)> = took.iter().flat_map(|(_, h)| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
+    before.retain(|(c, t, a), _| took_on.contains(&(*t, a.clone())) && p.engine.header(c).is_some_and(|h| !h.kind.has_own_writes()));
     carried.extend(aspects.iter().filter(|(t, a)| !p.engine.carried_dots(t, a).is_empty()).cloned());
     for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }
-    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried, took }
+    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried, took: before }
 }
 
 /// Whether node `p` dates deaths as spec/commits.md §5 allows against the oracle `o` (`None`),
@@ -1231,7 +1238,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 let ok = match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
-                    (x, Some(y), true) => x.is_some_and(|x| x.1 >= y.1) || o.took.contains(&(a.tid, a.ak.clone())),
+                    (x, Some(y), true) => o.took.get(&k).map_or(Some(y), |b| *b).is_none_or(|y| x.is_some_and(|x| x.1 >= y.1)),
                     _ => false,
                 };
                 if !ok {
