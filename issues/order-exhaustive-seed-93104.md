@@ -3,3 +3,5 @@
 > Tags: tests, engine, order
 
 Shrunk history: `Aim(Typed { by: 0, t: 1, op: 26, k: 0, v: 7 }), Aim(Undo { by: 0, back: 1 }), Aim(Demote { by: 0, t: 1, holder: 1, at: 3, to_read: false }), Aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 6 })` with `Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: true, threads: 1, sync: true }`.
+
+Same shape at seed 9416002 (order-tidy review, order #3 `[0..8, 12, 11, 10, 9]`, no clock): `Aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 5 }), Aim(Undo { by: 0, back: 0 }), Aim(Demote { by: 0, t: 1, holder: 2, at: 2, to_read: false }), Aim(Typed { by: 2, t: 1, op: 26, k: 0, v: 8 })`, death missing at ts 6.
