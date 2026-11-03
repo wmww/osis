@@ -3286,10 +3286,19 @@ fn stripped_while_waiting_purge_falls_seed_890044() {
 }
 
 // spec/commits.md §4: a roster snapshot's `tenures.0` part arriving before its `roles.0` part does
-// not show who stays, so it counts no removed author's delta as held yet (seed 3050, no purge needed).
+// not show who stays, so it counts no removed author's delta as held yet (seed 3050, no purge
+// needed). Tier 1 tries only the orders that fail without it (the whole set, reversed with late
+// parts; no shuffles, partial sets or clock); the tier-2 twin all of LARGE.
 #[test]
 fn partial_roster_snapshot_removes_nobody_seed_3050() {
-    run("partial_roster_snapshot_removes_nobody_seed_3050", 3050..3051, 60, LARGE, purge_history);
+    let cfg = Cfg { random: 0, subsets: 0, clock: 0, sync: true, ..LARGE };
+    check(3050, &purge_history(3050, 60, cfg), cfg).unwrap();
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn partial_roster_snapshot_removes_nobody_seed_3050_large() {
+    run("partial_roster_snapshot_removes_nobody_seed_3050_large", 3050..3051, 60, LARGE, purge_history);
 }
 
 #[test]
