@@ -997,9 +997,9 @@ fn reseals_stay_in_the_budget_spec_sync_3() {
     assert_eq!(budget_left(&mut net, host, &home), left - 6, "not stamped");
 }
 
-// spec/sync.md §3: an inbox blob done with comes back when its thing gets a new `label.0`: the copy under home gains it
+// spec/sync.md §3: a copied grant's thing gets a new `label.0`: the copy under home gains it
 #[test]
-fn done_inbox_blob_wakes_on_a_new_label_spec_sync_3() {
+fn copied_grant_gains_a_new_label_spec_sync_3() {
     let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
     grant(&mut net, a, g, bob);
     for _ in 0..4 {
@@ -1018,4 +1018,61 @@ fn done_inbox_blob_wakes_on_a_new_label_spec_sync_3() {
     let next = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
     assert_ne!(first, next);
     assert!(copies(&mut net, &next), "the new label's copy under home");
+}
+
+// spec/sync.md §3: a blob expiring later than an honest sender's could is not stamped, its expiry being the sender's word; another blob of the commit is
+#[test]
+fn far_expiry_stays_in_the_budget_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    net.set_online(a, false);
+    let c = grant_commit(&mut net, a, g, bob);
+    let exp = net.now() + 2 * INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    let far = plant_inbox(&mut net, a, (host, &home), bob, &c, Vec::new(), exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(b).core.ix.commits.contains_key(&c) && !net.engine(b).core.ix.pending.contains_key(&c), "applied");
+    assert!(net.sync(b).entry_meta(&home, &far).unwrap().1.is_none());
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    let near = plant_inbox(&mut net, a, (host, &home), bob, &c, vec![osis_label::InboxThing { tid: g, label: None, delete_keys: None }], exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b).entry_meta(&home, &near).unwrap().1.is_some());
+}
+
+// spec/sync.md §3: a blob of the commit without the parts about the actor takes no stamp, and leaves it to the one with them
+#[test]
+fn partless_blob_takes_no_stamp_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    net.set_online(a, false);
+    let c = grant_commit(&mut net, a, g, bob);
+    let bytes = net.engine(a).commit_bytes(&c).unwrap().unwrap();
+    let mut bare = osis_commit::CommitBlob::decode(&bytes).unwrap();
+    bare.parts.clear();
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
+    net.set_online(b, false);
+    let bares: Vec<_> = (0..4).map(|i| plant_bytes(&mut net, a, (host, &home), bob, &bare.encode(), t(i), exp)).collect();
+    let whole = plant_inbox(&mut net, a, (host, &home), bob, &c, Vec::new(), exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b).entry_meta(&home, &whole).unwrap().1.is_some());
+    for x in bares {
+        assert!(net.sync(b).entry_meta(&home, &x).unwrap().1.is_none());
+    }
 }
