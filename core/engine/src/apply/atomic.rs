@@ -492,7 +492,8 @@ impl Unmerge {
         self.owned.owns(d)
     }
     /// Whether a held valid snapshot holds a write in the record of dot `d` and key `key`: of
-    /// a keyed map entry, its creation's copy under that key; else any write under `d`.
+    /// a keyed map entry, its creation's copy under that key or the record itself (its
+    /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
     fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
         match key {
             Some(k) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
