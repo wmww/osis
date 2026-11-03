@@ -202,7 +202,8 @@ impl Osis {
         let shown = |e: &osis_node::Engine, t: &Tid| acting.is_none_or(|a| e.readable_by(&a, t));
         let things = |keep: &dyn Fn(&osis_node::Engine, &Tid) -> bool| -> Result<Vec<(Tid, Ak)>> {
             self.engine(|e| {
-                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, _)| keep(e, t) && shown(e, t)).collect();
+                // an ephemeral aspect of a durable thing (a cursor) is in scope only when named
+                let mut out: Vec<(Tid, Ak)> = e.all_aspects()?.into_iter().filter(|(t, a)| a.lifetime() == crate::Lifetime::Durable && keep(e, t) && shown(e, t)).collect();
                 out.extend(e.ephemeral_scope_keys().into_iter().filter(|(t, _)| keep(e, t) && shown(e, t)));
                 Ok::<_, osis_node::Error>(out)
             })

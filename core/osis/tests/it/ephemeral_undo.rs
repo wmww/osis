@@ -29,8 +29,7 @@ fn undo_redo_ephemeral_thing_spec_crdt_4_6() {
     db.write_with(|w| w.at(t, k.clone()).set(&Value::Int(2))).unwrap();
     let scope = Scope::Thing(t);
     let get = || db.get(t, k.clone()).unwrap();
-    let all = db.commits(&CommitQuery::new().scope(scope.clone())).unwrap();
-    assert_eq!(all.len(), 3, "the creation and two writes");
+    let all = db.commits(&CommitQuery::new().scope(scope.clone())).unwrap();    assert_eq!(all.len(), 3, "the creation and two writes");
     assert!(all.iter().all(|e| e.kind == CommitKind::Ephemeral && e.in_effect && matches!(e.commit.id, ChangeId::Ephemeral(_))));
     let u = db.undo(&scope).unwrap().unwrap();
     assert!(matches!(u.id, ChangeId::Ephemeral(_)));

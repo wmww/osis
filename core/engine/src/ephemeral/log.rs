@@ -309,7 +309,7 @@ impl Engine {
         if commit.is_none() && memory.is_empty() && making.is_empty() {
             return Ok(Reverted::Superseded);
         }
-        let w = self.finish_batch((commit, memory, logged), Vec::new(), making, &BTreeSet::new(), ts, actor, Some(id));
+        let w = self.finish_batch((commit, memory, logged), Vec::new(), making, &BTreeSet::new(), Vec::new(), ts, actor, Some(id));
         Ok(w.map_or(Reverted::Superseded, Reverted::Written))
     }
 
@@ -322,7 +322,14 @@ impl Engine {
         if let Some(e) = core.write_expiry(tid, ak, d) {
             return e;
         }
-        matches!(d.src.author().kind(), osis_crdt::SourceKind::Session(_)).then_some(0)
+        // no commit holds the write: one of this session's plain writes never expires (its
+        // commit was covered by a snapshot, or reverted); any other session write whose commit
+        // is gone expired or was superseded (spec/crdt.md §4.7)
+        match d.src.author().kind() {
+            osis_crdt::SourceKind::Session(s) if s.nonce == core.session.nonce => None,
+            osis_crdt::SourceKind::Session(_) => Some(0),
+            _ => None,
+        }
     }
 }
 
@@ -352,8 +359,7 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
             if !expiring || src == &own[1] {
                 break;
             }
-        }
-        if let Some((delta, r, expires)) = result {
+        }        if let Some((delta, r, expires)) = result {
             out.push(Inverse { tid: la.tid, ak: la.ak, fragment: delta, range: r, expires, schema: la.schema });
         }
     }

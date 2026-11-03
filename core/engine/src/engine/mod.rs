@@ -596,6 +596,9 @@ pub struct MemorySync {
     pub reasons: BTreeMap<CommitId, MemoryDrop>,
     /// Memory-class things' creations (`MemoryThing`), by tid.
     pub things: BTreeMap<Tid, MemoryThing>,
+    /// Things of memory commits forgotten since the last sweep: a received one no commit is on
+    /// any more is freed (`Engine::free_unused_memory`), so records do not pile up.
+    pub unused: BTreeSet<Tid>,
     marks: (usize, usize, usize),
 }
 
@@ -1592,8 +1595,20 @@ impl Tx<'_> {
         } else {
             self.txn.remove_local(&records::aspect_key(records::ASPECTS, tid, ak), Shred::No)?;
         }
+        self.placed_from(tid, ak, f.as_ref());
         self.core.states.insert((*tid, ak.clone()), f);
         Ok(())
+    }
+
+    /// Keeps `Indexes::placed` (the ephemeral placements, read with `group.0`) at the state
+    /// of a group's `placed.0~`, whatever wrote it.
+    fn placed_from(&mut self, tid: &Tid, ak: &Ak, f: Option<&Fragment>) {
+        if ak.as_str() == "placed.0~" {
+            match f.and_then(crate::ephemeral::def_of) {
+                Some(d) => self.core.ix.placed.insert(*tid, d),
+                None => self.core.ix.placed.remove(tid),
+            };
+        }
     }
 
     /// Writes a state a join changed: `touch` (`pages::touch_of` the delta) says what it
@@ -1611,6 +1626,7 @@ impl Tx<'_> {
                 unit.state = s;
                 self.txn.put_aspect(tid, ak, &unit, shred)?;
             }
+            self.placed_from(tid, ak, f.as_ref());
             self.core.states.insert(k, f);
             return Ok(());
         }

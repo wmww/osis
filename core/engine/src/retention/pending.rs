@@ -75,8 +75,10 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     for p in blob.parts.iter_mut().filter(|p| p.ai == ai && p.delta != emptied()) {
         let mut interner = osis_crdt::Interner::new();
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
-        let mut reader = osis_label::BlobReader::new(&dedup, &mut blobs);
-        let Ok(Decoded::Delta(mut d)) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(&mut reader)) else { continue };
+        let mut paged = osis_label::BlobReader::new(&dedup, &mut blobs);
+        let mut unpaged = osis_crdt::Unpaged;
+        let reader: &mut dyn osis_crdt::PageSource = if h.ephemeral.is_some() { &mut unpaged } else { &mut paged };
+        let Ok(Decoded::Delta(mut d)) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(reader)) else { continue };
         d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
         let v = [&d.nonce[..], &crate::engine::state::encode(&d.fragment)?].concat();
         tx.txn.put_local(&records::stripped_key(id, ai, p.di), &v, Shred::No)?;

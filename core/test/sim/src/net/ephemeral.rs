@@ -457,8 +457,8 @@ impl NetSim {
         let mut out = Vec::new();
         for n in ns {
             let Some(e) = self.nodes.get(*n).and_then(|x| x.sync.as_ref()).map(|s| s.engine()) else { continue };
-            for (id, bytes, own) in e.held_ephemeral() {
-                let Some(h) = e.ephemeral_header(&id) else { continue };
+            for (id, bytes, own) in e.memory_commits() {
+                let Some(h) = e.header(&id) else { continue };
                 let aks: Vec<&str> = h.aspects.iter().filter(|a| a.tid == *t).map(|a| a.ak.as_str()).collect();
                 if aks.is_empty() {
                     continue;
@@ -518,12 +518,12 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
     for l in lines {
         sim.note(l);
     }
-    // the author's own compaction keeps its own commits within twice their cover
+    // compaction keeps the bodies held of an aspect within `FACTOR` times its snapshot
     let ups: Vec<usize> = (0..sim.nodes.len()).filter(|n| sim.is_up(*n)).collect();
     for n in ups {
-        for (actor, held, cover, largest) in sim.engine(n)?.own_ephemeral_load() {
-            if held > osis_node::ephemeral::COVER_FACTOR * cover + largest {
-                return Err(sim.fail(format!("node {n} holds {held} B of own ephemeral commits for {actor}, more than `COVER_FACTOR` times their {cover} B cover and one {largest} B commit")));
+        for x in sim.engine(n)?.memory_load().map_err(|e| sim.fail(e.to_string()))? {
+            if x.held > osis_node::ephemeral::FACTOR * x.snapshot + x.largest {
+                return Err(sim.fail(format!("node {n} holds {} B of {} on {}, more than `FACTOR` times its {} B snapshot and one {} B commit", x.held, x.ak, x.tid, x.snapshot, x.largest)));
             }
         }
     }
@@ -561,7 +561,7 @@ pub fn check(sim: &mut NetSim) -> Res<()> {
         let mut by: BTreeMap<BTreeSet<osis_base::CommitId>, Vec<usize>> = BTreeMap::new();
         for n in hs {
             let e = sim.engine(*n)?;
-            let held: BTreeSet<osis_base::CommitId> = e.held_ephemeral().into_iter().map(|x| x.0).collect();
+            let held: BTreeSet<osis_base::CommitId> = e.memory_commits().into_iter().map(|x| x.0).collect();
             by.entry(held).or_default().push(*n);
         }
         for same in by.into_values().filter(|x| x.len() > 1) {

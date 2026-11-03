@@ -134,6 +134,22 @@ impl Engine {
         self.core.ix.pending.contains_key(id)
     }
 
+    /// Drops pending memory commit `id` (the lane has no room to keep it waiting, spec/sync.md
+    /// §9 Caps): it comes again when the label is reconciled.
+    pub fn forget_pending_memory(&mut self, id: &CommitId) -> Result<()> {
+        if !self.memory_pending(id) {
+            return Ok(());
+        }
+        let id = *id;
+        self.run(|tx| {
+            tx.set_memory();
+            tx.txn.remove_pending(&id, osis_store::Shred::No)?;
+            tx.core.ix.pending.remove(&id);
+            tx.core.waits.unpended(&id);
+            Ok(())
+        })
+    }
+
     /// The blob of held memory commit `id` (header and the parts held), for the lane to place.
     pub fn memory_blob(&mut self, id: &CommitId) -> Result<Option<CommitBlob>> {
         if !self.holds_memory(id) {
@@ -146,20 +162,11 @@ impl Engine {
         })
     }
 
-    /// Held memory commits: id, the encoded bytes of their held parts, whether this node
-    /// authored it (tests, diagnostics).
-    pub fn memory_commits(&mut self) -> Vec<(CommitId, usize, bool)> {
+    /// Held memory commits: id, how many of its parts are held, whether this node authored it
+    /// (tests, diagnostics).
+    pub fn memory_commits(&self) -> Vec<(CommitId, usize, bool)> {
         let me = self.tid();
-        let ids: Vec<(CommitId, Tid)> = self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, m.view.author)).collect();
-        let mut out = Vec::new();
-        for (id, author) in ids {
-            let bytes = self.run(|tx| {
-                tx.set_memory();
-                Ok(tx.get_commit(&id)?.map_or(0, |b| b.parts.iter().map(|p| p.delta.len()).sum()))
-            }).unwrap_or(0);
-            out.push((id, bytes, author == me));
-        }
-        out
+        self.core.ix.commits.iter().filter(|(_, m)| m.view.memory).map(|(id, m)| (*id, (0..m.view.aspects.len()).filter(|ai| m.holds(*ai)).count(), m.view.author == me)).collect()
     }
 
     /// Own memory commits applied since the last take that are not held back, for the lane to
@@ -180,22 +187,27 @@ impl Engine {
                 out.push(c);
             }
         }
-        // per aspect, the unsent plain own writes: two or more coalesce
-        let mut by_aspect: BTreeMap<(Tid, Ak), Vec<CommitId>> = BTreeMap::new();
+        // per aspect, two or more unsent own commits go as one: plain writes coalesce into a
+        // snapshot of their join; with an own snapshot among them (the trigger fired while the
+        // label was busy) a snapshot of the whole state covers them all
+        let mut by_aspect: BTreeMap<(Tid, Ak), (Vec<CommitId>, bool)> = BTreeMap::new();
         for c in &out {
             let Some(m) = self.core.ix.commits.get(c) else { continue };
             let plain = matches!(m.view.form, Form::Session(n) if n == self.core.session.nonce) && !m.view.kind.is_compaction();
-            if plain {
+            if plain || m.view.kind.is_compaction() {
                 for a in &m.view.aspects {
-                    by_aspect.entry((a.tid, a.ak.clone())).or_default().push(*c);
+                    let e = by_aspect.entry((a.tid, a.ak.clone())).or_default();
+                    e.0.push(*c);
+                    e.1 |= !plain;
                 }
             }
         }
-        for ((tid, ak), ids) in by_aspect {
+        for ((tid, ak), (ids, whole)) in by_aspect {
             if ids.len() < 2 {
                 continue;
             }
-            if let Some(s) = self.coalesce(&tid, &ak, &ids)? {
+            let s = if whole { self.snapshot(&tid, &ak)? } else { self.coalesce(&tid, &ak, &ids)? };
+            if let Some(s) = s {
                 out.push(s);
             }
         }
@@ -209,9 +221,40 @@ impl Engine {
 
     /// Memory commits forgotten since the last take, with why (the lane forgets their entries
     /// and deletes them where it may, `MemoryDrop`). Only commits no longer held are listed.
+    /// Also frees the received memory things their commits were the last on
+    /// (`free_unused_memory`).
     pub fn take_memory_drops(&mut self) -> Vec<(CommitId, MemoryDrop)> {
         let d = std::mem::take(&mut self.core.memory.dropped);
-        d.into_iter().filter(|(c, _)| !self.holds_memory(c)).collect()
+        let d: Vec<_> = d.into_iter().filter(|(c, _)| !self.holds_memory(c)).collect();
+        if let Err(e) = self.free_unused_memory() {
+            let now = self.now();
+            self.core.events.diagnostic(crate::events::Diagnostic { kind: crate::events::DiagnosticKind::EphemeralRefused, tids: Vec::new(), commit: None, peer: None, detail: format!("freeing unused ephemeral records: {e}") }, now);
+        }
+        d
+    }
+
+    /// Frees the memory things received from others (never one this session made: the app's
+    /// own) that no held or pending memory commit is on any more, among those of the commits
+    /// forgotten since the last sweep: a record is no state of its own (every commit about the
+    /// thing carries it again), so dropping it loses nothing and received things do not pile up
+    /// (notes/ephemeral.md Records go with their commit's other parts).
+    pub fn free_unused_memory(&mut self) -> Result<()> {
+        let cands = std::mem::take(&mut self.core.memory.unused);
+        let mut free = BTreeSet::new();
+        for t in cands {
+            let made_here = self.core.memory.things.get(&t).is_some_and(|m| m.made_here);
+            let used = self.core.ix.by_thing.get(&t).is_some_and(|s| !s.is_empty()) || self.core.ix.held.owned(&t).next().is_some();
+            if self.core.ix.held.is_memory(&t) && !made_here && !used {
+                free.insert(t);
+            }
+        }
+        if free.is_empty() {
+            return Ok(());
+        }
+        self.run(|tx| {
+            tx.set_memory();
+            crate::apply::free::free(tx, &free)
+        })
     }
 
     /// Memory commits applied here since the last take, any origin (the lane promotes the
@@ -249,7 +292,7 @@ impl Engine {
             let Some(snapshot) = self.snapshot_cost(&tid, &ak)? else { continue };
             self.core.memory.weighed.insert((tid, ak.clone()), snapshot);
             let _ = largest;
-            if bodies < 2 || (!force && held <= FACTOR * snapshot) {
+            if bodies == 0 || (!force && (bodies < 2 || held <= FACTOR * snapshot)) {
                 continue;
             }
             // a node that may not write the aspect leaves compaction to one that may
@@ -267,8 +310,10 @@ impl Engine {
         self.core.ix.by_aspect.iter().filter(|(_, s)| s.iter().any(|(_, c)| self.holds_memory(c))).map(|(k, _)| k.clone()).collect()
     }
 
-    /// What the bodies held of memory aspect `(tid, ak)` cost (not expiring ones: a snapshot
-    /// covers none): (their sum, the costliest, how many).
+    /// What the write bodies held of memory aspect `(tid, ak)` cost (not expiring ones: a
+    /// snapshot covers none; not snapshots: each author keeps its own until its next, so two
+    /// authors' would otherwise make each compact the other's forever): (their sum, the
+    /// costliest, how many).
     fn held_cost(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<(usize, usize, usize)>> {
         let ids: Vec<(CommitId, usize)> = self
             .core
@@ -278,7 +323,7 @@ impl Engine {
             .into_iter()
             .flatten()
             .filter_map(|(_, c)| {
-                let m = self.core.ix.commits.get(c).filter(|m| m.view.memory)?;
+                let m = self.core.ix.commits.get(c).filter(|m| m.view.memory && !m.view.kind.is_compaction())?;
                 let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
                 m.header.aspects.get(ai).filter(|a| a.expires.is_none())?;
                 Some((*c, ai))
@@ -290,16 +335,22 @@ impl Engine {
         let (tid, ak) = (*tid, ak.clone());
         self.run(|tx| {
             tx.set_memory();
+            // only bodies a snapshot built now would cover: one behind an invalid body of its
+            // session (a hole its frontier cannot pass) is held until that body turns valid,
+            // and must not make the trigger fire on every step
+            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && !m.missing.contains(&ai)));
+            let left_out = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).and_then(|ai| m.header.aspects.get(ai)).is_some_and(|a| a.expires.is_some()));
+            let (_, reflected) = crate::retention::frontiers_now(tx, &tid, &ak, true, &valid_on, &left_out);
             let (mut sum, mut largest) = (0usize, 0usize);
-            for (c, ai) in &ids {
+            for (c, ai) in ids.iter().filter(|(c, _)| reflected.contains(c)) {
                 let Some(blob) = tx.get_commit(c)? else { continue };
                 let bytes: usize = blob.parts.iter().filter(|p| p.ai == *ai).map(|p| p.delta.len().saturating_add(records_bytes(p))).sum();
                 let cost = part_weight(bytes).saturating_add(ENTRY_CHARGE);
                 sum = sum.saturating_add(cost);
                 largest = largest.max(cost);
             }
-            let _ = (&tid, &ak);
-            Ok(Some((sum, largest, ids.len())))
+            let bodies = ids.iter().filter(|(c, _)| reflected.contains(c)).count();
+            Ok(Some((sum, largest, bodies)))
         })
     }
 

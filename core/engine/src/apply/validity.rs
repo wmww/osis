@@ -697,7 +697,8 @@ pub(crate) fn note_required_rules(core: &mut Core, h: &Header, id: &CommitId, pa
 /// compaction snapshot's or an aspect of fixed retention's. An ephemeral commit's is judged
 /// elsewhere (`eph_part_valid`) and carries none.
 pub(super) fn under_required(h: &Header, ak: &Ak) -> bool {
-    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none()
+    // a non-durable aspect answers to no rule (spec/commits.md §5)
+    !h.kind.is_compaction() && osis_commit::retention::fixed_retention(ak.as_str()).is_none() && ak.lifetime() == osis_schema::Lifetime::Durable
 }
 
 /// Re-derives the edge writes of commits whose removed keys were unknown.

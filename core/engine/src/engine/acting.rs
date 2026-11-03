@@ -47,7 +47,8 @@ impl Engine {
                 return false;
             }
         }
-        self.entitled(actor, t) || self.copy_readable_by(actor, t)
+        // a memory thing has no kept copy
+        self.entitled(actor, t) || (!self.core.ix.held.is_memory(t) && self.copy_readable_by(actor, t))
     }
 
     /// The permission model's entitlement (spec/sync.md §3); a thing ephemeral here by its owner

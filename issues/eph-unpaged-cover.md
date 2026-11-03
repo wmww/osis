@@ -1,6 +1,6 @@
 # Ephemeral size limits: residuals
-> Summary: Plain ephemeral commits and own covers now split by aspect past inline header lists, and an aspect whose own delta does not fit a blob is held back with further writes refused (notes/ephemeral.md Past inline lists or a blob). Left: two gaps in the write-time check.
+> Summary: Ephemeral deltas never page (`Unpaged`), so a batch whose delta on one aspect does not fit a blob is refused whole (`Misuse`), and a memory compaction snapshot of an aspect whose state does not fit a blob cannot be built: its bodies are never covered and pile up to the caps. Pages on the memory path (eph-unify step C) lift both.
 > Tags: engine, ephemeral
 
-- The refusal check (`check_full`) measures this session's own unexpiring writes of the aspect (all actors), while a cover joins per actor and also carries earlier sessions' held commits: a write can pass the check while the cover still does not fit, so the aspect is flagged again at the next cover and writes keep going in small takes (its held commits grow until caps refuse them). Needs earlier sessions' state past a blob on one aspect.
-- Undo/redo of ephemeral batches (`apply_ephemeral` with `reverts`) skips the check.
+- `Engine::write` maps the build error to `Misuse("an ephemeral delta does not fit a blob")` (test `ephemeral::delta_past_a_blob_refused_spec_commits_2`); an undo whose inverse does not fit fails with the build error.
+- `compaction_snapshot`/`coalesce` of a state past a blob fail at the build; `memory_compactions` reports nothing and weighs the aspect again once its held cost doubles. Writes on it keep going as separate entries until the node and host caps refuse them.

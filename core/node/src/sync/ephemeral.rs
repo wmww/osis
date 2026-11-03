@@ -250,6 +250,10 @@ pub(crate) struct Lane {
     /// Lane uploads (relay-only ones included) and deletes sent and not answered: their
     /// statuses are the lane's, never a sync record's.
     pub uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
+    /// Those of `uploads` of own plain entries, kept while unanswered whether or not the entry
+    /// is still held (one forgotten meanwhile, covered by a snapshot, still holds the label
+    /// busy, `eph_busy`).
+    pub own_uploads: BTreeSet<(ConnId, LabelId, BlobId)>,
     /// Lane deletes in flight with the item sent and the label key that signed it.
     pub deletes: BTreeMap<(ConnId, LabelId, BlobId), (osis_label::DeleteItem, VerifyingKey)>,
     /// Lane deletes to send again (`Redo`).
@@ -568,21 +572,17 @@ impl SyncEngine {
         self.eph.by_commit.get(c).is_some_and(|ks| ks.iter().any(|(l2, b)| l2 == l && self.eph.present.contains(&(s, *l2, *b))))
     }
 
-    /// Whether every cover of `cs` placed under `l` is held at host `s` there: a split cover's
-    /// piece about other things is never placed under `l`. An own cover was placed under every
-    /// label at once (its entries say where); another's, or one not placed yet, counts when
-    /// `l`'s closure (of group `g`) holds a thing of it.
-    fn eph_covers_held_at(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: HostKey) -> bool {
-        self.eph_covers_held_with(cs, g, l, s, None)
+    /// Whether every cover of `cs` is held at host `s` under `l`. One never placed under `l`
+    /// (its thing's placement there not back yet after a restart) keeps the entry it covers at
+    /// the host under `l` until a later cover is placed there (`eph_forget` moves the waiting
+    /// delete to it): a reader of `l` alone would lose the entry otherwise.
+    fn eph_covers_held_at(&self, cs: &BTreeSet<CommitId>, l: &LabelId, s: HostKey) -> bool {
+        self.eph_covers_held_with(cs, l, s, None)
     }
 
     /// `eph_covers_held_at`, counting commit `also` (being uploaded there) as held.
-    fn eph_covers_held_with(&self, cs: &BTreeSet<CommitId>, g: Option<Tid>, l: &LabelId, s: HostKey, also: Option<&CommitId>) -> bool {
-        let outside = |c: &CommitId| match self.eph.by_commit.get(c) {
-            Some(ks) if ks.iter().any(|k| self.eph.entries.get(k).is_some_and(|e| e.own)) => !ks.iter().any(|(l2, _)| l2 == l),
-            _ => g.is_some_and(|g| self.engine.header(c).is_some_and(|h| !h.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid)))),
-        };
-        cs.iter().all(|c| Some(c) == also || self.eph_held_at(c, l, s) || outside(c))
+    fn eph_covers_held_with(&self, cs: &BTreeSet<CommitId>, l: &LabelId, s: HostKey, also: Option<&CommitId>) -> bool {
+        cs.iter().all(|c| Some(c) == also || self.eph_held_at(c, l, s))
     }
 
     /// Sends the waiting deletes whose covers are held at their host now (on a connection
@@ -591,8 +591,7 @@ impl SyncEngine {
         if self.eph.waiting.is_empty() {
             return Ok(());
         }
-        let groups: BTreeMap<LabelId, Tid> = self.labels().into_iter().map(|(g, gl)| (gl.id, g)).collect();
-        let ready: Vec<(LabelId, BlobId, HostKey)> = self.eph.waiting.iter().filter(|((l, _, s), (cs, _))| self.eph_covers_held_at(&self.eph_covers(cs), groups.get(l).copied(), l, *s)).map(|(k, _)| *k).collect();
+        let ready: Vec<(LabelId, BlobId, HostKey)> = self.eph.waiting.iter().filter(|((l, _, s), (cs, _))| self.eph_covers_held_at(&self.eph_covers(cs), l, *s)).map(|(k, _)| *k).collect();
         for (l, b, s) in ready {
             let Some(conn) = self.eph_conn_to(&l, s) else { continue };
             let Some((_, item)) = self.eph.waiting.remove(&(l, b, s)) else { continue };
@@ -613,13 +612,10 @@ impl SyncEngine {
     #[allow(clippy::too_many_arguments)]
     fn eph_delete_after(&mut self, conn: ConnId, s: HostKey, l: LabelId, b: BlobId, item: osis_label::DeleteItem, covers: BTreeSet<CommitId>, out: &mut Vec<Action>) -> Result<()> {
         let cs = self.eph_covers(&covers);
-        if !cs.is_empty() {
-            let g = self.group_of(&l);
-            if !self.eph_covers_held_at(&cs, g, &l, s) {
-                self.eph_trace(&l, &b, None, || format!("delete at host {} waits for {} covers", host6(&s), cs.len()));
-                self.eph.waiting.insert((l, b, s), (cs, item));
-                return Ok(());
-            }
+        if !cs.is_empty() && !self.eph_covers_held_at(&cs, &l, s) {
+            self.eph_trace(&l, &b, None, || format!("delete at host {} waits for {} covers", host6(&s), cs.len()));
+            self.eph.waiting.insert((l, b, s), (cs, item));
+            return Ok(());
         }
         self.eph_delete_now(conn, l, b, item, out)
     }
@@ -675,10 +671,7 @@ impl SyncEngine {
     /// them is busy.
     fn eph_busy(&self) -> BTreeSet<Tid> {
         let mut plain: BTreeMap<LabelId, (Option<Tid>, BTreeSet<ConnId>)> = BTreeMap::new();
-        for (c, l, b) in &self.eph.uploads {
-            if !self.eph.entries.get(&(*l, *b)).is_some_and(|e| e.own) {
-                continue;
-            }
+        for (c, l, _) in &self.eph.own_uploads {
             let p = plain.entry(*l).or_default();
             p.0 = p.0.or_else(|| self.conns.get(c).and_then(|x| x.labels.get(l)).map(|x| x.group));
             p.1.insert(*c);
@@ -905,6 +898,9 @@ impl SyncEngine {
             self.eph_trace(&l, b, None, || format!("upload on conn {conn} ({} replaced)", replaces.len()));
             entries.push(osis_proto::Entry { blob, wrap, stamp, replaces });
             self.eph.uploads.insert((conn, l, *b));
+            if own {
+                self.eph.own_uploads.insert((conn, l, *b));
+            }
             self.eph.restamp.remove(&(conn, l, *b));
         }
         if !entries.is_empty() {
@@ -920,12 +916,11 @@ impl SyncEngine {
     fn eph_replaces(&mut self, conn: ConnId, l: LabelId, b: BlobId, room: &mut usize) -> Vec<osis_label::DeleteItem> {
         let Some(commit) = self.eph.entries.get(&(l, b)).filter(|e| e.own).map(|e| e.commit) else { return Vec::new() };
         let Some(host) = self.conns.get(&conn).map(|c| c.host) else { return Vec::new() };
-        let g = self.group_of(&l);
         let ready: Vec<BlobId> = self
             .eph
             .waiting
             .of_label(l)
-            .filter(|((_, _, s), (cs, _))| *s == host && cs.contains(&commit) && self.eph_covers_held_with(&self.eph_covers(cs), g, &l, host, Some(&commit)))
+            .filter(|((_, _, s), (cs, _))| *s == host && cs.contains(&commit) && self.eph_covers_held_with(&self.eph_covers(cs), &l, host, Some(&commit)))
             .map(|((_, x, _), _)| *x)
             .take(*room)
             .collect();
@@ -1027,6 +1022,7 @@ impl SyncEngine {
         let mut rest = (Vec::new(), Vec::new());
         for (b, code) in ids.into_iter().zip(codes) {
             let lane = self.eph.uploads.remove(&(conn, l, b)) || (self.eph.entries.contains_key(&(l, b)) && !self.state.entries.contains_key(&(l, b)));
+            self.eph.own_uploads.remove(&(conn, l, b));
             if !lane {
                 rest.0.push(b);
                 rest.1.push(code);
@@ -1176,10 +1172,7 @@ impl SyncEngine {
         let waits = bound.max(size);
         let pending_used = self.eph.pending_bytes.get(&l).copied().unwrap_or(0);
         let may_wait = pending_used.saturating_add(waits) <= cap / PENDING_SHARE;
-        // a blob that would wait past the share is not given to the engine at all (it would
-        // keep it pending): the label is reconciled once a waiting entry leaves the share
-        let known = self.engine.holds_memory(&commit) || self.engine.memory_pending(&commit);
-        let ingested = if may_wait || known { self.engine.ingest_memory(&pt, room) } else { Ok(Ingested::Pending(commit, crate::apply::Reason::Parked)) };
+        let ingested = self.engine.ingest_memory(&pt, room);
         self.eph_trace(&l, &b, Some(&commit), || format!("ingested: {ingested:?} (may wait {may_wait}, room {room})"));
         let salt = osis_label::Prefix::parse(&blob).map(|p| *p.salt()).unwrap_or_default();
         let a = h.aspects.get(first);
@@ -1202,7 +1195,10 @@ impl SyncEngine {
                 // not fully checked: kept apart under a share of the cap, neither served nor
                 // spread
                 if !may_wait {
+                    // nor by the engine: the label is reconciled once a waiting entry leaves
+                    // the share
                     self.eph_trace(&l, &b, Some(&commit), || "dropped: waiting share full".into());
+                    self.engine.forget_pending_memory(&commit)?;
                     if self.eph.refused_pending.insert(l) {
                         self.eph_report(&l, "this node's share for unverified ephemeral commits was reached: further ones are not kept");
                     }
@@ -1384,6 +1380,7 @@ impl SyncEngine {
             for (l, b) in keys {
                 let Some(e) = self.eph_unkeep(l, b) else { continue };
                 let dks = self.engine.ephemeral_delete_secrets_for(&e.tid, &e.actor, &e.keys);
+                self.eph_trace(&l, &b, Some(c), || format!("forget: {} delete secrets, present at {:?}", dks.len(), self.eph.present.iter().filter(|(_, pl, pb)| *pl == l && *pb == b).map(|(s, _, _)| host6(s)).collect::<Vec<_>>()));
                 for (conn, host, hk) in self.eph_conns(&l) {
                     self.eph.capped.remove(&(conn, l, b));
                     let present = self.eph.present.remove(&(host, l, b));
@@ -1454,6 +1451,7 @@ impl SyncEngine {
         self.eph.gained.retain(|(c, _), _| *c != conn);
         self.eph.reconciling.retain(|(c, _), _| *c != conn);
         self.eph.uploads.retain(|(c, _, _)| *c != conn);
+        self.eph.own_uploads.retain(|(c, _, _)| *c != conn);
         self.eph.stamped.retain(|(c, _, _), _| *c != conn);
         self.eph.restamp.retain(|(c, _, _), _| *c != conn);
         self.eph.deletes.retain(|(c, _, _), _| *c != conn);

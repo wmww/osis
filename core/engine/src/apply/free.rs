@@ -73,6 +73,8 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
         tx.core.memory.things.remove(t);
+        tx.core.memory.dirty.retain(|(x, _)| x != t);
+        tx.core.memory.weighed.retain(|(x, _), _| x != t);
         tx.core.ix.placed.remove(t);
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
         let residues = tx.txn.memory_local_keys(&[records::RESIDUE, t.as_bytes()].concat());
@@ -117,6 +119,7 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         core.memory.dropped.push((*id, why));
         core.memory.unsent.retain(|c| c != id);
         core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+        core.memory.unused.extend(v.aspects.iter().map(|a| a.tid));
     }
     for a in &v.aspects {
         let k = (a.tid, a.ak.clone());

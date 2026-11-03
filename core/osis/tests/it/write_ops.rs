@@ -200,6 +200,9 @@ fn run(creates: usize, calls: &[Call], batched: bool) -> (World, Vec<Tid>, Optio
 /// Every aspect value, placement and existence of the case's things and groups.
 fn state(wd: &World, things: &[Tid]) -> Vec<String> {
     let db = &wd.db;
+    // created things are named by position: a creation-only batch is a commit (its blind drawn
+    // from the engine's rng), so the tids drawn after one differ between the modes
+    let name = |s: String| things.iter().enumerate().fold(s, |s, (i, t)| s.replace(&t.to_string(), &format!("T{i}")));
     let mut out = Vec::new();
     for t in things.iter().chain(&wd.groups) {
         let mut vals = Vec::new();
@@ -211,7 +214,7 @@ fn state(wd: &World, things: &[Tid]) -> Vec<String> {
             }
             vals.push(format!("{a}={:?}", db.get(*t, a.clone()).unwrap()));
         }
-        out.push(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t), db.get(*t, core::GROUP).unwrap(), db.groups_of(*t), vals.join(" ")));
+        out.push(name(format!("{t} knows={} group={:?} in={:?} {}", db.knows(*t), db.get(*t, core::GROUP).unwrap(), db.groups_of(*t), vals.join(" "))));
     }
     out
 }
@@ -230,7 +233,6 @@ fn batch_equals_single_op_batches() {
         let (creates, calls) = case(seed);
         let (a, ta, id) = run(creates, &calls, true);
         let (b, tb, _) = run(creates, &calls, false);
-        assert_eq!(ta, tb, "seed {seed}: creates draw the same tids");
         assert_eq!(state(&a, &ta), state(&b, &tb), "seed {seed}: {calls:?}");
         // the batched commit's ID: equal before and after a refactor of the write path (run
         // with --nocapture and compare)

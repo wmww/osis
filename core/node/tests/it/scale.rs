@@ -1230,50 +1230,23 @@ fn eph_map_commits(net: &mut crate::net::Net, x: usize, t: Tid, commits: usize, 
             m.op(t, &notes, PathOp { path: vec![PathSeg::Key(Value::Int((c * per + e) as i64))], op: Op::Set(value.clone()) }).unwrap();
         }
         net.engine(x).write(m).unwrap();
-        blobs.extend(net.engine(x).take_ephemeral().unwrap().into_iter().map(|c| c.blob));
+        blobs.extend(take_memory(net, x));
     }
     blobs
 }
 
-// issues/eph-node-cost-bounds.md (CPU), spec/sync.md §9: a writer whose small commits each list
-// one absorbed ID the holder never got; time per arrival as the held set grows (the absorbed
-// lookups scanned every held commit per arrival). Run alone:
-// `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_absorb_lists_cost`.
-#[test]
-#[ignore]
-fn eph_absorb_lists_cost() {
-    let n = size("OSIS_EPH_N", 8000, 400);
-    let (mut net, b, x, t) = eph_net();
-    let cur = crate::common::ak("doc:cursor.0~");
-    let ca = ak("doc:cursor.0~");
-    let t0 = Instant::now();
-    let mut blobs = Vec::with_capacity(n);
-    for k in 0..n {
-        let mut m = Mutation::new();
-        m.set(t, &cur, &Value::Int(k as i64)).unwrap();
-        net.engine(x).write(m).unwrap();
-        let d = net.engine(x).take_ephemeral().unwrap().remove(0);
-        blobs.push(net.engine(x).forge_cover(t, &ca, Value::Int(k as i64), &[d.id]).unwrap().unwrap().blob);
-    }
-    println!("absorb lists: built {n} at the writer in {:?}", t0.elapsed());
-    let step = (n / 8).max(1);
-    let mut lap = Instant::now();
-    let t1 = Instant::now();
-    for (k, bl) in blobs.into_iter().enumerate() {
-        net.engine(b).ingest_ephemeral(bl).unwrap();
-        if (k + 1) % step == 0 {
-            println!("absorb lists: held {:>6}: {:>8.1} us per arrival", k + 1, lap.elapsed().as_secs_f64() * 1e6 / step as f64);
-            lap = Instant::now();
-        }
-    }
-    println!("absorb lists: {n} arrivals in {:?}, {} held", t1.elapsed(), net.engine(b).held_ephemeral().len());
+/// Node `x`'s own memory commits not yet taken by its lane, as blobs (taken here instead).
+fn take_memory(net: &mut crate::net::Net, x: usize) -> Vec<osis_commit::CommitBlob> {
+    let e = net.engine(x);
+    let ids = e.take_memory_commits(&std::collections::BTreeSet::new()).unwrap();
+    ids.into_iter().filter_map(|c| e.memory_blob(&c).unwrap()).collect()
 }
 
 // issues/eph-node-cost-bounds.md (memory), spec/sync.md §9 (caps): RSS a holder gains per
-// encoded byte held, against what the node cap charges (`Engine::ephemeral_charge`), for
+// encoded byte held, against what the node cap charges (`Engine::memory_charge`), for
 // `OSIS_EPH_SHAPE` tiny (many tiny map entries), large (a few 8 KB strings) or aspects (one small
 // write on each of many aspects). `OSIS_EPH_PER` entries per commit (tiny), `OSIS_EPH_ROOM`: what
-// the holder may hold (`ingest_ephemeral_within`, as a node passes its cap's room; unset: no
+// the holder may hold (`Engine::ingest_memory`, as a node passes its cap's room; unset: no
 // bound). Run each shape alone (a fresh process):
 // `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_decoded_memory`.
 #[test]
@@ -1296,7 +1269,7 @@ fn eph_decoded_memory() {
                 m.set(t, &crate::common::ak(&format!("x:a{:06}.0~", c * per + e)), &value).unwrap();
             }
             net.engine(x).write(m).unwrap();
-            blobs.extend(net.engine(x).take_ephemeral().unwrap().into_iter().map(|c| c.blob));
+            blobs.extend(take_memory(&mut net, x));
         }
         blobs
     } else {
@@ -1306,45 +1279,21 @@ fn eph_decoded_memory() {
     let rss0 = rss_kib();
     let mut refused = 0;
     for bl in blobs {
-        let left = room.saturating_sub(net.engine(b).held_ephemeral().iter().map(|h| net.engine(b).ephemeral_charge(&h.0, &[])).sum());
-        if matches!(net.engine(b).ingest_ephemeral_within(bl, true, left).unwrap(), osis_node::ephemeral::EphIngest::TooLarge) {
+        let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
+        let charged: u64 = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
+        let left = room.saturating_sub(charged);
+        if matches!(net.engine(b).ingest_memory(&bl.encode(), left).unwrap(), osis_node::Ingested::TooLarge(_)) {
             refused += 1;
         }
     }
     println!("decoded memory ({shape}): {refused} commits refused for the room");
-    let held: usize = net.engine(b).held_ephemeral().iter().map(|h| h.1).sum();
     let rss = rss_kib().saturating_sub(rss0);
     let writes = commits * per;
-    let ids: Vec<_> = net.engine(b).held_ephemeral().into_iter().map(|h| h.0).collect();
-    let charge: u64 = ids.iter().map(|id| net.engine(b).ephemeral_charge(id, &[])).sum();
+    let ids: Vec<_> = net.engine(b).memory_commits().into_iter().map(|h| h.0).collect();
+    let charge: u64 = ids.iter().map(|id| net.engine(b).memory_charge(id).unwrap()).sum();
+    let held = charge as usize;
     println!("decoded memory ({shape}): charged {} KiB", charge / 1024);
     println!("decoded memory ({}): {commits} commits x {per} entries: {} KiB encoded (held {} KiB), RSS +{rss} KiB: {:.1}x, {} B per write", shape, blob_bytes / 1024, held / 1024, rss as f64 * 1024.0 / blob_bytes.max(1) as f64, rss * 1024 / writes as u64);
-}
-
-// issues/eph-node-cost-bounds.md (CPU), spec/sync.md §9: a replayed small commit that a big cover
-// lists, judged contained (`eph_containers`): time per replay (it copied the whole cover). Run:
-// `cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::eph_replay_cost`.
-#[test]
-#[ignore]
-fn eph_replay_cost() {
-    let (mut net, b, x, t) = eph_net();
-    let small = eph_map_commits(&mut net, x, t, 1, 1, &Value::Int(1)).remove(0);
-    let blobs = eph_map_commits(&mut net, x, t, size("OSIS_EPH_COMMITS", 64, 4), 2000, &Value::Int(2));
-    net.engine(b).ingest_ephemeral(small.clone()).unwrap();
-    for bl in blobs {
-        net.engine(b).ingest_ephemeral(bl).unwrap();
-    }
-    for c in net.engine(x).compact_own_ephemeral(true).unwrap() {
-        net.engine(b).ingest_ephemeral(c.blob).unwrap();
-    }
-    let replays = size("OSIS_EPH_REPLAYS", 200, 10);
-    let t2 = Instant::now();
-    for _ in 0..replays {
-        let r = net.engine(b).ingest_ephemeral(small.clone()).unwrap();
-        assert!(matches!(r, osis_node::ephemeral::EphIngest::Covered(_)), "{r:?}");
-    }
-    let cover: usize = net.engine(b).held_ephemeral().iter().map(|h| h.1).max().unwrap_or(0);
-    println!("replay: {:.1} us per replay of a small commit against a {} KiB cover", t2.elapsed().as_secs_f64() * 1e6 / replays as f64, cover / 1024);
 }
 
 /// Peak resident set (KiB) since the last `reset_peak` (Linux `VmHWM`).
