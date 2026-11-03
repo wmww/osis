@@ -2,11 +2,11 @@
 > Summary: Clobbering fixed by frontier-study F2 (a demoter leaves out only what its own compaction could drop now, `receipt::droppable_here`). Left: under keep-at-least forever the frontier now lists every kept write, so a kick scales with history there until permanent heads (notes/frontier-study.md F3/F4) are built.
 > Tags: security, spec, permissions, engine
 
-Owner: incorrect, and especially wrong for a thing set so admins cannot erase history. Candidate rule: a frontier may leave out only a commit whose body its retention lets be dropped now (past keep at least, right holder); keep-forever writes are always listed. Then the frontier is O(surviving writes) forever for such aspects: see the hash chain idea in e-review.md and the size limit (8 MiB, about 2.5x10^5 commits).
+Tess: incorrect, and especially wrong for a thing set so admins cannot erase history. Candidate rule: a frontier may leave out only a commit whose body its retention lets be dropped now (past keep at least, right holder); keep-forever writes are always listed. Then the frontier is O(surviving writes) forever for such aspects: see the hash chain idea in e-review.md and the size limit (8 MiB, about 2.5x10^5 commits).
 
 Related limit to decide: the frontier is the demoter's own word, so a hostile admin can list nothing and make every write of the demoted member invalid, under any retention. Bodies stay must-hold (`must_hold` does not read validity) and a re-grant revives them, but state and any validity-filtered read lose them. So "admin cannot erase history" holds for bodies, not for validity. Is that acceptable, and should a history read show such writes as disputed instead of absent? Requirements Permissions (edits the revoker had not received are lost until re-grant) accepts the honest case.
 
-Owner requirement: the cost of a kick, in general and not only for chat, must not scale with history size. So the fix cannot be a frontier that lists every surviving write.
+Tess's requirement: the cost of a kick, in general and not only for chat, must not scale with history size. So the fix cannot be a frontier that lists every surviving write.
 
 Purge rights are sets now (osis-base `PurgeBy`): a demoter may drop a body only per `Timeline::may_purge`, and an admin holds no right under `author` unless it acts for the header's actor (`Header::purge_actor`). Old `author` is `author_or_admin`, same code 2; `author` is the new author-only class, code 4. Nothing about permanence changes.
 

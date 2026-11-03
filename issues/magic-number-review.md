@@ -1,6 +1,6 @@
-# Owner review of the picked tradeoff values
-> Summary: some picked numbers trade one real thing against another (clock skew, how long an offline device may return, inbox lifetime, LAN tag window, ...); the owner reviews them at some point (round 13: "lets handle the magic numbers later"). The full, kept-current list of every picked number with its justification is notes/arbitrary-values-table.md.
-> Tags: owner-call, spec
+# Tess's review of the picked tradeoff values
+> Summary: some picked numbers trade one real thing against another (clock skew, how long an offline device may return, inbox lifetime, LAN tag window, ...); Tess reviews them at some point (round 13: "lets handle the magic numbers later"). The full, kept-current list of every picked number with its justification is notes/arbitrary-values-table.md.
+> Tags: tess-call, spec
 
 ## Values awaiting the review
 Values no choice makes free; each is in the spec or should be. Listed with what it trades.
@@ -16,7 +16,7 @@ Values no choice makes free; each is in the spec or should be. Listed with what 
 | `MAX_CLAIMS` 65 536 | most claim keys per step: caps the holders of a label that can catch up by claim at one step vs claim-set size | wire §2 |
 | LAN tag window 10 min | discovery stability vs trackability of the tag | sync §10 |
 | `MAX_INBOX_RESENDS` 3 (node policy; spec: MAY bound) | a recipient silent for 3 × 90 days is given up vs re-sends forever | `sync/local.rs` |
-| `INBOX_COPY_MIN_LEFT` = `INBOX_LIFETIME` / 2 (spec sync §3) | at 0 a stranger with the deposit seed recycles the deposit budget by short expiries and gets grants copied without bound; at `INBOX_LIFETIME` nobody copies. Past it a device opening a late blob applies the grant without copying: if no device copied it earlier, the actor's later devices never find it (applying counts as acting, so no re-send). Owner sign-off pending | `sync/pass.rs` |
+| `INBOX_COPY_MIN_LEFT` = `INBOX_LIFETIME` / 2 (spec sync §3) | at 0 a stranger with the deposit seed recycles the deposit budget by short expiries and gets grants copied without bound; at `INBOX_LIFETIME` nobody copies. Past it a device opening a late blob applies the grant without copying: if no device copied it earlier, the actor's later devices never find it (applying counts as acting, so no re-send). Tess's sign-off pending | `sync/pass.rs` |
 | `MAX_LIST_BYTES` 8 MiB, `MAX_READ` 1 GiB (node policy) | a commit whose header lists exceed 8 MiB is not applied here (`TooLarge`, Local) although spec/requirements.md says a change has no size limit; large values beyond 1 GiB stream only | `commit/lists.rs`, `engine/large.rs` |
 | schema limits `MAX_EXPAND` 64, `MAX_TYPE_DEPTH` 256, `MAX_INSTANCES` 10 000, `MAX_CHECK_WORK` 100 000, `MAX_NEST` 64 | decide whether a schema is valid but are not in the spec: another implementation could accept what osis refuses | `schema/` |
 

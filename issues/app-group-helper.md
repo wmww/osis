@@ -1,5 +1,5 @@
 # Per-person app groups: every app reimplements the convention
-> Summary: The owner's convention for an app's own data (a marked group among home's subgroups, union read, smallest tid written) leaves each app to find or create the group correctly and to merge duplicates from devices that started offline, per piece of data. Ask: a helper in the `osis` crate that does both.
+> Summary: Tess's convention for an app's own data (a marked group among home's subgroups, union read, smallest tid written) leaves each app to find or create the group correctly and to merge duplicates from devices that started offline, per piece of data. Ask: a helper in the `osis` crate that does both.
 > Tags: core-ask, api
 
 The convention itself is decided (notes/app.md, kit and app). The placement footgun (a group placed in home but not a subgroup of it) now fails the placement loudly (notes/api.md Writes); what remains:

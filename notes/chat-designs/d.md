@@ -1,5 +1,5 @@
 # Chat design D: C plus forward secrecy
-> Summary: Parked: owner thinks member forward secrecy is probably undesirable; review4 refuted its claim (the seed box opens under keys the device keeps); a real fix needs erasable per-device keys, MLS-sized. What survives: a newcomer boxed the current chain state cannot read older content. The text below is the design as proposed, kept for the record.
+> Summary: Parked: Tess thinks member forward secrecy is probably undesirable; review4 refuted its claim (the seed box opens under keys the device keeps); a real fix needs erasable per-device keys, MLS-sized. What survives: a newcomer boxed the current chain state cannot read older content. The text below is the design as proposed, kept for the record.
 
 ## What is different
 
@@ -52,7 +52,7 @@ Rejected: ratcheting the read role secret itself (changes the label's sync key h
 
 Deletion line 61 becomes true against a host recording too. Decentralization line 12 ("Total data may exceed what any node tracks") weakens for such actors: history lives in devices, not hosts. Line 125 stays. It is a per-actor osis option, not chat-only: shared records, journalism, health data, any disappearing-content space whose hosts may be recorded. History for new members (re-publish) and for new devices (transfer) are settings in C and D alike.
 
-## Sorting into the owner's categories
+## Sorting into Tess's categories
 
 - **Default:** chain on for disappearing chats; two-hour window; new devices by transfer; new members no history.
 - **Setting:** chain on or off at creation; re-publish history to a joiner; periodic re-seed interval.

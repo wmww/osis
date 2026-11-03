@@ -4,10 +4,10 @@
 osis (Open Structured Information System) is a decentralized database optimized for flexibility and robustness: end-user apps managing small-to-large interconnected data across users and devices (notes, calendars, spreadsheets), shared by many apps, app versions, generic tools and AI agents like a file format. Handles device sync, sharing, encryption and simple data APIs. Somewhere between Git, Obsidian, Google Drive and Syncthing.
 
 ## Where things live
-The repo is meant to become a small monorepo of projects worked on independently (owner): core (with cli and schema), kit (UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
-- `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. Until a stable release, spec edits need no owner sign-off; changes to or conflicts with spec/requirements.md go to the owner.
+The repo is meant to become a small monorepo of projects worked on independently (Tess): core (with cli and schema), kit (UI toolkit) and app (notes/app.md), each with its own checks (the gate picks them by changed paths, notes/build.md).
+- `spec/`: what a compatible implementation needs (start at spec/overview.md). Requirements, accepted limits and usage rules are spec/requirements.md. Until a stable release, spec edits need no Tess's sign-off; changes to or conflicts with spec/requirements.md go to Tess.
 - `notes/`: why the spec is what it is, rejected alternatives, policies and implementation hints.
-- `issues/`: unsolved problems and pending owner decisions (`grep -l owner-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `owner-call`, component names. `plans/`: work not done yet; the MVP plans are all done or turned into issues. notes/mvp-progress.md holds the MVP final report.
+- `issues/`: unsolved problems and decisions pending with Tess (`grep -l tess-call issues/*`); each has Summary, Tags and a Repro line. Tags: `security`, `performance`, `tests`, `post-mvp`, `tess-call`, component names. `plans/`: work not done yet; the MVP plans are all done or turned into issues. notes/mvp-progress.md holds the MVP final report.
 - `docs/explainer/`: slide-deck site (notes/explainer.md), updated only on request.
 
 ## Status
@@ -33,8 +33,8 @@ How to run:
 
 Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequences-not-paged, crdt-seq-linearization-cost); rough edges (node-sync-gaps); api-deferred (queries are a design pass), in-memory-things; tests-unbuilt (10^4-seed sweep, model refactors).
 
-- MVP scope (owner): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
-- Workflow: owner and agent iterate by discussion. Notes mark what was the owner's decision, the agent's call or a proposal. Decisions waiting on the owner are issues tagged `owner-call`.
+- MVP scope (Tess): everything in the spec. Only unimportant non-protocol client features may slip (e.g. client support for the anonymous-writing patterns).
+- Workflow: Tess and agent iterate by discussion. Notes mark what was Tess's decision, the agent's call or a proposal. Decisions waiting on Tess are issues tagged `tess-call`.
 
 ## Notes
 - notes/architecture.md: crate map and DAG, fixed abstractions, error classes, build and test rules, dependency allowlist, osis-base and osis-schema surfaces, where each crate's notes live.

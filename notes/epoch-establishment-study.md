@@ -12,7 +12,7 @@ Adversary:
 - **Forgery**: D signs any role commit. Where D's departure d is held (or an epoch start after it), D's writes dated after d are invalid and dated before d are invalid unless d's frontier (or the ledger tenure's, permissions §6) covers them. Where d is not held, every such write is valid: a rotation of A or N boxing D, a `keys.0` keyset of N with D's KEM key under any epoch id (`keys.0` vouches for no secret), a grant to a second identity, a stranded heartbeat.
 - **Honest ignorance** does the same damage without forgery: an admin of N that has not seen D's removal forks N boxing D; an admin of A that holds N's new keyset but not the removal boxes N at whatever `keys.0` shows.
 
-Out of scope (owner): a current admin or writer acting maliciously; a party that keeps a role by another path (not departed).
+Out of scope (Tess): a current admin or writer acting maliciously; a party that keeps a role by another path (not departed).
 
 **Safety (NoLeak)**: if an honest node W encrypts under e while it knows d, D never learns s_e; and a D that never held a role on A never learns any s_e (the later-admin-path case needs this second half). s_e travels only in e's boxes, in later grant or re-seal boxes at e, and in history boxes of epochs whose rotator held s_e, so the property is: nobody who writes any of those boxes seals one to a key D can derive, unless an admin re-grants D.
 

@@ -1,5 +1,5 @@
 # Chat test cases by architecture
-> Summary: Informal chat behavior cases, each answered per proposed architecture (A, B, C, D, E): forced yes or no, app's choice, or needs a core change. Add a column per new topology; a good one has many `opt` and no `!`. Answers come from reading spec and code; column E was run where core/chat/tests covers it; `want` values are guesses for the owner to correct.
+> Summary: Informal chat behavior cases, each answered per proposed architecture (A, B, C, D, E): forced yes or no, app's choice, or needs a core change. Add a column per new topology; a good one has many `opt` and no `!`. Answers come from reading spec and code; column E was run where core/chat/tests covers it; `want` values are guesses for Tess to correct.
 
 Legend: **A** messages are things in the member's own group (untied read grant to the chat); **B** messages are things in the chat's member list, one-commit send; **C** messages are entries in a map on the member actor M (rolled to fresh M-owned things), with an add-only member list for non-admins (core change f). **D** (parked; review4 refuted its protection claim) is C plus a per-chat content key chain (core change i): content blobs wrapped under an hourly key erased after two hours, never in history boxes, re-seeded at every membership change. **E** (built: core/chat, notes/chat.md) messages are writes on an aspect of the chat itself, kept as history (retention `author_or_admin`, keep at least forever: permanent deltas), no member actor and no member list, the sender the verified actor; E cells on kick cost assume the frontier study (notes/frontier-study.md), unbuilt; E1 (a register of message-thing tids) is noted only where it differs.
 Cells: `yes`/`no` forced; `opt` app's clean choice; `opt*` a modified client defeats it; `core x` needs core change x (list at the end); `?` not traced; `–` not applicable; `!` marks a forced answer that differs from want. "Honest" means the party's client follows the rules; "modified" means it does not.
@@ -257,14 +257,14 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 ## Core changes
 
 - **b** Delegated purge: retention names an actor whose admins may purge; binds only senders whose client wrote it.
-- **c** Keep-after-removal: whether a removed holder keeps what it held is what its removal says, filled from a default on the thing unless the remover overrides (spec/permissions.md §2, §3 Keep); chat sets keep at creation (owner); a person holds none, so a device removal erases.
-- **e** Sender card in invite requests (owner: yes).
+- **c** Keep-after-removal: whether a removed holder keeps what it held is what its removal says, filled from a default on the thing unless the remover overrides (spec/permissions.md §2, §3 Keep); chat sets keep at creation (Tess); a person holds none, so a device removal erases.
+- **e** Sender card in invite requests (Tess: yes).
 - **f** Add-only member list (C only): a new core aspect read as a group's member list; a non-admin delta may hold only new elements, and resets and snapshots need admin. Assumed in every C cell.
 - **g** Entry-level API: key-range read, change events naming the keys touched, per-entry received time.
-- **h** Wake relay for background notifications (owner: does not block).
+- **h** Wake relay for background notifications (Tess: does not block).
 - **i** Content key chain (D only): a boxed seed with no history box, re-seeded in every read rotation; an hourly hash-chain key in the clear prefix; content blobs wrapped under it; devices erase hour keys after two hours and keep blob keys of retained bodies; content older than the window is may-hold; a re-wrapped transfer bundle for new devices. Assumed in every D cell. Refuted by review4: the seed's box is in the recording and opens under keys the device keeps, so a thief rebuilds every hour key; only "newcomers cannot read older content" survives.
 - **j** Per-sender key chains (Signal sender keys): per-message erasure, at the cost of a per-sender state per device and either a per-sender marker hosts can link or trial decryption.
-- **k** Purge by author: a purge item naming (aspect, author) so an admin erases a removed member's deltas in one item, within each delta's own purge rights; never overrides author-only or `nobody` (owner; spec/wire.md §4).
+- **k** Purge by author: a purge item naming (aspect, author) so an admin erases a removed member's deltas in one item, within each delta's own purge rights; never overrides author-only or `nobody` (Tess; spec/wire.md §4).
 - **m** Erasable per-device KEM keys with per-device boxes (MLS-sized): what real member forward secrecy would need; against spec/crypto.md §3 and requirements line 48.
 - **l** History read API (E): the held bodies of an aspect with author, time, received time, validity and the sender flag, paged by time, memory commits included, and a change event per commit.
 - **n** History-less grant: a read rotation at the add with earlier secrets sealed per prior holder, no shared history box, chain certificates re-placed (issues/history-less-grant.md); segments (footnote 33) are the fallback without core change.
@@ -308,7 +308,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 30. E: nothing is compacted; messages keep at least forever.
 31. E: a required retention on every aspect makes `nobody` junk invalid, dropped without a right (spec/permissions.md §8); junk under the required retention is what purge by author erases; a member from before a change can still backdate below it.
 32. E: the frontier is a few heads (frontier study), but un-merging a kicked member's deltas re-reads the year's aspect (about 70 s at 10^6, extrapolated, e-review §6); not measured in any design.
-33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change; the owner's primary path is core n.
+33. Segments: the admin creates a new chat, grants everyone plus the newcomer, and the old chat points to it (admin-only); old members' apps stitch the two. Works in every design, no core change; Tess's primary path is core n.
 34. The new chat carries no pointer back; a tid is a bare reference and the old chat's label and hosts live under its own label.
 35. The pointer is a set, so old members stitch every branch; each newcomer sees only its branch; admins merge with a further segment.
 36. About 15 KB per member (grant boxes plus chain certificates under the new label): about 15 MB at 1000, estimated.

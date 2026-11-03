@@ -26,7 +26,7 @@ Adding a message is a write on C's list, which needs write on C at that moment. 
 
 As A.
 
-## Sorting into the owner's categories
+## Sorting into Tess's categories
 
 - **Default:** as A; unlisted messages hidden.
 - **Setting:** as A.

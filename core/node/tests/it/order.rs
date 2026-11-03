@@ -1472,7 +1472,7 @@ fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
 /// creation; the flip back gave the content alone), reads alike. Anything else is a failure.
 fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
     // a part held pending at its expiry counts as never received at that node (spec/commits.md
-    // §5; owner: nodes may read differently when a part expired before a node could apply it):
+    // §5; Tess: nodes may read differently when a part expired before a node could apply it):
     // what such an aspect reads, its states, its bodies and the index lines of its commits (that
     // part is dropped at a node that applied it, missing at one that did not) may differ,
     // repaired by a writer's snapshot (spec/sync.md §7), which the node cannot tell (its flag
@@ -3061,7 +3061,7 @@ fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     steps
 }
 
-/// Checks owner decision (a)'s new-device equivalence (spec/permissions.md §5.1: a frontier lists
+/// Checks Tess's decision (a)'s new-device equivalence (spec/permissions.md §5.1: a frontier lists
 /// commit IDs, leaving out commits covered at the demoter; §5.2: a valid snapshot vouches for
 /// what it carries): a node holding every body and a fresh node holding only what hosts keep
 /// once covered bodies go (every role commit and snapshot whole; each other commit without its
@@ -3162,7 +3162,7 @@ fn run_new_device(name: &str, seeds: std::ops::Range<u64>, len: usize) {
     assert!(fails.is_empty(), "{summary}\n{}", fails.join("\n\n"));
 }
 
-// spec/permissions.md §5.1 (frontier by commit ID), §5.2 (snapshots vouch), owner decision (a)
+// spec/permissions.md §5.1 (frontier by commit ID), §5.2 (snapshots vouch), Tess's decision (a)
 // (issues/session-sources.md rule 7): a fresh node holding the demotion, the snapshots and the
 // uncovered bodies reads as a node holding every body.
 #[test]

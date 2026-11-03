@@ -1,5 +1,5 @@
 # Chat
-> Summary: Chat as built on design E (notes/chat-designs/e.md): crate `osis-chat` (core/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, members hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor. What is built, what the app layer decided, what is left out, costs. Kept from the old pattern: rotation costs and the owner's decision on them.
+> Summary: Chat as built on design E (notes/chat-designs/e.md): crate `osis-chat` (core/chat) over the `osis` API, and `osis chat`: one ownerless actor per chat, members hold write, a message is one kept write on `chat:msgs:y<year>.0`, the sender the verified actor. What is built, what the app layer decided, what is left out, costs. Kept from the old pattern: rotation costs and Tess's decision on them.
 
 ## As built
 - **Create** (`create`, one flow): `create_ownerless(me)`, `required.0^` (`chat:msgs:` the message rule; the empty prefix the plain default, so `nobody` junk on another aspect is invalid; `keep` true), `chat:settings.0^` (name, edit mode), `make_group`, `sync`. A host must take it by label or `--admit open`: `admit own` does not.
@@ -25,4 +25,4 @@ On the sim (`--release`, every node in one process, `scale_long`, `scale_small`,
 
 ## Rotation costs (kept from the old pattern)
 - A read+write rotation costs 2.7 KB per remaining holder (`scale.rs` `roster_removal_cost`: 272 KB at 100 writers, 2.70 MB at 1000; 1.05 s to commit at 1000). Downloads multiply by the holder count, only on removals.
-- **Owner decision: accepted; keep the simple format.** Cheaper only by wire-format changes, both declined: the header once per commit (a second fetch per message); one KEM key per actor and one box per holder for all roles (done plainly gives read-only holders write and admin secrets; the safe variants make role separation classical-only, or delay reads after a lower-role grant). Removals are rare, groups of hundreds are rare, simplicity and the post-quantum promise win.
+- **Tess's decision: accepted; keep the simple format.** Cheaper only by wire-format changes, both declined: the header once per commit (a second fetch per message); one KEM key per actor and one box per holder for all roles (done plainly gives read-only holders write and admin secrets; the safe variants make role separation classical-only, or delay reads after a lower-role grant). Removals are rare, groups of hundreds are rare, simplicity and the post-quantum promise win.

@@ -25,7 +25,7 @@ Messages live in each member's own group, so adding a message never touches C. R
 
 Sender card in invite requests; keep-read-only policy on removal; wake relay (does not block). Nothing else.
 
-## Sorting into the owner's categories
+## Sorting into Tess's categories
 
 - **Default:** kicked member keeps own messages; others keep a kicked member's history; block is local.
 - **Setting:** wipe a member on kick; show a deletion tombstone; private read position.
