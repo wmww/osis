@@ -394,4 +394,151 @@ mod tests {
             assert!(e.core.ix.void.contains(&i), "peer {r}: rebuilt");
         }
     }
+
+    /// A hostile creator's import on `copy` of `body`'s register writes of commit-form `srcs`,
+    /// re-sourced to `to` (each its dots' source), listing `listed` as origins.
+    fn import_as(lp: &mut LocalPeer, i: usize, copy: Tid, body: &Ak, srcs: &[(CommitId, CommitId)], listed: &[CommitId]) -> CommitId {
+        let e = &mut lp.peers[i].engine;
+        e.core.skip_writer_rules = true;
+        let id = e
+            .run(|tx| {
+                let mut out = Fragment::default();
+                let mut retention = None;
+                for (d, to) in srcs {
+                    let h = tx.core.ix.commits.get(d).unwrap().header.clone();
+                    let (ai, a) = h.aspects.iter().enumerate().find(|(_, a)| a.ak == *body).unwrap();
+                    let mut f = crate::apply::held_parts(tx, d, ai)?.into_iter().next().unwrap().into_fragment();
+                    f.map_dots(&|x| (x.src == Source::commit(*d)).then(|| Dot::new(Source::commit(*to), x.ctr)));
+                    out.join(f);
+                    retention = Some(a.retention);
+                }
+                let origins = listed.iter().map(|c| { let h = tx.core.ix.commits.get(c).unwrap().header.clone(); Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts } }).collect();
+                let node = tx.core.id.tid();
+                let ts = tx.core.hlc.next();
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let r = Resolved { tid: copy, ak: body.clone(), fragment: out, lo: 0, hi: 0, schema: None, retention, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
+                build_and_apply(tx, plan, vec![r])
+            })
+            .unwrap();
+        e.core.skip_writer_rules = false;
+        id
+    }
+
+    /// The residues of `(copy, body)` holding `what`.
+    fn residues_holding(e: &mut Engine, copy: &Tid, body: &Ak, what: &[u8]) -> usize {
+        e.run(|tx| {
+            let mut n = 0;
+            tx.scan(&crate::engine::records::aspect_key(crate::engine::records::RESIDUE, copy, body), |_, v| {
+                n += usize::from(v.windows(what.len()).any(|w| w == what));
+                Ok(())
+            })?;
+            Ok(n)
+        })
+        .unwrap()
+    }
+
+    fn purge_import(lp: &mut LocalPeer, copy: Tid, body: &Ak, i: CommitId) {
+        let mut m = Mutation::new();
+        let now = lp.peers[0].engine.now();
+        m.set(copy, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Commit { commit: i, tid: copy, ak: body.clone() });
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(1_000);
+    }
+
+    fn two_sources() -> (LocalPeer, Tid, Tid, Ak) {
+        let mut lp = LocalPeer::new(2, 0x5e2f, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        let me = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        let mut m = Mutation::new();
+        let z = lp.peers[0].engine.new_thing(&mut m, me);
+        lp.peers[0].commit(m).unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        (lp, t, z, Ak::new("t:body.0").unwrap())
+    }
+
+    fn write_form(lp: &mut LocalPeer, t: Tid, body: &Ak, v: &str) -> CommitId {
+        let mut m = Mutation::new();
+        m.commit_form();
+        m.retention(t, body, osis_schema::Retention { by: osis_base::PurgeBy::Writer, ..Default::default() }).unwrap();
+        m.set(t, body, &Value::Str(v.into())).unwrap();
+        let c = lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(1_000);
+        c
+    }
+
+    // spec/permissions.md §8: an import of two origins, each named through another import. One
+    // request falling takes its origin off the list and its import back; the two-origin one stays
+    // dropped for the other, and its residue does not hide the origin's value when a copy comes.
+    #[test]
+    fn two_origin_import_stays_dropped_while_one_origin_is_purged() {
+        let (mut lp, t, z, body) = two_sources();
+        let me = lp.peers[0].engine.tid();
+        let x = lp.peers[1].engine.tid();
+        let (copy, _) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+        lp.advance(1_000);
+        let d = write_form(&mut lp, z, &body, "SECRETD-value");
+        let c = write_form(&mut lp, z, &body, "SECRETC-value");
+        let both = import_as(&mut lp, 0, copy, &body, &[(c, c), (d, d)], &[c, d]);
+        lp.advance(1_000);
+        let ic = import_as(&mut lp, 0, copy, &body, &[(c, c)], &[c]);
+        lp.advance(1_000);
+        let id = import_as(&mut lp, 0, copy, &body, &[(d, d)], &[d]);
+        lp.advance(1_000);
+        let copy_of_ic = lp.peers[0].engine.package(&ic).unwrap().unwrap();
+        let mut m = Mutation::new();
+        m.op(copy, &osis_schema::core_types::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(x))], op: Op::Set(osis_schema::core_types::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None }.to_value()) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        let mut m = Mutation::new();
+        let now = lp.peers[1].engine.now();
+        m.set(copy, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Commit { commit: ic, tid: copy, ak: body.clone() });
+        lp.peers[1].commit(m).unwrap().unwrap();
+        lp.sync_all().unwrap();
+        lp.advance(1_000);
+        purge_import(&mut lp, copy, &body, id);
+        let e = &mut lp.peers[0].engine;
+        assert!(!e.body_not_dropped(&both, &copy, &body) && !e.body_not_dropped(&ic, &copy, &body) && !e.body_not_dropped(&id, &copy, &body));
+        // the demotion, whose frontier leaves out the request
+        let mut m = Mutation::new();
+        m.op(copy, &osis_schema::core_types::ROLES, PathOp { path: Vec::new(), op: Op::Remove(Value::Tid(x)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.core.ix.valueless.get(&(copy, body.clone())).map(Vec::as_slice), Some(&[Owned::Commit(d)][..]));
+        assert!(e.body_not_dropped(&ic, &copy, &body), "its origin is off the list");
+        assert!(!e.body_not_dropped(&both, &copy, &body), "the other is on it");
+        assert!(!e.body_not_dropped(&id, &copy, &body));
+        e.ingest(&copy_of_ic.bytes, copy_of_ic.blobs.clone()).unwrap();
+        assert_eq!(e.get(&copy, &body).unwrap(), Some(Value::Str("SECRETC-value".into())));
+    }
+
+    // spec/requirements.md Purge: an import listing two origins dropped for one of them leaves no
+    // copy of the other's value once that one is purged too.
+    #[test]
+    fn purge_of_each_origin_leaves_no_value_in_a_two_origin_import() {
+        let (mut lp, t, z, body) = two_sources();
+        let me = lp.peers[0].engine.tid();
+        let (copy, _) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+        lp.advance(1_000);
+        let c = write_form(&mut lp, z, &body, "SECRETC-value");
+        let d = write_form(&mut lp, z, &body, "SECRETD-value");
+        import_as(&mut lp, 0, copy, &body, &[(d, d)], &[c, d]);
+        lp.advance(1_000);
+        let ic = import_as(&mut lp, 0, copy, &body, &[(c, c)], &[c]);
+        lp.advance(1_000);
+        let id = import_as(&mut lp, 0, copy, &body, &[(d, d)], &[d]);
+        lp.advance(1_000);
+        purge_import(&mut lp, copy, &body, ic);
+        purge_import(&mut lp, copy, &body, id);
+        let e = &mut lp.peers[0].engine;
+        assert_eq!(e.get(&copy, &body).unwrap(), None);
+        assert_eq!(residues_holding(e, &copy, &body, b"SECRETC-value"), 0, "a residue keeps the purged value");
+        assert_eq!(residues_holding(e, &copy, &body, b"SECRETD-value"), 0, "a residue keeps the purged value");
+    }
 }

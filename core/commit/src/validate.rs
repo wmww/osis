@@ -108,6 +108,9 @@ impl Header {
                 if !self.purge.is_empty() {
                     return Err(Error::Invalid("expires on a commit with a purge request"));
                 }
+                if kind == Kind::Import {
+                    return Err(Error::Invalid("expires on an import"));
+                }
                 if t <= wall {
                     return Err(Error::Invalid("expires not after the commit's ts"));
                 }

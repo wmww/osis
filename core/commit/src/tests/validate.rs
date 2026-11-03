@@ -60,6 +60,8 @@ fn validate_kinds() {
     assert!(invalid(&x).to_string().contains("delete levels"), "imports carry no level-2 key");
     x.keys.remove(1);
     x.aspects[0].keys = vec![0];
+    assert!(invalid(&x).to_string().contains("expires on an import"), "spec/permissions.md §7");
+    x.aspects[0].expires = None;
     assert!(invalid(&x).to_string().contains("origins"));
     x.origins.push(Origin { commit: CommitId([1; 32]), author: t(1), actor: t(2), ts: ts(5) });
     x.validate().unwrap();

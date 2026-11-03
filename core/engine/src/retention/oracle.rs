@@ -153,7 +153,7 @@ pub(crate) fn kills(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, (c, ai): (&CommitId, us
 
 /// `make_valueless`'s residue: the body and `kept` (or, dropped as covered, its held valid coverers'
 /// copies of its writes) joined, then stripped.
-pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai: usize, o: &Owned, kept: &[Fragment]) -> Result<Option<Fragment>> {
+pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai: usize, o: &[Owned], all: &[Owned], kept: &[Fragment]) -> Result<Option<Fragment>> {
     let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
     let mut bodies = crate::apply::held_fragments(tx, c, ai)?;
     bodies.extend(kept.iter().cloned());
@@ -164,7 +164,7 @@ pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai
                 continue;
             }
             for mut f in crate::apply::held_fragments(tx, &s, sai)? {
-                f.remove_writes(&|d| !o.owns(d));
+                f.remove_writes(&|d| !o.iter().any(|x| x.owns(d)));
                 if f != Fragment::default() {
                     bodies.push(f);
                 }
@@ -178,6 +178,6 @@ pub(crate) fn residue(tx: &mut Tx<'_>, m: &crate::engine::Meta, c: &CommitId, ai
     for b in bodies {
         r.join(b);
     }
-    r.strip(&|d| o.owns(d));
+    r.strip(&|d| all.iter().any(|x| x.owns(d)));
     Ok(Some(r))
 }
