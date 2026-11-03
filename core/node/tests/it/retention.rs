@@ -2151,3 +2151,111 @@ fn honest_demotion_of_a_path_keeps_rightful_purges_spec_perm_8() {
         stays_purged(&mut lp, t, c);
     }
 }
+
+// spec/permissions.md §5.1, §8: a hostile current admin's frontier lists the demoted admin's message
+// and leaves its delete out: the delete is undone. Nodes that dropped the body read it as never
+// received; a node that still holds it keeps it and its copy brings the message back everywhere.
+// Left out too, the message itself stays invalid.
+#[test]
+fn demotion_lists_the_message_omits_the_delete_spec_perm_8() {
+    for listed in [true, false] {
+        let mut lp = net(4, 0x7b);
+        lp.sync_all().unwrap();
+        let (t, k) = (new_thing(&mut lp, 0), ak("t:reg.0"));
+        let x = lp.peers[1].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let c = set(&mut lp, 1, t, &REG, "kept");
+        lp.sync_all().unwrap();
+        lp.advance(5);
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+        let p = lp.peers[1].commit(m).unwrap().unwrap();
+        let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
+        // 3 is behind: it still holds the body
+        for i in [0, 2] {
+            lp.deliver(i, &pp).unwrap();
+            assert!(!lp.peers[i].engine.body_not_dropped(&c, &t, &k));
+        }
+        let copy = lp.peers[3].engine.package(&c).unwrap().unwrap();
+        lp.advance(5);
+        let commits = if listed { std::collections::BTreeSet::from([c]) } else { Default::default() };
+        let d = set_edge(&mut lp.peers[0].engine, t, x, None, Some(osis_schema::core_types::Frontier { commits }.to_value()));
+        let pd = lp.peers[0].engine.package(&d).unwrap().unwrap();
+        for (i, pk) in [(2, &pd), (3, &pd), (3, &pp)] {
+            lp.deliver(i, pk).unwrap();
+        }
+        for i in [0, 2, 3] {
+            assert!(lp.peers[i].engine.purged_on(&t, &k).unwrap().is_empty(), "peer {i}: no purge shown");
+        }
+        // what the thing's creation wrote, below the message
+        let (before, want) = (Some(s("new")), Some(s(if listed { "kept" } else { "new" })));
+        assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), want, "the holder");
+        assert!(lp.peers[3].engine.body_not_dropped(&c, &t, &k), "the holder keeps the body either way");
+        for i in [0, 2] {
+            assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), before, "peer {i}: as never received");
+            assert_eq!(lp.peers[i].engine.core.ix.commits.get(&c).unwrap().missing.len(), 1, "peer {i}");
+            lp.deliver(i, &copy).unwrap();
+            assert!(lp.peers[i].engine.body_not_dropped(&c, &t, &k), "peer {i}: the copy joins");
+            assert_eq!(lp.peers[i].engine.get(&t, &k).unwrap(), want, "peer {i}");
+        }
+        assert_eq!(lp.peers[0].engine.get(&t, &ak("t:list.0")).unwrap(), None, "the request's own write falls with it");
+    }
+}
+
+// spec/permissions.md §8, spec/sync.md §6: a waiting commit's part stripped for a purge that falls
+// before the commit applies: the part counts as never received once it applies, and the change
+// names the commit, which is what makes node-sync fetch it again (`reopen_undropped`).
+#[test]
+fn stripped_while_waiting_purge_falls_is_fetched_again_spec_perm_8() {
+    let mut lp = net(4, 0x7c);
+    let (x, w) = (lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    for (a, b) in [(0, 1), (1, 0), (0, 2), (2, 0), (1, 2), (2, 1)] {
+        sync(&mut lp, a, b);
+    }
+    let (t, k) = (new_thing(&mut lp, 0), ak("t:reg.0"));
+    set_edge(&mut lp.peers[0].engine, t, x, Some(edge(Role::Admin)), None);
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    for (a, b) in [(0, 1), (0, 2)] {
+        sync(&mut lp, a, b);
+    }
+    lp.advance(5);
+    let c = set(&mut lp, 2, t, &REG, "kept");
+    sync(&mut lp, 2, 1);
+    lp.advance(5);
+    let mut m = Mutation::new();
+    m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+    m.set(t, &LIST, &Value::List(vec![s("beside")])).unwrap();
+    let p = lp.peers[1].commit(m).unwrap().unwrap();
+    // 3 lacks `w`'s creation record: `c` waits
+    let is_w = |pk: &osis_node::local_peer::Package| osis_commit::CommitBlob::decode(&pk.bytes).unwrap().header.author == w;
+    let all = lp.packages(0).unwrap();
+    for pk in all.iter().filter(|pk| !is_w(pk)) {
+        let _ = lp.deliver(3, pk);
+    }
+    let withheld: Vec<_> = all.into_iter().filter(|pk| is_w(pk)).collect();
+    let pc = lp.peers[2].engine.package(&c).unwrap().unwrap();
+    let pp = lp.peers[1].engine.package(&p).unwrap().unwrap();
+    lp.deliver(3, &pc).unwrap();
+    lp.deliver(3, &pp).unwrap();
+    assert!(!lp.peers[3].engine.core.ix.commits.contains_key(&c), "it waits");
+    lp.peers[3].engine.reexamine().unwrap();
+    assert_eq!(lp.peers[3].engine.stripped_count(&c).unwrap(), 1, "stripped for the request");
+    lp.advance(5);
+    let d = set_edge(&mut lp.peers[0].engine, t, x, None, None);
+    let pd = lp.peers[0].engine.package(&d).unwrap().unwrap();
+    lp.deliver(3, &pd).unwrap();
+    lp.peers[3].engine.take_changed();
+    for pk in withheld.iter().filter(|pk| pk.id != c) {
+        let _ = lp.deliver(3, pk);
+    }
+    lp.peers[3].engine.reexamine().unwrap();
+    let e = &mut lp.peers[3].engine;
+    assert_eq!(e.core.ix.commits.get(&c).unwrap().missing.len(), 1, "applied, its part never received");
+    assert!(e.take_changed().undropped.contains(&c), "node-sync is told to fetch it");
+    assert_eq!(e.get(&t, &k).unwrap(), Some(s("new")));
+    lp.deliver(3, &pc).unwrap();
+    assert_eq!(lp.peers[3].engine.get(&t, &k).unwrap(), Some(s("kept")));
+}
