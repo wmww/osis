@@ -2427,3 +2427,70 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
     assert_eq!(run(full - 1).1, [true, true, false], "one left out, the one received last");
     assert_eq!(run(0).1, [false, false, false], "none fits: the demotion still goes through");
 }
+
+// spec/crdt.md §4.7, spec/commits.md §5: a second request on a delta dropped as covered keeps the
+// residue the first took from its coverers, when a coverer not carrying it is left (was: replaced
+// by nothing, so the older write came back once a later write fell, where a node that held the body
+// read as ever).
+#[test]
+fn second_request_keeps_covered_residue_spec_crdt_4_7() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut lp = net(3, 0x77);
+    lp.sync_all().unwrap();
+    let ids: Vec<_> = (0..3).map(|i| lp.peers[i].engine.tid()).collect();
+    let t = new_thing(&mut lp, 0);
+    set_edge(&mut lp.peers[0].engine, t, ids[1], Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, ids[2], Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let mut packs: Vec<_> = lp.peers[0].engine.commit_ids().into_iter().map(|id| lp.peers[0].engine.package(&id).unwrap().unwrap()).collect();
+    let k = ak("t:reg.0");
+    let pack = |lp: &mut LocalPeer, i: usize, id: &osis_base::CommitId| lp.peers[i].engine.package(id).unwrap().unwrap();
+    // an older write no snapshot covers, kept from 0 for now
+    let old = set(&mut lp, 1, t, &REG, "old");
+    let old = pack(&mut lp, 1, &old);
+    lp.advance(10);
+    let c = set(&mut lp, 0, t, &REG, "secret");
+    let cp = pack(&mut lp, 0, &c);
+    lp.advance(10);
+    let s1 = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+    let s1 = pack(&mut lp, 0, &s1);
+    lp.deliver(2, &cp).unwrap();
+    lp.deliver(2, &s1).unwrap();
+    lp.advance(10);
+    // 2's later write, and its snapshot: covers c, carries none of it
+    let x = set(&mut lp, 2, t, &REG, "later");
+    let xp = pack(&mut lp, 2, &x);
+    lp.advance(10);
+    let s2 = lp.peers[2].engine.snapshot(&t, &k).unwrap().unwrap();
+    let s2 = pack(&mut lp, 2, &s2);
+    lp.deliver(0, &xp).unwrap();
+    lp.deliver(0, &s2).unwrap();
+    lp.advance(10);
+    lp.peers[0].engine.drop_body(&c, &t, &k).unwrap();
+    packs.extend([old.clone(), cp, s1, xp, s2]);
+    for v in ["one", "two"] {
+        let mut m = Mutation::new();
+        m.purge(PurgeItem::Commit { commit: c, tid: t, ak: k.clone() });
+        m.set(t, &KEPT, &s(v)).unwrap();
+        let p = lp.peers[0].commit(m).unwrap().unwrap();
+        packs.push(pack(&mut lp, 0, &p));
+        lp.advance(10);
+    }
+    lp.deliver(0, &old).unwrap();
+    // 2 demoted as of before its write: both fall
+    let scope = osis_perm::DemotionScope { roles: BTreeMap::from([(ids[2], BTreeSet::from([t]))]), content: BTreeMap::from([(ids[2], BTreeSet::from([t]))]) };
+    let before = WallMs(lp.peers[2].engine.header(&x).unwrap().ts.wall_ms().0 - 1);
+    let f = lp.peers[0].engine.frontier(&scope, before).unwrap();
+    let mut m = Mutation::new();
+    m.op(t, &osis_schema::core_types::ROLES, PathOp { path: vec![], op: Op::Remove(Value::Tid(ids[2])) }).unwrap();
+    m.frontier(f.to_value());
+    let d = lp.peers[0].commit(m).unwrap().unwrap();
+    packs.push(pack(&mut lp, 0, &d));
+    let now = lp.peers[0].engine.now();
+    let mut fresh = osis_node::local_peer::Peer::new(0x9999, now).unwrap();
+    for pk in &packs {
+        fresh.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    }
+    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), fresh.engine.get(&t, &k).unwrap(), "the older write stays superseded");
+    assert_eq!(lp.peers[0].engine.state_digest(&t, &k).unwrap(), fresh.engine.state_digest(&t, &k).unwrap());
+}

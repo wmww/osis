@@ -598,6 +598,11 @@ fn make_valueless(tx: &mut Tx<'_>, c: &CommitId, ai: usize, kept: &[Fragment]) -
             }
             crate::apply::each_held_piece(tx, &s, sai, &mut |tx, mut f| {
                 f.remove_writes(&|d| !o.owns(d));
+                // a copy of none of them is no residue: a second request, the carrying coverers
+                // gone with the first, must not replace the row with nothing
+                if f == Fragment::default() {
+                    return Ok(());
+                }
                 strip(tx, f)
             })?;
         }
