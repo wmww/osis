@@ -415,7 +415,7 @@ mod tests {
                 let origins = listed.iter().map(|c| { let h = tx.core.ix.commits.get(c).unwrap().header.clone(); Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts } }).collect();
                 let node = tx.core.id.tid();
                 let ts = tx.core.hlc.next();
-                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Node, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+                let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins, signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
                 let r = Resolved { tid: copy, ak: body.clone(), fragment: out, lo: 0, hi: 0, schema: None, retention, expires: None, frontiers: None, chunks: Vec::new(), split: false, records: Vec::new() };
                 build_and_apply(tx, plan, vec![r])
             })
