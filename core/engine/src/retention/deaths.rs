@@ -58,19 +58,19 @@ fn own_commits(core: &Core, tid: &Tid, ak: &Ak, o: &osis_crdt::Dot) -> Vec<(Comm
     core.commit_of(tid, ak, o).into_iter().chain(imports).filter_map(|c| held_part(core, &c, tid, ak).map(|ai| (c, ai))).collect()
 }
 
-/// The held bodies with a relative bound carrying the write of death `d` of `(tid, ak)`, each
-/// with the date it dies for that body: its own commits' at `d.at`; every compaction snapshot
-/// taken before `d.at` that carries it (a snapshot carries every write live at its time that
-/// its author had applied, spec/crdt.md §8: `took`, else its body holds a write of the stamp)
-/// at `d.at`; a snapshot taken at or after `d.at` whose author had not applied the superseder
-/// and whose body carries the dying write (`Parts::carries`), at the snapshot's `ts`
-/// (spec/commits.md §5: a snapshot's writes die for it no earlier than its `ts`). Dropped bodies
-/// are not. Cost: in memory, but for a snapshot newer than the write that `took` does not decide
+/// The held bodies with a relative bound carrying the write of death `d` of `(tid, ak)`, dated
+/// `at` (`d.at`, or later for a vouched copy, `replay_all`), each with the date it dies for that
+/// body: its own commits' at `at`; every compaction snapshot taken before `d.at` that carries it
+/// (a snapshot carries every write live at its time that its author had applied, spec/crdt.md
+/// §8: `took`, else its body holds a write of the stamp) at `at`; a snapshot taken at or after
+/// `d.at` whose author had not applied the superseder and whose body carries the dying write
+/// (`Parts::carries`), at `at` or the snapshot's `ts` if later (spec/commits.md §5: a snapshot's
+/// writes die for it no earlier than its `ts`). Dropped bodies are not. Cost: in memory, but for a snapshot newer than the write that `took` does not decide
 /// (its body read, once per `parts`) and a superseder some later snapshot had not applied: the
 /// superseder's body (else the state) joined into a copy of that snapshot's part (once per pair
 /// per `parts`).
-fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -> Result<Vec<(CommitId, usize, Ts)>> {
-    let (dot, at) = (&d.stamp.dot, d.at);
+fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death, at: Ts) -> Result<Vec<(CommitId, usize, Ts)>> {
+    let dot = &d.stamp.dot;
     let core = &*tx.core;
     let mut out: Vec<(CommitId, usize, Ts)> = own_commits(core, tid, ak, dot).into_iter().filter(|(c, ai)| bounded_part(core, c, tid, ak) == Some(*ai)).map(|(c, ai)| (c, ai, at)).collect();
     let snaps: Vec<(Ts, CommitId, usize, bool, bool)> = core
@@ -88,10 +88,10 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -
         if !has && (ts < d.stamp.ts || !parts.holds(tx, &s, ai, &d.stamp)?) {
             continue;
         }
-        if ts < at {
+        if ts < d.at {
             out.push((s, ai, at));
         } else if !saw && parts.carries(tx, tid, ak, &s, ai, d)? {
-            out.push((s, ai, ts));
+            out.push((s, ai, at.max(ts)));
         }
     }
     Ok(out)
@@ -229,14 +229,27 @@ fn add_death(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, at: T
     Ok(())
 }
 
+/// Whether a superseder of `deaths` is a vouched copy, its own delta invalid here: the join gives
+/// the invalid commit's `ts`, and which snapshot's `ts` dates it is `replay_all`'s to say.
+fn by_vouched_copy(core: &Core, tid: &Tid, ak: &Ak, deaths: &[Death]) -> bool {
+    if deaths.is_empty() {
+        return false;
+    }
+    let invalid = crate::apply::invalid_of(core, tid, ak);
+    !invalid.is_empty() && deaths.iter().any(|d| invalid.iter().any(|o| o.owns(d.by.owner())))
+}
+
 /// Records the deaths a join of a valid delta reported, at the superseder's `ts` the join met:
 /// per body, first and last so far, on every held body with a relative bound carrying the
 /// write; drops bodies past keep at most (spec/commits.md §5), in this transaction.
 pub(crate) fn note_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, deaths: &[Death]) -> Result<()> {
+    if by_vouched_copy(tx.core, tid, ak, deaths) {
+        return mark_deaths_due(tx, tid, ak);
+    }
     let mut bodies = BTreeSet::new();
     let mut parts = Parts::default();
     for d in deaths {
-        for (c, ai, at) in carriers(tx, &mut parts, tid, ak, d)? {
+        for (c, ai, at) in carriers(tx, &mut parts, tid, ak, d, d.at)? {
             add_death(tx, tid, ak, &c, ai, at)?;
             bodies.insert((c, ai));
         }
@@ -267,7 +280,9 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
         st.join_into(f.clone(), None, &mut ch);
         undated |= ch.undated();
         let core = &*tx.core;
-        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(core, tid, &fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
+        let joined = ch.into_deaths();
+        undated |= by_vouched_copy(core, tid, ak, &joined);
+        deaths.extend(joined.into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(core, tid, &fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
         Ok(())
     })?;
     #[cfg(test)]
@@ -276,7 +291,8 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
         let w = super::oracle::copies_deaths(tx, c, ai, tid, ak, ts, &|core, d| took(core, tid, &fr, &abs, &d.by))?;
         assert_eq!(a, w, "note_copies streamed vs whole");
     }
-    // a copy of a held creation or delete, or an out-of-order flag: dated from the bodies alone
+    // a copy of a held creation or delete, an out-of-order flag or a vouched copy: dated from the
+    // bodies alone
     if undated {
         mark_deaths_due(tx, tid, ak)?;
     }
@@ -354,8 +370,9 @@ pub(crate) fn rejudge_deaths(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> 
 /// joined before it, which the state shows only the last of: unless it died before (seed
 /// 8413009), it dies at the earliest one newer than it (`TextDeletes`), as its own delta, had it
 /// played, would have (seed 7731022). That death adds to what the join reports, never hides one
-/// (a reset's at the same `ts` dates a snapshot that had not applied it, seed 8413015).
-fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, dead: &mut BTreeSet<Stamp>, dels: Option<&mut TextDeletes>) {
+/// (a reset's at the same `ts` dates a snapshot that had not applied it, seed 8413015). Each death
+/// goes in with its date, `date` of it.
+fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<(Death, Ts)>, dead: &mut BTreeSet<Stamp>, dels: Option<&mut TextDeletes>, date: impl Fn(&Death) -> Ts) {
     let mut ch = Changes::new();
     let mut late = Vec::new();
     if let Some(dels) = dels {
@@ -375,9 +392,12 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
             continue;
         }
         dead.insert(d.stamp.clone());
-        deaths.push(d);
+        deaths.push((d.clone(), date(&d)));
     }
-    deaths.extend(late);
+    deaths.extend(late.into_iter().map(|d| {
+        let at = date(&d);
+        (d, at)
+    }));
 }
 
 /// Each write dies at the first superseding write among the held bodies joined in `(ts, ID)`
@@ -386,8 +406,15 @@ fn join(st: &mut Fragment, f: Fragment, copies: bool, deaths: &mut Vec<Death>, d
 /// commit), a body dropped value-less (expired, purged) as its residue, then the state (live
 /// writes of bodies dropped otherwise); every held body with a relative bound gets the first and
 /// last of its writes' deaths. A superseder whose body was dropped for its keep bounds dates
-/// nothing unless its write is live: a write it superseded dies at a later one here. Cost: the
-/// aspect's held bodies, residues and whole state.
+/// nothing unless its write is live: a write it superseded dies at a later one here.
+///
+/// A valid snapshot's copy of a write whose own delta is invalid supersedes from the snapshot on,
+/// and dates there (spec/commits.md §5): its stamp's `ts` is an invalid commit's, which says
+/// nothing of when a valid write superseded anything. The invariant, which needs no window or
+/// cache: a date is never an invalid commit's `ts` (the state holds such a write only while a
+/// valid snapshot vouches for it, and that snapshot's body plays first), so a valid superseder
+/// arriving later never shows a date earlier than the earliest valid one. Cost: the aspect's held
+/// bodies, residues and whole state.
 fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
     let held: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|x| x.1).collect();
     let un = crate::apply::Unmerge::of(tx, tid, ak)?;
@@ -401,7 +428,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             // supersede like any held (spec/crdt.md §4.7)
             if let Some(mut f) = residue_of(tx, c, tid, ak)? {
                 un.strip(&mut f);
-                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels));
+                join(&mut st, f, false, &mut deaths, &mut dead, Some(&mut dels), |d| d.at);
             }
             continue;
         };
@@ -409,7 +436,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             continue;
         }
         let _s = crate::costs::span("deaths: join bodies");
-        let kind = tx.core.ix.commits.get(c).map(|m| m.header.kind);
+        let (kind, ts) = tx.core.ix.commits.get(c).map(|m| (m.header.kind, m.header.ts)).unzip();
         let cp = kind.is_none_or(|k| !k.has_own_writes());
         // a snapshot's copies of an import's writes play at the import (its dot names the
         // origin); an import's are not removed for another import of the same origin
@@ -428,7 +455,8 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
                 let plays_own = |x: &CommitId, ai: usize| x != c && core.ix.commits.get(x).is_some_and(|m| m.valid_at(ai));
                 f.remove_writes(&|d| if snap { own_commits(core, tid, ak, d).iter().any(|(x, ai)| plays_own(x, *ai)) } else { core.commit_of(tid, ak, d).is_some_and(|x| held_part(core, &x, tid, ak).is_some_and(|ai| plays_own(&x, ai))) });
             }
-            join(&mut st, f, cp, &mut deaths, &mut dead, Some(&mut dels));
+            let date = |d: &Death| if snap && un.bad(d.by.owner()) { ts.map_or(d.at, |ts| d.at.max(ts)) } else { d.at };
+            join(&mut st, f, cp, &mut deaths, &mut dead, Some(&mut dels), date);
             Ok(())
         })?;
     }
@@ -436,23 +464,23 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         let _s = crate::costs::span("deaths: state");
         if let Some(cur) = tx.state(tid, ak)?.cloned() {
             // joined last: no copy meets its deletes
-            join(&mut st, cur, false, &mut deaths, &mut dead, None);
+            join(&mut st, cur, false, &mut deaths, &mut dead, None, |d| d.at);
         }
     }
     // a text creation dies once, at its earliest delete (spec/crdt.md §4.8; a delete over an
     // undelete reports it again)
-    let mut elems: BTreeMap<Stamp, Death> = BTreeMap::new();
-    deaths.retain(|d| {
-        if d.element && elems.get(&d.stamp).is_none_or(|o| d.at < o.at) {
-            elems.insert(d.stamp.clone(), d.clone());
+    let mut elems: BTreeMap<Stamp, (Death, Ts)> = BTreeMap::new();
+    deaths.retain(|(d, at)| {
+        if d.element && elems.get(&d.stamp).is_none_or(|o| *at < o.1) {
+            elems.insert(d.stamp.clone(), (d.clone(), *at));
         }
         !d.element
     });
     deaths.extend(elems.into_values());
     let mut got: BTreeMap<(CommitId, usize), (Ts, Ts)> = BTreeMap::new();
     let mut parts = Parts::default();
-    for d in &deaths {
-        for (c, ai, at) in carriers(tx, &mut parts, tid, ak, d)? {
+    for (d, date) in &deaths {
+        for (c, ai, at) in carriers(tx, &mut parts, tid, ak, d, *date)? {
             let e = got.entry((c, ai)).or_insert((at, at));
             *e = (e.0.min(at), e.1.max(at));
         }
