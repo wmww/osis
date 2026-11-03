@@ -701,13 +701,15 @@ impl Osis {
             return Ok(PreSync::Synced);
         }
         self.act(|l| l.sync.read_receipts(&reads));
+        // ended on a dropped future too: a daemon outlives a client gone mid-demote
+        let reading = ReceiptsGuard { db: self.downgrade(), groups: reads.clone() };
         self.sync_labels();
         let wait = match d.sync {
             WaitForSync::Try(t) => t,
             _ => PRESYNC_WAIT,
         };
         let r = self.groups_synced(Some(groups.clone()), reads.clone(), wait, None).await;
-        self.locked(|l| l.sync.end_receipts(&reads));
+        drop(reading);
         let mut all = groups;
         all.extend(reads);
         match (r, d.sync) {
@@ -1710,6 +1712,20 @@ impl Drop for KeyGuard {
             if let Some(k) = self.link {
                 db.act(|x| x.sync.forget_link(k));
             }
+        }
+    }
+}
+
+/// A pre-sync's receipts-only reads, ended when it goes.
+struct ReceiptsGuard {
+    db: crate::handle::WeakOsis,
+    groups: Vec<Tid>,
+}
+
+impl Drop for ReceiptsGuard {
+    fn drop(&mut self) {
+        if let Some(db) = self.db.hold() {
+            db.locked(|l| l.sync.end_receipts(&self.groups));
         }
     }
 }

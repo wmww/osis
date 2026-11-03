@@ -88,6 +88,8 @@ pub(crate) struct Port {
     pub panic_next: std::sync::atomic::AtomicBool,
     /// Likewise after a Call ran, before its reply: the reply is lost, the write stays applied.
     pub panic_after_call: std::sync::atomic::AtomicBool,
+    /// A test's way to a pairing reply above the small allowance: bytes added to the next.
+    pub pad_pair_reply: AtomicUsize,
     /// A test's way into the gap between a write's route and its lock.
     pub after_route: Mutex<Option<Box<dyn Fn() + Send>>>,
     queued: Mutex<Vec<Job>>,
@@ -96,7 +98,7 @@ pub(crate) struct Port {
 
 impl Port {
     pub fn new() -> Port {
-        Port { panic_next: false.into(), panic_after_call: false.into(), after_route: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
+        Port { panic_next: false.into(), panic_after_call: false.into(), pad_pair_reply: AtomicUsize::new(0), after_route: Mutex::new(None), queued: Mutex::new(Vec::new()), tx: Mutex::new(None) }
     }
 
     /// Queues actions (under the handle lock).
@@ -236,8 +238,10 @@ struct Conn {
     asked: bool,
     /// `settle` calls answered once nothing is left to send.
     settles: Vec<Id>,
-    /// A bundle on its way in pages (`method::EXPORT_BUNDLE`, `BUNDLE_WRITE`).
-    bundle: Vec<u8>,
+    /// A bundle waiting to go out in pages (`method::EXPORT_BUNDLE`), until its last one went.
+    export: Vec<u8>,
+    /// A bundle coming in pages (`method::BUNDLE_WRITE`).
+    import: Vec<u8>,
 }
 
 impl Conn {
@@ -439,7 +443,7 @@ impl Worker {
     fn request(&mut self, db: &Osis, conn: ConnId, tier: Tier, msg: Message) {
         match msg {
             Message::Auth { id, session, .. } => {
-                let new = || Conn { tier, session, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new(), bundle: Vec::new() };
+                let new = || Conn { tier, session, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new(), export: Vec::new(), import: Vec::new() };
                 self.conns.entry(conn).and_modify(|c| c.session = session).or_insert_with(new);
                 if self.session(db, conn).is_none() {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
@@ -676,7 +680,8 @@ impl Worker {
             method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
             method::PAIR_ACCEPT => {
                 let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
-                Value::List(vec![Value::Tid(node), Value::Str(reply.to_string())])
+                let pad = vec![0; db.inner.port.pad_pair_reply.swap(0, Ordering::AcqRel)];
+                Value::List(vec![Value::Tid(node), Value::Str(reply.to_string()), Value::Bytes(pad)])
             }
             method::CONTACT_CARD => Value::Str(db.contact_card()?.to_string()),
             method::PROFILE_OF => c::opt(db.profile_of(a.tid()?)?, Value::Tid),
@@ -707,23 +712,27 @@ impl Worker {
                 let mut b = Vec::new();
                 db.export_bundle(&c::tids(a.next()?)?, &mut b)?;
                 let n = b.len();
-                self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle = b;
+                self.conns.get_mut(&conn).ok_or(Error::Closed)?.export = b;
                 u(n as u64)
             }
             method::BUNDLE_READ => {
                 let (off, n) = (usize::try_from(a.uint()?).unwrap_or(usize::MAX), usize::try_from(a.uint()?).unwrap_or(usize::MAX).min(STREAM_CHUNK));
-                let b = &self.conns.get(&conn).ok_or(Error::Closed)?.bundle;
+                let b = &mut self.conns.get_mut(&conn).ok_or(Error::Closed)?.export;
                 let end = off.saturating_add(n).min(b.len());
-                Value::bytes(b.get(off..end).unwrap_or_default())
+                let page = Value::bytes(b.get(off..end).unwrap_or_default());
+                if end == b.len() {
+                    *b = Vec::new();
+                }
+                page
             }
             method::BUNDLE_WRITE => {
                 let page = a.bytes()?;
-                self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle.extend_from_slice(&page);
+                self.conns.get_mut(&conn).ok_or(Error::Closed)?.import.extend_from_slice(&page);
                 nothing()
             }
             method::IMPORT_BUNDLE => {
                 let want = a.uint()?;
-                let b = std::mem::take(&mut self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle);
+                let b = std::mem::take(&mut self.conns.get_mut(&conn).ok_or(Error::Closed)?.import);
                 if b.len() as u64 != want {
                     return Err(Error::Network("the connection to the node changed during an import: run it again".into()));
                 }

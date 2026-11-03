@@ -371,7 +371,7 @@ fn gt_of(store: &Path) -> String {
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --owner me --in home --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `device ls`, `card show`, `hosting set/show/off`, `hosts add/rm`, `link redeem/revoke`, `demote`, `move`, `bundle export/import`, `pair offer`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `device ls`, `card show`, `hosting set/show/off`, `hosts add/rm`, `link redeem/revoke`, `demote`, `move`, `bundle export/import`, `pair offer`, `device rm`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
@@ -512,7 +512,12 @@ fn daemon_clients_localhost() {
             assert_eq!(run_in(&s, &["bundle", "import"], &bundle.stdout).0, 0);
             let dev = dir("daemon-device");
             pair(&s, &dev, Some(&addr));
-            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 2);
+            let ls = osis(&s, &["device", "ls"]);
+            assert_eq!(ls.lines().count(), 2);
+            let node = field(&osis(&s, &["--json", "whoami"]), "node").to_string();
+            let other = ls.lines().find(|l| *l != node).unwrap().to_string();
+            osis(&s, &["device", "rm", &other, "--sync", "skip"]);
+            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 1);
         }
         drop(host);
         if let Some((ht, w)) = unsynced {

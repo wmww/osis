@@ -133,11 +133,12 @@ pub(crate) mod method {
     /// `[tid, owner, [group*]]` -> tid
     pub const MOVE_THING: u64 = 59;
     /// `[[group*]]` -> length: the bundle waits on this connection for `BUNDLE_READ`, replacing one
-    /// waiting there. A bundle does not fit a frame; held per connection, it goes with it.
+    /// waiting there, until its last page was read. A bundle does not fit a frame; held per
+    /// connection, it goes with it.
     pub const EXPORT_BUNDLE: u64 = 60;
     /// `[offset, n]` -> bytes of the waiting bundle (`n` at most `STREAM_CHUNK`)
     pub const BUNDLE_READ: u64 = 61;
-    /// `[bytes]` -> `[]`: appended to the bundle waiting on this connection for `IMPORT_BUNDLE`
+    /// `[bytes]` -> `[]`: appended to the bundle coming on this connection for `IMPORT_BUNDLE`
     pub const BUNDLE_WRITE: u64 = 62;
     /// `[length]` -> `[]`: imports the waiting bundle, which must have that length (a reconnect
     /// between pages loses what was sent on the old connection)

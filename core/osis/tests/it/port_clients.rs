@@ -587,13 +587,13 @@ fn watches_and_rows() {
     assert!(matches!(c.register_schema_source("x.osis", "version 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
     // the rows of the node's own (the socket's Owner only), those that wait too
     let plain = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    let link = x.n.make_link(x.g, Role::Read, Default::default());
+    let link = x.n.make_link(x.g, Role::Read, LinkOpts { direct: true, ..Default::default() }).unwrap();
     assert!(matches!(block_on(c.demote(x.t, a, Lower::Remove, plain)), Err(Error::Unsupported(_))));
     assert!(matches!(block_on(c.revoke_link(x.t, plain)), Err(Error::Unsupported(_))));
     assert!(matches!(block_on(c.revoke_joiner(x.t, a, plain)), Err(Error::Unsupported(_))));
-    if let Ok(l) = link {
-        assert!(matches!(block_on(c.redeem(&l)), Err(Error::Unsupported(_))));
-    }
+    // refused here: the link's secret never goes to a node that would only refuse it
+    let r = block_on(c.redeem(&link));
+    assert!(matches!(&r, Err(Error::Unsupported(m)) if m.starts_with("a thin client")), "{r:?}");
     assert!(matches!(c.devices(), Err(Error::Unsupported(_))));
     assert!(matches!(c.add_host(&osis::HostAddr::new("quic://x:1", [1; 32])), Err(Error::Unsupported(_))));
     assert!(matches!(c.contact_card(), Err(Error::Unsupported(_))));

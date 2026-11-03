@@ -477,6 +477,34 @@ fn removal_rotates_spec_permissions_3() {
     assert_eq!(x(carol, by_bob), Some(s("bob was here")));
 }
 
+// spec: none (API surface); notes/sync.md Receipts-only reads, notes/client-port.md §2 (rows that wait): a pre-sync's read of a receipts-only group ends with its future, also one dropped before it finished: a daemon outlives a client gone mid-demote
+#[test]
+fn dropped_demote_ends_its_receipts_read() {
+    use std::future::Future;
+    let mut w = World::new();
+    let (alice, others, ids) = people(&mut w, 1);
+    let g = group(&alice);
+    let h = {
+        let mut wr = alice.write();
+        let h = wr.create_in(g, &[]).unwrap();
+        wr.make_group(h).unwrap();
+        wr.commit().unwrap();
+        h
+    };
+    alice.sync(h, &[]).unwrap();
+    alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
+    w.run();
+    drop(others);
+    alice.sync_policy(h, osis::GroupPolicy { receipts_only: true, ..Default::default() }).unwrap();
+    w.run();
+    w.set_online(&alice, false);
+    let mut d = Box::pin(alice.demote(g, ids[0], Lower::Remove, Demotion::default()));
+    assert!(d.as_mut().poll(&mut std::task::Context::from_waker(std::task::Waker::noop())).is_pending());
+    assert_eq!(alice.sync_engine(|s| s.receipts_read(&[h])), None, "reading");
+    drop(d);
+    assert_eq!(alice.sync_engine(|s| s.receipts_read(&[h])), Some(Ok(())), "nobody reads any more");
+}
+
 // spec/permissions.md §5.1 (frontier received), §5.3 (receipts only), notes/sync.md
 // Receipts-only reads: Alice's phone holds group G but none of its subgroup H (receipts-only).
 // Bob writes in both; the phone removes him with the required pre-sync, which reads H's commit

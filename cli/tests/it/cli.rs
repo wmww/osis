@@ -335,6 +335,7 @@ fn sharing_commands_local_plan_cli_4() {
     let other = S::mem();
     let stranger = other.ok(&["whoami"]).out.lines().next().unwrap().split('\t').nth(1).unwrap().to_string();
     assert_eq!(s.code(&["grant", &g, &stranger, "read"]), 3, "keys unknown: import a card first");
+    assert_eq!(s.code(&["device", "rm", &stranger]), 0, "no device of this person: nothing to do");
     assert_eq!(s.code(&["grant", &g, "me", "superuser"]), 2);
     let st = s.ok(&["--json", "status"]).line().to_string();
     assert!(st.starts_with("{\"groups\":[") && st.ends_with("\"split\":[]}"), "{st}");
