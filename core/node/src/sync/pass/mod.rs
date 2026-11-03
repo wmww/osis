@@ -203,13 +203,14 @@ impl SyncEngine {
     /// roster's clock horizon, the next heartbeat. With none of those, one heartbeat interval from
     /// now: what no trigger names, should anything, waits no longer than a heartbeat does.
     fn schedule_pass(&mut self, conn: Option<ConnId>, l: LabelId) {
-        let (now, raw) = (self.now(), self.raw_now());
-        let beats: Vec<u64> = self.state.beats.get(&l).into_iter().chain(self.state.stranded.get(&l)).map(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS)).collect();
+        let now = self.now();
+        // not one past due: the pass just run had its chance (a label no more stranded, no budget)
+        let beats: Vec<u64> = self.state.beats.get(&l).into_iter().chain(self.state.stranded.get(&l)).map(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS)).filter(|t| *t > now).collect();
         let full_passes = self.cfg.full_passes;
         let Some(w) = self.work_mut(conn, l) else { return };
         let due = w.due.keys().next().into_iter().chain(w.due_blobs.keys().next()).chain(w.until.as_ref()).copied();
         let t = due.chain(beats).fold(now.saturating_add(HEARTBEAT_MIN_INTERVAL_MS), u64::min);
-        w.pass_at = if full_passes { 0 } else { raw.saturating_add(t.saturating_sub(now)) };
+        w.pass_at = if full_passes { 0 } else { t };
     }
 
     /// `pass`, at a host.

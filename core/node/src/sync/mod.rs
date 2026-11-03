@@ -1779,7 +1779,12 @@ impl SyncEngine {
 
     /// Session pings, periodic re-syncs, heartbeats and retries.
     fn timers(&mut self, out: &mut Vec<Action>) -> Result<()> {
-        let now = self.raw_now();
+        let (now, corrected) = (self.raw_now(), self.now());
+        // the clock went back: resyncs count from now, not from a time still ahead
+        self.local_last = self.local_last.min(now);
+        for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
+            l.last_sync = l.last_sync.min(now);
+        }
         // what waited for a time (a copy left to its author, a relay wait, a step's back-off)
         let later = self.settle_at.split_off(&now.saturating_add(1));
         let due: BTreeSet<LabelId> = std::mem::replace(&mut self.settle_at, later).into_values().flatten().collect();
@@ -1822,7 +1827,7 @@ impl SyncEngine {
             }
             self.start_label(conn, g, label, out)?;
         }
-        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(now))) {
+        if self.local_any && self.local_last.saturating_add(self.cfg.resync_ms) <= now && (self.local_work.is_empty() || self.local_work.values().any(|w| w.resync_due(corrected))) {
             self.local_dirty = true;
         }
         for (conn, label) in resync {
@@ -1840,7 +1845,7 @@ impl SyncEngine {
                 // subscribed: a pass when something waits for it (`Work::resync_due`: what a pass
                 // left, a heartbeat, a timed bound); unsubscribed, the Sync's end uploads those
                 l.last_sync = now;
-                l.dirty |= l.fill.is_some() || l.work.resync_due(now);
+                l.dirty |= l.fill.is_some() || l.work.resync_due(corrected);
                 self.eph_retry(conn, label, out)?;
             }
         }
