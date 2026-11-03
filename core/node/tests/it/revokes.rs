@@ -24,7 +24,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     net.pair(b, a);
     let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &x, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -40,7 +40,7 @@ fn revoke_about_author_placed_spec_permissions_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -77,7 +77,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
     let r = net.node(4, &[host]);
     let x2 = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
     let x1 = net.group_seeded(b, &[], vec![net.address(host)], 2);
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(b).grant(&x1, &x2, &edge).unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);
@@ -103,7 +103,7 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
     let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
     assert!(net.sync(b).labels().iter().all(|(x, _)| *x != g), "B does not sync G");
     let wt = net.tid(w);
-    let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&x2, &Demotion { holder: wt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let removal = *done.commits.first().unwrap();
     let acts = net.sync(b).carry_out(done).unwrap();
     net.actions(b, acts);

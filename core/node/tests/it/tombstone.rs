@@ -415,7 +415,7 @@ fn a_kicked_writers_tombstone_stays_spec_perm_5_1() {
     assert_eq!(net.engine(b).named_permanent_count().unwrap(), 1);
     let g = net.sync(a).labels().into_iter().find(|x| x.1.id == l).unwrap().0;
     let holder = net.tid(b);
-    let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -501,7 +501,7 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
     net.set_online(a, false);
-    let d = osis_node::flows::Demotion { holder: net.tid(c2), new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: net.tid(c2), new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     net.advance(5_000);
     purge(&mut net, c2, t, m, Retention::default());
@@ -719,7 +719,7 @@ fn a_header_only_some_judge_lasting_is_left_alone_spec_sync_6() {
     net.set_online(d2, false);
     let m = msg(&mut net, b, t, "SECRET", permanent());
     net.run();
-    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: net.tid(x), new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(d2).demote(&g, &d).unwrap();
     net.advance(5_000);
     let p = purge(&mut net, x, t, m, Retention::default());

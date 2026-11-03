@@ -120,7 +120,7 @@ codec_struct! {
     /// `keyset`: on a grant or raise of a holder actor, the key of its `keys.0` commit whose
     /// keyset the granter sealed to (spec/crypto.md §4).
     #[derive(Clone, Debug, PartialEq, Eq)]
-    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie>, 5 keyset: Option<EdgeKey>, 6 keep: bool }
+    pub struct Edge { 0 role: Role, 1 until: Option<WallMs>, 2 invite: Option<Role>, 3 since: Option<EdgeKey>, 4 tied: Option<Tie>, 5 keyset: Option<EdgeKey> }
 }
 codec_struct! {
     /// A keyset: epoch, KEM key, suite ID of the epoch, delete key, and the epochs its rotation
@@ -273,8 +273,30 @@ impl Required {
     }
 }
 
-/// `required.0^`: by AK prefix.
-pub type RequiredRules = BTreeMap<String, Required>;
+codec_struct! {
+    /// `required.0^`: the retention required by AK prefix; `keep`: a removal from the thing keeps
+    /// unless its remover says otherwise (spec/permissions.md §3).
+    #[derive(Clone, Debug, Default, PartialEq, Eq)]
+    pub struct RequiredRules { 0 rules: BTreeMap<String, Required>, 1 keep: bool }
+}
+
+impl RequiredRules {
+    pub fn new() -> RequiredRules {
+        RequiredRules::default()
+    }
+}
+
+impl From<BTreeMap<String, Required>> for RequiredRules {
+    fn from(rules: BTreeMap<String, Required>) -> RequiredRules {
+        RequiredRules { rules, keep: false }
+    }
+}
+
+impl FromIterator<(String, Required)> for RequiredRules {
+    fn from_iter<I: IntoIterator<Item = (String, Required)>>(i: I) -> RequiredRules {
+        BTreeMap::from_iter(i).into()
+    }
+}
 
 /// What `required.0^` value `v` requires (spec/commits.md §5): nothing, if it does not read as the
 /// type or is over the bounds.
@@ -284,12 +306,12 @@ pub fn required_rules(v: &Value) -> RequiredRules {
 
 /// Whether `rules` is within the bounds of one `required.0^` delta.
 pub fn required_fits(rules: &RequiredRules) -> bool {
-    rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES && rules.keys().all(|p| p.len() <= osis_base::format::MAX_AK_BYTES)
+    rules.rules.len() <= osis_base::format::MAX_REQUIRED_ENTRIES && rules.rules.keys().all(|p| p.len() <= osis_base::format::MAX_AK_BYTES)
 }
 
 /// The entry of `rules` governing `ak`: its longest prefix.
 pub fn required_for<'a>(rules: &'a RequiredRules, ak: &str) -> Option<&'a Required> {
-    (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.get(p)))
+    (0..=ak.len()).rev().filter(|n| ak.is_char_boundary(*n)).find_map(|n| ak.get(..n).and_then(|p| rules.rules.get(p)))
 }
 
 codec_struct! {

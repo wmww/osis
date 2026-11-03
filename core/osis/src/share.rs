@@ -22,9 +22,6 @@ pub const PRESYNC_WAIT: Duration = Duration::from_secs(30);
 pub struct EdgeOpts {
     pub until: Option<WallMs>,
     pub invite: Option<Role>,
-    /// What the holder's devices do with their copy when this edge ends: keep it read-only or
-    /// erase it (spec/permissions.md §3, Keep). `None`: as the edge has it, erase on a new one.
-    pub keep: Option<bool>,
 }
 
 /// How `Osis::share_into` places.
@@ -82,8 +79,8 @@ pub struct Demotion {
     /// epochs stays readable only where those secrets are already held. Only after a lockout:
     /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
     pub repudiate: bool,
-    /// Overrides the edge's `keep` in this write (spec/permissions.md §3, Keep): the removed
-    /// holder's devices keep a read-only copy, or erase. `None`: as the edge has it.
+    /// A removal's word (spec/permissions.md §3, Keep): the removed holder's devices keep a
+    /// read-only copy, or erase. `None`: the thing's default (`Osis::set_keep_default`).
     pub keep: Option<bool>,
 }
 
@@ -104,8 +101,6 @@ pub struct LinkOpts {
     /// redeemer removes the link key in its redemption, and a device of this person finalizes
     /// the link when it sees that (spec/permissions.md §9).
     pub single_use: bool,
-    /// A joiner's edge has `keep` (spec/permissions.md §3, Keep), as K's on the target.
-    pub keep: bool,
     /// Opt-in: the link text carries this device's dialable key and relays (never its lan
     /// secret; spec/permissions.md §9), so a redeemer that shares no host with it reaches it
     /// directly while it is online. Anyone holding the link can dial this device until the link
@@ -331,7 +326,7 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
 }
 
 fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
-    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None, keyset: None, keep: o.keep.unwrap_or(false) }
+    ct::Edge { role, until: o.until, invite: o.invite, since: None, tied: None, keyset: None }
 }
 
 fn share_of(e: crate::Edge) -> Share {
@@ -486,9 +481,7 @@ impl Osis {
             // an edge change keeps its tie; a new hand grant is untied
             let cur = e.roster(&target).get(&holder).copied();
             let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
-            // ... and its `keep`, unless this says
-            let keep = opts.keep.or(cur.map(|x| x.keep)).unwrap_or(false);
-            let done = e.grant(&target, &holder, &ct::Edge { tied, keep, ..edge(role, opts) }).map_err(needs_admin)?;
+            let done = e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)?;
             // after the edge, as `make_link`: its first pass then knows who reads it (`reach.0`). A
             // crash or failure between leaves the edge alone, the call unacknowledged: the same
             // grant again makes the label (separate transactions; one would save only that retry)
@@ -553,7 +546,7 @@ impl Osis {
                 true => Some(e.placement(&t, &g, opts.subgroup)?.ok_or_else(|| Error::Invalid(format!("{t} is not placed in {g} here")))?),
                 false => None,
             };
-            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None, keep: existing.is_some_and(|x| x.keep) };
+            let edge = ct::Edge { role, until: None, invite: None, since: None, tied: tie.map(flows::tied::tie_ct), keyset: None };
             e.grant(&t, &g, &edge).map_err(needs_admin)
         })?;
         self.carry(done)?;
@@ -588,7 +581,7 @@ impl Osis {
             return Ok(());
         }
         let done = self.guarded(&[g, t], |e| match e.may_remove(&t, &g) {
-            Some(flows::Untie::SelfRemoval) => Ok(e.demote(&t, &flows::Demotion { holder: g, new: None, presync: PreSync::Synced })?),
+            Some(flows::Untie::SelfRemoval) => Ok(e.demote(&t, &flows::Demotion { holder: g, new: None, presync: PreSync::Synced, keep: None })?),
             Some(flows::Untie::Explicit) => Err(Error::Invalid(format!("this node is an admin of {t}: use demote"))),
             None => Err(Error::Permission { tid: g, needs: Role::Admin }),
         })?;
@@ -758,14 +751,13 @@ impl Osis {
         let new = match to {
             Lower::To(role) => {
                 let cur = self.roster(t).get(&m).copied().ok_or(Error::Invalid(format!("{m} is no holder of {t}")))?;
-                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None, keep: d.keep.unwrap_or(cur.keep) })
+                Some(ct::Edge { role, until: cur.until, invite: cur.invite.map(|i| i.min(role)), since: None, tied: self.engine(|e| e.roster(&t).get(&m).and_then(|x| x.tied)).map(flows::tied::tie_ct), keyset: None })
             }
-            // the override in the write that ends the edge: `until` 0, gone at every node's clock
-            Lower::Remove => self.roster(t).get(&m).copied().filter(|cur| d.keep.is_some_and(|k| k != cur.keep)).map(|cur| ct::Edge { role: cur.role, until: Some(WallMs(0)), invite: None, since: None, tied: None, keyset: None, keep: !cur.keep }),
+            Lower::Remove => None,
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
         let presync = self.presync(things, d).await?;
-        let fd = flows::Demotion { holder: m, new, presync };
+        let fd = flows::Demotion { holder: m, new, presync, keep: d.keep };
         let done = self.guarded(&[t], |e| (if d.repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
         self.carry(done)
     }
@@ -777,8 +769,15 @@ impl Osis {
         }
         let t = self.resolved(target);
         let me = self.me();
-        let done = self.guarded(&[t], |e| Ok(e.demote(&t, &flows::Demotion { holder: me, new: None, presync: PreSync::Synced })?))?;
+        let done = self.guarded(&[t], |e| Ok(e.demote(&t, &flows::Demotion { holder: me, new: None, presync: PreSync::Synced, keep: None })?))?;
         self.carry(done)
+    }
+
+    /// Sets whether a removal from `thing` keeps by default (spec/permissions.md §3, Keep): an
+    /// admin's setting, beside the retention `thing` requires; a removal's own word overrides it.
+    pub fn set_keep_default(&self, thing: Tid, keep: bool) -> Result<()> {
+        let rules = self.get(thing, ct::REQUIRED)?.unwrap_or_default();
+        self.write_with(|w| w.at(thing, ct::REQUIRED).set(&ct::RequiredRules { keep, ..rules }))
     }
 
     /// The actors whose read-only copy this node keeps after losing them (spec/permissions.md §3,
@@ -813,7 +812,7 @@ impl Osis {
     /// `revoke_link`.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
-            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct), Value::Bool(opts.keep)])?;
+            let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
             return Ok(ShareLink(crate::port::codec::Args::of(vec![v]).text()?));
         }
         let t = self.resolved(target);
@@ -830,7 +829,7 @@ impl Osis {
         let (mut link, keep, done) = self.locked(|l| {
             self.guard_local(l, &[t])?;
             let label = self.grant_needs_label(l, t, None)?;
-            let made = l.engine().create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use, keep: opts.keep }).map_err(needs_admin)?;
+            let made = l.engine().create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
             // K is on it before the label's first pass: this device's `reach.0` never goes under
             // it, and nothing rotates (spec/permissions.md §4, §9)
             if label {
@@ -963,16 +962,7 @@ impl Osis {
         });
         let say = d.keep;
         let presync = self.presync(things, d).await?;
-        // the removal resets what it is written over, in any order (spec/permissions.md §2): saying
-        // otherwise is a change of the edge just before (the commit removing L too takes no expired
-        // write)
-        let change = self.engine(|e| e.roster(&id).get(&m).copied()).filter(|cur| say.is_some_and(|k| k != cur.keep));
-        if let Some(cur) = change {
-            let edge = ct::Edge { role: cur.role, until: cur.until, invite: cur.invite, since: None, tied: None, keyset: None, keep: !cur.keep };
-            let done = self.guarded(&[id], |e| e.grant(&id, &m, &edge).map_err(needs_admin))?;
-            self.carry(done)?;
-        }
-        let done = self.guarded(&[id], |e| e.revoke_joiner(&id, &l, &m, presync).map_err(needs_admin))?;
+        let done = self.guarded(&[id], |e| e.revoke_joiner(&id, &l, &m, presync, say).map_err(needs_admin))?;
         self.carry(done)
     }
 

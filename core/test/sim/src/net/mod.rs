@@ -1366,7 +1366,7 @@ impl NetSim {
 
     /// Node `n` grants `holder` `role` on `target` (spec/permissions.md §2).
     pub fn grant(&mut self, n: usize, target: Tid, holder: Tid, role: Role) -> Res<()> {
-        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let edge = ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
         let r = self.engine(n)?.grant(&target, &holder, &edge);
         let done = r.map_err(|e| self.fail(format!("node {n} grant: {e}")))?;
         self.carry(n, done)
@@ -1374,7 +1374,7 @@ impl NetSim {
 
     /// Node `n` removes `holder` from `target` with the rotation (spec/permissions.md §3, §5).
     pub fn remove(&mut self, n: usize, target: Tid, holder: Tid) -> Res<()> {
-        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced };
+        let d = osis_node::flows::Demotion { holder, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
         let r = self.engine(n)?.demote(&target, &d);
         let done = r.map_err(|e| self.fail(format!("node {n} remove: {e}")))?;
         self.carry(n, done)

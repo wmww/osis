@@ -28,8 +28,8 @@ fn edge_key() -> EdgeKey {
 /// (case, AK, value) per core aspect a commit writes; inputs are repeated bytes.
 fn samples() -> Vec<(&'static str, &'static str, Value)> {
     let holders: Holders = BTreeMap::from([
-        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), keyset: None, keep: true }),
-        (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }),
+        (tid(5), Edge { role: Role::Write, until: Some(WallMs(1_700_000_000_000)), invite: Some(Role::Read), since: Some(edge_key()), tied: Some(Tie { ts: edge_key().ts, source: Source::Commit(CommitId([7; 32])), ctr: 2, subgroup: false }), keyset: None }),
+        (tid(7), Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None }),
     ]);
     let keys = Keys {
         read: Some(Keyset { epoch: epoch(1), kem_key: KemKey::X25519MlKem768(vec![9; 1216]), suite: 1, delete_key: SigningKey::Ed25519(vec![8; 32]), supersedes: BTreeSet::from([epoch(0)]) }),

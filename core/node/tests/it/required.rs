@@ -217,7 +217,7 @@ fn setting_itself_fixed_spec_commits_5() {
     // `set` writes the whole value, so the delta alone reads it
     let c2 = require(&mut lp, 0, d, &rules(&[("t:", permanent()), ("t:y", Retention::default())]));
     let sets = lp.peers[0].engine.core.ix.required.get(&d).unwrap();
-    assert_eq!(sets.iter().find(|x| x.0.commit == c2).unwrap().1.len(), 2);
+    assert_eq!(sets.iter().find(|x| x.0.commit == c2).unwrap().1.rules.len(), 2);
     // an undo of it writes nothing on it
     let mut m = Mutation::new();
     m.undo(c2);
@@ -970,16 +970,16 @@ fn signer_whose_grant_fell_alike_in_every_order_spec_commits_4() {
 fn unmeetable_entry_refused_spec_commits_5() {
     let (mut lp, d) = setup(439);
     let keep = Retention { by: PurgeBy::AuthorOrAdmin, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
-    let at_most: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]);
-    let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]);
-    let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]);
+    let at_most: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(keep, None))]).into();
+    let at_once: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(0)))]).into();
+    let beyond: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(permanent(), Some(osis_commit::FOREVER)))]).into();
     for r in [at_most, at_once, beyond] {
         let mut m = Mutation::new();
         m.set(d, &ct::REQUIRED, &r).unwrap();
         assert!(lp.peers[0].commit(m).is_err(), "{r:?}");
     }
     let writer = Retention { by: PurgeBy::Writer, at_most: Bound { abs: None, rel: Some(1_000) }, ..Retention::default() };
-    let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]);
+    let fine: RequiredRules = BTreeMap::from([("t:".to_string(), Required::new(writer, Some(60_000)))]).into();
     require(&mut lp, 0, d, &fine);
     let mut m = Mutation::new();
     m.set(d, &ak("t:x.0"), &s("x")).unwrap();

@@ -180,7 +180,7 @@ fn reads_are_exactly_the_actors() {
     assert!(x.n.groups_of(x.t).item_of.contains(&x.h));
     // what it may not read: the person, its node, a link, another group
     let link_target = x.u;
-    let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true, keep: false }).unwrap();
+    let _link = x.n.make_link(link_target, Role::Read, LinkOpts { until: None, single_use: false, direct: true }).unwrap();
     let k = x.n.links(link_target)[0].id;
     let home = x.n.get(x.n.me(), ct::GROUP).unwrap().unwrap();
     let seed = home.items.iter().copied().find(|i| x.n.aspects(*i).unwrap().iter().any(|a| a.as_str() == "link:seed.0")).unwrap();

@@ -283,17 +283,17 @@ impl<T: Rec> Rec for Option<T> {
 }
 impl Rec for osis_perm::Edge {
     fn to(&self) -> Value {
-        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to(), self.keyset.to(), Value::Bool(self.keep)])
+        Value::List(vec![self.role.to(), self.until.map(|u| u.0).to(), self.invite.to(), self.since.to(), self.tied.map(crate::flows::tied::tie_ct).as_ref().map(Codec::to_value).to(), self.keyset.to()])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
-        let [role, until, invite, since, tied, keyset, keep] = x.as_slice() else { return None };
+        let [role, until, invite, since, tied, keyset] = x.as_slice() else { return None };
         let until = <Option<u64> as Rec>::from(until)?.map(WallMs);
         let tied = match <Option<Value> as Rec>::from(tied)? {
             None => None,
             Some(t) => Some(crate::flows::tied::tie_perm(osis_schema::core_types::Tie::from_value(&t).ok()?)),
         };
-        let e = osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied, keyset: Rec::from(keyset)?, keep: *keep == Value::Bool(true) };
+        let e = osis_perm::Edge { role: Rec::from(role)?, until, invite: Rec::from(invite)?, since: Rec::from(since)?, tied, keyset: Rec::from(keyset)? };
         // as `validity::edge_of` reads them
         e.well_formed().then_some(e)
     }

@@ -533,7 +533,7 @@ fn replaced_label_dropped_when_admin_edge_expires_spec_sync_2() {
     net.pair(b, a);
     let until = osis_base::WallMs(net.now() + 3_600_000);
     let bt = net.tid(b);
-    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+    let done = net.engine(a).grant(&g, &bt, &ct::Edge { role: Role::Admin, until: Some(until), invite: None, since: None, tied: None, keyset: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.pair(a, b);
@@ -584,7 +584,7 @@ fn grant_by_inbox_end_to_end_spec_sync_3() {
     let (_, done) = net.engine(a).create_label(&g, &[addr]).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Inbox { .. })));
     let acts = net.sync(a).carry_out(done).unwrap();
@@ -654,7 +654,7 @@ fn grant_by_inbox_reads_earlier_content_spec_crypto_4() {
     for _ in 0..3 {
         net.advance(70_000);
     }
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -793,7 +793,7 @@ fn removal_placed_first_under_every_label_spec_perm_3() {
     let ct_ = net.tid(c);
     // a content write not yet uploaded, then the removal
     let after = net.write(a, t, "after");
-    let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct_, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     assert!(done.deliveries.iter().any(|d| matches!(d, Delivery::First { .. })));
     let removal = done.commits[0];
     let h = net.engine(a).header(&removal).unwrap();
@@ -1289,7 +1289,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.person);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let blob = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");
     // everything but the commits writing g's `keys.0` reaches b directly; the grant by inbox
@@ -1310,7 +1310,7 @@ fn grant_by_inbox_writes_before_keys_spec_crypto_7() {
     let h = net.engine(b).header(&c).unwrap();
     let admin = net.engine(a).epochs(&g).unwrap().admin.newest_held().map(|(_, s)| osis_crypto::DeleteSecret::derive(s).verifying_key().to_bytes()).unwrap();
     assert!(h.keys.iter().any(|k| k.level == 1 && k.key == admin), "b lists g's admin delete key");
-    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(b).demote(&g, &Demotion { holder: bob.person, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let _ = done;
 }
 
@@ -1341,7 +1341,7 @@ fn inbox_hints_only_from_admin_grants_spec_crypto_7() {
     let g = e.new_thing(&mut m, alice.person);
     m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
     e.commit(m).unwrap();
-    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
     net.engine(a).grant(&g, &carl.person, &edge).unwrap();
     let done = net.engine(a).grant(&g, &bob.person, &edge).unwrap();
     let genuine = done.deliveries.iter().find_map(|d| if let Delivery::Inbox { blob, .. } = d { Some(blob.clone()) } else { None }).expect("an inbox blob");

@@ -13,7 +13,7 @@ use osis_schema::core_types as ct;
 fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, osis_base::CommitId, osis_node::flows::Done) {
     let g = net.group(0, &[(1, Role::Read)], &[host]);
     let b = net.tid(1);
-    let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None, keep: false };
+    let raise = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None };
     let done = net.engine(0).grant(&g, &b, &raise).unwrap();
     let acts = net.sync(0).carry_out(done).unwrap();
     net.actions(0, acts);
@@ -21,7 +21,7 @@ fn invite(net: &mut Net, host: usize) -> (osis_base::Tid, osis_base::LabelId, os
     net.pair(2, 1);
     let l = net.engine(0).group_labels(&g).unwrap()[0].id;
     let c = net.tid(2);
-    let grant = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let grant = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(1).grant(&g, &c, &grant).unwrap();
     let commit = *done.commits.last().unwrap();
     (g, l, commit, done)
@@ -78,7 +78,7 @@ fn queued_deposit_survives_forgetting_spec_sync_5() {
     net.sync(1).carry_out(done).unwrap();
     // node 1 loses the group before it is back online
     let b = net.tid(1);
-    let d = osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: b, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(0).demote(&g, &d).unwrap();
     // the admin stays offline: the label keeps the deposit key node 1 signed with (the removal
     // refreshed the deposit seed, spec/crypto.md §3; registered, it refuses node 1's deposit)
@@ -179,7 +179,7 @@ fn link_setup_at(net: &mut Net, k: &[usize]) -> (usize, usize, osis_base::Tid, o
     let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
     net.actions(a, acts);
     net.run();
-    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true, keep: false };
+    let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: k.iter().map(|s| net.address(*s)).collect(), peers: Vec::new(), single_use: true };
     let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
     carry(net, a, done);
     net.run();
@@ -314,7 +314,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     // K (label at s1) with holder b, a holder of T (label at s0)
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(&mut net, a, done);
     net.run();
@@ -322,7 +322,7 @@ fn removal_copies_not_held_spec_permissions_3() {
     net.blocked.insert((a, s1));
     net.set_online(a, true);
     let bt = net.tid(b);
-    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+    let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(a).demote(&k, &d).unwrap();
     let c = *done.commits.last().unwrap();
     carry(&mut net, a, done);
@@ -350,7 +350,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let (g, l, c, done) = invite(&mut net, host);
     net.pair(3, 0);
     let d = net.tid(3);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let grant = net.engine(0).grant(&g, &d, &edge).unwrap();
     carry(&mut net, 0, grant);
     net.run();
@@ -360,7 +360,7 @@ fn queued_deposit_after_seed_refresh_spec_sync_5() {
     let actor = net.engine(0).group_actor(&g);
     let done = net.engine(0).refresh_deposit_seed(&actor).unwrap();
     carry(&mut net, 0, done);
-    let demotion = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demotion = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let done = net.engine(0).demote(&g, &demotion).unwrap();
     carry(&mut net, 0, done);
     for _ in 0..3 {
@@ -422,7 +422,7 @@ fn holder_group(net: &mut Net) -> (usize, usize, osis_base::Tid, osis_base::Tid)
     let b = net.node(41, &[s0, s1]);
     let k = net.group(a, &[(b, Role::Write)], &[s1]);
     let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&t, &k, &edge).unwrap();
     carry(net, a, done);
     net.run();
@@ -453,7 +453,7 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
         let b2 = net.node(42, &[s0, s1]);
         let k = net.group(a, &[(b, Role::Write), (b2, Role::Write)], &[s1]);
         let t = net.group_seeded(a, &[], vec![net.address(s0)], 2);
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
         let done = net.engine(a).grant(&t, &k, &read).unwrap();
         carry(&mut net, a, done);
         net.run();
@@ -463,12 +463,12 @@ fn first_copy_survives_a_crash_spec_permissions_3() {
         net.blocked.insert((a, s1));
         if crash == "while it waits" {
             let bt = net.tid(b);
-            let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced };
+            let d = osis_node::flows::Demotion { holder: bt, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
             let done = net.engine(a).demote(&k, &d).unwrap();
             carry(&mut net, a, done);
         }
         let b2t = net.tid(b2);
-        let d = osis_node::flows::Demotion { holder: b2t, new: Some(read.clone()), presync: osis_node::flows::PreSync::Synced };
+        let d = osis_node::flows::Demotion { holder: b2t, new: Some(read.clone()), presync: osis_node::flows::PreSync::Synced, keep: None };
         let done = net.engine(a).demote(&k, &d).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::First { under, .. } if under.contains(&t))));
         let c = *done.commits.last().unwrap();
@@ -501,7 +501,7 @@ fn removal_copy_survives_a_crash_spec_permissions_3() {
         let (a, _, k, t) = holder_group(&mut net);
         let s1 = 1;
         let kl = net.engine(a).group_labels(&k).unwrap()[0].id;
-        let d = osis_node::flows::Demotion { holder: k, new: None, presync: osis_node::flows::PreSync::Synced };
+        let d = osis_node::flows::Demotion { holder: k, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
         let done = net.engine(a).demote(&t, &d).unwrap();
         assert!(done.deliveries.iter().any(|d| matches!(d, osis_node::flows::Delivery::Removal { under, .. } if *under == k)));
         let c = *done.commits.last().unwrap();
@@ -540,7 +540,7 @@ fn link_card_survives_a_crash_spec_permissions_9() {
         let (_, acts) = net.sync(a).create_label(&t, home.clone()).unwrap();
         net.actions(a, acts);
         net.run();
-        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true, keep: false };
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: None, hosts: vec![net.address(s1)], peers: Vec::new(), single_use: true };
         let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
         let card = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Certificate { commits, under } = d { (*under == link.k).then(|| commits[0]) } else { None }).unwrap();
         if crash {

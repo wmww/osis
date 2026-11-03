@@ -23,7 +23,7 @@ fn typed(v: &Value, name: &str) -> Option<Value> {
 
 pub(crate) fn edge_of(v: &Value) -> Option<Edge> {
     let e = ct::Edge::from_value(&typed(v, "edge")?).ok()?;
-    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of), keep: e.keep };
+    let edge = Edge { role: e.role, until: e.until, invite: e.invite, since: e.since.map(point_of), tied: e.tied.map(crate::flows::tied::tie_perm), keyset: e.keyset.map(point_of) };
     edge.well_formed().then_some(edge)
 }
 
@@ -751,6 +751,18 @@ fn in_force(judge: &mut Judge<'_>, tid: &Tid, ak: &str, at: &Point) -> Option<(P
     let valid = judge.settings(tid);
     let (p, rules) = valid.get(valid.partition_point(|x| x.0 < *at).checked_sub(1)?)?;
     Some((*p, ct::required_for(rules, ak).copied()))
+}
+
+/// Whether a removal from `tid` at key `at` keeps by default: the `keep` of the setting in force
+/// (spec/permissions.md §3; none: it erases).
+pub(crate) fn keep_in_force(core: &Core, tid: &Tid, at: &Point) -> bool {
+    let valid = Judge::new(core).settings(tid);
+    valid.partition_point(|x| x.0 < *at).checked_sub(1).and_then(|i| valid.get(i)).is_some_and(|x| x.1.keep)
+}
+
+/// `keep_in_force` for a write this node makes now: after every setting it holds.
+pub(crate) fn keep_now(core: &Core, tid: &Tid) -> bool {
+    keep_in_force(core, tid, &Point { ts: core.hlc.peek(), node: core.id.tid(), commit: CommitId([0xff; 32]) })
 }
 
 /// The requirement in force for a write of `ak` on `tid` by `node` at `ts` (the writer's side).
@@ -1630,9 +1642,10 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         // spec/permissions.md §9, spec/commits.md §2)
         let redemption = holders.len() == 2 && holders.first().map(|m| m.0) == holders.last().map(|m| m.0) && changed.iter().any(|c| c.1 == h.author && c.2.is_none()) && changed.iter().any(|c| c.1 != h.author && c.2.is_some());
         // or an explicit removal of several others' edges on one target (a link joiner with
-        // the link key), under one frontier and one rotation: no edge of it a self-removal
+        // the link key), under one frontier and one rotation: no edge of it a self-removal, each
+        // gone or saying keep
         let first = holders.first().map(|m| m.0);
-        let removal = h.frontier.is_some() && changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none() && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
+        let removal = h.frontier.is_some() && changed.iter().all(|c| Some(c.0) == first && c.1 != h.author && c.2.is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, &c.0, &c.1, h.ts));
         if !redemption && !removal {
             return Err(Error::BadInput("a role commit changes more than one edge"));
         }
@@ -1653,7 +1666,7 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
         let old = core.timelines.get(target).map(|tl| tl.roster(target, At::END)).and_then(|r| r.get(m).copied());
         let demotes = match (old, new) {
             (Some(o), None) => o.role >= Role::Read,
-            (Some(o), Some(n)) => n.role < o.role,
+            (Some(o), Some(n)) => n.role < o.role || n.says_keep(),
             _ => false,
         };
         // a self-removal carries no rotation: the next node that may rotate does it
@@ -1689,7 +1702,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
         let done = lp.peers[0].engine.grant(&t, &b, &edge).unwrap();
         let grant = *done.commits.last().unwrap();
         let h = lp.peers[0].engine.header(&grant).unwrap();
@@ -1721,7 +1734,7 @@ mod tests {
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(WallMs(1_700_000_100_000)), invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        crate::flows::put_edge(&mut m, t, b, &ct::Edge { role: Role::Write, until: Some(WallMs(1_700_000_100_000)), invite: None, since: None, tied: None, keyset: None }).unwrap();
         lp.peers[0].commit(m).unwrap();
         lp.sync_all().unwrap();
         // the role field alone, into the grant's entry: admin, with the `until` left behind
@@ -1747,7 +1760,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         lp.sync_all().unwrap();
         // the invite holder grants c and also writes a box keyed to the admin
@@ -1789,7 +1802,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
         lp.sync_all().unwrap();
         // a grant of e the receivers have not seen yet
@@ -1838,7 +1851,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let read = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None, keep: false };
+        let read = ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &b, &read).unwrap();
         let ak = osis_base::Ak::new("secrets.0").unwrap();
         let st = lp.peers[0].engine.state(&t, &ak).unwrap().unwrap();
@@ -1927,7 +1940,7 @@ mod tests {
         let shallow = lp.peers[0].engine.new_thing(&mut m, me);
         lp.peers[0].commit(m).unwrap();
         let edge_in = |m: &mut Mutation, t: Tid, holder: Tid| {
-            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }.to_value()) }).unwrap();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }.to_value()) }).unwrap();
         };
         let edge = |t: Tid, holder: Tid| {
             let mut m = Mutation::new();
@@ -1965,7 +1978,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &r, &read).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
@@ -2013,7 +2026,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let done = lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        let done = lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         let grant = *done.commits.last().unwrap();
         let mut h = (*lp.peers[0].engine.header(&grant).unwrap()).clone();
         let ai = h.aspects.iter().position(|x| x.ak.as_str() == "secrets.0").unwrap();
@@ -2051,7 +2064,7 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         lp.sync_all().unwrap();
         assert_eq!(lp.peers[1].engine.role_on(&t), Some(Role::Write));
         let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
@@ -2103,7 +2116,7 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         lp.sync_all().unwrap();
         let keys = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
@@ -2138,7 +2151,7 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         lp.sync_all().unwrap();
         let keys_ak = osis_base::Ak::new("keys.0").unwrap();
         let before = lp.peers[0].engine.get_typed(&t, &ct::KEYS).unwrap().unwrap();
@@ -2178,7 +2191,7 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let we = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let we = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &w1, &we).unwrap();
         lp.peers[0].engine.grant(&t, &w2, &we).unwrap();
         let g = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, ..we.clone() }).unwrap().commits.last().unwrap();
@@ -2228,11 +2241,11 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let e = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let e = |role| ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &p, &e(Role::Admin)).unwrap();
         lp.peers[0].engine.grant(&t, &r, &e(Role::Read)).unwrap();
         lp.sync_all().unwrap();
-        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, presync: crate::flows::PreSync::Synced }).unwrap().commits;
+        let rot = lp.peers[1].engine.demote(&t, &crate::flows::Demotion { holder: r, new: None, presync: crate::flows::PreSync::Synced, keep: None }).unwrap().commits;
         lp.sync_all().unwrap();
         let ep = lp.peers[0].engine.core.epochs(&t).unwrap().role(Role::Read).newest().unwrap();
         let intro = |lp: &LocalPeer| lp.peers[0].engine.core.ix.epoch_intro.get(&(t, Role::Read, ep)).map(|v| v.1);
@@ -2273,7 +2286,7 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &w, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let mut m = Mutation::new();
@@ -2292,7 +2305,7 @@ mod keys_tests {
             assert_eq!(lp.peers[i].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), before, "peer {i}");
         }
         // a read box: the writer may remove it, judged alike before and after its grant arrives
-        let grant = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap().commits.last().unwrap();
+        let grant = *lp.peers[0].engine.grant(&t, &r, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap().commits.last().unwrap();
         let grant = lp.peers[0].engine.package(&grant).unwrap().unwrap();
         lp.deliver(1, &grant).unwrap();
         let rk = lp.peers[1].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap().boxes.keys().find(|k| k.holder == r).unwrap().clone();
@@ -2323,7 +2336,7 @@ mod keys_tests {
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
         let wt = lp.peers[1].engine.tid();
-        lp.peers[0].engine.grant(&t, &wt, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &wt, &ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
@@ -2354,11 +2367,11 @@ mod keys_tests {
         let t = lp.peers[0].engine.new_thing(&mut m, me);
         m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None, keep: false }).unwrap();
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Read, until: None, invite: Some(Role::Read), since: None, tied: None, keyset: None }).unwrap();
         lp.sync_all().unwrap();
         let secrets = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let mut m = Mutation::new();
-        crate::flows::put_edge(&mut m, t, c, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }).unwrap();
+        crate::flows::put_edge(&mut m, t, c, &ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None }).unwrap();
         m.set(t, &osis_base::Ak::new("secrets.0").unwrap(), &Value::Int(1)).unwrap();
         force(&mut lp, 1, m);
         lp.sync_all().unwrap();

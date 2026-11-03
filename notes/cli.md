@@ -63,7 +63,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `place` / `unplace` / `sub add/rm` / `groups` | `Write::place/unplace/add_subgroup/remove_subgroup`, `groups_of` (lines `item`/`subgroup`/`within` TAB group) | now |
 | `roster T [--watch]` / `role T` / `via T HOLDER` | `roster`, `watch_roster` / `role_on` / `holder_path` | now |
 | `now` | `now` | now |
-| `grant [--keep]` / `edge [--keep B]` / `demote [--keep B]` / `leave` / `kept [--drop A]` | `grant` / `change_edge` / `demote` / `leave` / `kept_copies`, `drop_kept` | now |
+| `grant` / `edge` / `demote [--keep B]` / `leave` / `keep-default T B` / `kept [--drop A]` | `grant` / `change_edge` / `demote` / `leave` / `set_keep_default` / `kept_copies`, `drop_kept` | now |
 | `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |
 | `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |

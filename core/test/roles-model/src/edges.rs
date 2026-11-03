@@ -6,7 +6,7 @@
 //! the commit: an op lowering the author's own edge is a self-removal, always applied and
 //! attributed to the author's class (Admin, its invite level, else SelfOnly: no class); an
 //! admin's (owner, or an alive admin edge) other ops apply (Admin); otherwise an op applies iff
-//! it adds an edge, role ≤ the author's invite, for an actor with no alive edge (Invite, with
+//! it adds an edge alive when written, role ≤ the author's invite, for an actor with no alive edge (Invite, with
 //! the author's invite level).
 //!
 //! Audit (demoter-frontier rule of main.rs): `held[x]` is the highest class (admin above every
@@ -206,7 +206,7 @@ impl EHist {
                     Attr::Admin
                 } else {
                     match new {
-                        Some(e) if auth(edges[x], w.t).0 == Role::None && e.role <= inv && e.invite <= e.role && inv > Role::None => Attr::Invite(inv),
+                        Some(e) if w.t < e.until && auth(edges[x], w.t).0 == Role::None && e.role <= inv && e.invite <= e.role && inv > Role::None => Attr::Invite(inv),
                         _ => Attr::Skipped,
                     }
                 }

@@ -91,7 +91,7 @@ fn revived_body_uploaded_again_after_timed_delete_spec_commits_5() {
         // b revoked from before its write: v2 is void, v1 live again at a
         let bt = net.tid(b);
         net.set_online(b, false);
-        let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
+        let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), keep: None };
         let done = net.engine(a).demote(&g, &d).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);
@@ -160,7 +160,7 @@ fn late_holder_judges_backdated_revoke_alike_spec_permissions_5() {
     net.advance(1_000);
     let bt = net.tid(b);
     net.set_online(b, false);
-    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)) };
+    let d = Demotion { holder: bt, new: None, presync: PreSync::Backdated(osis_base::WallMs(before)), keep: None };
     let done = net.engine(a).demote(&g, &d).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

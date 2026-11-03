@@ -273,7 +273,7 @@ fn removed_admin_cannot_backdate_removers_edge_spec_permissions_5_1() {
     w.until(bob.demote(g, c, Lower::Remove, Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }), 1000, 10).unwrap();
     w.run();
     let until = osis::WallMs(w.now() + 3_600_000);
-    carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None, keep: None }).unwrap();
+    carol.change_edge(g, b, Role::Admin, osis::EdgeOpts { until: Some(until), invite: None }).unwrap();
     assert_eq!(carol.roster(g).get(&b).and_then(|e| e.until), Some(until), "carol wrote it");
     // straight to Alice and Bob (G's hosts refuse her stale write key)
     deliver(&carol, &alice);
