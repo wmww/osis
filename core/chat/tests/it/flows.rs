@@ -1066,3 +1066,27 @@ fn join_held_chat() {
     assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c, "again");
     assert!(matches!(w.until(join(&e, &one), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
 }
+
+// spec: none. notes/chat.md: a link whose target names a held chat but whose key is another chat's opens the held chat and redeems nothing (the target is the link text's word); someone kicked with a kept copy does not hold the chat, so a link redeems and rejoins
+#[test]
+fn join_held_target_redeems_nothing_kicked_rejoins() {
+    let Room { mut w, a, b, c, bob } = room(Options::default());
+    let c2 = create(&a, &Options::default()).unwrap();
+    let l = link(&a, c, Role::Write, false).unwrap();
+    let l2 = link(&a, c2, Role::Write, false).unwrap();
+    w.run();
+    let mut crafted = osis_label::ShareLink::from_text(&l2.to_string()).unwrap();
+    crafted.target = c;
+    let crafted: osis::ShareLink = crafted.to_text().unwrap().parse().unwrap();
+    assert_eq!(w.until(join(&b, &crafted), 1000, 30).unwrap(), c);
+    w.run();
+    assert_eq!(chats(&b).unwrap(), vec![c], "c2 not joined");
+
+    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.run();
+    assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c);
+    w.run();
+    assert_eq!(chats(&b).unwrap(), vec![c], "rejoined");
+    assert!(b.kept_copies().unwrap().is_empty());
+}
