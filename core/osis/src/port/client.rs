@@ -668,13 +668,14 @@ impl Io {
 }
 
 /// The handle is gone, or the thread died of a panic: calls and writes fail, subscriptions
-/// (a `remote_task` waiting) hear `Closed`.
+/// (a `remote_task` waiting) hear `Closed`. A sink panicking again here is caught: escaping a
+/// drop during unwinding aborts the process.
 impl Drop for Io {
     fn drop(&mut self) {
         self.calls.clear();
         self.writes.clear();
         for (_, mut s) in std::mem::take(&mut self.subs) {
-            (s.sink)(PortEvent::Closed);
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (s.sink)(PortEvent::Closed)));
         }
     }
 }
@@ -878,6 +879,14 @@ impl Osis {
     #[inline]
     pub fn is_attached(&self) -> bool {
         self.inner.thin.get().is_some()
+    }
+
+    /// A test's way to panic the attachment's connection thread: a subscription whose sink
+    /// panics at its first event (its reply, or `Closed` while down).
+    #[allow(clippy::panic)]
+    pub(crate) fn panic_client_thread(&self) {
+        let sink: Sink = Box::new(|_| panic!("test: the client port's connection thread panics"));
+        let _ = self.primary().tx.send(Cmd::Sub { token: next_token(), filter: Value::List(Vec::new()), again: false, sink });
     }
 
     /// The attachment process-wide calls go to on a handle with no store of its own.

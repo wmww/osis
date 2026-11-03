@@ -887,3 +887,35 @@ fn schema_bytes_per_node() {
     drop(b);
     n.close().unwrap();
 }
+
+// notes/api.md Handle and sync: an attached handle's connection thread that dies of a panic closes
+// its subscriptions as it unwinds, so a `wait_synced` waiting at the node fails `Network` at once
+// instead of hanging, and so does every later call
+// spec: none (an API property)
+#[test]
+fn client_thread_panic_fails_waits() {
+    let d = Dir::new();
+    let net = osis_transport::Net::new(2);
+    let sock = d.0.join("m.sock");
+    // a host nobody answers at: `wait_synced(All)` waits
+    let m = node_on(&net, "m", vec![osis::HostAddr::new("mem://nobody", [3; 32])], &sock);
+    let c = attach(&sock);
+    let far = Duration::from_secs(600);
+    let (tx, rx) = channel();
+    let c2 = c.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(crate::common::block_on(c2.wait_synced(osis::SyncScope::All, far)));
+    });
+    let t0 = std::time::Instant::now();
+    while m.waiting() == 0 {
+        assert!(t0.elapsed() < W, "the wait never reached the node");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    c.panic_client_thread();
+    let r = rx.recv_timeout(W).expect("a wait hung on a dead connection thread");
+    assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
+    let r = crate::common::block_on(c.wait_synced(osis::SyncScope::All, far));
+    assert!(matches!(r, Err(osis::Error::Network(_))), "{r:?}");
+    drop(c);
+    m.close().unwrap();
+}
