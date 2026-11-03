@@ -55,6 +55,13 @@ pub fn label(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
     NewWidget::new_with_props(l, Properties::new().with(ContentColor::new(color)).with(Padding::all(0.0)))
 }
 
+/// `label` broken at word boundaries to its width (running text).
+pub fn wrapped(look: &Look, text: &str, t: Text) -> NewWidget<Label> {
+    let (size, weight, color) = role(look, t);
+    let l = Label::new(text.to_string()).with_style(StyleProperty::FontSize(size)).with_style(StyleProperty::FontWeight(FontWeight::new(weight))).with_style(font_stack(look));
+    NewWidget::new_with_props(l, Properties::new().with(ContentColor::new(color)).with(Padding::all(0.0)).with(masonry::properties::LineBreaking::WordWrap))
+}
+
 /// The accent's mark above a screen's title: a rule in the main colour (rule), a bar (bar), an
 /// underline (slash); `None` for plain and caps.
 pub fn title_mark(look: &Look) -> Option<NewWidget<masonry::widgets::Flex>> {

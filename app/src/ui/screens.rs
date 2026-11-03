@@ -20,11 +20,11 @@ impl Ui {
         NewWidget::new_with_tag(SizedBox::empty(), tag)
     }
 
-    fn status_widget(&mut self) -> NewWidget<SizedBox> {
+    pub(super) fn status_widget(&mut self) -> NewWidget<SizedBox> {
         NewWidget::new_with_tag(SizedBox::new(style::label(&self.look, "", Text::Small)), STATUS)
     }
 
-    fn act(&mut self, w: NewWidget<impl Widget + ?Sized>, a: Act) -> NewWidget<dyn Widget> {
+    pub(super) fn act(&mut self, w: NewWidget<impl Widget + ?Sized>, a: Act) -> NewWidget<dyn Widget> {
         self.acts.insert(w.id(), a);
         w.erased()
     }
@@ -45,6 +45,7 @@ impl Ui {
             .with_child(style::label(&look, "osis", Text::Brand))
             .with_child(self.search_field(true))
             .with_child(self.slot_widget(HOME_BODY))
+            .with_child(self.join_section())
             .with_child(self.look_picker())
             .with_child(self.status_widget());
         let col = NewWidget::new_with_props(col, Properties::new().with(Padding::from_vh(look.sp(48.0), look.sp(16.0))));

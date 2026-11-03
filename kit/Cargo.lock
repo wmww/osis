@@ -2606,6 +2606,7 @@ version = "0.1.0"
 dependencies = [
  "jiff",
  "osis",
+ "osis-chat",
  "osis-kit",
  "osis-schema",
 ]
@@ -2618,6 +2619,13 @@ dependencies = [
  "libc",
  "rand",
  "zeroize",
+]
+
+[[package]]
+name = "osis-chat"
+version = "0.1.0"
+dependencies = [
+ "osis",
 ]
 
 [[package]]

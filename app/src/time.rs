@@ -26,6 +26,11 @@ pub fn system() -> TimeZone {
     TimeZone::try_system().unwrap_or(TimeZone::UTC)
 }
 
+/// A moment (UTC ms) as local wall time (`localtime` ms).
+pub fn local_of(utc_ms: i64) -> i64 {
+    Timestamp::from_millisecond(utc_ms).map_or(utc_ms, |t| ms_of(t.to_zoned(system()).datetime()))
+}
+
 /// Now as local wall time (`localtime` ms).
 pub fn now_local() -> i64 {
     ms_of(Zoned::now().with_time_zone(system()).datetime())

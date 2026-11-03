@@ -17,13 +17,18 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 /// Opens the store in `dir`, creating it (with its home group on `hosts`) when `dir` holds
-/// none. Sync runs on osis's own runtime over QUIC while the app runs.
+/// none; an existing store adds the `hosts` it lacks. Sync runs on osis's own runtime over QUIC
+/// while the app runs.
 pub fn open(dir: &Path, hosts: Vec<HostAddr>) -> Result<Osis> {
     let mut cfg = Config::dir(dir);
     cfg.runtime = Runtime::Own;
     cfg.transport = Some(Transport::Quic);
     if dir.join("db.redb").exists() {
-        Osis::open(cfg)
+        let db = Osis::open(cfg)?;
+        for h in &hosts {
+            db.add_host(h)?;
+        }
+        Ok(db)
     } else {
         cfg.hosts = hosts;
         Ok(Osis::create(cfg)?.0)
