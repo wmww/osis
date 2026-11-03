@@ -1379,6 +1379,51 @@ fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: us
     out
 }
 
+/// A state's part at a delta's positions judges the delta as the whole state does (`covered`,
+/// `Parts::kills`, spec/commits.md §5), and the part of paged pieces is the part of their join: for
+/// any shape of delta, forged ones included. A false "joins unchanged" would lose history.
+fn part_judges_as_whole(st: &Fragment, d: &Fragment, r: &mut crdt_model::r#gen::Rng) {
+    use crate::copies::CopySet;
+    let enc = |f: &Fragment| encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: f.clone(), frontiers: Frontiers::default() }, &snap_cx(), None).unwrap();
+    let joined = |a: &Fragment, b: &Fragment| {
+        let mut x = a.clone();
+        x.join(b.clone());
+        x
+    };
+    let unchanged = joined(st, d) == *st;
+    assert_eq!(st.contains(d), unchanged, "the part judges as the whole");
+    let part = st.part_at(d);
+    assert_eq!(enc(&joined(&part, d)) == enc(&part), enc(&joined(st, d)) == enc(st), "the part's bytes judge as the whole's");
+    if let Fragment::Seq(s) = st {
+        // pages of the state: whole records, each with its meta
+        let mut pieces = vec![BTreeMap::new()];
+        for (k, e) in s.elems() {
+            if r.chance(1, 3) {
+                pieces.push(BTreeMap::new());
+            }
+            pieces.last_mut().unwrap().insert(k.clone(), e.clone());
+        }
+        let mut from_pieces = Fragment::default();
+        for p in pieces {
+            from_pieces.join(Fragment::Seq(Seq::new(s.text, s.meta.clone(), p)).part_at(d));
+        }
+        assert_eq!(enc(&joined(&from_pieces, d)) == enc(&from_pieces), enc(&joined(st, d)) == enc(st), "pieces' part judges as the whole");
+    }
+    // the copies of a delta's writes a state holds, by ranges, against the delta whole and in part
+    let mut ranges: Vec<(Source, u64, u64)> = d.writes().into_iter().map(|(w, _)| (w.src.clone(), w.ctr, w.ctr.saturating_add(r.below(3) as u64 + 1))).collect();
+    ranges.sort();
+    ranges.dedup();
+    assert_eq!(st.copy_index_in(&ranges).outside(&ranges, &CopySet::of(&[&d.part_at(st)])), st.copy_index().outside(&ranges, &CopySet::of(&[d])), "copies outside by the index in ranges");
+    assert_eq!(d.copy_index_in(&ranges).outside(&ranges, &CopySet::of(&[&st.part_at(d)])), d.copy_index().outside(&ranges, &CopySet::of(&[st])), "copies outside by the state's part");
+    // what a join of the source's part kills of a fragment, as `Parts::kills` keeps them
+    let kills = |x: Fragment| {
+        let (mut g, mut ch) = (d.clone(), crate::Changes::new());
+        g.join_into(x, None, &mut ch);
+        ch.into_deaths().into_iter().filter(|w| d.holds_stamp(&w.stamp) && !d.holds_stamp(&Stamp { ts: w.at, dot: w.by.clone() })).map(|w| (w.stamp, w.at, w.by)).collect::<std::collections::BTreeSet<_>>()
+    };
+    assert_eq!(kills(st.part_at(d)), kills(st.clone()), "a source's part kills as the source");
+}
+
 /// Joins `writes` in a random order (each once or twice) into a placement read before every
 /// join (so it is followed, not rebuilt): state and read equal the model's after each join, the
 /// cached placement equals a whole pass, and snapshots encode byte-identically with the model's.
@@ -1426,6 +1471,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
                 {
                     let _ = crate::testutil::partial_follow(st, &d, 1 + r.below(4));
                 }
+                part_judges_as_whole(&ours, &frag(&writes[k]), &mut r);
                 mapply(&mut model, writes[k].clone());
                 ours.join(frag(&writes[k]));
                 crate::testutil::check_lin(&ours);
@@ -1515,6 +1561,26 @@ proptest! {
     #[test]
     fn hostile_list_matches_model_spec_6_2(seed in any::<u64>()) {
         hostile_lockstep(seed, true, false);
+    }
+
+    /// spec/commits.md §5: `part_judges_as_whole` on honest histories (moves, deletes, undeletes,
+    /// an element's fields), at the root or as struct fields, the state a join of some bodies.
+    #[test]
+    fn part_judges_as_whole_of_histories_spec_commits_5(seed in any::<u64>()) {
+        let text_and_list = Ty::Struct([(1, Ty::Text), (2, Ty::List(Box::new(inner()))), (3, Ty::Text)].into_iter().collect());
+        for ty in [Ty::Text, Ty::List(Box::new(inner())), text_and_list] {
+            let mut r = crate::testutil::rng(seed | 1);
+            let bodies: Vec<Fragment> = history(&mut r, std::slice::from_ref(&ty), 3, 6).iter().map(|c| frag(&c.delta)).collect();
+            for _ in 0..4 {
+                let mut st = Fragment::default();
+                for b in bodies.iter().filter(|_| r.chance(1, 2)) {
+                    st.join(b.clone());
+                }
+                for b in &bodies {
+                    part_judges_as_whole(&st, b, &mut r);
+                }
+            }
+        }
     }
 }
 
