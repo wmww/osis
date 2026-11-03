@@ -1570,7 +1570,7 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     wf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     gf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     // a node given a commit before a part of it expired may have applied it by that part, where
-    // one given it after holds it pending (issues/applied-by-part-before-expiry.md): with an
+    // one given it after holds it pending (a stated limit, spec/commits.md §4): with an
     // early clock, a commit with a part on such an aspect applied at one node only is not
     // compared (its bodies, index lines and pending line); everything else is
     let parted: BTreeSet<String> = if want.early || got.early {
