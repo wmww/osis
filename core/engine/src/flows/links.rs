@@ -48,9 +48,6 @@ pub struct LinkSpec {
     pub peers: Vec<osis_label::Peer>,
     /// The link's `flags` bit 0: its redemption removes L (spec/permissions.md §9).
     pub single_use: bool,
-    /// K's edge on the target and every joiner's edge on K carry `keep`
-    /// (spec/permissions.md §3, Keep).
-    pub keep: bool,
 }
 
 impl Engine {
@@ -87,7 +84,7 @@ impl Engine {
         if !edge.alive_at(Some(osis_base::Ts::make(self.now(), 0).unwrap_or_default())) {
             return Err(Error::Misuse("the link expired"));
         }
-        let grant = Edge { role: edge.role, until: None, invite: None, since: None, tied: None, keyset: None, keep: edge.keep };
+        let grant = Edge { role: edge.role, until: None, invite: None, since: None, tied: None, keyset: None };
         // L signs with its own role, so `grant_in` deposits only below write
         self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))
     }
@@ -97,7 +94,7 @@ impl Engine {
     /// redemption (L's edge already gone: its entry is reset again, spec/permissions.md §2), or
     /// to revoke the link. K rotates before its next encryption (L's departure).
     pub fn finalize_link(&mut self, k: &Tid, l: &Tid) -> Result<Done> {
-        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced })
+        self.demote(k, &crate::flows::Demotion { holder: *l, new: None, presync: crate::flows::PreSync::Synced, keep: Some(false) })
     }
 
     /// The links whose seed this node holds (a sharer-only thing's `link:seed.0`, readable on
@@ -178,8 +175,8 @@ impl Engine {
     /// joiner may still hold the seed) in one commit under one rotation of K (spec/commits.md
     /// §2); the remaining joiners need a new link. L already gone (a used single-use link):
     /// the joiner alone.
-    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync) -> Result<Done> {
-        let d = crate::flows::Demotion { holder: *joiner, new: None, presync };
+    pub fn revoke_joiner(&mut self, k: &Tid, l: &Tid, joiner: &Tid, presync: crate::flows::PreSync, keep: Option<bool>) -> Result<Done> {
+        let d = crate::flows::Demotion { holder: *joiner, new: None, presync, keep };
         let with_l = self.core.timelines.get(k).is_some_and(|tl| tl.edges_at(None).get(l, k).is_some());
         self.remove_signed(None, k, &d, if with_l { std::slice::from_ref(l) } else { &[] }, false)
     }
@@ -216,7 +213,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     let rcpt = Recipient { holder: l, role: spec.role, keys: HolderKeys::KeyActor { kem: lkeys.kem.public().clone(), seed: None } };
     let boxes = box_holder(&k, &epochs, &secrets, &rcpt, &roles_up_to(spec.role), &mut *tx.rng)?.ok_or(Error::Misuse("L's keys"))?;
     let mut m = Mutation::new();
-    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), since: None, tied: None, keyset: None, keep: spec.keep })?;
+    put_edge(&mut m, k, l, &Edge { role: spec.role, until: spec.until, invite: Some(spec.role), since: None, tied: None, keyset: None })?;
     super::put_secrets(&mut m, k, &boxes, false)?;
     done.add(Engine::commit_tx(tx, m)?);
     let epochs = tx.core.epochs(&k).ok_or(Error::Misuse("K's secrets"))?;
@@ -232,8 +229,14 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     if let Some(c) = lc {
         done.deliveries.push(super::owe(tx, Delivery::Certificate { commits: vec![c], under: k })?);
     }
+    // a joiner's removal from K reads K's default: the target's now
+    if crate::apply::validity::keep_now(tx.core, &spec.target) {
+        let mut m = Mutation::new();
+        m.set(k, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep: true })?;
+        done.add(Engine::commit_tx(tx, m)?);
+    }
     // K on the target
-    let target_edge = Edge { role: spec.role, until: None, invite: None, since: None, tied: None, keyset: None, keep: spec.keep };
+    let target_edge = Edge { role: spec.role, until: None, invite: None, since: None, tied: None, keyset: None };
     done.extend(grant_in(tx, None, spec.target, k, &target_edge, false)?);
     // the seed on a thing only the sharer's actor reads (derived secrets)
     let mut m = Mutation::new();

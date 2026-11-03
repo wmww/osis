@@ -7,6 +7,7 @@ use crate::common;
 use common::*;
 use osis_base::Role::{Admin, Read, Write};
 use osis_base::{Role, Tid};
+use osis_perm::EdgeEnd;
 use osis_perm::{At, Class, Edge, Timeline, WriteId};
 
 fn eval(w: &World) -> Timeline {
@@ -596,74 +597,65 @@ fn ownerless_has_no_owner_chain() {
     assert_eq!(role(&tl, n[2], d), Some(Write));
 }
 
-fn keeping(role: Role) -> Option<Edge> {
-    edge(role).map(|e| Edge { keep: true, ..e })
+fn says_keep() -> Option<Edge> {
+    Some(Edge::kept_end(None))
 }
 
-// spec/permissions.md §3, Keep: an ended edge's last applied value decides: a later write's over
-// an earlier one's, an expired value's, never a write that did not apply; a live edge has none.
+fn end_of(tl: &osis_perm::Timeline, g: &Tid, m: &Tid) -> EdgeEnd {
+    tl.ended(g, ts(100)).get(m).unwrap().0
+}
+
+// spec/permissions.md §3, Keep: the last applied write decides: a removal's own word, last by key, never
+// a write that did not apply; an `until` ending has none and reads the default at its key; a live
+// edge has no end.
 #[test]
-fn ended_gives_the_last_applied_value_spec_permissions_3() {
+fn ended_gives_the_last_applied_word_spec_permissions_3() {
     let (mut w, n, g) = group();
     let z = w.nodes_salted(4, 77);
-    let at = ts(100);
-    // kept through a removal
-    w.set(n[0], g, z[0], keeping(Read), 2, &[]);
-    w.set(n[0], g, z[0], None, 3, &[]);
-    // a later value wins
-    w.set(n[0], g, z[1], keeping(Read), 2, &[]);
-    w.set(n[0], g, z[1], edge(Read), 3, &[]);
+    // a removal saying keep
+    w.set(n[0], g, z[0], edge(Read), 2, &[]);
+    w.set(n[0], g, z[0], says_keep(), 3, &[]);
+    // a later plain removal over it: erase
+    w.set(n[0], g, z[1], edge(Read), 2, &[]);
+    w.set(n[0], g, z[1], says_keep(), 3, &[]);
     w.set(n[0], g, z[1], None, 4, &[]);
-    // written expired, no removal after it
+    // written expired
     w.set(n[0], g, z[2], edge(Read), 2, &[]);
-    w.set(n[0], g, z[2], Some(Edge { until: Some(osis_base::WallMs(3)), keep: true, ..Edge::new(Read) }), 3, &[]);
-    // no authority: z[3] is nobody here, its write on z[1]'s neighbour does not apply
-    w.set(z[3], g, n[4], keeping(Write), 5, &[]);
+    w.set(n[0], g, z[2], Some(Edge { until: Some(osis_base::WallMs(3)), ..Edge::new(Read) }), 3, &[]);
+    // no authority: z[3] is nobody here, its removal saying keep does not apply
+    w.set(z[3], g, n[4], says_keep(), 5, &[]);
     w.set(n[0], g, n[4], None, 6, &[]);
     let tl = eval(&w);
-    let ended = tl.ended(&g, at);
-    assert!(ended.get(&z[0]).unwrap().0.keep);
-    assert!(!ended.get(&z[1]).unwrap().0.keep);
-    assert!(ended.get(&z[2]).unwrap().0.keep);
-    assert!(!ended.get(&n[4]).unwrap().0.keep, "a write that did not apply");
-    assert!(!ended.contains_key(&n[1]), "alive");
+    assert_eq!(end_of(&tl, &g, &z[0]), EdgeEnd::Said(true));
+    assert_eq!(end_of(&tl, &g, &z[1]), EdgeEnd::Said(false));
+    assert!(matches!(end_of(&tl, &g, &z[2]), EdgeEnd::Until(_)));
+    assert_eq!(end_of(&tl, &g, &n[4]), EdgeEnd::Said(false), "a write that did not apply");
+    assert!(!tl.ended(&g, ts(100)).contains_key(&n[1]), "alive");
 }
 
-// spec/permissions.md §2: raising its own edge's `keep` is no self-removal: not applied, unless the
-// author has authority on the target; lowering it is.
+// spec/permissions.md §2, §3: a holder's self-removal says keep whatever anyone wants, no authority on
+// the target needed; a stranger's removal of it decides nothing.
 #[test]
-fn self_removal_does_not_raise_keep_spec_permissions_2() {
+fn self_removal_says_its_own_keep_spec_permissions_2() {
     let (mut w, n, g) = group();
-    // n[4] holds write, no authority
-    w.set(n[4], g, n[4], keeping(Read), 5, &[]);
-    assert!(!eval(&w).roster(&g, At::END).get(&n[4]).unwrap().keep, "not applied");
-    // an admin may
-    w.set(n[1], g, n[1], keeping(Admin), 6, &[]);
-    assert!(eval(&w).roster(&g, At::END).get(&n[1]).unwrap().keep);
-    // the same holder lowering it, with an earlier keep given by an admin
-    w.set(n[0], g, n[4], keeping(Write), 7, &[]);
-    w.set(n[4], g, n[4], edge(Read), 8, &[]);
-    let r = eval(&w).roster(&g, At::END);
-    assert!(!r.get(&n[4]).unwrap().keep);
-    assert_eq!(r.get(&n[4]).unwrap().role, Read);
+    let z = w.nodes_salted(1, 78);
+    w.set(z[0], g, n[4], None, 4, &[]);
+    assert!(eval(&w).roster(&g, At::END).contains_key(&n[4]), "a stranger's removal");
+    w.set(n[4], g, n[4], says_keep(), 5, &[]);
+    let tl = eval(&w);
+    assert!(!tl.roster(&g, At::END).contains_key(&n[4]));
+    assert_eq!(end_of(&tl, &g, &n[4]), EdgeEnd::Said(true));
 }
 
-// spec/permissions.md §2: an invite grant applies with `keep` only through an edge giving the invite
-// that has it, in any order: a non-admin cannot make a copy stay.
+// spec/permissions.md §2: an invite grants: a value saying keep on an absent edge does not apply, so
+// an invite holder cannot make a copy stay.
 #[test]
-fn invite_grant_keep_needs_an_edge_with_it_spec_permissions_2() {
-    for (keeps, salt) in [(false, 78), (true, 79)] {
-        let (mut w, n, g) = group();
-        let z = w.nodes_salted(2, salt);
-        let invite = Edge { invite: Some(Read), keep: keeps, ..Edge::new(Read) };
-        w.set(n[0], g, z[0], Some(invite), 2, &[]);
-        w.set(z[0], g, z[1], keeping(Read), 3, &[]);
-        let tl = eval(&w);
-        assert_eq!(tl.roster(&g, At::END).contains_key(&z[1]), keeps, "a grant saying keep through {keeps}");
-        // and without saying it, always
-        w.set(z[0], g, n[4], None, 4, &[]);
-        let z2 = w.nodes_salted(1, salt + 100);
-        w.set(z[0], g, z2[0], edge(Read), 5, &[]);
-        assert!(eval(&w).roster(&g, At::END).contains_key(&z2[0]));
-    }
+fn an_invite_does_not_say_keep_spec_permissions_2() {
+    let (mut w, n, g) = group();
+    let z = w.nodes_salted(3, 79);
+    w.set(n[0], g, z[0], Some(Edge { invite: Some(Read), ..Edge::new(Read) }), 2, &[]);
+    w.set(z[0], g, z[1], says_keep(), 3, &[]);
+    assert!(!eval(&w).ended(&g, ts(100)).contains_key(&z[1]));
+    w.set(z[0], g, z[2], edge(Read), 4, &[]);
+    assert!(eval(&w).roster(&g, At::END).contains_key(&z[2]));
 }

@@ -118,7 +118,7 @@ impl Osis {
         }
         for t in self.engine(|x| x.grants_of(&actor)) {
             self.not_routed("remove_client", t)?;
-            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced })?))?;
+            let done = self.guarded(&[t], |x| Ok(x.demote(&t, &Demotion { holder: actor, new: None, presync: PreSync::Synced, keep: None })?))?;
             self.carry(done)?;
         }
         self.write_with(|w| w.at(node, ct::CLIENTS).path(Path::root()).remove_key(&actor))?;

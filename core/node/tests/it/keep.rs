@@ -16,38 +16,59 @@ const D_MARK: &str = "KEEP-D-MARK-77a1";
 const F_MARK: &str = "KEEP-F-MARK-02bd";
 const LATE_MARK: &str = "KEEP-LATE-MARK-4c0e";
 
-fn keeping(role: Role) -> ct::Edge {
-    ct::Edge { keep: true, ..edge_of(role) }
+/// A holder's edge and the target's default for removals.
+type Holding = (ct::Edge, bool);
+
+fn keeping(role: Role) -> Holding {
+    (edge_of(role), true)
 }
 
+fn erasing(role: Role) -> Holding {
+    (edge_of(role), false)
+}
+
+/// The removal's word left to the default.
 fn remove(holder: Tid) -> Demotion {
-    Demotion { holder, new: None, presync: PreSync::Synced }
+    Demotion { holder, new: None, presync: PreSync::Synced, keep: None }
 }
 
-/// Removes `holder`, the write saying `keep` whatever its edge says: `until` 0.
+fn saying(holder: Tid, keep: bool) -> Demotion {
+    Demotion { keep: Some(keep), ..remove(holder) }
+}
+
+/// Removes `holder`, the removal saying `keep` whatever the default.
 fn remove_saying(lp: &mut LocalPeer, target: Tid, holder: Tid, keep: bool) -> osis_node::flows::Done {
-    let new = ct::Edge { until: Some(osis_base::WallMs(0)), keep, ..edge_of(Role::Read) };
-    let d = Demotion { holder, new: Some(new), presync: PreSync::Synced };
-    lp.peers[0].engine.demote(&target, &d).unwrap()
+    lp.peers[0].engine.demote(&target, &saying(holder, keep)).unwrap()
+}
+
+/// Peer `i` sets `t`'s default for removals.
+fn set_default(lp: &mut LocalPeer, i: usize, t: Tid, keep: bool) -> osis_base::CommitId {
+    let mut m = Mutation::new();
+    m.set(t, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep }).unwrap();
+    lp.peers[i].engine.commit(m).unwrap().unwrap()
 }
 
 struct Kept {
     lp: LocalPeer,
     /// Bob's person.
     pb: Tid,
-    /// Bob holds `edge` on it.
+    /// Bob holds an edge on it.
     d: Tid,
     /// Read by bob only through `d`.
     f: Tid,
 }
 
-/// Alice's d (bob holding `edge`) and f (d holding read), a marker on each, all at both.
-fn setup(seed: u64, edge: ct::Edge) -> Kept {
+/// Alice's d (bob holding `edge`, `keep` its default) and f (d holding read), a marker on each, all
+/// at both.
+fn setup(seed: u64, (edge, keep): Holding) -> Kept {
     let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
     let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
     let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
     spread(&mut lp);
     let d = thing_of(&mut lp, 0, pa);
+    if keep {
+        set_default(&mut lp, 0, d, true);
+    }
     lp.peers[0].engine.grant(&d, &pb, &edge).unwrap();
     let f = thing_of(&mut lp, 0, pa);
     lp.peers[0].engine.grant(&f, &d, &edge_of(Role::Read)).unwrap();
@@ -102,10 +123,10 @@ fn removed(x: &mut Kept) {
     x.lp.peers[1].engine.drop_lost_due().unwrap();
 }
 
-// spec/permissions.md §3, Keep: an edge with `keep` ending leaves its holder's node a copy of what
-// it read through the edge, an actor below it included, with no secret; it reads and is read-only.
+// spec/permissions.md §3, Keep: a removal under a default to keep leaves its holder's node a copy of
+// what it read through the edge, an actor below it included, with no secret; it reads and is read-only.
 #[test]
-fn edge_keep_leaves_a_read_only_copy_spec_perm_3() {
+fn a_keeping_removal_leaves_a_read_only_copy_spec_perm_3() {
     let mut x = setup(9100, keeping(Role::Write));
     removed(&mut x);
     assert_kept(&mut x);
@@ -116,10 +137,10 @@ fn edge_keep_leaves_a_read_only_copy_spec_perm_3() {
     assert_eq!(read(&mut x.lp, x.d), Some(s(&big(D_MARK))));
 }
 
-// spec/permissions.md §3, Keep: an edge without `keep` erases, the core's default.
+// spec/permissions.md §3, Keep: no default erases.
 #[test]
-fn default_edge_erases_spec_perm_3() {
-    let mut x = setup(9110, edge_of(Role::Write));
+fn no_default_erases_spec_perm_3() {
+    let mut x = setup(9110, erasing(Role::Write));
     removed(&mut x);
     assert_erased(&mut x);
 }
@@ -232,36 +253,11 @@ fn a_purge_carries_no_content_into_a_copy_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK));
 }
 
-// spec/permissions.md §2, Keep: an invite says no more than it was given: its holder's grant cannot
-// say `keep` through an edge without it (receivers: osis-perm `invite_grant_keep_...`), and carries it
-// through one with it.
+// spec/permissions.md §3, Keep: the removal says for itself, either way, in one commit with its
+// rotation; the removed holder is boxed nothing. The node reads the removal, not the default it holds.
 #[test]
-fn an_invite_grant_carries_its_edges_keep_spec_perm_2() {
-    for (edge, seed) in [(edge_of(Role::Read), 9500), (keeping(Role::Read), 9510)] {
-        let keeps = edge.keep;
-        let mut lp = LocalPeer::of((0..3).map(|i| forensic_peer(seed + i, &osis_store::Faults::new())).collect(), seed);
-        let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-        let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
-        let pc = lp.peers[2].engine.create_person(&hosts()).unwrap().0.person;
-        spread(&mut lp);
-        let d = thing_of(&mut lp, 0, pa);
-        lp.peers[0].engine.grant(&d, &pb, &ct::Edge { invite: Some(Role::Read), ..edge }).unwrap();
-        spread(&mut lp);
-        let forged = lp.peers[1].engine.grant(&d, &pc, &keeping(Role::Read));
-        assert_eq!(forged.is_ok(), keeps);
-        if !keeps {
-            lp.peers[1].engine.grant(&d, &pc, &edge_of(Role::Read)).unwrap();
-        }
-        spread(&mut lp);
-        assert_eq!(lp.peers[0].engine.roster(&d).get(&pc).map(|e| e.keep), Some(keeps));
-    }
-}
-
-// spec/permissions.md §3, Keep: the write ending the edge says for itself, either way, in one commit
-// with its rotation: expired when written, it is a removal, and the removed holder is boxed nothing.
-#[test]
-fn removal_overrides_the_edge_spec_perm_3() {
-    for (edge, say, seed) in [(keeping(Role::Read), false, 9190), (edge_of(Role::Read), true, 9200)] {
+fn the_removal_overrides_the_default_spec_perm_3() {
+    for (edge, say, seed) in [(keeping(Role::Read), false, 9190), (erasing(Role::Read), true, 9200)] {
         let mut x = setup(seed, edge);
         let (d, pb) = (x.d, x.pb);
         let before = x.lp.peers[0].engine.epochs(&d).unwrap().read.newest_held().unwrap().0;
@@ -284,32 +280,87 @@ fn removal_overrides_the_edge_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §2, §3, Keep: a removal resets the value it was written over, so a change to
-// erase cannot be missed: a node holding only the removal still holds the edge, and erases once the
-// change arrives.
+// spec/permissions.md §3, Keep: changing the default touches no past removal, in either direction: a
+// copy stays through a change to erase, nothing comes back on a change to keep.
 #[test]
-fn removal_arrives_with_the_value_it_removes_spec_perm_3() {
-    for (rm_first, seed) in [(true, 9210), (false, 9220)] {
-        let mut x = setup(seed, keeping(Role::Read));
-        let (d, pb) = (x.d, x.pb);
-        let fix = *x.lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap().commits.last().unwrap();
-        let rm = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
-        if rm_first {
-            send(&mut x.lp, 0, 1, &[rm]);
-            x.lp.peers[1].engine.drop_lost_due().unwrap();
-            assert_eq!(x.lp.peers[1].engine.role_on(&d), Some(Role::Read), "the reset names no holder yet");
-            assert!(x.lp.peers[1].engine.kept_copies().is_empty());
-            send(&mut x.lp, 0, 1, &[fix]);
+fn a_later_default_touches_no_past_removal_spec_perm_3() {
+    for (edge, seed) in [(keeping(Role::Read), 9210), (erasing(Role::Read), 9220)] {
+        let keep = edge.1;
+        let mut x = setup(seed, edge);
+        let d = x.d;
+        removed(&mut x);
+        set_default(&mut x.lp, 0, d, !keep);
+        spread(&mut x.lp);
+        x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+        if keep {
+            assert_kept(&mut x);
         } else {
-            send(&mut x.lp, 0, 1, &[fix, rm]);
+            assert_erased(&mut x);
         }
-        x.lp.peers[1].engine.drop_lost_due().unwrap();
-        assert_erased(&mut x);
     }
 }
 
-// spec/permissions.md §3, Keep: two admins at once, one removal keeping, one written expired saying
-// erase: the node ends erased in either order, also where it kept on the first.
+// spec/permissions.md §2, §3, Keep: a default is an admin's: a member's setting does not reach a
+// removal, nor one its author lost the standing for (a demoted admin's, outside the frontier).
+#[test]
+fn only_a_standing_default_fills_spec_perm_3() {
+    let mut x = setup(9225, erasing(Role::Write));
+    let (d, pb) = (x.d, x.pb);
+    let setting = ct::RequiredRules { rules: Default::default(), keep: true };
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    assert!(x.lp.peers[1].engine.commit(m).is_err(), "not an admin");
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    let forged = x.lp.peers[1].engine.commit_hostile(m).unwrap().unwrap();
+    send(&mut x.lp, 1, 0, &[forged]);
+    x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
+    spread(&mut x.lp);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_erased(&mut x);
+
+    let mut x = setup(9227, erasing(Role::Admin));
+    let (d, pb) = (x.d, x.pb);
+    let mut m = Mutation::new();
+    m.set(d, &ct::REQUIRED, &setting).unwrap();
+    let fell = x.lp.peers[1].engine.commit(m).unwrap().unwrap();
+    let down = Demotion { new: Some(edge_of(Role::Read)), ..remove(pb) };
+    x.lp.peers[0].engine.demote(&d, &down).unwrap();
+    send(&mut x.lp, 1, 0, &[fell]);
+    x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap();
+    spread(&mut x.lp);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_erased(&mut x);
+}
+
+// spec/permissions.md §2: `until` 0 is a removal's way of saying keep, nothing else writes it; and a
+// lowering says nothing.
+#[test]
+fn only_a_removal_says_spec_perm_2() {
+    let mut x = setup(9228, erasing(Role::Write));
+    let (d, pb) = (x.d, x.pb);
+    let zero = ct::Edge { until: Some(osis_base::WallMs(0)), ..edge_of(Role::Read) };
+    let f = x.f;
+    assert!(x.lp.peers[0].engine.grant(&f, &pb, &zero).is_err());
+    let e = &mut x.lp.peers[0].engine;
+    assert!(e.demote(&d, &Demotion { new: Some(zero), ..remove(pb) }).is_err());
+    assert!(e.demote(&d, &Demotion { new: Some(edge_of(Role::Read)), keep: Some(true), ..remove(pb) }).is_err());
+}
+
+// spec/commits.md §2: a removal saying keep carries its rotation as any: a writer refuses without it.
+#[test]
+fn a_removal_saying_keep_without_its_rotation_spec_commits_2() {
+    let mut x = setup(9229, erasing(Role::Read));
+    let (d, pb) = (x.d, x.pb);
+    let mut m = Mutation::new();
+    let marker = ct::Edge { until: Some(osis_base::WallMs(0)), ..edge_of(Role::Read) };
+    m.op(d, &ct::ROLES, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Remove(Value::Tid(pb)) }).unwrap();
+    m.op(d, &ct::ROLES, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(Value::Tid(pb))], op: osis_crdt::Op::Set(osis_schema::Codec::to_value(&marker)) }).unwrap();
+    assert!(x.lp.peers[0].engine.commit(m).is_err());
+}
+
+// spec/permissions.md §3, Keep: two admins at once, one removal keeping, one erasing, the erasing one
+// last by key: the node ends erased in either order, also where it kept on the first.
 #[test]
 fn concurrent_admins_erase_in_either_order_spec_perm_3() {
     for (keep_first, seed) in [(true, 9260), (false, 9270)] {
@@ -322,8 +373,8 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
         x.lp.peers[0].engine.grant(&d, &carol, &edge_of(Role::Admin)).unwrap();
         spread(&mut x.lp);
         let keep = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
-        let new = ct::Edge { until: Some(osis_base::WallMs(0)), ..edge_of(Role::Read) };
-        let erase = *x.lp.peers[2].engine.demote(&d, &Demotion { holder: pb, new: Some(new), presync: PreSync::Synced }).unwrap().commits.last().unwrap();
+        x.lp.peers[2].clock.advance(1_000);
+        let erase = *x.lp.peers[2].engine.demote(&d, &saying(pb, false)).unwrap().commits.last().unwrap();
         if keep_first {
             send(&mut x.lp, 0, 1, &[keep]);
             x.lp.peers[1].engine.drop_lost_due().unwrap();
@@ -339,54 +390,101 @@ fn concurrent_admins_erase_in_either_order_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §2, §3, Keep: a client does not raise its own edge's keep (receivers: osis-perm
-// `self_removal_does_not_raise_keep`).
+// spec/permissions.md §2, §3, Keep: a holder leaving says its own word, whatever the default: no
+// protocol rule stops it (receivers: osis-perm `self_removal_says_its_own_keep`).
 #[test]
-fn a_holder_does_not_raise_its_own_keep_spec_perm_2() {
-    let mut x = setup(9235, edge_of(Role::Read));
-    let (d, pb) = (x.d, x.pb);
-    let new = ct::Edge { keep: true, ..edge_of(Role::Read) };
-    assert!(x.lp.peers[1].engine.demote(&d, &Demotion { holder: pb, new: Some(new.clone()), presync: PreSync::Synced }).is_err());
-    removed(&mut x);
-    assert_erased(&mut x);
+fn a_holder_leaving_says_its_own_word_spec_perm_2() {
+    for (edge, say, seed) in [(erasing(Role::Read), true, 9235), (keeping(Role::Read), false, 9237)] {
+        let mut x = setup(seed, edge);
+        let (d, pb) = (x.d, x.pb);
+        x.lp.peers[1].engine.demote(&d, &saying(pb, say)).unwrap();
+        x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+        if say {
+            assert_kept(&mut x);
+        } else {
+            assert_erased(&mut x);
+        }
+        // the others read the same word: gone from the roster
+        spread(&mut x.lp);
+        assert!(!x.lp.peers[0].engine.roster(&d).contains_key(&pb));
+    }
 }
 
-// spec/permissions.md §3, Keep: a roster snapshot may take the signal out of the walk: read before
-// the node judged, there is none and it erases; after, the record stands.
+// spec/permissions.md §3, Keep; §6: a roster snapshot carries the removal's word as an edge with `until`
+// 0: a node given the snapshot alone reads the same, a read or write holder's, and an erasing one's is gone.
 #[test]
-fn snapshot_hides_the_signal_spec_perm_3() {
-    for (kept_first, seed) in [(false, 9240), (true, 9250)] {
-        let mut x = setup(seed, keeping(Role::Read));
+fn a_snapshot_carries_the_word_spec_perm_6() {
+    for (role, say, kept_first, seed) in [(Role::Read, true, false, 9240), (Role::Read, true, true, 9250), (Role::Write, true, false, 9252), (Role::Read, false, false, 9254), (Role::Write, false, false, 9256)] {
+        let mut x = setup(seed, erasing(role));
         let (d, pb) = (x.d, x.pb);
-        let rm = *x.lp.peers[0].engine.demote(&d, &remove(pb)).unwrap().commits.last().unwrap();
+        let rm = *remove_saying(&mut x.lp, d, pb, say).commits.last().unwrap();
         let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
         if kept_first {
             send(&mut x.lp, 0, 1, &[rm]);
             x.lp.peers[1].engine.drop_lost_due().unwrap();
             assert_kept(&mut x);
-            send(&mut x.lp, 0, 1, &[snap]);
-            x.lp.peers[1].engine.drop_lost_due().unwrap();
+        }
+        send(&mut x.lp, 0, 1, &[snap]);
+        x.lp.peers[1].engine.drop_lost_due().unwrap();
+        assert_eq!(x.lp.peers[1].engine.epoch_start(&d), Some(snap));
+        assert_eq!(x.lp.peers[1].engine.role_on(&d), None);
+        if say {
             assert_kept(&mut x);
         } else {
-            send(&mut x.lp, 0, 1, &[snap]);
-            x.lp.peers[1].engine.drop_lost_due().unwrap();
-            assert_eq!(x.lp.peers[1].engine.role_on(&d), None);
             assert_erased(&mut x);
         }
     }
 }
 
-/// Alice's C and her actor P, bob's node holding `device` on P, P holding `member` on C.
-fn nested(seed: u64, device: ct::Edge, member: ct::Edge) -> (LocalPeer, Tid, Tid, Tid) {
+// spec/permissions.md §3, Keep; §6: the word goes through a second snapshot, and a later plain removal
+// after a re-grant replaces it; a record held already changes by no snapshot.
+#[test]
+fn a_second_snapshot_goes_on_saying_spec_perm_6() {
+    let mut x = setup(9258, erasing(Role::Read));
+    let (d, pb) = (x.d, x.pb);
+    remove_saying(&mut x.lp, d, pb, true);
+    x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap();
+    x.lp.peers[0].clock.advance(1_000);
+    let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
+    send(&mut x.lp, 0, 1, &[snap]);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_kept(&mut x);
+    x.lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    remove_saying(&mut x.lp, d, pb, false);
+    let again = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
+    send(&mut x.lp, 0, 1, &[again]);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_kept(&mut x);
+
+    let mut x = setup(9259, erasing(Role::Read));
+    let (d, pb) = (x.d, x.pb);
+    remove_saying(&mut x.lp, d, pb, true);
+    x.lp.peers[0].engine.grant(&d, &pb, &edge_of(Role::Read)).unwrap();
+    remove_saying(&mut x.lp, d, pb, false);
+    let snap = *x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap().commits.last().unwrap();
+    send(&mut x.lp, 0, 1, &[snap]);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_erased(&mut x);
+}
+
+/// Alice's C and her actor P, bob's node holding admin on P, P holding write on C; each thing's
+/// default as `(on P, on C)`.
+fn nested(seed: u64, (on_p, on_c): (bool, bool)) -> (LocalPeer, Tid, Tid, Tid) {
     let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
     let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
     lp.peers[1].engine.create_person(&hosts()).unwrap();
     spread(&mut lp);
     let bob = lp.peers[1].engine.tid();
     let p = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&p, &bob, &device).unwrap();
+    lp.peers[0].engine.grant(&p, &bob, &edge_of(Role::Admin)).unwrap();
     let c = thing_of(&mut lp, 0, pa);
-    lp.peers[0].engine.grant(&c, &p, &member).unwrap();
+    lp.peers[0].engine.grant(&c, &p, &edge_of(Role::Write)).unwrap();
+    if on_p {
+        set_default(&mut lp, 0, p, true);
+    }
+    if on_c {
+        set_default(&mut lp, 0, c, true);
+    }
     write(&mut lp, c, D_MARK);
     spread(&mut lp);
     assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))));
@@ -399,10 +497,10 @@ fn drop_due(lp: &mut LocalPeer) {
 }
 
 // spec/permissions.md §3, Keep: a person kicked keeps through its device; the device then removed
-// from the person (no keep) erases that copy with the person's: erase wins along a path.
+// from the person (no default there) erases that copy with the person's: erase wins along a path.
 #[test]
 fn device_removal_erases_what_its_person_kept_spec_perm_3() {
-    let (mut lp, bob, p, c) = nested(9300, edge_of(Role::Admin), keeping(Role::Write));
+    let (mut lp, bob, p, c) = nested(9300, (false, true));
     lp.peers[0].engine.demote(&c, &remove(p)).unwrap();
     drop_due(&mut lp);
     assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))), "the person's kick keeps");
@@ -414,17 +512,17 @@ fn device_removal_erases_what_its_person_kept_spec_perm_3() {
     assert!(lp.peers[1].engine.kept_copies().is_empty());
 }
 
-// spec/permissions.md §3, Keep: the edge that decides is the one the node lost: removed from P
-// (no keep), C goes though P's edge on it says keep; the same with the keep on the node's edge keeps
-// C though P's edge on it does not say so, since P's edge did not end.
+// spec/permissions.md §3, Keep: the removal that decides is of the edge the node lost: removed from P
+// (no default) C goes though C's default keeps; the same with the default on P keeps C though C has
+// none, since P's edge did not end.
 #[test]
 fn the_edge_lost_decides_spec_perm_3() {
-    let (mut lp, bob, p, c) = nested(9310, edge_of(Role::Admin), keeping(Role::Write));
+    let (mut lp, bob, p, c) = nested(9310, (false, true));
     lp.peers[0].engine.demote(&p, &remove(bob)).unwrap();
     drop_due(&mut lp);
     assert_eq!(read(&mut lp, c), None);
     assert!(!found(&mut lp, D_MARK));
-    let (mut lp, bob, p, c) = nested(9320, keeping(Role::Admin), edge_of(Role::Write));
+    let (mut lp, bob, p, c) = nested(9320, (true, false));
     lp.peers[0].engine.demote(&p, &remove(bob)).unwrap();
     drop_due(&mut lp);
     assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))));
@@ -432,10 +530,10 @@ fn the_edge_lost_decides_spec_perm_3() {
 }
 
 // spec/permissions.md §3, Keep: an edge P's holder never read through (bob joined P after P's edge
-// on C ended) keeps nothing of C: bob had C another way, whose end says erase.
+// on C ended, saying keep) keeps nothing of C: bob had C another way, whose end says erase.
 #[test]
 fn an_end_before_the_node_read_the_holder_keeps_nothing_spec_perm_3() {
-    let (mut lp, bob, p, c) = nested(9330, edge_of(Role::Admin), keeping(Role::Write));
+    let (mut lp, bob, p, c) = nested(9330, (false, true));
     lp.peers[0].engine.demote(&p, &remove(bob)).unwrap();
     lp.peers[0].engine.grant(&c, &bob, &edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.demote(&c, &remove(p)).unwrap();
@@ -443,7 +541,7 @@ fn an_end_before_the_node_read_the_holder_keeps_nothing_spec_perm_3() {
     spread(&mut lp);
     lp.peers[1].engine.drop_lost_due().unwrap();
     assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))), "reads directly");
-    lp.peers[0].engine.demote(&c, &remove(bob)).unwrap();
+    lp.peers[0].engine.demote(&c, &saying(bob, false)).unwrap();
     drop_due(&mut lp);
     assert_eq!(read(&mut lp, c), None);
     assert!(!lp.peers[1].engine.kept_copies().contains(&c));
@@ -452,25 +550,24 @@ fn an_end_before_the_node_read_the_holder_keeps_nothing_spec_perm_3() {
 // spec/permissions.md §3, Keep: several ways in: the copy stays while one way's end keeps.
 #[test]
 fn any_path_keeps_spec_perm_3() {
-    let (mut lp, bob, p, c) = nested(9340, edge_of(Role::Admin), keeping(Role::Write));
+    let (mut lp, bob, p, c) = nested(9340, (false, true));
     lp.peers[0].engine.grant(&c, &bob, &edge_of(Role::Read)).unwrap();
     lp.peers[0].engine.demote(&c, &remove(p)).unwrap();
     drop_due(&mut lp);
     assert!(lp.peers[1].engine.kept_copies().is_empty(), "still reads directly");
-    lp.peers[0].engine.demote(&c, &remove(bob)).unwrap();
+    lp.peers[0].engine.demote(&c, &saying(bob, false)).unwrap();
     drop_due(&mut lp);
     assert_eq!(read(&mut lp, c), Some(s(&big(D_MARK))));
     assert!(lp.peers[1].engine.kept_copies().contains(&c));
 }
 
 // spec/permissions.md §3, Keep: an `until` passing, no role commit behind it: the node acts when it
-// next judges (here the manual drop; a restart changes nothing), keeping or erasing as the edge says.
+// next judges (here the manual drop; a restart changes nothing), reading the default.
 #[test]
 fn until_ending_spec_perm_3() {
-    for (edge, seed) in [(keeping(Role::Read), 9350), (edge_of(Role::Read), 9355)] {
-        let keep = edge.keep;
+    for ((edge, keep), seed) in [(keeping(Role::Read), 9350), (erasing(Role::Read), 9355)] {
         let at = osis_base::WallMs(T0.0 + 3_600_000);
-        let mut x = setup(seed, ct::Edge { until: Some(at), ..edge });
+        let mut x = setup(seed, (ct::Edge { until: Some(at), ..edge }, keep));
         x.lp.peers[1].engine.drop_lost_due().unwrap();
         reopen(&mut x.lp, 1, seed + 2).unwrap();
         x.lp.peers[1].clock.set(at);
@@ -484,11 +581,32 @@ fn until_ending_spec_perm_3() {
     }
 }
 
+// spec/permissions.md §3, Keep: an `until` ending reads the default in force at its key: a setting ordered
+// after it changes nothing either way, whichever the node held first.
+#[test]
+fn until_reads_the_default_at_its_key_spec_perm_3() {
+    for ((edge, keep), seed) in [(keeping(Role::Read), 9356), (erasing(Role::Read), 9358)] {
+        let at = osis_base::WallMs(T0.0 + 3_600_000);
+        let mut x = setup(seed, (ct::Edge { until: Some(at), ..edge }, keep));
+        let d = x.d;
+        x.lp.peers[0].clock.set(osis_base::WallMs(at.0 + 1_000));
+        x.lp.peers[1].clock.set(osis_base::WallMs(at.0 + 1_000));
+        let flip = set_default(&mut x.lp, 0, d, !keep);
+        send(&mut x.lp, 0, 1, &[flip]);
+        x.lp.peers[1].engine.drop_lost_secrets().unwrap();
+        if keep {
+            assert_kept(&mut x);
+        } else {
+            assert_erased(&mut x);
+        }
+    }
+}
+
 // spec/permissions.md §2, §3 Keep: a removal saying its own `keep` holds at once at a node whose clock
 // is far behind the remover's, in the bound a commit applies within (`MAX_DRIFT`): no timer.
 #[test]
 fn a_removal_saying_keep_ignores_the_clock_spec_perm_3() {
-    for (edge, say, seed) in [(edge_of(Role::Read), true, 9380), (keeping(Role::Read), false, 9385)] {
+    for (edge, say, seed) in [(erasing(Role::Read), true, 9380), (keeping(Role::Read), false, 9385)] {
         let mut x = setup(seed, edge);
         let behind = T0.0 + 10_000;
         x.lp.peers[0].clock.set(osis_base::WallMs(behind + osis_base::format::MAX_DRIFT_MS - 1_000));
@@ -505,11 +623,11 @@ fn a_removal_saying_keep_ignores_the_clock_spec_perm_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: a holder leaving keeps as its edge says: not its own choice.
+// spec/permissions.md §3, Keep: a holder leaving without a word of its own reads the default.
 #[test]
-fn self_removal_keeps_as_the_edge_says_spec_perm_3() {
-    for (edge, seed) in [(keeping(Role::Read), 9360), (edge_of(Role::Read), 9370)] {
-        let keep = edge.keep;
+fn self_removal_fills_from_the_default_spec_perm_3() {
+    for (edge, seed) in [(keeping(Role::Read), 9360), (erasing(Role::Read), 9370)] {
+        let keep = edge.1;
         let mut x = setup(seed, edge);
         let (d, pb) = (x.d, x.pb);
         x.lp.peers[1].engine.demote(&d, &remove(pb)).unwrap();
@@ -584,9 +702,9 @@ fn a_stripped_waiting_part_stays_out_spec_perm_3() {
     assert!(!found(&mut x.lp, LATE_MARK));
 }
 
-// spec/permissions.md §3, Keep; §6: a roster snapshot carries the edge's `keep`.
+// spec/permissions.md §3, Keep; §6: a roster snapshot before the removal changes nothing of the default.
 #[test]
-fn snapshot_carries_keep_spec_perm_6() {
+fn a_snapshot_keeps_the_default_spec_perm_6() {
     let mut x = setup(9430, keeping(Role::Read));
     let d = x.d;
     x.lp.peers[0].engine.roster_snapshot(&d, None).unwrap();
@@ -596,8 +714,7 @@ fn snapshot_carries_keep_spec_perm_6() {
     assert_kept(&mut x);
 }
 
-// spec/permissions.md §3, Keep: a restart between the removal's apply and the trigger reads `keep`
-// from what it saved.
+// spec/permissions.md §3, Keep: a restart between the removal's apply and the trigger reads the same word.
 #[test]
 fn restart_before_the_trigger_keeps_spec_perm_3() {
     let mut x = setup(9440, keeping(Role::Read));
@@ -611,14 +728,21 @@ fn restart_before_the_trigger_keeps_spec_perm_3() {
     assert_kept(&mut x);
 }
 
-// spec/permissions.md §7: a move's copy keeps the roster's `keep`.
+// spec/permissions.md §7, §3 Keep: a move's copy holds the default, and only that of the setting.
 #[test]
-fn move_carries_keep_spec_perm_7() {
+fn move_carries_the_default_spec_perm_7() {
     let x = setup(9450, keeping(Role::Read));
     let (mut lp, d, pb) = (x.lp, x.d, x.pb);
     let me = lp.peers[0].engine.tid();
     let (copy, _) = lp.peers[0].engine.move_to(&d, &me).unwrap();
-    assert!(lp.peers[0].engine.roster(&copy).get(&pb).is_some_and(|e| e.keep));
+    assert!(lp.peers[0].engine.roster(&copy).contains_key(&pb));
+    let on_copy = lp.peers[0].engine.get_typed(&copy, &ct::REQUIRED).unwrap().unwrap();
+    assert!(on_copy.keep && on_copy.rules.is_empty());
+    let y = setup(9455, erasing(Role::Read));
+    let (mut lp, d) = (y.lp, y.d);
+    let me = lp.peers[0].engine.tid();
+    let (copy, _) = lp.peers[0].engine.move_to(&d, &me).unwrap();
+    assert!(lp.peers[0].engine.get_typed(&copy, &ct::REQUIRED).unwrap().is_none());
 }
 
 // spec/permissions.md §3, Keep: the node's user may erase a copy, and what hangs on it.
@@ -647,9 +771,36 @@ fn regrant_ends_the_copy_spec_perm_3() {
     assert!(!x.lp.peers[1].engine.kept_copies().contains(&d));
     assert_eq!(read(&mut x.lp, d), Some(s(&big(LATE_MARK))), "reads again");
     assert!(!no_secret(&x.lp, d));
-    removed(&mut x);
-    assert_eq!(read(&mut x.lp, d), None, "this edge says erase");
+    let pb = x.pb;
+    remove_saying(&mut x.lp, d, pb, false);
+    spread(&mut x.lp);
+    x.lp.peers[1].engine.drop_lost_due().unwrap();
+    assert_eq!(read(&mut x.lp, d), None, "this removal says erase");
     assert!(!found(&mut x.lp, D_MARK));
+}
+
+// spec/permissions.md §2, §3 Keep; spec/sync.md: a node leaving by its own word, over a real host: its
+// removal is placed before it drops, the others see it gone, the node holds the copy, frozen.
+#[test]
+fn leaving_with_a_copy_over_a_host_spec_perm_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let (a, b) = (net.node(9490, &[host]), net.node(9491, &[host]));
+    let g = net.group(a, &[(b, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "before");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("before")));
+    let bt = net.tid(b);
+    let done = net.engine(b).demote(&g, &saying(bt, true)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    assert!(!net.engine(a).roster(&g).contains_key(&bt), "it reached the others");
+    assert!(net.engine(b).kept_copies().contains(&g));
+    net.write(a, t, "after");
+    net.run();
+    assert_eq!(net.read(b, t), Some(s("before")), "frozen");
+    assert!(net.sync(b).labels().is_empty());
 }
 
 // spec/permissions.md §3, Keep; spec/sync.md §2: over a real host a copy leaves the label: no
@@ -664,11 +815,7 @@ fn copy_is_not_synced_spec_perm_3() {
     net.run();
     assert_eq!(net.read(b, t), Some(s("before")));
     let bt = net.tid(b);
-    let done = net.engine(a).grant(&g, &bt, &keeping(Role::Read)).unwrap();
-    let acts = net.sync(a).carry_out(done).unwrap();
-    net.actions(a, acts);
-    net.run();
-    let done = net.engine(a).demote(&g, &remove(bt)).unwrap();
+    let done = net.engine(a).demote(&g, &saying(bt, true)).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.run();
@@ -688,31 +835,40 @@ fn copy_is_not_synced_spec_perm_3() {
     assert_eq!(net.read(a, t), Some(s("after")));
 }
 
-// spec/permissions.md §3, Keep: a link's joiner holds what the link says.
+// spec/permissions.md §3, Keep; §9: K takes the target's default when made, so a joiner removal keeps
+// under it; the link key goes plain in the same commit.
 #[test]
-fn link_carries_keep_spec_perm_3() {
-    let mut lp = LocalPeer::of(vec![forensic_peer(9410, &osis_store::Faults::new()), forensic_peer(9411, &osis_store::Faults::new())], 9410);
-    let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
-    let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
-    spread(&mut lp);
-    let d = thing_of(&mut lp, 0, pa);
-    let spec = osis_node::flows::LinkSpec { target: d, role: Role::Read, until: None, hosts: hosts(), peers: Vec::new(), single_use: false, keep: true };
-    let (link, _, _) = lp.peers[0].engine.create_link(&pa, &spec).unwrap();
-    spread(&mut lp);
-    lp.peers[1].engine.redeem(&link, &pb, false).unwrap();
-    spread(&mut lp);
-    let k = link.k;
-    assert!(lp.peers[1].engine.roster(&k).get(&pb).is_some_and(|e| e.keep), "the joiner's edge");
-    assert!(lp.peers[0].engine.roster(&d).get(&k).is_some_and(|e| e.keep), "K's edge");
+fn a_links_key_takes_the_targets_default_spec_perm_9() {
+    for (keep, seed) in [(true, 9410), (false, 9415)] {
+        let mut lp = LocalPeer::of(vec![forensic_peer(seed, &osis_store::Faults::new()), forensic_peer(seed + 1, &osis_store::Faults::new())], seed);
+        let pa = lp.peers[0].engine.create_person(&hosts()).unwrap().0.person;
+        let pb = lp.peers[1].engine.create_person(&hosts()).unwrap().0.person;
+        spread(&mut lp);
+        let d = thing_of(&mut lp, 0, pa);
+        if keep {
+            set_default(&mut lp, 0, d, true);
+        }
+        write(&mut lp, d, D_MARK);
+        let spec = osis_node::flows::LinkSpec { target: d, role: Role::Read, until: None, hosts: hosts(), peers: Vec::new(), single_use: false };
+        let (link, _, _) = lp.peers[0].engine.create_link(&pa, &spec).unwrap();
+        spread(&mut lp);
+        let (k, l) = (link.k, lp.peers[0].engine.roster(&link.k).keys().copied().find(|h| *h != pa).unwrap());
+        lp.peers[1].engine.redeem(&link, &pb, false).unwrap();
+        spread(&mut lp);
+        assert_eq!(read(&mut lp, d), Some(s(&big(D_MARK))));
+        assert_eq!(lp.peers[1].engine.get_typed(&k, &ct::REQUIRED).unwrap().is_some_and(|r| r.keep), keep);
+        lp.peers[0].engine.revoke_joiner(&k, &l, &pb, PreSync::Synced, None).unwrap();
+        drop_due(&mut lp);
+        assert_eq!(read(&mut lp, d).is_some(), keep);
+        assert_eq!(lp.peers[1].engine.kept_copies().contains(&d), keep);
+    }
 }
 
 /// A random history of edge writes by alice over C, P and bob (`nested`), in the order it was made.
 fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) {
     let mut rng = crate::order::Rng(seed);
-    let device = if rng.below(2) == 0 { keeping(Role::Admin) } else { edge_of(Role::Admin) };
-    let member = if rng.below(2) == 0 { keeping(Role::Write) } else { edge_of(Role::Write) };
-    let (mut lp, bob, p, c) = nested(seed, device, member);
-    lp.peers[0].engine.grant(&c, &bob, &if rng.below(2) == 0 { keeping(Role::Read) } else { edge_of(Role::Read) }).unwrap();
+    let (mut lp, bob, p, c) = nested(seed, (rng.below(2) == 0, rng.below(2) == 0));
+    lp.peers[0].engine.grant(&c, &bob, &edge_of(Role::Read)).unwrap();
     spread(&mut lp);
     let mut ids = Vec::new();
     for _ in 0..3 + rng.below(4) {
@@ -722,12 +878,14 @@ fn random_history(seed: u64) -> (LocalPeer, Tid, Tid, Vec<osis_base::CommitId>) 
         let keep = rng.below(2) == 0;
         let role = if t == p { Role::Admin } else { Role::Read };
         let live = lp.peers[0].engine.roster(&t).contains_key(&h);
-        let done = match (rng.below(3), live) {
-            (0, _) => lp.peers[0].engine.grant(&t, &h, &ct::Edge { keep, ..edge_of(role) }).ok(),
+        let done = match (rng.below(4), live) {
+            (0, _) => lp.peers[0].engine.grant(&t, &h, &edge_of(role)).ok(),
             (1, true) => lp.peers[0].engine.demote(&t, &remove(h)).ok(),
-            (_, true) => {
-                let new = ct::Edge { until: Some(osis_base::WallMs(0)), keep, ..edge_of(role) };
-                lp.peers[0].engine.demote(&t, &Demotion { holder: h, new: Some(new), presync: PreSync::Synced }).ok()
+            (2, true) => lp.peers[0].engine.demote(&t, &saying(h, keep)).ok(),
+            // a removal's fill changes; no receiver reads this
+            (3, _) => {
+                ids.push(set_default(&mut lp, 0, t, keep));
+                None
             }
             _ => None,
         };
@@ -773,12 +931,11 @@ fn any_order_replay(s: u64) -> String {
 
 // spec/permissions.md §3, Keep: in any arrival order, with the trigger run after each commit, a node
 // keeps no more than a node given the whole history at once; what it does not keep is gone from the
-// store; a copy holds no secret. FOUND: a kept mark not rechecking that the node read the holder (11124),
-// a rotation arriving after the removal giving back a secret (11876), a re-grant with no secret ending
-// the mark and a loss then leaving the content unmarked (886071).
+// store; a copy holds no secret. Seeds with teeth: a kept mark not rechecking that the node read the holder
+// (385), the timeline's word not ending a mark (102), a later plain removal not replacing a word (1204).
 #[test]
 fn any_order_keeps_no_more_spec_perm_3() {
-    let seeds = [11124, 11876, 886071, 886741, 889051, 9700];
+    let seeds = [385, 102, 1204, 11124, 886071, 9700];
     let kept: u64 = osis_base::testenv::run_seeds("keep::any_order_keeps_no_more", &seeds, false, any_order_replay, any_order_seed).into_iter().sum();
     assert!(kept > 0, "some seed kept");
 }

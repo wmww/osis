@@ -28,7 +28,7 @@ pub struct Person {
 }
 
 fn admin_edge() -> Edge {
-    Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }
+    Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None }
 }
 
 /// A key actor's `keys.0`: its KEM key (spec/crypto.md §3).
@@ -132,7 +132,7 @@ impl Engine {
             done.extend(self.run(|tx| grant_in(tx, Some(r), p, me, &admin_edge(), false))?);
         }
         for d in lost {
-            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync })?);
+            done.extend(self.demote_as(&r, &p, &Demotion { holder: *d, new: None, presync, keep: None })?);
         }
         Ok(done)
     }

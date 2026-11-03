@@ -139,7 +139,7 @@ fn key_actor_opens_deep_holder_chain_spec_crypto_4() {
         lp.peers[0].engine.grant(&w[1], &w[0], &read).unwrap();
     }
     let sharer = new_thing(&mut lp, 0);
-    let spec = osis_node::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false, keep: false };
+    let spec = osis_node::flows::LinkSpec { target: chain[0], role: Role::Read, until: None, hosts: Vec::new(), peers: Vec::new(), single_use: false };
     let (link, _, _) = lp.peers[0].engine.create_link(&sharer, &spec).unwrap();
     sync(&mut lp, 0, 1);
     let held = |lp: &LocalPeer, t: &Tid| lp.peers[1].engine.epochs(t).is_some_and(|e| e.read.holds_any());

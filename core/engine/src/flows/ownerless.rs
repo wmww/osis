@@ -47,7 +47,7 @@ fn create_in(tx: &mut Tx<'_>, admin: Tid) -> Result<(Tid, Option<CommitId>)> {
     rotation::fresh_deposit_seed(tx, &mut m, t)?;
     // the record's edge as a `roles.0` entry too, so a removal has an entry to reset
     // (spec/crdt.md §5.6); applied through the record's edge itself
-    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None };
     super::put_edge(&mut m, t, admin, &edge)?;
     let c = Engine::commit_tx(tx, m)?;
     rotation::record(tx, t, &rot)?;

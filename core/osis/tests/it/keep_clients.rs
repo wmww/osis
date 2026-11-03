@@ -206,7 +206,7 @@ fn refused(c: &Osis, t: Tid) -> bool {
 #[test]
 fn chat_kick_as_seen_by_the_app_spec_permissions_3() {
     for keep in [true, false] {
-        let x = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+        let x = chat(EdgeOpts::default(), Role::Write);
         let (_, secret, app) = x.app(Role::Write);
         let (_, other) = x.stranger();
         assert_eq!(app.get(x.m, text()).unwrap(), Some(s("hello")));
@@ -307,7 +307,10 @@ fn sim(w: &mut World, keep: Option<bool>) -> (Osis, Osis, Tid, Tid, Tid) {
     let bob = w.until(a.import_contact(&card), 1000, 10).unwrap();
     let g = sim_group(&a);
     let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
-    a.grant(g, bob, Role::Write, EdgeOpts { keep, invite: Some(Role::Read), ..Default::default() }).unwrap();
+    if let Some(k) = keep {
+        a.set_keep_default(g, k).unwrap();
+    }
+    a.grant(g, bob, Role::Write, EdgeOpts { invite: Some(Role::Read), ..Default::default() }).unwrap();
     w.run();
     assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
     (a, b, bob, g, m)
@@ -373,13 +376,12 @@ fn a_clients_read_follows_its_role_on_the_holder_spec_permissions_3() {
 fn a_client_with_its_own_edge_spec_permissions_3() {
     for (own, person, reads) in [(Some(true), Some(false), true), (Some(false), Some(true), false), (Some(true), Some(true), true)] {
         let mut w = World::new();
-        // the invite's edge keeps, so the client's invite grant does; the person's is said at the kick
+        // each one's word is said at its kick
         let (a, b, bob, g, m) = sim(&mut w, Some(true));
         let (c, _) = b.add_client(None).unwrap();
         let (other, _) = b.add_client(None).unwrap();
-        b.grant(g, c, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+        b.grant(g, c, Role::Read, EdgeOpts::default()).unwrap();
         w.run();
-        assert_eq!(a.roster(g).get(&c).map(|e| e.keep), Some(true));
         assert_eq!(b.acting_as(c).get(m, text()).unwrap(), Some(s("hello")));
         assert!(!b.acting_as(other).knows(m));
         sim_kick(&mut w, &a, g, c, own);
@@ -398,7 +400,8 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
     let (a, b, bob, f, in_f) = sim(&mut w, Some(true));
     let chat = sim_group(&a);
     let m = a.write_with(|x| { let m = x.create(chat)?; x.place(m, chat)?; x.at(m, text()).set(&s("in the chat"))?; Ok(m) }).unwrap();
-    a.grant(chat, f, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    a.set_keep_default(chat, true).unwrap();
+    a.grant(chat, f, Role::Read, EdgeOpts::default()).unwrap();
     let (app, _) = b.add_client(None).unwrap();
     let (before, _) = b.add_client(None).unwrap();
     b.grant(bob, app, Role::Read, Default::default()).unwrap();
@@ -424,7 +427,8 @@ fn a_member_of_the_holder_reads_no_copy_spec_permissions_3() {
 // spec/wire.md §11.2, notes/client-port.md §3: an app watching a copy, its role on the person ended: it reads nothing from then on, and its watch gets nothing more and lapses at the next change
 #[test]
 fn a_watch_on_a_copy_ends_with_the_role_spec_permissions_3() {
-    let x = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+    let x = chat(EdgeOpts::default(), Role::Write);
+    x.a.set_keep_default(x.g, true).unwrap();
     let (actor, _, app) = x.app(Role::Read);
     let watch = app.at(x.m, text()).watch().unwrap();
     assert_eq!(watch.current().unwrap(), Some(s("hello")));
@@ -477,7 +481,8 @@ fn an_ownerless_chat_keeps_spec_permissions_3() {
     a.write_with(|x| { x.place(g, a.home())?; x.make_group(g) }).unwrap();
     a.sync(g, &[]).unwrap();
     let m = a.write_with(|x| { let m = x.create(g)?; x.place(m, g)?; x.at(m, text()).set(&s("hello"))?; Ok(m) }).unwrap();
-    a.grant(g, bob, Role::Write, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    a.set_keep_default(g, true).unwrap();
+    a.grant(g, bob, Role::Write, EdgeOpts::default()).unwrap();
     w.run();
     assert_eq!(b.get(m, text()).unwrap(), Some(s("hello")));
     let (app, _) = b.add_client(None).unwrap();
@@ -602,11 +607,12 @@ fn ephemeral_data_and_a_copy_spec_permissions_3() {
 // spec/permissions.md §3 (Keep): a chat read through a faction Bob stays in: the kick of the faction from the chat leaves a copy beside a label that goes on syncing, through restarts; the label settles, the faction's new items arrive
 #[test]
 fn a_copy_beside_a_live_holder_spec_permissions_3() {
-    let x0 = chat(EdgeOpts { keep: Some(true), ..Default::default() }, Role::Write);
+    let x0 = chat(EdgeOpts::default(), Role::Write);
     let (h, a, b) = (x0.g, &x0.a, &x0.b);
     let xg = a.write_with(|w| { let g = w.create(a.me())?; w.place(g, a.home())?; w.make_group(g)?; Ok(g) }).unwrap();
     a.sync(xg, &[]).unwrap();
-    a.grant(xg, h, Role::Read, EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
+    a.set_keep_default(xg, true).unwrap();
+    a.grant(xg, h, Role::Read, EdgeOpts::default()).unwrap();
     let t = a.write_with(|w| { let t = w.create(xg)?; w.place(t, h)?; w.at(t, text()).set(&s("before"))?; Ok(t) }).unwrap();
     let nudge = Nudge::default();
     until("Bob has t", || { nudge.at(b); b.get(t, text()).ok().flatten() == Some(s("before")) });

@@ -104,7 +104,7 @@ pub struct DemoteFlags {
     /// Repudiate the holder's rotations this device cannot open (a writer that locked everyone out)
     #[arg(long)]
     pub repudiate: bool,
-    /// Override the edge: the removed holder's devices keep a read-only copy (true) or erase (false)
+    /// On a removal: the removed holder's devices keep a read-only copy (true) or erase (false); default: the thing's (`keep-default`)
     #[arg(long, value_name = "BOOL")]
     pub keep: Option<bool>,
 }
@@ -325,9 +325,6 @@ pub enum Cmd {
         until: Option<String>,
         #[arg(long, value_name = "ROLE")]
         invite: Option<String>,
-        /// When the edge ends the holder's devices keep a read-only copy
-        #[arg(long)]
-        keep: bool,
     },
     /// Change an edge's until/invite or raise its role
     Edge {
@@ -339,9 +336,6 @@ pub enum Cmd {
         until: Option<String>,
         #[arg(long, value_name = "ROLE")]
         invite: Option<String>,
-        /// When the edge ends the holder's devices keep a read-only copy (true) or erase (false)
-        #[arg(long, value_name = "BOOL")]
-        keep: Option<bool>,
     },
     /// Lower HOLDER to ROLE or `remove` (after the pre-sync)
     Demote {
@@ -357,6 +351,12 @@ pub enum Cmd {
     Kept {
         #[arg(long, value_name = "ACTOR")]
         drop: Option<String>,
+    },
+    /// Set whether a removal from T keeps a read-only copy by default (admin); absent: it erases
+    KeepDefault {
+        t: String,
+        #[arg(action = clap::ArgAction::Set, value_name = "BOOL")]
+        keep: bool,
     },
     /// Place T in group G and give G a tied edge on T (it goes when the placement goes)
     ShareInto {
@@ -584,9 +584,6 @@ pub enum LinkCmd {
         until: Option<String>,
         #[arg(long)]
         single_use: bool,
-        /// Joiners' devices keep a read-only copy when removed
-        #[arg(long)]
-        keep: bool,
     },
     Redeem { link: String },
     Ls { t: String },

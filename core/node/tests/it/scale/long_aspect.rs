@@ -539,7 +539,7 @@ fn step_kick_m(d: &Path, n: usize) {
         let f = step(n, &format!("kick {name} ({count} messages): the frontier alone"), || e.frontier(&scope, now).unwrap());
         let enc = osis_base::encode(&f.to_value()).len();
         println!("LONG n={n} kick {name}: the frontier lists {} commits, {enc} B encoded", f.commits.len());
-        let d = Demotion { holder: v, new: None, presync: PreSync::Synced };
+        let d = Demotion { holder: v, new: None, presync: PreSync::Synced, keep: None };
         let done = step(n, &format!("kick {name}: the whole demote"), || e.demote(&meta.t, &d));
         match done {
             Ok(done) => {

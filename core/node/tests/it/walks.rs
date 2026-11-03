@@ -429,7 +429,7 @@ fn open_equals_rebuild_after_a_forget() {
     lp.peers[1].engine.commit(m).unwrap().unwrap();
     lp.sync_all().unwrap();
     open_equals_rebuild(&mut lp.peers[1].engine, &[d], "holder");
-    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: pb, new: None, presync: osis_node::flows::PreSync::Synced }).unwrap();
+    lp.peers[0].engine.demote(&d, &osis_node::flows::Demotion { holder: pb, new: None, presync: osis_node::flows::PreSync::Synced, keep: None }).unwrap();
     lp.sync_all().unwrap();
     let gone = lp.peers[1].engine.forget_lost(osis_node::rotation::LostScope::Due).unwrap().forgotten;
     assert!(gone.things.contains(&d), "B forgets the thing");
@@ -457,7 +457,7 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
         ids.extend(lp.peers[0].engine.grant(&t, &who, &edge(role)).unwrap().commits);
     }
     lp.sync_all().unwrap();
-    let demote = osis_node::flows::Demotion { holder: r, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demote = osis_node::flows::Demotion { holder: r, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
     lp.sync_all().unwrap();
     // the admin compacts both aspects and drops every body a snapshot covers
@@ -480,7 +480,7 @@ fn open_equals_rebuild_after_a_secrets_compaction() {
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "compacted");
     // a later grant and rotation over the compacted aspects, compacted again
     ids.extend(lp.peers[0].engine.grant(&t, &r2, &edge(Role::Read)).unwrap().commits);
-    let demote = osis_node::flows::Demotion { holder: w, new: None, presync: osis_node::flows::PreSync::Synced };
+    let demote = osis_node::flows::Demotion { holder: w, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     ids.extend(lp.peers[0].engine.demote(&t, &demote).unwrap().commits);
     lp.sync_all().unwrap();
     open_equals_rebuild(&mut lp.peers[0].engine, &[t], "rotated after");
@@ -539,7 +539,7 @@ fn uncovered_part_judged_anew() {
     let tick = |lp: &mut LocalPeer| (0..4).for_each(|i| lp.peers[i].clock.advance(1));
     // B's removal of D reaches C alone
     tick(&mut lp);
-    let rm = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced };
+    let rm = osis_node::flows::Demotion { holder: d, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let g = lp.peers[1].engine.demote(&t, &rm).unwrap().commits;
     deliver(&mut lp, 1, 2, &g);
     // C compacts `keys.0`, dropping the rotation's part
@@ -555,9 +555,9 @@ fn uncovered_part_judged_anew() {
     }
     // A, having seen neither, demotes B to write and removes C
     tick(&mut lp);
-    let to_write = osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
+    let to_write = osis_node::flows::Demotion { holder: b, new: Some(edge(Role::Write)), presync: osis_node::flows::PreSync::Synced, keep: None };
     let db = lp.peers[0].engine.demote(&t, &to_write).unwrap().commits;
-    let gone = osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced };
+    let gone = osis_node::flows::Demotion { holder: c, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
     let dc = lp.peers[0].engine.demote(&t, &gone).unwrap().commits;
     deliver(&mut lp, 0, 2, &db);
     let valid = |e: &Engine, x: &osis_base::CommitId| e.body_valid(x, &t, &keys).unwrap();
@@ -591,7 +591,7 @@ fn secrets_history(seed: u64) -> usize {
                 let _ = lp.peers[i].engine.grant(&t, &m, &edge(role));
             }
             2 => {
-                let d = osis_node::flows::Demotion { holder: m, new: None, presync: osis_node::flows::PreSync::Synced };
+                let d = osis_node::flows::Demotion { holder: m, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
                 let _ = lp.peers[i].engine.demote(&t, &d);
             }
             3 | 4 => {

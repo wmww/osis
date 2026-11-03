@@ -1044,8 +1044,8 @@ fn imported_author_only_spec_perm_7() {
 
 fn demote(net: &mut Net, a: usize, g: osis_base::Tid, holder: osis_base::Tid, to: Role) {
     use osis_node::flows::{Demotion, PreSync};
-    let new = ct::Edge { role: to, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
-    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Synced }).unwrap();
+    let new = ct::Edge { role: to, until: None, invite: None, since: None, tied: None, keyset: None };
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
 }

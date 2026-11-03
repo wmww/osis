@@ -23,7 +23,7 @@ impl Engine {
             .roster(t)
             .into_iter()
             .filter(|(_, e)| e.alive_at(Some(ts)))
-            .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_ct), keyset: None, keep: e.keep }))
+            .map(|(m, e)| (m, Edge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_ct), keyset: None }))
             .collect();
         let hosts = self.group_labels(t)?.into_iter().find(|l| !l.replaced).map(|l| l.hosts);
         let (copy, imports) = self.move_thing(t, *owner)?;
@@ -34,6 +34,12 @@ impl Engine {
             done.extend(self.give_own_secrets(&copy)?);
             let (_, d) = self.create_label(&copy, &hosts)?;
             done.extend(d);
+        }
+        // the copy's retention is its own (spec/data-model.md §9), its default for removals carries
+        if crate::apply::validity::keep_now(&self.core, t) {
+            let mut m = Mutation::new();
+            m.set(copy, &ct::REQUIRED, &ct::RequiredRules { rules: Default::default(), keep: true })?;
+            done.add(self.commit(m)?);
         }
         for (m, e) in roster {
             if m != *owner {

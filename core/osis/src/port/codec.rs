@@ -245,7 +245,7 @@ pub(crate) fn groups(v: Value) -> Result<GroupsOf> {
 }
 
 pub(crate) fn roster_v(r: &Roster) -> Value {
-    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.invite, role_v), Value::Bool(e.tied), Value::Bool(e.keep)])).collect())
+    Value::List(r.iter().map(|(t, e)| Value::List(vec![Value::Tid(*t), role_v(e.role), opt(e.until, |w| u(w.0)), opt(e.invite, role_v), Value::Bool(e.tied)])).collect())
 }
 
 pub(crate) fn roster(v: Value) -> Result<Roster> {
@@ -253,7 +253,7 @@ pub(crate) fn roster(v: Value) -> Result<Roster> {
     for x in Args::of(vec![v]).list()? {
         let mut a = Args::new(x)?;
         let t = a.tid()?;
-        let e = Edge { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, tied: a.bool()?, keep: a.bool()? };
+        let e = Edge { role: role(&a.next()?)?, until: a.opt_wall()?, invite: a.opt()?.map(|r| role(&r)).transpose()?, tied: a.bool()? };
         a.end()?;
         out.insert(t, e);
     }
@@ -674,18 +674,17 @@ pub(crate) fn retention(v: Value) -> Result<Retention> {
     Ok(r)
 }
 
-/// Edge options: `[Opt(until), Opt(invite), Opt(keep)]`.
+/// Edge options: `[Opt(until), Opt(invite)]`.
 pub(crate) fn edge_opts_v(o: &EdgeOpts) -> Value {
-    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.invite, role_v), opt(o.keep, Value::Bool)])
+    Value::List(vec![opt(o.until, |w| u(w.0)), opt(o.invite, role_v)])
 }
 
 pub(crate) fn edge_opts(v: Value) -> Result<EdgeOpts> {
     let mut a = Args::new(v)?;
     let until = a.opt_wall()?;
     let invite = a.opt()?.map(|r| role(&r)).transpose()?;
-    let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
     a.end()?;
-    Ok(EdgeOpts { until, invite, keep })
+    Ok(EdgeOpts { until, invite })
 }
 
 /// A share: `[0, role]` tied, `[1, role]` untied, `[2]` excluded.

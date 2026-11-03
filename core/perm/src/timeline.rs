@@ -133,6 +133,32 @@ impl Kept {
     }
 }
 
+/// How an edge with no alive value ended (spec/permissions.md §3, Keep).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EdgeEnd {
+    /// A removal said keep or erase.
+    Said(bool),
+    /// Its `until` passed (or it was written expired): the thing's default in force at this key.
+    Until(Point),
+}
+
+impl EdgeEnd {
+    /// The end of last value `e`, written at `at` (`None`: an epoch start's). An end by `until`
+    /// has the key (first `ts` at `until`, the zero tid and commit ID, §6), or its write's if later.
+    fn of(e: &Edge, at: Option<Point>) -> EdgeEnd {
+        if e.says_keep() {
+            return EdgeEnd::Said(true);
+        }
+        let key = e.until.and_then(|u| Ts::make(u, 0)).map(Point::expiry);
+        match (key, at) {
+            (Some(k), Some(a)) => EdgeEnd::Until(k.max(a)),
+            (Some(k), None) => EdgeEnd::Until(k),
+            (None, Some(a)) => EdgeEnd::Until(a),
+            (None, None) => EdgeEnd::Said(false),
+        }
+    }
+}
+
 impl Timeline {
     /// Evaluates from scratch (D rebuilt, §5.1 step 5).
     pub fn evaluate(held: &dyn HeldSet) -> Timeline {
@@ -538,17 +564,17 @@ impl Timeline {
         f(&view, &view.roles_from(node))
     }
 
-    /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: each one's
-    /// last value and the point of its last write (`None`: unchanged since an epoch start).
+    /// The holders with no edge alive on `thing` at `ts` that the walk saw one of: how each one's
+    /// edge ended and the point of its last write (`None`: unchanged since an epoch start).
     /// O(the walk's history): only a node that lost access asks (spec/permissions.md §3, Keep).
-    pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (Edge, Option<Point>)> {
-        let mut out: BTreeMap<Tid, (Edge, Option<Point>)> = EdgesAt::new(&self.walked.initial).holders(thing).map(|(m, e)| (*m, (*e, None))).collect();
+    pub fn ended(&self, thing: &Tid, ts: Ts) -> BTreeMap<Tid, (EdgeEnd, Option<Point>)> {
+        let mut out: BTreeMap<Tid, (EdgeEnd, Option<Point>)> = EdgesAt::new(&self.walked.initial).holders(thing).map(|(m, e)| (*m, (EdgeEnd::of(e, None), None))).collect();
         for c in self.walked.history.iter().filter(|c| c.target == *thing) {
             match (c.edge, out.get_mut(&c.holder)) {
                 (Some(e), _) => {
-                    out.insert(c.holder, (e, Some(c.point)));
+                    out.insert(c.holder, (EdgeEnd::of(&e, Some(c.point)), Some(c.point)));
                 }
-                (None, Some(x)) => x.1 = Some(c.point),
+                (None, Some(x)) => *x = (EdgeEnd::Said(false), Some(c.point)),
                 (None, None) => {}
             }
         }
@@ -586,11 +612,6 @@ impl Timeline {
     /// Effective invite (§2).
     pub fn invite(&self, node: &Tid, thing: &Tid, at: At) -> Option<Role> {
         self.with_roles(node, at, |view, best| view.invite(best, thing))
-    }
-
-    /// Whether an edge giving `node` its invite on `thing` has `keep` (§2).
-    pub fn invite_keeps(&self, node: &Tid, thing: &Tid, at: At) -> bool {
-        self.with_roles(node, at, |view, best| view.invite_keeps(best, thing))
     }
 
     /// Effective roles of `node` on every thing it reaches.

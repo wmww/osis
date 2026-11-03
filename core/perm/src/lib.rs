@@ -28,7 +28,7 @@ pub use moves::{MoveIndex, RESOLUTION_HOPS};
 pub use osis_base::PurgeBy;
 pub use roster::RosterState;
 pub use scope::DemotionScope;
-pub use timeline::{At, Timeline};
+pub use timeline::{At, EdgeEnd, Timeline};
 pub use types::{Edge, EdgeOp, Frontier, RoleCommit, Point, RosterSnapshot, Tenure, Tie, TieSource, WriteId, ROLES};
 pub use walk::{Applied, Attr, Demotion, Fall};
 #[cfg(debug_assertions)]

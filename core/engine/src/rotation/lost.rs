@@ -272,8 +272,8 @@ fn contested(core: &Core, k: &Tid) -> bool {
 /// One way a lost actor's copy may hang on holder `via`.
 #[derive(Clone, Copy)]
 struct Way {
-    /// An ended edge's last value has `keep`, or the way is alive (an edge or owner link from a
-    /// holder that is itself kept).
+    /// An ended edge's removal said keep, or its `until` passed under a default to keep, or the
+    /// way is alive (an edge or owner link from a holder that is itself kept).
     keep: bool,
     /// The write that ended it: the node must have read the holder just before it.
     end: Option<osis_perm::Point>,
@@ -287,7 +287,11 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
     for a in actors {
         let w = out.entry(*a).or_default();
         if let Some(tl) = core.timelines.get(a) {
-            w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { keep: e.keep, end })));
+            let says = |e: osis_perm::EdgeEnd| match e {
+                osis_perm::EdgeEnd::Said(k) => k,
+                osis_perm::EdgeEnd::Until(key) => crate::apply::validity::keep_in_force(core, a, &key),
+            };
+            w.extend(tl.ended(a, ts).into_iter().map(|(h, (e, end))| (h, Way { keep: says(e), end })));
             w.extend(tl.roster(a, At::now(ts)).into_keys().map(|h| (h, live)));
         }
         if let Some(o) = core.owner(a) {
@@ -300,7 +304,7 @@ fn ways(core: &Core, actors: &BTreeSet<Tid>) -> BTreeMap<Tid, BTreeMap<Tid, Way>
 /// The copies to keep among `lost` and the held copies `marks` (spec/permissions.md §3, Keep), each
 /// with the holders it hangs on. A copy hangs on holder H while the node still has H (it is H, or
 /// reads H, or keeps H) and the way through H is one that keeps; a holder already recorded goes
-/// only on the timeline's word: its edge's last value now says erase. Least fixpoint, so holders
+/// only on the timeline's word: the edge's end now says erase. Least fixpoint, so holders
 /// cannot keep each other.
 fn keeps(core: &Core, lost: &BTreeSet<Tid>, marks: &BTreeMap<Tid, BTreeSet<Tid>>) -> BTreeMap<Tid, BTreeSet<Tid>> {
     let me = core.id.tid();

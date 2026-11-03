@@ -70,7 +70,7 @@ fn departed_node_card_deleted_spec_permissions_4() {
     let keys = card_entries(&mut net, a, host, &l, rt, "keys.0");
     assert!(!keys.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -97,7 +97,7 @@ fn regranted_node_card_placed_again_spec_permissions_4() {
     let first = card_entries(&mut net, a, host, &l, rt, "reach.0");
     assert!(!first.is_empty());
     net.set_online(r, false);
-    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: rt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -176,7 +176,7 @@ fn person_reader(net: &mut Net, a: usize, r: usize, host: usize, until: Option<o
     let g = net.group(a, &[], &[host]);
     let p = person(net, r, host);
     net.pair(r, a);
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &p, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
@@ -205,7 +205,7 @@ fn person_removed_node_card_deleted_spec_permissions_4() {
     let (g, p, l) = person_reader(&mut net, a, r, host, None);
     let rt = net.tid(r);
     assert!(!card_entries(&mut net, a, host, &l, rt, "reach.0").is_empty(), "the reader's card is under the group's label");
-    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -294,7 +294,7 @@ fn unheld_chain_card_kept_spec_permissions_4() {
     m.set(h, &REG, &s("h")).unwrap();
     e.commit(m).unwrap();
     set_edge(e, h, r2t, Role::Read);
-    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: p, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     settle(&mut net);
@@ -318,7 +318,7 @@ fn regrant_after_until_reads_again_spec_permissions_2() {
     net.clock.advance(3_600_000);
     settle(&mut net);
     assert!(!net.engine(a).may_read(&p, &g), "the edge passed its until");
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     let done = net.engine(a).grant(&g, &p, &edge).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);

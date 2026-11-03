@@ -35,10 +35,26 @@ pub struct Demotion {
     pub holder: Tid,
     pub new: Option<Edge>,
     pub presync: PreSync,
+    /// A removal's word (`new` `None`): keep or erase; `None`: the thing's default in force
+    /// (spec/permissions.md §3, Keep).
+    pub keep: Option<bool>,
+}
+
+/// What `d` writes on the holder's edge on `target`, standing at `old`: `d.new`, or for a removal
+/// saying keep the value that says so (spec/permissions.md §3, Keep).
+fn written(core: &crate::engine::Core, target: &Tid, old: Option<&PermEdge>, d: &Demotion) -> Result<Option<Edge>> {
+    if d.new.is_some() {
+        return match d.keep.is_some() || d.new.as_ref().is_some_and(|n| n.until == Some(osis_base::WallMs(0))) {
+            true => Err(Error::Misuse("only a removal says keep or erase, by `keep`")),
+            false => Ok(d.new.clone()),
+        };
+    }
+    let keep = old.is_some() && d.keep.unwrap_or_else(|| crate::apply::validity::keep_now(core, target));
+    Ok(keep.then_some(Edge { role: Role::Read, until: Some(osis_base::WallMs(0)), invite: None, since: None, tied: None, keyset: None }))
 }
 
 fn perm_edge(e: &Edge) -> PermEdge {
-    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None, keep: e.keep }
+    PermEdge { role: e.role, until: e.until, invite: e.invite, since: None, tied: e.tied.map(super::tied::tie_perm), keyset: None }
 }
 
 /// Which parts of a commit an inbox blob carries.
@@ -115,6 +131,9 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     if edge.invite.is_some_and(|i| i > edge.role) {
         return Err(Error::Misuse("invite above the edge's role"));
     }
+    if edge.until == Some(osis_base::WallMs(0)) {
+        return Err(Error::Misuse("`until` 0 is a removal's saying keep"));
+    }
     let role = tx.core.role_now(&who, &target);
     let admin = role == Some(Role::Admin);
     // a non-writer of the target's label deposits its invite grant (spec/sync.md §5)
@@ -122,12 +141,8 @@ pub(crate) fn grant_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, holder
     let ts = now_ts(tx.core);
     let old = tx.core.timelines.get(&target).and_then(|tl| tl.roster(&target, At::now(ts)).get(&holder).copied());
     let invite = tx.core.timelines.get(&target).and_then(|tl| tl.invite(&who, &target, At::now(ts)));
-    // an invite grant carries the `keep` it is made through, and no other (spec/permissions.md §2)
-    let keep = edge.keep;
-    let through = !admin && tx.core.timelines.get(&target).is_some_and(|tl| tl.invite_keeps(&who, &target, At::now(ts)));
-    let edge = &Edge { keep: if admin { keep } else { through }, ..edge.clone() };
     if !admin {
-        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i)) && (!keep || through);
+        let ok = old.is_none() && invite.is_some_and(|i| edge.role <= i && edge.invite.is_none_or(|x| x <= i));
         if !ok {
             return Err(Error::Permission { tid: target });
         }
@@ -250,7 +265,8 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let tl = tx.core.timelines.get(&target).ok_or(Error::UnknownThing(target))?;
     let old = tl.edges_at(None).get(&holder, &target).copied();
     // the lowered edge keeps the standing edge's `keyset` (spec/crypto.md §4), as written below
-    let new_p = d.new.as_ref().map(|n| PermEdge { keyset: old.and_then(|o| o.keyset), ..perm_edge(n) });
+    let new = written(tx.core, &target, old.as_ref(), d)?;
+    let new_p = new.as_ref().map(|n| PermEdge { keyset: old.and_then(|o| o.keyset), ..perm_edge(n) });
     if old.is_some() && !osis_perm::types::lowers(new_p.as_ref(), old.as_ref()) {
         return Err(Error::Misuse("not a lowering write (use grant)"));
     }
@@ -267,9 +283,6 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     let admin = tx.core.role_now(&who, &target) == Some(Role::Admin);
     if !selfr && !admin || selfr && !gone.is_empty() {
         return Err(Error::Permission { tid: target });
-    }
-    if selfr && d.new.as_ref().is_some_and(|n| n.keep && !old.is_some_and(|o| o.keep)) {
-        return Err(Error::Misuse("a holder does not raise its own edge's keep"));
     }
     if !selfr && let PreSync::Unsynced { proceed: false } = d.presync {
         return Err(Error::Misuse("labels not synced before a demotion; proceed to stamp anyway"));
@@ -306,7 +319,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     }
     // a lowering seals nothing to the holder: the edge keeps the keyset the standing one names
     // (spec/crypto.md §4)
-    if let Some(n) = &d.new {
+    if let Some(n) = &new {
         let keyset = old.and_then(|o| o.keyset).map(|k| ct::EdgeKey { ts: k.ts, node: k.node, commit: k.commit });
         put_edge(&mut m, target, holder, &Edge { keyset, ..n.clone() })?;
     }
@@ -319,7 +332,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     // an explicit demotion carries the target's rotation of the roles the holders left
     let mut rot = None;
     let mut unreached = Vec::new();
-    let new_role = d.new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role);
+    let new_role = new.as_ref().filter(|e| e.until.is_none_or(|u| u > ts.wall_ms())).map(|e| e.role);
     let mut left: BTreeSet<Role> = BTreeSet::new();
     let mut pending = Vec::new();
     for (x, o, n) in std::iter::once((holder, old, new_role)).chain(gone.iter().map(|(x, e)| (*x, Some(*e), None))) {
@@ -524,7 +537,8 @@ impl Engine {
                 let certs = tl.certificates(&who, &t);
                 let by_then = |c: &CommitId| self.core.ix.commits.get(c).is_some_and(|m| m.received.0 <= as_of.0);
                 let own: BTreeSet<CommitId> = certs.commits.into_iter().chain(certs.snapshots.into_keys()).filter(|c| by_then(c)).collect();
-                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, d.new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
+                let new = written(&self.core, &t, tl.edges_at(None).get(&d.holder, &t), d)?;
+                let ops: Vec<osis_perm::EdgeOp> = std::iter::once((d.holder, new.as_ref().map(perm_edge))).chain(others.iter().map(|x| (*x, None))).map(|(holder, edge)| osis_perm::EdgeOp { target: t, holder, edge }).collect();
                 // what this node received on the aspects the demotion puts in question with
                 // that frontier (`Timeline::demotion_scope`), from what it puts in question
                 // with every held write received, until the scope stops growing

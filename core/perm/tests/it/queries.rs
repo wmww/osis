@@ -365,7 +365,6 @@ fn cert_run_edges(samples: u64, seed: u64) {
         let t = w.thing(nodes[0]);
         let me = |e: Option<edges::Edge>| {
             e.map(|e| Edge {
-                keep: false,
                 role: match e.role {
                     roles_model::Role::Admin => Admin,
                     roles_model::Role::Write => Write,
@@ -622,7 +621,7 @@ fn patched_view_equals_cloned_edges() {
         let role = [Read, Write, Admin][rng.below(3)];
         let invite = [None, Some(Read), Some(Write), Some(Admin)][rng.below(4)].map(|i: Role| i.min(role));
         let until = (rng.below(3) == 0).then(|| osis_base::WallMs(rng.below(10) as u64));
-        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: crate::common::tie_if(until.is_some() != invite.is_some()), keyset: None, keep: false })
+        (rng.below(4) != 0).then_some(Edge { role, until, invite, since: None, tied: crate::common::tie_if(until.is_some() != invite.is_some()), keyset: None })
     };
     for _ in 0..2000 {
         let keys = key_actors(3, 11);

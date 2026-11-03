@@ -77,7 +77,7 @@ fn removal_moves_local_head_spec_sync_5() {
     let steps = |net: &mut Net| net.engine(a).group_labels(&g).unwrap().into_iter().find(|x| x.id == l).unwrap().steps.len();
     assert_eq!(steps(&mut net), 1);
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     net.advance(31_000);
@@ -176,7 +176,7 @@ fn one_step_per_rotation_without_host_spec_sync_5() {
     };
     assert_eq!(shape(&mut net, a), (1, 1));
     let ct = net.tid(c);
-    let done = net.engine(a).demote(&g, &Demotion { holder: ct, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: ct, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     for _ in 0..3 {
@@ -318,7 +318,7 @@ fn local_run(full: bool) -> (Vec<Vec<String>>, Vec<(u64, u64)>) {
     }
     // a removal: the head moves
     let bt = net.tid(b);
-    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced }).unwrap();
+    let done = net.engine(a).demote(&g, &Demotion { holder: bt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
     let acts = net.sync(a).carry_out(done).unwrap();
     net.actions(a, acts);
     step(&mut net);
@@ -499,7 +499,7 @@ fn expired_link_at_no_host_finalized_spec_permissions_9() {
         let t = net.group(a, &[], &[]);
         net.run();
         let until = WallMs(net.now() + 3_600_000);
-        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), hosts: hosts.clone(), peers: Vec::new(), single_use: false, keep: false };
+        let spec = osis_node::flows::LinkSpec { target: t, role: Role::Read, until: Some(until), hosts: hosts.clone(), peers: Vec::new(), single_use: false };
         let (link, _, done) = net.engine(a).create_link(&pa.person, &spec).unwrap();
         let acts = net.sync(a).carry_out(done).unwrap();
         net.actions(a, acts);

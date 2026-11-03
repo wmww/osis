@@ -1876,7 +1876,7 @@ mod tests {
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {
         let (path, op) = match role {
-            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None, keep: false }.to_value())),
+            Some(role) => (vec![PathSeg::Key(Value::Tid(m))], Op::Set(ct::Edge { role, until: None, invite: None, since: None, tied: None, keyset: None }.to_value())),
             None => (Vec::new(), Op::Remove(Value::Tid(m))),
         };
         let mut mu = Mutation::new();

@@ -234,7 +234,7 @@ fn link_redeem_spec_permissions_9() {
     let bob = &others[0];
     let g = group(&alice);
     let before = item(&alice, g, g, "before the link");
-    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false, keep: false }).unwrap();
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
     assert_eq!(alice.links(g).len(), 1);
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();
@@ -269,7 +269,7 @@ fn used_link_refused_at_once_spec_permissions_9() {
     let bob = &others[0];
     let g = group(&alice);
     item(&alice, g, g, "before the link");
-    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false, keep: false }).unwrap();
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
@@ -296,7 +296,7 @@ fn used_link_with_sharer_offline_spec_permissions_9() {
     let bob = &others[0];
     let g = group(&alice);
     item(&alice, g, g, "before the link");
-    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false, keep: false }).unwrap();
+    let link = alice.make_link(g, Role::Write, osis::LinkOpts { until: None, single_use: true, direct: false }).unwrap();
     w.run();
     let link: osis::ShareLink = link.to_string().parse().unwrap();
     w.set_online(&alice, false);
@@ -324,7 +324,7 @@ fn until_link(w: &mut World) -> (Osis, Osis, Tid, Tid, Tid) {
     w.run();
     let g = group(&alice);
     let until = osis::WallMs(w.now() + 3_600_000);
-    let link = alice.make_link(g, Role::Read, osis::LinkOpts { until: Some(until), single_use: false, direct: false, keep: false }).unwrap();
+    let link = alice.make_link(g, Role::Read, osis::LinkOpts { until: Some(until), single_use: false, direct: false }).unwrap();
     w.run();
     assert_eq!(w.until(bob.redeem(&link), 1000, 10).unwrap(), g);
     w.run();
@@ -1129,7 +1129,7 @@ fn a_grant_again_makes_the_label_a_crash_left_out() {
     let (alice, others, ids) = people(&mut w, 1);
     let t = plain(&alice, "for bob");
     // the first half of `Osis::grant`, its result dropped as a crash would
-    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+    let edge = osis_schema::core_types::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
     alice.engine(|e| e.grant(&t, &ids[0], &edge).map(drop)).unwrap();
     w.run();
     assert_eq!(x(&others[0], t), None);
@@ -1151,10 +1151,12 @@ fn removal_keeps_a_copy_spec_permissions_3() {
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
-        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts { keep, ..Default::default() }).unwrap();
+        if let Some(k) = keep {
+            alice.set_keep_default(g, k).unwrap();
+        }
+        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts::default()).unwrap();
         w.run();
         assert_eq!(x(bob, t), Some(s("before")));
-        assert_eq!(alice.roster(g).get(&bob.me()).unwrap().keep, keep == Some(true));
         let d = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: say };
         w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
         w.run();
@@ -1179,7 +1181,10 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
-        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts { keep, ..Default::default() }).unwrap();
+        if let Some(k) = keep {
+            alice.set_keep_default(g, k).unwrap();
+        }
+        alice.grant(g, bob.me(), Role::Read, osis::EdgeOpts::default()).unwrap();
         w.run();
         let d = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
         w.until(alice.demote(g, bob.me(), Lower::Remove, d), 1000, 10).unwrap();
@@ -1198,16 +1203,20 @@ fn a_regrant_ends_a_copy_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §3, Keep: a kick of a link's joiner says for itself too; the two ways round.
+// spec/permissions.md §3, Keep; §9: a kick of a link's joiner fills from the target's default as the
+// link was made, and says for itself too; the two ways round.
 #[test]
-fn a_joiners_removal_overrides_the_link_spec_permissions_3() {
+fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
     for (link, say, kept) in [(true, Some(false), false), (false, Some(true), true), (true, None, true), (false, None, false)] {
         let mut w = World::new();
         let (alice, others, _) = people(&mut w, 1);
         let bob = &others[0];
         let g = group(&alice);
         let t = item(&alice, g, g, "before");
-        let l = alice.make_link(g, Role::Read, osis::LinkOpts { until: None, single_use: false, direct: false, keep: link }).unwrap();
+        if link {
+            alice.set_keep_default(g, true).unwrap();
+        }
+        let l = alice.make_link(g, Role::Read, osis::LinkOpts { until: None, single_use: false, direct: false }).unwrap();
         w.run();
         w.until(bob.redeem(&l), 1000, 10).unwrap();
         w.run();
@@ -1219,15 +1228,3 @@ fn a_joiners_removal_overrides_the_link_spec_permissions_3() {
     }
 }
 
-// spec/permissions.md §2, Keep: a tied share over an edge keeps its `keep`.
-#[test]
-fn share_into_keeps_keep_spec_permissions_2() {
-    let mut w = World::new();
-    let (alice, _, _) = people(&mut w, 1);
-    let g = group(&alice);
-    let t = plain(&alice, "x");
-    alice.write_with(|w| w.place(t, g)).unwrap();
-    alice.grant(t, g, Role::Read, osis::EdgeOpts { keep: Some(true), ..Default::default() }).unwrap();
-    alice.share_into(t, g, Role::Write, Default::default()).unwrap();
-    assert!(alice.roster(t).get(&g).is_some_and(|e| e.keep && e.role == Role::Write));
-}

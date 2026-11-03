@@ -2,7 +2,7 @@
 > Summary: Lost access by an `until` passing is only judged at the next role commit on the thing or a manual `drop_lost`. Automating it has traps; what the keep-after-removal branch learned before it backed the attempt out.
 > Tags: engine, node, security
 
-Requirement: a node whose edge's `until` passed should drop (or keep, as the edge says) what it lost without needing another role commit or a manual `SyncEngine::drop_lost`. Reads by clients already end at the `until`, the node's own secrets and content do not.
+Requirement: a node whose edge's `until` passed should drop (or keep, as the thing's default said at the ending) what it lost without needing another role commit or a manual `SyncEngine::drop_lost`. Reads by clients already end at the `until`, the node's own secrets and content do not.
 
 Attempt (keep-after-removal, reviews 1, 3, 4; backed out): due scopes re-armed each target for its roster's next `until`, then gates. Each fix added states.
 
@@ -16,4 +16,4 @@ Traps:
 
 Costs measured: the work list holds one entry per thing with an `until` ahead (23 B each, a growth row): a scan took 22 µs at 10^4 entries and 0.6 ms at 10^5, per step, so that attempt added a by-time index. `heard_out` is O(labels x connections) per step while an expired edge waits on a host down.
 
-Not part of this: a removal saying its own `keep` is written with `until` 0, so it is a plain loss at every clock (spec/permissions.md §2).
+Not part of this: a removal saying keep is written with `until` 0, so it is a plain loss at every clock (spec/permissions.md §2). An `until` ending reads the default in force at its key.

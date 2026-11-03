@@ -660,14 +660,6 @@ impl<'a> View<'a> {
         inv
     }
 
-    /// Whether an edge giving `x` an invite on `n` has `keep`, so its invite grants may too
-    /// (spec/permissions.md §2).
-    pub fn invite_keeps(&self, best: &BTreeMap<Tid, Role>, n: &Tid) -> bool {
-        let mut keeps = false;
-        self.each_holder(n, |m, e| keeps |= e.keep && e.invite.is_some() && best.contains_key(m) && e.alive_at(self.ts));
-        keeps
-    }
-
     /// Standing of `x` on `n` given `x`'s roles.
     pub fn standing(&self, x: &Tid, best: &BTreeMap<Tid, Role>, n: &Tid) -> Standing {
         self.reads(n).standing(x, best, n)

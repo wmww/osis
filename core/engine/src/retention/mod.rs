@@ -1893,7 +1893,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         lp.peers[0].commit(m).unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1904,7 +1904,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.body_live(&c, &t, &ak).unwrap(), "W's write is the value");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), keep: None }).unwrap();
         assert!(!e.body_live(&c, &t, &ak).unwrap(), "invalid after the backdated removal: dead");
         e.grant(&t, &w, &write).unwrap();
         assert!(e.body_live(&c, &t, &ak).unwrap(), "valid again after the re-grant: live");
@@ -1923,7 +1923,7 @@ mod tests {
         let t = lp.peers[0].engine.new_thing(&mut m, a);
         m.set(t, &ak, &Value::Int(0)).unwrap();
         let first = lp.peers[0].commit(m).unwrap().unwrap();
-        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None, keep: false };
+        let write = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
         lp.peers[0].engine.grant(&t, &w, &write).unwrap();
         lp.sync_all().unwrap();
         let before = lp.peers[0].engine.now();
@@ -1937,7 +1937,7 @@ mod tests {
         lp.sync(1, 0).unwrap();
         let e = &mut lp.peers[0].engine;
         assert!(e.take_changed().commits.contains(&c), "applied");
-        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before) }).unwrap();
+        e.demote(&t, &Demotion { holder: w, new: None, presync: PreSync::Backdated(before), keep: None }).unwrap();
         let got = e.take_changed();
         assert!(got.commits.contains(&c), "the flipped commit");
         assert!(!got.commits.contains(&first), "not every commit on the flipped aspect");

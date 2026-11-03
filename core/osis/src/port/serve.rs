@@ -593,7 +593,7 @@ impl Worker {
             method::MAKE_LINK => {
                 let (t, r) = (a.tid()?, c::role(&a.next()?)?);
                 let until = a.opt_wall()?;
-                let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()?, keep: a.bool()? };
+                let o = crate::LinkOpts { until, single_use: a.bool()?, direct: a.bool()? };
                 Value::Str(db.make_link(t, r, o)?.to_string())
             }
             _ => return Err(unsupported(&format!("method {m}"))),
