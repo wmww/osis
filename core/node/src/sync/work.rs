@@ -13,7 +13,7 @@
 //! pass over the set acts as a full pass would.
 
 use super::pass::{is_card, is_snapshot};
-use super::state::Kind;
+use super::state::{Kind, Touch};
 use super::{ConnId, SyncEngine};
 use crate::error::Result;
 use crate::labeling::{Body, BodyCtx, HeadKeys};
@@ -107,6 +107,33 @@ impl Touched {
     pub fn is_empty(&self) -> bool {
         !self.full && !self.keys && !self.clock && self.commits.is_empty() && self.states.is_empty() && self.whole.is_empty() && self.blobs.is_empty() && self.moved.is_empty() && self.roles.is_empty() && self.actors.is_empty()
     }
+
+    /// One entry or commit judged again.
+    pub fn add(&mut self, x: Touch) {
+        match x {
+            Touch::Commit(c) => self.commits.insert(c),
+            Touch::Blob(b) => self.blobs.insert(b),
+        };
+    }
+
+    /// Takes in what `o` collected.
+    pub fn absorb(&mut self, o: &Touched) {
+        self.full |= o.full;
+        self.commits.extend(o.commits.iter().copied());
+        self.states.extend(o.states.iter().cloned());
+        self.whole.extend(o.whole.iter().cloned());
+        self.blobs.extend(o.blobs.iter().copied());
+        self.moved.extend(o.moved.iter().copied());
+        self.roles.merge(&o.roles);
+        self.actors.extend(o.actors.iter().copied());
+        self.keys |= o.keys;
+        self.clock |= o.clock;
+    }
+
+    /// What it holds that grows with changes (`SyncConfig::work_max`).
+    pub fn size(&self) -> usize {
+        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len() + self.roles.subjects.len()
+    }
 }
 
 /// A change of edges or owner links: only `subjects` (`Held::upstream` of the changed edges'
@@ -151,46 +178,58 @@ impl Inputs {
     }
 }
 
-/// One label's work set at one connection's host (`LConn::work`).
+/// What verdicts wait on: a time, an aspect's state, a linked blob, a key, settling. Filled by a
+/// pass (`Left`), kept by the set until the wait ends or a pass judges everything.
 #[derive(Default)]
-pub(crate) struct Work {
-    /// Judge everything next pass.
-    pub full: bool,
-    pub commits: BTreeSet<CommitId>,
-    pub blobs: BTreeSet<BlobId>,
-    /// Changes from elsewhere since the last pass (`bound`).
-    pub elsewhere: usize,
-    pub aspects: BTreeSet<(Tid, Ak)>,
-    pub states: BTreeSet<(Tid, Ak)>,
-    pub whole: BTreeSet<(Tid, Ak)>,
-    pub things: BTreeSet<Tid>,
-    pub moved: BTreeSet<Tid>,
-    pub roles: RoleMoves,
-    pub actors: BTreeSet<Tid>,
-    pub keys: bool,
-    /// The roster's clock horizon is to be taken again (`Touched::clock`).
-    pub clock: bool,
+pub(crate) struct Waits {
+    /// Entries and commits whose verdict changes at a time (corrected wall ms).
+    pub due: BTreeMap<u64, BTreeSet<Touch>>,
+    /// Commits whose verdict waits on an aspect's state (liveness).
+    pub aspects: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    /// Keep-at-most bodies before their timed delete: a valid write changes their bound or
+    /// liveness only by killing their writes, which marks them (`retention::note_deaths`,
+    /// replays), so only the aspect's other state changes (`Touched::whole`) wake them.
+    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
+    /// Blobs a body links that this node neither holds nor has an entry of: the commits that
+    /// upload them once they arrive.
+    pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
     /// Commits whose delete waits for a delete key this node lacks: judged again when held
     /// epochs may have changed.
     pub keyless: BTreeSet<CommitId>,
     /// Commits judged while nothing could be deleted (something unsettled) or nothing
     /// established uncovered (an entry being fetched): judged again once that ends.
     pub held_back: BTreeSet<CommitId>,
-    /// At the last pass: whether nothing was unsettled, and no entry was being fetched.
-    pub settled: Option<(bool, bool)>,
-    /// Commits whose verdict changes at a time (raw-free corrected wall ms).
-    pub due: BTreeMap<u64, BTreeSet<CommitId>>,
-    /// Other entries whose verdict changes at a time (a local pass: a prefix's expiry).
-    pub due_blobs: BTreeMap<u64, BTreeSet<BlobId>>,
-    /// Commits whose verdict waits on an aspect's state (liveness).
-    pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    /// Keep-at-most bodies before their timed delete: a valid write changes their bound or
-    /// liveness only by killing their writes, which marks them (`retention::note_deaths`,
-    /// replays), so only the aspect's other state changes (`whole`) wake them.
-    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    /// Blobs a body links that this node neither holds nor has an entry of: the commits that
-    /// upload them once they arrive.
-    pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
+}
+
+impl Waits {
+    fn absorb(&mut self, o: Waits) {
+        for (t, xs) in o.due {
+            self.due.entry(t).or_default().extend(xs);
+        }
+        for (k, cs) in o.aspects {
+            self.aspects.entry(k).or_default().extend(cs);
+        }
+        for (k, cs) in o.at_most {
+            self.at_most.entry(k).or_default().extend(cs);
+        }
+        for (b, cs) in o.links {
+            self.links.entry(b).or_default().extend(cs);
+        }
+        self.keyless.extend(o.keyless);
+        self.held_back.extend(o.held_back);
+    }
+}
+
+/// One label's work set at one connection's host (`LConn::work`).
+#[derive(Default)]
+pub(crate) struct Work {
+    /// What changed: judged by the next pass.
+    pub touched: Touched,
+    /// Changes from elsewhere since the last pass (`bound`).
+    pub elsewhere: usize,
+    pub waits: Waits,
+    /// At the last pass: whether something was unsettled, and an entry being fetched.
+    pub withheld: (bool, bool),
     pub inputs: Option<Inputs>,
     /// When the clock alone next changes a role the verdicts read (an edge's `until`, a
     /// role write ahead of the clock): everything is judged then.
@@ -222,14 +261,14 @@ pub(crate) struct Work {
 impl Work {
     /// A set that judges everything at its first pass (a label opened, a local pass begun).
     pub fn fresh() -> Work {
-        Work { full: true, ..Work::default() }
+        Work { touched: Touched { full: true, ..Touched::default() }, ..Work::default() }
     }
 
     /// Whether no pass is wanted but at `pass_at`: nothing left, nothing touched, nothing
     /// unsettled or unopened. A change from elsewhere waiting here (`spread_touches`) is no
     /// reason: the label's marks would have passed it if it concerned the label.
     pub fn quiet(&self) -> bool {
-        !self.full && !self.again && self.unopened.is_empty() && self.held_back.is_empty() && self.unsettled.is_empty() && self.settled.is_none_or(|s| s == (true, true))
+        !self.touched.full && !self.again && self.unopened.is_empty() && self.waits.held_back.is_empty() && self.unsettled.is_empty()
     }
 
     /// Whether a resync at `now` (corrected wall ms) passes this label. A `pass_at` further off
@@ -240,30 +279,15 @@ impl Work {
 
     /// Whether changes `t` wake a verdict waiting here (`prepare`): the next resync judges it.
     pub fn woken_by(&self, t: &Touched) -> bool {
-        t.states.iter().any(|k| self.waits.contains_key(k)) || t.whole.iter().any(|k| self.at_most.contains_key(k)) || t.blobs.iter().any(|b| self.links.contains_key(b)) || t.keys && !self.keyless.is_empty()
+        let w = &self.waits;
+        t.states.iter().any(|k| w.aspects.contains_key(k)) || t.whole.iter().any(|k| w.at_most.contains_key(k)) || t.blobs.iter().any(|b| w.links.contains_key(b)) || t.keys && !w.keyless.is_empty()
     }
 
     /// Takes in what another set collected meanwhile (a pass's own touches).
     pub fn merge(&mut self, o: Work) {
-        self.full |= o.full;
         self.again |= o.again;
-        self.commits.extend(o.commits);
-        self.blobs.extend(o.blobs);
-        self.aspects.extend(o.aspects);
-        self.states.extend(o.states);
-        self.whole.extend(o.whole);
-        self.things.extend(o.things);
-        self.moved.extend(o.moved);
-        self.roles.merge(&o.roles);
-        self.actors.extend(o.actors);
-        self.keys |= o.keys;
-        self.clock |= o.clock;
+        self.touched.absorb(&o.touched);
         self.elsewhere = self.elsewhere.saturating_add(o.elsewhere);
-    }
-
-    /// What the set holds (a measure).
-    pub fn waiting(&self) -> usize {
-        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len() + self.roles.subjects.len()
     }
 
     /// Notes `n` more changes from elsewhere. Past `max` since the last pass, the next pass judges
@@ -273,40 +297,18 @@ impl Work {
     pub fn bound(&mut self, n: usize, max: usize) {
         self.elsewhere = self.elsewhere.saturating_add(n);
         if self.elsewhere > max {
-            self.full = true;
-            self.commits.clear();
-            self.blobs.clear();
-            self.states.clear();
-            self.whole.clear();
-            self.moved.clear();
-            self.roles = RoleMoves::default();
+            self.touched = Touched { full: true, ..Touched::default() };
         }
     }
 
     /// Takes what pass left to do (`Left`) as the next pass's set.
     pub fn leave(&mut self, left: Left) {
-        self.full = false;
+        self.touched.full = false;
         self.again = left.again || !left.commits.is_empty() || !left.blobs.is_empty();
-        self.commits = left.commits;
-        self.blobs = left.blobs;
+        self.touched.commits = left.commits;
+        self.touched.blobs = left.blobs;
         self.elsewhere = 0;
-        for (t, cs) in left.due {
-            self.due.entry(t).or_default().extend(cs);
-        }
-        for (t, bs) in left.due_blobs {
-            self.due_blobs.entry(t).or_default().extend(bs);
-        }
-        for (k, cs) in left.waits {
-            self.waits.entry(k).or_default().extend(cs);
-        }
-        for (k, cs) in left.at_most {
-            self.at_most.entry(k).or_default().extend(cs);
-        }
-        for (b, cs) in left.links {
-            self.links.entry(b).or_default().extend(cs);
-        }
-        self.keyless.extend(left.keyless);
-        self.held_back.extend(left.held_back);
+        self.waits.absorb(left.waits);
     }
 }
 
@@ -329,36 +331,34 @@ impl Scope {
     }
 }
 
-/// What a pass left to do: judged again next pass, at a time, or when an aspect's state
-/// changes.
+/// What a pass left to do: judged again next pass, or on what it waits for.
 #[derive(Default)]
 pub(crate) struct Left {
     pub commits: BTreeSet<CommitId>,
     pub blobs: BTreeSet<BlobId>,
-    pub due: BTreeMap<u64, BTreeSet<CommitId>>,
-    pub due_blobs: BTreeMap<u64, BTreeSet<BlobId>>,
-    pub waits: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    pub at_most: BTreeMap<(Tid, Ak), BTreeSet<CommitId>>,
-    pub links: BTreeMap<BlobId, BTreeSet<CommitId>>,
-    pub keyless: BTreeSet<CommitId>,
-    pub held_back: BTreeSet<CommitId>,
+    pub waits: Waits,
     /// Something outside the set waits for a later pass: a relay the host lacks, a deposit not
     /// promoted.
     pub again: bool,
 }
 
 impl Left {
-    pub fn at(&mut self, t: u64, c: CommitId) {
-        self.due.entry(t).or_default().insert(c);
+    pub fn at(&mut self, t: u64, x: Touch) {
+        self.waits.due.entry(t).or_default().insert(x);
     }
 
     pub fn wait(&mut self, t: Tid, a: Ak, c: CommitId) {
-        self.waits.entry((t, a)).or_default().insert(c);
+        self.waits.aspects.entry((t, a)).or_default().insert(c);
     }
 
-    /// Keep-at-most body `c` of `(t, a)` waits for its timed delete (`Work::at_most`).
+    /// Keep-at-most body `c` of `(t, a)` waits for its timed delete (`Waits::at_most`).
     pub fn wait_at_most(&mut self, t: Tid, a: Ak, c: CommitId) {
-        self.at_most.entry((t, a)).or_default().insert(c);
+        self.waits.at_most.entry((t, a)).or_default().insert(c);
+    }
+
+    /// Commit `c` waits for linked blob `b`.
+    pub fn link(&mut self, b: BlobId, c: CommitId) {
+        self.waits.links.entry(b).or_default().insert(c);
     }
 }
 
@@ -384,13 +384,13 @@ impl Note {
             left.commits.insert(c);
         }
         if let Some(t) = self.at.take() {
-            left.at(t, c);
+            left.at(t, Touch::Commit(c));
         }
         for (t, a) in std::mem::take(&mut self.waits) {
             left.wait(t, a, c);
         }
         if std::mem::take(&mut self.keyless) {
-            left.keyless.insert(c);
+            left.waits.keyless.insert(c);
         }
     }
 }
@@ -401,71 +401,68 @@ impl SyncEngine {
     /// to their commits, the aggregates follow. Returns whether the pass judges everything.
     pub(super) fn prepare(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &Arc<BTreeSet<Tid>>) -> bool {
         let now = self.now();
-        let later = w.due.split_off(&now.saturating_add(1));
-        for (_, cs) in std::mem::replace(&mut w.due, later) {
-            w.commits.extend(cs);
+        let later = w.waits.due.split_off(&now.saturating_add(1));
+        for x in std::mem::replace(&mut w.waits.due, later).into_values().flatten() {
+            w.touched.add(x);
         }
-        let later = w.due_blobs.split_off(&now.saturating_add(1));
-        for (_, bs) in std::mem::replace(&mut w.due_blobs, later) {
-            w.blobs.extend(bs);
-        }
-        for k in std::mem::take(&mut w.states).into_iter().chain(w.aspects.iter().cloned()) {
-            if let Some(cs) = w.waits.remove(&k) {
-                w.commits.extend(cs);
+        for k in std::mem::take(&mut w.touched.states) {
+            if let Some(cs) = w.waits.aspects.remove(&k) {
+                w.touched.commits.extend(cs);
             }
         }
-        for k in std::mem::take(&mut w.whole).into_iter().chain(w.aspects.iter().cloned()) {
-            if let Some(cs) = w.at_most.remove(&k) {
-                w.commits.extend(cs);
+        for k in std::mem::take(&mut w.touched.whole) {
+            if let Some(cs) = w.waits.at_most.remove(&k) {
+                w.touched.commits.extend(cs);
             }
         }
-        for b in &w.blobs {
-            if let Some(cs) = w.links.remove(b) {
-                w.commits.extend(cs);
+        for b in &w.touched.blobs {
+            if let Some(cs) = w.waits.links.remove(b) {
+                w.touched.commits.extend(cs);
             }
         }
-        w.commits.extend(self.commits_of(l, &w.blobs));
+        w.touched.commits.extend(self.commits_of(l, &w.touched.blobs));
         let x = self.engine.group_actor(g);
         // roles the pass reads as the actor, the group or this node
-        let RoleMoves { subjects, reached } = std::mem::take(&mut w.roles);
+        let RoleMoves { subjects, reached } = std::mem::take(&mut w.touched.roles);
         if subjects.contains(&x) || subjects.contains(g) || subjects.contains(&self.engine.tid()) {
-            w.moved.extend(reached);
+            w.touched.moved.extend(reached);
         }
         // a change of the owner chain or of a role of the label's own actor (every entry's
         // reader may stand anew), or of whether it has secrets of its own
-        let own = w.moved.contains(&x) || w.actors.contains(&x);
-        let full = w.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
+        let own = w.touched.moved.contains(&x) || w.touched.actors.contains(&x);
+        let full = w.touched.full || own || self.cfg.full_passes || w.until.is_some_and(|u| u <= now);
         if full {
             self.go_full(g, l, w, closure);
         } else {
-            self.roles_moved(g, l, w, closure);
-            if std::mem::take(&mut w.clock) {
+            let mut things = self.roles_moved(g, l, w, closure);
+            if std::mem::take(&mut w.touched.clock) {
                 w.until = self.roster_horizon(closure, g);
             }
             // an unchanged closure is the same `Arc` (`Groups::closures`)
             if !same_closure(closure, &w.closure) {
-                w.things.extend(closure.symmetric_difference(&w.closure).copied());
+                things.extend(closure.symmetric_difference(&w.closure).copied());
             }
             // a snapshot changes coverage of its aspects; a node's newer card write makes its
             // older card stale (spec/permissions.md §4)
             let me = self.engine.tid();
-            for c in &w.commits {
+            let mut aspects: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+            for c in &w.touched.commits {
                 let Some(h) = self.engine.header(c) else { continue };
                 let snapshot = is_snapshot(h.kind);
                 for a in &h.aspects {
                     let card = a.tid == h.author && h.author != me && is_card(a.ak.as_str());
                     if snapshot || card {
-                        w.aspects.insert((a.tid, a.ak.clone()));
+                        aspects.insert((a.tid, a.ak.clone()));
                     }
                 }
             }
-            for (t, a) in std::mem::take(&mut w.aspects) {
-                w.commits.extend(self.engine.core.durable_on(&(t, a)));
+            for k in aspects {
+                w.touched.commits.extend(self.engine.core.durable_on(&k));
             }
-            for t in std::mem::take(&mut w.things) {
-                w.commits.extend(self.commits_on_thing(&t));
+            for t in things {
+                w.touched.commits.extend(self.commits_on_thing(&t));
             }
-            let (cs, bs) = (w.commits.clone(), w.blobs.clone());
+            let (cs, bs) = (w.touched.commits.clone(), w.touched.blobs.clone());
             self.aggregate(g, l, w, &cs, &bs);
         }
         w.closure = closure.clone();
@@ -478,15 +475,16 @@ impl SyncEngine {
     /// changed rosters and owner links) or whose owner chain holds an actor that got or lost
     /// secrets of its own (reader actors); the label's own commits with a delta on such a thing
     /// (a superset's foreign deltas); other nodes' cards (their author's departure); deletes
-    /// waiting for a key. A label they reach takes its roster horizon again.
-    fn roles_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
-        if std::mem::take(&mut w.keys) {
-            w.commits.extend(std::mem::take(&mut w.keyless));
+    /// waiting for a key. A label they reach takes its roster horizon again. Returns those things.
+    fn roles_moved(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        if std::mem::take(&mut w.touched.keys) {
+            w.touched.commits.extend(std::mem::take(&mut w.waits.keyless));
         }
-        let moved = std::mem::take(&mut w.moved);
-        let actors = std::mem::take(&mut w.actors);
+        let moved = std::mem::take(&mut w.touched.moved);
+        let actors = std::mem::take(&mut w.touched.actors);
+        let mut things = BTreeSet::new();
         if moved.is_empty() && actors.is_empty() {
-            return;
+            return things;
         }
         let published = self.engine.published_under(g);
         let engine = &self.engine;
@@ -494,7 +492,7 @@ impl SyncEngine {
         let mut hit = false;
         for t in closure.iter().chain(published.iter()) {
             if moved.contains(t) || !actors.is_empty() && under(t) {
-                w.things.insert(*t);
+                things.insert(*t);
                 hit = true;
             }
         }
@@ -505,16 +503,17 @@ impl SyncEngine {
             let Some(h) = self.engine.header(&c) else { continue };
             let found = h.aspects.iter().any(|a| moved.contains(&a.tid) || !actors.is_empty() && *seen.entry(a.tid).or_insert_with(|| under(&a.tid)));
             if found {
-                w.commits.insert(c);
+                w.touched.commits.insert(c);
                 hit = true;
             }
         }
         if !moved.is_empty() {
-            w.commits.extend(w.cards.iter().copied());
+            w.touched.commits.extend(w.cards.iter().copied());
         }
         if hit {
             w.until = self.roster_horizon(closure, g);
         }
+        things
     }
 
     /// The commits of the entries among `bs` under `l` (a blob touched before it opened).
@@ -566,23 +565,9 @@ impl SyncEngine {
     /// aggregates and the roster horizon are taken anew.
     pub(super) fn go_full(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &BTreeSet<Tid>) {
         self.inbox_copied.forget_label(l);
-        w.commits.clear();
-        w.blobs.clear();
-        w.aspects.clear();
-        w.things.clear();
-        w.waits.clear();
-        w.at_most.clear();
-        w.whole.clear();
-        w.links.clear();
-        w.due.clear();
-        w.due_blobs.clear();
-        w.moved.clear();
-        w.roles = RoleMoves::default();
-        w.actors.clear();
-        w.keys = false;
-        w.clock = false;
-        w.keyless.clear();
-        w.held_back.clear();
+        // `full` stands until the pass ends well (`leave`)
+        w.touched = Touched { full: w.touched.full, ..Touched::default() };
+        w.waits = Waits::default();
         self.rebuild(g, l, w);
         w.until = self.roster_horizon(closure, g);
     }
@@ -601,7 +586,7 @@ impl SyncEngine {
         w.beats.clear();
         w.cards.clear();
         let cs: BTreeSet<CommitId> = self.state.label_commits(l).collect();
-        let bs: BTreeSet<BlobId> = self.state.of_kind(l, 0).into_iter().collect();
+        let bs: BTreeSet<BlobId> = self.state.of_kind(l, Kind::TAG_UNKNOWN).into_iter().collect();
         self.aggregate(g, l, w, &cs, &bs);
     }
 
@@ -672,7 +657,7 @@ impl SyncEngine {
             Some(conn) => self.lc(conn, &l).map(|lc| &lc.work),
             None => self.local_work.get(&l),
         };
-        let Some((mut cs, bs)) = meanwhile.map(|w| (w.commits.clone(), w.blobs.clone())) else { return };
+        let Some((mut cs, bs)) = meanwhile.map(|w| (w.touched.commits.clone(), w.touched.blobs.clone())) else { return };
         cs.extend(self.commits_of(&l, &bs));
         self.aggregate(g, &l, w, &cs, &bs);
         if let Scope::Some { commits, blobs } = scope {

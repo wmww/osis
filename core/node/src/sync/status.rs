@@ -119,7 +119,7 @@ impl SyncEngine {
 
     /// The most any label's work set holds waiting for its pass (`SyncConfig::work_max`).
     pub fn work_waiting(&self) -> usize {
-        self.conns.values().flat_map(|c| c.labels.values().map(|l| &l.work)).chain(self.local_work.iter().map(|x| x.1)).map(work::Work::waiting).max().unwrap_or(0)
+        self.conns.values().flat_map(|c| c.labels.values().map(|l| &l.work)).chain(self.local_work.iter().map(|x| x.1)).map(|w| w.touched.size()).max().unwrap_or(0)
     }
 
     /// Whether every open label on every connection has completed a pass and nothing is

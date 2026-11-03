@@ -3,6 +3,13 @@
 
 use super::*;
 
+/// Whether a change on an aspect `a` of a thing concerns only labels holding that thing: content,
+/// no role, creation or group record.
+fn narrow_aspect(a: &Ak) -> bool {
+    let s = a.as_str();
+    !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~")
+}
+
 impl SyncEngine {
     /// Drains the engine's changes: the changed commits (`Engine::take_changed`) go to every
     /// label's work set and mark every open label for a pass; events carry role changes: roles
@@ -19,13 +26,14 @@ impl SyncEngine {
         let mut own = false;
         let me = self.engine.tid();
         let clients = osis_schema::AspectKey::ak(&osis_schema::core_types::CLIENTS);
+        let moved_clients = |aspects: &[(Tid, Ak)]| aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
         while let Ok(e) = self.events.try_recv() {
             match e {
                 crate::Event::Applied { id, origin, changed: aspects, .. } => {
                     changed = true;
                     own |= origin == Origin::Local;
                     self.tied.touched(&aspects);
-                    self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
+                    self.clients_moved |= moved_clients(&aspects);
                     self.placed_cache.0 = u64::MAX;
                     narrow.extend(aspects.iter().cloned());
                     let Some(h) = self.engine.header(&id) else {
@@ -50,9 +58,8 @@ impl SyncEngine {
                         self.seq += 1;
                         let at = self.raw_now();
                         for a in &h.aspects {
-                            let actor = self.engine.core.secret_actor(&a.tid).unwrap_or(a.tid);
-                            self.roles_seen.insert(actor, self.seq);
-                            self.roles_at.insert(actor, at);
+                            let actor = self.keys_actor(&a.tid);
+                            self.role_change.insert(actor, (self.seq, at));
                             // only an admin registers its rotation's step: another's (a writer
                             // rotating for a departure) is this admin's to register at once
                             if a.ak.as_str() == "secrets.0" && self.engine.core.role_now(&h.author, &actor) == Some(osis_base::Role::Admin) {
@@ -71,10 +78,9 @@ impl SyncEngine {
                 crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(_, a)| !osis_schema::AspectKey::lifetime(a).is_durable()) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
-                    wide |= cause == crate::events::Cause::LostAccess;
                     narrow.extend(aspects.iter().cloned());
                     self.tied.touched(&aspects);
-                    self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
+                    self.clients_moved |= moved_clients(&aspects);
                     if cause == crate::events::Cause::LostAccess {
                         self.touched.full = true;
                     }
@@ -140,14 +146,14 @@ impl SyncEngine {
         self.touched.states.extend(ch.aspects.iter().cloned());
         self.touched.whole.extend(ch.aspects);
         let cs = ch.commits;
-        // this node's own write passes a filling label too (`mark_dirty`)
+        // this node's own write passes a filling label too (`LConn::want_pass`)
         if own {
             for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
                 l.dirty |= l.fill.is_some();
             }
         }
         if changed {
-            scoped.extend(narrow.iter().filter(|(t, a)| !self.narrow_aspect(t, a)).map(|x| x.0));
+            scoped.extend(narrow.iter().filter(|(_, a)| !narrow_aspect(a)).map(|x| x.0));
             for t in self.engine.core.ix.held.reach(&scoped) {
                 self.inbox_copied.moved(&t);
             }
@@ -190,40 +196,21 @@ impl SyncEngine {
         if self.touched.is_empty() && self.state.touched.is_empty() && self.state.touched_commits.is_empty() {
             return;
         }
-        let t = std::mem::take(&mut self.touched);
+        let mut t = std::mem::take(&mut self.touched);
         let st = std::mem::take(&mut self.state.touched);
-        let carriers = std::mem::take(&mut self.state.touched_commits);
+        t.commits.append(&mut self.state.touched_commits);
         let max = self.cfg.work_max;
-        let elsewhere = t.commits.len() + carriers.len() + t.states.len() + t.whole.len() + t.blobs.len() + t.moved.len() + t.roles.reached.len() + t.roles.subjects.len();
+        let elsewhere = t.size();
         let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
         for (l, w) in conns.chain(self.local_work.iter_mut()) {
-            w.full |= t.full;
             w.again |= w.woken_by(&t);
-            w.commits.extend(t.commits.iter().chain(&carriers).copied());
-            w.states.extend(t.states.iter().cloned());
-            w.whole.extend(t.whole.iter().cloned());
-            w.blobs.extend(t.blobs.iter().copied());
-            w.moved.extend(t.moved.iter().copied());
-            w.roles.merge(&t.roles);
-            w.actors.extend(t.actors.iter().copied());
-            w.keys |= t.keys;
-            w.clock |= t.clock;
+            w.touched.absorb(&t);
             for (_, x) in st.range((*l, state::Touch::Commit(osis_base::CommitId([0; 32])))..).take_while(|(x, _)| x == l) {
                 w.again = true;
-                match x {
-                    state::Touch::Commit(c) => w.commits.insert(*c),
-                    state::Touch::Blob(b) => w.blobs.insert(*b),
-                };
+                w.touched.add(*x);
             }
             w.bound(elsewhere, max);
         }
-    }
-
-    /// Whether a change on `(t, a)` concerns only labels holding `t`: content of a thing, no role,
-    /// creation or group record.
-    pub(super) fn narrow_aspect(&self, _t: &Tid, a: &Ak) -> bool {
-        let s = a.as_str();
-        !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~")
     }
 
     /// What a role, creation or group change on `things` can concern: where authority flows from
@@ -260,12 +247,14 @@ impl SyncEngine {
         }
         for c in self.conns.values_mut() {
             for l in c.labels.values_mut() {
-                l.dirty |= groups.contains(&l.group) && l.fill.is_none();
+                if groups.contains(&l.group) {
+                    l.want_pass();
+                }
             }
         }
     }
 
-    /// These labels want a pass on every connection, as `mark_dirty`.
+    /// These labels want a pass on every connection (`LConn::want_pass`).
     pub(crate) fn mark_labels<'a>(&mut self, ids: impl IntoIterator<Item = &'a LabelId> + Clone) {
         if self.cfg.full_passes {
             return self.mark_dirty();
@@ -274,20 +263,28 @@ impl SyncEngine {
         for c in self.conns.values_mut() {
             for id in ids.clone() {
                 if let Some(l) = c.labels.get_mut(id) {
-                    l.dirty |= l.fill.is_none();
+                    l.want_pass();
                 }
             }
         }
     }
 
-    /// Every label on every connection wants a pass; one filling at its next due (`sync_label`), its
-    /// fill's end or this node's own next write, not per batch applied.
+    /// Every label on every connection wants a pass (`LConn::want_pass`).
     pub(crate) fn mark_dirty(&mut self) {
         self.local_dirty = true;
-        for c in self.conns.values_mut() {
-            for l in c.labels.values_mut() {
-                l.dirty |= l.fill.is_none();
-            }
+        for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
+            l.want_pass();
         }
+    }
+
+    /// After role commits or placements on `things`: the labels they can concern (`downstream`)
+    /// and `labels` want a pass; every label, for a key actor's things.
+    pub(crate) fn mark_things(&mut self, things: &BTreeSet<Tid>, labels: &[LabelId]) {
+        if things.iter().any(|t| self.engine.core.is_key_actor(t)) {
+            return self.mark_dirty();
+        }
+        let scope = self.downstream(things);
+        self.mark_dirty_of(&scope);
+        self.mark_labels(labels);
     }
 }

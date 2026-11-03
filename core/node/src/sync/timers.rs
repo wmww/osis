@@ -47,10 +47,7 @@ impl SyncEngine {
         let later = self.settle_at.split_off(&now.saturating_add(1));
         let due: BTreeSet<LabelId> = std::mem::replace(&mut self.settle_at, later).into_values().flatten().collect();
         if !due.is_empty() {
-            self.local_dirty = true;
-            for l in self.conns.values_mut().flat_map(|c| c.labels.iter_mut()).filter(|(id, _)| due.contains(*id)).map(|x| x.1) {
-                l.dirty |= l.fill.is_none();
-            }
+            self.mark_labels(&due);
         }
         let due: Vec<ConnId> = self.conns.iter().filter(|(_, c)| c.timer.is_some_and(|t| t <= now)).map(|(id, _)| *id).collect();
         for conn in due {
@@ -67,19 +64,15 @@ impl SyncEngine {
                 c.labels.iter().filter(|(_, l)| l.phase == Phase::Open && !l.syncing && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, _)| (*id, *lid))
             })
             .collect();
-        // labels no key opened: try again from scratch
-        let failed: Vec<(ConnId, LabelId, Tid)> = self
-            .conns
-            .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| l.phase == Phase::Failed && l.last_sync.saturating_add(self.cfg.resync_ms) <= now).map(move |(lid, l)| (*id, *lid, l.group)))
-            .collect();
-        // registrations refused for now: try again once their back-off passed
-        let refused: Vec<(ConnId, LabelId, Tid)> = self
-            .conns
-            .iter()
-            .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| matches!(l.phase, Phase::Refused { retry_at } if retry_at <= now)).map(move |(lid, l)| (*id, *lid, l.group)))
-            .collect();
-        for (conn, label, g) in failed.into_iter().chain(refused) {
+        // labels no key opened, and registrations refused for now once their back-off passed: try
+        // again from scratch
+        let again = |l: &LConn| match l.phase {
+            Phase::Failed => l.last_sync.saturating_add(self.cfg.resync_ms) <= now,
+            Phase::Refused { retry_at } => retry_at <= now,
+            _ => false,
+        };
+        let reopen: Vec<(ConnId, LabelId, Tid)> = self.conns.iter().flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| again(l)).map(move |(lid, l)| (*id, *lid, l.group))).collect();
+        for (conn, label, g) in reopen {
             if let Some(c) = self.conns.get_mut(&conn) {
                 c.req.reopens.remove(&label);
             }
@@ -148,30 +141,32 @@ impl SyncEngine {
             at(*x);
         }
         let skew = self.now() as i64 - now as i64;
+        // a corrected time as a raw one
+        let raw = |x: u64| (x as i64).saturating_sub(skew).max(0) as u64;
         // a pending grant keeping a leaver's actor ages out (`drop_left`)
         if let Some(x) = self.left.as_ref().and_then(|l| l.recheck_at()) {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         // a pending grant keeping a lost actor ages out (`drop_lost_due`)
         if let Some(x) = self.engine.next_lost_due() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         // an unsent delivery (`at` 0) waits on placement, which wakes by its own events and bound
         if let Some(x) = self.state.sent_inbox.values().filter(|s| s.at != 0).map(|s| s.at.saturating_add(osis_base::format::INBOX_LIFETIME_MS)).min() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         // a due inbox blob goes once its host's connection is ready (an event of its own)
         for o in self.outbox.values().filter(|o| o.sent.is_none() && o.after > now) {
             at(o.after);
         }
         if let Ok(Some(x)) = self.engine.next_timer() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         if let Some(x) = self.engine.next_wait_due() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         if let Ok(Some(x)) = self.engine.next_link_expiry() {
-            at((x as i64).saturating_sub(skew).max(0) as u64);
+            at(raw(x));
         }
         t.map(|x| x.max(self.last_tick.saturating_add(MIN_WAKE_MS)))
     }
@@ -187,9 +182,8 @@ impl SyncEngine {
     }
 
     /// Catches up at the caller's word (an app's refresh, at any rate): a label that needs it syncs,
-    /// a live one only judges again. A Sync of every label costs a round trip per two (each may
-    /// answer `MAX_MESSAGE`, `osis_proto::client::WINDOW`) and shows `Syncing`, so a caller polling
-    /// faster than that kept a node `Syncing` for good and every `wait_synced` waiting. A connection
+    /// a live one only judges again: a Sync of every label costs a round trip per two (each may
+    /// answer `MAX_MESSAGE`, `osis_proto::client::WINDOW`) and shows `Syncing`. A connection
     /// quiet for `retry_ms` gets a ping: after a network change it may be dead with nothing in flight
     /// to find out by (the stall timeout), and a live label would hear nothing.
     pub fn refresh(&mut self) -> Vec<Action> {

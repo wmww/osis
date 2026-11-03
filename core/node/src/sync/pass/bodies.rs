@@ -8,7 +8,7 @@ impl SyncEngine {
     /// each body (at `host` if there, else any genuine one; `None`: this node's own served
     /// state, any entry), else a fresh placement when this node may upload or deposit it, with
     /// the blobs it links when this node writes. Another node's body not at `host` waits for
-    /// its author or a co-writer (`relay_due`).
+    /// its author or a co-writer (`relay_at`).
     pub(super) fn body_sends(&mut self, p: &Head, bodies: &[Body], snaps: &Snaps, snapping: &Unsettled, left: &mut Left) -> Result<Vec<Out>> {
         let (g, l, keys, read_ok, host) = (&p.g, p.l, &p.keys, p.read_ok, p.host.as_ref());
         let mut sends = Vec::new();
@@ -23,7 +23,7 @@ impl SyncEngine {
             let needed = self.must_hold(b, snaps, snapping_b, &mut note)?;
             note.leave(b.commit, left);
             if snapping.contains(&None) {
-                left.held_back.insert(b.commit);
+                left.waits.held_back.insert(b.commit);
             }
             let Some(needed) = needed else { continue };
             let entry = self.entry_for(host, &l, b);
@@ -40,7 +40,7 @@ impl SyncEngine {
                 continue;
             }
             // another node's commit not at this host: its author (or a co-writer) first
-            if !here && !self.relay_due(p.l, &b.commit) {
+            if !here && self.relay_at(p.l, &b.commit).is_some() {
                 left.commits.insert(b.commit);
                 continue;
             }
@@ -67,7 +67,7 @@ impl SyncEngine {
                 if let Some(h) = self.engine.header(&b.commit) {
                     for ch in &h.chunks {
                         if !linked.contains(&ch.blob) {
-                            left.links.entry(ch.blob).or_default().insert(b.commit);
+                            left.link(ch.blob, b.commit);
                         }
                     }
                 }
@@ -128,14 +128,14 @@ impl SyncEngine {
         Ok(must.then_some(needed))
     }
 
-    /// Whether each of `parts` of body `b` has no live write or a snapshot under the label
-    /// (`snaps`) covering it.
     /// Whether a delete took body `b` from `l` and it stays out: its live writes are carried there
     /// and no purge that fell may have been what took it (spec/sync.md §6).
     pub(super) fn delete_stands(&mut self, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         Ok(self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(b, parts, snaps, note)? && !self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
     }
 
+    /// Whether each of `parts` of body `b` has no live write or a snapshot under the label
+    /// (`snaps`) covering it.
     pub(super) fn live_carried(&mut self, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         for p in parts {
@@ -292,7 +292,7 @@ impl SyncEngine {
                 } else {
                     // the walk goes on once the missing nodes are here
                     for m in r.missing {
-                        left.links.entry(m).or_default().insert(b.commit);
+                        left.link(m, b.commit);
                     }
                 }
                 all
@@ -300,7 +300,7 @@ impl SyncEngine {
         };
         let (here, not): (Vec<BlobId>, Vec<BlobId>) = all.into_iter().partition(|id| self.state.entries.contains_key(&(*l, *id)) || self.engine.has_blob(id));
         for id in not {
-            left.links.entry(id).or_default().insert(b.commit);
+            left.link(id, b.commit);
         }
         Ok(here)
     }

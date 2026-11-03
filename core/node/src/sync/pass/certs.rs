@@ -11,7 +11,7 @@ impl SyncEngine {
         for id in self.cert_entries(&l, scope) {
             let Some(e) = self.state.entries.get(&(l, id)) else { continue };
             let c = if let Kind::Commit { commit, .. } = &e.kind { Some(*commit) } else { None };
-            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0"));
+            let beat = c.and_then(|c| self.engine.header(&c)).is_some_and(|h| is_beat(&h));
             let prio = if c.is_some_and(|c| self.first.contains(&c)) {
                 0
             } else if beat {
@@ -167,7 +167,7 @@ impl SyncEngine {
     /// Whether this node may rotate the read role of `g`'s secret actor (spec/permissions.md §3).
     pub(super) fn may_rotate_read(&self, g: &Tid) -> bool {
         let me = self.engine.tid();
-        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        let a = self.keys_actor(g);
         crate::rotation::may_rotate(&self.engine.core, &me, &a).contains(&Role::Read)
     }
 }

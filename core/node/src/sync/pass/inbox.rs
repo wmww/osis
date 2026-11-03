@@ -18,16 +18,13 @@ impl SyncEngine {
     /// Each leaves the deposit budget and stays readable for the actor's other devices until it
     /// expires.
     pub(super) fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        for (id, mut e) in self.due_entries(conn, host, l) {
+        for (id, e) in self.due_entries(conn, host, l) {
             let Kind::Inbox(Some(c)) = e.kind else { continue };
             if !self.inbox_stampable(&l, &id, &c)? {
                 continue;
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
-            let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
-            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
-            e.stamp = Some(stamp);
-            self.state.set_entry(l, id, e);
+            uploads.push(self.stamped_upload(l, id, e, blob, write));
         }
         Ok(())
     }
@@ -63,9 +60,8 @@ impl SyncEngine {
     /// first, those expiring too far ahead before the rest, then the requests earliest to expire,
     /// so a stranger's fill ends with this pass, what does not open never costs a user an invite,
     /// and the rest of the budget stays free. A request goes only past `INBOX_WAITING` of them.
-    pub(super) fn clear_inbox(&mut self, conn: ConnId, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
+    pub(super) fn clear_inbox(&mut self, conn: ConnId, host: HostKey, p: &Head, out: &mut Vec<crate::sync::Action>) -> Result<()> {
         let (l, keys) = (p.l, &p.keys);
-        let Some(host) = p.host else { return Ok(()) };
         if keys.delete.is_none() {
             return Ok(());
         }
@@ -169,7 +165,7 @@ impl SyncEngine {
         }
         let Some(li) = self.inbox_label(g) else { return Ok(out) };
         let now = self.now();
-        let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, 2).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
+        let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, Kind::TAG_INBOX).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
         // what the last passes found all there (`InboxCopied`): a pass walks only what is new
         self.inbox_copied.lost(self.state.losses);
         for (b, c) in opened {

@@ -473,7 +473,7 @@ impl SyncEngine {
             if self.secrets_count() == before {
                 break;
             }
-            todo = self.state.of_tag(0).into_iter().collect();
+            todo = self.state.of_tag(Kind::TAG_UNKNOWN).into_iter().collect();
         }
         self.engine.reexamine()?;
         self.reread_boxes |= self.secrets_count() != start;
@@ -593,7 +593,7 @@ impl SyncEngine {
         let labels: BTreeSet<LabelId> = self.labels().iter().map(|(_, x)| x.id).collect();
         let mut out: BTreeMap<CommitId, Vec<(LabelId, BlobId)>> = BTreeMap::new();
         for l in labels {
-            for b in self.state.of_kind(&l, 2) {
+            for b in self.state.of_kind(&l, Kind::TAG_INBOX) {
                 if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(l, b)).map(|e| &e.kind)
                     && !self.state.declined.contains(c)
                 {
@@ -758,7 +758,7 @@ impl SyncEngine {
     fn request_entries(&mut self) -> Vec<(LabelId, BlobId, CommitId)> {
         self.labels();
         self.state
-            .of_tag(5)
+            .of_tag(Kind::TAG_REQUEST)
             .into_iter()
             .filter(|(l, _)| self.synced.ids.contains(l))
             .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
@@ -950,7 +950,7 @@ impl SyncEngine {
         self.labels();
         let inbox: Vec<(LabelId, BlobId, Option<CommitId>)> = self
             .state
-            .of_tag(2)
+            .of_tag(Kind::TAG_INBOX)
             .into_iter()
             .filter(|(l, _)| self.synced.ids.contains(l))
             .filter_map(|(l, b)| match self.state.entries.get(&(l, b)).map(|e| &e.kind) {
@@ -960,7 +960,7 @@ impl SyncEngine {
             .collect();
         // a request waiting for the user keeps its opened payload too: a KEM per vet otherwise
         let mut live: BTreeSet<(LabelId, BlobId)> = inbox.iter().map(|(l, b, _)| (*l, *b)).collect();
-        live.extend(self.state.of_tag(5));
+        live.extend(self.state.of_tag(Kind::TAG_REQUEST));
         self.inbox_opened.retain(|k, _| live.contains(k));
         let mut want: BTreeMap<LabelId, Hint> = BTreeMap::new();
         let mut expires = u64::MAX;
@@ -1487,13 +1487,8 @@ impl SyncEngine {
         }
         let Some(h) = self.engine.header(&commit).filter(|h| h.kind.is_role()) else { return };
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
-        if things.iter().any(|t| self.engine.core.is_key_actor(t)) {
-            return self.mark_dirty();
-        }
-        let scope = self.downstream(&things);
-        self.mark_dirty_of(&scope);
         let holding = self.state.labels_of_commit(&commit);
-        self.mark_labels(&holding);
+        self.mark_things(&things, &holding);
     }
 
     /// A deposit's answer; `entries_left` only when the host checked its signature under the

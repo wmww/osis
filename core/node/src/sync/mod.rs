@@ -100,11 +100,10 @@ pub struct SyncEngine {
     /// Per (host, label), the last pass end: its `seq` and when (corrected wall ms).
     /// Kept across disconnects on purpose: readers ask "a pass ended after X", never "on the live
     /// connection". `complete_pass` counts only passes after the actor's last remote role
-    /// commit (`roles_seen`), and finalizing an expired link only those ended after `until`;
+    /// commit (`role_change`), and finalizing an expired link only those ended after `until`;
     /// what reached the host after a pass end is the same race online, and a duplicate re-seal
     /// costs a box. Clearing would block re-seal and link finalization while one host is down.
     pub(crate) passes: BTreeMap<(HostKey, LabelId), (u64, u64)>,
-    pub(crate) roles_seen: BTreeMap<Tid, u64>,
     wake: Option<u64>,
     /// When the last Tick was handled (raw wall ms).
     last_tick: u64,
@@ -225,11 +224,11 @@ pub struct SyncEngine {
     /// Co-readers this node received entries of a label from (complete passes wait for them
     /// while a connection to them is up, spec/permissions.md §3).
     pub(crate) peer_received: BTreeMap<LabelId, BTreeSet<HostKey>>,
-    /// When the last remote role commit of each actor applied (raw ms; the peer part of
-    /// `complete_pass` waits at most `peer_pass_wait_ms` from it).
-    pub(crate) roles_at: BTreeMap<Tid, u64>,
+    /// The last remote role commit of each actor applied: its `seq`, and when (raw ms; the peer
+    /// part of `complete_pass` waits at most `peer_pass_wait_ms` from it).
+    pub(crate) role_change: BTreeMap<Tid, (u64, u64)>,
     /// When this engine was built (raw ms): a role change applied before it came no later,
-    /// so the peer wait of an actor with none in `roles_at` counts from here.
+    /// so the peer wait of an actor with none in `role_change` counts from here.
     pub(crate) started: u64,
     /// When the last remote role commit writing an actor's `secrets.0` (a rotation, the
     /// only change its author registers a step for) applied (raw ms; `step_settled`).
@@ -289,7 +288,6 @@ impl SyncEngine {
             state,
             seq: 0,
             passes: BTreeMap::new(),
-            roles_seen: BTreeMap::new(),
             wake: None,
             last_tick: 0,
             diagnostics: Vec::new(),
@@ -343,7 +341,7 @@ impl SyncEngine {
             swept: 0,
             peer_cache: peers::PeerCache::default(),
             peer_received: BTreeMap::new(),
-            roles_at: BTreeMap::new(),
+            role_change: BTreeMap::new(),
             started,
             rotation_at: BTreeMap::new(),
             placed_cache: (u64::MAX, BTreeMap::new()),
@@ -392,6 +390,11 @@ impl SyncEngine {
     /// Asks for a pass of `l` at raw ms `t` (`settle_at`).
     pub(crate) fn settle_by(&mut self, t: u64, l: LabelId) {
         self.settle_at.entry(t).or_default().insert(l);
+    }
+
+    /// The actor `g`'s keys derive from (`Core::secret_actor`), else `g`.
+    pub(crate) fn keys_actor(&self, g: &Tid) -> Tid {
+        self.engine.core.secret_actor(g).unwrap_or(*g)
     }
 
     /// Raw wall ms (sessions and timers).
@@ -599,7 +602,7 @@ impl SyncEngine {
         } else {
             self.stats.label_reads += 1;
             let (labels, timed) = self.compute_labels(now);
-            let actors = labels.iter().map(|(g, l)| (l.id, (self.engine.core.secret_actor(g).unwrap_or(*g), peers::host_keys(&l.hosts).collect()))).collect();
+            let actors = labels.iter().map(|(g, l)| (l.id, (self.keys_actor(g), peers::host_keys(&l.hosts).collect()))).collect();
             let ids = labels.iter().map(|(_, l)| l.id).collect();
             let key = (key.0, key.1, if timed { now } else { 0 });
             self.synced = Synced { key, timed, labels, ids, actors };
@@ -653,19 +656,9 @@ impl SyncEngine {
         self.handle(Event::Local)
     }
 
-    /// Runs the rotations due before this node encrypts under `g`'s secrets (flows'
-    /// `ensure_rotated`, spec/permissions.md §3) and returns the roles it still may not
-    /// encrypt under (`placing`).
-    pub(crate) fn uncovered(&mut self, g: &Tid) -> Result<BTreeSet<osis_base::Role>> {
-        self.uncovered_by(g, true)
-    }
-
-    /// The roles of `g`'s secret actor this node may not encrypt under now, without rotating.
-    pub(crate) fn uncovered_now(&mut self, g: &Tid) -> Result<BTreeSet<osis_base::Role>> {
-        self.uncovered_by(g, false)
-    }
-
-    fn uncovered_by(&mut self, g: &Tid, rotate: bool) -> Result<BTreeSet<osis_base::Role>> {
+    /// The roles of `g`'s secret actor this node may not encrypt under now (`placing`), after
+    /// the rotations due first when `rotate` (flows' `ensure_rotated`, spec/permissions.md §3).
+    pub(crate) fn uncovered(&mut self, g: &Tid, rotate: bool) -> Result<BTreeSet<osis_base::Role>> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(BTreeSet::new()) };
         if self.engine.core.is_key_actor(&a) {
             return Ok(BTreeSet::new());

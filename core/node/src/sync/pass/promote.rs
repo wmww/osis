@@ -32,7 +32,7 @@ impl SyncEngine {
         for (id, e) in self.due_entries(conn, host, l) {
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
-            if h.aspects.iter().any(|a| a.ak.as_str() == "seen.0") {
+            if is_beat(&h) {
                 continue;
             }
             let (commit, parts) = (*commit, parts.clone());
@@ -45,7 +45,7 @@ impl SyncEngine {
     /// heartbeat (`due_deposits`).
     pub(super) fn promotable(&self, l: &LabelId, b: &BlobId) -> bool {
         match self.state.entries.get(&(*l, *b)).map(|e| &e.kind) {
-            Some(Kind::Commit { commit, .. }) => !self.engine.header(commit).is_some_and(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")),
+            Some(Kind::Commit { commit, .. }) => !self.engine.header(commit).is_some_and(|h| is_beat(&h)),
             Some(Kind::Parked(_)) => true,
             _ => false,
         }
@@ -99,14 +99,14 @@ impl SyncEngine {
     /// the entries `scope` names, but `ours` (this pass's placements).
     pub(super) fn local_promote(&mut self, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, scope: &Scope, ours: &BTreeSet<BlobId>, left: &mut Left) -> Result<()> {
         for id in self.scope_entries(&l, scope).difference(ours).copied().collect::<Vec<_>>() {
-            let Some(mut e) = self.state.entries.get(&(l, id)).cloned() else { continue };
+            let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let (commit, parts) = (*commit, parts.clone());
-            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")) {
+            if e.stamp.is_some() || e.cert || self.own(&commit) || self.engine.header(&commit).is_none_or(|h| is_beat(&h)) {
                 continue;
             }
             if let Some(t) = self.relay_at(l, &commit) {
-                left.at(t, commit);
+                left.at(t, Touch::Commit(commit));
                 continue;
             }
             match self.complete_chain(None, g, l, &commit, &parts)? {
@@ -117,8 +117,7 @@ impl SyncEngine {
                 }
                 None => continue,
             }
-            e.stamp = Some(osis_label::sign_stamp(write, &l, &id, &e.wrap));
-            self.state.set_entry(l, id, e);
+            self.stamp_entry(l, id, e, write);
         }
         Ok(())
     }
@@ -127,15 +126,12 @@ impl SyncEngine {
     /// commits whose author's chain is under the label (`complete_chains` placed what it held
     /// of it), never a heartbeat; per host (a blob may be deposited at several).
     pub(super) fn promote(&mut self, conn: ConnId, host: HostKey, g: &Tid, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        for (id, mut e, c, parts) in self.due_deposits(conn, host, l) {
+        for (id, e, c, parts) in self.due_deposits(conn, host, l) {
             if uploads.iter().any(|u| osis_label::blob_id(&u.blob) == id) || !self.chain_missing(Some(host), g, l, &c, &parts)?.is_some_and(|m| m.is_empty()) {
                 continue;
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
-            let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
-            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
-            e.stamp = Some(stamp);
-            self.state.set_entry(l, id, e);
+            uploads.push(self.stamped_upload(l, id, e, blob, write));
             // still deposited there until the host takes the stamped upload (a refusal, say a
             // step registered meanwhile, leaves it for the next pass)
         }
@@ -190,14 +186,9 @@ impl SyncEngine {
         RELAY_MIN_MS + u64::from_le_bytes(x) % (SETTLE_MS - RELAY_MIN_MS)
     }
 
-    /// Whether this node uploads or relays commit `c` at a host lacking it now: its own (made
-    /// here, a held key actor's included, or placed first by a flow) at once, another node's once `relay_delay` has passed since it
-    /// arrived here (else a wake is set for then).
-    pub(super) fn relay_due(&mut self, l: LabelId, c: &CommitId) -> bool {
-        self.relay_at(l, c).is_none()
-    }
-
-    /// `relay_due` as the time (corrected wall ms) it comes, `None` once due.
+    /// When this node uploads or relays commit `c` at a host lacking it (corrected wall ms; a wake
+    /// is set for then), `None` for now: its own (made here, a held key actor's included, or placed
+    /// first by a flow) at once, another node's once `relay_delay` has passed since it arrived here.
     pub(super) fn relay_at(&mut self, l: LabelId, c: &CommitId) -> Option<u64> {
         let me = self.engine.tid();
         let m = self.engine.core.ix.commits.get(c)?;
