@@ -123,6 +123,56 @@ fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
     assert_eq!(recv(&diags).tids, vec![n]);
 }
 
+// spec/data-model.md §6 (unreadable link): a link where the type takes one whose value cannot be read (one names
+// no blob, one a blob under another thing's dedup secret) reads as absent at its own position, with an `Unreadable` diagnostic; the
+// rest of the aspect reads, by typed and untyped reads, watches and `on_change` alike (one such
+// set element failed every read of the aspect `blob missing`).
+#[test]
+fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
+    use osis::schema::osis_base::{BlobId, Link};
+    let db = db(1);
+    let n = db.write_with(|w| w.create_in(db.me(), &[db.home()])).unwrap();
+    let (tx, diags) = std::sync::mpsc::channel();
+    let _d = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::Unreadable {
+            tx.send(d).unwrap();
+        }
+    });
+    let watch = db.at(n, notes::TASKS).watch().unwrap();
+    let (ctx, changes) = std::sync::mpsc::channel();
+    let _sub = db.at(n, notes::TASKS).on_change(move |_, c| ctx.send(c.value).unwrap()).unwrap();
+    assert_eq!(recv(&changes), Ok(None), "the initial call");
+    // two tasks, the first's tags holding a link that names no blob
+    let tasks = vec![task("a"), task("b")];
+    db.write_with(|w| w.at(n, notes::TASKS).set(&tasks)).unwrap();
+    let Some(Value::List(mut raw)) = db.at(n, ak("note:tasks.0")).get_value().unwrap() else { panic!() };
+    let Value::Map(first) = &mut raw[0] else { panic!() };
+    let bogus = Value::Link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
+    // and a held blob of another thing's large value: under that thing's dedup secret
+    let m = db.write_with(|w| w.create(db.me())).unwrap();
+    db.write_with(|w| w.at(m, ak("t:big.0")).set(&s(&"x".repeat(200 << 10)))).unwrap();
+    let foreign = db.engine(|e| e.get(&m, &ak("t:big.0"))).unwrap().unwrap();
+    assert!(matches!(foreign, Value::Link(_)));
+    first.insert(Value::Int(task::TAGS.0 as i64), Value::Set([s("kept"), bogus, foreign].into_iter().collect()));
+    db.write_with(|w| w.at(n, ak("note:tasks.0")).set(&Value::List(raw))).unwrap();
+    let mut want = tasks.clone();
+    want[0].tags = ["kept".to_string()].into();
+    assert_eq!(db.get(n, notes::TASKS).unwrap(), Some(want.clone()), "the rest reads");
+    let d = recv(&diags);
+    assert_eq!(d.tids, vec![n]);
+    assert!(d.detail.contains("blob missing") && d.detail.contains("verification failed"), "{}", d.detail);
+    assert_eq!(db.at(n, notes::TASKS).path(p![0, task::TAGS]).get::<BTreeSet<String>>().unwrap(), Some(["kept".to_string()].into()));
+    assert_eq!(db.at(n, notes::TASKS).path(p![1]).get::<Task>().unwrap(), Some(task("b")));
+    // on_change: the plain write, then the one with the link; the watch holds the latter
+    assert_eq!(recv(&changes), Ok(Some(tasks)));
+    assert_eq!(recv(&changes), Ok(Some(want.clone())));
+    assert_eq!(watch.current(), Ok(Some(want)));
+    // at the aspect root: the aspect reads absent, not an error
+    let k = ak("t:x.0");
+    db.write_with(|w| w.at(n, k.clone()).set(&Value::Link(Link { hash: [6; 32], blob: BlobId([7; 32]), suite: 1, key: [8; 32] }))).unwrap();
+    assert_eq!(db.at(n, k).get_value().unwrap(), None);
+}
+
 // notes/api.md Keys: a schema registered at run time types `Key` reads (reader defaults) and
 // validates writes; unknown AKs stay untyped.
 // spec: none (API surface, notes/api.md)

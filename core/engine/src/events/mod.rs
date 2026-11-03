@@ -136,6 +136,10 @@ pub enum DiagnosticKind {
     /// not seen (spec/commits.md §5), a demotion. Its writes no longer read, and nothing re-sends
     /// them (`commit`: it, `tids`: its things).
     OwnWriteInvalid,
+    /// A read found a link whose value it cannot read: a blob of its tree not held (not fetched
+    /// yet, or named by no blob) or failing verification. That position read as absent
+    /// (spec/data-model.md §6; `tids`: the thing).
+    Unreadable,
 }
 
 /// A structured diagnostic: kind, the things and commit it names, the peer it came from.

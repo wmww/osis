@@ -363,7 +363,7 @@ pub(crate) fn status(v: Value) -> Result<Status> {
     Ok(st)
 }
 
-const KINDS: [DiagnosticKind; 17] = [
+const KINDS: [DiagnosticKind; 19] = [
     DiagnosticKind::BadInput,
     DiagnosticKind::CollidingRecord,
     DiagnosticKind::Parked,
@@ -381,6 +381,8 @@ const KINDS: [DiagnosticKind; 17] = [
     DiagnosticKind::Misstated,
     DiagnosticKind::Storage,
     DiagnosticKind::Repair,
+    DiagnosticKind::OwnWriteInvalid,
+    DiagnosticKind::Unreadable,
 ];
 
 pub(crate) fn diag_v(d: &Diagnostic) -> Value {
