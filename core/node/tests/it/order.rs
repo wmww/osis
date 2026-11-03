@@ -763,7 +763,8 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 Some(by)
             }
             Step::Reimport { by, from, copy } => {
-                no = why(&lp.peers[by].engine.reimport(&th(from), &th(copy)));
+                // a shrink that drops the move leaves no copy: `th` would wrap onto the source
+                no = if things.len() <= from.max(copy) { Some("no copy".into()) } else { why(&lp.peers[by].engine.reimport(&th(from), &th(copy))) };
                 Some(by)
             }
             Step::PurgeImport { by, t, back, reset } => {
@@ -1569,13 +1570,15 @@ fn keyed(text: &str) -> BTreeMap<(String, String), String> {
     }).collect()
 }
 
-/// The commits (as `facts_text` prints them) of the bodies under keep at most dropped at both
-/// nodes on an aspect whose reads or states differ and that flipped on the way (`flips`): what an
-/// un-merge took of such a body's delta comes back only with a copy (spec/crdt.md §4.6), which
-/// joins as a late part (spec/commits.md §5), so both are given them again (`alike_exchanged`).
+/// The commits (as `facts_text` prints them) of the bodies dropped at both nodes, under keep at
+/// most or copies (a snapshot or import: dropped for carrying purged writes, seed 34000), on an
+/// aspect whose reads or states differ and that flipped on the way (`flips`): what the state
+/// alone held of such a body and lost to an un-merge comes back only with a copy (spec/crdt.md
+/// §4.6), which joins as a late part or, purged, value-less (spec/commits.md §5), so both are
+/// given them again (`alike_exchanged`).
 fn both_dropped_flips(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> BTreeSet<String> {
     let ((wf, _), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
-    let dropped = |k: &BodyKey, f: &Fact| f.at_most && !f.held && gf.get(k).is_some_and(|g| !g.held);
+    let dropped = |k: &BodyKey, f: &Fact| (f.at_most || f.copies) && !f.held && gf.get(k).is_some_and(|g| !g.held);
     let mut apart: BTreeSet<(String, String)> = BTreeSet::new();
     for name in ["reads", "states"] {
         let (a, b) = (keyed(want.part(name)), keyed(got.part(name)));
@@ -2944,6 +2947,31 @@ fn arrival_order_purge_import_small_spec_commits_5() {
 #[ignore = "tier 2"]
 fn arrival_order_purge_import_large_spec_commits_5() {
     run("arrival_order_purge_import_large_spec_commits_5", 5000..5060, 40, LARGE, purge_import_history);
+}
+
+// spec/crdt.md §4.6, spec/commits.md §5 (order seed 34000, shrunk): the owner's snapshot #22
+// carries the moved copy's register write `m0` (an origin's dot) below B's `v4`; the re-import of
+// that origin is header-only (its author's earlier request on the origin dropped it at creation)
+// and a held request names it, so both nodes drop #22 and hold `m0` value-less. Where B's `reset` (#30) came valid and superseded `m0` before
+// the drop, then turned invalid (A's demotion of B came valid last), its un-merge has no body or
+// residue to give the value-less `m0` back, and B's older `v1` shows; where `m0` was the winner
+// when purged, the state keeps it value-less and reads nothing. Given #22 again (it joins
+// value-less, `both_dropped_flips`), both read nothing.
+#[test]
+fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
+    use Step::*;
+    let h = vec![Message { by: 0, t: 0, v: 0 }, Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Sync { from: 1, to: 0 }, Move { by: 0, t: 0 }, Reimport { by: 0, from: 0, copy: 1 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 1 }, Sync { from: 0, to: 2 }, Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Write { by: 1, t: 1, op: 0, k: 0, v: 4 }, Advance { who: Some(2), ms: 1621 }, Compact { by: 0, t: 1, op: 0 }, Demote { by: 2, t: 1, holder: 1, at: 0, to_read: true }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Reimport { by: 0, from: 0, copy: 1 }, PurgeImport { by: 0, t: 1, back: 0, reset: false }, Demote { by: 2, t: 1, holder: 2, at: 1, to_read: false }, PurgeImport { by: 1, t: 1, back: 0, reset: true }];
+    let played = play(34000, &h);
+    let made = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 11, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30];
+    let order = vec![3, 28, 1, 8, 5, 25, 11, 18, 22, 23, 30, 24, 4, 0, 21, 20, 2, 29, 7, 27, 6, 26, 19];
+    let want = judged(&mut deliver(&played, &made), &played);
+    let got = judged(&mut deliver(&played, &order), &played);
+    let differs = alike(&want, &got).expect("the reads differ");
+    assert!(differs.contains("reads on") && differs.contains("v1"), "{differs}");
+    let copy = format!("{:?}", played.things[1]);
+    assert!(flipped(&played, &order, None, &copy, "t:reg.0"), "the order flips");
+    assert!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false).is_some(), "no flip, nothing given");
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|t, a| flipped(&played, &order, None, t, a)), None);
 }
 
 // spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
