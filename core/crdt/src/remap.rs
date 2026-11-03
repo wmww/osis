@@ -244,8 +244,14 @@ impl Visit for Outside<'_> {
         let hit = match r {
             Rec::Elem(..) => false,
             Rec::Entry(_, e) => e.created.as_ref().is_some_and(|c| self.stamp(c)),
-            // sibling keys name writes, they are none
-            Rec::Seq(_, e) => e.created.iter().map(|x| &x.0).chain(e.pos.iter().map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0)).any(|s| self.stamp(s)),
+            // sibling keys name writes, they are none; a creation on a record without content
+            // is an anchor (spec/crdt.md §5.7: an import carries them for what it places, from
+            // whichever commit made them), also as its position write
+            Rec::Seq(_, e) => {
+                let anchor = e.created.as_ref().filter(|_| matches!(e.content, SeqContent::None));
+                let pos = e.pos.iter().filter(|p| !anchor.is_some_and(|c| crate::seq::is_creation(p, c)));
+                e.created.iter().filter(|_| anchor.is_none()).map(|x| &x.0).chain(pos.map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0)).any(|s| self.stamp(s))
+            }
         };
         if hit { Next::Stop } else { Next::On }
     }
@@ -259,9 +265,10 @@ impl Fragment {
         walk(&mut Any(owned, false), self)
     }
 
-    /// Whether the fragment holds a write (a stamp, a map entry's creation; never a sibling key, an
-    /// anchor or a record repeating an element's identity) whose owner dot's source `ok` refuses:
-    /// an import's writes outside its origins (spec/permissions.md §7).
+    /// Whether the fragment holds a stamp other than a sibling key or an anchor (a sequence
+    /// element's creation on a record without content) whose owner dot's source `ok` refuses: an
+    /// import's writes outside its origins (spec/permissions.md §7). Every value is the payload
+    /// of such a stamp, map keys aside (issues/purge-keeps-repeated-key.md).
     pub fn stamps_outside(&self, ok: &dyn Fn(&Source) -> bool) -> bool {
         walk(&mut Outside(ok), self)
     }
