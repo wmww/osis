@@ -242,7 +242,7 @@ mod tests {
         assert_eq!(encrypt_blob(&prefix, &big, &mut rng).err(), Some(Error::TooLarge));
     }
 
-    // spec/crypto.md §5: wraps are deterministic, 49 bytes, bound to the blob ID and secret.
+    // spec/crypto.md §5: wraps are deterministic, 57 bytes, bound to the blob ID and secret.
     #[test]
     fn wraps() {
         let (s, k, id) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]), BlobId([3; 32]));

@@ -3,7 +3,7 @@
 //! changes: one not fetched yet is one not received. Only the order, and when the pass ends.
 
 use super::state::Kind;
-use super::{ConnId, Phase, SyncEngine};
+use super::{ConnId, LConn, Phase, SyncEngine};
 use crate::error::Result;
 use osis_base::{BlobId, LabelId};
 use osis_proto::Cursor;
@@ -185,13 +185,19 @@ impl SyncEngine {
         self.fetch_on(conn, l, ids, out)
     }
 
-    /// Whether a fill has not all that judging needs: the group memberships among it.
+    /// Whether a fill has not all that judging needs: the group memberships among it. A label not
+    /// open at a host waits for nobody (a host refusing it may do so for good).
     pub fn fill_before_passes(&self) -> bool {
-        self.conns.values().any(|c| c.labels.values().any(|x| x.fill.as_ref().is_some_and(|f| !f.first_done)))
+        self.conns.values().any(|c| c.labels.values().any(LConn::first_waits))
     }
 
-    /// Whether `l` is filling on a connection: entries that open may be unfetched.
+    /// `fill_before_passes`, of `l`.
+    pub(crate) fn fill_first_waits(&self, l: &LabelId) -> bool {
+        self.conns.values().any(|c| c.labels.get(l).is_some_and(LConn::first_waits))
+    }
+
+    /// Whether `l` is filling at a host it is open at: entries that open may be unfetched.
     pub(crate) fn filling(&self, l: &LabelId) -> bool {
-        self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.fill.is_some()))
+        self.conns.values().any(|c| c.labels.get(l).is_some_and(|x| x.phase == Phase::Open && x.fill.is_some()))
     }
 }

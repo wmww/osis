@@ -78,7 +78,7 @@ impl Chat {
 
     fn filling(&mut self) -> bool {
         let g = self.g;
-        self.net.sync(self.c).label_status().iter().any(|s| s.group == g && s.idle < s.open)
+        self.net.sync(self.c).label_status().iter().any(|s| s.group == g && (s.idle < s.open || s.open < s.connected))
     }
 
     /// Goes on to a point part way through the fill: some messages here, more to come.
@@ -274,17 +274,18 @@ fn a_covered_body_stays_gone_during_a_fill_spec_sync_6() {
     assert!(at_a.is_disjoint(&before), "deleted at the host");
     f.net.set_online(c, true);
     f.until(|s| s.held().len() >= FILL_BATCH);
-    // past a co-writer's wait to relay it (`relay_due`), two passes
+    // past a co-writer's wait to relay it (`relay_due`, at most 30 s), with passes (each 60 s)
+    let passes = f.net.sync(c).pass_stats().passes;
     for _ in 0..2 {
-        f.net.tick(3_600_000);
+        f.net.tick(61_000);
         for _ in 0..3 {
             f.net.round();
+            // no entry of it here: none listed, and none placed (a deletes one placed within hops)
+            assert!(copies_at(&mut f.net, c).is_empty(), "the body went up during the fill");
         }
     }
+    assert!(f.net.sync(c).pass_stats().passes >= passes + 2, "passes ran");
     assert!(f.filling());
-    let copies = copies_at(&mut f.net, c);
-    let up: Vec<BlobId> = f.net.host_ids(host, &l).into_iter().filter(|b| !before.contains(b) && copies.contains(b)).collect();
-    assert!(up.is_empty(), "the body went up during the fill: {up:?}");
 }
 
 // spec/sync.md §7 Repair: a node part way through a fill does not answer another's suspect report:
@@ -352,4 +353,222 @@ fn junk_listed_goes_when_it_comes_spec_sync_6() {
     f.net.set_online(c, true);
     f.finish();
     assert!(!f.net.engine(c).has_blob(&id), "bytes of an unvouched entry that opens under nothing");
+}
+
+/// `c`, a new device, past the listing, the rotation that brings the head's read secret held back:
+/// no pass runs, so no stranded heartbeat, whatever wants one: `write` an own write, and with two
+/// hosts the second host's fill, which finds order 0 in flight on the first and goes on.
+fn no_pass_before_order_0(hosts: usize, write: bool) {
+    let mut net = Net::new();
+    let hs: Vec<usize> = (0..hosts).map(|_| net.add_host()).collect();
+    let a = net.node(1, &hs);
+    let c = net.node(3, &hs);
+    let d = net.node(4, &[]);
+    let g = net.group(a, &[(c, Role::Write), (d, Role::Read)], &hs);
+    let t = net.item(a, g, g, "chat");
+    net.set_online(c, false);
+    net.run();
+    for i in 0..N / 2 {
+        say(&mut net, a, t, i);
+    }
+    net.run();
+    let (ta, tc, td) = (net.tid(a), net.tid(c), net.tid(d));
+    let recipients = net::recipients_of(net.engine(a), &[(ta, Role::Admin), (tc, Role::Write)]);
+    let rotation = net::remove_holder(net.engine(a), g, td, &recipients, 9);
+    net.run();
+    net.advance(61_000);
+    let l = net.label(a);
+    let held: Vec<BlobId> = net.sync(a).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == rotation)).map(|x| x.0).collect();
+    assert!(!held.is_empty());
+    let mut f = Chat { net, host: hs[0], a, c, g, t, l };
+    f.net.set_online(c, true);
+    f.until(|s| s.net.sync(c).entries(&l).len() > N / 2);
+    // listed: the fetch's reply waits
+    f.net.hold_blobs.extend(held);
+    assert!(f.net.sync(c).fill_before_passes());
+    if write {
+        let mut m = Mutation::new();
+        m.set(tc, &crate::net::REG, &net::s("mine")).unwrap();
+        f.net.engine(c).commit(m).unwrap().unwrap();
+        f.net.feed(c, osis_node::sync::Event::Local);
+    }
+    for _ in 0..200 {
+        f.net.round();
+        if f.net.queue_len() == 0 {
+            f.net.tick(1_000);
+        }
+        assert!(!f.net.sync(c).stranded_at(&l), "a pass before order 0");
+    }
+    // the second host's fill went on with the newest
+    let ids = f.net.host_ids(hs[0], &l);
+    let fetched = ids.iter().filter(|b| f.net.engine(c).has_blob(b)).count();
+    assert_eq!(fetched > FILL_BATCH / 2, hosts == 2, "{fetched} fetched at {hosts} host(s)");
+    f.net.release();
+    f.net.run();
+    f.net.advance(61_000);
+    assert!(!f.net.sync(c).stranded_at(&l), "no stranded heartbeat");
+    assert_eq!(f.held().len(), N / 2);
+}
+
+// spec/sync.md §6: order 0 before a pass.
+#[test]
+fn no_pass_before_order_0_spec_sync_6() {
+    no_pass_before_order_0(1, true);
+}
+
+// spec/sync.md §6: order 0 before a pass, whichever host fetches it.
+#[test]
+fn no_pass_before_order_0_at_two_hosts_spec_sync_6() {
+    no_pass_before_order_0(2, false);
+}
+
+// spec/sync.md §6: a rotation part way can end the open at the host with a batch asked under it:
+// the host refuses it, the reopen goes on from what is listed, in order, and the pass still ends
+// only when everything is here.
+#[test]
+fn a_rotation_part_way_loses_nothing_spec_sync_6() {
+    let mut refused = 0;
+    for wait in 0..4 {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let a = net.node(1, &[host]);
+        let c = net.node(3, &[host]);
+        let d = net.node(4, &[]);
+        let g = net.group(a, &[(c, Role::Read), (d, Role::Read)], &[host]);
+        let t = net.item(a, g, g, "chat");
+        net.set_online(c, false);
+        net.run();
+        for i in 0..N {
+            say(&mut net, a, t, i);
+        }
+        net.run();
+        let l = net.label(a);
+        let mut f = Chat { net, host, a, c, g, t, l };
+        f.part_way();
+        for _ in 0..wait {
+            f.net.round();
+        }
+        let (ta, tc, td) = (f.net.tid(a), f.net.tid(c), f.net.tid(d));
+        let recipients = net::recipients_of(f.net.engine(a), &[(ta, Role::Admin), (tc, Role::Read)]);
+        net::remove_holder(f.net.engine(a), g, td, &recipients, 9);
+        f.net.feed(a, osis_node::sync::Event::Local);
+        f.until(|s| {
+            let n = s.held().len();
+            let g = s.g;
+            s.assert_newest();
+            if n < N {
+                assert!(!s.net.sync(s.c).complete_pass(&g), "a pass ended with {n} of {N} held");
+                assert!(s.filling(), "status: filling, {n} of {N} held");
+            }
+            n == N
+        });
+        refused += f.net.diagnostics(c).iter().filter(|x| x.contains("Fetch refused")).count();
+        f.finish();
+    }
+    assert!(refused > 0, "no batch was refused: nothing tested");
+}
+
+// spec/sync.md §6: a message written during a fill comes next, not after the backlog.
+#[test]
+fn a_push_during_a_fill_comes_next_spec_sync_6() {
+    let mut f = chat(Role::Read);
+    f.part_way();
+    let (a, t) = (f.a, f.t);
+    let held = f.held().len();
+    let mut m = Mutation::new();
+    m.set(t, &MSG, &Value::Str("zz new".into())).unwrap();
+    f.net.engine(a).commit(m).unwrap().unwrap();
+    f.net.feed(a, osis_node::sync::Event::Local);
+    f.until(|s| s.held().first().is_some_and(|v| v.as_ref() == Some(&Value::Str("zz new".into()))));
+    assert!(f.held().len() < held + 2 * FILL_BATCH, "next: {} held", f.held().len());
+    f.net.run();
+    f.net.advance(61_000);
+    assert_eq!(f.held().len(), N + 1);
+}
+
+// spec/sync.md §6, spec/crdt.md §5.7: text fetched newest first reads as what it holds, an own
+// insert anchored in it goes out, and every node ends with one text.
+#[test]
+fn an_own_edit_of_text_part_way_joins_spec_sync_6() {
+    use osis_crdt::{Op, PathOp};
+    let mut f = chat(Role::Write);
+    let (a, c, t) = (f.a, f.c, f.t);
+    let mut m = Mutation::new();
+    m.set(t, &net::SEQ, &net::s("base")).unwrap();
+    f.net.engine(a).commit(m).unwrap().unwrap();
+    for i in 0..N {
+        let mut m = Mutation::new();
+        m.op(t, &net::SEQ, PathOp { path: Vec::new(), op: Op::Insert { at: 4 + i, items: vec![net::s("x")] } }).unwrap();
+        f.net.engine(a).commit(m).unwrap().unwrap();
+    }
+    f.net.run();
+    let seq = Ak::new("t:seq.0").unwrap();
+    f.net.set_online(c, true);
+    f.until(|s| s.net.engine(s.c).get(&s.t, &seq).unwrap().is_some() && s.held().len() >= FILL_BATCH);
+    let mut m = Mutation::new();
+    m.op(t, &net::SEQ, PathOp { path: Vec::new(), op: Op::Insert { at: 0, items: vec![net::s("Z")] } }).unwrap();
+    f.net.engine(c).commit(m).unwrap().unwrap();
+    f.net.feed(c, osis_node::sync::Event::Local);
+    f.net.run();
+    f.net.advance(61_000);
+    let (at_a, at_c) = (f.net.engine(a).get(&t, &seq).unwrap(), f.net.engine(c).get(&t, &seq).unwrap());
+    assert_eq!(at_a, at_c);
+    let Some(Value::Str(text)) = at_a else { panic!("text") };
+    assert_eq!(text.matches('x').count(), N);
+    assert!(text.contains('Z') && text.contains("base"), "{text}");
+}
+
+// spec/sync.md §6: a compaction part way (an app's own) covers only what it holds: nothing the
+// node has not got is lost, for it or anyone.
+#[test]
+fn a_compaction_part_way_loses_nothing_spec_sync_6() {
+    let mut f = chat(Role::Write);
+    let (a, c, t) = (f.a, f.c, f.t);
+    let big = Ak::new("t:big.0").unwrap();
+    for i in 0..N {
+        let mut m = Mutation::new();
+        m.op(t, &net::BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(net::s(&format!("{i:05}")))], op: osis_crdt::Op::Put(net::s("v")) }).unwrap();
+        f.net.engine(a).commit(m).unwrap().unwrap();
+    }
+    f.net.run();
+    f.net.advance(osis_base::format::MAX_DRIFT_MS + 61_000);
+    f.net.set_online(c, true);
+    f.until(|s| s.net.engine(s.c).get(&s.t, &big).unwrap().is_some() && s.held().len() >= FILL_BATCH);
+    let acts = f.net.sync(c).compact(&t, &big).unwrap();
+    f.net.actions(c, acts);
+    f.net.run();
+    f.net.advance(61_000);
+    let (at_a, at_c) = (f.net.engine(a).get(&t, &big).unwrap(), f.net.engine(c).get(&t, &big).unwrap());
+    assert_eq!(at_a, at_c);
+    let Some(Value::Map(m)) = at_c else { panic!("map") };
+    assert_eq!(m.len(), N);
+    assert_eq!(f.held().len(), N);
+}
+
+// spec/crypto.md §5: a purge request is order 0: here before any message, wherever in the log.
+#[test]
+fn a_purge_comes_with_order_0_spec_crypto_5() {
+    let mut f = chat(Role::Read);
+    let (a, c, t) = (f.a, f.c, f.t);
+    let target = {
+        let mut m = Mutation::new();
+        m.set(t, &MSG, &Value::Str("target".into())).unwrap();
+        f.net.engine(a).commit(m).unwrap().unwrap()
+    };
+    let mut m = Mutation::new();
+    m.purge(osis_commit::PurgeItem::Commit { commit: target, tid: t, ak: Ak::new("f:msgs.0").unwrap() });
+    m.set(t, &crate::net::REG, &net::s("p")).unwrap();
+    let purge = f.net.engine(a).commit(m).unwrap().unwrap();
+    for i in N..N + 2 * FILL_BATCH {
+        say(&mut f.net, a, t, i);
+    }
+    f.net.run();
+    f.net.set_online(c, true);
+    f.until(|s| {
+        let n = s.held().len();
+        if n > 0 {
+            assert!(s.net.engine(s.c).header(&purge).is_some(), "the purge first");
+        }
+        n > 0
+    });
 }

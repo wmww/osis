@@ -443,11 +443,11 @@ impl Engine {
             return Ok(Vec::new());
         }
         let role_commit = cut.header.kind.is_role();
-        let order = super::fetch_order(&cut.header);
         let resolved = match self.core.ix.commits.get(&id) {
             Some(m) if !cut.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(cut.header.clone()),
         };
+        let order = super::fetch_order(&resolved);
         let ps = osis_commit::project_resolved(&cut, &resolved, |_| ())?;
         Ok(ps.into_iter().map(|p| Body { commit: id, reader: self.tid(), parts: p.parts, expires: p.expires, keys: p.keys, blind: cut.header.blind, plaintext: p.plaintext, role_commit, order }).collect())
     }
