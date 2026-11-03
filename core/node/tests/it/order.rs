@@ -1206,9 +1206,9 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
 /// never earlier, first or last; a held snapshot or import has a last death no earlier than the
 /// oracle's; a body dropped here under a relative keep at most D that the oracle holds died by
 /// the oracle at least D before now (never early); a body under keep at most 0 with a death and
-/// no live write is dropped (prompt). Aspects the drop-before-flip difference reaches are
-/// skipped (`alike`), and those with carried writes whose own commit the oracle does not hold
-/// (it would date them late, `Oracle::carried`).
+/// no live write is dropped (prompt) unless its commit carries a purge request. Aspects the
+/// drop-before-flip difference reaches are skipped (`alike`), and those with carried writes whose
+/// own commit the oracle does not hold (it would date them late, `Oracle::carried`).
 fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
     let (mine, _) = facts_of(&facts_text(&mut p.engine));
     let (theirs, inv) = facts_of(&o.facts);
@@ -1244,7 +1244,9 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 if !ok && !(x.is_none() && !copies && orphaned(e, &id, a.tid, &a.ak, y)) {
                     return Some(format!("death dated early or missing: {what}"));
                 }
-                if r.at_most.rel == Some(0) && x.is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
+                // a commit carrying a purge request keeps its blobs to `ROLE_KEEP` past its `ts`,
+                // whatever its keep at most (spec/commits.md §5, Purge request)
+                if r.at_most.rel == Some(0) && h.purge.is_empty() && x.is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
                     return Some(format!("dead body kept under keep at most 0: {what}"));
                 }
             } else if let Some(d) = r.at_most.rel
@@ -4378,4 +4380,15 @@ fn snapshot_purged_fell_purged_stands_in_seed_32032_spec_perm_8() {
     let got = digest(&[18, 15, 8, 6, 7, 1, 0, 21, 2, 24, 3, 19, 9, 12, 11, 16, 20, 25, 17, 5, 4, 26, 22, 23, 13, 10, 14]);
     assert!(want.iter().any(|(_, c)| c.stands_in == [0].into()), "a dropped snapshot stands in: {want:?}");
     assert_eq!(want, got);
+}
+
+// spec/commits.md §5 (Purge request): a commit carrying a purge request keeps its body to
+// `ROLE_KEEP` though it writes under keep at most 0 (a required retention's) and a later write
+// killed it; `dating` does not take that for a dead body kept (seed 32014, shrunk).
+#[test]
+fn purge_commit_body_kept_under_at_most_0_seed_32014_spec_commits_5() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(New { by: 0, parent: 2, write: true }), aim(Breaking { by: 0, t: 2, op: 24, v: 5, fits: false }), aim(Breaking { by: 1, t: 0, op: 18, v: 5, fits: false }), NewTop { by: 2 }, aim(Nested { by: 2, other: 0, t: 7, k: 2, text: false, compact: true, also: true }), Forged { by: 1, a: 0, b: 1, how: 1, op: 23, k: 2, v: 2 }, aim(Require { by: 2, t: 1, op: 20, rule: 3 }), Forged { by: 0, a: 6, b: 3, how: 4, op: 9, k: 0, v: 6 }, aim(Purge { by: 2, t: 1, of: 1, back: 1, v: 6 }), NewTop { by: 2 }, aim(Demote { by: 2, t: 1, holder: 2, at: 0, to_read: false }), aim(Require { by: 2, t: 0, op: 26, rule: 1 })];
+    check(32014, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
