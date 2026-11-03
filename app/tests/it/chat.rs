@@ -100,8 +100,8 @@ fn edited_deleted_and_nameless() {
     assert_eq!(got[3].reply_to, Some((first, "Alice: fixed".to_string())));
 }
 
-/// A store without hosts has no profile: reading the name writes nothing (a failed `profile()`
-/// leaves a thing behind) and sending works, nameless.
+/// A store without hosts has no profile: reading the name writes nothing and sending works,
+/// nameless.
 #[test]
 fn hostless_store_sends_without_a_name() {
     let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));

@@ -842,8 +842,9 @@ fn across_a_new_year_spec_data_model_2() {
     assert!(page.more);
 }
 
-/// `chats` lists the chats a node holds, not its other synced groups (Bob's profile group from
-/// his contact card), and a joined chat once it is here.
+/// `chats` lists the chats a node syncs, not its other synced groups (Bob's profile group from
+/// his contact card), a new chat once it is here; not one left (at once) or kicked from with a
+/// kept copy.
 #[test]
 fn chats_lists_held_chats() {
     let mut r = room(Options::default());
@@ -856,4 +857,14 @@ fn chats_lists_held_chats() {
     both.sort();
     assert_eq!(chats(&r.a).unwrap(), both);
     assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
+    leave(&r.b, r.c).unwrap();
+    assert!(chats(&r.b).unwrap().is_empty(), "left, before a host has it");
+    r.w.run();
+    assert!(chats(&r.b).unwrap().is_empty());
+
+    let Room { mut w, a, b, c, bob } = room(Options::default());
+    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.run();
+    assert_eq!(b.kept_copies().unwrap(), vec![c]);
+    assert!(chats(&b).unwrap().is_empty());
 }
