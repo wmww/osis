@@ -122,6 +122,7 @@ Rule: a seed-ranged harness's tier-1 test runs fixed seeds and reads no environm
 | `walks::open_equals_rebuild_random_secrets_compactions_large` | osis-node | `OSIS_WALKS_SECRETS_*` (0..200) | 16 seeds 3.4 s at load 40 |
 | `walks::open_equals_rebuild_random_histories_forged_large` | osis-node | `OSIS_WALKS_FORGED_*` (0..200) | 16 seeds 2.2 s at load 40 |
 | `sessions::pruned_sessions_converge_large_spec_crdt_8` | osis-node | `OSIS_SESSIONS_START`/`_SEEDS` (0..200) | 200 seeds about 10 s (two writers across restarts, random compactions, a fresh node from what is held, then every body replayed) |
+| `sessions::gap_cover_large_spec_commits_5` | osis-node | `OSIS_GAPCOVER_START`/`_SEEDS` (0..100) | 300 seeds 5 s (two writers see part of each other's commits; a node dropping what the join covers reads, states and rebuilds as one dropping nothing, also after a writer falls) |
 | `walks::open_equals_rebuild_random_histories_moves_large` | osis-node | `OSIS_WALKS_MOVES_*` (0..100), `OSIS_WALKS_MOVES_DOUBLES=0` without hostile second imports | 16 seeds 2.2 s at load 40 |
 | `waits::gap_snapshots_converge_large_spec_crdt_8` | osis-node | `OSIS_ORDER_*` (1000..1300; expiring runs too) | 1000 seeds 33 s |
 | `retention::deaths_never_early_random_large` | osis-node | `OSIS_STRAYS_*` (0..200) | 16 seeds 0.4 s at load 40 |
