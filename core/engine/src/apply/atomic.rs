@@ -801,18 +801,32 @@ fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], j: &mut 
 /// Rebuilds the aspects of commit `id` (header `h`) whose writes valid snapshots held before it
 /// copied otherwise than its deltas hold them (`uncarried`, `copies::differing_copies`): the
 /// snapshots' copies govern (spec/permissions.md §5.2), so the delta's writes under those dots go.
+/// Invariant: every held delta a held valid snapshot misstates has been compared with it, on
+/// whichever arrived second (`copies_before` for the snapshot), so the state is `rebuilt`'s. A
+/// carried entry names only the first owner of a dot to arrive: an import's dots may be received
+/// already through another import of its origin (spec/permissions.md §7), so an import's held
+/// parts are compared with every held valid snapshot of the aspect.
 fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], j: &mut Joins) -> Result<()> {
-    for (tid, ak, snaps) in uncarried {
-        let Some(ai) = h.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
+    let mut per: BTreeMap<(Tid, Ak), BTreeSet<CommitId>> = uncarried.iter().map(|(t, a, s)| ((*t, a.clone()), s.clone())).collect();
+    if h.kind == osis_commit::Kind::Import
+        && let Some(m) = tx.core.ix.commits.get(id)
+    {
+        for a in h.aspects.iter().enumerate().filter(|(ai, _)| m.holds(*ai)).map(|x| x.1) {
+            let k = (a.tid, a.ak.clone());
+            per.entry(k.clone()).or_default().extend(tx.core.ix.snapshots.get(&k).into_iter().flatten().map(|s| s.1));
+        }
+    }
+    for ((tid, ak), snaps) in per {
+        let Some(ai) = h.aspects.iter().position(|a| a.tid == tid && a.ak == ak) else { continue };
         // an invalid snapshot's copies never joined
-        let snaps: BTreeSet<CommitId> = snaps.iter().copied().filter(|s| copies::snapshot_valid(tx.core, s, tid, ak)).collect();
+        let snaps: BTreeSet<CommitId> = snaps.into_iter().filter(|s| copies::snapshot_valid(tx.core, s, &tid, &ak)).collect();
         if snaps.is_empty() {
             continue;
         }
         if copies::differing_copies(tx, h, id, ai, &snaps)?.is_empty() {
             continue;
         }
-        rebuild_changed(tx, tid, ak, &[], j)?;
+        rebuild_changed(tx, &tid, &ak, &[], j)?;
     }
     Ok(())
 }
