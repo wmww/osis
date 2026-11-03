@@ -240,9 +240,14 @@ fn inbox_hint_never_dials_peer_spec_sync_3() {
 /// Seals commit `c` (held by node `from`) with `things` to `to` and puts it under `l` at host
 /// `host` with prefix expiry `expiry`, as a stranger holding the deposit seed could. Returns the
 /// blob's ID.
-fn plant_inbox(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid, c: &osis_base::CommitId, things: Vec<osis_label::InboxThing>, expiry: u64) -> osis_base::BlobId {
+fn plant_inbox(net: &mut Net, from: usize, at: (usize, &LabelId), to: Tid, c: &osis_base::CommitId, things: Vec<osis_label::InboxThing>, expiry: u64) -> osis_base::BlobId {
     let bytes = net.engine(from).commit_bytes(c).unwrap().unwrap();
-    let commit = osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
+    plant_bytes(net, from, at, to, &bytes, things, expiry)
+}
+
+/// `plant_inbox` of a commit's encoded bytes.
+fn plant_bytes(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid, bytes: &[u8], things: Vec<osis_label::InboxThing>, expiry: u64) -> osis_base::BlobId {
+    let commit = osis_base::decode(bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap();
     let keys = net.engine(from).get_typed(&to, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
@@ -867,4 +872,96 @@ fn junk_label_copy_applies_no_declined_invite_spec_sync_3() {
 
 fn net_is_role(net: &mut Net, a: usize, c: &osis_base::CommitId, g: &Tid) -> bool {
     net.engine(a).header(c).is_some_and(|h| h.kind == osis_commit::Kind::Role && h.aspects.iter().any(|x| x.tid == *g && x.ak.as_str() == "roles.0"))
+}
+
+/// What is left of the deposit budget of `l` at the host, in entries.
+fn budget_left(net: &mut Net, host: usize, l: &LabelId) -> u64 {
+    osis_proto::LabelStore::budget(net.hosts[host].hub.store_mut(), l).unwrap().entries_left
+}
+
+// spec/sync.md §5: a grant accepted on one device is stamped out of the deposit budget and stays at the host, readable by the sibling that was away
+#[test]
+fn stamped_inbox_blob_reaches_a_sibling_spec_sync_5() {
+    let (mut net, a, b, b2, bob, g) = bob_with_two_devices();
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let left = budget_left(&mut net, 0, &home);
+    let t = net.item(a, g, g, "for bob");
+    net.set_online(b2, false);
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(budget_left(&mut net, 0, &home), left - 1, "a request holds its slot");
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(budget_left(&mut net, 0, &home), left, "accepted: the slot is free");
+    let id = net.sync(b).entries(&home).into_iter().find(|(_, k)| matches!(k, EntryKind::Inbox(Some(x)) if *x == c)).unwrap().0;
+    assert!(net.host_ids(0, &home).contains(&id), "the blob stays");
+    net.set_online(b2, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b2).entries(&home).iter().any(|(x, k)| *x == id && matches!(k, EntryKind::Inbox(Some(x)) if *x == c)), "the sibling opened it");
+    assert!(net.sync(b2).entry_meta(&home, &id).unwrap().1.is_some(), "stamped");
+    assert_eq!(net.read(b2, t), Some(s("for bob")));
+}
+
+// spec/sync.md §5: a stranger's request holds its budget slot until the user answers it; declining frees the slot and the blob stays until it expires
+#[test]
+fn declined_request_leaves_the_budget_spec_sync_5() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let left = budget_left(&mut net, host, &home);
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c]);
+    assert_eq!(budget_left(&mut net, host, &home), left - 1, "unanswered: it holds its slot");
+    assert!(net.sync(b).decline_invite(c).unwrap());
+    let ids = net.host_ids(host, &home);
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    assert_eq!(budget_left(&mut net, host, &home), left, "declined: the slot is free");
+    assert_eq!(net.host_ids(host, &home), ids);
+    assert!(!holds(&mut net, b, &c), "and its commit stays unapplied");
+}
+
+// spec/sync.md §5: a commit from a connected sender that applies and is judged invalid leaves its blob in the budget
+#[test]
+fn invalid_inbox_commit_keeps_its_slot_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    net.pair(a, b);
+    // a thing of Bob's that Alice only reads
+    let e = net.engine(b);
+    let mut m = Mutation::new();
+    let h = e.new_thing(&mut m, bob);
+    m.set(h, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    grant(&mut net, b, h, alice);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "Alice is connected");
+    assert_eq!(net.engine(a).role_on(&h), Some(Role::Read));
+    let left = budget_left(&mut net, host, &home);
+    let rec = net.engine(b).get_typed(&h, &ct::CREATED).unwrap().unwrap();
+    let ak = osis_base::Ak::new("forged.0").unwrap();
+    let bytes = crate::validity::forge_by(net.engine(a), rec, h, &ak, &osis_base::Value::Bytes(vec![1]), 1 << 32, osis_commit::Kind::Content);
+    let c = osis_commit::CommitBlob::decode(&bytes).unwrap().id();
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    plant_bytes(&mut net, a, (host, &home), bob, &bytes, Vec::new(), exp);
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let valid = net.engine(b).core.ix.commits.get(&c).map(|m| m.valid.clone());
+    assert_eq!(valid, Some(vec![false]), "applied, judged invalid; pending: {:?}", net.engine(b).pending());
+    assert_eq!(budget_left(&mut net, host, &home), left - 1, "not stamped");
 }

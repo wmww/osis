@@ -552,10 +552,16 @@ pub(crate) fn forge_role_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis
 
 /// `forge_role_commit` of any kind; an AK the core schema does not declare is written untyped.
 fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
+    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
+    forge_by(&lp.peers[by].engine, rec, t, ak, v, lo, kind)
+}
+
+/// A commit by `by` on thing `t`, whose creation record is `rec`, whatever its rights there.
+pub(crate) fn forge_by(by: &osis_node::Engine, rec: osis_base::CreationRecord, t: Tid, ak: &osis_base::Ak, v: &Value, lo: u64, kind: osis_commit::Kind) -> Vec<u8> {
     use osis_commit::{AspectWrite, CommitBuilder, Form, MemoryBlobs, writer_ctx};
     use osis_crdt::{Delta, Source, Writer, create, encode_delta};
-    let author = lp.peers[by].engine.tid();
-    let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
+    let author = by.tid();
+    let ts = osis_base::Ts::make(by.now(), 0).unwrap();
     // commit form (spec/commits.md §3): own dots name the commit, a placeholder until built
     let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), lo);
     let f = match osis_schema::core_schema().view(ak.as_str()) {
@@ -569,8 +575,7 @@ fn forge_commit(lp: &mut LocalPeer, by: usize, t: Tid, ak: &osis_base::Ak, v: &V
     aw.retention = osis_commit::retention::write_retention(ak.as_str(), None, None).unwrap();
     let mut cb = CommitBuilder::new(kind, ts, author, author, Form::Commit);
     cb.aspects.push(aw);
-    let rec = lp.peers[0].engine.get_typed(&t, &osis_schema::core_types::CREATED).unwrap().unwrap();
-    cb.build(&lp.peers[by].engine.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
+    cb.build(&by.identity().keys().signing, &Dedup(rec), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(9)).unwrap().commit.encode()
 }
 
 // spec/permissions.md §3 (lost access): only an unfinalized single-use link race defers a
