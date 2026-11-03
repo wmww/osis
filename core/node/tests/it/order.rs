@@ -1286,7 +1286,7 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
     let mut aspects = BTreeSet::new();
     for id in e.commit_ids() {
         let Some(h) = e.header(&id) else { continue };
-        for a in &h.aspects {
+        for (ai, a) in h.aspects.iter().enumerate() {
             let at_most = a.retention.at_most.rel.is_some() || a.retention.at_most.abs.is_some();
             let approx = a.retention.at_most.rel.is_some();
             let valid = e.body_valid(&id, &a.tid, &a.ak).unwrap();
@@ -1297,7 +1297,8 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             // a held copies body's lowest carried `ts` (`-`: dropped, or not copies)
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
             let orphan = !copies && orphan_here(e, &id, a.tid, &a.ak);
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}", a.tid, a.ak.as_str(), h.ts);
+            let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}|{missing}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1421,6 +1422,8 @@ struct Fact {
     low: Option<u64>,
     /// Held with no death for want of a killer dropped before it arrived (`orphan_here`).
     orphan: bool,
+    /// Missing (counting as never received, as after a fall) when judged.
+    missing: bool,
 }
 
 impl Fact {
@@ -1503,7 +1506,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11), missing: b(12) });
     }
     (out, inv)
 }
@@ -1710,15 +1713,23 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
 }
 
 /// The commits (as `facts_text` prints them) with a part on an aspect some purge request names
-/// that is missing at one node and not at the other: the purge fell after one applied it, and the
-/// part counts as never received there (spec/permissions.md §8), as `drop_flips` for keep bounds.
+/// that is missing at one node and not at the other, when judged or a day later (an expiry by
+/// then drops it at both): the purge fell after one applied it, and the part counts as never
+/// received there (spec/permissions.md §8), as `drop_flips` for keep bounds.
 fn purge_flips(played: &Played, want: &Judged, got: &Judged) -> BTreeSet<String> {
     let (Some(w), Some(g)) = (&want.index, &got.index) else { return BTreeSet::new() };
     let header = |p: &Package| osis_commit::CommitBlob::decode(&p.bytes).ok().map(|b| b.header);
     let named: BTreeSet<(Tid, osis_base::Ak)> = played.packs.iter().filter_map(header).flat_map(|h| h.purge.iter().map(|i| (*i.tid(), i.ak().clone())).collect::<Vec<_>>()).collect();
+    let ((wf, _), (gf, _)) = (facts_of(want.part("facts")), facts_of(got.part("facts")));
+    let missing_now = |id: &str, a: &osis_commit::AspectEntry| {
+        let k = (id.to_string(), format!("{:?}", a.tid), a.ak.as_str().to_string());
+        wf.get(&k).map(|f| f.missing) != gf.get(&k).map(|f| f.missing)
+    };
     played.packs.iter().filter(|p| {
         let (Some(x), Some(y), Some(h)) = (w.commits.get(&p.id), g.commits.get(&p.id), header(p)) else { return false };
-        x.missing.symmetric_difference(&y.missing).any(|ai| h.aspects.get(*ai).is_some_and(|a| named.contains(&(a.tid, a.ak.clone()))))
+        let id = format!("{:?}", p.id);
+        let on_named = |a: &osis_commit::AspectEntry| named.contains(&(a.tid, a.ak.clone()));
+        x.missing.symmetric_difference(&y.missing).any(|ai| h.aspects.get(*ai).is_some_and(on_named)) || h.aspects.iter().any(|a| on_named(a) && missing_now(&id, a))
     }).map(|p| format!("{:?}", p.id)).collect()
 }
 
@@ -4313,6 +4324,17 @@ fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Breaking { by: 1, t: 2, op: 11, v: 9, fits: false }), aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
     check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/permissions.md §8: a part a fallen purge took counts as never received until a copy comes;
+// an expiry a day later drops it at every node, so the harness tells the fall by its missing part
+// when judged (`purge_flips`) (seed 29617 of the purge-rows mix, shrunk).
+#[test]
+fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_8() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, Sync { from: 2, to: 1 }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Message { by: 1, t: 0, v: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, aim(Purge { by: 0, t: 0, of: 2, back: 2, v: 0 }), aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 0 }), aim(Message { by: 0, t: 0, v: 4 }), aim(Typed { by: 2, t: 0, op: 27, k: 2, v: 2 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }), aim(Typed { by: 0, t: 0, op: 27, k: 1, v: 9 }), Send { from: 2, to: 1, back: 0 }, aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 4 }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 0, t: 0, op: 27, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Demote { by: 1, t: 0, holder: 1, at: 3, to_read: true }), Edge { by: 2, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Demote { by: 2, t: 0, holder: 2, at: 1, to_read: false }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, aim(Purge { by: 2, t: 0, of: 1, back: 1, v: 3 })];
+    check(29617, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
 }
 
 // spec/commits.md §5: a body dropped under keep at most whose other part is still missing leaves that
