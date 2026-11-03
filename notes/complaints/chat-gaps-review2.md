@@ -1,0 +1,2 @@
+- `tools/bin-at` plus a release sim build takes the worktree for about 2 min per revision (detached HEAD): nothing can be edited or tested meanwhile.
+- `RoleEpochs::held` says "may be encrypted under" but only checks `reading`: an unestablished derived epoch passes it. `newest_held` is what guards, so `read.held().next().is_some()` (share.rs redeem wait, a test) does not prove a real secret.
