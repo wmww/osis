@@ -70,33 +70,17 @@ impl crate::engine::Engine {
         if blobs.is_empty() {
             return Ok(());
         }
-        self.run(|tx| {
-            let mut fresh = false;
-            for (id, b) in blobs {
-                if osis_label::blob_id(&b) == id && tx.txn.read_blob(&id, 0, 0)?.is_none() {
-                    tx.txn.put_blob(&id, b)?;
-                    fresh = true;
-                }
-            }
-            // a read that missed it: watches read again (one still missing a blob notes it again)
-            if fresh && !tx.core.missed.is_empty() {
-                let (mut changed, mut entries) = (Vec::new(), Vec::new());
-                for (tid, ak, entry) in std::mem::take(&mut tx.core.missed) {
-                    match entry {
-                        None => changed.push((tid, ak)),
-                        Some(c) => entries.push((tid, ak, c)),
-                    }
-                }
-                if !changed.is_empty() {
-                    tx.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
-                }
-                tx.core.history_touched(entries);
-            }
-            Ok(())
-        })?;
-        // a node blob may complete a tree walk that lacked it
-        self.core.live_trees.retain(|_, t| t.missing.is_empty());
+        if self.run(|tx| tx.store_blobs(blobs))? {
+            self.blobs_stored();
+        }
         Ok(())
+    }
+
+    /// After a transaction that stored a new blob (`Tx::store_blobs`) committed: what reads
+    /// noted missing was re-delivered, and a node blob may complete a tree walk that lacked it.
+    pub(crate) fn blobs_stored(&mut self) {
+        self.core.missed.clear();
+        self.core.live_trees.retain(|_, t| t.missing.is_empty());
     }
 
     /// A read of `tid`'s `ak` (its state, or with `entry` that change's history entry) found a
@@ -108,5 +92,36 @@ impl crate::engine::Engine {
     pub fn has_blob(&mut self, id: &BlobId) -> bool {
         let id = *id;
         self.run(|tx| Ok(tx.txn.read_blob(&id, 0, 0)?.is_some())).unwrap_or(false)
+    }
+}
+
+impl crate::engine::Tx<'_> {
+    /// Stores blob ciphertexts by ID (one not matching its ID, or held already, is skipped);
+    /// whether one was new. A new one re-delivers what reads noted missing (`Core::missed`):
+    /// aspects as `Cause::Fetched`, history entries as `Event::History`; a read still missing
+    /// a blob notes it again. The notes stay until `Engine::blobs_stored` clears them after the
+    /// commit, so a rolled back transaction (its events discarded) loses none.
+    pub(crate) fn store_blobs(&mut self, blobs: Vec<(BlobId, Vec<u8>)>) -> crate::error::Result<bool> {
+        let mut fresh = false;
+        for (id, b) in blobs {
+            if osis_label::blob_id(&b) == id && self.txn.read_blob(&id, 0, 0)?.is_none() {
+                self.txn.put_blob(&id, b)?;
+                fresh = true;
+            }
+        }
+        if fresh && !self.core.missed.is_empty() {
+            let (mut changed, mut entries) = (Vec::new(), Vec::new());
+            for (tid, ak, entry) in &self.core.missed {
+                match entry {
+                    None => changed.push((*tid, ak.clone())),
+                    Some(c) => entries.push((*tid, ak.clone(), *c)),
+                }
+            }
+            if !changed.is_empty() {
+                self.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
+            }
+            self.core.history_touched(entries);
+        }
+        Ok(fresh)
     }
 }

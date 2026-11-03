@@ -1168,6 +1168,7 @@ impl Engine {
     fn ingest_class(&mut self, bytes: &[u8], blobs: Vec<(BlobId, Vec<u8>)>, peer: Option<Tid>, room: Option<u64>) -> Result<Ingested> {
         let memory = room.is_some();
         let _s = crate::costs::span("ingest");
+        let mut fresh = false;
         let r = self.run(|tx| {
             let decoded = CommitBlob::decode(bytes);
             if matches!(&decoded, Ok(b) if b.header.ephemeral.is_some() != memory) {
@@ -1182,11 +1183,7 @@ impl Engine {
                     return Ok(Ingested::TooLarge(b.id()));
                 }
             } else {
-                for (id, b) in blobs {
-                    if osis_label::blob_id(&b) == id {
-                        tx.txn.put_blob(&id, b)?;
-                    }
-                }
+                fresh = tx.store_blobs(blobs)?;
             }
             match decoded {
                 Ok(blob) => ingest_blob(tx, blob, Origin::Remote),
@@ -1198,6 +1195,9 @@ impl Engine {
                 Err(e) => Err(e.into()),
             }
         });
+        if fresh && r.is_ok() {
+            self.blobs_stored();
+        }
         match &r {
             Err(e) if e.class() == ErrorClass::BadInput => {
                 let now = self.now();

@@ -667,7 +667,10 @@ pub struct Core {
     pub live_trees: BTreeMap<Tid, LiveTrees>,
     /// Aspects (`None`) and history entries (`Some`, that change's) a read found a link of whose
     /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
-    /// (`put_blobs`: `Cause::Fetched`, `Event::History`). Bounded by the aspects and entries held.
+    /// (`Tx::store_blobs`: `Cause::Fetched`, `Event::History`). Bounded by the aspects and entries
+    /// held. A link whose blob never comes stays noted while a watch re-reads it, so each blob
+    /// stored costs a re-read of the watched aspects and entries holding one (an aspect's re-read
+    /// already costs its size).
     pub missed: BTreeSet<(Tid, Ak, Option<crate::events::ChangeId>)>,
     /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
