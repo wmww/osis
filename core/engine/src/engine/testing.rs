@@ -150,6 +150,12 @@ impl Engine {
         self.core.keep_bodies = on;
     }
 
+    /// What a demotion's frontier is fit to in place of `MAX_LIST_BYTES` (tests: `fit_requests` end to end).
+    #[doc(hidden)]
+    pub fn list_bound(&mut self, bytes: usize) {
+        self.core.list_bound = bytes;
+    }
+
     /// Whether the delta of `(tid, ak)` in `c` is valid here (`None`: no such delta). Tests: the
     /// order harness tells the documented keep-at-most difference apart.
     #[doc(hidden)]

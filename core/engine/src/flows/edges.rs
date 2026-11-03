@@ -551,7 +551,7 @@ impl Engine {
                         f.commits.retain(|c| !omit.iter().any(|(o, _)| o == c));
                     }
                     let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
-                    crate::apply::receipt::fit_requests(&mut f, &requests, osis_commit::MAX_LIST_BYTES);
+                    crate::apply::receipt::fit_requests(&mut f, &requests, self.core.list_bound);
                     let pf = osis_perm::Frontier { commits: f.commits.clone() };
                     let probe = self.demotion_probe(who, ops.clone(), pf);
                     let s = self.core.timelines.get(&t).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();

@@ -206,7 +206,7 @@ pub(crate) fn forget(tx: &mut Tx<'_>, lost: &[Tid], held: &BTreeMap<Tid, u64>) -
             tx.txn.remove_local(&records::aspect_key(p, t, ak), Shred::Yes)?;
         }
         let mut residues = Vec::new();
-        for p in [records::RESIDUE, records::PURGES_NAMED, records::GAVE, records::LEFT] {
+        for p in [records::RESIDUE, records::PURGES_NAMED, records::GAVE] {
             let prefix = records::aspect_key(p, t, ak);
             tx.scan(&prefix, |k, _| {
                 residues.push([prefix.as_slice(), k].concat());

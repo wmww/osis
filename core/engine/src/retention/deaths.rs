@@ -466,7 +466,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// The value-less residue of `c`'s part on `(tid, ak)` (`retention::make_valueless`), if any.
 fn residue_of(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<Fragment>> {
-    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)) else { return Ok(None) };
+    let Some(ai) = tx.core.ix.commits.get(c).and_then(|m| m.aspect(tid, ak)).filter(|ai| super::valueless(tx.core, c, *ai)) else { return Ok(None) };
     let Some(v) = tx.txn.get_local(&records::residue_key(tid, ak, c, ai))? else { return Ok(None) };
     Ok(Some(crate::engine::state::decode(&v)?))
 }
