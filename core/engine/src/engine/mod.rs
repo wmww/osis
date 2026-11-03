@@ -98,7 +98,8 @@ pub enum DropFor {
     /// when it turns valid.
     Broke,
     /// For a purge request (`retention::rejudge_purges`): it comes back as missing when no held
-    /// request drops it any more. A delta with own writes is also in the value-less list.
+    /// request drops it any more. A delta with writes (`retention::writes_of`) is also in the
+    /// value-less list, and that decides for it.
     Purge,
 }
 
@@ -1440,8 +1441,8 @@ impl Tx<'_> {
     /// owning them (where they lie). A paged state strips and rewrites only their pages and
     /// its skeleton; anything else is rewritten whole. `true`: an entry's records merged into
     /// its key-erased record with a death between them (`Fragment::strip_merging`).
-    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &crate::engine::Owned) -> Result<bool> {
-        let pred = |d: &osis_crdt::Dot| owned.owns(d);
+    pub fn strip_bodies(&mut self, tid: &Tid, ak: &Ak, bodies: &[Fragment], owned: &[crate::engine::Owned]) -> Result<bool> {
+        let pred = |d: &osis_crdt::Dot| owned.iter().any(|o| o.owns(d));
         let mut merged = false;
         let done = self.rewrite_bodies(tid, ak, bodies, |txn, idx, f, touches| {
             let r = pages::strip_touched(txn, idx, tid, ak, f, touches, &pred)?;

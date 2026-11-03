@@ -535,13 +535,7 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
         if m.valid_at(ai) {
             continue;
         }
-        if m.header.kind.has_own_writes() {
-            out.extend(Owned::of(&m.header, c, ai));
-        } else if m.header.kind == osis_commit::Kind::Import {
-            // an origin owning its dots here (a commit-form commit on this aspect: the import is
-            // void, spec/permissions.md §7) keeps its writes
-            out.extend(m.header.origins.iter().filter(|o| !copies::owns_commit_dots(core, &o.commit, tid, ak)).map(|o| Owned::Commit(o.commit)));
-        }
+        out.extend(crate::retention::writes_of(core, &m.header, c, ai));
     }
     out
 }
@@ -654,6 +648,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
         tx.core.stale_commits.insert(*c);
         tx.txn.put_local(&[records::VOID, &c.0[..]].concat(), &[], Shred::No)?;
     }
+    crate::retention::origin_arrived(tx, &id, &h)?;
     index_commit(tx.core, &id, &view);
     // copies snapshots held here took of its writes: compared with its deltas once stored
     let uncarried = copies::uncarry(tx.core, &id, &h, &|ai| parts.has(ai));

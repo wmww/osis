@@ -4,7 +4,7 @@
 use crate::engine::DropFor;
 use super::{T_EXPIRY, drop_part_for, known_purged, make_valueless, suspect};
 use crate::engine::records;
-use crate::engine::{Owned, Tx};
+use crate::engine::Tx;
 use crate::error::{Error, Result};
 use osis_base::{Ak, CommitId, Tid};
 use osis_commit::{Decoded, Header};
@@ -62,10 +62,14 @@ pub(crate) fn pending_drops(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_comm
 /// result kept (`records::STRIPPED`); its slot in `blob` and the stored copy holds an empty delta
 /// (`emptied`). `examine` joins the kept delta in its place, and `stripped_joined` drops it once
 /// joined, as a purge drops an applied part. One not readable yet (its thing's record or a page
-/// away) waits as received and is stripped once it is; a bad one is `examine`'s. A snapshot or
-/// import has no values of its own: kept whole, dropped once applied (`purge_one`).
+/// away) waits as received and is stripped once it is; a bad one is `examine`'s. A snapshot has
+/// no values of its own: kept whole, dropped once applied (`purge_one`), as is an import a request
+/// reaches only through another import of its origin (`drop_gone`).
 fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBlob, h: &Header, ai: usize) -> Result<()> {
-    let Some(o) = Owned::of(h, id, ai).filter(|_| h.kind.has_own_writes()) else { return Ok(()) };
+    let o = super::writes_of(tx.core, h, id, ai);
+    if o.is_empty() {
+        return Ok(());
+    }
     let Some(dedup) = h.aspects.get(ai).and_then(|a| tx.core.dedup(&a.tid)) else { return Ok(()) };
     let mut done = BTreeSet::new();
     for p in blob.parts.iter_mut().filter(|p| p.ai == ai && p.delta != emptied()) {
@@ -73,7 +77,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
         let mut blobs = crate::engine::blobs::TxBlobs::new(&mut tx.txn);
         let mut reader = osis_label::BlobReader::new(&dedup, &mut blobs);
         let Ok(Decoded::Delta(mut d)) = osis_commit::verify_part(h, id, p, &dedup, &mut interner, Some(&mut reader)) else { continue };
-        d.fragment.strip(&|x| o.owns(x));
+        d.fragment.strip(&|x| o.iter().any(|y| y.owns(x)));
         let v = [&d.nonce[..], &crate::engine::state::encode(&d.fragment)?].concat();
         tx.txn.put_local(&records::stripped_key(id, ai, p.di), &v, Shred::No)?;
         p.delta = emptied();

@@ -88,6 +88,14 @@ pub(crate) enum Step {
     /// `by` purges `t`'s register by author: `of`'s deltas (spec/permissions.md §8), as the API does:
     /// no write on the register, a `purge.0` one.
     PurgeAuthor { by: usize, t: usize, of: usize },
+    /// `by` moves `t` to a copy it owns (spec/permissions.md §7), the copy a new thing.
+    Move { by: usize, t: usize },
+    /// `by` imports `from` into copy `copy` again (`Engine::reimport`): imports listing origins
+    /// other imports list.
+    Reimport { by: usize, from: usize, copy: usize },
+    /// `by` purges one of its last imports on `t` by name, its register only: with a write there
+    /// (`reset`), or with a `purge.0` one.
+    PurgeImport { by: usize, t: usize, back: u8, reset: bool },
     /// Every commit `from` holds to `to`.
     Sync { from: usize, to: usize },
     /// One of `from`'s last commits to `to`.
@@ -744,6 +752,42 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                 m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
                 m.purge(osis_commit::PurgeItem::Author { tid: t, ak: ak("t:reg.0"), actor });
                 no = why(&lp.peers[by].commit(m));
+                Some(by)
+            }
+            Step::Move { by, t } => {
+                let r = lp.peers[by].engine.move_thing(&th(t), ids[by]);
+                no = why(&r);
+                if let Ok((copy, _)) = r {
+                    things.push(copy);
+                }
+                Some(by)
+            }
+            Step::Reimport { by, from, copy } => {
+                no = why(&lp.peers[by].engine.reimport(&th(from), &th(copy)));
+                Some(by)
+            }
+            Step::PurgeImport { by, t, back, reset } => {
+                let (t, k) = (th(t), ak("t:reg.0"));
+                let e = &lp.peers[by].engine;
+                // any node's: a request by another admin may fall where the owner's stands
+                let mut imports: Vec<(osis_base::Ts, CommitId)> = e.commit_ids().into_iter().filter_map(|c| e.header(&c).filter(|h| h.kind == osis_commit::Kind::Import && h.aspects.iter().any(|a| a.tid == t && a.ak == k)).map(|h| (h.ts, c))).collect();
+                imports.sort();
+                match imports.iter().rev().nth(back as usize % imports.len().max(1)).map(|x| &x.1) {
+                    Some(commit) => {
+                        let mut m = Mutation::new();
+                        m.purge(osis_commit::PurgeItem::Commit { commit: *commit, tid: t, ak: k });
+                        if reset {
+                            m.set(t, &REG, &s("reset")).unwrap();
+                        } else {
+                            // a new value, or no delta to carry the request
+                            lp.peers[by].clock.advance(1);
+                            let now = lp.peers[by].engine.now();
+                            m.set(t, &osis_schema::core_types::PURGE, &now).unwrap();
+                        }
+                        no = why(&lp.peers[by].commit(m));
+                    }
+                    None => no = Some("no import".into()),
+                }
                 Some(by)
             }
             Step::Sync { from, to } => {
@@ -1724,6 +1768,40 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
     p
 }
 
+/// What a node holds against the rule of `retention::writes_of` (spec/requirements.md Purge): a
+/// value under the origin dots of an import a held request names, in the state or in a held body
+/// of any commit. Only an owner purges imports in these histories, so its right rests on the class.
+fn purged_import_held(p: &mut Peer) -> Option<String> {
+    use osis_crdt::SourceKind;
+    let e = &mut p.engine;
+    let ids = e.commit_ids();
+    for id in &ids {
+        let Some(h) = e.header(id) else { continue };
+        for item in &h.purge {
+            let osis_commit::PurgeItem::Commit { commit, tid, ak } = item else { continue };
+            let Some(i) = e.header(commit).filter(|i| i.kind == osis_commit::Kind::Import && i.ts < h.ts) else { continue };
+            if !i.aspects.iter().any(|a| a.tid == *tid && a.ak == *ak && matches!(a.retention.by, PurgeBy::Writer | PurgeBy::Admin | PurgeBy::AuthorOrAdmin)) || !e.purge_stands(id, commit, tid, ak) {
+                continue;
+            }
+            let origins: Vec<CommitId> = i.origins.iter().map(|o| o.commit).collect();
+            let carries = |f: &osis_crdt::Fragment| {
+                let mut g = f.clone();
+                g.strip(&|d| matches!(d.src.kind(), SourceKind::Commit(c) if origins.contains(c)));
+                g != *f
+            };
+            if e.state(tid, ak).unwrap().is_some_and(|f| carries(&f)) {
+                return Some(format!("the state of {tid:?} holds a value of purged import {commit:?}"));
+            }
+            for c in &ids {
+                if e.body_fragment(c, tid, ak).unwrap().is_some_and(|f| carries(&f)) {
+                    return Some(format!("body {c:?} holds a value of purged import {commit:?}"));
+                }
+            }
+        }
+    }
+    None
+}
+
 /// `OSIS_ORDER_DUMP`: on an order's failure, prints the packs (index: id, author, kind, aspects),
 /// each order's reads as they change after every ingest, and both nodes' judged parts. Every
 /// failing check prints, the shrink's too: use it on a pinned history or with
@@ -2046,7 +2124,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         // the reference, as made: its deaths dated as the spec allows, a reopen from the
         // persisted index and a rebuild judge alike (an open re-examines what pends)
         let mut p = deliver(played, &orders[0]);
-        if let Some(d) = dating(&mut p, &o, played.now) {
+        if let Some(d) = dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)) {
             return Err(format!("{of}, as made: {d}"));
         }
         let now = judged_now(&mut p, &played.things);
@@ -2107,13 +2185,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 let copy = rng.clone();
                 let mut p = deliver_split(played, order, rng);
                 let flips = |t: &str, a: &str| flipped(played, &orders[0], None, t, a) || flipped(played, order, Some(copy.clone()), t, a);
-                return match dating(&mut p, &o, played.now).or_else(|| alike_exchanged(played, &want, &orders[0], &judged(&mut p, played), order, Some(copy.clone()), &flips)) {
+                return match dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)).or_else(|| alike_exchanged(played, &want, &orders[0], &judged(&mut p, played), order, Some(copy.clone()), &flips)) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
             }
             let mut p = deliver(played, order);
-            if let Some(d) = dating(&mut p, &o, played.now) {
+            if let Some(d) = dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)) {
                 return Err(format!("{of}, order #{k} {order:?}: {d}"));
             }
             let mut got = judged_now(&mut p, &played.things);
@@ -2671,12 +2749,74 @@ fn purge_rows_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     out
 }
 
+/// A move of a thing, writes on both sides, compactions of the copy, repeat imports, purges of
+/// imports by name by the owner and two admins, who demote each other (requests fall and rise, the
+/// owner's stand; `purged_import_held` judges each node).
+fn purge_import_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0xa24b_aed4_963e_e407) | 1);
+    let mut out = vec![Step::Message { by: 0, t: 0, v: 0 }, Step::Write { by: 1, t: 0, op: 0, k: 0, v: 1 }, Step::Sync { from: 1, to: 0 }, Step::Move { by: 0, t: 0 }, Step::Reimport { by: 0, from: 0, copy: 1 }, Step::Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }, Step::Edge { by: 0, t: 1, holder: 2, role: Some(Role::Admin) }, Step::Sync { from: 0, to: 1 }, Step::Sync { from: 0, to: 2 }];
+    while out.len() < len {
+        let (by, v) = (rng.below(3) as usize, rng.below(10) as u8);
+        let (holder, to) = (1 + rng.below(2) as usize, (by + 1 + rng.below(2) as usize) % 3);
+        out.push(match rng.below(15) {
+            0 | 1 => Step::Write { by, t: 1, op: 0, k: 0, v },
+            2 => Step::Message { by: 0, t: 0, v },
+            3 | 4 => Step::Compact { by, t: 1, op: 0 },
+            5 => Step::Reimport { by: 0, from: 0, copy: 1 },
+            6..=8 => Step::PurgeImport { by, t: 1, back: rng.below(3) as u8, reset: rng.below(4) == 0 },
+            9 => Step::Advance { who: Some(by), ms: 1 + rng.below(2_000) },
+            10 | 11 => Step::Demote { by: rng.below(3) as usize, t: 1, holder, at: rng.below(4) as u8, to_read: rng.below(2) == 0 },
+            12 => Step::Edge { by: 0, t: 1, holder, role: Some(Role::Admin) },
+            _ => Step::Sync { from: by, to },
+        });
+    }
+    out
+}
+
 // spec/permissions.md §8, spec/crdt.md §4.7: a residue left by a fall, value-less again by expiry or a
 // purge, and reopened.
 #[test]
 #[ignore = "tier 2"]
 fn arrival_order_purge_rows_large_spec_perm_8() {
     run("arrival_order_purge_rows_large_spec_perm_8", 7000..7060, 40, LARGE, purge_rows_history);
+}
+
+// spec/commits.md §5, spec/permissions.md §7: a purge of an import takes its origins' writes from
+// every body and the state in any arrival order, a snapshot written concurrently (stamped after
+// the request, carrying them) and an import of the same origin included.
+#[test]
+fn arrival_order_purge_import_pinned_spec_commits_5() {
+    use Step::*;
+    let h = vec![
+        Write { by: 1, t: 0, op: 0, k: 0, v: 1 },
+        Sync { from: 1, to: 0 },
+        Move { by: 0, t: 0 },
+        Edge { by: 0, t: 1, holder: 1, role: Some(Role::Write) },
+        Reimport { by: 0, from: 0, copy: 1 },
+        Sync { from: 0, to: 1 },
+        PurgeImport { by: 0, t: 1, back: 0, reset: false },
+        Advance { who: Some(1), ms: 5_000 },
+        Compact { by: 1, t: 1, op: 0 },
+    ];
+    let played = play(9, &h);
+    let n = played.packs.len();
+    assert!(played.tally.kinds.get("PurgeImport").is_some_and(|x| x.1 == 1) && played.tally.kinds.get("Compact").is_some_and(|x| x.1 == 1), "{:?}", played.tally.kinds);
+    let mut p = deliver(&played, &(0..n).collect::<Vec<_>>());
+    assert_eq!(p.engine.get(&played.things[1], &ak("t:reg.0")).unwrap(), None, "the purged value stays out");
+    check(9, &h, EXHAUST_SMALL).unwrap();
+}
+
+// spec/commits.md §5, spec/requirements.md Purge, spec/permissions.md §7: arrival order decides
+// nothing with purges of imports, and no node holds their values whatever came first.
+#[test]
+fn arrival_order_purge_import_small_spec_commits_5() {
+    run("arrival_order_purge_import_small_spec_commits_5", 0..8, 16, SMALL, purge_import_history);
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_purge_import_large_spec_commits_5() {
+    run("arrival_order_purge_import_large_spec_commits_5", 5000..5060, 40, LARGE, purge_import_history);
 }
 
 // spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
