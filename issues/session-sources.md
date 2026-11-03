@@ -71,7 +71,7 @@ B never needs to know which case it is in. Per construct:
 | Dedup by commit ID (`ingest_class`, node inbound `admits`) | Header held | Forgotten commit re-applies | Rule 9 |
 | Expiry T (`write_expiry`, strip_valueless, moves `excluded`) | Header | Late valued copy shows | `v/` list kept (rule 8) |
 | Death dating, own-delta retention bounds | Header of held bodies | Already falls back to snapshot bodies (commits.md §5) | None |
-| Purge judging (`purge_allowed`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new device today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named. A permanent delta's commit and its request are not forgotten (rule 8) |
+| Purge judging (`stands`, `purge_one`, `drop_purged_snapshot`) | Named commit's header | Request naming a forgotten commit judged nowhere | As at a new device today. The purger resets live content and re-snapshots (commits.md §5), so only dead history was named. A permanent delta's commit and its request are not forgotten (rule 8) |
 | Undo "in effect" (undo/mod.rs:204, :311) | Headers of later commits | Undo commit forgotten | Forgotten counts as in effect (above) |
 | Validity re-judge (`rejudge_once`, `Judge::part`) | Every meta | Nothing to judge | None. Writes live in snapshots |
 | Imports: self-origin void (validity.rs:845), `import_one` | Origin header | Undetected | Malicious-creator residual; importer already imports from snapshots |

@@ -299,7 +299,7 @@ impl AspectRequests {
     }
 
     /// Whether one of these names commit `c` (header `ch`), standing or not.
-    fn name(&self, ch: &Header, c: &CommitId) -> bool {
+    fn names_it(&self, ch: &Header, c: &CommitId) -> bool {
         self.named.get(c).into_iter().flatten().any(|(_, p)| ch.ts < p.ts) || self.wide.iter().any(|(_, i, p)| ch.ts < p.ts && reaches(i, ch, c))
     }
 }
@@ -349,7 +349,7 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
             (Some(pc), false) if dropped.is_none() => rise.push((pc, c, ai)),
             (None, false) if dropped.is_some_and(|d| d.why == DropFor::Purge) => {
                 // named itself and not standing: its own request fell, whatever else did
-                fell |= requests.name(&m.header, &c);
+                fell |= requests.names_it(&m.header, &c);
                 bare.push((c, ai));
             }
             _ => {}
