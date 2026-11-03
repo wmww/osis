@@ -78,7 +78,7 @@ impl Fixture {
         osis_label::frame(&p, &[n; 20], &mut SeededRng::from_seed([n; 32])).expect("small blob").1
     }
 
-    /// A stamped entry of `blob` under the head's write key (wrap: 49 repeated bytes).
+    /// A stamped entry of `blob` under the head's write key (wrap: one byte repeated).
     pub fn entry(&self, blob: Vec<u8>) -> Entry {
         let wrap = [blob.len() as u8; WRAP_LEN];
         let stamp = sign_stamp(&self.write, &self.label, &osis_label::blob_id(&blob), &wrap);

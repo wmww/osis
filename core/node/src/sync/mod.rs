@@ -309,15 +309,19 @@ pub(crate) struct LConn {
 }
 
 impl LConn {
-    /// The log was read to its end and nothing runs: a pass may start. During a fill, from when
-    /// what judging needs is here (a pass would call this node stranded before).
+    /// The log was read to its end and nothing runs.
     fn ready(&self) -> bool {
-        self.synced && !self.syncing && self.registering.is_none() && self.fill.as_ref().is_none_or(|f| f.first_done)
+        self.synced && !self.syncing && self.registering.is_none()
     }
 
-    /// Ready, with no pass wanted. (A fill always has a batch asked: not idle by the session.)
+    /// A fill here has not all that judging needs.
+    fn first_waits(&self) -> bool {
+        self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
+    }
+
+    /// Ready, with no pass wanted and no fill under way.
     fn idle(&self) -> bool {
-        self.ready() && !self.dirty
+        self.ready() && !self.dirty && self.fill.is_none()
     }
 }
 
@@ -1593,6 +1597,9 @@ impl SyncEngine {
             .iter()
             .flat_map(|(id, c)| c.labels.iter().filter(|(_, l)| !l.receipts && l.dirty && l.phase == Phase::Open && l.ready()).map(move |(lid, _)| (*id, *lid)))
             .collect();
+        // no pass before a fill has what judging needs, on any connection: it would call this node
+        // stranded
+        let todo: Vec<(ConnId, LabelId)> = todo.into_iter().filter(|(_, l)| !self.fill_first_waits(l)).collect();
         for (conn, label) in todo {
             if let Some(l) = self.lc_mut(conn, &label) {
                 l.dirty = false;

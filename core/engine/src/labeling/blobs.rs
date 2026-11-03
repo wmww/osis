@@ -30,10 +30,11 @@ pub struct Body {
     pub order: u64,
 }
 
-/// A wrap's fetch order (spec/crypto.md §5): 0 for a commit a judgment of other commits needs, else
-/// the commit's `ts`. Read only to order this node's fetches.
+/// A wrap's fetch order (spec/crypto.md §5): 0 for a commit a judgment of other commits needs or a
+/// purge request (what it names does not show first), else the commit's `ts`. Read only to order
+/// this node's fetches.
 pub fn fetch_order(h: &osis_commit::Header) -> u64 {
-    let foundation = h.kind.is_role() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "required.0^" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
+    let foundation = h.kind.is_role() || !h.purge.is_empty() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "required.0^" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
     if foundation { 0 } else { h.ts.to_u64().max(1) }
 }
 
