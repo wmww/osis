@@ -195,6 +195,12 @@ impl Engine {
     /// node on a thing in question. This node's own receipts only;
     /// `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
+        Ok(self.frontier_and_requests(scope, as_of)?.0)
+    }
+
+    /// `frontier`, and the commits it lists only as requests, those received last first
+    /// (`fit_requests`).
+    pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>)> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
         let admin_class = |ak: &Ak| is_role_class(ak.as_str()) || ak.admin();
         let mut aspects: Vec<(Tid, Tid, Ak)> = Vec::new();
@@ -270,15 +276,64 @@ impl Engine {
             // a request's right ends with the role unless the frontier lists it (spec/permissions.md
             // §8): one this node received stays rightful, whatever became of its body and on
             // whatever aspect its own delta lies
+            let mut requests = Vec::new();
             for (node, things) in &scope.roles {
                 for pc in crate::retention::requests_on(tx, things)? {
                     let Some(m) = tx.core.ix.commits.get(&pc) else { continue };
-                    if m.received.0 <= as_of.0 && !m.view.memory && (m.view.author == *node || m.header.actor == *node) {
-                        f.commits.insert(pc);
+                    if m.received.0 <= as_of.0 && !m.view.memory && (m.view.author == *node || m.header.actor == *node) && f.commits.insert(pc) {
+                        requests.push((std::cmp::Reverse(m.received.0), pc));
                     }
                 }
             }
-            Ok(f)
+            requests.sort();
+            Ok((f, requests.into_iter().map(|x| x.1).collect()))
         })
+    }
+}
+
+/// Leaves out of frontier `f` as many of `requests` (received last first) as it takes to fit `max`
+/// encoded bytes, so that requests never make a role holder impossible to demote: each one left
+/// out loses its right (spec/permissions.md §5.1). A hostile holder's flood is what it received
+/// last. What is over `max` without them stays over: `build` refuses it.
+pub(crate) fn fit_requests(f: &mut Frontier, requests: &[CommitId], max: usize) {
+    let size = |f: &Frontier| osis_base::encode(&osis_schema::Codec::to_value(f)).len();
+    let each = osis_base::encode(&osis_base::Value::bytes(&[0u8; 32])).len();
+    let mut left = requests.iter();
+    let mut now = size(f);
+    while now > max {
+        for _ in 0..(now - max).div_ceil(each) {
+            let Some(c) = left.next() else { return };
+            f.commits.remove(c);
+        }
+        now = size(f);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    // spec/permissions.md §5.1: over the bound the requests received last go first, never another
+    // listed commit; with none left it stays over, for `build` to refuse.
+    #[test]
+    fn frontier_over_the_bound_leaves_out_requests_spec_perm_5_1() {
+        let id = |i: u32| {
+            let mut b = [0u8; 32];
+            b[..4].copy_from_slice(&i.to_be_bytes());
+            CommitId(b)
+        };
+        let size = |f: &Frontier| osis_base::encode(&osis_schema::Codec::to_value(f)).len();
+        let all = Frontier { commits: (0..2000).map(id).collect() };
+        let requests: Vec<CommitId> = (1000..2000).rev().map(id).collect();
+        let mut f = all.clone();
+        fit_requests(&mut f, &requests, size(&all));
+        assert_eq!(f, all, "it fits");
+        let max = size(&Frontier { commits: (0..1500).map(id).collect() });
+        fit_requests(&mut f, &requests, max);
+        assert!(size(&f) <= max);
+        assert_eq!(f.commits, (0..1500).map(id).collect::<BTreeSet<_>>(), "the oldest requests stay");
+        fit_requests(&mut f, &requests, 100);
+        assert_eq!(f.commits, (0..1000).map(id).collect::<BTreeSet<_>>(), "only requests go");
     }
 }

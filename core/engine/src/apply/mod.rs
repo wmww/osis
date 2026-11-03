@@ -22,7 +22,7 @@ mod tests_paged;
 pub(crate) use free::unindex_commit;
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
+pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};

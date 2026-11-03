@@ -417,7 +417,8 @@ fn purge_by_author_any_order_spec_perm_8() {
             lp.sync_all().unwrap();
             let rq = purge(&mut lp, who, PurgeItem::Author { tid: d, ak: reg(), actor: ids[1] });
             let prq = pack(&mut lp, who, &rq);
-            let f = ct::Frontier { commits: [c].into_iter().collect() };
+            // an honest demotion: it lists the delta and the request (spec/permissions.md §5.1)
+            let f = ct::Frontier { commits: [c, rq].into_iter().collect() };
             let dm = set_edge(&mut lp.peers[0].engine, d, ids[1], Some(edge(Role::Read)), Some(f.to_value()));
             let pd = pack(&mut lp, 0, &dm);
             let items = [&pc, &setting, &pd, &prq];

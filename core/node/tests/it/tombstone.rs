@@ -817,3 +817,61 @@ fn a_slow_clock_purges_a_message_stamped_ahead_spec_commits_5() {
         assert!(!net.engine(x).body_not_dropped(&m, &t, &k()), "at {x}");
     }
 }
+
+// spec/permissions.md §5.1, §8: a fresh device demotes an admin whose old purge it never held. Non
+// permanent: the request went with compaction, so the frontier cannot list it. The purge falls where
+// it is held, but no node holds the body and the host has none: nothing comes back. Permanent: the
+// request lasts as a header, the fresh device lists it, and the tombstone stays.
+#[test]
+fn a_fresh_device_demotes_and_nothing_comes_back_spec_perm_8() {
+    for lasting in [false, true] {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, x, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(4, &[host]), net.node(3, &[host]));
+        let g = net.group(a, &[(x, Role::Admin), (b, Role::Write), (f, Role::Admin)], &[host]);
+        net.set_online(f, false);
+        let t = net.item(a, g, g, "x");
+        net.run();
+        let l = net.label(a);
+        let r = if lasting { permanent() } else { Retention::default() };
+        let m = msg(&mut net, b, t, "SECRET", r);
+        net.run();
+        let p = purge(&mut net, x, t, m, Retention::default());
+        net.run();
+        // the request's own write replaced and compacted: its body goes from the host
+        net.advance(10_000);
+        let mut w = Mutation::new();
+        w.set(t, &REG, &s("later")).unwrap();
+        net.engine(a).commit(w).unwrap().unwrap();
+        net.run();
+        net.advance(100 * 86_400_000);
+        net.run();
+        net.engine(a).compaction_snapshot(&t, &k()).unwrap().unwrap();
+        net.run();
+        net.advance(120_000);
+        net.run();
+        net.set_online(f, true);
+        net.run();
+        net.advance(120_000);
+        net.run();
+        assert_eq!(net.engine(f).commit_ids().contains(&p), lasting, "what the fresh device holds of the request");
+        let holder = net.tid(x);
+        let d = osis_node::flows::Demotion { holder, new: Some(crate::common::edge(Role::Write)), presync: osis_node::flows::PreSync::Synced };
+        let done = net.engine(f).demote(&g, &d).unwrap();
+        let acts = net.sync(f).carry_out(done).unwrap();
+        net.actions(f, acts);
+        net.run();
+        for _ in 0..4 {
+            net.advance(120_000);
+            net.run();
+        }
+        for n in [a, b, f] {
+            assert_ne!(net.engine(n).get(&t, &k()).unwrap(), Some(s("SECRET")), "node {n}");
+            assert!(!net.engine(n).body_not_dropped(&m, &t, &k()) || net.engine(n).core.ix.commits.get(&m).is_none_or(|c| !c.missing.is_empty()), "node {n}: the body is back");
+            assert_eq!(net.engine(n).purged_on(&t, &k()).unwrap().contains_key(&m), lasting, "node {n}: the tombstone");
+        }
+        let at = at_host(&mut net, a, host, &l, m);
+        assert!(at.iter().all(Vec::is_empty), "a body at the host: {at:?}");
+        assert_eq!(!at.is_empty(), lasting, "its header alone, while it lasts");
+    }
+}

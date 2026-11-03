@@ -358,7 +358,7 @@ fn aim(st: &Step, lp: &mut LocalPeer, things: &[Tid], ids: &[Tid], own: &[Vec<Co
         NestedItem { by, other, t, k, compact, also } => pick(lp, by, t, &|lp, b, x| write(lp, b, x) && write(lp, other, x)).filter(|x| x.0 != other).map(|(by, t)| NestedItem { by, other, t, k, compact, also }),
         Message { by, t, v } => pick(lp, by, t, &write).map(|(by, t)| Message { by, t, v }),
         Purge { by, t, of, back, v } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| Purge { by, t, of, back, v }),
-        PurgeAuthor { by, t, of } => pick(lp, by, t, &admin).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
+        PurgeAuthor { by, t, of } => pick(lp, by, t, &write).filter(|x| x.0 == by).map(|(by, t)| PurgeAuthor { by, t, of }),
         Undo { by, back } => {
             // one of the author's last content commits
             let content: Vec<usize> = own[by].iter().enumerate().filter(|(_, id)| lp.peers[by].engine.header(id).is_some_and(|h| h.kind == osis_commit::Kind::Content)).map(|(i, _)| i).collect();
@@ -2593,8 +2593,7 @@ fn purge_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 }
 
 /// Short histories for purges by author, on what a chat does: permanent messages by three writers,
-/// demotions, grants, compactions, sync, the owner's purges (its right cannot fall:
-/// issues/purge-before-demotion.md). Not `history`'s mix: a whole-aspect or by-author request with
+/// demotions, grants, compactions, sync, purges by any of them, so requests fall and rise. Not `history`'s mix: a whole-aspect or by-author request with
 /// keep-at-most bodies or commits split over parts still differs (issues/wide-purge-order.md).
 fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
@@ -2603,7 +2602,7 @@ fn purge_author_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
         let (by, t, v) = (rng.below(3) as usize, rng.below(4) as usize, rng.below(10) as u8);
         out.push(match rng.below(12) {
             0..=4 => Step::Aim(Box::new(Step::Message { by, t, v })),
-            5 | 6 => Step::Aim(Box::new(Step::PurgeAuthor { by: 0, t, of: by })),
+            5 | 6 => Step::Aim(Box::new(Step::PurgeAuthor { by: rng.below(3) as usize, t, of: by })),
             7 => Step::Aim(Box::new(Step::Demote { by: 0, t, holder: by, at: rng.below(4) as u8, to_read: rng.below(2) == 0 })),
             8 => Step::Aim(Box::new(Step::Edge { by: 0, t, holder: by, role: Some(Role::Write) })),
             9 => Step::Advance { who: None, ms: 1 + rng.below(2_000) },
@@ -3884,4 +3883,20 @@ fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 3 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 7 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), aim(Undo { by: 1, back: 1 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 2 }), aim(Undo { by: 1, back: 2 }), Compact { by: 1, t: 0, op: 26 }, aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 8 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 1 }), Compact { by: 2, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 9 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 6 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 26 }, aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 5 })];
     check(8413015, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/commits.md §5, spec/permissions.md §8: a snapshot purged, the purge falling, then purged again
+// gives what it gave at a node that saw only the last (seed 3265).
+#[test]
+#[ignore = "tier 2"]
+fn snapshot_purged_fell_purged_keeps_what_it_gave_seed_3265() {
+    run("snapshot_purged_fell_purged_keeps_what_it_gave_seed_3265", 3265..3266, 60, LARGE, purge_history);
+}
+
+// spec/permissions.md §8: a by-author request standing, falling and another rising over a part with
+// no copy left: the part leaves what it left, so a value-less winner stays the winner (seed 872030).
+#[test]
+#[ignore = "tier 2"]
+fn purged_fell_purged_leaves_its_residue_seed_872030() {
+    run("purged_fell_purged_leaves_its_residue_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
 }

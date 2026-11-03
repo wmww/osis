@@ -283,7 +283,15 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a snapshot dropped other than as covered keeps its frontiers and `Absorbed` (counters
     // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
     // a covered one's coverers reach them
-    let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
+    let mut gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
+    // its body gone for a purge that fell: what it gave then (`rejudge_purges`)
+    if snapshot && !as_cover && gives.is_none() && m.missing.contains(&ai) {
+        let key = records::gave_key(&a.tid, &a.ak, c, ai);
+        if let Some(b) = tx.txn.get_local(&key)? {
+            gives = Some(crate::engine::index::read_gives(&mut Rd::new(&b))?);
+            tx.txn.remove_local(&key, Shred::No)?;
+        }
+    }
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
@@ -647,7 +655,30 @@ fn expire(tx: &mut Tx<'_>, c: &CommitId, ai: usize, purged: bool, changed: &mut 
     if let Some(k) = make_valueless(tx, c, ai, &[])? {
         changed.insert(k);
     }
-    drop_part_for(tx, c, ai, if purged { DropFor::Purge } else { DropFor::Other })
+    drop_part_for(tx, c, ai, if purged { DropFor::Purge } else { DropFor::Other })?;
+    if purged {
+        left_again(tx, c, ai, changed)?;
+    }
+    Ok(())
+}
+
+/// Part `ai` of `c` purged just now, once purged before: with no body this time, its residue from
+/// then (`out_of_valueless`) stands and its writes rejoin the state, as at a node that never saw
+/// the purge fall. Nodes holding the same commits read alike, the fall left nothing behind.
+fn left_again(tx: &mut Tx<'_>, c: &CommitId, ai: usize, changed: &mut BTreeSet<(Tid, Ak)>) -> Result<()> {
+    let Some(a) = tx.core.ix.commits.get(c).and_then(|m| m.view.aspects.get(ai)).map(|a| (a.tid, a.ak.clone())) else { return Ok(()) };
+    let key = records::left_key(&a.0, &a.1, c, ai);
+    let Some(b) = tx.txn.get_local(&key)? else { return Ok(()) };
+    tx.txn.remove_local(&key, Shred::Yes)?;
+    let residue = records::residue_key(&a.0, &a.1, c, ai);
+    if tx.txn.get_local(&residue)?.is_none() {
+        tx.txn.put_local(&residue, &b, Shred::No)?;
+        crate::apply::join_into_state(tx, &a.0, &a.1, crate::engine::state::decode(&b)?, false, false)?;
+        tx.core.forget_live(&a.0, &a.1);
+        mark_if_bounded(tx, &a.0, &a.1)?;
+        changed.insert(a);
+    }
+    Ok(())
 }
 
 /// Whether part `ai` of a commit (header `h`), held while it waits, is past its expiry: it goes
@@ -1155,14 +1186,16 @@ pub(crate) fn purged_aspects(tx: &mut Tx<'_>, things: &BTreeSet<Tid>, whole: &BT
 /// A request not by name on one aspect: its ID, item and header.
 type WideRequest = (CommitId, PurgeItem, crate::engine::LazyHeader);
 
+/// Per class and actor: the newest standing request, the newest at all.
+type WidestFor = (Option<(Ts, CommitId, PurgeItem)>, Option<Ts>);
+
 /// The requests not by name on one aspect, asked per delta in one walk of it: a request's right is
 /// the same for every delta of one class and actor, and of those reaching that actor the newest
 /// standing reaches every delta any of them does. So a walk costs the aspect's length, plus the
 /// requests per class and actor met, whatever their number.
 struct Widest {
     wide: Vec<WideRequest>,
-    /// Per (class, actor): the newest standing, the newest at all.
-    of: BTreeMap<(u64, Tid), (Option<(Ts, CommitId, PurgeItem)>, Option<Ts>)>,
+    of: BTreeMap<(u64, Tid), WidestFor>,
 }
 
 impl Widest {
@@ -1170,7 +1203,7 @@ impl Widest {
         Widest { wide, of: BTreeMap::new() }
     }
 
-    fn of(&mut self, core: &Core, a: &osis_commit::AspectEntry, ch: &Header) -> &(Option<(Ts, CommitId, PurgeItem)>, Option<Ts>) {
+    fn of(&mut self, core: &Core, a: &osis_commit::AspectEntry, ch: &Header) -> &WidestFor {
         let actor = ch.purge_actor();
         let wide = &self.wide;
         self.of.entry((a.retention.by as u64, actor)).or_insert_with(|| {
@@ -1272,6 +1305,9 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
+        if let Some(g) = tx.core.ix.commits.get(&c).and_then(|m| m.dropped.get(&ai)?.gives.clone()) {
+            tx.txn.put_local(&records::gave_key(tid, ak, &c, ai), &crate::engine::index::write_gives(Wr::new(), &g).take(), Shred::No)?;
+        }
         reopen(tx, &c, ai)?;
         tx.core.mark_changed(c);
         if let Some(ch) = &mut tx.core.changed {
@@ -1298,8 +1334,13 @@ fn out_of_valueless(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, parts: &[(CommitId, usi
     for (c, ai) in parts {
         let Some(m) = tx.core.ix.commits.get(c) else { continue };
         let Some(o) = Owned::of(&m.header, c, *ai) else { continue };
-        out.push((*c, *ai, o, m.dropped.get(ai).is_some_and(|d| !d.as_cover)));
-        tx.txn.remove_local(&records::residue_key(tid, ak, c, *ai), Shred::Yes)?;
+        let returns = m.dropped.get(ai).is_some_and(|d| !d.as_cover);
+        out.push((*c, *ai, o, returns));
+        let key = records::residue_key(tid, ak, c, *ai);
+        if returns && let Some(b) = tx.txn.get_local(&key)? {
+            tx.txn.put_local(&records::left_key(tid, ak, c, *ai), &b, Shred::No)?;
+        }
+        tx.txn.remove_local(&key, Shred::Yes)?;
     }
     let k = (*tid, ak.clone());
     let leaving: BTreeSet<&Owned> = out.iter().map(|x| &x.2).collect();

@@ -1602,6 +1602,15 @@ fn purge_rejudge_cost() {
         join(&mut lp, "join", z, Some(Role::Write));
         join(&mut lp, "fall (no frontier)", x, None);
         join(&mut lp, "rise", x, Some(if wide { Role::Write } else { Role::Admin }));
-        join(&mut lp, "fall 2", x, None);
+        if wide {
+            join(&mut lp, "fall 2", x, None);
+        } else {
+            // an honest demotion: the frontier lists the requests
+            let t4 = Instant::now();
+            let d = osis_node::flows::Demotion { holder: x, new: None, presync: osis_node::flows::PreSync::Synced };
+            let done = lp.peers[0].engine.demote(&t, &d).unwrap();
+            let size = done.commits.iter().filter_map(|c| lp.peers[0].engine.header(c)).filter_map(|h| h.frontier.clone()).map(|f| osis_base::encode(&f).len()).max();
+            println!("wide {wide}: honest demotion: {:?}, frontier {size:?} bytes", t4.elapsed());
+        }
     }
 }

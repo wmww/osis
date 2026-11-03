@@ -544,12 +544,14 @@ impl Engine {
                 // with every held write received, until the scope stops growing
                 let mut scope = tl.demotion_scope(self.demotion_probe(who, ops.clone(), tl.all_held()));
                 loop {
-                    let mut f = self.frontier(&scope, as_of)?;
+                    let (mut f, requests) = self.frontier_and_requests(&scope, as_of)?;
                     f.commits.extend(own.iter().copied());
                     if repudiate {
                         omit = self.lockout_rotations(&f.commits, &scope);
                         f.commits.retain(|c| !omit.iter().any(|(o, _)| o == c));
                     }
+                    let requests: Vec<CommitId> = requests.into_iter().filter(|c| !own.contains(c)).collect();
+                    crate::apply::receipt::fit_requests(&mut f, &requests, osis_commit::MAX_LIST_BYTES);
                     let pf = osis_perm::Frontier { commits: f.commits.clone() };
                     let probe = self.demotion_probe(who, ops.clone(), pf);
                     let s = self.core.timelines.get(&t).map(|tl| tl.demotion_scope(probe)).unwrap_or_default();
