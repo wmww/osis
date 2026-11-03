@@ -5,7 +5,7 @@
 
 use super::Parts;
 use super::atomic::{Joins, Unmerge, invalid_of, note_snapshot, strip_valueless, unmerge_fell};
-use super::validity;
+use super::{copies, validity};
 use crate::engine::{Gives, Tx};
 use crate::error::Result;
 use osis_base::{Ak, CommitId, Tid};
@@ -55,8 +55,8 @@ pub(super) fn joins(tx: &mut Tx<'_>, h: &Header, id: &CommitId, parts: &Parts, v
 
 fn note_snapshot_part(tx: &mut Tx<'_>, a: &AspectEntry, ts: osis_base::Ts, id: &CommitId, f: &Fragment, fr: Gives, valid: bool) -> bool {
     note_snapshot(tx.core, &a.tid, &a.ak, ts, id, fr);
-    let c = validity::carried_of(tx.core, &a.tid, &a.ak, f);
-    validity::note_carried_of(tx.core, &a.tid, &a.ak, id, c);
+    let c = copies::carried_of(tx.core, &a.tid, &a.ak, f);
+    copies::note_carried_of(tx.core, &a.tid, &a.ak, id, c);
     if !valid {
         return false;
     }
@@ -71,7 +71,7 @@ fn misstates_held(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<b
     tx.load(tid, ak)?;
     let core = &*tx.core;
     let Some(Some(st)) = core.states.get(&(*tid, ak.clone())) else { return Ok(false) };
-    Ok(!f.misstated(&[st], &|d| validity::owner_held(core, tid, ak, d), &|d| validity::owner_expires(core, tid, ak, d)).is_empty())
+    Ok(!f.misstated(&[st], &|d| copies::owner_held(core, tid, ak, d), &|d| copies::owner_expires(core, tid, ak, d)).is_empty())
 }
 
 fn arrived_invalid(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: Option<Fragment>, j: &mut Joins) -> Result<()> {

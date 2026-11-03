@@ -1,0 +1,383 @@
+//! Compaction snapshots (spec/commits.md §2, §5, spec/crdt.md §8): writing one, the bounds it
+//! carries, and the covered test.
+
+use super::aspect_index;
+#[cfg(test)]
+use super::oracle;
+use crate::engine::write::{CommitPlan, Resolved, build_and_apply};
+use crate::engine::{Engine, Owned, Tx, Core};
+use crate::error::{Error, Result};
+use osis_base::{Ak, CommitId, Tid};
+use osis_commit::{Decoded, Form, Header, Kind};
+use osis_crdt::{Fragment, Frontiers};
+use osis_schema::core_types::is_role_class;
+use std::collections::BTreeSet;
+
+/// The retentions standing for the writes snapshot state `st` of `(tid, ak)` carries live
+/// (spec/commits.md §5): each write's own delta (spec/permissions.md §5.2: the node-form delta
+/// whose counter range holds it, the commit-form commit it names, the imports listing that commit
+/// as an origin); for writes whose own delta's header is not held, the held snapshot bodies of
+/// the aspect carrying them, and for any of those none carries, every snapshot of the aspect
+/// applied here. Cost: a lookup and a header per live write; the aspect's headers (and its held
+/// snapshot bodies) only when some write's own commit is not found directly.
+fn own_retentions(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, st: &Fragment) -> Result<Vec<osis_schema::Retention>> {
+    if osis_commit::retention::fixed_retention(ak.as_str()).is_some() {
+        return Ok(Vec::new());
+    }
+    let entry = |h: &Header| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| a.retention);
+    let mut own: BTreeSet<CommitId> = BTreeSet::new();
+    let mut out = Vec::new();
+    // live writes whose own commit is not a held commit with its own writes on the aspect, with
+    // the commit their dot names (an import's origin), if any
+    let mut rest: Vec<(osis_crdt::Dot, Option<CommitId>)> = Vec::new();
+    for (d, _) in st.live_writes() {
+        let c = tx.core.commit_of(tid, ak, &d);
+        let found = c.and_then(|c| {
+            let h = &tx.core.ix.commits.get(&c)?.header;
+            (!h.kind.is_compaction() && h.kind != Kind::Import).then_some(())?;
+            entry(h)
+        });
+        match (found, c) {
+            (Some(r), Some(c)) => {
+                if own.insert(c) {
+                    out.push(r);
+                }
+            }
+            _ => rest.push((d, c)),
+        }
+    }
+    if rest.is_empty() {
+        return Ok(out);
+    }
+    let commits: Vec<CommitId> = tx.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().map(|(_, c)| *c).collect();
+    let mut imports: std::collections::BTreeMap<CommitId, Vec<osis_schema::Retention>> = Default::default();
+    let mut snapshots = Vec::new();
+    for c in &commits {
+        let Some(h) = tx.core.ix.commits.get(c).map(|m| &m.header) else { continue };
+        let Some(r) = entry(h) else { continue };
+        if h.kind == Kind::Import {
+            for o in &h.origins {
+                imports.entry(o.commit).or_default().push(r);
+            }
+        } else if h.kind.is_compaction() {
+            snapshots.push((*c, r));
+        }
+    }
+    let mut unknown: BTreeSet<osis_crdt::Dot> = BTreeSet::new();
+    for (d, c) in rest {
+        match c.and_then(|c| imports.get(&c)) {
+            Some(rs) => out.extend(rs.iter().copied()),
+            None => _ = unknown.insert(d),
+        }
+    }
+    if unknown.is_empty() {
+        return Ok(out);
+    }
+    let mut carried = BTreeSet::new();
+    for (c, r) in &snapshots {
+        let Some(ai) = aspect_index(tx.core, c, tid, ak) else { continue };
+        let mut carries = false;
+        crate::apply::each_held_piece(tx, c, ai, &mut |_, f| {
+            for (d, _) in f.live_writes() {
+                if unknown.contains(&d) {
+                    carries = true;
+                    carried.insert(d);
+                }
+            }
+            Ok(())
+        })?;
+        if carries {
+            out.push(*r);
+        }
+    }
+    if carried.len() < unknown.len() {
+        out.extend(snapshots.iter().map(|x| x.1));
+    }
+    Ok(out)
+}
+
+/// Whether part `ai` of snapshot `s` is a carrier only (`osis_commit::retention::carrier_only`).
+pub(super) fn carrier_at(core: &Core, s: &CommitId, ai: usize) -> bool {
+    core.ix.commits.get(s).and_then(|m| m.header.aspects.get(ai).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
+}
+
+/// Whether frontiers `fr` miss some of the counters below `hi` of commit `c` (header `h`), a
+/// node- or session-form commit with own writes (judged by counters); `false` for others.
+pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi: u64) -> bool {
+    if !h.form.counted() || !h.kind.has_own_writes() {
+        return false;
+    }
+    let src = h.form.own_source(h.author, *c);
+    fr.sources().find(|(s, _)| *s == src).is_none_or(|(_, f)| f.saturating_add(1) < hi)
+}
+
+/// Whether a commit's writes are judged by its ID (commit form, imports: snapshots list them
+/// absorbed) rather than by counters under a frontier.
+pub(super) fn by_id(kind: Kind, form: Form) -> bool {
+    kind == Kind::Import || (form == Form::Commit && kind.has_own_writes())
+}
+
+/// `Engine::covered` in `tx`: the body whole, the snapshot a piece at a time (its part at the
+/// body's positions, `Fragment::part_at`, and each piece's copies of the body's writes against
+/// the body's part at the piece's positions: a copy lies where its write does). Cost: the body
+/// and the snapshot's part at its positions, about twice the body; both whole only with a
+/// pull decoder walking them side by side (issues/durable-decode-bound.md).
+pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+    let (Some(sai), Some(cai)) = (aspect_index(tx.core, s, tid, ak), aspect_index(tx.core, c, tid, ak)) else { return Ok(None) };
+    // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); a
+    // carrier only covers none (spec/commits.md §5)
+    if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || carrier_at(tx.core, s, sai) {
+        return Ok(Some(false));
+    }
+    // a snapshot body still to arrive (or missing again, `uncover`): nothing is established
+    // without its content (a delta's frontier or absorbed check below stands alone)
+    if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
+        return Ok(None);
+    }
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
+    let held = crate::apply::held_parts(tx, c, cai)?;
+    let other = match held.as_slice() {
+        [Decoded::Snapshot(o)] => Some((o.frontiers.clone(), o.absorbed.clone())),
+        _ => None,
+    };
+    let is_snapshot = m.header.kind.is_compaction();
+    let mut body: Vec<Fragment> = held.into_iter().map(Decoded::into_fragment).collect();
+    // a valid snapshot body's copies all count (spec/permissions.md §5.2): it must carry them
+    // all; an invalid one gives nothing, its copies of writes a received valid delta supplies
+    // are left out
+    if is_snapshot && !crate::apply::copies::snapshot_valid(tx.core, c, tid, ak) {
+        let core = &*tx.core;
+        for b in &mut body {
+            b.strip_copies(&|d| crate::apply::copies::any_owner(core, tid, ak, d, &|_, m, ai| !m.missing.contains(&ai) && m.valid_at(ai)));
+        }
+    }
+    // the snapshot's copies of the body's writes are the body's (a copy at another
+    // value, `ts` or position, or under a dot the body owns but lacks, joins as
+    // unchanged): under its own dots, or a snapshot body's carried writes (records
+    // without a `ts`, such as the entry another's write is nested in, are no writes)
+    let mut ranges: Vec<(osis_crdt::Source, u64, u64)> = if is_snapshot {
+        body.iter().flat_map(|b| b.writes()).filter(|w| w.1.is_some()).map(|(d, _)| (d.src.clone(), d.ctr, d.ctr.saturating_add(1))).collect()
+    } else {
+        crate::apply::copies::owned_ranges(&m.header, c, cai)
+    };
+    ranges.sort();
+    ranges.dedup();
+    let held = !body.is_empty();
+    let mut joined = Fragment::default();
+    for b in body {
+        joined.join(b);
+    }
+    let mut part = Fragment::default();
+    let mut outside = false;
+    let gives = crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
+        // a copy in `p` is compared with the body's write at its position
+        outside = outside || !p.copy_index().outside(&ranges, &osis_crdt::CopySet::of(&[&joined.part_at(&p)])).is_empty();
+        part.join(p.part_at(&joined));
+        Ok(())
+    })?;
+    // the snapshot not held: nothing is established
+    let [g] = gives.as_slice() else { return Ok(None) };
+    if let Some((fr, abs)) = g {
+        let h = &m.header;
+        let unseen = h.aspects.get(cai).is_some_and(|a| unseen_by(fr, h, c, a.hi));
+        if unseen || (by_id(h.kind, h.form) && !abs.iter().any(|x| x.0 == *c)) {
+            return Ok(Some(false));
+        }
+        // a snapshot covers another only if its frontiers hold the other's too: otherwise a
+        // holder of it alone does not count as listed what the other's frontier listed
+        if let Some((ofr, oabs)) = &other
+            && (ofr.sources().any(|(s, f)| fr.of(&s) < f) || oabs.keys().any(|c| !abs.iter().any(|x| x.0 == *c)))
+        {
+            return Ok(Some(false));
+        }
+    }
+    // a body this node holds no delta of joins nothing: covered, unless still to come with an
+    // expiry: a snapshot carries none of its values (spec/crdt.md §8), so it must still join
+    if !held {
+        let awaited = m.missing.contains(&cai) && m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some());
+        return Ok(Some(!awaited));
+    }
+    // joining the body changes the snapshot's canonical bytes, judged on its part at the
+    // body's positions (the rest is left as it is)
+    let before = crate::engine::state::encode(&part)?;
+    part.join(joined);
+    if crate::engine::state::encode(&part)? != before {
+        return Ok(Some(false));
+    }
+    Ok(Some(!outside))
+}
+
+impl Engine {
+    /// Whether snapshot `s` is a carrier only on `(tid, ak)` (`osis_commit::retention::carrier_only`
+    /// of its retention there): it drops no body as covered and covers none for must-hold.
+    pub fn carrier_only(&self, s: &CommitId, tid: &Tid, ak: &Ak) -> bool {
+        self.header(s).and_then(|h| h.aspects.iter().find(|a| a.tid == *tid && a.ak == *ak).map(|a| osis_commit::retention::carrier_only(&a.retention))).unwrap_or(false)
+    }
+
+    /// Writes a compaction snapshot of `(tid, ak)` from this node's whole state (spec/commits.md
+    /// §2, spec/crdt.md §8): values of deltas with an expiry and of purged writes go
+    /// value-less; frontiers from the receipt record. A carrier-only one included. On a `~`
+    /// aspect a memory commit: deltas with an expiry left out whole, frontiers continuing from
+    /// the held valid memory snapshots'.
+    pub fn snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+        self.snapshot_if(tid, ak, false)
+    }
+
+    /// `snapshot` for compaction: none when it would be a carrier only (spec/commits.md §5:
+    /// it would drop nothing).
+    pub fn compaction_snapshot(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<CommitId>> {
+        self.snapshot_if(tid, ak, true)
+    }
+
+    fn snapshot_if(&mut self, tid: &Tid, ak: &Ak, compaction: bool) -> Result<Option<CommitId>> {
+        let (tid, ak) = (*tid, ak.clone());
+        if ak.as_str() == "roles.0" || ak.as_str() == "tenures.0" {
+            return Err(Error::Misuse("roles.0 and tenures.0 are compacted by roster snapshots"));
+        }
+        if ak.as_str() == "created.0" {
+            return Err(Error::Misuse("created.0 is kept forever, never compacted"));
+        }
+        // a memory aspect's snapshot is a memory commit (spec/commits.md §2); signals are never
+        // held
+        let memory = match ak.lifetime() {
+            osis_schema::Lifetime::Durable => false,
+            osis_schema::Lifetime::Ephemeral => true,
+            osis_schema::Lifetime::Signal => return Err(Error::Misuse("a signal aspect holds no state to compact")),
+        };
+        self.run(|tx| {
+            if memory {
+                tx.set_memory();
+            }
+            let node = tx.core.id.tid();
+            let ts = tx.core.hlc.next();
+            // a snapshot needs the strictest role a write it carries could need (tests may write
+            // one a receiver judges invalid)
+            let need = if tx.core.skip_writer_rules { crate::engine::write::required_role(ak.as_str()) } else { crate::engine::write::snapshot_role(ak.as_str()) };
+            if !(memory && tx.core.skip_writer_rules) {
+                crate::engine::write::check_role_with(tx.core, tx.core.id.tid(), &|_| None, &tid, ak.as_str(), need, ts)?;
+            }
+            if tx.state(&tid, &ak)?.is_none() {
+                return Ok(None);
+            }
+            let expiring: Vec<(CommitId, Owned)> = tx
+                .core
+                .ix.by_aspect
+                .get(&(tid, ak.clone()))
+                .into_iter()
+                .flatten()
+                .filter_map(|(_, c)| {
+                    let m = tx.core.ix.commits.get(c)?;
+                    let ai = m.aspect(&tid, &ak)?;
+                    m.header.aspects.get(ai)?.expires?;
+                    Some((*c, Owned::of(&m.header, c, ai)?))
+                })
+                .collect();
+            let st = if memory {
+                // an expiring memory write vanishes whole at T (spec/crdt.md §4.7): no snapshot
+                // carries it, nor counts it received, so it goes from every holder alike
+                let gone: Vec<Owned> = expiring.iter().map(|x| x.1.clone()).collect();
+                let skip: BTreeSet<CommitId> = expiring.iter().map(|x| x.0).collect();
+                let (st, _) = crate::apply::rebuilt(tx, &tid, &ak, &gone, &skip)?;
+                let Some(st) = st else { return Ok(None) };
+                st
+            } else {
+                let Some(mut st) = tx.state(&tid, &ak)?.cloned() else { return Ok(None) };
+                if !expiring.is_empty() {
+                    st.strip(&|d| expiring.iter().any(|o| o.1.owns(d)));
+                }
+                st
+            };
+            if ak.as_str() == "secrets.0" && !crate::apply::keys::may_compact(tx.core, &tid, &st) {
+                return Err(Error::Misuse("secrets.0 keys an epoch not established here (spec/crypto.md §4)"));
+            }
+            // a part still missing gives this state nothing (applied without it, spec/commits.md
+            // §4): an expiring one's writes would go value-less here anyway
+            let valid_on = |c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(&tid, &ak).is_some_and(|ai| m.valid_at(ai) && (!m.missing.contains(&ai) || m.header.aspects.get(ai).is_some_and(|a| a.expires.is_some()))));
+            let left_out = |c: &CommitId| memory && expiring.iter().any(|x| x.0 == *c);
+            // frontiers cover only counters whose writes this state reflects: applied, valid
+            // (and for memory, not expiring). A memory commit is forgotten once covered, its
+            // counters with it: there the held valid snapshots' frontiers count as reflected (their
+            // writes are joined), and own ranges continue from them
+            let mut frontiers = Frontiers::default();
+            if memory {
+                for (_, s, fr, _) in tx.core.ix.snapshots.get(&(tid, ak.clone())).into_iter().flatten() {
+                    if valid_on(s) {
+                        for (src, f) in fr.sources() {
+                            if f > frontiers.of(&src) {
+                                frontiers.insert(&src, f);
+                            }
+                        }
+                    }
+                }
+            }
+            let from = (tid, ak.clone(), osis_crdt::Source::node(Tid::from_bytes([0; 15])));
+            for ((_, _, n), ranges) in tx.core.ix.ranges.range(from..).take_while(|((t, a, _), _)| *t == tid && *a == ak) {
+                let mut next = frontiers.of(n).saturating_add(1);
+                for (lo, (hi, c)) in ranges {
+                    if memory && *hi <= next {
+                        continue;
+                    }
+                    // contiguous (a memory range may start below a snapshot's frontier)
+                    let joins = *lo == next || (memory && *lo < next);
+                    if !joins || !valid_on(c) || left_out(c) {
+                        break;
+                    }
+                    next = *hi;
+                }
+                if next > 1 {
+                    frontiers.insert(n, next - 1);
+                }
+            }
+            // commits judged by ID (commit form, imports) whose valid writes the state reflects
+            let mut absorbed = std::collections::BTreeMap::new();
+            for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
+                let Some(m) = tx.core.ix.commits.get(c) else { continue };
+                if by_id(m.header.kind, m.header.form) && valid_on(c) && !left_out(c) {
+                    absorbed.insert(*c, m.header.author);
+                }
+            }
+            let kind = if is_role_class(ak.as_str()) { Kind::RoleSnapshot } else { Kind::ContentSnapshot };
+            // bounds from the retention of the writes it carries, schema known here or not
+            // (spec/commits.md §5); a memory one's are `writer` without bounds (spec/commits.md §2)
+            let retention = if memory {
+                osis_schema::Retention { by: osis_schema::PurgeBy::Writer, ..Default::default() }
+            } else {
+                osis_commit::retention::snapshot_retention(ak.as_str(), own_retentions(tx, &tid, &ak, &st)?, ts.wall_ms().0)
+            };
+            if compaction && osis_commit::retention::carrier_only(&retention) {
+                return Ok(None);
+            }
+            // the records of the memory things it is on or places beside it (spec/commits.md §2)
+            let records = if memory {
+                let placed = crate::ephemeral::def_of(&st).map(|(i, s)| i.into_iter().chain(s).collect::<Vec<_>>()).unwrap_or_default();
+                crate::engine::write::memory_records(tx.core, &tid, &ak, placed.into_iter())
+            } else {
+                Vec::new()
+            };
+            // a memory snapshot is commit form (spec/commits.md §3)
+            let form = if memory { Form::Commit } else { Form::Node };
+            let plan = CommitPlan { kind, ts, actor: node, form, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: Vec::new(), signer: tx.core.id.tid(), blind: crate::engine::write::draw_blind(&mut *tx.rng) };
+            let d = Resolved { tid, ak, fragment: st, lo: 0, hi: 0, schema: None, retention: Some(retention), expires: None, frontiers: Some((frontiers, absorbed)), chunks: Vec::new(), split: false, records };
+            build_and_apply(tx, plan, vec![d]).map(Some)
+        })
+    }
+
+    /// Is the body of `ak` in commit `c` covered by snapshot commit `s` (spec/commits.md §5):
+    /// joining each of its deltas into the snapshot's fragment leaves its canonical bytes
+    /// unchanged, and for a node-form body, the snapshot's frontier holds its counters, for a
+    /// body judged by commit ID, the snapshot lists it as absorbed (so every holder of the
+    /// snapshot counts the dropped body's delta as listed in atomic apply, spec/crdt.md §8). A
+    /// carrier only covers none. `None` when either is not held (nothing is established).
+    pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
+        let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
+        self.run(|tx| {
+            let r = covered(tx, &s, &c, &tid, &ak)?;
+            #[cfg(test)]
+            {
+                let w = oracle::covered(tx, &s, &c, &tid, &ak)?;
+                assert_eq!(r, w, "covered streamed vs whole");
+            }
+            Ok(r)
+        })
+    }
+}

@@ -2439,7 +2439,7 @@ fn coverer_demoted_after_cover_drop_alike_spec_perm_5_2() {
 // reaches fresh nodes only through snapshots: Alice's honest one and Carol's carrying another
 // value under Bob's dot and `ts`. Alice then removes Carol with a frontier not listing Carol's.
 // Whether Carol's copy came first (valid) or after the removal, the state ends alike: Alice's copy
-// (its turning invalid strips its copies of shared dots too, `validity::given_by`).
+// (its turning invalid strips its copies of shared dots too, `copies::given_by`).
 #[test]
 fn invalidated_copy_of_shared_dot_goes_alike_spec_perm_5_2() {
     use osis_crdt::{Batch, Op, PathOp, Source, Writer};

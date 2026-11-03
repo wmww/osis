@@ -2,7 +2,7 @@
 //! after its role records reach perm, records deaths, expiry and purges, and
 //! re-judges held deltas when the held set changed; events go out after it is durable.
 
-use super::{Parts, Streamed, validity};
+use super::{Parts, Streamed, copies, validity};
 use crate::engine::{Core, Meta, Owned, Tx, records};
 use crate::error::{Error, Result};
 use crate::events::{Cause, Event, Origin};
@@ -337,13 +337,13 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
     let un = if !v && !snap { Some(Unmerge::of(tx, &tid, &ak)?) } else { None };
     each_piece(tx, h, id, blob, part, &mut |tx, f| {
         if snap {
-            for (src, ctrs) in validity::carried_of(tx.core, &tid, &ak, &f) {
+            for (src, ctrs) in copies::carried_of(tx.core, &tid, &ak, &f) {
                 carried.entry(src).or_default().extend(ctrs);
             }
             vouch |= !owned.is_empty() && f.holds_dots(&|d| owned.iter().any(|o| o.owns(d)));
             if !vouch && let Some(cs) = &copies {
                 let core = &*tx.core;
-                vouch = !f.misstated_in(cs, &|d| validity::owner_held(core, &tid, &ak, d), &|d| validity::owner_expires(core, &tid, &ak, d)).is_empty();
+                vouch = !f.misstated_in(cs, &|d| copies::owner_held(core, &tid, &ak, d), &|d| copies::owner_expires(core, &tid, &ak, d)).is_empty();
             }
         }
         if !v {
@@ -362,7 +362,7 @@ fn join_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, ai: 
         Ok(())
     })?;
     if snap {
-        validity::note_carried_of(tx.core, &tid, &ak, id, carried);
+        copies::note_carried_of(tx.core, &tid, &ak, id, carried);
     }
     if vouch {
         j.vouching.insert((tid, ak.clone()));
@@ -478,7 +478,7 @@ impl Unmerge {
     /// From the held set, reading the valid snapshots' writes when a delta is invalid.
     pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
-        let vouched = validity::vouched(tx, tid, ak, &owned)?;
+        let vouched = copies::vouched(tx, tid, ak, &owned)?;
         Ok(Unmerge { owned: OwnedSet::of(&owned), vouched })
     }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
@@ -540,7 +540,7 @@ pub(crate) fn invalid_of(core: &Core, tid: &Tid, ak: &Ak) -> Vec<Owned> {
         } else if m.header.kind == osis_commit::Kind::Import {
             // an origin owning its dots here (a commit-form commit on this aspect: the import is
             // void, spec/permissions.md §7) keeps its writes
-            out.extend(m.header.origins.iter().filter(|o| !validity::owns_commit_dots(core, &o.commit, tid, ak)).map(|o| Owned::Commit(o.commit)));
+            out.extend(m.header.origins.iter().filter(|o| !copies::owns_commit_dots(core, &o.commit, tid, ak)).map(|o| Owned::Commit(o.commit)));
         }
     }
     out
@@ -616,7 +616,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
 
     // creation records first: perm and dedup secrets need them
     let mut held_changed = note_created(tx, &h, blob, &parts.whole)?;
-    validity::note_imports(tx.core, &id, &h);
+    copies::note_imports(tx.core, &id, &h);
     let view = Arc::new(crate::engine::View::of(&h));
     if h.kind.is_role() {
         validity::note_required(tx.core, &h, &id, &parts.whole);
@@ -646,7 +646,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     // an import naming an origin on its own thing is void, judged once both are held
     // (spec/permissions.md §7): this one, or held ones naming this commit
-    let voided = validity::self_origin_imports(tx.core, &id, &h);
+    let voided = copies::self_origin_imports(tx.core, &id, &h);
     let void_self = voided.contains(&id);
     for c in &voided {
         held_changed = true;
@@ -656,7 +656,7 @@ pub(crate) fn apply_verified(tx: &mut Tx<'_>, blob: &CommitBlob, parts: Parts, o
     }
     index_commit(tx.core, &id, &view);
     // copies snapshots held here took of its writes: compared with its deltas once stored
-    let uncarried = validity::uncarry(tx.core, &id, &h, &|ai| parts.has(ai));
+    let uncarried = copies::uncarry(tx.core, &id, &h, &|ai| parts.has(ai));
     let valid: Vec<bool> = (0..h.aspects.len()).map(|ai| validity::part_valid(tx.core, &h, &id, ai)).collect();
     let missing: BTreeSet<usize> = (0..h.aspects.len()).filter(|ai| !parts.has(*ai)).collect();
     let meta = Meta { view, header: crate::engine::LazyHeader::ready(h.clone()), received, origin, valid: valid.clone(), dropped: BTreeMap::new(), missing };
@@ -809,17 +809,17 @@ fn rebuild_changed(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], j: &mut 
 }
 
 /// Rebuilds the aspects of commit `id` (header `h`) whose writes valid snapshots held before it
-/// copied otherwise than its deltas hold them (`uncarried`, `validity::differing_copies`): the
+/// copied otherwise than its deltas hold them (`uncarried`, `copies::differing_copies`): the
 /// snapshots' copies govern (spec/permissions.md §5.2), so the delta's writes under those dots go.
 fn refill(tx: &mut Tx<'_>, h: &Header, id: &CommitId, uncarried: &[(Tid, Ak, BTreeSet<CommitId>)], j: &mut Joins) -> Result<()> {
     for (tid, ak, snaps) in uncarried {
         let Some(ai) = h.aspects.iter().position(|a| a.tid == *tid && a.ak == *ak) else { continue };
         // an invalid snapshot's copies never joined
-        let snaps: BTreeSet<CommitId> = snaps.iter().copied().filter(|s| validity::snapshot_valid(tx.core, s, tid, ak)).collect();
+        let snaps: BTreeSet<CommitId> = snaps.iter().copied().filter(|s| copies::snapshot_valid(tx.core, s, tid, ak)).collect();
         if snaps.is_empty() {
             continue;
         }
-        if validity::differing_copies(tx, h, id, ai, &snaps)?.is_empty() {
+        if copies::differing_copies(tx, h, id, ai, &snaps)?.is_empty() {
             continue;
         }
         rebuild_changed(tx, tid, ak, &[], j)?;
@@ -837,7 +837,7 @@ fn unjoin_void(tx: &mut Tx<'_>, h: &Header, id: &CommitId, voided: &BTreeSet<Com
         aspects.extend(m.header.aspects.iter().filter(|a| h.aspects.iter().any(|x| x.tid == a.tid && x.ak == a.ak)).map(|a| (a.tid, a.ak.clone())));
     }
     for (tid, ak) in aspects {
-        if validity::owns_commit_dots(tx.core, id, &tid, &ak) {
+        if copies::owns_commit_dots(tx.core, id, &tid, &ak) {
             rebuild_changed(tx, &tid, &ak, &[Owned::Commit(*id)], j)?;
         }
     }
@@ -879,11 +879,11 @@ pub(crate) fn join_late(tx: &mut Tx<'_>, id: &CommitId, merged: &CommitBlob, par
     let h = meta.header.clone();
     meta.missing.retain(|ai| !parts.has(*ai));
     tx.core.put_meta(*id, meta.clone());
-    let uncarried = validity::uncarry(tx.core, id, &h, &|ai| parts.has(ai));
+    let uncarried = copies::uncarry(tx.core, id, &h, &|ai| parts.has(ai));
     let late = parts.ais();
     wake_listed(tx.core, &h, &late);
     let mut held_changed = note_created(tx, &h, merged, &parts.whole)?;
-    validity::note_imports(tx.core, id, &h);
+    copies::note_imports(tx.core, id, &h);
     let away = away_of(tx, &h, id, &parts);
     let edges = h.kind.is_role() && (!away.is_empty() || late.iter().any(|ai| h.aspects.get(*ai).is_some_and(|a| validity::edge_ak(a.ak.as_str()))));
     if h.kind.is_role() {
@@ -1273,7 +1273,7 @@ pub(crate) fn rebuild(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 
 /// `rebuild`, the writes `gone` matches first removed from the current state, exactly (others'
 /// writes nested under them stay): what a snapshot turned invalid gave
-/// (`validity::given_by`). Reports each valid snapshot misstating a held delta.
+/// (`copies::given_by`). Reports each valid snapshot misstating a held delta.
 pub(crate) fn rebuild_without(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned]) -> Result<()> {
     let (st, misstating) = rebuilt(tx, tid, ak, gone, &BTreeSet::new())?;
     let now = tx.now();
@@ -1314,7 +1314,7 @@ fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
 
 /// What `rebuild_without` writes, and the valid snapshots misstating a held delta other than by
 /// value-less copies. A held
-/// delta's writes under a dot a held valid snapshot misstates (`validity::misstated_in`) count
+/// delta's writes under a dot a held valid snapshot misstates (`copies::misstated_in`) count
 /// for nothing: the snapshots' copies govern, joined by the copy order (spec/permissions.md
 /// §5.2). Under a dot any held snapshot misstates the current state's writes go first, so the
 /// held bodies give them again. The held bodies of `skip` are left out (their writes must be in
@@ -1363,7 +1363,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
     if !deltas.is_empty() {
         let mut ixs = Vec::new();
         for (s, valid) in snaps {
-            if let Some(ix) = validity::copy_index(tx, &s, tid, ak)? {
+            if let Some(ix) = copies::copy_index(tx, &s, tid, ak)? {
                 ixs.push((s, valid, ix));
             }
         }
@@ -1371,7 +1371,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
             // the delta's writes, indexed once it is compared
             let mut own = None;
             for (s, valid, ix) in &ixs {
-                let dots = validity::misstated_in(tx, ix, h, c, *ai, &mut own)?;
+                let dots = copies::misstated_in(tx, ix, h, c, *ai, &mut own)?;
                 if dots.is_empty() {
                     continue;
                 }
@@ -1379,7 +1379,7 @@ pub(crate) fn rebuilt(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, gone: &[Owned], skip:
                 if *valid {
                     // reported unless only value-less: an honest snapshot taken after a purge
                     // this node has not seen yet (its copy governs all the same)
-                    if !ix.misstated(&validity::owned_ranges(h, c, *ai), validity::held_copies(tx, c, *ai, &mut own)?, true).is_empty() {
+                    if !ix.misstated(&copies::owned_ranges(h, c, *ai), copies::held_copies(tx, c, *ai, &mut own)?, true).is_empty() {
                         misstating.insert(*s);
                     }
                     strip_own.entry(*c).or_default().extend(dots);

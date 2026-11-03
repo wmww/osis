@@ -203,14 +203,14 @@ fn uints_of(v: &Value) -> Option<Vec<u64>> {
     let Value::List(x) = v else { return None };
     x.iter().map(|c| if let Value::Int(c) = c { u64::try_from(*c).ok() } else { None }).collect()
 }
-impl Rec for crate::apply::validity::Carried {
+impl Rec for crate::apply::copies::Carried {
     fn to(&self) -> Value {
         Value::List(vec![self.snap.to(), self.src.to(), uints(&self.ctrs)])
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::List(x) = v else { return None };
         let [snap, src, ctrs] = x.as_slice() else { return None };
-        Some(crate::apply::validity::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, ctrs: uints_of(ctrs)? })
+        Some(crate::apply::copies::Carried { snap: <CommitId as Rec>::from(snap)?, src: <osis_crdt::Source as Rec>::from(src)?, ctrs: uints_of(ctrs)? })
     }
 }
 impl Rec for std::sync::Arc<osis_schema::core_types::RequiredRules> {

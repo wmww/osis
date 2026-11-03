@@ -97,7 +97,7 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
                 Some((*c, ai, m.view.kind.is_compaction()))
             })
             .collect();
-        let snaps: Vec<CommitId> = held.iter().filter(|x| x.2 && crate::apply::validity::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| x.0).collect();
+        let snaps: Vec<CommitId> = held.iter().filter(|x| x.2 && crate::apply::copies::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| x.0).collect();
         if snaps.is_empty() {
             continue;
         }
