@@ -146,12 +146,13 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     Ok(s)
 }
 
-/// The chats this node holds: its synced groups (`Osis::status`) with chat settings, in tid order.
-/// The set changes with the status: re-list on `Osis::watch_status`.
+/// The chats this node syncs: its synced groups (`Osis::status`) with chat settings, in tid order;
+/// not one this person is leaving, nor a joined one before its settings arrive. A copy kept after
+/// a kick or leave is not synced: `Osis::kept_copies`. Re-list on `Osis::watch_status`.
 pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
     let ak = settings_ak()?;
     // a value of another shape is someone's junk: not a chat
-    Ok(db.status()?.groups.into_keys().filter(|&t| matches!(db.get(t, ak.clone()), Ok(Some(_)))).collect())
+    Ok(db.status()?.groups.into_iter().filter(|(t, g)| !g.leaving && matches!(db.get(*t, ak.clone()), Ok(Some(_)))).map(|(t, _)| t).collect())
 }
 
 /// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A member
