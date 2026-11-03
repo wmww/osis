@@ -1,5 +1,0 @@
-# judgment-vectors-3
-- `order.rs` steps swallow refusals (`let _ =`, `is_ok_and`): a scripted case silently lost its commit four times here (`Leave` by a non-admin: `commit` refuses a self-removal; `Demote` of an absent edge: `Ok(None)`; `Write` by a node that holds no write; `Nested { text: true }`: "sequence op needs a list or text type"). Check a new scenario's commit list before reading its verdicts.
-- The harness writes through a bare `Ak`, so untyped: `Nested { text: true }` and ops 8, 9, 24, 26 never write on a fresh entry, and `t:map.0` puts hold a map encoding beside a field write's struct encoding, whose read hides the put's other fields. Fixing them would move the pinned seeds; left, typed steps added for the vectors.
-- `body` said `valid` for every `roles.0` part, an unapplied edge write too: the `.vec` verdict carried nothing there until it became `applied`/`unapplied`.
-- (review) `Timeline::applied` holds a roster snapshot only as its thing's start, not every snapshot that "applies" (`candidates`): a verdict named after the spec's word silently meant another thing.

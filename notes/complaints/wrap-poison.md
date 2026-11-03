@@ -1,1 +1,0 @@
-- Review: `Net::hide_blobs` drops the whole `Added` event, not only the bytes, so "bytes on their way" needs a hand-fed Push with the host's real cursor (a zero cursor triggers a replay that re-hears everything and hides the bug). Cost me a false repro.

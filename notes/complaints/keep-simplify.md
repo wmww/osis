@@ -1,2 +1,0 @@
-- A failing `arrival_order_alike_large` seed took 216 s to replay alone (shrinking), where the note's cost is 13 s for 60 passing seeds: comparing one seed against main cost 5 min with the build.
-- The FOUND comment on `any_order_keeps_no_more` says seed 11124 catches a mark not rechecking that the node read the holder; a mutant of only that (`read_then` true) passes the differential. Seed 11124 catches the mark not rechecking the way at all. The unit test `an_end_before_the_node_read_the_holder_keeps_nothing` is what holds `read_then`.

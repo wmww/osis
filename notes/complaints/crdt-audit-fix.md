@@ -1,8 +1,0 @@
-# crdt-audit-fix
-- `cargo test --workspace` took about 10 min wall at load 33-39 (other agents' runs); the per-crate `cargo test -p osis-crdt` loop (15-35 s) carried the work.
-- tools/spec_map.py attributes a bare `§n` to the last file named before it in the comment, so a crdt test comment naming `spec/data-model.md §6` mid-list sent its later `(§5.5, §5.6)` to data-model, and a file name broken across comment lines (`spec/` / `wire.md`) was missed. A clause-based reset was tried and dropped (it lost real citations after `: ` inside parentheses); the fix is writing the file name out where a comment switches files.
-- Prune in place looked like the cheap prune-stability check, but prune also drops an undelete's chars (no creation in the delta): checking needs a copy.
-- My mid-task `cargo test --workspace --no-fail-fast 2>&1 | grep ... | head` showed nothing, yet the gate then failed on crdt-model's `props` (a test asserting the old leniency). Probably read the wrong run; the gate caught it.
-- Review: the order/walks oracles cannot see an honest delta rejected by a new reader rule: fresh nodes ignore `ingest` errors and every order rejects alike. Only the sim harness fails on `BadInput`. A throwaway patch asserting no `BadInput` in order.rs's ingests (alike + exhaustive, 100 seeds) was the real check; worth making permanent.
-- tools/__pycache__ was committed (no `__pycache__/` in .gitignore); added.
-- Review gate 1 failed on osis-cli `syntax::numbered_round_trip`: its value generator still drew enum cases above i64::MAX (now rejected by the CBOR decoder). The worker's per-crate loop never ran the cli tests; a format-rule change should grep every value generator (`Value::Enum(` with `any::<u64>`).
