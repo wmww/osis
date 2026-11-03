@@ -56,7 +56,7 @@ pub fn steps() -> VecFile {
     let entry = static_entry(&s0.label, &card.signing.verifying_key());
     assert!(c0.contains(&k1) && c0.contains(&k2) && c0.contains(&entry));
     let b = c0.entries.get(&entry).unwrap();
-    assert_eq!(open_entry_box(b, &s0, &card.kem, &group).unwrap(), (epoch, read.clone()));
+    assert_eq!(open_entry_box(b, &s0, &card.kem, &group).unwrap(), osis_crypto::EntryItem { epoch, secret: read.clone(), earlier: None });
     let mut cases = vec![step_fields(
         case("genesis step with two DH readers and one static entry", SPEC)
             .with("read-secret", hex(read.expose()))

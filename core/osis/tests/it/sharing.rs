@@ -229,6 +229,137 @@ fn new_device_gets_k_keyset_before_its_box_spec_permissions_4() {
     assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some() && x.admin.held().next().is_some())), "the device holds K's secrets");
 }
 
+// spec/permissions.md §9, spec/sync.md §2 (entry boxes): a link works after a joiner left and K rotated; its new joiner reads what was there, is a holder and writes
+#[test]
+fn redeem_after_a_joiner_left_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let (dave, _) = w.person(4, &[host]);
+    let g = group(&alice);
+    let t = item(&alice, g, g, "from alice");
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    let k = alice.links(g)[0].id;
+    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert!(carol.engine(|e| e.knows(&k) && e.roster(&k).contains_key(&carol.me())));
+    assert_eq!(x(&carol, t), Some(s("from alice")));
+    let u = item(&carol, g, g, "from carol");
+    w.run();
+    assert_eq!(x(&alice, u), Some(s("from carol")));
+    assert_eq!(alice.links(g).len(), 1, "the link still works and says so");
+    // twice over: the entry box names only the last rotation's wrap
+    w.until(carol.demote(k, carol.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert_eq!(w.until(dave.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(x(&dave, t), Some(s("from alice")));
+    // a leaver holding the link text comes back by it
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    let v = item(&dave, g, g, "from dave");
+    w.run();
+    assert_eq!(x(&bob, v), Some(s("from dave")));
+}
+
+// spec/permissions.md §9: a revoked link tells its redeemer so, at once (`Invalid`, not a wait's `Network`), before and after K's new step reached the host, and shows nowhere; so does a kicked joiner's and one past `until`
+#[test]
+fn ended_link_fails_clearly_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&alice);
+    let revoked = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    w.until(alice.revoke_link(alice.links(g)[0].id, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    assert!(alice.links(g).is_empty());
+    assert!(matches!(w.until(carol.redeem(&revoked), 1000, 30), Err(Error::Invalid(_))));
+    assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
+    let kicked = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    w.until(bob.redeem(&kicked), 1000, 30).unwrap();
+    w.run();
+    w.until(alice.revoke_joiner(alice.links(g)[0].id, bob.me(), skip_sync()), 1000, 10).unwrap();
+    w.run();
+    assert!(alice.links(g).is_empty());
+    assert!(matches!(w.until(carol.redeem(&kicked), 1000, 30), Err(Error::Invalid(_))));
+    let until = osis::WallMs(alice.now().0 + 1000);
+    let expired = alice.make_link(g, Role::Write, osis::LinkOpts { until: Some(until), single_use: false, direct: false }).unwrap();
+    w.run();
+    assert_eq!(alice.links(g).len(), 1);
+    w.advance(2000);
+    assert!(alice.links(g).is_empty(), "past `until`, finalized or not");
+    assert!(matches!(w.until(carol.redeem(&expired), 1000, 30), Err(Error::Invalid(_))));
+    assert_eq!(carol.role_on(g), None);
+    let fresh = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(carol.redeem(&fresh), 1000, 30).unwrap(), g);
+}
+
+// spec/permissions.md §9, §3: a read link too: its joiner rotates nothing on leaving, the sharer does; the link goes on
+#[test]
+fn redeem_after_a_read_joiner_left_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&alice);
+    let t = item(&alice, g, g, "from alice");
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    let k = alice.links(g)[0].id;
+    let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
+    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    let v = item(&alice, g, g, "after the leave");
+    w.run();
+    assert_ne!(alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap()), before, "K rotated");
+    assert_eq!(x(&bob, v), None, "what the rotation protects");
+    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!((x(&carol, t), x(&carol, v)), (Some(s("from alice")), Some(s("after the leave"))));
+}
+
+// spec/permissions.md §9, §3: a device removal rotates K (a departure inside its owner): a link no one used yet still works, a read link as well
+#[test]
+fn redeem_after_a_device_removal_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let node = device(&mut w, &alice, 7);
+    let g = group(&alice);
+    let t = item(&alice, g, g, "from alice");
+    let link = alice.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    w.until(alice.remove_device(node, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert_eq!(w.until(carol.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    assert_eq!(x(&carol, t), Some(s("from alice")));
+}
+
 // spec/permissions.md §5.3, notes/api.md Demotion: offline, `Required` fails `Unsynced` after
 // `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
 #[test]

@@ -705,6 +705,70 @@ fn link_joiner_leaves_spec_perm_9() {
     assert!(!texts(&b, c).contains(&"still here".to_string()));
 }
 
+// spec/permissions.md §9, spec/sync.md §2: a link shared in advance keeps working: someone joins by it and leaves, the next person joins by it, reads, posts; a leaver comes back by it; a kick ends it, says so, and a new link works
+#[test]
+fn link_after_leave_and_kick_spec_perm_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    let (b, _) = w.person(2, &[host]);
+    let (d, _) = w.person(3, &[host]);
+    let (e, _) = w.person(4, &[host]);
+    w.run();
+    let c = create(&a, &Options::default()).unwrap();
+    let l = link(&a, c, Role::Write, false).unwrap();
+    post(&a, c, "hi").unwrap();
+    w.run();
+    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.run();
+    leave(&b, c).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert_eq!(member_links(&a, c).len(), 1, "a leave ends no link");
+    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(texts(&d, c), ["hi"]);
+    post(&d, c, "joined after the leave").unwrap();
+    w.run();
+    assert_eq!(texts(&a, c), ["hi", "joined after the leave"]);
+    assert!(!texts(&b, c).contains(&"joined after the leave".to_string()), "what the leave protects");
+    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.run();
+    assert!(texts(&b, c).contains(&"joined after the leave".to_string()), "the link text brings a leaver back");
+    w.until(kick(&a, c, d.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert!(member_links(&a, c).is_empty(), "a kick ends the link");
+    assert!(matches!(w.until(join(&e, &l), 1000, 30), Err(osis::Error::Invalid(_))), "and says so");
+    assert!(matches!(w.until(join(&d, &l), 1000, 30), Err(osis::Error::Invalid(_))), "the kicked person stays out");
+    let fresh = link(&a, c, Role::Write, false).unwrap();
+    w.run();
+    w.until(join(&e, &fresh), 1000, 30).unwrap();
+    w.run();
+    post(&e, c, "by the new link").unwrap();
+    post(&b, c, "still here").unwrap();
+    w.run();
+    let t = texts(&a, c);
+    assert!(t.contains(&"by the new link".to_string()) && t.contains(&"still here".to_string()), "{t:?}");
+}
+
+// spec/permissions.md §9: a link past its `until` is shown as none
+#[test]
+fn expired_link_not_shown_spec_perm_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    w.run();
+    let c = create(&a, &Options::default()).unwrap();
+    a.make_link(c, Role::Write, osis::LinkOpts { until: Some(osis::WallMs(a.now().0 + 1000)), single_use: false, direct: false }).unwrap();
+    w.run();
+    assert_eq!(member_links(&a, c).len(), 1);
+    w.advance(2000);
+    assert!(member_links(&a, c).is_empty());
+}
+
 // spec/permissions.md §9: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
 #[test]
 fn link_joiners_are_members_spec_perm_9() {

@@ -316,8 +316,8 @@ fn substituted_entry_box_teaches_nothing_spec_sync_2() {
     let (head, _) = register(Parent::Genesis(&delete), skeys, &[reader()], (&ka, e1, &read), &mut SeededRng::from_u64(10)).unwrap();
     let slot = osis_crypto::BoxSlot::Entry { label: head.label, step_key: head.step_key, group: ka };
     let other = Secret32::from_bytes([0x99; 32]);
-    let item = osis_crypto::BoxItem { role: Role::Read, epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other };
-    let sealed = osis_crypto::seal_box(keys.kem.public(), &slot, None, &item, &mut SeededRng::from_u64(11)).unwrap();
+    let item = osis_crypto::EntryItem { epoch: Epoch::derive(&ka, Role::Read, 1, &other).unwrap(), secret: other, earlier: None };
+    let sealed = osis_crypto::seal_entry(keys.kem.public(), &slot, &item, &mut SeededRng::from_u64(11)).unwrap();
     use osis_schema::core_types as ct;
     let forged = ct::SecretBox::Sealed(ct::SealedBox { keyset: None, suite: u64::from(osis_crypto::SUITE_1), sealed: ct::Sealed::X25519MlKem768(sealed), names: None });
     let target = head.label;

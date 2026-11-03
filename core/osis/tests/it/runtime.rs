@@ -304,9 +304,7 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     assert!(carol.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(carol.role_on(g), None);
     // even at the sharer's current key, K refuses the revoked link's key: the open fails there.
-    // Erin waits as long as the guard (a short wait could end before a loaded machine gets the
-    // open refused) and drops her redemption once refused; the new key is listened on first (a
-    // dial before that pauses the peer)
+    // Erin is told at once; the new key is listened on first (a dial before that pauses the peer)
     let nk = alice.sync_engine(|s| s.own_reach()).unwrap().dialable;
     tokio::time::timeout(GUARD, async {
         while probe.dial(&osis_transport::Address { url: osis_transport::peer_url(&[]), key: nk }).await.is_err() {
@@ -322,21 +320,11 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     e.wait_timeout = GUARD;
     let erin = Osis::create(e).unwrap().0;
     net.partition("e", "s");
-    let refused = async {
-        loop {
-            if erin.sync_engine(|s| s.describe()).iter().any(|d| d.contains("Failed")) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    };
-    tokio::select! {
-        r = erin.redeem(&patched) => panic!("K's open was refused at the sharer: {r:?}"),
-        _ = refused => {}
-    }
+    assert!(matches!(tokio::time::timeout(GUARD, erin.redeem(&patched)).await.unwrap(), Err(osis::Error::Invalid(_))), "K's open was refused at the sharer");
     assert!(erin.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(erin.role_on(g), None);
     // a redemption dropped while it waits forgets its follow too (the key guard)
+    net.partition("d", "s");
     let dave = Osis::create(cfg(4, vec![], Transport::InProcess(net.endpoint("d")))).unwrap().0;
     assert!(tokio::time::timeout(Duration::from_millis(300), dave.redeem(&link)).await.is_err());
     assert!(dave.sync_engine(|s| s.link_peer_keys()).is_empty());

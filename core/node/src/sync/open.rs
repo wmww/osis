@@ -191,6 +191,7 @@ impl SyncEngine {
             index,
             phase: Phase::Opening,
             tries,
+            static_refused: false,
             tried_claim: false,
             head: None,
             keys: HeadKeys::default(),
@@ -370,18 +371,22 @@ impl SyncEngine {
     fn static_entry_secret(&mut self, conn: ConnId, l: LabelId, g: &Tid, head: &Step, b: &SecretBox) -> Result<bool> {
         let Some(Try::Static { kem, .. }) = self.current_try(conn, &l) else { return Ok(false) };
         let Some(index) = self.lc(conn, &l).map(|x| x.index) else { return Ok(false) };
-        let (e, secret) = match osis_label::open_entry_box(b, head, &kem, g) {
+        let item = match osis_label::open_entry_box(b, head, &kem, g) {
             Ok(x) => x,
             Err(e) => {
                 self.diag(format!("entry box: {e}"));
                 return Ok(false);
             }
         };
-        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&secret]).is_none() {
+        if osis_label::match_secret(&head.keys.sync, LabelRole::Sync, index, [&item.secret]).is_none() {
             self.diag("entry box secret does not derive the head's sync key".into());
             return Ok(false);
         }
-        self.engine.learn_read_secret(g, e, secret)
+        // the earlier secret opens the epoch's rotation commit, and with it all the rest
+        if let Some((e, s)) = item.earlier {
+            self.engine.learn_read_secret(g, e, s)?;
+        }
+        self.engine.learn_read_secret(g, item.epoch, item.secret)
     }
 
     /// The head is good: derive its keys, subscribe, sync.
@@ -509,7 +514,15 @@ impl SyncEngine {
         let phase = self.lc(conn, &l).map(|x| x.phase.clone());
         match (kind, phase) {
             (Request::Open, Some(Phase::Opening)) if code == Code::UNKNOWN_LABEL => self.register_path(conn, l, out),
-            (Request::Open, Some(Phase::Opening)) => self.drop_try(conn, l, out),
+            (Request::Open, Some(Phase::Opening)) => {
+                if code == Code::REFUSED
+                    && let Some(lc) = self.lc_mut(conn, &l)
+                    && matches!(lc.tries.first(), Some(Try::Static { .. }))
+                {
+                    lc.static_refused = true;
+                }
+                self.drop_try(conn, l, out)
+            }
             // a pass's step refused for now (a full host, the rate, not admitted): the open stays,
             // a later pass registers again after a back-off (else every pass sent it again), and
             // the pass that waited for the step runs now under the host's head
