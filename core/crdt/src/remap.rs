@@ -233,12 +233,37 @@ impl Visit for Any<'_> {
     }
 }
 
+/// `Fragment::stamps_outside`: stops at the first write whose owner's source `ok` refuses.
+struct Outside<'a>(&'a dyn Fn(&Source) -> bool);
+
+impl Visit for Outside<'_> {
+    fn stamp(&mut self, s: &Stamp) -> bool {
+        !(self.0)(&s.dot.owner().src)
+    }
+    fn rec(&mut self, r: Rec<'_>) -> Next {
+        let hit = match r {
+            Rec::Elem(..) => false,
+            Rec::Entry(_, e) => e.created.as_ref().is_some_and(|c| self.stamp(c)),
+            // sibling keys name writes, they are none
+            Rec::Seq(_, e) => e.created.iter().map(|x| &x.0).chain(e.pos.iter().map(|x| &x.0)).chain(e.deleted.iter().map(|x| &x.0)).any(|s| self.stamp(s)),
+        };
+        if hit { Next::Stop } else { Next::On }
+    }
+}
+
 impl Fragment {
     /// Whether some write's owner dot (as `writes` lists them) lies in a range `owned(src, lo,
     /// hi)` accepts (any counter in `lo..hi` owned); stops at the first, and never expands range
     /// records.
     pub fn holds_owned(&self, owned: &dyn Fn(&Source, u64, u64) -> bool) -> bool {
         walk(&mut Any(owned, false), self)
+    }
+
+    /// Whether the fragment holds a write (a stamp, a map entry's creation; never a sibling key, an
+    /// anchor or a record repeating an element's identity) whose owner dot's source `ok` refuses:
+    /// an import's writes outside its origins (spec/permissions.md §7).
+    pub fn stamps_outside(&self, ok: &dyn Fn(&Source) -> bool) -> bool {
+        walk(&mut Outside(ok), self)
     }
 
     /// `holds_owned` of the writes the fragment holds (spec/commits.md §5, live writes): an

@@ -555,7 +555,15 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     // a snapshot's or an import's carried writes stamped after the commit (spec/crdt.md §8, §7: a
     // node's next stamp exceeds every stamp it holds, §2.2)
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
+    // an import's writes all lie under its origins' sources (spec/permissions.md §7), as a
+    // writer's are its own (spec/crdt.md §3.3 rule 7). Invariant (security, spec/requirements.md
+    // Purge): so `retention::writes_of`, its origins' dots, is every write it holds, and going
+    // value-less takes all of them; judged from the part and header alone, in every order.
+    let origins: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
+    // (tests let a local writer break it, `rules`, to test receivers)
+    let outside = |f: &osis_crdt::Fragment| rules && h.kind == Kind::Import && f.stamps_outside(&|s| origins.contains(s));
     let mut late = false;
+    let mut foreign = false;
     #[cfg(test)]
     let whole = whole_part(a.ak.as_str()) || tx.core.whole_apply;
     #[cfg(not(test))]
@@ -563,12 +571,14 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     let r = if whole {
         verify_part(h, id, p, dedup, interner, Some(&mut reader)).map(|d| {
             late = carries && d.fragment().max_ts().is_some_and(|t| t > h.ts);
+            foreign = outside(d.fragment());
             Some(d)
         })
     } else {
         // the full check, keeping nothing: apply streams it again
         let mut each = |f: osis_crdt::Fragment| {
             late |= carries && f.max_ts().is_some_and(|t| t > h.ts);
+            foreign |= outside(&f);
             Ok(())
         };
         osis_commit::stream_part(h, id, p, dedup, interner, Some(&mut reader), &mut each).map(|gives| {
@@ -586,6 +596,10 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     if late {
         out.streamed.retain(|s| (s.ai, s.di) != (p.ai, p.di));
         return Err(Error::BadInput("carried write stamped after its commit"));
+    }
+    if foreign {
+        out.streamed.retain(|s| (s.ai, s.di) != (p.ai, p.di));
+        return Err(Error::BadInput("an import write outside its origins"));
     }
     let Some(d) = decoded else { return Ok(Judged::Good) };
     let part = (p.ai, p.di, d);
