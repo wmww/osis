@@ -64,3 +64,55 @@ fn two_people_chat() {
     // the newest n only, still oldest first
     assert_eq!(chat::recent(&a, c, 1).unwrap().iter().map(|l| l.text.as_str()).collect::<Vec<_>>(), vec!["hi back"]);
 }
+
+/// What the CLI can do to a timeline the window shows: an edit (the newest text, marked, its
+/// replies quoting it), a delete, a sender with no name or a blank one.
+#[test]
+fn edited_deleted_and_nameless() {
+    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let a = Osis::create(cfg(1, &clock)).unwrap().0;
+    let b = Osis::create(cfg(2, &clock)).unwrap().0;
+    sync(&a, &b);
+    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    osis_chat::add(&a, c, b.me(), Role::Write).unwrap();
+    assert_eq!(chat::chats(&a).unwrap()[0].name, "Chat");
+    chat::set_name(&a, "Alice").unwrap();
+    let first = chat::send(&a, c, "", "typo", None).unwrap();
+    let doomed = chat::send(&a, c, "", "oops", None).unwrap();
+    clock.advance(1000);
+    sync(&a, &b);
+    osis_chat::send(&b, c, &osis_chat::Draft::text("anon")).unwrap();
+    osis_chat::send(&b, c, &osis_chat::Draft { text: "blank".into(), name: Some("  ".into()), reply_to: Some(first) }).unwrap();
+    clock.advance(1000);
+    let m = osis_chat::find(&a, c, &first).unwrap().unwrap();
+    osis_chat::edit(&a, c, &m, "fixed").unwrap();
+    osis_chat::delete(&a, c, &osis_chat::find(&a, c, &doomed).unwrap().unwrap()).unwrap();
+    clock.advance(1000);
+    sync(&a, &b);
+
+    let got = chat::recent(&b, c, 20).unwrap();
+    let shown: Vec<(&str, &str, bool)> = got.iter().map(|l| (l.who.as_str(), l.text.as_str(), l.edited)).collect();
+    let short = |o: &Osis| -> String { o.me().to_string().chars().take(8).collect() };
+    let (alice, bob) = (short(&a), short(&b));
+    // a deleted body takes its name along
+    assert_eq!(shown, vec![("Alice", "fixed", true), (alice.as_str(), "<deleted>", false), (bob.as_str(), "anon", false), (bob.as_str(), "blank", false)]);
+    assert_eq!(got[0].id, first);
+    assert_eq!(got[3].reply_to, Some((first, "Alice: fixed".to_string())));
+}
+
+/// A store without hosts has no profile: reading the name writes nothing (a failed `profile()`
+/// leaves a thing behind) and sending works, nameless.
+#[test]
+fn hostless_store_sends_without_a_name() {
+    let clock = Arc::new(ManualClock::new(WallMs(1_760_000_000_000)));
+    let mut cfg = cfg(1, &clock);
+    cfg.hosts.clear();
+    let a = Osis::create(cfg).unwrap().0;
+    let c = osis_chat::create(&a, &osis_chat::Options::default()).unwrap();
+    let before = a.engine(|e| e.commit_ids().len());
+    chat::my_name(&a).unwrap();
+    assert_eq!(a.engine(|e| e.commit_ids().len()), before);
+    assert!(chat::set_name(&a, "Alice").is_err());
+    chat::send(&a, c, "", "hi", None).unwrap();
+    assert_eq!(chat::recent(&a, c, 20).unwrap()[0].text, "hi");
+}

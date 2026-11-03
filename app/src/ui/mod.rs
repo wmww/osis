@@ -270,8 +270,10 @@ impl Ui {
     fn refresh(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) {
         if let Err(e) = self.refresh_inner(ctx, force) {
             // a thing that cannot be shown (a synced aspect of another shape under its editor,
-            // say) must not leave a half-built screen whose presses go nowhere: go home
-            if matches!(self.data.opened(), Ok(Some(_))) && self.data.set_open(None).is_ok() {
+            // say, or a chat no longer readable) must not leave a half-built screen whose presses
+            // go nowhere: go home
+            let chat = self.chat.take().is_some();
+            if (matches!(self.data.opened(), Ok(Some(_))) && self.data.set_open(None).is_ok()) || chat {
                 self.editor = None;
                 let _ = self.refresh_inner(ctx, true);
             }
