@@ -4198,3 +4198,27 @@ fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
 fn purged_fell_purged_leaves_its_residue_seed_872030() {
     run("purged_fell_purged_leaves_its_residue_seed_872030", 872030..872031, 50, LARGE, purge_author_history);
 }
+
+// spec/commits.md §5: a body dropped under keep at most whose other part is still missing leaves that
+// part missing (never received, fetched as such): a node that applied the kill, then saw it turn
+// invalid and was given the body again, judges the commit as one that never applied the kill (seed
+// 106342, shrunk; #26's `t:docs.0` part is missing, #28 kills its `t:reg.0` write until #17
+// turns #28 invalid).
+#[test]
+fn class_drop_leaves_missing_part_missing_seed_106342_spec_commits_5() {
+    use Step::*;
+    let aim = |x: Step| Aim(Box::new(x));
+    let h = vec![aim(New { by: 0, parent: 4, write: false }), Forged { by: 0, a: 1, b: 3, how: 0, op: 16, k: 2, v: 2 }, aim(Breaking { by: 0, t: 1, op: 28, v: 9, fits: false }), aim(Compact { by: 0, t: 4, op: 5 }), aim(Nested { by: 2, other: 0, t: 6, k: 1, text: true, compact: true, also: true }), aim(Typed { by: 2, t: 3, op: 18, k: 1, v: 5 }), aim(Require { by: 0, t: 0, op: 3, rule: 1 }), aim(Edge { by: 2, t: 7, holder: 2, role: Some(Role::Write) }), aim(Edge { by: 2, t: 5, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 1, op: 29, k: 2, v: 2 }), aim(Roster { by: 0, t: 2 }), aim(Require { by: 0, t: 0, op: 17, rule: 3 }), Forged { by: 0, a: 5, b: 4, how: 2, op: 3, k: 0, v: 6 }, aim(Leave { by: 1, t: 6 }), aim(Edge { by: 2, t: 5, holder: 1, role: Some(Role::Read) }), aim(Nested { by: 0, other: 2, t: 5, k: 1, text: true, compact: false, also: true }), aim(Write { by: 1, t: 0, op: 27, k: 1, v: 6 }), aim(Nested { by: 0, other: 2, t: 7, k: 0, text: false, compact: true, also: true }), Advance { who: None, ms: 6502368 }, aim(Typed { by: 2, t: 5, op: 19, k: 1, v: 7 })];
+    let played = with_syncs(play(106342, &h), 106342);
+    let digest = |order: &[usize]| {
+        let mut p = deliver(&played, order);
+        let pk = &played.packs[26];
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+        p.engine.reexamine().unwrap();
+        p.engine.index_digest().commits.get(&pk.id).cloned().unwrap()
+    };
+    let want = digest(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 17, 19, 20, 21, 22, 26, 27, 28, 29, 30, 31, 32]);
+    let got = digest(&[5, 10, 32, 20, 31, 6, 8, 13, 29, 19, 21, 2, 15, 26, 0, 30, 9, 4, 27, 3, 12, 14, 1, 28, 17, 7, 22]);
+    assert_eq!(want.missing, [1].into(), "the t:docs.0 part never came");
+    assert_eq!(want, got);
+}
