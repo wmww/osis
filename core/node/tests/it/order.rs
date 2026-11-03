@@ -1578,6 +1578,8 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     } else {
         BTreeSet::new()
     };
+    // their expired aspects, as tables key them
+    let parted_on: BTreeSet<String> = all.iter().filter(|k| parted.contains(&k.0) && expired.contains(&(k.1.clone(), k.2.clone()))).map(|k| format!("({}, Ak({:?}))", k.1, k.2)).collect();
     wf.retain(|k, _| !parted.contains(&k.0));
     gf.retain(|k, _| !parted.contains(&k.0));
     if wf.keys().ne(gf.keys()) {
@@ -1616,7 +1618,9 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
                 IndexField::Table("bounded_held") => orphans_counted(),
                 IndexField::Commit(c) => on_expired(c) || orphan(c),
                 IndexField::DroppedSnapshots(c) | IndexField::Snapshots(c) | IndexField::Carried(c) => on_expired(c),
-                IndexField::Held(_) | IndexField::ByChunk | IndexField::Table(_) => false,
+                // a table listing a commit not compared (`parted`), or its expired aspect, at either node
+                IndexField::Table(t) => [w, g].iter().any(|i| i.tables.get(t).is_some_and(|x| parted.iter().any(|c| x.contains(c.as_str())) || parted_on.iter().any(|a| x.contains(a.as_str())))),
+                IndexField::Held(_) | IndexField::ByChunk => false,
             };
             if let Some(f) = w.diff(g).into_iter().find(|f| !exempt(f)) {
                 return Some(format!("index {f:?}:\n  want {}\n  got  {}", w.show(&f).unwrap_or("<none>".into()), g.show(&f).unwrap_or("<none>".into())));
