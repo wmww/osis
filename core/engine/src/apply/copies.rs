@@ -300,10 +300,11 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> R
 /// The records (dot, key: `CopyIndex::records_in`) among those `owned` matches under which a
 /// held valid snapshot of `(tid, ak)` holds a write: those writes count whatever their own
 /// delta's validity, as the snapshot's writer vouched for them (spec/permissions.md §5.2).
-pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<BTreeSet<(Dot, Option<Value>)>> {
+pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<(BTreeSet<(Dot, Option<Value>)>, BTreeSet<Dot>)> {
     let mut out = BTreeSet::new();
+    let mut erased = BTreeSet::new();
     if owned.is_empty() {
-        return Ok(out);
+        return Ok((out, erased));
     }
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.1).filter(|s| snapshot_valid(tx.core, s, tid, ak)).collect();
     for s in snaps {
@@ -315,9 +316,10 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> R
                 Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
             };
             out.extend(ix.records_in(&src, lo, hi).filter(|(d, _)| o.owns(d)).map(|(d, k)| (d.clone(), k.cloned())));
+            erased.extend(ix.erased_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
         }
     }
-    Ok(out)
+    Ok((out, erased))
 }
 
 /// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta

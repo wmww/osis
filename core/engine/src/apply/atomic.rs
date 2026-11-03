@@ -425,9 +425,8 @@ fn copies_before(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, 
 pub(crate) struct Unmerge {
     owned: OwnedSet,
     vouched: BTreeSet<(osis_crdt::Dot, Option<osis_base::Value>)>,
-    /// The owners held value-less on the aspect (`ix.valueless`): a dot of theirs has one map
-    /// record, the key-erased one (spec/crdt.md §4.7), whatever key a body names it by.
-    valueless: OwnedSet,
+    /// The dots whose map record a held valid snapshot holds key-erased (spec/crdt.md §4.7).
+    erased: BTreeSet<osis_crdt::Dot>,
 }
 
 /// A list of `Owned` for a lookup per dot in O(log its length): a fall lists every fallen delta,
@@ -484,27 +483,15 @@ impl Unmerge {
     /// From the held set, reading the valid snapshots' writes when a delta is invalid.
     pub(crate) fn of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
-        let vouched = copies::vouched(tx, tid, ak, &owned)?;
-        let mut valueless = tx.core.ix.valueless.get(&(*tid, ak.clone())).cloned().unwrap_or_default();
-        // and the invalid deltas value-less by right but not listed yet: one arriving past its
-        // expiry or named by a held purge request un-merges on arrival, before
-        // `retention::on_apply` lists it (only an invalid delta's records are asked about)
-        let now = tx.now().0;
-        for c in tx.core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten().copied().collect::<Vec<_>>() {
-            let Some((h, Some(ai))) = tx.core.ix.commits.get(&c).map(|m| (m.header.clone(), m.aspect(tid, ak).filter(|ai| !m.valid_at(*ai)))) else { continue };
-            let expired = h.aspects.get(ai).and_then(|a| a.expires).is_some_and(|t| t <= now);
-            if expired || crate::retention::purged_by(tx, &h, &c, ai)?.is_some() {
-                valueless.extend(crate::retention::writes_of(tx.core, &h, &c, ai));
-            }
-        }
-        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched, valueless: OwnedSet::of(&valueless) })
+        let (vouched, erased) = copies::vouched(tx, tid, ak, &owned)?;
+        Ok(Unmerge { owned: OwnedSet::of(&owned), vouched, erased })
     }
     /// `of` for removing from `f` alone: snapshots are read only when `f` holds a write of an
     /// invalid delta.
     pub(crate) fn probe(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, f: &Fragment) -> Result<Unmerge> {
         let owned = invalid_of(tx.core, tid, ak);
         if owned.is_empty() || !f.holds_dots(&|d| owned.iter().any(|o| o.owns(d))) {
-            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new(), valueless: OwnedSet::default() });
+            return Ok(Unmerge { owned: OwnedSet::default(), vouched: BTreeSet::new(), erased: BTreeSet::new() });
         }
         Unmerge::of(tx, tid, ak)
     }
@@ -518,14 +505,15 @@ impl Unmerge {
     /// Whether a held valid snapshot holds a write in the record of dot `d` and key `key`: of
     /// a keyed map entry, its creation's copy under that key or the record itself (its
     /// creation pruned by a reset, alive by a later nested write); else any write under `d`.
-    /// A dot held value-less here has one record whatever key a body names it by (its records
-    /// are joined into the key-erased one, spec/crdt.md §4.7), so a copy of it under no key or
-    /// another vouches too (seed 7340007: an expired creation's valid snapshot copy, keyed by
-    /// a valid later put into it).
+    /// A key-erased record (its writer held the dot value-less, spec/crdt.md §4.7) keeps every
+    /// record of its dot, whether or not this node holds it value-less yet (seed 7340007): the
+    /// answer must not change when the dot goes value-less here, since no rebuild runs then.
+    /// Limit: with the dot value-less here, the state's key-erased record is asked with no
+    /// key, so a misstated copy under another key keeps it there but not in a body.
     fn vouches(&self, d: &osis_crdt::Dot, key: Option<&osis_base::Value>) -> bool {
         match key {
-            Some(k) if !self.valueless.owns(d) => self.vouched.contains(&(d.clone(), Some(k.clone()))),
-            _ => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
+            Some(k) => self.erased.contains(d) || self.vouched.contains(&(d.clone(), Some(k.clone()))),
+            None => self.vouched.range((d.clone(), None)..).next().is_some_and(|x| x.0 == *d),
         }
     }
     /// Whether what a valid snapshot's body holds under owner dot `d` goes.
@@ -536,7 +524,8 @@ impl Unmerge {
     /// §4.6): the invalid deltas' writes, the records they created and others' writes nested in
     /// them, except in a record a held valid snapshot's copy keeps (`vouches`): the record
     /// stays in the state, so others' valid writes in it stay too. A copy of a map entry's
-    /// creation under another key (misstated) keeps its own record, not the delta's.
+    /// creation under another key (misstated) keeps its own record, not the delta's; a
+    /// key-erased one keeps them all.
     pub(crate) fn strip(&self, f: &mut Fragment) {
         if !self.is_empty() {
             f.remove_dots_keeping(&|d| self.bad(d), &|d, k| self.vouches(d, k));
@@ -545,7 +534,7 @@ impl Unmerge {
     /// Whether removing in place from the state can give the join (spec/crdt.md §4.6): no held
     /// valid snapshot vouches for a write of an invalid delta.
     pub(crate) fn in_place(&self) -> bool {
-        self.vouched.is_empty()
+        self.vouched.is_empty() && self.erased.is_empty()
     }
 }
 

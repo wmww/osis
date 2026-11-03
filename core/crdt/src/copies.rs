@@ -54,8 +54,8 @@ struct Copies<'a> {
     out: Vec<(Key, Option<Val>)>,
     /// A `Slots` register's stamps while its slots are walked.
     embedded: Vec<Stamp>,
-    /// The keyed map records walked (dot, key), with or without a creation.
-    records: Vec<(Dot, Value)>,
+    /// The map records walked (dot, key; `None`: key-erased, §4.7), with or without a creation.
+    records: Vec<(Dot, Option<Value>)>,
 }
 
 impl Copies<'_> {
@@ -117,9 +117,7 @@ impl Copies<'_> {
             Fragment::Map(Map { meta: m, entries, .. }) => {
                 self.meta(m);
                 for (id, e) in entries {
-                    if let Some(k) = id.key() {
-                        self.records.push((id.dot.clone(), k.clone()));
-                    }
+                    self.records.push((id.dot.clone(), id.key().cloned()));
                     self.path.push(Step::Elem(id.dot.clone()));
                     if let Some(c) = &e.created {
                         self.put(Kind::Entry, c, id.key().cloned().map(Val::V));
@@ -177,8 +175,8 @@ impl Fragment {
         self.copies_and_records(keep).0
     }
 
-    /// `copies`, and the keyed map records walked.
-    fn copies_and_records(&self, keep: &dyn Fn(&Dot) -> bool) -> (Writes, Vec<(Dot, Value)>) {
+    /// `copies`, and the map records walked.
+    fn copies_and_records(&self, keep: &dyn Fn(&Dot) -> bool) -> (Writes, Vec<(Dot, Option<Value>)>) {
         let mut c = Copies { keep, path: Vec::new(), out: Vec::new(), embedded: Vec::new(), records: Vec::new() };
         c.frag(self);
         (c.out, c.records)
@@ -318,9 +316,10 @@ impl CopySet {
     }
 }
 
-/// A fragment's writes by owner dot (`Fragment::copy_index`), and its keyed map records.
+/// A fragment's writes by owner dot (`Fragment::copy_index`), and its map records (`None`:
+/// key-erased).
 #[derive(Debug, Default)]
-pub struct CopyIndex(BTreeMap<Dot, Vec<(Key, Option<Val>)>>, BTreeMap<Dot, BTreeSet<Value>>);
+pub struct CopyIndex(BTreeMap<Dot, Vec<(Key, Option<Val>)>>, BTreeMap<Dot, BTreeSet<Option<Value>>>);
 
 impl CopyIndex {
     /// Adds the writes of `f` (a piece of a streamed fragment: the index of a fragment is the
@@ -365,8 +364,13 @@ impl CopyIndex {
                 _ => (d, None),
             })
         });
-        let records = self.1.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).flat_map(|(d, ks)| ks.iter().map(move |k| (d, Some(k))));
+        let records = self.1.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).flat_map(|(d, ks)| ks.iter().flatten().map(move |k| (d, Some(k))));
         writes.chain(records)
+    }
+    /// The dots of `src` with a counter in `lo..hi` whose map record is held key-erased (its
+    /// writer held the dot value-less, §4.7).
+    pub fn erased_in(&self, src: &Source, lo: u64, hi: u64) -> impl Iterator<Item = &Dot> {
+        self.1.range(Dot::new(src.clone(), lo)..Dot::new(src.clone(), hi)).filter(|(_, ks)| ks.contains(&None)).map(|(d, _)| d)
     }
     /// Whether a write is indexed under owner dot `d`.
     pub fn holds(&self, d: &Dot) -> bool {
