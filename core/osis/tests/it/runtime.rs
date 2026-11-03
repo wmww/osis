@@ -315,11 +315,12 @@ async fn redeem_direct_in_process_spec_permissions_9() {
     .unwrap();
     let mut patched = parsed.clone();
     patched.peers = vec![osis_label::Peer { dialable: nk, relays: vec![] }];
+    // the sharer's node is its only route: a host not answering would keep the verdict open
+    patched.hosts = vec![];
     let patched: osis::ShareLink = patched.to_text().unwrap().parse().unwrap();
     let mut e = cfg(5, vec![], Transport::InProcess(net.endpoint("e")));
     e.wait_timeout = GUARD;
     let erin = Osis::create(e).unwrap().0;
-    net.partition("e", "s");
     assert!(matches!(tokio::time::timeout(GUARD, erin.redeem(&patched)).await.unwrap(), Err(osis::Error::Invalid(_))), "K's open was refused at the sharer");
     assert!(erin.sync_engine(|s| s.link_peer_keys()).is_empty());
     assert_eq!(erin.role_on(g), None);
@@ -368,6 +369,28 @@ async fn redeem_direct_no_host_in_process_spec_permissions_9() {
     let back = Some(Value::Str("back".into()));
     tokio::time::timeout(GUARD, async {
         while alice.get(t, ak("t:x.0")).unwrap() != back {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    // Bob leaves, K rotates: the link goes on for a next redeemer at her device (spec/sync.md §2)
+    let k = alice.links(g)[0].id;
+    let before = alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap());
+    tokio::time::timeout(GUARD, bob.demote(k, bob.me(), osis::Lower::Remove, osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None })).await.unwrap().unwrap();
+    tokio::time::timeout(GUARD, async {
+        while alice.engine(|e| e.epochs(&k).unwrap().read.newest().unwrap()) == before {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let mut c = cfg(3, vec![], Transport::InProcess(net.endpoint("c")));
+    c.wait_timeout = GUARD;
+    let carol = Osis::create(c).unwrap().0;
+    assert_eq!(tokio::time::timeout(GUARD, carol.redeem(&link)).await.unwrap().unwrap(), g);
+    tokio::time::timeout(GUARD, async {
+        while carol.get(t, ak("t:x.0")).unwrap() != back {
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
