@@ -18,6 +18,12 @@
 # test that reads notes/ (osis-cli's command table check; plus the GUI steps if it touched kit/ or app/), not tier 1, lints, deny or the sweep.
 set -e
 cd "$(git rev-parse --show-toplevel)"
+# a gate on a half-rebased tree passes on the wrong code (watchdog 13i: eight agents piped a
+# stopped rebase into the gate)
+gd=$(git rev-parse --git-dir)
+if [ -d "$gd/rebase-merge" ] || [ -d "$gd/rebase-apply" ] || [ -f "$gd/MERGE_HEAD" ] || [ -n "$(git diff --name-only --diff-filter=U)" ]; then
+  echo "gate: a rebase or merge is in progress or conflicts remain; finish it first" >&2; exit 2
+fi
 seeds=
 all=
 base=
