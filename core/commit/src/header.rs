@@ -99,20 +99,20 @@ impl Form {
 
     fn value(&self) -> Value {
         match self {
-            Form::Commit => uint(1),
-            Form::Session(n) => Value::List(vec![uint(2), Value::bytes(n)]),
+            Form::Commit => uint(0),
+            Form::Session(n) => Value::List(vec![uint(1), Value::bytes(n)]),
         }
     }
 
     fn from_value(v: &Value) -> Result<Form, Error> {
         if let Value::List(l) = v {
             return match l.as_slice() {
-                [k, n] if as_uint(k)? == 2 => Ok(Form::Session(as_bytes(n)?)),
+                [k, n] if as_uint(k)? == 1 => Ok(Form::Session(as_bytes(n)?)),
                 _ => Err(Error::Malformed("dot form")),
             };
         }
         match as_uint(v)? {
-            1 => Ok(Form::Commit),
+            0 => Ok(Form::Commit),
             _ => Err(Error::Malformed("dot form")),
         }
     }
