@@ -1311,7 +1311,8 @@ fn history_rows_as_the_actor() {
     w.at(x.t, k.clone()).purge_commit(id).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
     let e = &x.n.at(x.t, k.clone()).history(HistoryFrom::Newest, 2).unwrap().entries;
-    assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq }), "{e:?}");
+    assert!(e.iter().any(|e| e.commit.id == id && e.body == HistoryBody::Purged { by: rq, actor: Some(a) }), "{e:?}");
+    assert_eq!(&c.at(x.t, k.clone()).history(HistoryFrom::Newest, 2).unwrap().entries, e, "over the port too");
     // what it may not write: refused for that
     let mut w = c.write();
     w.at(x.u, k.clone()).purge_author(a).unwrap();
@@ -1336,7 +1337,7 @@ fn history_rows_as_the_actor() {
     let e = x.n.at(x.t, k.clone()).history(HistoryFrom::Oldest, 1).unwrap().entries;
     assert_eq!(e[0].commit.id, one);
     let by = e[0].body.clone();
-    assert!(by == HistoryBody::Purged { by: rq } || by == HistoryBody::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
+    assert!(by == HistoryBody::Purged { by: rq, actor: Some(a) } || by == HistoryBody::Held(Some(Value::Str("one".into()))), "as its right says: {by:?}");
 }
 
 // spec/wire.md §11.2, notes/client-port.md Reconnect, notes/api.md History: a dropped connection and its return are

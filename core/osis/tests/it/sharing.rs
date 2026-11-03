@@ -99,6 +99,21 @@ fn revoke_link_spec_permissions_9() {
     assert!(alice.links(g).is_empty());
 }
 
+// spec/permissions.md §4 (owners' keysets), spec/crypto.md §4 (keyset names): a person who got its host after creation has an inbox write as its newest `keys.0`; a link's actor names the person's keyset, so that keyset must come along or a redeemer holds no established epoch to box
+#[test]
+fn redeem_link_of_a_person_with_a_late_host_spec_permissions_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = Osis::create(w.cfg(1, &[])).unwrap();
+    let (bob, _) = w.person(2, &[host]);
+    alice.add_host(&bob.hosts()[0]).unwrap();
+    w.run();
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+}
+
 // spec/permissions.md §5.3, notes/api.md Demotion: offline, `Required` fails `Unsynced` after
 // `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
 #[test]

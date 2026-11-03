@@ -511,7 +511,11 @@ fn chat_commands_plan_cli() {
     s.ok(&["chat", "edit", &c, &two, "two!"]);
     assert!(s.ok(&["chat", "read", &c]).out.contains("(edited): two!"));
     s.ok(&["chat", "delete", &c, &one]);
-    assert!(s.ok(&["chat", "read", &c]).out.contains("<deleted>"));
+    let who = s.ok(&["whoami"]).out;
+    let me = who.lines().find_map(|l| l.strip_prefix("me\t")).unwrap().to_string();
+    assert!(s.ok(&["chat", "read", &c]).out.contains(&format!("<deleted by {me}>")));
+    assert!(s.ok(&["--json", "chat", "read", &c]).out.contains(&format!("\"deleted_by\":\"{me}\"")));
+    assert_ne!(s.code(&["chat", "resend", &c, &two]), 0, "delivered: nothing to send again");
     assert!(s.ok(&["chat", "members", &c]).out.contains("Admin"));
     assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
     assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);

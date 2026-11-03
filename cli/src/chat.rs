@@ -31,8 +31,19 @@ fn who(sender: Tid, name: Option<&String>) -> String {
     name.map_or_else(|| sender.to_uri(), |n| format!("{n} ({})", sender.to_uri()))
 }
 
-fn shown(s: &str, t: &str) -> String {
-    if s == "text" { t.to_string() } else { format!("<{s}>") }
+fn shown(b: &Body) -> String {
+    match b {
+        Body::Text(t) => t.clone(),
+        Body::Deleted { who: Some(w), .. } => format!("<deleted by {}>", w.to_uri()),
+        b => format!("<{}>", state(b).0),
+    }
+}
+
+fn deleted_by(b: &Body) -> J {
+    J::opt(match b {
+        Body::Deleted { who, .. } => who.map(J::tid),
+        _ => None,
+    })
 }
 
 fn message_line(json: bool, m: &Message) -> String {
@@ -45,6 +56,7 @@ fn message_line(json: bool, m: &Message) -> String {
             ("time", J::int(m.time)),
             ("state", J::str(s)),
             ("text", J::str(t)),
+            ("deleted_by", deleted_by(&m.body)),
             ("reply_to", opt_id(m.reply_to.as_ref())),
             ("edited", J::Bool(m.edited.is_some())),
             ("earlier", J::Arr(m.earlier.iter().map(|e| J::str(state(&e.body).1)).collect())),
@@ -55,7 +67,7 @@ fn message_line(json: bool, m: &Message) -> String {
     let reply = m.reply_to.map_or_else(String::new, |r| format!(" (to {r})"));
     let edited = if m.edited.is_some() { " (edited)" } else { "" };
     let bad = if m.valid { "" } else { " (not delivered)" };
-    format!("{} {} {}{reply}{edited}{bad}: {}", m.id, who(m.sender, m.name.as_ref()), m.time, shown(s, t))
+    format!("{} {} {}{reply}{edited}{bad}: {}", m.id, who(m.sender, m.name.as_ref()), m.time, shown(&m.body))
 }
 
 fn entry_line(json: bool, e: &Entry) -> String {
@@ -69,6 +81,7 @@ fn entry_line(json: bool, e: &Entry) -> String {
             ("time", J::int(e.time)),
             ("state", J::str(s)),
             ("text", J::str(t)),
+            ("deleted_by", deleted_by(&e.body)),
             ("reply_to", opt_id(e.reply_to.as_ref())),
             ("replaces", opt_id(of.as_ref())),
             ("valid", J::Bool(e.valid)),
@@ -78,7 +91,7 @@ fn entry_line(json: bool, e: &Entry) -> String {
     let reply = e.reply_to.map_or_else(String::new, |r| format!(" (to {r})"));
     let what = of.map_or_else(String::new, |o| format!(" replaces {o}"));
     let bad = if e.valid { "" } else { " (invalid)" };
-    format!("{} {} {}{reply}{what}{bad}: {}", e.id, who(e.sender, e.name.as_ref()), e.time, shown(s, t))
+    format!("{} {} {}{reply}{what}{bad}: {}", e.id, who(e.sender, e.name.as_ref()), e.time, shown(&e.body))
 }
 
 fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Message> {
@@ -244,6 +257,13 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             send_out(ctx, None)?;
             ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
         }
+        ChatCmd::Resend { chat, id: i } => {
+            let t = ctx.tid(&chat)?;
+            let m = find(ctx, t, &i)?;
+            let new = osis_chat::resend(&db, t, &m)?;
+            send_out(ctx, None)?;
+            ctx.emit(&[new.to_string()], J::obj([("id", J::str(new.to_string()))]))
+        }
         ChatCmd::Delete { chat, id: i } => {
             let t = ctx.tid(&chat)?;
             let m = find(ctx, t, &i)?;
@@ -258,11 +278,19 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             pull(ctx, t);
             let m = osis_chat::members(&db, t);
+            let links = osis_chat::member_links(&db, t);
             let s = osis_chat::settings(&db, t)?;
-            let text: Vec<String> = m.iter().map(|(p, r)| format!("{} {r:?}", p.to_uri())).collect();
+            // through an actor, or none: a joiner's `via` is its link's K
+            let via = |p: Tid| match db.holder_path(t, p).as_slice() {
+                [(_, k), _] => Some(*k),
+                _ => None,
+            };
+            let mut text: Vec<String> = m.iter().map(|(p, r)| format!("{} {r:?}{}", p.to_uri(), via(*p).map_or_else(String::new, |k| format!(" via {}", k.to_uri())))).collect();
+            text.extend(links.iter().map(|(k, r)| format!("link {} {r:?}", k.to_uri())));
             let j = J::obj([
                 ("name", J::str(s.name)),
-                ("members", J::Arr(m.iter().map(|(p, r)| J::obj([("person", J::tid(*p)), ("role", J::str(format!("{r:?}")))])).collect())),
+                ("members", J::Arr(m.iter().map(|(p, r)| J::obj([("person", J::tid(*p)), ("role", J::str(format!("{r:?}"))), ("via", J::opt(via(*p).map(J::tid)))])).collect())),
+                ("links", J::Arr(links.iter().map(|(k, r)| J::obj([("link", J::tid(*k)), ("role", J::str(format!("{r:?}")))])).collect())),
             ]);
             ctx.emit(&text, j)
         }

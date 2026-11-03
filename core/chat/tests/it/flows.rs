@@ -3,6 +3,7 @@
 use osis_chat::*;
 use osis::{ChangeId, HistoryFrom, Osis, Role, Tid, Value, WaitForSync};
 use osis_sim::world::World;
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 /// A world with one host, Alice and Bob who know each other, and Alice's chat with Bob in it.
@@ -182,6 +183,11 @@ fn delete_for_everyone_spec_commits_5() {
     delete(&a, c, &newest(&a, c)).unwrap();
     w.run();
     assert_eq!(texts(&b, c), ["<deleted>"; 3]);
+    let by = |db: &Osis, id: &Id| match at(db, id).body {
+        Body::Deleted { who, .. } => who,
+        x => panic!("{x:?}"),
+    };
+    assert_eq!((by(&b, &his), by(&a, &mine)), (Some(bob), Some(a.me())), "who deleted, by its signed header");
     let offer = b.pair_offer().unwrap();
     let join = Osis::pair(w.cfg(5, &[]), &offer).unwrap();
     let req: osis::PairRequest = join.request().to_string().parse().unwrap();
@@ -190,6 +196,7 @@ fn delete_for_everyone_spec_commits_5() {
     w.run();
     assert_eq!(texts(&b2, c), ["<deleted>"; 3], "tombstones on a new device");
     assert_eq!(newest(&b2, c).sender, bob);
+    assert_eq!(by(&b2, &his), Some(bob), "on a new device too");
 }
 
 // spec/permissions.md §8: purge sets: author only keeps a moderator out; nobody is a permanent chat; admin only keeps an author out
@@ -272,6 +279,12 @@ fn required_and_stale_writer_spec_commits_5() {
     assert!(!mine.valid, "its sender sees it did not go");
     assert_eq!(mine.body, Body::Text("stale".into()), "and can send it again");
     assert_eq!(members(&a, c).get(&bob), Some(&Role::Write));
+    assert!(resend(&a, c, &mine).is_err(), "not another's");
+    let again = resend(&b, c, &mine).unwrap();
+    w.run();
+    assert_eq!(texts(&a, c).last().unwrap(), "stale", "it went this time");
+    assert!(resend(&b, c, &find(&b, c, &again).unwrap().unwrap()).is_err(), "delivered: nothing to send again");
+    w.advance(1000);
     // he can post again under the new rule
     post(&b, c, "fresh").unwrap();
     w.run();
@@ -690,6 +703,52 @@ fn link_joiner_leaves_spec_perm_9() {
     w.run();
     assert_eq!(texts(&a, c), ["hi", "still here"]);
     assert!(!texts(&b, c).contains(&"still here".to_string()));
+}
+
+// spec/permissions.md §9: `members` lists the people who joined by a link, not its actor; a direct member learns a joiner from its first post; kicking a joiner ends the link, the others stay; a single-use link leaves its joiner a member
+#[test]
+fn link_joiners_are_members_spec_perm_9() {
+    let Room { mut w, a, b, c, bob } = room(Options::default());
+    let (d, _) = w.person(3, &[0]);
+    let (e, _) = w.person(4, &[0]);
+    let (f, _) = w.person(5, &[0]);
+    w.run();
+    let l = link(&a, c, Role::Read, false).unwrap();
+    let once = link(&a, c, Role::Write, true).unwrap();
+    w.run();
+    assert_eq!(member_links(&a, c).len(), 2);
+    assert_eq!(members(&a, c).into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob]), "a link no one used is nobody");
+    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.until(join(&e, &l), 1000, 30).unwrap();
+    w.until(join(&f, &once), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(members(&a, c).into_keys().collect::<BTreeSet<_>>(), BTreeSet::from([a.me(), bob, d.me(), e.me(), f.me()]));
+    assert!(members(&d, c).contains_key(&e.me()), "a joiner sees the link's other joiners");
+    assert_eq!(members(&a, c).get(&d.me()), Some(&Role::Read), "the link's role");
+    assert_eq!(members(&a, c).get(&f.me()), Some(&Role::Write));
+    assert_eq!(member_links(&a, c).len(), 1, "the single-use link is spent");
+    post(&f, c, "from a joiner").unwrap();
+    w.run();
+    assert!(members(&b, c).contains_key(&f.me()), "a direct member, from the post");
+    w.until(kick(&a, c, d.me(), None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.run();
+    let left = members(&a, c);
+    assert!(!left.contains_key(&d.me()) && left.contains_key(&e.me()), "{left:?}");
+    assert!(member_links(&a, c).is_empty(), "kicking a joiner ended the link");
+    // a rotation naming K's keyset: a direct member and a joiner go on
+    let (g, _) = w.person(6, &[0]);
+    let gid = meet(&mut w, &a, &g);
+    add(&a, c, gid, Role::Write).unwrap();
+    w.run();
+    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.run();
+    post(&g, c, "after the rotation").unwrap();
+    post(&f, c, "and from a joiner").unwrap();
+    w.run();
+    for db in [&a, &g, &e, &f] {
+        let t = texts(db, c);
+        assert!(t.contains(&"after the rotation".to_string()) && t.contains(&"and from a joiner".to_string()), "{t:?}");
+    }
 }
 
 // spec/permissions.md §9, §5.2: joining by link on a store in use: the joiner is its own verified sender, its name and reply come through; a cursor gives what is new, an edit of an older message as that message; kicking a joiner leaves the link's other joiners

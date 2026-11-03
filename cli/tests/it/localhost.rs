@@ -285,6 +285,10 @@ fn chat_channel_localhost() {
     let caught = osis(&b, &["--json", "chat", "watch", &c, "--after", &cursor, "--count", "1"]);
     assert_eq!(field(&caught, "id"), second);
     let mine = osis(&b, &["chat", "post", &c, "--from", "bob", "from bob"]);
+    // the people who joined, by their link; not the link's actor
+    let whom = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
+    let m = osis(&a, &["chat", "members", &c]);
+    assert!(m.lines().any(|l| l.starts_with(&format!("{whom} Write via "))) && m.lines().any(|l| l.starts_with("link ")), "{m}");
     let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
     while !osis(&a, &["chat", "read", &c]).contains("from bob") {
         assert!(std::time::Instant::now() < end, "not at Alice");

@@ -29,8 +29,9 @@ pub enum HistoryBody<T> {
     Held(Option<T>),
     /// Held, and above the materialization bound.
     TooLarge { limit: usize },
-    /// A purge request dropped it, for everyone honest: the entry is its tombstone.
-    Purged { by: ChangeId },
+    /// A purge request dropped it, for everyone honest: the entry is its tombstone. `by` the request,
+    /// `actor` who made it, verified (`None`: its header is not held here).
+    Purged { by: ChangeId, actor: Option<Tid> },
     /// Gone for another reason: expiry, a keep bound, compaction.
     Dropped,
     /// Not on this node (yet): its header came and its body did not. Not an absence.
@@ -92,7 +93,7 @@ fn entry_of(r: &mut Reader<'_>, tid: &Tid, ak: &Ak, row: HistoryRow, limit: usiz
             Err(_) => HistoryBody::NotFetched,
         },
         RowBody::TooLarge => HistoryBody::TooLarge { limit },
-        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::Commit(by) },
+        RowBody::Purged(by) => HistoryBody::Purged { by: ChangeId::Commit(by), actor: r.e.header(&by).map(|h| h.actor) },
         RowBody::Dropped => HistoryBody::Dropped,
         RowBody::NotFetched => HistoryBody::NotFetched,
     };
@@ -105,7 +106,7 @@ pub(crate) fn typed<K: AspectKey>(db: &Osis, tid: Tid, ak: &Ak, key: &K, e: Hist
     let body = match e.body {
         HistoryBody::Held(v) => HistoryBody::Held(v.and_then(|v| lenient(tid, ak, key.decode(&v), |d| db.engine(|e| e.report(d))))),
         HistoryBody::TooLarge { limit } => HistoryBody::TooLarge { limit },
-        HistoryBody::Purged { by } => HistoryBody::Purged { by },
+        HistoryBody::Purged { by, actor } => HistoryBody::Purged { by, actor },
         HistoryBody::Dropped => HistoryBody::Dropped,
         HistoryBody::NotFetched => HistoryBody::NotFetched,
     };
