@@ -9,7 +9,7 @@ impl SyncEngine {
     /// sibling); a wake brings the pass back then. Other role writes (an admin recording
     /// a step in `label.0`, a `keys.0` update) get no step from their author and delay nothing.
     pub(super) fn step_settled(&mut self, g: &Tid, l: LabelId) -> bool {
-        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        let a = self.keys_actor(g);
         let Some(t) = self.rotation_at.get(&a).map(|t| t.saturating_add(SETTLE_MS)) else { return true };
         if t <= self.raw_now() {
             return true;
@@ -46,7 +46,7 @@ impl SyncEngine {
         if unopened {
             return false;
         }
-        let a = self.engine.core.secret_actor(g).unwrap_or(*g);
+        let a = self.keys_actor(g);
         !self.engine.keys_write_pending(&a).unwrap_or(true)
     }
 
@@ -70,7 +70,7 @@ impl SyncEngine {
             return Ok(false);
         }
         let (Some(write), Some(head)) = (keys.write.clone(), head) else { return Ok(false) };
-        let a = self.engine.core.secret_actor(&g).unwrap_or(g);
+        let a = self.keys_actor(&g);
         let core = &self.engine.core;
         let ids: Vec<CommitId> = core.on_thing(&a).filter(|c| core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_role())).collect();
         let mut uploads = Vec::new();

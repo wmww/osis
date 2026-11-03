@@ -69,7 +69,7 @@ impl SyncEngine {
         let (secrets, inbox) = self.fill_ranks(&l);
         let mut queue = BTreeSet::new();
         if self.state.cursors.contains_key(&(host, l)) {
-            for b in self.state.of_kind(&l, Kind::Unknown.tag().unwrap_or(0)) {
+            for b in self.state.of_kind(&l, Kind::TAG_UNKNOWN) {
                 let Some(e) = self.state.entries.get(&(l, b)) else { continue };
                 let r = self.rank(&secrets, inbox, &b, &e.wrap);
                 if self.state.is_present(&host, &l, &b) && !self.engine.has_blob(&b) {

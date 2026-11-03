@@ -274,7 +274,7 @@ fn a_covered_body_stays_gone_during_a_fill_spec_sync_6() {
     assert!(at_a.is_disjoint(&before), "deleted at the host");
     f.net.set_online(c, true);
     f.until(|s| s.held().len() >= FILL_BATCH);
-    // past a co-writer's wait to relay it (`relay_due`, at most 30 s), with passes (each 60 s)
+    // past a co-writer's wait to relay it (`relay_at`, at most 30 s), with passes (each 60 s)
     let passes = f.net.sync(c).pass_stats().passes;
     for _ in 0..2 {
         f.net.tick(61_000);

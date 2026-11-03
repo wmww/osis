@@ -28,7 +28,7 @@ impl SyncEngine {
                 let fate = self.deletable(at, &id, &e, &desired, true, &mut note)?;
                 note.leave(commit, left);
                 if !settled {
-                    left.held_back.insert(commit);
+                    left.waits.held_back.insert(commit);
                 }
                 match fate {
                     Fate::Wait => continue,
@@ -66,7 +66,7 @@ impl SyncEngine {
                     self.forget_entry_blob(&id)?;
                 }
                 Some(t) => {
-                    left.due_blobs.entry(t).or_default().insert(id);
+                    left.at(t, Touch::Blob(id));
                 }
                 None => {}
             }
@@ -371,7 +371,7 @@ impl SyncEngine {
             let fate = self.deletable(at, &id, &e, &desired, true, &mut note)?;
             note.leave(commit, left);
             if !settled {
-                left.held_back.insert(commit);
+                left.waits.held_back.insert(commit);
             }
             match fate {
                 Fate::Keep | Fate::Wait => {}
@@ -478,7 +478,7 @@ impl SyncEngine {
                     items.push(item);
                 }
                 None => {
-                    left.keyless.insert(b.commit);
+                    left.waits.keyless.insert(b.commit);
                 }
             }
         }

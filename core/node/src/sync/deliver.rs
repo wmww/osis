@@ -47,13 +47,11 @@ impl SyncEngine {
         let things: BTreeSet<Tid> = done.commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).collect();
         self.take_done(done)?;
         // placements wait for a pass: the labels they concern and those they went under
-        if all || things.iter().any(|t| self.engine.core.is_key_actor(t)) {
+        if all {
             self.mark_dirty();
         } else {
-            let scope = self.downstream(&things);
-            self.mark_dirty_of(&scope);
-            let under: BTreeSet<LabelId> = self.state.touched.iter().map(|(l, _)| *l).collect();
-            self.mark_labels(&under);
+            let under: Vec<LabelId> = self.state.touched.iter().map(|(l, _)| *l).collect::<BTreeSet<_>>().into_iter().collect();
+            self.mark_things(&things, &under);
         }
         Ok(())
     }
@@ -527,7 +525,7 @@ impl SyncEngine {
                 continue;
             }
             if explicit {
-                let since = [g, t].iter().filter_map(|a| self.roles_seen.get(a)).copied().max().unwrap_or(0);
+                let since = [g, t].iter().filter_map(|a| self.role_change.get(a)).map(|x| x.0).max().unwrap_or(0);
                 let mut holding: BTreeSet<Tid> = BTreeSet::new();
                 for x in &scope {
                     holding.extend(self.groups_holding(x));
@@ -559,7 +557,7 @@ impl SyncEngine {
 
     /// Whether a complete pass may stop waiting for peers on `actor`'s change: `peer_pass_wait_ms`
     /// after its last remote role commit, or after the start when none applied in this run
-    /// (`roles_at` is memory only; spec/permissions.md §3 bounds the wait after the change):
+    /// (`role_change` is memory only; spec/permissions.md §3 bounds the wait after the change):
     /// a restarted node first hears its peers out.
     pub(crate) fn peers_waited(&self, actor: &Tid) -> bool {
         self.peer_wait_end(actor) <= self.raw_now()
@@ -567,7 +565,7 @@ impl SyncEngine {
 
     /// When the wait of `peers_waited` ends (raw ms).
     pub(crate) fn peer_wait_end(&self, actor: &Tid) -> u64 {
-        self.roles_at.get(actor).copied().unwrap_or(self.started).saturating_add(self.cfg.peer_pass_wait_ms)
+        self.role_change.get(actor).map_or(self.started, |x| x.1).saturating_add(self.cfg.peer_pass_wait_ms)
     }
 
     /// Whether label `l` passed completely after `since` (spec/permissions.md §3): at each of
@@ -589,7 +587,7 @@ impl SyncEngine {
 
 impl SyncState for SyncEngine {
     fn complete_pass(&self, actor: &Tid) -> bool {
-        let since = self.roles_seen.get(actor).copied().unwrap_or(0);
+        let since = self.role_change.get(actor).map_or(0, |x| x.0);
         let waited = self.peers_waited(actor);
         // no label of the actor known (at start, before `labels()`): no pass yet
         let mut labels = self.synced.actors.iter().filter(|(_, (a, _))| a == actor).peekable();

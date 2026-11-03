@@ -48,7 +48,7 @@ const SETTLE_MS: u64 = 30_000;
 
 /// The least a writer waits, after receiving another node's commit or seeing a deposit, before
 /// it uploads or promotes it itself (ms); the most is `SETTLE_MS`. The point in between is this
-/// node's per blob (`relay_due`), so the author or the first co-writer is usually done and the
+/// node's per blob (`relay_delay`), so the author or the first co-writer is usually done and the
 /// others skip it: writers online together otherwise each sent a copy (spec/sync.md §6, §7).
 const RELAY_MIN_MS: u64 = 5_000;
 
@@ -100,9 +100,9 @@ enum Fate {
 /// What a keep-at-most body before its timed delete waits on (`keep_at_most_due`), its aspect.
 enum AtMost {
     /// No write died: only a death (it marks the body) or another change of the aspect's state
-    /// (`Work::at_most`) changes its bound or liveness.
+    /// (`Waits::at_most`) changes its bound or liveness.
     Live(Tid, Ak),
-    /// A write died: any write may also drop the dots it still holds (`Work::waits`).
+    /// A write died: any write may also drop the dots it still holds (`Waits::aspects`).
     Dead(Tid, Ak),
 }
 
@@ -163,6 +163,11 @@ struct At<'a> {
 /// A deposited entry due for promotion: (blob, entry, commit, its parts).
 type Deposit = (BlobId, Entry, CommitId, Vec<(usize, usize)>);
 
+/// Whether a commit writes a heartbeat (`seen.0`).
+fn is_beat(h: &osis_commit::Header) -> bool {
+    h.aspects.iter().any(|a| a.ak.as_str() == "seen.0")
+}
+
 pub(super) fn is_snapshot(k: CKind) -> bool {
     matches!(k, CKind::ContentSnapshot | CKind::RoleSnapshot)
 }
@@ -204,7 +209,7 @@ impl SyncEngine {
         let beats: Vec<u64> = self.state.beats.get(&l).into_iter().chain(self.state.stranded.get(&l)).map(|t| t.saturating_add(HEARTBEAT_MIN_INTERVAL_MS)).filter(|t| *t > now).collect();
         let full_passes = self.cfg.full_passes;
         let Some(w) = self.work_mut(conn, l) else { return };
-        let due = w.due.keys().next().into_iter().chain(w.due_blobs.keys().next()).chain(w.until.as_ref()).copied();
+        let due = w.waits.due.keys().next().into_iter().chain(w.until.as_ref()).copied();
         let t = due.chain(beats).fold(now.saturating_add(HEARTBEAT_MIN_INTERVAL_MS), u64::min);
         w.pass_at = if full_passes { 0 } else { t };
     }
@@ -242,7 +247,7 @@ impl SyncEngine {
             return Ok(());
         }
         let p = Head { g, l, host: Some(host), id: head.id(), keys, read_ok };
-        self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, &p, ctx, w, out))
+        self.with_work(&g, Some(conn), l, |s, ctx, w| s.judge_label(conn, host, &p, ctx, w, out))
     }
 
     /// Runs a pass of `l` of `g` over its work set (`conn` `None`: the local pass): the closure
@@ -261,7 +266,7 @@ impl SyncEngine {
         let Some(mut w) = self.work_mut(conn, l).map(std::mem::take) else { return Ok(()) };
         let r = f(self, &ctx, &mut w);
         if r.is_err() {
-            w.full = true;
+            w.touched.full = true;
         }
         if let Some(x) = self.work_mut(conn, l) {
             let meanwhile = std::mem::replace(x, w);
@@ -280,9 +285,8 @@ impl SyncEngine {
 
     /// The pass after the keys and registration (`pass`): over what work set `w` names, or
     /// everything when it says so or an input of the pass changed (`work`).
-    fn judge_label(&mut self, conn: ConnId, p: &Head, ctx: &BodyCtx, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
+    fn judge_label(&mut self, conn: ConnId, host: HostKey, p: &Head, ctx: &BodyCtx, w: &mut Work, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys, read_ok) = (p.g, p.l, &p.keys, p.read_ok);
-        let Some(host) = p.host else { return Ok(()) };
         let (full, scope) = self.begin(&g, &l, w, &ctx.closure);
         self.refetch(conn, host, l, w, out)?;
         // commits the refetch applied may move the closure or published groups: judged with
@@ -297,7 +301,7 @@ impl SyncEngine {
         let J { mut scope, mut left, snaps, mut bodies, judged, unsettled, snapping, replaced } = self.judging(Some(conn), p, ctx, w, scope, full)?;
         let mut sends: Vec<Out> = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         // parked commits travel like at a host: stamped entries are relayed (spec/versioning.md §2)
-        for id in self.state.of_kind(&l, 4) {
+        for id in self.state.of_kind(&l, Kind::TAG_PARKED) {
             if self.state.entries.get(&(l, id)).is_some_and(|e| e.stamp.is_some()) {
                 sends.push(Out { prio: 3, id, fresh: false, of: None });
             }
@@ -324,8 +328,8 @@ impl SyncEngine {
         sends.extend(self.cert_sends(l, &scope));
         // a replaced label with everything to hold already there (`retire_at`)
         let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id));
-        self.send(conn, p, sends, &mut left, out)?;
-        self.clear_inbox(conn, p, out)?;
+        self.send(conn, host, p, sends, &mut left, out)?;
+        self.clear_inbox(conn, host, p, out)?;
         // a commit deposited there this writer has not promoted yet: its chain may come
         if keys.write.is_some() {
             left.again |= self.state.deposited_at(&host, &l).into_iter().any(|b| self.promotable(&l, &b));
@@ -350,9 +354,8 @@ impl SyncEngine {
     /// and is not in flight, stamped when this node writes (promoting due deposits too), else
     /// relayed with its stamp, else deposited (this node's own role writes queued in the
     /// outbox). What the host lacks is judged again next pass (`left`).
-    fn send(&mut self, conn: ConnId, p: &Head, mut sends: Vec<Out>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
+    fn send(&mut self, conn: ConnId, host: HostKey, p: &Head, mut sends: Vec<Out>, left: &mut Left, out: &mut Vec<super::Action>) -> Result<()> {
         let (g, l, keys) = (p.g, p.l, &p.keys);
-        let Some(host) = p.host else { return Ok(()) };
         sends.sort_by_key(|o| o.prio);
         let raw = self.raw_now();
         let mut seen = BTreeSet::new();
@@ -378,12 +381,7 @@ impl SyncEngine {
             let Some(e) = self.state.entries.get(&(l, o.id)).cloned() else { continue };
             let Some(blob) = self.engine.blob(&o.id)? else { continue };
             if let Some(w) = &keys.write {
-                let stamp = osis_label::sign_stamp(w, &l, &o.id, &e.wrap);
-                uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
-                // kept, so a later pass does not promote it again
-                let mut e = e;
-                e.stamp = Some(stamp);
-                self.state.set_entry(l, o.id, e);
+                uploads.push(self.stamped_upload(l, o.id, e, blob, w));
             } else if let Some(stamp) = e.stamp {
                 uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             } else if let Some(d) = &keys.deposit
@@ -427,11 +425,26 @@ impl SyncEngine {
         Ok(())
     }
 
+    /// Stamps entry `id` under `l` and keeps the stamp, so a later pass does not promote it again.
+    pub(super) fn stamp_entry(&mut self, l: LabelId, id: BlobId, mut e: Entry, write: &osis_crypto::SigningSecret) -> osis_crypto::Signature {
+        let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
+        e.stamp = Some(stamp);
+        self.state.set_entry(l, id, e);
+        stamp
+    }
+
+    /// `stamp_entry`, as an upload of `blob`.
+    pub(super) fn stamped_upload(&mut self, l: LabelId, id: BlobId, e: Entry, blob: Vec<u8>, write: &osis_crypto::SigningSecret) -> osis_proto::Entry {
+        let wrap = e.wrap;
+        let stamp = self.stamp_entry(l, id, e, write);
+        osis_proto::Entry { blob, wrap, stamp, replaces: Vec::new() }
+    }
+
     /// Readies `w` for a pass (`prepare`): whether it judges everything, and its scope.
     fn begin(&mut self, g: &Tid, l: &LabelId, w: &mut Work, closure: &std::sync::Arc<BTreeSet<Tid>>) -> (bool, Scope) {
         let full = self.prepare(g, l, w, closure);
         self.stats.passes += 1;
-        let scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.commits), blobs: std::mem::take(&mut w.blobs) } };
+        let scope = if full { Scope::All } else { Scope::Some { commits: std::mem::take(&mut w.touched.commits), blobs: std::mem::take(&mut w.touched.blobs) } };
         (full, scope)
     }
 
@@ -489,9 +502,9 @@ impl SyncEngine {
     /// outstanding), and so are the commits of aspects that became or stopped being unsettled.
     /// Returns whether the pass judges everything.
     fn take_inputs(&mut self, p: &Head, w: &mut Work, scope: &mut Scope, mut full: bool, inputs: Inputs, (unsettled, snapping): &(Unsettled, Unsettled)) -> bool {
-        let flags = (unsettled.is_empty(), !snapping.contains(&None));
-        let release = w.settled.is_some_and(|(s, n)| !s && flags.0 || !n && flags.1);
-        w.settled = Some(flags);
+        let withheld = (!unsettled.is_empty(), snapping.contains(&None));
+        let release = w.withheld.0 && !withheld.0 || w.withheld.1 && !withheld.1;
+        w.withheld = withheld;
         let mut moved: BTreeSet<(Tid, Ak)> = unsettled.iter().chain(snapping.iter()).flatten().cloned().collect();
         let was: BTreeSet<(Tid, Ak)> = w.unsettled.iter().flatten().cloned().collect();
         moved = moved.symmetric_difference(&was).cloned().collect();
@@ -505,7 +518,7 @@ impl SyncEngine {
         w.inputs = Some(inputs);
         if let Scope::Some { commits, .. } = scope {
             if release {
-                commits.extend(std::mem::take(&mut w.held_back));
+                commits.extend(std::mem::take(&mut w.waits.held_back));
             }
             for (t, a) in &moved {
                 commits.extend(self.engine.core.durable_on(&(*t, a.clone())));
@@ -553,7 +566,7 @@ impl SyncEngine {
     /// back what the uncovered roles would sign or wrap.
     fn usable_keys(&mut self, g: &Tid, index: u64, head: &osis_label::Step) -> Result<(HeadKeys, bool)> {
         let mut keys = self.engine.head_keys(g, index, head)?;
-        let still = self.uncovered(g)?;
+        let still = self.uncovered(g, true)?;
         if still.contains(&Role::Write) {
             keys.write = None;
         }
@@ -617,14 +630,13 @@ impl SyncEngine {
                 cands.extend(&ours);
             }
             for id in cands {
-                let Some(mut e) = self.state.entries.get(&(l, id)).cloned() else { continue };
+                let Some(e) = self.state.entries.get(&(l, id)).cloned() else { continue };
                 if e.stamp.is_none() && (e.cert || ours.contains(&id)) {
-                    e.stamp = Some(osis_label::sign_stamp(wk, &l, &id, &e.wrap));
-                    self.state.set_entry(l, id, e);
+                    self.stamp_entry(l, id, e, wk);
                 }
             }
         }
-        let settled = self.unsettled_of(!w.unopened.is_empty())?.is_empty();
+        let settled = self.unsettled_sets(!w.unopened.is_empty(), false)?.0.is_empty();
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
         self.local_deletions(&p.at(&snaps, settled), &bodies, &scope, &mut left)?;
         // a node serving the label alone decides here: nobody runs a pass at a host for it
@@ -646,7 +658,7 @@ impl SyncEngine {
     /// (`dropped_chunks`): every one, or those its commits list and its blobs.
     fn chunk_entries(&self, l: &LabelId, scope: &Scope, keep: impl Fn(&Self, &BlobId) -> bool) -> BTreeSet<BlobId> {
         match scope {
-            Scope::All => self.state.of_kind(l, 0).into_iter().filter(|b| keep(self, b)).collect(),
+            Scope::All => self.state.of_kind(l, Kind::TAG_UNKNOWN).into_iter().filter(|b| keep(self, b)).collect(),
             Scope::Some { commits, blobs } => {
                 let listed = commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.chunks.iter().map(|ch| ch.blob).collect::<Vec<_>>());
                 listed.chain(blobs.iter().copied()).filter(|b| self.state.entries.get(&(*l, *b)).is_some_and(|e| e.kind == Kind::Unknown) && keep(self, b)).collect()
@@ -771,15 +783,10 @@ impl SyncEngine {
     /// Aspects this node cannot judge deletions on yet: those of pending commits; every aspect
     /// (`None` in the set) while an entry of the label opens under a held secret and is not
     /// applied (`unopened`: a snapshot not fetched or applied yet, spec/sync.md §6: may-hold).
-    pub(super) fn unsettled_of(&mut self, unopened: bool) -> Result<Unsettled> {
-        Ok(self.unsettled_sets(unopened, false)?.0)
-    }
-
-    /// `unsettled_of`, and the aspects where a body is not established uncovered yet (spec/sync.md
-    /// §6), so not must-hold: those of pending snapshots (pages not fetched, deltas missing), and
-    /// every aspect (`None`) while an entry of the label that opens under a held secret is being
-    /// fetched (`fetching`; it may be a snapshot). Other pending commits settle nothing there (two
-    /// writers' pending commits otherwise withheld exactly what the other waited for), nor do
+    /// And the aspects where a body is not established uncovered yet (spec/sync.md §6), so not
+    /// must-hold: those of pending snapshots (pages not fetched, deltas missing), and every aspect
+    /// (`None`) while an entry of the label that opens under a held secret is being fetched
+    /// (`fetching`; it may be a snapshot). Other pending commits settle nothing there, nor do
     /// entries that do not open as a commit or whose bytes no host delivers.
     pub(super) fn unsettled_sets(&mut self, unopened: bool, fetching: bool) -> Result<(Unsettled, Unsettled)> {
         // what pends moves only with the engine

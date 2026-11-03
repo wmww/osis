@@ -95,6 +95,12 @@ impl LConn {
         self.phase == Phase::Open && self.fill.as_ref().is_some_and(|f| !f.first_done)
     }
 
+    /// A pass is wanted; a fill's at its next due (`sync_label`), its end or this node's own next
+    /// write, not per batch applied.
+    pub(super) fn want_pass(&mut self) {
+        self.dirty |= self.fill.is_none();
+    }
+
     /// Ready, with no pass wanted and no fill under way.
     pub(super) fn idle(&self) -> bool {
         self.ready() && !self.dirty && self.fill.is_none()
@@ -204,27 +210,24 @@ impl SyncEngine {
     /// The hosts and co-reader nodes to keep connections to (true: a node).
     pub(super) fn wanted_hosts(&mut self) -> BTreeMap<HostKey, (Address, bool)> {
         let mut m: BTreeMap<HostKey, (Address, bool)> = self.cfg.hosts.iter().map(|a| (a.key, (a.clone(), false))).collect();
-        for (_, l) in self.labels() {
-            // an admin's word: hosts only (`peer://` nodes come from `reach.0` or a link)
-            for a in l.hosts.iter().filter(|a| !peers::is_peer(a)).cloned() {
-                m.entry(a.key).or_insert((a, false));
-            }
-        }
-        for h in self.state.hints.values() {
-            for a in h.hosts.iter().filter(|a| !peers::is_peer(a)) {
+        // an admin's word: hosts only (`peer://` nodes come from `reach.0` or a link)
+        fn add<'a>(m: &mut BTreeMap<HostKey, (Address, bool)>, hosts: impl IntoIterator<Item = &'a Address>) {
+            for a in hosts.into_iter().filter(|a| !peers::is_peer(a)) {
                 m.entry(a.key).or_insert_with(|| (a.clone(), false));
             }
         }
-        // a queued deposit's host until it takes it (an inbox host of no label synced here)
-        for o in self.state.outbox.values().filter(|o| !peers::is_peer(&o.host)) {
-            m.entry(o.host.key).or_insert_with(|| (o.host.clone(), false));
+        for (_, l) in self.labels() {
+            add(&mut m, &l.hosts);
         }
+        for h in self.state.hints.values() {
+            add(&mut m, &h.hosts);
+        }
+        // a queued deposit's host until it takes it (an inbox host of no label synced here)
+        add(&mut m, self.state.outbox.values().map(|o| &o.host));
         let reads: Vec<Tid> = self.receipts.values().map(|r| r.group).collect();
         for g in reads {
             for l in self.engine.labels_of(&g) {
-                for a in l.hosts.iter().filter(|a| !peers::is_peer(a)) {
-                    m.entry(a.key).or_insert_with(|| (a.clone(), false));
-                }
+                add(&mut m, &l.hosts);
             }
         }
         if self.cfg.peers {

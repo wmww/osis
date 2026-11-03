@@ -113,7 +113,7 @@ impl SyncEngine {
             }
             let Some(due) = self.engine.drop_from(&c, t, ak)? else { continue };
             if due > now.0 {
-                left.at(due, c);
+                left.at(due, super::state::Touch::Commit(c));
                 continue;
             }
             match self.engine.covered(&s, &c, t, ak)? {
@@ -164,7 +164,7 @@ impl SyncEngine {
         // placing never rotates (a rotation's own copies placed here recursed into rotations):
         // under an epoch that does not cover a known departure it waits for the next pass,
         // which rotates first
-        if self.uncovered_now(g)?.contains(&Role::Read) {
+        if self.uncovered(g, false)?.contains(&Role::Read) {
             self.deferred.push((*g, *c, aspects.clone(), owed));
             return Ok(());
         }

@@ -186,15 +186,21 @@ pub enum Touch {
 }
 
 impl Kind {
+    pub const TAG_UNKNOWN: u8 = 0;
+    pub const TAG_INBOX: u8 = 2;
+    pub const TAG_BAD: u8 = 3;
+    pub const TAG_PARKED: u8 = 4;
+    pub const TAG_REQUEST: u8 = 5;
+
     /// The index tag of a kind other than `Commit` (`State::by_kind`).
     pub fn tag(&self) -> Option<u8> {
         match self {
-            Kind::Unknown => Some(0),
+            Kind::Unknown => Some(Kind::TAG_UNKNOWN),
             Kind::Commit { .. } => None,
-            Kind::Inbox(_) => Some(2),
-            Kind::Bad => Some(3),
-            Kind::Parked(_) => Some(4),
-            Kind::Request(_) => Some(5),
+            Kind::Inbox(_) => Some(Kind::TAG_INBOX),
+            Kind::Bad => Some(Kind::TAG_BAD),
+            Kind::Parked(_) => Some(Kind::TAG_PARKED),
+            Kind::Request(_) => Some(Kind::TAG_REQUEST),
         }
     }
 }
