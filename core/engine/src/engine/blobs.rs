@@ -1,6 +1,7 @@
 //! Blob ciphertexts in the store, behind the traits of osis-label (pages, chunks) and
 //! osis-commit (header-list chunk trees).
 
+use crate::events::ChangeId;
 use osis_base::{Ak, BlobId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::Transaction;
@@ -79,8 +80,17 @@ impl crate::engine::Engine {
             }
             // a read that missed it: watches read again (one still missing a blob notes it again)
             if fresh && !tx.core.missed.is_empty() {
-                let changed = std::mem::take(&mut tx.core.missed).into_iter().collect();
-                tx.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
+                let (mut changed, mut entries) = (Vec::new(), Vec::new());
+                for (tid, ak, entry) in std::mem::take(&mut tx.core.missed) {
+                    match entry {
+                        None => changed.push((tid, ak)),
+                        Some(c) => entries.push((tid, ak, c)),
+                    }
+                }
+                if !changed.is_empty() {
+                    tx.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
+                }
+                tx.core.history_touched(entries);
             }
             Ok(())
         })?;
@@ -89,10 +99,10 @@ impl crate::engine::Engine {
         Ok(())
     }
 
-    /// A read of `tid`'s `ak` found a link whose blob is not held: the next blob stored
-    /// re-delivers the aspect to watches (`put_blobs`).
-    pub fn missed_blob(&mut self, tid: Tid, ak: Ak) {
-        self.core.missed.insert((tid, ak));
+    /// A read of `tid`'s `ak` (its state, or with `entry` that change's history entry) found a
+    /// link whose blob is not held: the next blob stored re-delivers it to watches (`put_blobs`).
+    pub fn missed_blob(&mut self, tid: Tid, ak: Ak, entry: Option<ChangeId>) {
+        self.core.missed.insert((tid, ak, entry));
     }
 
     pub fn has_blob(&mut self, id: &BlobId) -> bool {

@@ -665,10 +665,10 @@ pub struct Core {
     /// `Engine::live_trees` per thing, cleared by every transaction that changes the indexes or
     /// a state (`touch`, `rollback`) and when blobs arrive (`put_blobs`).
     pub live_trees: BTreeMap<Tid, LiveTrees>,
-    /// Aspects a read found a link of whose blob is not held (`Engine::missed_blob`): the next
-    /// blob stored re-delivers them to watches (`put_blobs`, `Cause::Fetched`). Bounded by the
-    /// aspects held.
-    pub missed: BTreeSet<(Tid, Ak)>,
+    /// Aspects (`None`) and history entries (`Some`, that change's) a read found a link of whose
+    /// blob is not held (`Engine::missed_blob`): the next blob stored re-delivers them to watches
+    /// (`put_blobs`: `Cause::Fetched`, `Event::History`). Bounded by the aspects and entries held.
+    pub missed: BTreeSet<(Tid, Ak, Option<crate::events::ChangeId>)>,
     /// `Engine::bodies` per commit without their plaintexts (the label pass's cost): dropped
     /// when the commit's record is written (late parts, drops), when a thing it touches gets
     /// its creation record, and all when an actor gets secrets of its own (reader actors move);

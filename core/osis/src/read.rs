@@ -7,7 +7,7 @@ use crate::handle::Osis;
 use crate::port::method as m;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
-use osis_node::{Diagnostic, Engine};
+use osis_node::{ChangeId, Diagnostic, Engine};
 use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -193,7 +193,7 @@ impl Reader<'_> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, self.limit, &mut bad)?;
         if bad.contains(&osis_label::Error::Missing) {
-            self.e.missed_blob(*tid, ak.clone());
+            self.e.missed_blob(*tid, ak.clone(), None);
         }
         if !bad.is_empty() {
             // each kind of failure once: the detail stays small however many links fail
@@ -203,10 +203,15 @@ impl Reader<'_> {
         Ok(v)
     }
 
-    /// `v` with its links replaced, up to `limit` bytes; any unreadable link fails it whole.
-    pub(crate) fn materialized(&mut self, tid: &Tid, v: Value, limit: usize) -> Result<Value> {
+    /// `v` (the body of `id`'s history entry on `tid`'s `ak`) with its links replaced, up to
+    /// `limit` bytes; any unreadable link fails it whole. A blob not held is noted: its arrival
+    /// re-delivers the entry to history watches (`Engine::missed_blob`).
+    pub(crate) fn materialized(&mut self, tid: &Tid, ak: &Ak, id: ChangeId, v: Value, limit: usize) -> Result<Value> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, limit, &mut bad)?;
+        if bad.contains(&osis_label::Error::Missing) {
+            self.e.missed_blob(*tid, ak.clone(), Some(id));
+        }
         match (bad.into_iter().next(), v) {
             (None, Some(v)) => Ok(v),
             (err, _) => Err(Error::Invalid(err.map_or_else(|| "unreadable link".into(), |e| e.to_string()))),
