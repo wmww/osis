@@ -555,8 +555,8 @@ pub(crate) fn valueless(core: &Core, c: &CommitId, ai: usize) -> bool {
 /// import does not hold by right: an origin with a delta on the thing owns its dots there (the
 /// import is void, §7), judged here when the origin arrived first and by `origin_arrived` when it
 /// comes later.
-/// Complete for an import: a held import holds no write outside its origins' sources (refused
-/// as bad input, `apply::judge_part`).
+/// Complete for an import's values: a held import holds no stamp outside its origins' sources
+/// but anchors' creations and sibling keys (refused as bad input, `apply::judge_part`).
 pub(crate) fn writes_of(core: &Core, h: &Header, id: &CommitId, ai: usize) -> Vec<Owned> {
     let Some(a) = h.aspects.get(ai) else { return Vec::new() };
     if h.kind == Kind::Import {

@@ -555,10 +555,12 @@ fn judge_part(tx: &mut Tx<'_>, h: &Header, id: &CommitId, p: &osis_commit::Part,
     // a snapshot's or an import's carried writes stamped after the commit (spec/crdt.md §8, §7: a
     // node's next stamp exceeds every stamp it holds, §2.2)
     let carries = h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot || h.kind == Kind::Import;
-    // an import's writes all lie under its origins' sources (spec/permissions.md §7), as a
-    // writer's are its own (spec/crdt.md §3.3 rule 7). Invariant (security, spec/requirements.md
-    // Purge): so `retention::writes_of`, its origins' dots, is every write it holds, and going
-    // value-less takes all of them; judged from the part and header alone, in every order.
+    // an import's stamps all lie under its origins' sources, anchors' creations and sibling keys
+    // aside (spec/permissions.md §7), as a writer's are its own (spec/crdt.md §3.3 rule 7).
+    // Invariant (security, spec/requirements.md Purge): every value it holds is the payload of
+    // such a stamp, so `retention::writes_of`, its origins' dots, covers them and going value-less
+    // takes them all (map keys aside, issues/purge-keeps-repeated-key.md); judged from the part
+    // and header alone, in every order.
     let origins: Vec<osis_crdt::Source> = h.origins.iter().filter(|_| h.kind == Kind::Import).map(|o| osis_crdt::Source::commit(o.commit)).collect();
     // (tests let a local writer break it, `rules`, to test receivers)
     let outside = |f: &osis_crdt::Fragment| rules && h.kind == Kind::Import && f.stamps_outside(&|s| origins.contains(s));
