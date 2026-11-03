@@ -1595,11 +1595,12 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
                 orphans.extend(held_orphan(&gf, &wf));
                 x.dropped != y.dropped && CommitDigest { dropped: y.dropped.clone(), ..x.clone() } == *y && x.dropped.symmetric_difference(&y.dropped).copied().collect::<BTreeSet<_>>() == orphans
             };
-            // ... and counted held there: `bounded_held` differs per aspect by those bodies alone
+            // ... and counted held there: `bounded_held` differs per aspect by those bodies alone,
+            // or on an aspect with a part held pending at its expiry (its bodies may differ)
             let orphans_counted = || {
                 let count = |a: &Facts, b: &Facts, k: &(String, String)| a.iter().filter(|(x, f)| (&x.1, &x.2) == (&k.0, &k.1) && f.orphan && b.get(*x).is_some_and(|o| !o.orphan)).count() as i64;
                 let (x, y) = (bounded_counts(w.tables.get("bounded_held")), bounded_counts(g.tables.get("bounded_held")));
-                x.keys().chain(y.keys()).all(|k| y.get(k).unwrap_or(&0) - x.get(k).unwrap_or(&0) == count(&gf, &wf, k) - count(&wf, &gf, k))
+                x.keys().chain(y.keys()).all(|k| expired.contains(k) || y.get(k).unwrap_or(&0) - x.get(k).unwrap_or(&0) == count(&gf, &wf, k) - count(&wf, &gf, k))
             };
             let exempt = |f: &IndexField| match f {
                 IndexField::Table("bounded_held") => orphans_counted(),
@@ -4294,6 +4295,15 @@ fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
 #[ignore = "tier 2"]
 fn snapshot_purged_fell_purged_reads_alike_seed_3265() {
     run("snapshot_purged_fell_purged_reads_alike_seed_3265", 3265..3266, 60, LARGE, purge_history);
+}
+
+// spec/commits.md §5: a part held pending at its expiry counts as never received, so the bodies of
+// its aspect may differ by arrival order, and with them that aspect's `bounded_held` count a day
+// later (reverse order holds one more `t:reg.0` body) (seed 29340).
+#[test]
+#[ignore = "tier 2"]
+fn expired_pending_aspect_counts_bodies_apart_seed_29340() {
+    run("expired_pending_aspect_counts_bodies_apart_seed_29340", 29340..29341, 60, LARGE, purge_history);
 }
 
 // spec/permissions.md §8: a by-author request standing, falling and another rising over a part with
