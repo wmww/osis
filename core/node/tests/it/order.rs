@@ -1331,7 +1331,9 @@ impl Judged {
 }
 
 /// A state's text, with what spec/crdt.md §5.7 leaves to the node taken out: a deleted text
-/// element's char (a node may drop it locally; a reopen has).
+/// element's char (a node may drop it locally; a reopen has), also once an undelete's copy of
+/// it reads in its place (seed 198 of `required_drops_read_alike_large`: dropped at a reopen
+/// while deleted, then undeleted).
 fn plain_state(state: &str) -> String {
     const AT: &str = "SeqElem {";
     let mut parts = state.split(AT);
@@ -1339,7 +1341,8 @@ fn plain_state(state: &str) -> String {
     for el in parts {
         out.push_str(AT);
         let deleted = el.find("deleted: Some").is_some_and(|i| el[i..].find("span:").is_some_and(|j| el[i..i + j].contains(", true))")));
-        match el.find("content: Char(").filter(|_| deleted) {
+        let copied = |i: usize| el[i..].strip_prefix("content: Char(").and_then(|c| c.get(..3)).is_some_and(|c| el.contains(&format!("undel: Some({c})")));
+        match el.find("content: Char(").filter(|i| deleted || copied(*i)) {
             Some(i) => {
                 let j = i + el[i..].find(", pos:").unwrap();
                 out.push_str(&el[..i]);
@@ -4391,4 +4394,28 @@ fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), Forged { by: 0, a: 5, b: 7, how: 2, op: 19, k: 0, v: 6 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
     check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+
+// spec/permissions.md §5.2, seed 7340054 of `new_device_alike_large`: 1 puts k0, 0 writes a
+// field into it, 1 removes k0 (its reset prunes the creation) and 0 compacts; 0 demotes 1 below
+// both. The snapshot holds the record k0 without its creation, alive by 0's field: it keeps the
+// record, so a node holding 1's invalid deltas reads k0 as a node holding the snapshot alone.
+#[test]
+fn new_device_record_without_creation_kept_spec_permissions_5_2() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 1, t: 3, op: 1, k: 2, v: 6 }), a(New { by: 2, parent: 1, write: false }), Advance { who: None, ms: 6961542 }, a(New { by: 0, parent: 1, write: true }), a(Nested { by: 1, other: 0, t: 0, k: 0, text: false, compact: false, also: false }), a(Breaking { by: 1, t: 1, op: 25, v: 9, fits: false }), Sync { from: 1, to: 0 }, a(Compact { by: 0, t: 0, op: 3 }), Demote { by: 0, t: 0, holder: 1, at: 1, to_read: false }];
+    check_new_device(7340054, &h).unwrap();
+}
+
+// spec/crdt.md §5.7, seed 198 of `required_drops_read_alike_large` (general): 1 deletes a char
+// and undoes the delete. A node reopening while it is deleted drops its char; the undelete's
+// copy then reads in its place (`plain_state`).
+#[test]
+fn drops_alike_undeleted_char_after_reopen_spec_crdt_5_7() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Demote { by: 2, t: 7, holder: 1, at: 3, to_read: true }), Send { from: 2, to: 1, back: 0 }, a(Demote { by: 2, t: 3, holder: 2, at: 5, to_read: false }), a(Breaking { by: 1, t: 2, op: 10, v: 5, fits: false }), a(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Write) }), Sync { from: 0, to: 1 }, Forged { by: 1, a: 0, b: 4, how: 1, op: 22, k: 1, v: 8 }, a(Undo { by: 1, back: 1 })];
+    drops_alike(198, &h, LARGE).unwrap();
 }

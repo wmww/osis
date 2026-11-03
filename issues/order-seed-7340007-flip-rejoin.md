@@ -1,0 +1,12 @@
+# Order seed 7340007: valid writes in a value-less record lost by arrival order
+> Summary: `arrival_order_alike_large` seed 7340007 (len 60) fails on main: writer 1's valid put nested in a record whose creating delta is expired then invalid stays in one order and is gone in another; likely the flip that makes 1's commits valid again rejoins its body against the wrong vouching snapshots. Not fixed.
+> Tags: engine, tests
+
+Replay: `OSIS_ORDER_SEED=7340007 OSIS_ORDER_LEN=60 cargo test -p osis-node --test it order::arrival_order_alike_large_spec_permissions_5_2 -- --ignored --exact` (shrink about 12 min). Shrunk, `check(7340007, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true })`:
+`h = vec![NewTop { by: 1 }, Aim(Typed { by: 2, t: 7, op: 28, k: 0, v: 9 }), Aim(Typed { by: 2, t: 7, op: 22, k: 1, v: 4 }), Send { from: 2, to: 1, back: 1 }, NewTop { by: 2 }, Aim(Edge { by: 0, t: 5, holder: 2, role: Some(Read) }), Advance { who: None, ms: 6647992 }, Aim(Nested { by: 0, other: 1, t: 3, k: 2, text: false, compact: true, also: true }), Aim(Demote { by: 0, t: 5, holder: 1, at: 4, to_read: true }), NewTop { by: 1 }, Aim(Nested { by: 1, other: 0, t: 4, k: 0, text: false, compact: true, also: false }), NewTop { by: 1 }, NewTop { by: 1 }, Forged { by: 0, a: 6, b: 6, how: 2, op: 17, k: 1, v: 2 }]`
+
+What happens on `t:map.0` (pack numbers as played):
+- #10, peer 2: puts k0 (record `Ed0W:1`) with an expiry already past: dropped value-less, so the record is key-erased. #11 also peer 2. #13 (role, ts 5) makes #10 and #11 invalid.
+- #15/#16: peer 1 writes and compacts; #17 demotes peer 1 (its #15, #16, #19 invalid), #23 re-grants it (all valid again). #19, peer 1: a put of k0 that wrote inner entries `:2`, `:3` into the key-erased record `Ed0W:1`. #20: peer 0's valid snapshot.
+- As made (#13 early; #19 arrives invalid, valid at #23): #19's entries in `Ed0W:1` are gone at the end. Held set without 13, 14, 17, 20, 23, then those (#13 last): they stay. `rebuild_state` keeps each node's own result (it joins the current state), so it does not say which is right.
+- By spec/crdt.md §4.6 the valid snapshots' value-less copy of `Ed0W:1`'s creation keeps the record, so the valid nested writes should stay: the as-made order looks wrong. Suspect: when #23 flips #16 and #19 valid, #19's body is rejoined (stripped by `Unmerge`) before #16 counts as a valid vouching snapshot, or a flip path strips without `vouches`. Check `Unmerge::of` timing in the flip in apply/.
