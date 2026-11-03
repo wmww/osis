@@ -1180,3 +1180,176 @@ fn pending_grants_are_not_cleared_spec_sync_5() {
     assert!(near.iter().all(|x| held.contains(x)), "kept while pending");
     assert_eq!(far.iter().filter(|x| held.contains(x)).count() as u64, n, "too far ahead counts");
 }
+
+/// `n` real invites from Alice to Bob, a second apart, each on a new thing: their commits.
+fn invites(net: &mut Net, a: usize, alice: Tid, bob: Tid, n: usize) -> Vec<osis_base::CommitId> {
+    let mut commits = Vec::new();
+    for _ in 0..n {
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, alice);
+        m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        commits.push(grant_commit(net, a, t, bob));
+        net.advance(1_000);
+    }
+    commits
+}
+
+/// Node `from` deposits at the host under `bob`'s inbox a blob that opens to nothing: `n` of them, while the budget takes them, expiring at `expiry`.
+fn deposit_junk(net: &mut Net, from: usize, (host, l): (usize, &LabelId), bob: Tid, n: u64, expiry: u64) -> Vec<osis_base::BlobId> {
+    let seed = net.engine(from).deposit_seed(&bob).unwrap().unwrap();
+    let d = osis_crypto::deposit_key(&seed, l);
+    let mut rng = osis_crypto::SeededRng::from_u64(expiry);
+    let mut out = Vec::new();
+    for _ in 0..n {
+        let prefix = osis_label::Prefix::new(osis_label::Prefix::random_salt(&mut rng), Some(osis_base::WallMs(expiry)), Vec::new()).unwrap();
+        let (_, blob) = osis_label::frame(&prefix, b"junk", &mut rng).unwrap();
+        let id = osis_label::blob_id(&blob);
+        let wrap = osis_crypto::filler_wrap(&mut rng);
+        let sig = osis_label::sign_deposit(&d, l, &id, &wrap);
+        crate::wrap_poison::send(net, from, host, osis_proto::Message::Deposit { id: 0x4000_0001, label: *l, blob, wrap, sig });
+        out.push(id);
+    }
+    assert!(out.iter().all(|x| net.host_ids(host, l).contains(x)), "the host took them");
+    out
+}
+
+// spec/sync.md §5: a stranger's deposits that open to nothing, expiring after real requests, go before them: real deposits over the wire while Bob is away
+#[test]
+fn junk_goes_before_real_requests_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    net.set_online(b, false);
+    let real = invites(&mut net, a, alice, bob, 10);
+    let until = net.now() + INBOX_LIFETIME_MS;
+    let junk = deposit_junk(&mut net, a, (host, &home), bob, 40, until);
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let mut seen = requests(&mut net, b);
+    seen.sort();
+    let mut want = real.clone();
+    want.sort();
+    assert_eq!(seen, want, "every request stays");
+    let held = net.host_ids(host, &home);
+    assert_eq!(junk.iter().filter(|x| held.contains(x)).count(), osis_base::format::INBOX_WAITING - real.len(), "the junk goes down to the cap");
+}
+
+// spec/sync.md §5: more real invites than the cap while their user is away: the latest stay, and the rest are lost to her until re-sent
+#[test]
+fn real_requests_past_the_cap_keep_the_latest_spec_sync_5() {
+    let (mut net, _, a, b, alice, bob, _, _) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    net.set_online(b, false);
+    let n = osis_base::format::INBOX_WAITING;
+    let real = invites(&mut net, a, alice, bob, n + 8);
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let mut seen = requests(&mut net, b);
+    seen.sort();
+    let mut want = real[8..].to_vec();
+    want.sort();
+    assert_eq!(seen, want);
+}
+
+// spec/sync.md §5: a person's new device clears as the old one would, once its first sync is whole: requests stay, junk goes
+#[test]
+fn fresh_device_keeps_requests_over_junk_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob, _, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let real = invites(&mut net, a, alice, bob, 10);
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    let until = net.now() + INBOX_LIFETIME_MS;
+    net.set_online(b, false);
+    let junk = deposit_junk(&mut net, a, (host, &home), bob, 40, until);
+    let b2 = net.node(3, &[host]);
+    net.nodes[b2].accepts = false;
+    net.pair(b2, b);
+    let b2t = net.tid(b2);
+    let done = net.engine(b).pair(&bob, &b2t).unwrap();
+    let paired = done.commits[0];
+    for (_, pks) in net.sync(b).take_direct() {
+        for pk in pks {
+            let _ = net.engine(b2).ingest(&pk.bytes, pk.blobs);
+        }
+    }
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    for (_, pks) in net.sync(b).take_direct() {
+        for pk in pks {
+            let _ = net.engine(b2).ingest(&pk.bytes, pk.blobs);
+        }
+    }
+    let done = net.engine(b2).paired(&bob, &paired).unwrap();
+    let acts = net.sync(b2).carry_out(done).unwrap();
+    net.actions(b2, acts);
+    for _ in 0..6 {
+        net.advance(70_000);
+    }
+    let mut seen = requests(&mut net, b2);
+    seen.sort();
+    let mut want = real.clone();
+    want.sort();
+    assert_eq!(seen, want, "the new device sees every request");
+    let held = net.host_ids(host, &home);
+    assert!(junk.iter().filter(|x| held.contains(x)).count() <= osis_base::format::INBOX_WAITING - real.len());
+}
+
+// spec/sync.md §5: an ownerless group's label is its own inbox, and its readers' heartbeats are deposits past the cap: its admin keeps them all
+#[test]
+fn readers_burst_under_a_group_inbox_stays_spec_sync_5() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let addr = net.address(host);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (o, done) = net.engine(a).create_ownerless(&alice.person).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (l, acts) = net.sync(a).create_label(&o, vec![addr.clone()]).unwrap();
+    net.actions(a, acts);
+    net.run();
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let mut readers = Vec::new();
+    for i in 0..4 {
+        let r = net.node(10 + i, &[host]);
+        let (p, done) = net.engine(r).create_person(std::slice::from_ref(&addr)).unwrap();
+        let acts = net.sync(r).carry_out(done).unwrap();
+        net.actions(r, acts);
+        net.run();
+        net.pair(r, a);
+        let done = net.engine(a).grant(&o, &p.person, &edge).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        net.run();
+        readers.push(r);
+    }
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(readers.iter().all(|r| net.engine(*r).role_on(&o) == Some(Role::Read)));
+    let before = net.host_ids(host, &l).len();
+    net.set_online(a, false);
+    let until = net.now() + INBOX_LIFETIME_MS;
+    let junk = deposit_junk(&mut net, readers[0], (host, &l), o, 40, until);
+    for _ in 0..3 {
+        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 1_000);
+    }
+    let held: Vec<_> = net.host_ids(host, &l).into_iter().filter(|x| !junk.contains(x)).collect();
+    assert!(held.len() >= before + osis_base::format::INBOX_WAITING / 3, "readers placed: {} after {before}", held.len());
+    net.set_online(a, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let after = net.host_ids(host, &l);
+    assert_eq!(held.iter().filter(|x| !after.contains(x)).count(), 0, "the readers' deposits stay");
+    assert_eq!(junk.iter().filter(|x| after.contains(x)).count(), osis_base::format::INBOX_WAITING, "the rule ran");
+}

@@ -91,7 +91,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | value | class | 0 / ∞ |
 |---|---|---|
 | `MAX_INBOX_RESENDS` 3 | O (sign-off) | |
-| `INBOX_WAITING` 32, `INBOX_WAITING_BYTES` 1 MiB | R | half the recommended minimum deposit budget, so the rest stays free; past it the earliest to expire is deleted. 0: nobody unconnected can invite; infinity: a stranger holds the budget up to `INBOX_LIFETIME` |
+| `INBOX_WAITING` 32, `INBOX_WAITING_BYTES` 1 MiB | R | half the recommended minimum deposit budget, so the rest stays free; past it what is no request goes first, then the requests earliest to expire. 0: nobody unconnected can invite; infinity: a stranger holds the budget up to `INBOX_LIFETIME` |
 | `DEPOSIT_RETRY_CAP_MS` 1 h | M | resent every tick / lands that much later once the refusal clears (a deposit taken at that host and label ends the wait of the others there) |
 | `RECORD_SWEEP_MS` 1 h (`serve.rs`) | P | every tick scans every entry and placement (about 100 ms at 10^6 entries) / unneeded carrier and certificate rows are never forgotten (they wait `TOMBSTONE_LIFETIME` anyway, so an hour is noise) |
 | `MAX_REOPENS` 3 | M (then the retry timer) | |
