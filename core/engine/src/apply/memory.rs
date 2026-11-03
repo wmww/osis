@@ -243,7 +243,7 @@ impl Engine {
         let mut free = BTreeSet::new();
         for t in cands {
             let made_here = self.core.memory.things.get(&t).is_some_and(|m| m.made_here);
-            let used = self.core.ix.by_thing.get(&t).is_some_and(|s| !s.is_empty()) || self.core.ix.held.owned(&t).next().is_some();
+            let used = self.core.on_thing(&t).next().is_some() || self.core.ix.held.owned(&t).next().is_some();
             if self.core.ix.held.is_memory(&t) && !made_here && !used {
                 free.insert(t);
             }
