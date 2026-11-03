@@ -429,9 +429,8 @@ fn demote_link_joiner_spec_permissions_9() {
 }
 
 // spec/permissions.md §9, notes/api.md Sharing (`demote`): after a joiner's removal the other
-// joiner reads new content and the removed one does not; another device of the sharer, which
-// holds no record of the link, refuses to demote a joiner instead of reporting success, and
-// syncs the removal to rest (spec/permissions.md §3: it once rotated the target without end,
+// joiner reads new content and the removed one does not; another device of the sharer can do the
+// removal, holding the link's seed thing, and syncs it to rest (spec/permissions.md §3: it once rotated the target without end,
 // since a late part of a joiner's redemption was judged without its `roles.0` part and the
 // rotation of K that removal made never established there).
 #[test]
@@ -442,8 +441,7 @@ fn demote_link_joiner_content_spec_permissions_9() {
     let alice2 = join.finish(&reply).unwrap();
     w.run();
     let skip = Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
-    assert!(matches!(w.until(alice2.demote(g, carol.me(), Lower::Remove, skip), 1000, 10), Err(osis::Error::Invalid(_))));
-    w.until(alice.demote(g, bob.me(), Lower::Remove, Demotion::default()), 1000, 20).unwrap();
+    w.until(alice2.demote(g, bob.me(), Lower::Remove, skip), 1000, 20).unwrap();
     let after = item(&alice, g, g, "after bob left");
     w.run();
     assert_eq!(x(&carol, after), Some(s("after bob left")));

@@ -37,7 +37,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `restore CARD` (or `@FILE`, `-`) | `restore` | now |
 | `whoami` | `me`, `node`, `home`, `hosts` | now |
 | `pair offer` / `pair join OFFER` | `pair_offer`, `pair_accept` / `pair`, `Joining::finish` (the two devices exchange one line each over stdin/stdout: request, reply) | now |
-| `device ls` / `device rm N` | `devices` / `remove_device` | now |
+| `device ls` / `device rm N [--end-links]` | `devices` / `remove_device`, then `revoke_link` each | now |
 | `hosts ls/add/rm` | `hosts`, `add_host`, `remove_host` | now |
 | `hosting show/set/off` | `hosting`, `host_key` / `set_hosting` (`--label GROUP`: `status`'s labels) / `set_hosting(None)` | now |
 | `clients add [--until T]` (prints `ACTOR SECRET`, once) / `clients ls` (`ACTOR UNTIL\|-`) / `clients rm ACTOR` (none: exit 3) / `clients rotate ACTOR` (prints the secret, once); through a daemon too | `add_client` / `clients` / `remove_client` / `rotate_client_secret` | now |
@@ -65,7 +65,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `now` | `now` | now |
 | `grant` / `share` / `edge` / `demote [--keep B]` / `leave` / `keep-default T B` / `kept [--drop A]` | `grant` (the role alone) / `share` (`sync` when the holder has no route, then `grant`) / `change_edge` / `demote` / `leave` / `set_keep_default` / `kept_copies`, `drop_kept` | now |
 | `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |
-| `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
+| `link make/redeem` / `link ls [T]/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `all_links`, `revoke_link`, `revoke_joiner` | now |
 | `chat create/add/link/join/kick/post/read/watch/edit/resend/delete/leave/members/disappear` (notes/chat.md; `read --after ID`, `watch --after ID --count N`; `--json` lines) | osis-chat over `create_ownerless`, `share`, `make_link`, `redeem`, `demote`, `history`, `on_history`, `purge_commit`, `purge_author`, `leave` | now (through a daemon too; `join` there waits a moment for the first messages, a `read` there does not pull) |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |

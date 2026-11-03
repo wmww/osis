@@ -121,10 +121,13 @@ impl SyncEngine {
         let suspect = self.suspects_under(closure)?;
         let Some(c) = self.heartbeat_commit(false, suspect)? else { return Ok(()) };
         let ais = BTreeSet::from([0usize]);
+        let mut placed = false;
         for b in self.engine.partial_bodies(&c, &ais)? {
-            self.place(g, l, &b, true)?;
+            placed |= self.place(g, l, &b, true)?.is_some();
         }
-        self.state.set_beat(l, now);
+        if placed {
+            self.state.set_beat(l, now);
+        }
         Ok(())
     }
 

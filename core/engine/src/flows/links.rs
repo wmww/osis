@@ -33,6 +33,8 @@ pub struct HeldLink {
     /// The seed thing's owner: only a K of that owner counts (a seed thing a co-reader made and
     /// placed in a shared group names no link of ours).
     pub owner: Tid,
+    pub target: Tid,
+    pub single_use: bool,
     /// This node wrote the seed: it made the link, so a redeemer of a link without hosts
     /// reached this node.
     pub here: bool,
@@ -118,11 +120,12 @@ impl Engine {
             if let Some(Value::Map(m)) = self.get(&t, &ak)?
                 && let (Some(Value::Tid(k)), Some(Value::Bytes(b))) = (m.get(&Value::Int(0)), m.get(&Value::Int(1)))
                 && let Ok(seed) = <[u8; 32]>::try_from(b.as_slice())
+                && let (Some(Value::Tid(target)), Some(Value::Bool(single_use))) = (m.get(&Value::Int(2)), m.get(&Value::Int(3)))
                 && let Some(owner) = self.owner(&t)
             {
                 let ids: Vec<osis_base::CommitId> = self.core.on_thing(&t).collect();
                 let here = ids.iter().any(|c| self.header(c).is_some_and(|h| h.author == me && h.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == LINK_SEED)));
-                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), owner, here });
+                out.push(HeldLink { k: *k, l: crate::identity::Identity::from_seed(Secret32::from_bytes(seed)).tid(), owner, target: *target, single_use: *single_use, here });
             }
         }
         out.sort();
@@ -248,7 +251,7 @@ fn create_link_in(tx: &mut Tx<'_>, sharer: Tid, spec: &LinkSpec, l: Tid, seed: &
     // the seed on a thing only the sharer's actor reads (derived secrets)
     let mut m = Mutation::new();
     let keep = m.create(crate::identity::thing_record(sharer, None, &mut *tx.rng));
-    m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Tid(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec()))].into_iter().collect())) })?;
+    m.op(keep, &super::ak(LINK_SEED)?, PathOp { path: Vec::new(), op: Op::Set(Value::Map([(Value::Int(0), Value::Tid(k)), (Value::Int(1), Value::Bytes(seed.expose().to_vec())), (Value::Int(2), Value::Tid(spec.target)), (Value::Int(3), Value::Bool(spec.single_use))].into_iter().collect())) })?;
     done.add(Engine::commit_tx(tx, m)?);
     Ok((k, label, keep, done))
 }

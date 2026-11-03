@@ -520,8 +520,20 @@ fn daemon_clients_localhost() {
             assert_eq!(ls.lines().count(), 2);
             let node = field(&osis(&s, &["--json", "whoami"]), "node").to_string();
             let other = ls.lines().find(|l| *l != node).unwrap().to_string();
-            osis(&s, &["device", "rm", &other, "--sync", "skip"]);
+            // spec/permissions.md §9: the removed device keeps the seeds: `device rm` says so, or
+            // with --end-links ends them
+            osis(&s, &["link", "make", &sg, "read"]);
+            let open = osis(&s, &["device", "rm", &other, "--sync", "skip"]);
+            assert!(open.contains("osis link revoke"), "{open}");
             assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 1);
+            assert_eq!(osis(&s, &["link", "ls"]).lines().count(), open.lines().count(), "the person's links");
+            let dev = dir("daemon-device-2");
+            pair(&s, &dev, Some(&addr));
+            let ls = osis(&s, &["device", "ls"]);
+            let other = ls.lines().find(|l| *l != node).unwrap().to_string();
+            let ended = osis(&s, &["device", "rm", &other, "--sync", "skip", "--end-links"]);
+            assert!(ended.starts_with("ended link"), "{ended}");
+            assert_eq!(osis(&s, &["link", "ls"]), "");
         }
         drop(host);
         if let Some((ht, w)) = unsynced {

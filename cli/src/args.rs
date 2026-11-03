@@ -512,6 +512,9 @@ pub enum DeviceCmd {
         node: String,
         #[command(flatten)]
         d: DemoteFlags,
+        /// Also end the person's links: the device keeps their seeds. Without it they are listed
+        #[arg(long)]
+        end_links: bool,
     },
 }
 
@@ -602,7 +605,8 @@ pub enum LinkCmd {
         single_use: bool,
     },
     Redeem { link: String },
-    Ls { t: String },
+    /// The person's working links (of thing T)
+    Ls { t: Option<String> },
     /// End link ID; with --joiner, also remove that joiner in the same commit
     Revoke {
         id: String,

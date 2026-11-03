@@ -83,6 +83,8 @@ pub(crate) mod method {
     pub const HOLDER_PATH: u64 = 33;
     /// `[target]` -> `[[id, target, role, Opt(until), single_use]*]`
     pub const LINKS: u64 = 34;
+    /// `[]` -> `[[id, target, role, Opt(until), single_use]*]`
+    pub const ALL_LINKS: u64 = 70;
     /// `[Opt(until)]` -> `[actor, secret]` (`Osis::add_client`)
     pub const ADD_CLIENT: u64 = 35;
     /// `[]` -> `[[actor, Opt(until)]*]`

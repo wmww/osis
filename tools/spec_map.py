@@ -145,6 +145,7 @@ RULES = [
     ("spec/permissions.md", "5.2", "admin-only", "A writer that does not hold admin on N MUST NOT write one"),
     ("spec/permissions.md", "5.2", "dot reuse", "One dot names one write"),
     ("spec/permissions.md", "7", "one import", "a client MUST NOT import t"),
+    ("spec/permissions.md", "9", "removed device's links", "MUST tell the one removing a device"),
     ("spec/permissions.md", "9", "link finalized", "MUST write it once L's edge expired or was self-removed"),
     ("spec/sync.md", "2", "home label", "It MUST have one when it names it as its inbox"),
     ("spec/sync.md", "5", "stale sync key", "is answered with that step's child on the path"),

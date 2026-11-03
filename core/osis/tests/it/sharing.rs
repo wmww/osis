@@ -683,3 +683,47 @@ fn contact_invite_goes_through_spec_sync_3() {
     assert!(bob.invite_requests().unwrap().is_empty());
     assert_eq!(x(&bob, t), Some(s("hi")));
 }
+
+// spec/permissions.md §9 (removed device's links): a removed device keeps the seeds of the person's links, so
+// `remove_device` lists them, a link made on that device too; the device left can revoke it.
+#[test]
+fn removing_a_device_lists_its_links_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&da);
+    let offer = da.pair_offer().unwrap();
+    let join = Osis::pair(w.cfg(4, &[]), &offer).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    w.run();
+    let made_there = db.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    let there = da.links(g)[0].id;
+    let made_here = da.make_link(g, Role::Read, Default::default()).unwrap();
+    w.run();
+    let links = da.links(g);
+    assert_eq!(links.len(), 2, "every device lists the person's links");
+    let here = links.iter().map(|l| l.id).find(|k| *k != there).unwrap();
+    let stranger = carol.node();
+    assert!(w.until(da.remove_device(stranger, skip_sync()), 1000, 10).unwrap().is_empty(), "no device of this person");
+    let open = w.until(da.remove_device(db.node(), skip_sync()), 1000, 10).unwrap();
+    let mut ids: Vec<Tid> = open.iter().map(|l| l.id).collect();
+    ids.sort();
+    let mut want = vec![there, here];
+    want.sort();
+    assert_eq!(ids, want);
+    assert!(open.iter().all(|l| l.target == g && !l.single_use && l.role == Role::Read));
+    assert_eq!(da.all_links().len(), 2);
+    w.run();
+    // the removal ended neither: the seed still reads
+    assert_eq!(w.until(bob.redeem(&made_there), 1000, 30).unwrap(), g);
+    w.run();
+    w.until(da.revoke_link(there, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    assert!(w.until(carol.redeem(&made_there), 1000, 30).is_err(), "revoked from the device left");
+    assert_eq!(w.until(carol.redeem(&made_here), 1000, 30).unwrap(), g, "the other still works");
+    assert_eq!(da.all_links().iter().map(|l| l.id).collect::<Vec<_>>(), vec![here]);
+}
