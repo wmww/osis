@@ -470,6 +470,8 @@ pub(crate) struct Played {
     sync: Syncs,
     /// Bodies of a fallen purge given again and judged alike (`alike_exchanged`).
     restored: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// Deliveries at an earlier clock whose move to `now` changed a state or a body (`Clock`).
+    moved: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Per step kind: how many ran and how many made a commit, and why the others made none.
@@ -1113,7 +1115,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
             pk.bytes = b.clone();
         }
     }
-    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default() }
+    Played { packs, authors, base, things, now, tally, sync: Syncs::None, restored: Default::default(), moved: Default::default() }
 }
 
 /// Per body (commit, thing, aspect): its first and last death (spec/crdt.md §4.8).
@@ -1145,6 +1147,8 @@ struct Oracle {
     /// stamp a held snapshot shares (a creation's), so a snapshot's last death there is judged
     /// against what the node's own held set gives.
     took: Deaths,
+    /// `register_deaths`: bodies judged and how many died, or the first mismatch.
+    registers: Result<(u64, u64), String>,
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
@@ -1199,7 +1203,68 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }
-    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried, took: before }
+    let deaths = deaths_of(&mut p.engine);
+    let registers = register_deaths(&mut p.engine, &deaths, &carried);
+    Oracle { deaths, facts: facts_text(&mut p.engine), carried, took: before, registers }
+}
+
+/// The root registers under a relative keep bound (ops 16-18): every write there sets the whole
+/// register (spec/crdt.md §5.1).
+const REGISTERS: [&str; 3] = ["t:kept.0", "t:short.0", "t:gone.0"];
+
+/// A death check independent of `retention::deaths` (whose `replay_all` the oracle's
+/// `replay_deaths` runs), on `REGISTERS` alone: a held body there with its own write valid
+/// dies (first and last) at the earliest `ts` above its own among the valid writes the node
+/// holds there (spec/crdt.md §4.8): applied bodies with their own writes, and a valid
+/// snapshot's copy of a write whose own delta is held invalid, at the snapshot's `ts`. `e`
+/// holds every body (the oracle); `deaths` are its recomputed ones. Aspects in `skip` (writes
+/// carried whose own commit is not held, `Oracle::carried`) and bodies with a `ts` tie are not
+/// judged. Returns how many bodies it judged and how many of them died, or the first mismatch.
+fn register_deaths(e: &mut osis_node::Engine, deaths: &Deaths, skip: &BTreeSet<(Tid, Ak)>) -> Result<(u64, u64), String> {
+    use osis_base::Ts;
+    let pending: BTreeSet<CommitId> = e.pending().into_iter().map(|x| x.0).collect();
+    // per aspect: (ts, commit, own writes, valid, relative keep bound) of each applied held body
+    type Body = (Ts, CommitId, bool, bool, bool);
+    let mut on: BTreeMap<(Tid, Ak), Vec<Body>> = BTreeMap::new();
+    for id in e.commit_ids() {
+        let Some(h) = e.header(&id) else { continue };
+        if pending.contains(&id) {
+            continue;
+        }
+        for (ai, a) in h.aspects.iter().enumerate() {
+            let missing = e.core.ix.commits.get(&id).is_none_or(|m| m.missing.contains(&ai));
+            if !REGISTERS.contains(&a.ak.as_str()) || skip.contains(&(a.tid, a.ak.clone())) || missing || !e.body_not_dropped(&id, &a.tid, &a.ak) {
+                continue;
+            }
+            let Some(valid) = e.body_valid(&id, &a.tid, &a.ak) else { continue };
+            let bounded = a.retention.at_least.rel.is_some() || a.retention.at_most.rel.is_some();
+            on.entry((a.tid, a.ak.clone())).or_default().push((h.ts, id, h.kind.has_own_writes(), valid, bounded));
+        }
+    }
+    let (mut judged, mut died) = (0, 0);
+    for ((tid, ak), bodies) in &on {
+        // the valid writes' `ts`
+        let mut killers: Vec<Ts> = bodies.iter().filter(|b| b.2 && b.3).map(|b| b.0).collect();
+        for b in bodies.iter().filter(|b| !b.2 && b.3) {
+            let low = e.body_min_ts(&b.1, tid, ak).unwrap();
+            if bodies.iter().any(|o| o.2 && !o.3 && Some(o.0) == low) {
+                killers.push(b.0);
+            }
+        }
+        for &(ts, id, own, valid, bounded) in bodies {
+            if !own || !valid || !bounded || bodies.iter().any(|o| o.1 != id && o.0 == ts) {
+                continue;
+            }
+            let want = killers.iter().filter(|k| **k > ts).min().map(|k| (*k, *k));
+            let got = deaths.get(&(id, *tid, ak.clone())).copied().flatten();
+            if got != want {
+                return Err(format!("register death of {id:?} on {tid:?} {}: recomputed {got:?}, by its superseders {want:?}", ak.as_str()));
+            }
+            judged += 1;
+            died += u64::from(want.is_some());
+        }
+    }
+    Ok((judged, died))
 }
 
 /// Whether node `p` dates deaths as spec/commits.md §5 allows against the oracle `o` (`None`),
@@ -1322,6 +1387,8 @@ struct Judged {
     /// Aspects (as `facts_text` prints them) the node flags suspect for a part it held pending
     /// at its expiry (counts as never received, spec/commits.md §5): not compared.
     expired_pending: BTreeSet<(String, String)>,
+    /// Delivered in part at an earlier clock (`Clock`).
+    early: bool,
 }
 
 impl Judged {
@@ -1386,7 +1453,7 @@ fn judged_now(p: &mut Peer, things: &[Tid]) -> Judged {
     let facts = facts_text(e);
     let parts = vec![("reads", reads), ("states", states), ("rosters", rosters), ("pending", pending.join("\n")), ("timelines", perm), ("timelines from scratch", scratch), ("facts", facts)];
     let expired_pending = expired_pending(e);
-    Judged { index: None, parts, expired_pending }
+    Judged { index: None, parts, expired_pending, early: false }
 }
 
 /// The persisted index as a day after `played.now` (every keep-at-most bound past: which bodies
@@ -1502,6 +1569,13 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     let all: BTreeSet<BodyKey> = wf.keys().chain(gf.keys()).cloned().collect();
     wf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     gf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
+    // a node given a commit before a part of it expired may have applied it by that part, where
+    // one given it after holds it pending (issues/applied-by-part-before-expiry.md): with an
+    // early clock, a commit with a part on such an aspect applied at one node only ends the
+    // comparison
+    if (want.early || got.early) && all.iter().any(|k| expired.contains(&(k.1.clone(), k.2.clone())) && wf.keys().any(|x| x.0 == k.0) != gf.keys().any(|x| x.0 == k.0)) {
+        return None;
+    }
     if wf.keys().ne(gf.keys()) {
         let k = wf.keys().find(|k| !gf.contains_key(*k)).or_else(|| gf.keys().find(|k| !wf.contains_key(*k)));
         return Some(format!("body {k:?} known at one node only"));
@@ -1515,6 +1589,7 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     };
     match (&want.index, &got.index) {
         (Some(w), Some(g)) => {
+            let (w, g) = (&unreceived(w), &unreceived(g));
             // a body held for want of a death whose killer this node dropped before it arrived, a
             // stated limit (spec/commits.md §5; `dating` checks the death): dropped by its bound where it died
             let orphan = |c: &CommitId| {
@@ -1563,6 +1638,18 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
         return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
     None
+}
+
+/// `i` without its commits' received times: node-local, they differ with the node's clock at
+/// arrival (`Clock`).
+fn unreceived(i: &IndexDigest) -> IndexDigest {
+    let mut i = i.clone();
+    for c in i.commits.values_mut() {
+        if c.rest.starts_with("WallMs(") {
+            c.rest = c.rest.split_once(' ').map_or(String::new(), |x| x.1.to_string());
+        }
+    }
+    i
 }
 
 /// Reads or states as `judged_now` prints them, by (thing, aspect).
@@ -1617,7 +1704,8 @@ fn packs_of(played: &Played, ids: &BTreeSet<String>) -> Vec<usize> {
 /// bodies both dropped on an aspect read apart after a flip (`both_dropped_flips`): a copy that
 /// arrives again joins (spec/commits.md §5), so they then hold the same bodies and judge alike
 /// with no exception for the drop.
-fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], rng: Option<Rng>, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way, flips: &dyn Fn(&str, &str) -> bool) -> Option<String> {
+    let (rng, clock) = way.parts();
     let fallen = purge_flips(played, want, got);
     let mut apart = drop_flips(want, got);
     apart.extend(fallen.iter().cloned());
@@ -1627,8 +1715,8 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
     }
     let again = packs_of(played, &apart);
     let mut rng = rng;
-    let mut w = deliver_with(played, want_order, None, &mut |_| {});
-    let mut g = deliver_with(played, got_order, rng.as_mut(), &mut |_| {});
+    let mut w = deliver_with(played, want_order, None, None, &mut |_| {});
+    let mut g = deliver_with(played, got_order, rng.as_mut(), clock, &mut |_| {});
     for p in [&mut w, &mut g] {
         for &i in &again {
             let pk = &played.packs[i];
@@ -1637,6 +1725,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
         p.engine.reexamine().unwrap();
     }
     let (mut wj, mut gj) = (judged(&mut w, played), judged(&mut g, played));
+    gj.early = clock.is_some();
     // a commit waiting past that copy, a part of it stripped for a purge that fell, applies later and
     // only then counts it missing (`index_later`): node-sync fetches it then (`Changed::undropped`)
     let later = purge_flips(played, &wj, &gj);
@@ -1650,6 +1739,7 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
             p.engine.reexamine().unwrap();
         }
         (wj, gj) = (judged(&mut w, played), judged(&mut g, played));
+        gj.early = clock.is_some();
     }
     let diff = alike(&wj, &gj).map(|d| format!("after the bodies dropped before a flip ({apart:?}) were given again: {d}"));
     if diff.is_none() {
@@ -1783,25 +1873,96 @@ fn with_syncs(mut played: Played, seed: u64) -> Played {
 
 /// A fresh node given `packs` in `order`.
 fn deliver(played: &Played, order: &[usize]) -> Peer {
-    deliver_with(played, order, None, &mut |_| {})
+    deliver_with(played, order, None, None, &mut |_| {})
 }
 
 /// A fresh node given `packs` in `order`, each commit with parts on several aspects first with
 /// those of one of them only (a seeded pick), the rest of it as late parts at the end, in
 /// reverse (spec/commits.md §4: a late delta joins on arrival).
 fn deliver_split(played: &Played, order: &[usize], rng: &mut Rng) -> Peer {
-    deliver_with(played, order, Some(rng), &mut |_| {})
+    deliver_with(played, order, Some(rng), None, &mut |_| {})
 }
 
-/// `deliver` (no `rng`) or `deliver_split`, calling `each` after every ingest.
-fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
+/// A delivery's clock (`deliver_with`): the first `at` ingests at wall time `early`, then the
+/// clock moves to the history's end (`tick`: the expiries, keep-at-most drops and drift parks
+/// due in between run) and the rest arrive.
+#[derive(Clone, Copy, Debug)]
+struct Clock {
+    at: usize,
+    early: WallMs,
+}
+
+/// How a compared node was given its order (`deliver_with`): as it is, with late parts split by
+/// the rng (`deliver_split`), or in part at an earlier clock.
+#[derive(Clone)]
+enum Way {
+    Plain,
+    Split(Rng),
+    Clocked(Clock),
+}
+
+impl Way {
+    fn parts(self) -> (Option<Rng>, Option<Clock>) {
+        match self {
+            Way::Plain => (None, None),
+            Way::Split(r) => (Some(r), None),
+            Way::Clocked(c) => (None, Some(c)),
+        }
+    }
+}
+
+/// A seeded clock for delivering `order` (`deliver_with`): a split after 1 to all of its
+/// commits, and an early time around the latest `ts` of the commits before it: just after (a
+/// one-second expiry or keep bound may pass at the move), just before (those commits ahead of
+/// the clock, within drift), up to an hour after, or anywhere from an hour before the first
+/// commit to the end (commits parked for drift).
+fn clock_of(played: &Played, order: &[usize], rng: &mut Rng) -> Clock {
+    let ts = |i: usize| osis_commit::CommitBlob::decode_stored(&played.packs[i].bytes).map_or(0, |b| b.header.ts.wall_ms().0);
+    let at = 1 + rng.below(order.len() as u64) as usize;
+    let last = order[..at].iter().map(|&i| ts(i)).max().unwrap_or(0);
+    let first = order.iter().map(|&i| ts(i)).min().unwrap_or(0).saturating_sub(HOUR);
+    let early = match rng.below(4) {
+        0 => last + rng.below(2_000),
+        1 => last.saturating_sub(rng.below(2_000)),
+        2 => last + rng.below(HOUR),
+        _ => first + rng.below(played.now.0.saturating_sub(first) + 1),
+    };
+    Clock { at, early: WallMs(early.min(played.now.0)) }
+}
+
+/// A `Clock`'s move: node `p`'s clock to `played.now` and what is due run, counted in
+/// `played.moved` when a state or a body's facts changed.
+fn move_clock(played: &Played, p: &mut Peer) {
+    let states = |p: &mut Peer| {
+        let mut out: Vec<String> = p.engine.all_aspects().unwrap().into_iter().map(|(t, a)| format!("{:?}", p.engine.state(&t, &a).unwrap())).collect();
+        out.push(facts_text(&mut p.engine));
+        out
+    };
+    let before = states(p);
+    p.clock.set(played.now);
+    p.engine.tick().unwrap();
+    if states(p) != before {
+        played.moved.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// `deliver` (no `rng`) or `deliver_split`, calling `each` after every ingest; with `clock`,
+/// the first ingests at an earlier time (`Clock`). The node is made at `played.now` either way
+/// and its clock set back, so its own things are the same as every fresh node's.
+fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, clock: Option<Clock>, each: &mut dyn FnMut(&mut Peer)) -> Peer {
     let mut p = Peer::new(FRESH, played.now).unwrap();
     // every component's walk saved, so reopens restore them
     p.engine.set_walk_cache_min(1);
+    if let Some(c) = clock {
+        p.clock.set(c.early);
+    }
     let mut late = Vec::new();
     let mut plan = played.sync.plan(order);
     let mut done = 0;
     for &i in order {
+        if clock.is_some_and(|c| c.at == done) {
+            move_clock(played, &mut p);
+        }
         plan.upto(&mut p, done);
         done += 1;
         let pk = &played.packs[i];
@@ -1819,6 +1980,10 @@ fn deliver_with(played: &Played, order: &[usize], mut rng: Option<&mut Rng>, eac
             }
         };
         let _ = p.engine.ingest(&bytes, pk.blobs.clone());
+        each(&mut p);
+    }
+    if clock.is_some_and(|c| c.at >= order.len()) {
+        move_clock(played, &mut p);
         each(&mut p);
     }
     for &i in late.iter().rev() {
@@ -1897,7 +2062,7 @@ fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want:
         let _ = writeln!(out, "--- {name} order {order:?}: reads as they change");
         let mut last: BTreeMap<String, String> = BTreeMap::new();
         let mut n = 0;
-        deliver_with(played, order, None, &mut |p| {
+        deliver_with(played, order, None, None, &mut |p| {
             let step = order.get(n).map_or("end".to_string(), |i| format!("#{i}"));
             n += 1;
             for (t, a) in p.engine.all_aspects().unwrap() {
@@ -1926,10 +2091,11 @@ fn dump_orders(played: &Played, want_order: &[usize], got_order: &[usize], want:
 /// Whether delivering `order` (split as `deliver_split` with `rng`) judged a body of `(tid, ak)`
 /// (as `facts_text` prints them) both valid and invalid on the way: a validity flip in that
 /// order. A delivery with facts at every step: asked only about a difference found.
-fn flipped(played: &Played, order: &[usize], rng: Option<Rng>, tid: &str, ak: &str) -> bool {
+fn flipped(played: &Played, order: &[usize], way: Way, tid: &str, ak: &str) -> bool {
+    let (rng, clock) = way.parts();
     let mut seen: BTreeMap<BodyKey, BTreeSet<bool>> = BTreeMap::new();
     let mut rng = rng;
-    deliver_with(played, order, rng.as_mut(), &mut |p| {
+    deliver_with(played, order, rng.as_mut(), clock, &mut |p| {
         for (k, f) in facts_of(&facts_text(&mut p.engine)).0 {
             if k.1 == tid && k.2 == ak {
                 seen.entry(k).or_default().insert(f.valid);
@@ -1989,6 +2155,8 @@ struct Cfg {
     subsets: usize,
     /// How many of each held set's orders are tried again with late parts.
     split: usize,
+    /// How many of each held set's orders are tried again at an earlier clock (`Clock`).
+    clock: usize,
     /// A seed's orders are independent tasks (each late-parts order split by its own rng), run
     /// on `threads` threads; else they run in turn, split by one rng.
     par_orders: bool,
@@ -1998,11 +2166,11 @@ struct Cfg {
     sync: bool,
 }
 
-const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, par_orders: false, threads: 1, sync: false };
-const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false };
+const SMALL: Cfg = Cfg { all_up_to: 4, every_held: false, random: 2, subsets: 1, split: 2, clock: 2, par_orders: false, threads: 1, sync: false };
+const LARGE: Cfg = Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, clock: 2, par_orders: false, threads: 1, sync: false };
 /// Every order of the whole set and 2 partial sets (`OSIS_ORDER_ALL_HELD`: of every held set),
 /// every order with late parts too (6 commits: up to 720 orders).
-const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: true, threads: 1, sync: false };
+const EXHAUST: Cfg = Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, clock: usize::MAX, par_orders: true, threads: 1, sync: false };
 /// The same up to 5 commits (120 orders), for tier 1.
 const EXHAUST_SMALL: Cfg = Cfg { all_up_to: 5, subsets: 1, ..EXHAUST };
 
@@ -2097,6 +2265,11 @@ struct Seen {
     by_author: u64,
     /// Bodies of a purge that fell after a node applied it, given again and judged alike.
     restored: u64,
+    /// Register bodies `register_deaths` judged, and how many of them died.
+    register_deaths: (u64, u64),
+    /// Deliveries at an earlier clock (`Clock`), and those whose move changed a state or a body.
+    clocked: u64,
+    moved: u64,
 }
 
 impl Seen {
@@ -2110,6 +2283,10 @@ impl Seen {
         self.tombstones += o.tombstones;
         self.by_author += o.by_author;
         self.restored += o.restored;
+        self.register_deaths.0 += o.register_deaths.0;
+        self.register_deaths.1 += o.register_deaths.1;
+        self.clocked += o.clocked;
+        self.moved += o.moved;
         for (k, v) in &o.pending {
             *self.pending.entry(k.clone()).or_default() += v;
         }
@@ -2139,6 +2316,10 @@ impl Seen {
         assert!(!self.tally.kinds.contains_key("Purge") || self.restored > 0, "order::{name}: no fallen purge restored: {self:?}");
         let can_fall = ["Forged", "Demote", "Edge"].iter().any(|k| self.tally.kinds.contains_key(*k));
         assert!(!can_fall || self.invalid > 0, "order::{name}: no invalid part: {self:?}");
+        // an earlier clock that never changes anything at its move tests nothing (where histories
+        // pass expiries and keep bounds: purge and required ones need not)
+        let timed = name.contains("alike") || name.contains("exhaustive");
+        assert!(!timed || self.clocked == 0 || self.moved > 0, "order::{name}: no move of an earlier clock changed a state or a body: {self:?}");
         // a history setting required retentions reaches a delta breaking one
         assert!(!self.tally.kinds.contains_key("Require") || self.broken > 0, "order::{name}: no delta broke a required retention: {self:?}");
         if broad {
@@ -2197,14 +2378,17 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         let played = if matches!(synced.sync, Syncs::Late { .. }) && learned_late_wait(&synced, &held) { &unsynced } else { &synced };
         let of = format!("held {held:?} of {n} commits (base {})", played.base);
         let o = oracle(played, &held);
+        let r = o.registers.clone().map_err(|d| format!("{of}: the oracle's deaths: {d}"))?;
+        seen.register_deaths.0 += r.0;
+        seen.register_deaths.1 += r.1;
         // a partial set, then the rest (both ways), ends where the whole set does
         if let Some(f) = full.as_ref().filter(|_| std::ptr::eq(played, full_of.unwrap_or(played))) {
             let rest: Vec<usize> = (0..n).filter(|i| !held.contains(i)).collect();
             for order in [held.iter().chain(&rest).copied().collect::<Vec<_>>(), held.iter().chain(rest.iter().rev()).copied().collect()] {
                 let mut p = deliver(played, &order);
-                let flips = |t: &str, a: &str| flipped(played, &(0..n).collect::<Vec<_>>(), None, t, a) || flipped(played, &order, None, t, a);
+                let flips = |t: &str, a: &str| flipped(played, &(0..n).collect::<Vec<_>>(), Way::Plain, t, a) || flipped(played, &order, Way::Plain, t, a);
                 let whole: Vec<usize> = (0..n).collect();
-                if let Some(d) = alike_exchanged(played, f, &whole, &judged(&mut p, played), &order, None, &flips) {
+                if let Some(d) = alike_exchanged(played, f, &whole, &judged(&mut p, played), &order, Way::Plain, &flips) {
                     return Err(format!("{of}, then the rest: order {order:?} vs the whole set as made: {d}"));
                 }
             }
@@ -2274,8 +2458,8 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             if let Some(rng) = split_rng {
                 let copy = rng.clone();
                 let mut p = deliver_split(played, order, rng);
-                let flips = |t: &str, a: &str| flipped(played, &orders[0], None, t, a) || flipped(played, order, Some(copy.clone()), t, a);
-                return match dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)).or_else(|| alike_exchanged(played, &want, &orders[0], &judged(&mut p, played), order, Some(copy.clone()), &flips)) {
+                let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Split(copy.clone()), t, a);
+                return match dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)).or_else(|| alike_exchanged(played, &want, &orders[0], &judged(&mut p, played), order, Way::Split(copy.clone()), &flips)) {
                     Some(d) => Err(format!("{vs} with late parts (got) {order:?}: {d}")),
                     None => Ok(()),
                 };
@@ -2291,7 +2475,7 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 return Err(format!("{of}, order #{k} {order:?}: reopen differs: {d}"));
             }
             got.index = Some(index_later(&mut p, played));
-            match alike_exchanged(played, &want, &orders[0], &got, order, None, &|t, a| flipped(played, &orders[0], None, t, a) || flipped(played, order, None, t, a)) {
+            match alike_exchanged(played, &want, &orders[0], &got, order, Way::Plain, &|t, a| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Plain, t, a)) {
                 Some(d) => {
                     dump_orders(played, &orders[0], order, &want, &got);
                     Err(format!("{vs} (got) {order:?}: {d}"))
@@ -2299,16 +2483,37 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
                 None => Ok(()),
             }
         };
+        // order `k` with its first commits delivered at an earlier clock (`clock_of`, drawn from
+        // its own rng: the main stream, and so pinned replays, unchanged) alike
+        let clock_base = seed.wrapping_mul(0xbf58_476d_1ce4_e5b9) ^ (held.len() as u64).wrapping_mul(0x94d0_49bb_1331_11eb);
+        let clocked = |k: usize| -> Result<(), String> {
+            let order = &orders[k];
+            let c = clock_of(played, order, &mut Rng(clock_base ^ (k as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1));
+            let mut p = deliver_with(played, order, None, Some(c), &mut |_| {});
+            let flips = |t: &str, a: &str| flipped(played, &orders[0], Way::Plain, t, a) || flipped(played, order, Way::Clocked(c), t, a);
+            match dating(&mut p, &o, played.now).or_else(|| purged_import_held(&mut p)).or_else(|| alike_exchanged(played, &want, &orders[0], &Judged { early: true, ..judged(&mut p, played) }, order, Way::Clocked(c), &flips)) {
+                Some(d) => Err(format!("{of}: order #0 (as made, want) {held:?} vs order #{k} at an earlier clock {c:?} (got) {order:?}: {d}")),
+                None => Ok(()),
+            }
+        };
         // late parts only matter when a commit has parts on several aspects; without one the
         // sequential modes still deliver the first two again and re-examine (as before)
         let splits = if split || !cfg.par_orders { cfg.split.min(orders.len()) } else { 0 };
+        let clocks = cfg.clock.min(orders.len());
+        seen.orders += clocks;
+        seen.clocked += clocks as u64;
         if cfg.par_orders {
-            // tasks: orders 1.. as they are, then 0.. with late parts, each split by its own rng
-            let tasks: Vec<u64> = (1..orders.len() + splits).map(|x| x as u64).collect();
+            // tasks: orders 1.. as they are, then 0.. with late parts, each split by its own rng,
+            // then 0.. at an earlier clock
+            let tasks: Vec<u64> = (1..orders.len() + splits + clocks).map(|x| x as u64).collect();
             let base = rng.0;
             let errs = par_map(&tasks, cfg.threads, |x| {
                 let x = x as usize;
-                caught(|| if x < orders.len() { one(x, None) } else { one(x - orders.len(), Some(&mut Rng(base ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))) })
+                caught(|| match x {
+                    x if x < orders.len() => one(x, None),
+                    x if x < orders.len() + splits => one(x - orders.len(), Some(&mut Rng(base ^ (x as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1))),
+                    x => clocked(x - orders.len() - splits),
+                })
             });
             if let Some(e) = errs.into_iter().find_map(Result::err) {
                 return Err(e);
@@ -2320,9 +2525,13 @@ fn check_orders(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             for k in 0..splits {
                 one(k, Some(&mut rng))?;
             }
+            for k in 0..clocks {
+                clocked(k)?;
+            }
         }
     }
     seen.restored = synced.restored.load(std::sync::atomic::Ordering::Relaxed);
+    seen.moved = synced.moved.load(std::sync::atomic::Ordering::Relaxed);
     Ok(seen)
 }
 
@@ -2503,7 +2712,9 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     let t0 = std::time::Instant::now();
     // seeds on a thread per core; with fewer seeds than cores, a seed's orders share the rest
     let outer = threads("OSIS_ORDER_THREADS").min(seeds.len()).max(1);
-    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, ..cfg };
+    // `OSIS_ORDER_CLOCK=n`: n orders per held set at an earlier clock (0: none)
+    let clock = u64_var("OSIS_ORDER_CLOCK").map_or(cfg.clock, |n| n as usize);
+    let cfg = Cfg { threads: if cfg.par_orders { threads("OSIS_ORDER_THREADS").div_ceil(outer) } else { 1 }, sync: true, clock, ..cfg };
     let results = par_map(&seeds, outer, |seed| {
         let steps = generate(seed, len, cfg);
         if std::env::var("OSIS_ORDER_STATS").is_ok() {
@@ -2529,7 +2740,7 @@ fn run(name: &str, seeds: std::ops::Range<u64>, len: usize, cfg: Cfg, generate: 
     // always shown: the order counts are what a passing run is read for
     osis_base::testenv::visible(true, &summary);
     if std::env::var("OSIS_ORDER_STATS").is_ok() {
-        eprintln!("{}\npending {:?}, invalid {}, aspects {:?}", seen.tally.show(), seen.pending, seen.invalid, seen.aspects);
+        eprintln!("{}\npending {:?}, invalid {}, aspects {:?}, register deaths judged {} (died {}), {} of {} early clocks changed a state or a body at the move", seen.tally.show(), seen.pending, seen.invalid, seen.aspects, seen.register_deaths.0, seen.register_deaths.1, seen.moved, seen.clocked);
     }
     assert!(fails.is_empty(), "{summary}\n{} of {} histories judged differently by arrival order:\n{}", fails.len(), seeds.len(), fails.join("\n\n"));
     seen.floors(name, seeds.len(), !cfg.par_orders && len >= 60);
@@ -2732,7 +2943,7 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
         seen.orders += orders.len();
         for order in &orders {
             // the same order with no drops: what arrival order alone does is `arrival_order_*`'s
-            let mut r = deliver_with(&played, order, None, &mut |p| tick(p));
+            let mut r = deliver_with(&played, order, None, None, &mut |p| tick(p));
             for pk in &played.packs {
                 let _ = r.engine.ingest(&pk.bytes, pk.blobs.clone());
                 tick(&mut r);
@@ -2740,7 +2951,7 @@ fn drops_alike(seed: u64, steps: &[Step], cfg: Cfg) -> Result<Seen, String> {
             seen.broken += r.engine.broken_parts() as u64;
             seen.fallen += r.engine.fallen_required() as u64;
             let want = view(judged_now(&mut r, &played.things));
-            let mut p = deliver_with(&played, order, None, &mut |p| {
+            let mut p = deliver_with(&played, order, None, None, &mut |p| {
                 tick(p);
                 p.engine.drop_broken(None).unwrap();
                 p.engine.reload().unwrap();
@@ -2976,9 +3187,9 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
     let differs = alike(&want, &got).expect("the reads differ");
     assert!(differs.contains("reads on") && differs.contains("v1"), "{differs}");
     let copy = format!("{:?}", played.things[1]);
-    assert!(flipped(&played, &order, None, &copy, "t:reg.0"), "the order flips");
-    assert!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false).is_some(), "no flip, nothing given");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|t, a| flipped(&played, &order, None, t, a)), None);
+    assert!(flipped(&played, &order, Way::Plain, &copy, "t:reg.0"), "the order flips");
+    assert!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false).is_some(), "no flip, nothing given");
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|t, a| flipped(&played, &order, Way::Plain, t, a)), None);
 }
 
 // spec/permissions.md §5.2, §7 (order seed 86144, shrunk): 1's snapshot #29 copies the moved
@@ -3012,8 +3223,8 @@ fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
             assert_eq!(w.engine.get(&copy, &reg).unwrap(), None, "import #{i} given again ({again:?})");
         }
     }
-    let flips = |t: &str, a: &str| flipped(&played, &held, None, t, a) || flipped(&played, &rev, None, t, a);
-    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, None, &flips), None);
+    let flips = |t: &str, a: &str| flipped(&played, &held, Way::Plain, t, a) || flipped(&played, &rev, Way::Plain, t, a);
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, Way::Plain, &flips), None);
 }
 
 // spec/permissions.md §8, spec/wire.md §4: arrival order decides nothing with purges by author,
@@ -3605,7 +3816,7 @@ fn text_creation_dies_once_seed_4900_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Sync { from: 2, to: 0 }, aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 2 }), aim(Typed { by: 0, t: 0, op: 24, k: 1, v: 8 }), Compact { by: 2, t: 0, op: 26 }, Send { from: 2, to: 1, back: 0 }, Compact { by: 1, t: 0, op: 26 }, Send { from: 2, to: 0, back: 1 }, Compact { by: 0, t: 0, op: 11 }];
-    check(4900, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(4900, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.8 (a write dies once, at its earliest superseder): a kept text inserted,
@@ -3637,7 +3848,7 @@ fn text_creation_arriving_deleted_dies_seed_5016_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 2 }), aim(Typed { by: 0, t: 0, op: 8, k: 0, v: 9 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 1, v: 8 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 1, t: 0, op: 8, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 0 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 3 }), Sync { from: 0, to: 2 }, aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 8 }), aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 8, k: 0, v: 8 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 6 }), aim(Typed { by: 2, t: 0, op: 9, k: 0, v: 6 }), Sync { from: 1, to: 0 }, Compact { by: 1, t: 0, op: 9 }, Compact { by: 1, t: 0, op: 9 }, aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 1 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 3 }), aim(Typed { by: 0, t: 0, op: 9, k: 0, v: 3 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 9 }), aim(Undo { by: 2, back: 1 }), Compact { by: 2, t: 0, op: 26 }, Compact { by: 0, t: 0, op: 26 }];
-    check(5016, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(5016, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.8: exhaustive order seed 9605, shrunk. A commit inserts a char and deletes it;
@@ -3647,7 +3858,7 @@ fn text_creation_arriving_deleted_dies_seed_5016_spec_crdt_4_8() {
 fn text_creation_deleted_into_empty_state_dies_seed_9605_spec_crdt_4_8() {
     use Step::*;
     let h = vec![Aim(Box::new(Typed { by: 2, t: 1, op: 23, k: 1, v: 3 })), Forged { by: 2, a: 1, b: 1, how: 1, op: 23, k: 0, v: 7 }];
-    check(9605, &h, Cfg { all_up_to: 6, every_held: true, random: 0, subsets: 2, split: usize::MAX, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(9605, &h, Cfg { par_orders: false, sync: true, ..EXHAUST }).unwrap();
 }
 
 // spec/commits.md §5 (dropping a body destroys every local index entry derived from it),
@@ -3675,14 +3886,14 @@ fn dropped_snapshot_rebuilds_alike_spec_commits_5() {
 #[test]
 fn invalid_snapshot_owner_late_seed_1006() {
     let h = vec![Step::Edge { by: 0, t: 0, holder: 2, role: None }, Step::Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: true }, Step::Write { by: 2, t: 6, op: 12, k: 1, v: 2 }, Step::Write { by: 0, t: 1, op: 18, k: 2, v: 6 }, Step::Demote { by: 0, t: 2, holder: 1, at: 5, to_read: true }, Step::Write { by: 0, t: 0, op: 3, k: 2, v: 9 }];
-    check(1006, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
+    check(1006, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // as above, order seed 1042, shrunk (an in-place un-merge differed from a rebuild).
 #[test]
 fn invalid_snapshot_owner_late_seed_1042() {
     let h = vec![Step::Nested { by: 0, other: 2, t: 1, k: 0, text: false, compact: true, also: true }, Step::New { by: 0, parent: 3, write: false }, Step::New { by: 0, parent: 6, write: false }, Step::Sync { from: 2, to: 1 }, Step::Demote { by: 2, t: 3, holder: 1, at: 3, to_read: true }, Step::Nested { by: 2, other: 1, t: 0, k: 1, text: false, compact: true, also: true }];
-    check(1042, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
+    check(1042, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received: a copy that
@@ -3721,7 +3932,7 @@ fn keep_at_most_drop_joins_again_after_flip_spec_commits_5() {
     assert!(alike(&want, &got).is_some(), "the orders differ until the body is given again");
     let apart = drop_flips(&want, &got);
     assert_eq!(apart.len(), 1, "one body dropped before the flip: {apart:?}");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, Way::Plain, &|_, _| false), None);
     // the node that dropped it holds it again once a copy arrives
     let mut p = deliver(&played, &made);
     let again = packs_of(&played, &apart);
@@ -3838,9 +4049,9 @@ fn creation_lost_by_drop_then_flip_given_again_spec_crdt_4_6() {
     let got = judged(&mut deliver(&played, &order), &played);
     let differs = alike(&want, &got).expect("the creation stamp differs");
     assert!(differs.contains("states on") && differs.contains("created: None"), "{differs}");
-    assert!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false).is_some(), "no flip, nothing given");
-    assert!(played.things.iter().any(|t| flipped(&played, &order, None, &format!("{t:?}"), "t:gonemap.0")), "the order flips");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|t, a| flipped(&played, &order, None, t, a)), None);
+    assert!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false).is_some(), "no flip, nothing given");
+    assert!(played.things.iter().any(|t| flipped(&played, &order, Way::Plain, &format!("{t:?}"), "t:gonemap.0")), "the order flips");
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|t, a| flipped(&played, &order, Way::Plain, t, a)), None);
 }
 
 // spec/commits.md §5, the shape of seed 2700027 in a map: B's snapshot of a keep-at-most-0 map
@@ -3936,7 +4147,7 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let got = judged(&mut deliver(&played, &order), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gone.0")).unwrap().clone();
     assert!(snap(&want).stands_in.is_empty() && !snap(&got).stands_in.is_empty(), "dropped in one order only, still standing in");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, Way::Plain, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
     let h2 = vec![Roster { by: 0, t: 2 }, Nested { by: 1, other: 2, t: 0, k: 1, text: false, compact: false, also: false }, Demote { by: 2, t: 6, holder: 2, at: 4, to_read: true }, Roster { by: 0, t: 0 }, Demote { by: 0, t: 6, holder: 2, at: 1, to_read: false }, Write { by: 0, t: 3, op: 18, k: 0, v: 2 }, Compact { by: 0, t: 4, op: 18 }, Write { by: 1, t: 0, op: 15, k: 0, v: 3 }, Edge { by: 0, t: 4, holder: 1, role: Some(Role::Read) }, Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }, Roster { by: 0, t: 6 }, Advance { who: None, ms: 3721574 }, Write { by: 1, t: 7, op: 15, k: 2, v: 7 }, Nested { by: 0, other: 2, t: 4, k: 0, text: false, compact: true, also: true }, Demote { by: 0, t: 0, holder: 1, at: 4, to_read: false }, Edge { by: 0, t: 7, holder: 2, role: Some(Role::Write) }, Compact { by: 1, t: 7, op: 4 }, Sync { from: 0, to: 2 }, Write { by: 1, t: 1, op: 4, k: 1, v: 3 }, Write { by: 2, t: 4, op: 0, k: 1, v: 8 }, Demote { by: 0, t: 4, holder: 2, at: 1, to_read: true }, Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }, Write { by: 1, t: 0, op: 18, k: 2, v: 5 }];
@@ -3945,7 +4156,7 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let order = [3, 8, 13, 30, 20, 4, 27, 0, 11, 2, 28, 26, 14, 16, 18, 10, 5, 6, 21, 1, 17, 7, 23];
     let (want, got) = (judged(&mut deliver(&played, &held), &played), judged(&mut deliver(&played, &order), &played));
     assert_ne!(want.index.as_ref().unwrap().carried, got.index.as_ref().unwrap().carried, "the carried index differs");
-    assert_eq!(alike_exchanged(&played, &want, &held, &got, &order, None, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &order, Way::Plain, &|_, _| false), None);
 }
 
 // spec/commits.md §5 (a snapshot's carried write killed by a lower-stamped write dies for it at
@@ -3965,7 +4176,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     let got = judged(&mut deliver(&played, &rev), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gonemap.0")).unwrap().clone();
     assert!(!snap(&want).dropped.is_empty() && !snap(&want).stands_in.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, still standing in");
-    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
+    assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, Way::Plain, &|_, _| false), None);
     check(21187, &h, LARGE).unwrap();
 }
 
@@ -3991,7 +4202,7 @@ fn expired_residue_survives_unmerge_spec_crdt_4_6() {
     let mut p = deliver(&played, &all);
     let suspect = p.engine.suspects().unwrap().iter().any(|x| x.0 == played.things[0] && x.1.as_str() == "t:brief.0");
     assert!(suspect || p.engine.get(&played.things[0], &ak("t:brief.0")).unwrap().is_none(), "differs unflagged");
-    check(24111, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
+    check(24111, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // spec/requirements.md Decentralization (the index is a function of what is held), seed 50036
@@ -4001,7 +4212,7 @@ fn expired_residue_survives_unmerge_spec_crdt_4_6() {
 fn valueless_list_order_independent_spec_crdt_4_7() {
     use Step::*;
     let h = vec![Write { by: 1, t: 7, op: 28, k: 1, v: 6 }, Write { by: 1, t: 2, op: 28, k: 1, v: 2 }, Advance { who: None, ms: 4563278 }];
-    check(50036, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: false }).unwrap();
+    check(50036, &h, Cfg { sync: false, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.6 Un-merge, §4.7 (residue), spec/commits.md §5 (purge): a purged delta whose
@@ -4277,7 +4488,7 @@ fn snapshot_copy_of_deleted_text_creation_dies_seed_7731022_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Roster { by: 0, t: 0 }), aim(Nested { by: 0, other: 1, t: 0, k: 0, text: false, compact: false, also: false }), aim(Edge { by: 0, t: 4, holder: 2, role: Some(Role::Write) }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Admin) }), aim(Demote { by: 0, t: 1, holder: 2, at: 3, to_read: false }), aim(Typed { by: 1, t: 4, op: 23, k: 0, v: 4 }), aim(Nested { by: 1, other: 0, t: 2, k: 1, text: false, compact: true, also: false }), aim(Nested { by: 1, other: 0, t: 1, k: 1, text: false, compact: false, also: true }), Forged { by: 0, a: 2, b: 4, how: 4, op: 19, k: 2, v: 7 }, aim(New { by: 0, parent: 4, write: false }), aim(Nested { by: 0, other: 1, t: 4, k: 2, text: true, compact: true, also: true }), Forged { by: 2, a: 5, b: 6, how: 2, op: 29, k: 2, v: 0 }, aim(Edge { by: 0, t: 7, holder: 2, role: None }), aim(Write { by: 0, t: 0, op: 19, k: 1, v: 9 }), aim(Typed { by: 1, t: 4, op: 11, k: 1, v: 5 }), aim(Roster { by: 0, t: 7 }), aim(Demote { by: 2, t: 7, holder: 1, at: 2, to_read: false }), aim(Typed { by: 2, t: 6, op: 16, k: 2, v: 4 }), Sync { from: 1, to: 2 }, aim(Compact { by: 2, t: 1, op: 4 }), Sync { from: 2, to: 0 }, aim(Edge { by: 2, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Nested { by: 2, other: 0, t: 6, k: 0, text: true, compact: false, also: true }), aim(Typed { by: 2, t: 0, op: 1, k: 2, v: 8 }), Sync { from: 0, to: 2 }, aim(Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }), aim(Nested { by: 0, other: 1, t: 7, k: 0, text: true, compact: false, also: true }), Forged { by: 1, a: 5, b: 5, how: 2, op: 14, k: 0, v: 0 }, aim(Nested { by: 1, other: 0, t: 5, k: 1, text: true, compact: true, also: false }), aim(Undo { by: 1, back: 2 }), NewTop { by: 1 }, Sync { from: 0, to: 1 }, aim(Edge { by: 0, t: 6, holder: 1, role: Some(Role::Admin) }), aim(Undo { by: 1, back: 2 }), aim(Compact { by: 1, t: 6, op: 10 }), aim(Typed { by: 0, t: 3, op: 29, k: 2, v: 8 }), Forged { by: 2, a: 1, b: 5, how: 4, op: 14, k: 2, v: 2 }, aim(Compact { by: 2, t: 2, op: 5 }), aim(Compact { by: 0, t: 1, op: 5 })];
-    check(7731022, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(7731022, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.8 (a write dies once, at its earliest superseder): seq_compact seed 8413009,
@@ -4289,7 +4500,7 @@ fn pruned_text_creation_copy_not_dated_again_seed_8413009_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 9 }), Compact { by: 0, t: 0, op: 24 }, aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 1 }), Compact { by: 0, t: 0, op: 10 }, aim(Undo { by: 1, back: 2 }), aim(Typed { by: 2, t: 0, op: 10, k: 1, v: 8 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 6 }), Compact { by: 2, t: 0, op: 10 }, aim(Typed { by: 2, t: 0, op: 11, k: 1, v: 3 }), Compact { by: 2, t: 0, op: 10 }];
-    check(8413009, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(8413009, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5: seq_compact seed 8413015, shrunk. A text creation dies
@@ -4301,7 +4512,7 @@ fn late_creation_death_hides_no_reset_death_seed_8413015_spec_crdt_4_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 3 }), aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 3 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 0 }), aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 7 }), aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), aim(Undo { by: 1, back: 1 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 2 }), aim(Undo { by: 1, back: 2 }), Compact { by: 1, t: 0, op: 26 }, aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 2, t: 0, op: 23, k: 1, v: 8 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 24, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 4 }), aim(Typed { by: 0, t: 0, op: 26, k: 0, v: 1 }), Compact { by: 2, t: 0, op: 23 }, aim(Typed { by: 1, t: 0, op: 26, k: 0, v: 9 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Typed { by: 2, t: 0, op: 23, k: 0, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 2, t: 0, op: 26, k: 0, v: 4 }), Compact { by: 1, t: 0, op: 24 }, aim(Typed { by: 0, t: 0, op: 23, k: 0, v: 6 }), aim(Undo { by: 0, back: 2 }), aim(Typed { by: 1, t: 0, op: 26, k: 1, v: 5 }), Compact { by: 0, t: 0, op: 26 }, aim(Typed { by: 0, t: 0, op: 26, k: 1, v: 5 })];
-    check(8413015, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(8413015, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/permissions.md §8: a snapshot purged, the purge falling, then purged again with no copy reads
@@ -4337,7 +4548,7 @@ fn creation_after_its_dropped_delete_has_no_death_seed_733028_spec_commits_5() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Leave { by: 1, t: 7 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), aim(Typed { by: 1, t: 0, op: 1, k: 0, v: 4 }), aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Undo { by: 2, back: 2 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.6: an un-merge takes the records a delta created; one whose body was dropped
@@ -4349,7 +4560,7 @@ fn records_of_a_dropped_body_after_a_flip_seed_733028_spec_crdt_4_6() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), aim(Breaking { by: 1, t: 2, op: 11, v: 9, fits: false }), aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/permissions.md §8: a part a fallen purge took counts as never received until a copy comes;
@@ -4360,7 +4571,7 @@ fn fallen_purge_part_missing_before_its_expiry_seed_29617_spec_perm_8() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, Sync { from: 2, to: 1 }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Message { by: 1, t: 0, v: 0 }), aim(Typed { by: 2, t: 0, op: 0, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Admin) }, aim(Purge { by: 0, t: 0, of: 2, back: 2, v: 0 }), aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 0 }), aim(Message { by: 0, t: 0, v: 4 }), aim(Typed { by: 2, t: 0, op: 27, k: 2, v: 2 }), aim(Typed { by: 0, t: 0, op: 0, k: 0, v: 1 }), aim(Typed { by: 0, t: 0, op: 27, k: 1, v: 9 }), Send { from: 2, to: 1, back: 0 }, aim(Typed { by: 1, t: 0, op: 27, k: 1, v: 4 }), aim(Compact { by: 2, t: 0, op: 0 }), aim(Typed { by: 0, t: 0, op: 27, k: 0, v: 7 }), Edge { by: 0, t: 0, holder: 1, role: Some(Role::Write) }, Edge { by: 2, t: 0, holder: 0, role: Some(Role::Write) }, aim(Demote { by: 1, t: 0, holder: 1, at: 3, to_read: true }), Edge { by: 2, t: 0, holder: 2, role: Some(Role::Admin) }, aim(Demote { by: 2, t: 0, holder: 2, at: 1, to_read: false }), Edge { by: 0, t: 0, holder: 2, role: Some(Role::Admin) }, Sync { from: 0, to: 2 }, aim(Purge { by: 2, t: 0, of: 1, back: 1, v: 3 })];
-    check(29617, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(29617, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/commits.md §5: a body dropped under keep at most whose other part is still missing leaves that
@@ -4428,7 +4639,7 @@ fn dropped_live_write_given_again_after_flip_seed_733028_spec_crdt_4_6() {
     use Step::*;
     let aim = |x: Step| Aim(Box::new(x));
     let h = vec![Forged { by: 2, a: 2, b: 5, how: 1, op: 1, k: 1, v: 3 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(NestedItem { by: 0, other: 2, t: 5, k: 0, compact: true, also: false }), aim(Demote { by: 0, t: 7, holder: 2, at: 4, to_read: true }), aim(Breaking { by: 2, t: 0, op: 28, v: 2, fits: true }), aim(Typed { by: 1, t: 1, op: 27, k: 1, v: 6 }), aim(Typed { by: 1, t: 3, op: 13, k: 0, v: 9 }), aim(Typed { by: 0, t: 2, op: 26, k: 0, v: 1 }), Forged { by: 0, a: 4, b: 0, how: 3, op: 26, k: 2, v: 1 }, aim(Nested { by: 0, other: 1, t: 4, k: 2, text: false, compact: true, also: false }), aim(Leave { by: 1, t: 7 }), aim(Nested { by: 0, other: 1, t: 1, k: 0, text: true, compact: true, also: true }), aim(Roster { by: 0, t: 4 }), aim(Require { by: 0, t: 1, op: 18, rule: 3 }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), aim(Breaking { by: 0, t: 1, op: 6, v: 1, fits: false }), Send { from: 0, to: 2, back: 2 }, aim(Nested { by: 1, other: 0, t: 7, k: 0, text: true, compact: false, also: true }), aim(Nested { by: 0, other: 2, t: 3, k: 2, text: true, compact: false, also: false }), aim(Undo { by: 2, back: 1 }), Advance { who: None, ms: 5621907 }, aim(Edge { by: 0, t: 2, holder: 1, role: Some(Role::Write) }), aim(Roster { by: 0, t: 4 }), aim(Typed { by: 2, t: 4, op: 3, k: 2, v: 7 }), Forged { by: 0, a: 5, b: 7, how: 2, op: 19, k: 0, v: 6 }, aim(Edge { by: 2, t: 3, holder: 2, role: Some(Role::Write) }), aim(Typed { by: 1, t: 0, op: 11, k: 0, v: 5 }), aim(Typed { by: 0, t: 2, op: 7, k: 0, v: 8 }), Forged { by: 1, a: 1, b: 2, how: 0, op: 13, k: 1, v: 2 }, aim(Undo { by: 0, back: 1 }), aim(Typed { by: 0, t: 4, op: 7, k: 1, v: 3 }), aim(Typed { by: 0, t: 3, op: 10, k: 1, v: 6 })];
-    check(733028, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(733028, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 
@@ -4465,7 +4676,7 @@ fn expired_record_keeps_keyed_valid_writes_seed_7340007_spec_crdt_4_6() {
     use Step::*;
     let a = |s: Step| Aim(Box::new(s));
     let h = vec![NewTop { by: 1 }, a(Typed { by: 2, t: 7, op: 28, k: 0, v: 9 }), a(Typed { by: 2, t: 7, op: 22, k: 1, v: 4 }), Send { from: 2, to: 1, back: 1 }, NewTop { by: 2 }, a(Edge { by: 0, t: 5, holder: 2, role: Some(Role::Read) }), Advance { who: None, ms: 6647992 }, a(Nested { by: 0, other: 1, t: 3, k: 2, text: false, compact: true, also: true }), a(Demote { by: 0, t: 5, holder: 1, at: 4, to_read: true }), NewTop { by: 1 }, a(Nested { by: 1, other: 0, t: 4, k: 0, text: false, compact: true, also: false }), NewTop { by: 1 }, NewTop { by: 1 }, Forged { by: 0, a: 6, b: 6, how: 2, op: 17, k: 1, v: 2 }];
-    check(7340007, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+    check(7340007, &h, Cfg { sync: true, ..LARGE }).unwrap();
 }
 
 // spec/crdt.md §4.8, spec/commits.md §5, seed 52040 of `arrival_order_alike_large`: 1 puts k2,
@@ -4490,7 +4701,7 @@ fn nested_write_dies_under_unmerged_record_seed_52040_spec_crdt_4_8() {
     assert!(!w.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "the dead body under keep at most 0 is dropped as made");
     assert!(!g.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "and reversed");
     let (want, got) = (judged(&mut w, &played), judged(&mut g, &played));
-    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, None, &|t, a| flipped(&played, &held, None, t, a) || flipped(&played, &rev, None, t, a)), None);
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, Way::Plain, &|t, a| flipped(&played, &held, Way::Plain, t, a) || flipped(&played, &rev, Way::Plain, t, a)), None);
 }
 
 /// The thing an aspect `ak` is written on in `played` (one thing per aspect name in a history).
@@ -4531,4 +4742,36 @@ fn key_erased_copy_keeps_record_before_expiry_spec_crdt_4_6() {
         assert_eq!(map(&a, i), map(&b, i), "{}", a.parts[i].0);
     }
     assert!(map(&a, 1).contains("value: Some(Int(5))"), "1's write is kept");
+}
+
+// spec/crdt.md §4.8: the oracle's register death check (`register_deaths`) judges kept and
+// keep-at-most register writes by their superseders and catches a recomputed death that is wrong.
+#[test]
+fn register_deaths_checked_spec_crdt_4_8() {
+    use Step::*;
+    let h = vec![
+        Typed { by: 0, t: 0, op: 16, k: 0, v: 1 },
+        Advance { who: None, ms: 1_000 },
+        Typed { by: 1, t: 0, op: 16, k: 0, v: 2 },
+        Sync { from: 1, to: 0 },
+        Typed { by: 0, t: 0, op: 17, k: 0, v: 3 },
+        Typed { by: 0, t: 0, op: 17, k: 0, v: 4 },
+    ];
+    let played = play(1, &h);
+    let held: Vec<usize> = (0..played.packs.len()).collect();
+    let (judged, died) = oracle(&played, &held).registers.unwrap();
+    assert!(judged >= 4 && died >= 2, "judged {judged}, died {died}");
+    let mut p = Peer::new(FRESH, played.now).unwrap();
+    p.engine.keep_bodies(true);
+    for pk in &played.packs {
+        let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
+    }
+    for (t, a) in p.engine.all_aspects().unwrap() {
+        p.engine.replay_deaths(&t, &a).unwrap();
+    }
+    let mut deaths = deaths_of(&mut p.engine);
+    assert!(register_deaths(&mut p.engine, &deaths, &BTreeSet::new()).is_ok());
+    let k = deaths.iter().find(|(k, d)| k.2.as_str() == "t:kept.0" && d.is_some()).map(|x| x.0.clone()).unwrap();
+    deaths.insert(k, None);
+    assert!(register_deaths(&mut p.engine, &deaths, &BTreeSet::new()).is_err(), "a lost death is caught");
 }
