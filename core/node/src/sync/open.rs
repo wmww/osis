@@ -182,6 +182,7 @@ impl SyncEngine {
             syncing: false,
             synced: false,
             dirty: false,
+            fill: None,
             registering: None,
             step_retry: 0,
             step_refusals: 0,

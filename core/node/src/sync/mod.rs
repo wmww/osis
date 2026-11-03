@@ -13,6 +13,7 @@
 mod bundle;
 mod deliver;
 mod ephemeral;
+mod fill;
 mod host;
 #[cfg(feature = "driver")]
 pub mod driver;
@@ -282,6 +283,8 @@ pub(crate) struct LConn {
     pub synced: bool,
     /// A pass is wanted once the running exchange ends.
     pub dirty: bool,
+    /// The label's first sync at this host is under way (`fill`).
+    pub fill: Option<fill::Fill>,
     /// A child step sent for registration.
     pub registering: Option<(Step, osis_label::ClaimSet)>,
     /// A child step refused for now: no pass registers one before this (raw ms).
@@ -306,12 +309,13 @@ pub(crate) struct LConn {
 }
 
 impl LConn {
-    /// The log was read to its end and nothing runs: a pass may start.
+    /// The log was read to its end and nothing runs: a pass may start. During a fill, from when
+    /// what judging needs is here (a pass would call this node stranded before).
     fn ready(&self) -> bool {
-        self.synced && !self.syncing && self.registering.is_none()
+        self.synced && !self.syncing && self.registering.is_none() && self.fill.as_ref().is_none_or(|f| f.first_done)
     }
 
-    /// Ready, with no pass wanted.
+    /// Ready, with no pass wanted. (A fill always has a batch asked: not idle by the session.)
     fn idle(&self) -> bool {
         self.ready() && !self.dirty
     }
@@ -954,12 +958,14 @@ impl SyncEngine {
         let mut changed = false;
         // things whose roster or creation record changed
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
+        let mut own = false;
         let me = self.engine.tid();
         let clients = osis_schema::AspectKey::ak(&osis_schema::core_types::CLIENTS);
         while let Ok(e) = self.events.try_recv() {
             match e {
                 crate::Event::Applied { id, origin, changed: aspects, .. } => {
                     changed = true;
+                    own |= origin == Origin::Local;
                     self.tied.touched(&aspects);
                     self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
                     self.placed_cache.0 = u64::MAX;
@@ -1054,6 +1060,11 @@ impl SyncEngine {
         self.touched.states.extend(ch.aspects.iter().cloned());
         self.touched.whole.extend(ch.aspects);
         let cs = ch.commits;
+        if own {
+            for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
+                l.dirty = true;
+            }
+        }
         if changed {
             self.mark_dirty();
             let all = self.touched.full || self.cfg.full_passes;
@@ -1088,12 +1099,13 @@ impl SyncEngine {
         }
     }
 
-    /// Every label on every connection wants a pass.
+    /// Every label on every connection wants a pass; one filling at its next due (`sync_label`), its
+    /// fill's end or this node's own next write, not per batch applied.
     pub(crate) fn mark_dirty(&mut self) {
         self.local_dirty = true;
         for c in self.conns.values_mut() {
             for l in c.labels.values_mut() {
-                l.dirty = true;
+                l.dirty |= l.fill.is_none();
             }
         }
     }
@@ -1808,10 +1820,16 @@ impl SyncEngine {
             return self.receipts_sync(conn, label, out);
         }
         let now = self.raw_now();
-        let inline_limit = self.cfg.inline_limit;
         let Some(c) = self.conns.get_mut(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(l) = c.labels.get_mut(&label) else { return Ok(()) };
+        // a fill past its listing goes on, its end brings what came meanwhile; a pass now and then
+        if l.fill.as_ref().is_some_and(|f| f.listed()) {
+            l.dirty = true;
+            l.last_sync = now;
+            return self.fill_more(conn, label, out);
+        }
+        l.fill = None;
         l.syncing = true;
         l.last_sync = now;
         let cursor = self.state.cursors.get(&(host, label)).copied();
@@ -1851,6 +1869,13 @@ impl SyncEngine {
         // the ephemeral entries held, listed once per connection: the host asks for those it
         // lacks (a restarted host, another host's)
         let gained = self.eph_gained(conn, label);
+        // a first sync lists, then fetches in the wraps' order (`fill`)
+        let inline_limit = if cursor.is_none() || self.state.filling.contains(&(host, label)) {
+            self.fill_start(conn, label);
+            0
+        } else {
+            self.cfg.inline_limit
+        };
         self.command(conn, Command::Sync { label, cursor, inline_limit, entries: Vec::new(), gained }, out)
     }
 
@@ -1925,6 +1950,11 @@ impl SyncEngine {
     /// Diagnostics since the last call (tests).
     pub fn take_diagnostics(&mut self) -> Vec<String> {
         std::mem::take(&mut self.diagnostics)
+    }
+
+    /// Whether a stranded heartbeat went under a label (tests).
+    pub fn stranded_at(&self, l: &LabelId) -> bool {
+        self.state.stranded.contains_key(l)
     }
 
     /// Entries this node knows under a label (tests).

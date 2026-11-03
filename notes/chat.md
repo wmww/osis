@@ -11,7 +11,7 @@
 - **Join by link**: K (a write link to C); the redeemer joins K by an invite grant, then makes its persona. A single-use link refuses a second redeemer.
 - **Removal**: the moderator removes P_i from C's subgroups and items, then `demote(C, person)` (the person from `owner_of(P_i)`): on C for a direct grant; for a link joiner the API removes the joiner and L from K in one commit (`revoke_joiner`, also when the link was revoked or used up: the joiner may keep the seed, spec/permissions.md §9; one rotation; the other joiners keep their roles on K). K's rotation cuts the joiner off C's new content; what P_i posts afterwards reaches nobody (P_i is outside C's closure). The node does not delete P_i's old entries with C's delete key; other holders just stop listing them.
 - **Timeline**: no query API yet: C's `group.0` subgroups, each persona's `group.0` items, each message, sorted by its creation's display time, then `ts` and tid.
-- **Not built**: time-bucket history groups (a label has no partial download, so one group per time bucket owned by C would let a new device fetch recent months first); deleting a removed persona's entries.
+- **Not built**: time-bucket history groups (one group per time bucket owned by C; a label now fills newest first, spec/sync.md §6, so this would only let a device stop fetching old months); deleting a removed persona's entries.
 
 ## Costs
 - Measured (`costs_join_message_removal`, tier 2, asserts these with margin; `OSIS_CHAT_N` sets the size, `OSIS_TRACE_UPLOADS=1` prints one line per entry sent):

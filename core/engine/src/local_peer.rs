@@ -117,7 +117,7 @@ impl Engine {
             }
             let Some(secret) = self.wrap_secret(&b.reader, Some((id, &b.parts)))? else { continue };
             let s = crate::labeling::seal_body(&b, rng)?;
-            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
             entries.push(SealedEntry { reader: b.reader, id: s.id, blob: s.blob, wrap });
         }
         Ok(Some(SealedPackage { id: *id, entries, blobs: pk.blobs }))

@@ -854,9 +854,9 @@ impl SyncEngine {
                 if reader != actor && !self.engine.may_read(&actor, &reader) {
                     continue;
                 }
-                let body = crate::labeling::Body { commit: c.id, reader, parts: p.parts.clone(), expires: p.expires, keys: p.keys.clone(), blind: c.blob.header.blind, plaintext: p.plaintext, role_commit: false };
+                let body = crate::labeling::Body { commit: c.id, reader, parts: p.parts.clone(), expires: p.expires, keys: p.keys.clone(), blind: c.blob.header.blind, plaintext: p.plaintext, role_commit: false, order: crate::labeling::fetch_order(&c.blob.header) };
                 let s = seal_body_as(&body, class, &mut *self.rng)?;
-                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+                let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, body.order)?;
                 let stamp = stamp_key.as_ref().map(|w| osis_label::sign_stamp(w, &l, &s.id, &wrap));
                 if c.class == EphClass::Relay {
                     self.eph_send_relay(l, s.blob, wrap, stamp, out)?;

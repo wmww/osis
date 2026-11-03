@@ -170,6 +170,53 @@ fn page_says_when_it_may_miss_entries() {
     assert!(alone.at(u, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete);
 }
 
+// spec/sync.md §6: a new device reads the newest messages while older ones are on their way:
+// `complete` false, then true, and every page's entries the newest there are.
+#[test]
+fn a_new_device_reads_newest_first_spec_sync_6() {
+    const N: usize = 400;
+    let mut w = World::new();
+    let host = w.add_host();
+    let (db, _) = w.person(1, &[host]);
+    let t = db
+        .write_with(|x| {
+            let t = x.create(db.me())?;
+            x.place(t, db.home())?;
+            Ok(t)
+        })
+        .unwrap();
+    // the thing's creation comes with its first message, which judging needs first
+    say(&db, t, "first");
+    for i in 0..N {
+        say(&db, t, &format!("{i:05}"));
+    }
+    w.run();
+    let join = Osis::pair(w.cfg(2, &[]), &db.pair_offer().unwrap()).unwrap();
+    let (_, reply) = db.pair_accept(join.request()).unwrap();
+    let phone = join.finish(&reply).unwrap();
+    let mut part = false;
+    for _ in 0..100_000 {
+        let page = phone.at(t, msgs()).history(HistoryFrom::Newest, 10).unwrap();
+        if !page.entries.is_empty() {
+            let shown = page.entries.iter().filter(|e| e.body != HistoryBody::Held(Some(s("first"))));
+            for (i, e) in shown.enumerate() {
+                assert_eq!(e.body, HistoryBody::Held(Some(s(&format!("{:05}", N - 1 - i)))), "newest first");
+            }
+            if page.complete {
+                break;
+            }
+            part = true;
+        }
+        // one hop; nothing queued: time for a tick
+        if !w.step(None) {
+            w.advance(1_000);
+        }
+    }
+    assert!(part, "seen before it was complete");
+    w.run();
+    assert!(phone.at(t, msgs()).history(HistoryFrom::Newest, 1).unwrap().complete);
+}
+
 // spec/sync.md §9, notes/api.md History, notes/ephemeral.md: memory data has a history too: own batches at once,
 // another node's memory commits with their author, and a commit gone (its expiry) is told as gone.
 #[test]

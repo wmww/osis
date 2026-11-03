@@ -126,9 +126,9 @@ fn bundle(played: &Played, second: bool) -> Laid {
                     }
                 }
             }
-            let body = Body { commit: pk.id, reader: Tid::from_bytes([0; 15]), parts: p.parts, expires: p.expires, keys: p.keys, blind: cb.header.blind, plaintext: p.plaintext, role_commit: cb.header.kind.is_role() };
+            let body = Body { commit: pk.id, reader: Tid::from_bytes([0; 15]), parts: p.parts, expires: p.expires, keys: p.keys, blind: cb.header.blind, plaintext: p.plaintext, role_commit: cb.header.kind.is_role(), order: 1 };
             let sealed = seal_body(&body, &mut rng).unwrap();
-            let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key).unwrap();
+            let wrap = osis_crypto::wrap(&lab.read, &sealed.id, &sealed.key, 1).unwrap();
             let stamp = sign_stamp(&lab.stamp, &lab.id, &sealed.id, &wrap);
             recs.push(Record::Blob(sealed.blob));
             recs.push(Record::Entry { label: lab.id, blob: sealed.id, wrap, stamp: Some(stamp) });

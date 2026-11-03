@@ -29,7 +29,7 @@ pub fn bundle() -> VecFile {
     let (k1, b1) = frame(&p, b"one", &mut FixedRng::new(&[&[0x56; 32]])).unwrap();
     let (_, b2) = frame(&p, b"two", &mut FixedRng::new(&[&[0x57; 32]])).unwrap();
     let (i1, i2) = (osis_label::blob_id(&b1), osis_label::blob_id(&b2));
-    let (w1s, w1t) = (wrap(&r0, &i1, &k1).unwrap(), wrap(&r1, &i1, &k1).unwrap());
+    let (w1s, w1t) = (wrap(&r0, &i1, &k1, 1).unwrap(), wrap(&r1, &i1, &k1, 1).unwrap());
     let st0 = sign_stamp(&label_role_key(LabelRole::Write, &w0, 0), &s0.label, &i1, &w1s);
     let st1 = sign_stamp(&label_role_key(LabelRole::Write, &w1, 0), &t0.label, &i1, &w1t);
     let recs = vec![

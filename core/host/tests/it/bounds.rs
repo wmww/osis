@@ -233,7 +233,7 @@ fn mutual_replication_settles() {
     let x = blob(100);
     let e1 = l.entry(x.clone());
     let mut e2 = e1.clone();
-    e2.wrap = [0x77; 49];
+    e2.wrap = [0x77; osis_crypto::WRAP_LEN];
     e2.stamp = osis_label::sign_stamp(&l.head_keys().write, &l.id, &osis_label::blob_id(&x), &e2.wrap);
     w.peer(s1, s2);
     w.peer(s2, s1);

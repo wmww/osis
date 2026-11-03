@@ -22,11 +22,11 @@ pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8
         .map_err(|_| Error::Decrypt)
 }
 
-/// A 49-byte `suite || key` wrap (spec/wire.md §5, §7): wraps, symmetric boxes.
-pub const WRAP_LEN: usize = 1 + 32 + TAG_LEN;
+/// A 49-byte `suite || key` sealing (spec/wire.md §7): symmetric boxes.
+pub const SUITE_KEY_LEN: usize = 1 + 32 + TAG_LEN;
 
 /// Encrypts `SUITE_1 || secret` under `ad`.
-pub(crate) fn seal_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], secret: &Secret32) -> Result<[u8; WRAP_LEN], Error> {
+pub(crate) fn seal_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], secret: &Secret32) -> Result<[u8; SUITE_KEY_LEN], Error> {
     let mut pt = Zeroizing::new([SUITE_1; 33]);
     if let Some(dst) = pt.get_mut(1..) {
         dst.copy_from_slice(secret.expose());
@@ -36,7 +36,7 @@ pub(crate) fn seal_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8],
 
 /// Opens a `suite || key` wrap; an unknown suite parks.
 pub(crate) fn open_suite_key(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], wrap: &[u8]) -> Result<Secret32, Error> {
-    if wrap.len() != WRAP_LEN {
+    if wrap.len() != SUITE_KEY_LEN {
         return Err(Error::Malformed("wrap length"));
     }
     let pt = Zeroizing::new(open(key, nonce, ad, wrap)?);

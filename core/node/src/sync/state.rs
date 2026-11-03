@@ -22,6 +22,8 @@ pub type HostKey = [u8; 32];
 const ENTRY: &[u8] = b"y/e";
 const PRESENT: &[u8] = b"y/p";
 const CURSOR: &[u8] = b"y/c";
+/// A (host, label) whose first sync has not ended (`fill`).
+const FILLING: &[u8] = b"y/4";
 const HEAD: &[u8] = b"y/h";
 const BLOB: &[u8] = b"y/b";
 const CERT: &[u8] = b"y/k";
@@ -229,6 +231,8 @@ pub struct State {
     /// promotes them at that host, whatever stamp this node knows.
     pub deposited: BTreeSet<(HostKey, LabelId, BlobId)>,
     pub cursors: BTreeMap<(HostKey, LabelId), Cursor>,
+    /// `FILLING`.
+    pub filling: BTreeSet<(HostKey, LabelId)>,
     pub heads: BTreeMap<(HostKey, LabelId), Step>,
     pub blobs: BTreeMap<BlobId, BlobRec>,
     pub by_commit: BTreeMap<CommitId, BTreeSet<BlobId>>,
@@ -433,6 +437,10 @@ impl State {
                     let k = (r.arr()?, LabelId(r.arr()?));
                     let mut c = Rd::new(&v);
                     s.cursors.insert(k, Cursor { log_id: c.arr()?, seq: c.u64()? });
+                }
+                b"4" => {
+                    let k: (HostKey, LabelId) = (r.arr()?, LabelId(r.arr()?));
+                    s.filling.insert(k);
                 }
                 b"h" => {
                     let k = (r.arr()?, LabelId(r.arr()?));
@@ -831,6 +839,17 @@ impl State {
                 self.del(k);
                 self.cursors.remove(&(s, l));
             }
+        }
+    }
+
+    pub fn set_filling(&mut self, s: HostKey, l: LabelId, on: bool) {
+        let k = key(FILLING, &[&s, &l.0]);
+        if on {
+            if self.filling.insert((s, l)) {
+                self.put(k, Vec::new());
+            }
+        } else if self.filling.remove(&(s, l)) {
+            self.del(k);
         }
     }
 

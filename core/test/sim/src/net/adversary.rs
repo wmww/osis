@@ -32,7 +32,7 @@ pub fn seal(sim: &mut NetSim, plaintext: &[u8]) -> Res<(BlobId, Vec<u8>, osis_cr
 /// A stamped entry of `blob` under `k`'s read secret and write key (wrong keys when not held).
 pub fn stamped(sim: &NetSim, k: &LabelKeys, id: &BlobId, blob: Vec<u8>, key: &osis_crypto::Secret32) -> Res<Entry> {
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret held"))?;
-    let wrap = osis_crypto::wrap(&read, id, key).map_err(|e| sim.fail(e.to_string()))?;
+    let wrap = osis_crypto::wrap(&read, id, key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key held"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, id, &wrap);
     Ok(Entry { blob, wrap, stamp, replaces: Vec::new() })
@@ -171,7 +171,7 @@ pub fn removed_replayer(seed: u64) -> Res<Report> {
         let sealed = osis_node::labeling::seal_body(&body, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
         let Some(read) = old.read.clone() else { break };
-        let wrap = osis_crypto::wrap(&read, &id, &key).map_err(|e| sim.fail(e.to_string()))?;
+        let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
         if let Some(dk) = &old.deposit {
             let sig = osis_label::sign_deposit(dk, &old.label, &id, &wrap);
             let ev = sim.rogue_do(&mut r, Command::Deposit { label: old.label, blob: blob.clone(), wrap, sig })?;
@@ -338,7 +338,7 @@ pub fn deposit_flood(seed: u64) -> Res<Report> {
     for i in 0..400u64 {
         let sealed = osis_node::labeling::seal_body(&body, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
         let (id, blob, key) = (sealed.id, sealed.blob, sealed.key);
-        let wrap = osis_crypto::wrap(&read, &id, &key).map_err(|e| sim.fail(e.to_string()))?;
+        let wrap = osis_crypto::wrap(&read, &id, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
         let sig = osis_label::sign_deposit(&dk, &k.label, &id, &wrap);
         let evs = sim.rogue_do(&mut r, Command::Deposit { label: k.label, blob, wrap, sig })?;
         for e in &evs {

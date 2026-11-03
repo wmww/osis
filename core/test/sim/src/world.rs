@@ -418,7 +418,7 @@ impl World {
 
     /// One round of `pump`: every database's actions, then one queued message. False if nothing
     /// moved. With `seen`, counts what it carries.
-    fn step(&mut self, mut seen: Option<&mut BTreeMap<String, u64>>) -> bool {
+    pub fn step(&mut self, mut seen: Option<&mut BTreeMap<String, u64>>) -> bool {
         let mut moved = false;
         let dbs = self.dbs();
         for (d, db) in dbs.iter().enumerate() {

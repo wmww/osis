@@ -439,7 +439,7 @@ fn header_only_prefix_is_checked_spec_sync_1() {
     let pk = net.engine(b).package(&c).unwrap().unwrap();
     let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
     let pt = osis_commit::rewrite(&blob, |_, _| true).encode();
-    let body = |expires| Body { commit: c, reader: t, parts: Vec::new(), expires, keys: Vec::new(), blind: blob.header.blind, plaintext: pt.clone(), role_commit: false };
+    let body = |expires| Body { commit: c, reader: t, parts: Vec::new(), expires, keys: Vec::new(), blind: blob.header.blind, plaintext: pt.clone(), role_commit: false, order: 1 };
     let mut rng = osis_crypto::SeededRng::from_u64(5);
     let good = seal_body(&body(None), &mut rng).unwrap();
     assert!(open_commit(&good.blob, &good.key).is_ok());

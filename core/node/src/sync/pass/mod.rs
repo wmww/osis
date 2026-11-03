@@ -315,7 +315,10 @@ impl SyncEngine {
             self.retire_at(host, &g, l)?;
         }
         self.reseal(&g, w)?;
-        self.repair_suspects(w)?;
+        // a snapshot from a state not whole yet repairs nothing
+        if !self.filling(&l) {
+            self.repair_suspects(w)?;
+        }
         w.leave(left);
         Ok(())
     }
@@ -762,8 +765,13 @@ impl SyncEngine {
         let mut sends = Vec::new();
         self.stats.bodies += bodies.len() as u64;
         let mut note = Note::default();
+        // a fill always has an entry on its way that may be a snapshot, but none covers what only
+        // this node has sent: its own writes go out meanwhile
+        let filling = self.filling(&l);
+        let own_snapping: Unsettled = snapping.iter().flatten().cloned().map(Some).collect();
         for b in bodies {
-            let needed = self.must_hold(b, snaps, snapping, &mut note)?;
+            let snapping_b = if filling && self.own(&b.commit) { &own_snapping } else { snapping };
+            let needed = self.must_hold(b, snaps, snapping_b, &mut note)?;
             note.leave(b.commit, left);
             if snapping.contains(&None) {
                 left.held_back.insert(b.commit);
@@ -1001,6 +1009,10 @@ impl SyncEngine {
     /// opened now, or fetched again when their bytes are not here (a fetch lost to a cut or
     /// crash, secrets that arrived later).
     fn refetch(&mut self, conn: ConnId, host: HostKey, l: LabelId, w: &Work, out: &mut Vec<super::Action>) -> Result<()> {
+        // a fill asks for them in order
+        if self.lc(conn, &l).is_some_and(|x| x.fill.is_some()) {
+            return Ok(());
+        }
         let missing = |s: &Self, b: &BlobId| s.conns.get(&conn).is_some_and(|c| c.req.missing.contains(b));
         let ids: Vec<BlobId> = w.unopened.iter().filter(|b| !self.fetching(b) && !missing(self, b) && self.state.is_present(&host, &l, b)).copied().collect();
         let (held, want): (Vec<BlobId>, Vec<BlobId>) = ids.into_iter().partition(|b| self.engine.has_blob(b));
@@ -1472,7 +1484,7 @@ impl SyncEngine {
             }
         };
         let Some(salt) = self.engine.blob(&id)?.and_then(|x| osis_label::Prefix::parse(&x).ok()).map(|p| *p.salt()) else { return Ok(None) };
-        let wrap = osis_crypto::wrap(&secret, &id, &key)?;
+        let wrap = osis_crypto::wrap(&secret, &id, &key, b.order)?;
         self.state.set_entry(l, id, Entry { wrap, stamp: None, cert, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt } });
         Ok(Some(id))
     }
@@ -1837,7 +1849,7 @@ impl SyncEngine {
         let Some(c) = self.heartbeat_commit(true, BTreeSet::new())? else { return Ok(()) };
         for b in self.engine.partial_bodies(&c, &BTreeSet::from([0usize]))? {
             let s = seal_body(&b, &mut *self.rng)?;
-            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key)?;
+            let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
             let sig = osis_label::sign_deposit(&d, &l, &s.id, &wrap);
             self.command(conn, Command::Deposit { label: l, blob: s.blob, wrap, sig }, out)?;
         }

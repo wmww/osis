@@ -793,7 +793,7 @@ fn junk_copy_keeps_out_no_inbox_blob_spec_commits_4() {
     let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
     let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let conn = net.conn_to(b, host).expect("connected");
     let ev = osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None };
     let m = osis_proto::Message::Push { label: home, events: vec![ev], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 1 << 40 } };
@@ -843,7 +843,7 @@ fn junk_label_copy_applies_no_declined_invite_spec_sync_3() {
     let junk = osis_node::labeling::Body { plaintext: junk.encode(), ..body };
     let sealed = osis_node::labeling::seal_body(&junk, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let secret = net.engine(b).wrap_secret(&bob, None).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let conn = net.conn_to(b, host).expect("connected");
     let ev = osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None };
     let m = osis_proto::Message::Push { label: home, events: vec![ev], cursor: osis_proto::Cursor { log_id: [0; 16], seq: 1 << 40 } };

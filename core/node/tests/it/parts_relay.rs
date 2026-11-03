@@ -22,7 +22,7 @@ fn entry(net: &mut Net, from: usize, keys: usize, g: Tid, plaintext: Vec<u8>, c:
     let body = osis_node::labeling::Body { plaintext, ..body };
     let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed)).unwrap();
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     (sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None })
 }
 
@@ -38,7 +38,7 @@ fn every_body(net: &mut Net, from: usize, keys: usize, g: Tid, n: usize, host: u
     let secret = net.engine(keys).wrap_secret(&g, None).unwrap().unwrap();
     for (i, body) in net.engine(from).bodies(c).unwrap().into_iter().enumerate() {
         let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed + i as u64)).unwrap();
-        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
         push(net, n, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed + i as u64);
     }
 }
@@ -337,7 +337,7 @@ fn a_name_raised_during_redelivery_is_kept_spec_commits_4() {
     let junk_e = osis_node::labeling::Body { plaintext: junk_e.encode(), ..body };
     let sealed = osis_node::labeling::seal_body(&junk_e, &mut SeededRng::from_u64(102)).unwrap();
     let secret = x.net.engine(a).wrap_secret(&x.g, None).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
     let (host, l) = (x.host, x.l);
     push(&mut x.net, b, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, 102);
     let g = x.g;
@@ -482,7 +482,7 @@ fn junk_first_on_a_unit_keeps_out_no_entry_spec_commits_4() {
             let (g, l, host) = (x.g, x.l, x.host);
             let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(seed)).unwrap();
             let secret = x.net.engine(a).wrap_secret(&g, None).unwrap().unwrap();
-            let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+            let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
             push(&mut x.net, b, host, l, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }, seed);
         };
         if other_first {
@@ -623,7 +623,7 @@ fn relay_seed(seed: u64) {
     let mut entries: Vec<(osis_base::BlobId, osis_proto::Event)> = Vec::new();
     let mut seal = |body: osis_node::labeling::Body, at: u64| {
         let sealed = osis_node::labeling::seal_body(&body, &mut SeededRng::from_u64(at)).unwrap();
-        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key).unwrap();
+        let wrap = osis_crypto::wrap(&secret, &sealed.id, &sealed.key, 1).unwrap();
         entries.push((sealed.id, osis_proto::Event::Added { blob_id: sealed.id, blob: Some(sealed.blob), wrap, stamp: None }));
     };
     let mut slots = Vec::new();

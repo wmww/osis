@@ -239,6 +239,11 @@ pub fn unwrap_any<'a>(secrets: impl IntoIterator<Item = &'a Secret32>, blob: &Bl
     secrets.into_iter().enumerate().find_map(|(i, s)| osis_crypto::unwrap(s, blob, wrap).ok().map(|k| (i, k)))
 }
 
+/// The fetch order of a wrap that opens (spec/crypto.md §5), else `None`.
+pub fn wrap_order<'a>(secrets: impl IntoIterator<Item = &'a Secret32>, blob: &BlobId, wrap: &[u8]) -> Option<u64> {
+    secrets.into_iter().find_map(|s| osis_crypto::unwrap_order(s, blob, wrap).ok().map(|x| x.1))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -422,7 +427,7 @@ mod tests {
     fn wraps() {
         let (old, new) = (Secret32::from_bytes([1; 32]), Secret32::from_bytes([2; 32]));
         let (id, k) = (BlobId([3; 32]), Secret32::from_bytes([4; 32]));
-        let w = osis_crypto::wrap(&old, &id, &k).unwrap();
+        let w = osis_crypto::wrap(&old, &id, &k, 1).unwrap();
         assert_eq!(unwrap_any([&new, &old], &id, &w), Some((1, k)));
         assert_eq!(unwrap_any([&new, &old], &id, &osis_crypto::filler_wrap(&mut SeededRng::from_u64(2))), None);
     }

@@ -26,6 +26,15 @@ pub struct Body {
     pub blind: [u8; 16],
     pub plaintext: Vec<u8>,
     pub role_commit: bool,
+    /// Its wrap's fetch order (`fetch_order`).
+    pub order: u64,
+}
+
+/// A wrap's fetch order (spec/crypto.md §5): 0 for a commit a judgment of other commits needs, else
+/// the commit's `ts`. Read only to order this node's fetches.
+pub fn fetch_order(h: &osis_commit::Header) -> u64 {
+    let foundation = h.kind.is_role() || h.aspects.iter().any(|a| matches!(a.ak.as_str(), "created.0" | "required.0^" | "group.0") || osis_schema::core_types::is_role_class(a.ak.as_str()));
+    if foundation { 0 } else { h.ts.to_u64().max(1) }
 }
 
 /// A blob of a body: ID, bytes, key, prefix salt.
@@ -124,13 +133,14 @@ impl Engine {
             Some(m) if !blob.header.is_resolved() => m.header.arc(),
             _ => std::sync::Arc::new(blob.header.clone()),
         };
+        let order = fetch_order(&resolved);
         let readers: Vec<Tid> = resolved.aspects.iter().map(|a| self.core.reader_of(&a.tid)).collect();
         let ps = osis_commit::project_resolved(&blob, &resolved, |ai| readers.get(ai).copied())?;
         Ok(ps
             .into_iter()
             .filter_map(|p| {
                 let reader = p.readers?;
-                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, blind: blob.header.blind, plaintext: p.plaintext, role_commit })
+                Some(Body { commit: id, reader, parts: p.parts, expires: p.expires, keys: p.keys, blind: blob.header.blind, plaintext: p.plaintext, role_commit, order })
             })
             .collect())
     }
@@ -228,7 +238,7 @@ impl Engine {
             if self.run(|tx| crate::retention::lasting(tx, &id, &on))?
                 && let Some(blind) = self.core.ix.commits.get(&id).map(|m| m.header.blind)
             {
-                out.push(Body { commit: id, reader: ctx.actor, parts: Vec::new(), expires: None, keys: Vec::new(), blind, plaintext: Vec::new(), role_commit: false });
+                out.push(Body { commit: id, reader: ctx.actor, parts: Vec::new(), expires: None, keys: Vec::new(), blind, plaintext: Vec::new(), role_commit: false, order: h.ts.to_u64().max(1) });
             }
         }
         Ok(out)

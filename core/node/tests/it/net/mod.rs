@@ -579,6 +579,10 @@ impl Net {
         }
     }
 
+    pub fn queue_len(&self) -> usize {
+        self.queue.len()
+    }
+
     /// Delivers the messages queued now; what they cause waits for the next round (one hop of
     /// latency per round).
     pub fn round(&mut self) {
@@ -638,6 +642,12 @@ impl Net {
 
     /// Moves time on by `ms`, firing node wakes and host ticks, then settles.
     pub fn advance(&mut self, ms: u64) {
+        self.tick(ms);
+        self.run();
+    }
+
+    /// `advance`, leaving what the wakes caused queued (`round`).
+    pub fn tick(&mut self, ms: u64) {
         self.clock.advance(ms);
         for s in 0..self.hosts.len() {
             let now = self.now_at(s);
@@ -647,7 +657,6 @@ impl Net {
         for n in 0..self.nodes.len() {
             self.feed(n, Event::Tick);
         }
-        self.run();
     }
 
     /// Delivers every commit `from` holds to `to` directly (pairing stand-in).

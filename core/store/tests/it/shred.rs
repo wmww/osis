@@ -253,7 +253,7 @@ fn blob_keys_and_wraps_dropped_leave_the_blob_unopenable() {
     let mut t = s.transaction(&mut rng).unwrap();
     t.put_blob(&inner, ib).unwrap();
     t.put_blob(&wrapped, wb).unwrap();
-    t.put_wrap(&LABEL, &wrapped, &osis_crypto::wrap(&secret, &wrapped, &wkey).unwrap()).unwrap();
+    t.put_wrap(&LABEL, &wrapped, &osis_crypto::wrap(&secret, &wrapped, &wkey, 1).unwrap()).unwrap();
     t.put_blob(&keyed, kb).unwrap();
     t.put_local(&[b"blobkey/".as_slice(), &keyed.0].concat(), kkey.expose(), Shred::No).unwrap();
     t.commit().unwrap();

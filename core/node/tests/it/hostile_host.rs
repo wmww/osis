@@ -58,7 +58,7 @@ fn unsolicited_push_stores_nothing_spec_wire_11_2() {
     let conn = net.conn_to(a, host).expect("connected");
     let junk = LabelId([0x77; 16]);
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 64]).collect();
-    let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
+    let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
     net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: junk, events, cursor: Cursor { log_id: [0; 16], seq: 1 } }) });
     net.settle(10_000);
     assert!(net.sync(a).entries(&junk).is_empty(), "no entry under a label not opened");
@@ -226,7 +226,7 @@ fn junk_under_opened_label_kept_nowhere_spec_sync_3() {
     let before = net.sync(a).entries(&l).len();
     let conn = net.conn_to(a, host).expect("connected");
     let blobs: Vec<Vec<u8>> = (0..50u8).map(|i| vec![i; 4096]).collect();
-    let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; 49], stamp: None }).collect();
+    let events = blobs.iter().map(|b| osis_proto::Event::Added { blob_id: osis_label::blob_id(b), blob: Some(b.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
     net.feed(a, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
     net.settle(10_000);
     for b in &blobs {
@@ -499,9 +499,9 @@ fn linked_header_prefix_checked_spec_commits_4() {
     let (key, blob) = osis_label::frame(&prefix, &body.plaintext, &mut SeededRng::from_u64(3)).unwrap();
     let id = osis_label::blob_id(&blob);
     let secret = net.engine(a).wrap_secret(&g, Some((&c, &parts))).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &id, &key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &id, &key, 1).unwrap();
     let pk = net.engine(a).package(&c).unwrap().unwrap();
-    let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; 49], stamp: None }).collect();
+    let mut events: Vec<osis_proto::Event> = pk.blobs.iter().map(|(bid, bytes)| osis_proto::Event::Added { blob_id: *bid, blob: Some(bytes.clone()), wrap: [1; osis_crypto::WRAP_LEN], stamp: None }).collect();
     events.push(osis_proto::Event::Added { blob_id: id, blob: Some(blob), wrap, stamp: None });
     let conn = net.conn_to(b, host).expect("connected");
     net.feed(b, Event::Bytes { conn, bytes: frame(Message::Push { label: l, events, cursor: Cursor { log_id: [0; 16], seq: 1 << 40 } }) });
@@ -522,7 +522,7 @@ fn junk(l: &LabelId, tag: u8, n: u8, stamp_key: Option<&osis_crypto::SigningSecr
         .iter()
         .map(|b| {
             let id = osis_label::blob_id(b);
-            let wrap = [tag; 49];
+            let wrap = [tag; osis_crypto::WRAP_LEN];
             osis_proto::Event::Added { blob_id: id, blob: Some(b.clone()), wrap, stamp: stamp_key.map(|k| osis_label::sign_stamp(k, l, &id, &wrap)) }
         })
         .collect();
@@ -633,13 +633,13 @@ fn wrap_not_opening_to_known_key_ignored_spec_sync_5() {
     assert!(i > 0, "the item's entry is wrapped under the older epoch");
     let conn = net.conn_to(r, host).expect("connected");
     let added = |wrap| vec![osis_proto::Event::Added { blob_id: id, blob: None, wrap, stamp: None }];
-    let other_key = osis_crypto::wrap(&secrets[0], &id, &Secret32::from_bytes([0x42; 32])).unwrap();
-    for w in [[0x13; 49], other_key] {
+    let other_key = osis_crypto::wrap(&secrets[0], &id, &Secret32::from_bytes([0x42; 32]), 1).unwrap();
+    for w in [[0x13; osis_crypto::WRAP_LEN], other_key] {
         net.feed(r, Event::Bytes { conn, bytes: push(l, added(w)) });
         net.settle(10_000);
         assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, wrap0);
     }
-    let rewrap = osis_crypto::wrap(&secrets[0], &id, &key).unwrap();
+    let rewrap = osis_crypto::wrap(&secrets[0], &id, &key, 1).unwrap();
     net.feed(r, Event::Bytes { conn, bytes: push(l, added(rewrap)) });
     net.settle(10_000);
     assert_eq!(net.sync(r).entry_meta(&l, &id).unwrap().0, rewrap, "a re-wrap of the known key is taken");
@@ -691,7 +691,7 @@ fn outside_delete_waits_for_settled_view_spec_sync_6() {
     // a host announces an entry that opens under the group's read secret, without its bytes
     let read = net.engine(a).epochs(&g).unwrap().read.newest_held().unwrap().1.clone();
     let blocker = osis_base::BlobId([0x99; 32]);
-    let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32])).unwrap();
+    let wrap = osis_crypto::wrap(&read, &blocker, &Secret32::from_bytes([1; 32]), 1).unwrap();
     let conn = net.conn_to(a, host).expect("connected");
     net.feed(a, Event::Bytes { conn, bytes: push(old, vec![osis_proto::Event::Added { blob_id: blocker, blob: None, wrap, stamp: None }]) });
     net.settle(10_000);

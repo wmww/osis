@@ -23,10 +23,10 @@ pub(crate) fn write_key(net: &mut Net, n: usize, g: Tid) -> osis_crypto::Signing
 pub(crate) fn sealed(net: &mut Net, w: usize, g: Tid, c: &osis_commit::CommitBlob, stamp: Option<&osis_crypto::SigningSecret>, seed: u64) -> (osis_base::BlobId, osis_proto::Event) {
     let p = osis_commit::project(c, |_| ()).unwrap().remove(0);
     let class = osis_label::Class::of_marker(c.header.ephemeral);
-    let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, role_commit: false };
+    let body = osis_node::labeling::Body { commit: c.id(), reader: g, parts: p.parts, expires: p.expires, keys: p.keys, blind: c.header.blind, plaintext: p.plaintext, role_commit: false, order: 1 };
     let s = osis_node::labeling::seal_body_as(&body, class, &mut osis_crypto::SeededRng::from_u64(seed)).unwrap();
     let secret = net.engine(w).wrap_secret(&g, None).unwrap().unwrap();
-    let wrap = osis_crypto::wrap(&secret, &s.id, &s.key).unwrap();
+    let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, 1).unwrap();
     let l = net.label(w);
     let stamp = stamp.map(|k| osis_label::sign_stamp(k, &l, &s.id, &wrap));
     (s.id, osis_proto::Event::Added { blob_id: s.id, blob: Some(s.blob), wrap, stamp })

@@ -102,7 +102,7 @@ pub fn future_format(seed: u64) -> Res<Report> {
     let (key, blob) = osis_label::frame(&prefix, &pt, &mut rng).map_err(|e| sim.fail(e.to_string()))?;
     let bid = osis_label::blob_id(&blob);
     let read = k.read.clone().ok_or_else(|| sim.fail("no read secret"))?;
-    let wrap = osis_crypto::wrap(&read, &bid, &key).map_err(|e| sim.fail(e.to_string()))?;
+    let wrap = osis_crypto::wrap(&read, &bid, &key, 1).map_err(|e| sim.fail(e.to_string()))?;
     let write = k.keys.write.clone().ok_or_else(|| sim.fail("no write key"))?;
     let stamp = osis_label::sign_stamp(&write, &k.label, &bid, &wrap);
     let mut rg = sim.rogue(s0)?;

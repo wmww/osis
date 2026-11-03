@@ -14,7 +14,7 @@ use osis_proto::{Entry, LabelStore, Message, encode_frame};
 const WRITER: u8 = 0;
 const READER: u8 = 1;
 
-fn send(net: &mut Net, h: usize, host: usize, m: Message) {
+pub(crate) fn send(net: &mut Net, h: usize, host: usize, m: Message) {
     let conn = net.conn_to(h, host).unwrap();
     net.actions(h, vec![Action::Send { conn, bytes: encode_frame(&m.encode()) }]);
     net.settle(10_000);
@@ -51,7 +51,7 @@ fn entries_of(net: &mut Net, n: usize, l: &LabelId, t: Tid) -> Vec<BlobId> {
 fn bad_wrap(net: &mut Net, h: usize, g: Tid, id: &BlobId, wrong: bool) -> [u8; WRAP_LEN] {
     if wrong {
         let read = net.engine(h).wrap_secret(&g, None).unwrap().unwrap();
-        osis_crypto::wrap(&read, id, &Secret32::from_bytes([0x42; 32])).unwrap()
+        osis_crypto::wrap(&read, id, &Secret32::from_bytes([0x42; 32]), 1).unwrap()
     } else {
         [0x13; WRAP_LEN]
     }
@@ -748,7 +748,7 @@ fn other_epoch(lag: bool) -> (Vec<BlobId>, Vec<BlobId>, Vec<BlobId>, Option<osis
     for id in &ids {
         let at = stored_wrap(&net, h1, &l, id).unwrap();
         let key = osis_crypto::unwrap(&old, id, &at).unwrap();
-        let wrap = osis_crypto::wrap(&new, id, &key).unwrap();
+        let wrap = osis_crypto::wrap(&new, id, &key, 1).unwrap();
         hostile_put(&mut net, w, h2, (g, &l), *id, wrap, WRITER);
         assert_eq!(stored_wrap(&net, h2, &l, id), Some(wrap), "first at that host");
     }

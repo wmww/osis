@@ -453,7 +453,7 @@ fn deposit_budget() {
     let max = 64 + 4 * l.sets[0].claims.len() as u64;
     let deposit = |l: &Label, n: u64, k: &SigningSecret| {
         let b = blob(n);
-        let wrap: Wrap = [7; 49];
+        let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
         let sig = sign_deposit(k, &l.id, &osis_label::blob_id(&b), &wrap);
         Command::Deposit { label: l.id, blob: b, wrap, sig }
     };
@@ -492,7 +492,7 @@ fn ephemeral_deposit_refused_spec_sync_5() {
     for (n, class) in [(1u8, osis_label::Class::Ephemeral), (2, osis_label::Class::Relay)] {
         let p = Prefix::new(salt(u64::from(n)), Some(WallMs(T0 + osis_base::format::MAX_DRIFT_MS)), vec![]).unwrap().with_class(class);
         let b = osis_label::frame(&p, &[n; 50], &mut osis_crypto::SeededRng::from_seed([n; 32])).unwrap().1;
-        let wrap: Wrap = [7; 49];
+        let wrap: Wrap = [7; osis_crypto::WRAP_LEN];
         let sig = sign_deposit(&dk, &l.id, &osis_label::blob_id(&b), &wrap);
         let ev = net.run(0, Command::Deposit { label: l.id, blob: b.clone(), wrap, sig });
         assert!(matches!(&ev[..], [ClientEvent::Budget { code: Code::REFUSED, .. }]), "{ev:?}");

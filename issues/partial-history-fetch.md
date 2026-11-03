@@ -1,7 +1,11 @@
-# Fetch recent history first, or only part of it
-> Summary: A new device downloads a label's whole log and every body, in log order, so a long chat opens slowly (about 15 min first sync at 10^6 messages, extrapolated) and recent messages are not guaranteed first. Owner: allow partial or newest-to-oldest fetch; a holder that cannot read old content (issues/history-less-grant.md) and one that chose not to fetch it may be the same state.
+# A device that stops fetching old history
+> Summary: A new device now fills newest first and whole (spec/sync.md §6, notes/sync.md First sync), so a long chat opens in seconds to minutes; what is left is a device that never fetches old messages, on-demand pages, and the cost of listing. Owner: "a holder that cannot read old content and one that chose not to fetch it may be the same state" (issues/history-less-grant.md).
 > Tags: sync, node-sync, api, performance
 
-Questions: what a node needs before it can judge a recent message: role commits sit in the same log, and hosts must not learn which blobs are which, so how are they found first? Log listing cost when only IDs and wraps are fetched; reading the log from the newest end at a host; must-hold and upload duties of a node that has not fetched everything (spec/sync.md "partial node", §6); atomic apply; read and status semantics for a gap ("older messages not fetched" versus absent); a kept state for aspects whose readers use state rather than history.
+Built: priority, not partiality. Numbers: notes/testing.md, long aspect table.
 
-The read's seam is built: `HistoryPage.complete` and `HistoryBody::NotFetched` (notes/api.md History); a partial node must set the first false and read its gap as the second.
+Not built, each needing a reason from use first:
+- **A cap**: a device-local "no older than". The fill stops at it. `complete` stays false for good, so `wait_synced`, a demotion's pre-sync and `label_passed` need another answer than a finished pass; deletions stay held (`unopened`), so a capped device would need not to count what it chose not to fetch, or it never deletes. Must-hold stays judged on held bodies only.
+- **On-demand pages**: move a page's range to the front of the queue. Small once a cap exists; pointless before, as the fill reaches them.
+- **Listing cost**: every entry is listed before the first body, about 160 B and 90-115 us each here, most of it verifying the stamp: about 2 min and 160 MB at 10^6. A batch signature check, or checking stamps only on arrival, would cut the time; a host-side filter cannot, as hosts cannot tell blobs apart.
+- **Stated limits**: a writer marking a flood order 0 delays the newest page, passes and a redeem by its size. Wraps under many epochs try each secret, as all reads do.

@@ -941,6 +941,10 @@ impl Osis {
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
         self.wait_until(t, Box::new(move |s, _, _| {
+            // what judges K may still be in a later batch of its first sync
+            if s.fill_before_passes() {
+                return None;
+            }
             let e = s.engine_mut();
             (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && !pending_on(e, &k)).then_some(Ok(()))
         }))
