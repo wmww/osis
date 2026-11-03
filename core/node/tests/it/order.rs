@@ -2985,9 +2985,9 @@ fn purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6() {
 // origin's write `v1` value-less (1 had purged its import by a request not held here), so it
 // misstates the held imports #12 and #16 of that origin and its copy governs: the register reads
 // nothing. Delivered as made, 2's request #24 purged both imports and then fell (1 demoted 2),
-// leaving them missing; given again after #29, #12 is compared with it (its dots were carried)
-// but #16 is not (#12 had received them) and joined its value: a purged value shown, and an
-// in-place un-merge keeping what a rebuild strips.
+// leaving them missing; given again after #29, the first is compared with it (its dots were
+// carried) but the second was not (the first had received them) and joined its value: a purged
+// value shown, and an in-place un-merge keeping what a rebuild strips.
 #[test]
 fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
     use Step::*;
@@ -3002,11 +3002,15 @@ fn second_import_misstated_by_snapshot_seed_86144_spec_permissions_5_2() {
     let got = judged(&mut g, &played);
     assert_eq!(g.engine.get(&copy, &reg).unwrap(), None);
     assert_eq!(w.engine.get(&copy, &reg).unwrap(), None);
-    // the imports, missing at `w` since the fall, given again: each compared with the snapshot
-    for i in [12usize, 16] {
-        let pk = &played.packs[i];
-        w.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
-        assert_eq!(w.engine.get(&copy, &reg).unwrap(), None, "import #{i} given again");
+    // the imports, missing since the fall, given again in either order: each compared with the
+    // snapshot, whichever finds the carried entry
+    let mut w2 = deliver(&played, &held);
+    for (w, again) in [(&mut w2, [16usize, 12]), (&mut w, [12, 16])] {
+        for i in again {
+            let pk = &played.packs[i];
+            w.engine.ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+            assert_eq!(w.engine.get(&copy, &reg).unwrap(), None, "import #{i} given again ({again:?})");
+        }
     }
     let flips = |t: &str, a: &str| flipped(&played, &held, None, t, a) || flipped(&played, &rev, None, t, a);
     assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, None, &flips), None);
