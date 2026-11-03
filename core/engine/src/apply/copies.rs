@@ -41,7 +41,7 @@ pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&Co
     let at = |m: &Meta| m.aspect(tid, ak);
     let d = d.owner();
     match d.src.kind() {
-        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
+        osis_crdt::SourceKind::Session(_) => core.commit_of(tid, ak, d).is_some_and(|c| core.ix.commits.get(&c).is_some_and(|m| at(m).is_some_and(|ai| f(&c, m, ai)))),
         osis_crdt::SourceKind::Commit(c) => {
             if let Some(m) = core.ix.commits.get(c).filter(|m| m.view.form == Form::Commit && m.view.kind.has_own_writes())
                 && let Some(ai) = at(m)

@@ -47,7 +47,7 @@ Companion edits: §3 names the lockout recovery (remove or demote the rotator wi
 - **Chains or bounds on compacting aspects**: forgetting and new devices leave gaps wherever a later session's commits were dropped while an earlier one is kept (map and set aspects under relative keep-at-least, expiring deltas, purge residues); an honest write then reads as uncovered, which is the same clobbering narrowed. Closing the gaps needs drops in chain order plus exclusions: three rules for a class whose honest list is already bounded by cadence.
 - **`ts` against the cutoff with sessions bounding the lie**: a session gives counter order, not time; a removed device appends to its last received session with any `ts` up to T. Adds nothing over counters; Tess rejected `ts` rules.
 - **Per-aspect summaries other than bounds** (set hashes, accumulators): a verifier needs a membership proof per commit, which the kick would have to produce per surviving write.
-- **Node-form counters for permanent aspects** (continuous across sessions, max read from held headers): reintroduces the `Node` source kind step 4 deletes, and a restore before sync voids both the old and the new writes instead of orphaning until healed.
+- **Per-node counters for permanent aspects** (continuous across sessions, max read from held headers): needs a per-node source kind beside sessions, and a restore before sync voids both the old and the new writes instead of orphaning until healed.
 - **Listing every kept write by ID** (the first version of this study): correct and simple, 32 B per kept commit, about 6% of what kept history costs its holders, but a kick then scales with history and the frontier caps fail the 0/infinity test. Rejected by Tess.
 
 ## 7. What stays open

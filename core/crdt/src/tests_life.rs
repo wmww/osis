@@ -4,7 +4,7 @@ use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot}
 use crate::fragment::Fragment;
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts};
+use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Received, Snapshot};
 use crate::Batch;
 use crate::ops::{Op, PathOp};
@@ -37,7 +37,7 @@ fn three(seed: u64, ty: &Ty) -> Three {
     let mut ranges = Vec::new();
     let mut mranges = Vec::new();
     for i in 0..3u8 {
-        let mut w = crdt_model::ops::Writer::new(MSource::node(i + 1), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
+        let mut w = crdt_model::ops::Writer::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + i as u64, 1);
         let mut st = None;
         for k in 0..4 {
             w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
@@ -196,10 +196,10 @@ pub(crate) fn unmerge_check(seed: u64, ty: &Ty) {
         mapply(&mut mstate, c.delta.clone());
     }
     let state = ostate(&mstate);
-    let bad = source(&MSource::node(2));
+    let bad = source(&MSource::session(2, 0));
     if let Some(ms) = &mstate {
         let mut mm = ms.clone();
-        mm.unmerge(&|s| *s == MSource::node(2));
+        mm.unmerge(&|s| *s == MSource::session(2, 0));
         let mut ours = state.clone();
         ours.remove_dots(&|d| d.src == bad);
         // canonical once pruned (`remove_dots` keeps creations for a join)
@@ -312,13 +312,13 @@ fn forged_copies_differ_spec_perm_5_2() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
     use std::collections::BTreeMap;
-    let x = Source::node(Tid::from_bytes([1; 15]));
+    let x = sess(Tid::from_bytes([1; 15]));
     let owned = |d: &Dot| d.src == x && d.ctr < 10;
     let map = |k: &str, v: &str| Value::Map(BTreeMap::from([(Value::Str(k.into()), Value::Str(v.into()))]));
     let make = |t: u64, v: &Value| create(&mut Writer::new(ts(t), x.clone(), 3), &AnyView, v).unwrap();
     let delta = make(5, &map("k", "real"));
     let mut other = make(1, &map("o", "y"));
-    other.map_dots(&|d| Some(Dot::new(Source::node(Tid::from_bytes([2; 15])), d.ctr)));
+    other.map_dots(&|d| Some(Dot::new(sess(Tid::from_bytes([2; 15])), d.ctr)));
     let state = join(&other, &delta);
     assert!(state.copies_within(&[&delta], &owned), "honest");
     for (what, f) in [("value", make(5, &map("k", "zzz"))), ("key", make(5, &map("evil", "real"))), ("ts", make(6, &map("k", "real")))] {
@@ -373,9 +373,9 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
     // b edits; a edits concurrently; both exchange
     let view = TyView(ty.clone());
     let v = crate::testutil::value(&crdt_model::r#gen::random_value(&mut r, ty, 0));
-    let mut bb = Batch::new(&b, crate::Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([9; 15])), 1));
+    let mut bb = Batch::new(&b, crate::Writer::new(ts(1 << 30), sess(Tid::from_bytes([9; 15])), 1));
     bb.apply(&PathOp { path: vec![], op: Op::Set(v) }, &view).unwrap();
-    let mut mw = crdt_model::ops::Writer::new(MSource::node(1), (1 << 30) + 1, 100);
+    let mut mw = crdt_model::ops::Writer::new(MSource::session(1, 0), (1 << 30) + 1, 100);
     mw.next_commit((1 << 30) + 2);
     let da = random_op(&mut r, &mut mw, ty, None).map(|d| frag(&d));
     if let Some((db, _)) = bb.finish() {
@@ -397,7 +397,7 @@ pub(crate) fn bootstrap_check(seed: u64, ty: &Ty) {
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
 pub(crate) fn big_set(n: usize, order_seed: u64) -> Fragment {
-    let node = |i: u8| Source::node(Tid::from_bytes([i; 15]));
+    let node = |i: u8| sess(Tid::from_bytes([i; 15]));
     let mut idx: Vec<usize> = (0..n).collect();
     let mut r = crate::testutil::rng(order_seed | 1);
     for k in (1..idx.len()).rev() {
@@ -417,7 +417,7 @@ fn snap(f: &Fragment) -> Snapshot {
 }
 
 fn scx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+    DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// Plaintexts of every page written.
@@ -531,7 +531,7 @@ fn paging_format_size_spec_8() {
     assert!(bytes.len() < crate::page::PageParams::FORMAT.target);
     assert_eq!(decode_snapshot(&bytes, &scx(), &mut Interner::new(), Some(&mut pages)).unwrap().fragment, st);
     // a writer's delta pages the same way (§8: any delta may page)
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
     let items: BTreeSet<Value> = (0..3000).map(|i| Value::Str(format!("bulk import {i}"))).collect();
     let d = crate::create(&mut w, &crate::AnyView, &Value::Set(items)).unwrap();
@@ -597,7 +597,7 @@ fn page_items_cap_spec_8() {
 /// decode; a text's runs hold at most `MAX_RUN` elements.
 #[test]
 fn page_items_honest_spec_8() {
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let big_map = Value::Map((0..100_000).map(|i| (Value::Str(format!("key {i}")), Value::Int(i))).collect());
     let text = Value::Str((0..100_000).map(|i| char::from(b'a' + (i % 26) as u8)).collect());
     for (view, v) in [(TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), big_map), (TyView(Ty::Text), text)] {
@@ -639,7 +639,7 @@ fn wide_struct(n: u64, len: usize) -> (Fragment, DeltaCtx) {
     let strs = || (0..n).map(|i| (Value::Int(i as i64), Value::Str(format!("{i:04}{}", "x".repeat(len))))).collect::<std::collections::BTreeMap<_, _>>();
     let mut v = strs();
     v.insert(Value::Int(n as i64), Value::Enum(1, Some(Box::new(Value::Map(strs())))));
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut w = crate::Writer::new(ts(1 << 20), node.clone(), 1);
     let d = crate::create(&mut w, &TyView(ty), &Value::Map(v)).unwrap();
     (d, DeltaCtx { ts: ts(1 << 20), own: node, range: w.range(), kind: DeltaKind::Writer })
@@ -719,10 +719,10 @@ fn paging_large_spec_8() {
 /// §4.7, §7: a value-less register embeds like its valued copy after stripping.
 #[test]
 fn value_less_embedding_spec_7() {
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut w = crate::Writer::new(ts(3 << 16), node.clone(), 1);
     let reg = crate::create(&mut w, &crate::AnyView, &Value::Int(5)).unwrap();
-    let mut w2 = crate::Writer::new(ts(2 << 16), Source::node(Tid::from_bytes([2; 15])), 1);
+    let mut w2 = crate::Writer::new(ts(2 << 16), sess(Tid::from_bytes([2; 15])), 1);
     let counter = crate::Fragment::empty(crate::Encoding::Counter).unwrap();
     let _ = &mut w2;
     let all = |_: &Dot| true;
@@ -732,7 +732,7 @@ fn value_less_embedding_spec_7() {
     a.strip(&all);
     let mut less = reg.clone();
     less.strip(&all);
-    let mut b = join(&less, &crate::ops::create(&mut crate::Writer::new(ts(2 << 16), Source::node(Tid::from_bytes([2; 15])), 1), &TyView(Ty::Counter), &Value::Int(1)).unwrap());
+    let mut b = join(&less, &crate::ops::create(&mut crate::Writer::new(ts(2 << 16), sess(Tid::from_bytes([2; 15])), 1), &TyView(Ty::Counter), &Value::Int(1)).unwrap());
     b.strip(&all);
     assert_eq!(a, b);
 }
@@ -744,7 +744,7 @@ fn value_less_embedding_spec_7() {
 fn list_run_closes_at_chunk_max_spec_3_3() {
     use crdt_model::value::Value as MV;
     let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
-    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(1), 5 << 16, 1);
+    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(1, 0), 5 << 16, 1);
     let big = |i: usize| MV::Str(format!("{i:03}{}", "x".repeat(128 * 1024 - 16)));
     let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..65).map(big).collect()));
     let mbytes = crdt_model::wire::encode_delta(&delta, [7; 16], &mut crdt_model::wire::Ctx::new(w.ts, w.source.clone(), w.lo));
@@ -770,7 +770,7 @@ fn list_run_closes_at_chunk_max_spec_3_3() {
 fn rejects_list_run_past_chunk_max_spec_3_3() {
     use crdt_model::value::Value as MV;
     let ty = crdt_model::ops::Ty::List(Box::new(crdt_model::ops::Ty::Register));
-    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(1), 5 << 16, 1);
+    let mut w = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(1, 0), 5 << 16, 1);
     let delta = crdt_model::ops::create(&mut w, &ty, &MV::List((0..6).map(|i| MV::Str(format!("{i}{}", "x".repeat(128 * 1024)))).collect()));
     let cx = crate::tests_wire::writer_cx(&w);
     let d = Delta { nonce: [7; 16], fragment: crate::testutil::frag(&delta) };
@@ -810,7 +810,7 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     use crate::PathSeg;
     use osis_base::{Tid, Value};
     use std::collections::BTreeMap;
-    let (a, b) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
     let w1 = create(&mut Writer::new(ts(1), a, 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
     let mut batch = Batch::new(&w1, Writer::new(ts(2), b.clone(), 1));
@@ -827,7 +827,7 @@ fn stripped_entry_keeps_others_creation_spec_perm_5_2() {
     assert_eq!(first, then, "the delta first, the stripped snapshot after; the snapshot first");
     // an un-merge of another author's dots (a rebuild) keeps the creation for the join too
     let mut unmerged = stripped.clone();
-    unmerged.remove_dots(&|d| d.src == Source::node(Tid::from_bytes([3; 15])));
+    unmerged.remove_dots(&|d| d.src == sess(Tid::from_bytes([3; 15])));
     let mut later = w2.clone();
     later.join(unmerged);
     assert_eq!(later, then, "removing others' dots kept the creation");
@@ -844,7 +844,7 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
     use crate::view::AnyView;
     use osis_base::{Tid, Value};
     use std::collections::BTreeMap;
-    let (a, b) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let (a, b) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
     let mut st = create(&mut Writer::new(ts(1), a.clone(), 1), &AnyView, &Value::Map(BTreeMap::from([(k.clone(), Value::Int(1))]))).unwrap();
     let owned = |s: &Source, lo: u64, _: u64| *s == a && lo <= 1;
@@ -865,7 +865,7 @@ fn entry_tombstone_is_no_live_write_spec_commits_5() {
 fn expired_list_reads_empty_spec_crdt_4_3() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
-    let x = Source::node(Tid::from_bytes([1; 15]));
+    let x = sess(Tid::from_bytes([1; 15]));
     let mut f = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &Value::List(vec![Value::Int(1), Value::Int(2)])).unwrap();
     f.strip(&|d| d.src == x);
     assert!(f.present());
@@ -879,7 +879,7 @@ fn expired_list_reads_empty_spec_crdt_4_3() {
 fn text_deletes_across_key_erased_record_spec_5_6() {
     use crate::ops::{Writer, create};
     use std::collections::BTreeMap;
-    let x = Source::node(Tid::from_bytes([1; 15]));
+    let x = sess(Tid::from_bytes([1; 15]));
     let view = crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Text)));
     let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &view, &map("ab")).unwrap();
@@ -902,7 +902,7 @@ fn death_across_key_erased_record_spec_5_6() {
     use crate::ops::{Writer, create};
     use crate::view::AnyView;
     use std::collections::BTreeMap;
-    let x = Source::node(Tid::from_bytes([1; 15]));
+    let x = sess(Tid::from_bytes([1; 15]));
     let map = |v: &str| Value::Map(BTreeMap::from([(Value::Str("k".into()), Value::Str(v.into()))]));
     let put = create(&mut Writer::new(ts(5), x.clone(), 1), &AnyView, &map("a")).unwrap();
     let later = crate::diff(&mut Writer::new(ts(8), x.clone(), 7), Some(&put), &AnyView, &map("b")).unwrap().unwrap();

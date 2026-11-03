@@ -22,7 +22,7 @@ use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer};
 use crate::seq::SeqContent;
 use crate::stamp::{CounterRange, Dot, Interner, Source};
-use crate::testutil::{Pager, TyView, check_lin, frag, mapply, partial_follow, source, ts, value};
+use crate::testutil::{Pager, TyView, check_lin, frag, mapply, partial_follow, sess, source, ts, value};
 use crate::undo::{Undone, undo};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Snapshot};
 use crdt_model::r#gen::{Rng, random_op, random_text, random_value};
@@ -144,7 +144,7 @@ struct World {
 pub fn replay(s: &Script) -> Stats {
     let ty = if s.list { Ty::List(Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect()))) } else { Ty::Text };
     let reps = (0..REPLICAS)
-        .map(|i| Rep { st: Fragment::default(), ms: None, tracked: true, whole: true, seen: BTreeSet::new(), msrc: MSource::node(i as u8 + 1), lo: 1, stale: None, last: None })
+        .map(|i| Rep { st: Fragment::default(), ms: None, tracked: true, whole: true, seen: BTreeSet::new(), msrc: MSource::session(i as u8 + 1, 0), lo: 1, stale: None, last: None })
         .collect();
     let mut w = World { list: s.list, view: TyView(ty.clone()), ty, reps, log: Vec::new(), clock: 0, fresh: 0, pasted: Default::default(), stats: Stats::default() };
     for st in s.steps.iter().take(MAX_STEPS) {
@@ -292,7 +292,7 @@ fn rebooted(f: &Fragment) -> Fragment {
 }
 
 fn snap_cx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 50), own: source(&MSource::node(250)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+    DeltaCtx { ts: ts(1 << 50), own: source(&MSource::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// A writer's delta through the wire: decodes to itself, re-encodes to the same bytes.
@@ -559,7 +559,7 @@ impl World {
             let floor = st.reset().map_or(0, |x| (x.ts.to_u64() >> 16) + 1);
             // below the clock (a node's clock is above every stamp it holds, §2.2)
             let span = (now >> 16).saturating_sub(floor).max(1);
-            ((floor + u64::from(skew) % span) << 16, Source::node(Tid::from_bytes(b)), 1)
+            ((floor + u64::from(skew) % span) << 16, sess(Tid::from_bytes(b)), 1)
         } else {
             (now, source(&self.reps[i].msrc), self.reps[i].lo)
         };

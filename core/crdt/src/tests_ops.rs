@@ -4,7 +4,7 @@ use crate::batch::Batch;
 use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::stamp::{CounterRange, Dot, Source};
-use crate::testutil::{TyView, frag, history, mapply, ostate, sink_no_seq, source, ts, value, writer};
+use crate::testutil::{TyView, frag, history, mapply, ostate, sess, sink_no_seq, source, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::view::AnyView;
 use crdt_model::r#gen::{Rng, random_op, random_value};
@@ -32,7 +32,7 @@ proptest! {
         for k in 0..4u64 {
             let mv = random_value(&mut r, &ty, 0);
             let v = value(&mv);
-            let mut mw = MWriter::new(crdt_model::stamp::Source::node(9), ((100 + k) << 16) + 9, 1);
+            let mut mw = MWriter::new(crdt_model::stamp::Source::session(9, 0), ((100 + k) << 16) + 9, 1);
             let mut w = writer(&mw);
             let md = crdt_model::diff::diff(&mut mw, mstate.as_ref(), &ty, &mv);
             let d = diff(&mut w, Some(&state), &TyView(ty.clone()), &v).unwrap();
@@ -43,7 +43,7 @@ proptest! {
                 s.join(d);
             }
             prop_assert_eq!(read(&s), Some(v.clone()));
-            let mut mw = MWriter::new(crdt_model::stamp::Source::node(9), 1 << 16, 1);
+            let mut mw = MWriter::new(crdt_model::stamp::Source::session(9, 0), 1 << 16, 1);
             let mut w = writer(&mw);
             prop_assert_eq!(create(&mut w, &TyView(ty.clone()), &v).unwrap(), frag(&crdt_model::ops::create(&mut mw, &ty, &mv)));
         }
@@ -62,7 +62,7 @@ proptest! {
         }
         let base = ostate(&mstate);
         let ops = random_path_ops(&mut r, &ty, 6);
-        let node = Source::node(Tid::from_bytes([7; 15]));
+        let node = sess(Tid::from_bytes([7; 15]));
         // one by one
         let mut seq_state = base.clone();
         let mut lo = 1;
@@ -99,7 +99,7 @@ proptest! {
             mapply(&mut mstate, c.delta.clone());
         }
         let Some(ms) = mstate.clone() else { return Ok(()) };
-        let mut mw = MWriter::new(crdt_model::stamp::Source::node(1), 80 << 16, 40);
+        let mut mw = MWriter::new(crdt_model::stamp::Source::session(1, 0), 80 << 16, 40);
         mw.next_commit(81 << 16);
         let Some(md) = random_op(&mut r, &mut mw, &ty, Some(&ms)) else { return Ok(()) };
         let s0 = frag(&ms);
@@ -110,10 +110,10 @@ proptest! {
         s1.join(d.clone());
         let src = source(&mw.source);
         let u = Undone { delta: &d, source: &src, range: CounterRange { lo: mw.lo, hi: mw.hi() }, restored: &|_| false };
-        let mut w = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
+        let mut w = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
         let full = undo(&mut w, &u, &s1, &s0, &TyView(ty.clone())).unwrap();
         // the node keeps only the footprint of the delta as its undo buffer
-        let mut w2 = Writer::new(ts(82 << 16), Source::node(Tid::from_bytes([1; 15])), mw.hi());
+        let mut w2 = Writer::new(ts(82 << 16), sess(Tid::from_bytes([1; 15])), mw.hi());
         prop_assert_eq!(undo(&mut w2, &u, &s1, &s0.footprint(&d), &TyView(ty.clone())).unwrap(), full.clone());
         let Some(ud) = full else {
             prop_assert_eq!(cmp(&s1), cmp(&s0));
@@ -133,7 +133,7 @@ proptest! {
         let mut r = crate::testutil::rng(seed | 1);
         let base = value(&random_value(&mut r, &ty, 0));
         let new = value(&random_value(&mut r, &ty, 0));
-        let node = Source::node(Tid::from_bytes([3; 15]));
+        let node = sess(Tid::from_bytes([3; 15]));
         let mut w = Writer::new(ts(1 << 16), node.clone(), 1);
         let mut state = create(&mut w, &view, &base).unwrap();
         let ops = diff_values(Some(&base), &new, &view).unwrap();
@@ -179,7 +179,7 @@ fn random_path_ops(r: &mut Rng, ty: &Ty, n: usize) -> Vec<PathOp> {
 #[test]
 fn created_and_removed_is_omitted_spec_4_5() {
     let state = Fragment::default();
-    let node = Source::node(Tid::from_bytes([2; 15]));
+    let node = sess(Tid::from_bytes([2; 15]));
     let view = AnyView;
     let mut b = Batch::new(&state, Writer::new(ts(1 << 16), node, 1));
     b.apply(&PathOp { path: vec![], op: Op::Set(Value::Set([Value::Int(1)].into_iter().collect())) }, &view).unwrap();
@@ -200,7 +200,7 @@ fn created_and_removed_is_omitted_spec_4_5() {
 #[test]
 fn last_write_and_replace_win_spec_4_5() {
     let state = Fragment::default();
-    let node = Source::node(Tid::from_bytes([2; 15]));
+    let node = sess(Tid::from_bytes([2; 15]));
     let view = AnyView;
     let m = |kv: &[(i64, i64)]| Value::Map(kv.iter().map(|(k, v)| (Value::Int(*k), Value::Int(*v))).collect());
     let mut b = Batch::new(&state, Writer::new(ts(1 << 16), node, 1));
@@ -220,7 +220,7 @@ fn last_write_and_replace_win_spec_4_5() {
 fn nested_register_replace_decodes_spec_5_1() {
     use crate::codec::{decode_delta, encode_delta};
     use crate::wire::{Delta, DeltaCtx, DeltaKind};
-    let node = Source::node(Tid::from_bytes([2; 15]));
+    let node = sess(Tid::from_bytes([2; 15]));
     let st = |kv: &[(i64, i64)]| Value::Map(kv.iter().map(|(k, v)| (Value::Int(*k), Value::Int(*v))).collect());
     let cases: [(Fragment, PathOp, Value); 3] = [
         (Fragment::default(), PathOp { path: vec![PathSeg::Key(Value::Int(1))], op: Op::Replace(Value::Int(7)) }, st(&[(1, 7)])),
@@ -246,8 +246,8 @@ fn nested_register_replace_decodes_spec_5_1() {
 #[test]
 fn map_put_lowest_dot_spec_5_6() {
     let view = AnyView;
-    let a = Source::node(Tid::from_bytes([1; 15]));
-    let b = Source::node(Tid::from_bytes([2; 15]));
+    let a = sess(Tid::from_bytes([1; 15]));
+    let b = sess(Tid::from_bytes([2; 15]));
     let put = |src: &Source, t: u64, v: i64| {
         let mut w = Writer::new(ts(t << 16), src.clone(), 1);
         create(&mut w, &view, &Value::Map([(Value::Int(0), Value::Int(v))].into_iter().collect())).unwrap()
@@ -278,7 +278,7 @@ fn path_op_into_absent_key_spec_5_6() {
     let view = AnyView;
     let st = Fragment::default();
     let add = |src: u8, v: i64| {
-        let mut b = Batch::new(&st, Writer::new(ts(1 << 16), Source::node(Tid::from_bytes([src; 15])), 1));
+        let mut b = Batch::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([src; 15])), 1));
         b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(v)) }, &view).unwrap();
         b.finish().unwrap().0
     };
@@ -286,7 +286,7 @@ fn path_op_into_absent_key_spec_5_6() {
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(1)].into_iter().collect()))].into_iter().collect())));
     s.join(add(2, 2));
     assert_eq!(s.read(), Some(Value::Map([(Value::Int(0), Value::Set([Value::Int(1), Value::Int(2)].into_iter().collect()))].into_iter().collect())));
-    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), Source::node(Tid::from_bytes([3; 15])), 1));
+    let mut b = Batch::new(&st, Writer::new(ts(1 << 16), sess(Tid::from_bytes([3; 15])), 1));
     // untyped, a remove from an absent value fails; typed, it is a no-op: either way no entry
     let _ = b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Remove(Value::Int(1)) }, &view);
     assert!(b.finish().is_none());
@@ -301,7 +301,7 @@ fn absent_key_typed_spec_5_6() {
     let sets = TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Set(Box::new(Ty::Register)))));
     let structs = TyView(Ty::Map(Box::new(Ty::Register), Box::new(inner)));
     let st = Fragment::default();
-    let node = Source::node(Tid::from_bytes([4; 15]));
+    let node = sess(Tid::from_bytes([4; 15]));
     let mut b = Batch::new(&st, Writer::new(ts(1 << 16), node.clone(), 1));
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Remove(Value::Int(1)) }, &sets).unwrap();
     b.apply(&PathOp { path: vec![PathSeg::Key(Value::Int(0))], op: Op::Add(Value::Int(2)) }, &sets).unwrap();
@@ -325,8 +325,8 @@ fn large_values_equal_by_hash_spec_5_5() {
     use osis_base::{BlobId, Link};
     let view = AnyView;
     let link = |blob: u8| Value::Link(Link { hash: [9; 32], blob: BlobId([blob; 32]), suite: 1, key: [blob; 32] });
-    let a = Source::node(Tid::from_bytes([1; 15]));
-    let b = Source::node(Tid::from_bytes([2; 15]));
+    let a = sess(Tid::from_bytes([1; 15]));
+    let b = sess(Tid::from_bytes([2; 15]));
     // Set: concurrent adds of one content read once; an add of it again writes nothing.
     let set = |src: &Source, blob: u8| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &view, &Value::Set([link(blob)].into_iter().collect())).unwrap();
     let mut st = set(&a, 1);
@@ -371,12 +371,12 @@ fn remove_then_put_same_key_round_trips_spec_5_6() {
     use crate::stamp::Interner;
     use crate::wire::{Delta, DeltaCtx, DeltaKind};
     let view = AnyView;
-    let a = Source::node(Tid::from_bytes([1; 15]));
+    let a = sess(Tid::from_bytes([1; 15]));
     let key = Value::Int(0);
     let mk = |v: u8| Value::Map([(key.clone(), Value::Bytes(vec![v; 4]))].into_iter().collect());
     let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
     let st = create(&mut w, &view, &mk(1)).unwrap();
-    for (src, lo) in [(a.clone(), 2), (Source::node(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_base::CommitId([9; 32])), 1)] {
+    for (src, lo) in [(a.clone(), 2), (sess(Tid::from_bytes([2; 15])), 1), (Source::commit(osis_base::CommitId([9; 32])), 1)] {
         let mut batch = Batch::new(&st, Writer::new(ts(5 << 16), src.clone(), lo));
         batch.apply(&PathOp { path: vec![], op: Op::Remove(key.clone()) }, &view).unwrap();
         batch.apply(&PathOp { path: vec![PathSeg::Key(key.clone())], op: Op::Set(Value::Bytes(vec![1; 4])) }, &view).unwrap();
@@ -398,10 +398,10 @@ fn diff_rewrites_value_less_field_spec_9() {
     let ty = Ty::Struct([(0, Ty::Register), (1, Ty::Register)].into_iter().collect());
     let view = TyView(ty);
     let v = |a: i64, b: Option<i64>| Value::Map([(Value::Int(0), Value::Int(a))].into_iter().chain(b.map(|b| (Value::Int(1), Value::Int(b)))).collect());
-    let first = Source::node(Tid::from_bytes([1; 15]));
+    let first = sess(Tid::from_bytes([1; 15]));
     let mut w1 = Writer::new(ts(1 << 16), first.clone(), 1);
     let mut st = create(&mut w1, &view, &v(1, Some(7))).unwrap();
-    let mut w2 = Writer::new(ts(2 << 16), Source::node(Tid::from_bytes([2; 15])), 1);
+    let mut w2 = Writer::new(ts(2 << 16), sess(Tid::from_bytes([2; 15])), 1);
     let d = diff(&mut w2, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
     let Fragment::Struct(s) = &d else { panic!("struct delta") };
     assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![0], "the live field 1 is not rewritten");
@@ -409,7 +409,7 @@ fn diff_rewrites_value_less_field_spec_9() {
     // the first delta expires: field 1 goes, field 0 keeps the second delta's value
     st.strip(&|d: &crate::stamp::Dot| d.src == first);
     assert_eq!(read(&st), Some(v(2, None)));
-    let mut w3 = Writer::new(ts(3 << 16), Source::node(Tid::from_bytes([3; 15])), 1);
+    let mut w3 = Writer::new(ts(3 << 16), sess(Tid::from_bytes([3; 15])), 1);
     let d = diff(&mut w3, Some(&st), &view, &v(2, Some(7))).unwrap().unwrap();
     let Fragment::Struct(s) = &d else { panic!("struct delta") };
     assert_eq!(s.fields.keys().copied().collect::<Vec<_>>(), vec![1]);
@@ -446,7 +446,7 @@ proptest! {
 #[test]
 fn map_put_new_spec_5_6() {
     let view = AnyView;
-    let a = Source::node(Tid::from_bytes([1; 15]));
+    let a = sess(Tid::from_bytes([1; 15]));
     let one = |v: i64| Value::Map([(Value::Int(0), Value::Int(v))].into_iter().collect());
     let mut w = Writer::new(ts(1 << 16), a.clone(), 1);
     let mut st = create(&mut w, &view, &one(1)).unwrap();
@@ -477,7 +477,7 @@ fn map_put_new_spec_5_6() {
 #[test]
 fn put_new_register_only_spec_5_6() {
     let view = AnyView;
-    let a = Source::node(Tid::from_bytes([1; 15]));
+    let a = sess(Tid::from_bytes([1; 15]));
     let st = Fragment::default();
     let mut b = Batch::new(&st, Writer::new(ts(1 << 16), a.clone(), 1));
     assert!(b.apply(&PathOp { path: vec![], op: Op::Put(Value::Int(3)) }, &view).is_ok());
@@ -498,7 +498,7 @@ fn split_entries_join_back_spec_commits_2() {
     let map = Value::Map((0..3i64).map(|i| (Value::Int(i), Value::Str(format!("v{i}")))).collect());
     let set = Value::Set((0..3i64).map(Value::Int).collect());
     for v in [map, set] {
-        let node = Source::node(Tid::from_bytes([5; 15]));
+        let node = sess(Tid::from_bytes([5; 15]));
         let mut w = crate::ops::Writer::new(ts(70 << 16), node.clone(), 1);
         let whole = crate::ops::replace(&mut w, &AnyView, &v).unwrap();
         let parts = whole.clone().split_entries();
@@ -520,7 +520,7 @@ fn split_entries_join_back_spec_commits_2() {
 fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
     let ty = Ty::Map(Box::new(Ty::Register), Box::new(Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect())));
     let view = TyView(ty);
-    let (na, nb) = (Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15])));
+    let (na, nb) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
     let k = Value::Str("k".into());
     let st = |a: (u64, &str)| Value::Map([(Value::Int(a.0 as i64), Value::Str(a.1.into()))].into_iter().collect());
     let mut w = Writer::new(ts(1 << 16), na.clone(), 1);
@@ -548,7 +548,7 @@ fn concurrent_key() -> Vec<(TyView, Fragment, Value)> {
 /// Commits `op` on `s` as node 1 at ts 5, undoes it (full state and footprint as the buffer);
 /// returns the undo delta and the state after it.
 fn commit_and_undo(view: &TyView, s: &Fragment, op: PathOp) -> (Fragment, Fragment, Fragment) {
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut b = Batch::new(s, Writer::new(ts(5 << 16), node.clone(), 20));
     b.apply(&op, view).unwrap();
     let (d, range) = b.finish().unwrap();
@@ -598,7 +598,7 @@ fn absent_spots() -> (TyView, Fragment) {
         [(1, Ty::Register), (2, set()), (3, Ty::Enum(cases)), (4, Ty::List(Box::new(Ty::Register))), (5, Ty::Text), (6, Ty::Counter)].into_iter().collect(),
     );
     let view = TyView(ty);
-    let mut w = Writer::new(ts(1 << 16), Source::node(Tid::from_bytes([1; 15])), 1);
+    let mut w = Writer::new(ts(1 << 16), sess(Tid::from_bytes([1; 15])), 1);
     let payload = Value::Map([(Value::Int(1), Value::Str("p".into()))].into_iter().collect());
     let v = Value::Map([(Value::Int(1), Value::Str("x".into())), (Value::Int(3), Value::Enum(1, Some(Box::new(payload))))].into_iter().collect());
     let s = create(&mut w, &view, &v).unwrap();
@@ -638,7 +638,7 @@ fn undo_makes_absent_again_spec_4_6() {
 #[test]
 fn undo_absent_before_wipes_concurrent_spec_4_6() {
     let (view, s) = absent_spots();
-    let other = Source::node(Tid::from_bytes([2; 15]));
+    let other = sess(Tid::from_bytes([2; 15]));
     for ((name, op), (_, op_b)) in absent_spot_ops().into_iter().zip(absent_spot_ops_of("b")) {
         let (_, ud, _) = commit_and_undo(&view, &s, op.clone());
         for (at, survives) in [(4u64, false), (7, true)] {
@@ -646,7 +646,7 @@ fn undo_absent_before_wipes_concurrent_spec_4_6() {
             let mut b = Batch::new(&s, Writer::new(ts(at << 16), other.clone(), 1));
             b.apply(&op, &view).unwrap();
             let d2 = b.finish().unwrap().0;
-            let node = Source::node(Tid::from_bytes([1; 15]));
+            let node = sess(Tid::from_bytes([1; 15]));
             let mut b = Batch::new(&s, Writer::new(ts(5 << 16), node, 20));
             b.apply(&op, &view).unwrap();
             let d1 = b.finish().unwrap().0;
@@ -673,12 +673,12 @@ fn approx_bytes_tracks_content() {
     let ty = sink_no_seq();
     for _ in 0..50 {
         let v = value(&random_value(&mut r, &ty, 0));
-        let mut w = Writer::new(osis_base::Ts::default(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let mut w = Writer::new(osis_base::Ts::default(), sess(Tid::from_bytes([1; 15])), 1);
         let f = create(&mut w, &AnyView, &v).unwrap();
         let enc = osis_base::encode(&v).len();
         assert!(f.approx_bytes() >= enc / 2, "{} vs {enc}", f.approx_bytes());
     }
-    let mut w = Writer::new(osis_base::Ts::default(), Source::node(Tid::from_bytes([1; 15])), 1);
+    let mut w = Writer::new(osis_base::Ts::default(), sess(Tid::from_bytes([1; 15])), 1);
     let small = create(&mut w, &AnyView, &Value::Str("a".into())).unwrap();
     let big = create(&mut w, &AnyView, &Value::Str("a".repeat(10_000))).unwrap();
     assert!(big.approx_bytes() > small.approx_bytes() + 9_000);
@@ -689,7 +689,7 @@ fn approx_bytes_tracks_content() {
 fn check_snapshot_bound(f: Fragment) -> bool {
     use crate::codec::{decode_snapshot, encode_snapshot};
     use crate::wire::{DeltaCtx, DeltaKind, Snapshot};
-    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f, frontiers: Default::default() };
     let Ok(bytes) = encode_snapshot(&s, &cx, None) else { return false };
     let back = decode_snapshot(&bytes, &cx, &mut crate::stamp::Interner::new(), None).unwrap();
@@ -698,7 +698,7 @@ fn check_snapshot_bound(f: Fragment) -> bool {
 }
 
 fn created(v: &Value) -> Fragment {
-    create(&mut Writer::new(ts(1 << 30), Source::node(Tid::from_bytes([1; 15])), 1), &AnyView, v).unwrap()
+    create(&mut Writer::new(ts(1 << 30), sess(Tid::from_bytes([1; 15])), 1), &AnyView, v).unwrap()
 }
 
 /// `decoded_bound` (a memory bound's measure, not a spec rule) holds for the shapes that take
@@ -756,7 +756,7 @@ fn decoded_bound_holds_dense_shapes() {
     for ops in scripts {
         let (mut st, mut lo) = (Fragment::default(), 1);
         for (k, op) in ops.into_iter().enumerate() {
-            let mut b = Batch::new(&st, Writer::new(ts((1 << 30) + k as u64), Source::node(Tid::from_bytes([1; 15])), lo));
+            let mut b = Batch::new(&st, Writer::new(ts((1 << 30) + k as u64), sess(Tid::from_bytes([1; 15])), lo));
             b.apply(&PathOp { path: vec![], op }, &crate::fuzzing::TextView).unwrap();
             let (d, range) = b.finish().unwrap();
             lo = range.hi;

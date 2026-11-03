@@ -83,10 +83,19 @@ pub fn value(v: &crdt_model::value::Value) -> Value {
     }
 }
 
+/// A writer source for tests: session of node `t` with a zero nonce.
+pub fn sess(t: Tid) -> Source {
+    Source::session(crate::Session { node: t, nonce: [0; crate::SESSION_NONCE_LEN] })
+}
+
+/// The `Source` entry of `sess(t)` in a hand-built `Sources` table.
+pub fn sess_value(t: Tid) -> Value {
+    Value::Bytes(crate::Session { node: t, nonce: [0; crate::SESSION_NONCE_LEN] }.to_bytes().to_vec())
+}
+
 pub fn source(s: &crdt_model::stamp::Source) -> Source {
     use crdt_model::stamp::Source as S;
     match s {
-        S::Node(b) => Source::node(Tid::from_bytes(*b)),
         S::Session(b) => Source::session(crate::Session::from_bytes(b)),
         S::Commit(b) => Source::commit(CommitId(*b)),
         S::Derived(d) => Source::derived(dot(d)).unwrap(),
@@ -267,7 +276,7 @@ pub struct MCommit {
 /// `n` writers make `rounds` rounds of random ops, writer `i` with type `types[i % len]`, seeing
 /// a random part of the others' commits. Returns the commits in creation order.
 pub fn history(r: &mut Rng, types: &[Ty], n: usize, rounds: usize) -> Vec<MCommit> {
-    let sources = (0..n).map(|i| crdt_model::stamp::Source::node(i as u8 + 1)).collect();
+    let sources = (0..n).map(|i| crdt_model::stamp::Source::session(i as u8 + 1, 0)).collect();
     history_with(r, types, sources, rounds)
 }
 

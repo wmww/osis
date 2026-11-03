@@ -12,7 +12,7 @@ use crate::subjects::case;
 use crate::{hex, unhex, xof};
 use osis_base::{Classified, CommitId, ErrorClass, Tid, Ts, Value};
 use osis_crdt::{
-    Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, Snapshot, Source, Undone, View, Writer, decode_delta, decode_snapshot,
+    Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Frontiers, Interner, MemoryPages, Op, PageSink, PageSource, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, Undone, View, Writer, decode_delta, decode_snapshot,
     encode_delta, encode_snapshot, undo,
 };
 use std::borrow::Cow;
@@ -64,7 +64,7 @@ fn s(x: &str) -> Value {
     Value::Str(x.into())
 }
 
-/// One writer commit: node `n` (or commit `c` in commit form) at wall `wall`, counters from `lo`.
+/// One writer commit: session `n` (or commit `c` in commit form) at wall `wall`, counters from `lo`.
 struct W {
     own: Source,
     own_bytes: Vec<u8>,
@@ -72,8 +72,13 @@ struct W {
     lo: u64,
 }
 
-fn node(n: u8, wall: u64, lo: u64) -> W {
-    W { own: Source::node(tid(n)), own_bytes: tid(n).as_bytes().to_vec(), ts: ts(wall), lo }
+/// Session `n` of node `n` (tid and nonce bytes all `n`).
+fn session(n: u8) -> Session {
+    Session { node: tid(n), nonce: [n; SESSION_NONCE_LEN] }
+}
+
+fn writer(n: u8, wall: u64, lo: u64) -> W {
+    W { own: Source::session(session(n)), own_bytes: session(n).to_bytes().to_vec(), ts: ts(wall), lo }
 }
 
 /// Applies `ops` under `view` to `state`; the delta and its range.
@@ -133,9 +138,9 @@ fn head(name: &str, spec: &str, kind: &str, w: &W, range: Option<CounterRange>) 
     }
 }
 
-/// A snapshot case by node 9 at wall 100 of `state`; checks it decodes back to itself.
+/// A snapshot case by session 9 at wall 100 of `state`; checks it decodes back to itself.
 fn snapshot_case(name: &str, spec: &str, state: &Fragment, frontiers: Frontiers, absorbed: BTreeMap<CommitId, Tid>) -> Record {
-    let w = node(9, 100, 0);
+    let w = writer(9, 100, 0);
     let cx = DeltaCtx { ts: w.ts, own: w.own.clone(), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { nonce: [3; 16], fragment: state.clone(), frontiers, absorbed };
     let mut pages = Pages::default();
@@ -168,27 +173,27 @@ pub fn deltas() -> VecFile {
     let any = V(None);
 
     // writer deltas
-    let a1 = node(1, 10, 1);
+    let a1 = writer(1, 10, 1);
     let (typed, r1) = write(&Fragment::default(), &a1, text, vec![root(Op::Insert { at: 0, items: vec![s("FOOBAR")] })]);
     cases.push(writer_case("text typing: one creation run", "spec/crdt.md §3.2, §5.7", &a1, r1, typed.clone()));
     let mut st = typed.clone();
-    let a2 = node(1, 11, r1.hi);
+    let a2 = writer(1, 11, r1.hi);
     let (del, r2) = write(&st, &a2, text, vec![root(Op::Delete { at: 1, len: 3 })]);
     cases.push(writer_case("text delete: one flag range at the delta stamp", "spec/crdt.md §2.3, §3.2, §5.7", &a2, r2, del.clone()));
     st.join(del.clone());
     // undoing the delete: an undelete, its chars in the `FlagW` string
-    let a4 = node(1, 12, r2.hi);
+    let a4 = writer(1, 12, r2.hi);
     let mut wu = Writer::new(a4.ts, a4.own.clone(), a4.lo);
     let undone = Undone { delta: &del, source: &a2.own, range: r2, restored: &|_| false };
     let und = undo(&mut wu, &undone, &st, &typed, &text).unwrap().unwrap();
     cases.push(writer_case("text undelete: the chars ride the flag write", "spec/crdt.md §3.2, §5.7", &a4, wu.range(), und));
-    let b1 = node(2, 12, 1);
+    let b1 = writer(2, 12, 1);
     let (ins, rb) = write(&st, &b1, text, vec![root(Op::Insert { at: 1, items: vec![s("xy")] })]);
     cases.push(writer_case("text insert anchored at another writer's element", "spec/crdt.md §3.2, §5.7", &b1, rb, ins.clone()));
     st.join(ins);
 
     let m = Value::Map([(s("a"), i(1)), (s("b"), l(vec![i(1), i(2)])), (s("c"), Value::Enum(2, Some(Box::new(s("z")))))].into_iter().collect());
-    let a3 = node(1, 13, 1);
+    let a3 = writer(1, 13, 1);
     let (put, r3) = write(&Fragment::default(), &a3, any, vec![root(Op::Set(m))]);
     cases.push(writer_case("map of a register, a list and an enum", "spec/crdt.md §3.2, §5.4, §5.6, §5.7", &a3, r3, put));
     let set = Value::Set([i(1), i(2), s("x")].into_iter().collect());
@@ -204,26 +209,26 @@ pub fn deltas() -> VecFile {
     cases.push(writer_case("commit form: register replace", "spec/crdt.md §2.1, §5.1", &cw, rcr, cr.clone()));
 
     // snapshots
-    let fr = |ns: &[(u8, u64)]| Frontiers::of_nodes(ns.iter().map(|(n, c)| (tid(*n), *c)).collect());
+    let fr = |ns: &[(u8, u64)]| Frontiers { sessions: ns.iter().map(|(n, c)| (session(*n), *c)).collect() };
     cases.push(snapshot_case("snapshot of two writers' text: runs, segments, Commits and base", "spec/crdt.md §3.2, §3.3, §8", &st, fr(&[(1, r2.hi - 1), (2, rb.hi - 1)]), BTreeMap::new()));
     let mut slots = Fragment::default();
-    let (reg, _) = write(&slots, &node(1, 20, 1), any, vec![root(Op::Set(s("abc")))]);
+    let (reg, _) = write(&slots, &writer(1, 20, 1), any, vec![root(Op::Set(s("abc")))]);
     slots.join(reg);
-    let (tx, rt) = write(&slots, &node(2, 21, 1), text, vec![root(Op::Insert { at: 0, items: vec![s("Q")] })]);
+    let (tx, rt) = write(&slots, &writer(2, 21, 1), text, vec![root(Op::Insert { at: 0, items: vec![s("Q")] })]);
     slots.join(tx);
     cases.push(snapshot_case("snapshot of a register and a text at one position: Slots", "spec/crdt.md §3.2, §7, §8", &slots, fr(&[(1, 1), (2, rt.hi - 1)]), BTreeMap::new()));
     let mut absorbed = Fragment::default();
     absorbed.join(cr);
     cases.push(snapshot_case("snapshot absorbing a commit-form commit", "spec/crdt.md §8", &absorbed, Frontiers::default(), BTreeMap::from([(c, tid(1))])));
     let big = Value::Set(xof("osis crdt pages", 136 * 512).chunks(512).map(|x| Value::Bytes(x.to_vec())).collect());
-    let (bf, _) = write(&Fragment::default(), &node(1, 30, 1), any, vec![root(Op::Set(big))]);
+    let (bf, _) = write(&Fragment::default(), &writer(1, 30, 1), any, vec![root(Op::Set(big))]);
     let mut paged = Fragment::default();
     paged.join(bf);
     cases.push(snapshot_case("paged snapshot: a set above PAGE_TARGET", "spec/crdt.md §8, spec/wire.md §6", &paged, fr(&[(1, 136)]), BTreeMap::new()));
 
     // rejections
     let wr = |lo, hi| Some(CounterRange { lo, hi });
-    let w = node(1, 10, 3);
+    let w = writer(1, 10, 3);
     let reg_at = |stamp: Value| l(vec![i(0), l(vec![]), stamp, i(1)]);
     cases.push(reject_case("register value off the delta stamp", "spec/crdt.md §2.3, §3.3", &w, wr(3, 6), delta_bytes(vec![], vec![], reg_at(l(vec![i(0), i(4)]))), "delta-stamp"));
     let set_of = |elems: Vec<Value>| l(vec![i(6), l(vec![]), l(vec![]), l(elems)]);
@@ -236,15 +241,15 @@ pub fn deltas() -> VecFile {
     let deep = (0..64).fold(i(1), |v, _| l(vec![v]));
     let st64 = l(vec![i(4), l(vec![]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![]), i(0), deep]))].into_iter().collect())]);
     cases.push(reject_case("a value 64 deep below a struct field reads 65 deep", "spec/crdt.md §3.3, spec/data-model.md §5", &w, wr(3, 6), delta_bytes(vec![], vec![], st64), "read-depth"));
-    // snapshots by node 9 at wall 100 of node 1's commit at wall 5, base 3
-    let sw = node(9, 100, 0);
-    let n1 = || Value::Bytes(tid(1).as_bytes().to_vec());
+    // snapshots by session 9 at wall 100 of session 1's commit at wall 5, base 3
+    let sw = writer(9, 100, 0);
+    let n1 = || Value::Bytes(session(1).to_bytes().to_vec());
     let c1 = || l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])]);
     let reg_rs = l(vec![i(0), l(vec![i(1)]), l(vec![i(1), i(4)]), i(7)]);
     cases.push(reject_case("register reset below its own write", "spec/crdt.md §3.3, §4.2, §5.1", &sw, None, snapshot_bytes(vec![n1()], vec![c1()], reg_rs), "prune"));
     let pruned_child = l(vec![i(4), l(vec![l(vec![i(1), i(4)])]), l(vec![]), Value::Map([(i(1), l(vec![i(0), l(vec![]), i(1), i(7)]))].into_iter().collect())]);
     cases.push(reject_case("struct field below the struct's reset", "spec/crdt.md §3.3, §4.2", &sw, None, snapshot_bytes(vec![n1()], vec![c1()], pruned_child), "prune"));
-    let n3 = Value::Bytes(tid(3).as_bytes().to_vec());
+    let n3 = Value::Bytes(session(3).to_bytes().to_vec());
     let c3 = l(vec![i(2), l(vec![l(vec![i(5), i(0), i(1)])])]);
     let foreign_value = set_of(vec![elem(l(vec![i(1), i(3)]), 1, 1)]);
     cases.push(reject_case("set element value written by another source", "spec/crdt.md §3.3, §5.5", &sw, None, snapshot_bytes(vec![n1(), n3], vec![c3], foreign_value), "element-source"));
@@ -265,8 +270,8 @@ pub fn deltas() -> VecFile {
 fn decode(c: &Record) -> Result<Option<Value>, osis_crdt::Error> {
     let tsv = Ts::from_u64(c.req("ts").unwrap().parse().unwrap()).unwrap();
     let own = unhex(c.req("own").unwrap()).unwrap();
-    let own = match <[u8; 15]>::try_from(own.as_slice()) {
-        Ok(t) => Source::node(Tid::from_bytes(t)),
+    let own = match <[u8; 31]>::try_from(own.as_slice()) {
+        Ok(s) => Source::session(Session::from_bytes(&s)),
         Err(_) => Source::commit(CommitId(own.as_slice().try_into().unwrap())),
     };
     let bytes = unhex(c.req("delta").unwrap()).unwrap();

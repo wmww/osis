@@ -142,13 +142,12 @@ impl Ctx {
         }
         self.commits.get(i as usize - 1).cloned().ok_or(Error::Bad("commit index"))
     }
-    /// `Sources := [Source*]`, `Source := bytes(15) | bytes(32) | [Src, ctr]`.
+    /// `Sources := [Source*]`, `Source := bytes(31) | bytes(32) | [Src, ctr]`.
     pub fn sources_item(&self) -> Item {
         Item::Array(
             self.sources
                 .iter()
                 .map(|s| match s {
-                    Source::Node(b) => Item::Bytes(b.to_vec()),
                     Source::Session(b) => Item::Bytes(b.to_vec()),
                     Source::Commit(b) => Item::Bytes(b.to_vec()),
                     Source::Derived(d) => Item::Array(vec![u(self.idx_of(&d.source)), u(d.ctr)]),
@@ -160,7 +159,6 @@ impl Ctx {
         self.sources.clear();
         for s in it.array()? {
             let src = match s {
-                Item::Bytes(b) if b.len() == 15 => Source::Node(b[..].try_into().unwrap()),
                 Item::Bytes(b) if b.len() == 31 => Source::Session(b[..].try_into().unwrap()),
                 Item::Bytes(b) if b.len() == 32 => Source::Commit(b[..].try_into().unwrap()),
                 Item::Array(a) if a.len() == 2 => {
@@ -357,7 +355,7 @@ fn runs(text: bool, v: &[(&Dot, &SeqElem)]) -> Vec<(usize, usize)> {
 impl Frag {
     /// Every stamp and dot reference of the fragment, in canonical encoding order.
     pub fn walk(&self, f: &mut dyn FnMut(Ref)) {
-        self.walk_own(&Source::node(0), f)
+        self.walk_own(&Source::session(0, 0), f)
     }
 
     /// `walk` with collections in the wire order of a delta whose own source is `own`.
@@ -1230,17 +1228,17 @@ pub fn decode_delta(bytes: &[u8], cx: &mut Ctx) -> Result<Frag, Error> {
 }
 
 /// Snapshot delta: `[nonce, Sources, Commits, Fragment, Frontiers, Absorbed]`, `Frontiers := [[Src, ctr]*]`, one
-/// entry per `Node` or `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8). Every
+/// entry per `Session` source of `Sources` in table order, `ctr` 0 where `frontiers` has none (§8). Every
 /// source `frontiers` names must occur in the fragment. The caller strips the values of expiring deltas first
 /// (§4.7). `Absorbed` (absorbed commit-form commits) is always empty here: the model keeps no per-commit receipts.
 pub fn encode_snapshot(f: &Frag, frontiers: &[(Source, u64)], nonce: [u8; 16], cx: &mut Ctx) -> Vec<u8> {
     cx.collect(f);
     for (s, c) in frontiers {
-        assert!(matches!(s, Source::Node(_) | Source::Session(_)) && *c >= 1, "frontiers name node or session sources");
+        assert!(matches!(s, Source::Session(_)) && *c >= 1, "frontiers name session sources");
         assert!(cx.sources.contains(s), "a frontier names a source of the fragment");
     }
     let frag = encode(f, cx);
-    let fr: Vec<(u64, u64)> = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Node(_) | Source::Session(_))).map(|(i, s)| (i as u64 + 1, frontiers.iter().find(|x| x.0 == *s).map_or(0, |x| x.1))).collect();
+    let fr: Vec<(u64, u64)> = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Session(_))).map(|(i, s)| (i as u64 + 1, frontiers.iter().find(|x| x.0 == *s).map_or(0, |x| x.1))).collect();
     let fr = Item::Array(fr.into_iter().map(|(i, c)| Item::Array(vec![u(i), u(c)])).collect());
     let top = vec![Item::Bytes(nonce.to_vec()), cx.sources_item(), cx.commits_item(), frag, fr, Item::Array(Vec::new())];
     cbor::encode(&Item::Array(top))
@@ -1264,9 +1262,9 @@ pub fn decode_snapshot(bytes: &[u8], cx: &mut Ctx) -> Result<(Frag, Vec<(Source,
             cx.load_sources(sources)?;
             cx.load_commits(commits)?;
             let frag = decode(f, cx)?;
-            // one entry per node or session source of the table, in table order (§8)
+            // one entry per session source of the table, in table order (§8)
             let mut out = Vec::new();
-            let mut counted = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Node(_) | Source::Session(_)));
+            let mut counted = cx.sources.iter().enumerate().filter(|(_, s)| matches!(s, Source::Session(_)));
             for e in fr.array()? {
                 let (i, c) = match e.array()? {
                     [i, c] => (i.uint()?, c.uint()?),

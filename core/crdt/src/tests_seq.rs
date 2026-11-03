@@ -10,7 +10,7 @@ use crate::seq_span::{expand, nth};
 use crate::stamp::{Dot, Source, Stamp};
 use std::collections::BTreeMap;
 use crate::stamp::{CounterRange, Interner};
-use crate::testutil::{frag, history, history_with, mapply, source, ts};
+use crate::testutil::{frag, history, history_with, mapply, sess, sess_value, source, ts};
 use crate::tests_join::lockstep;
 pub(crate) use crate::testutil::{Pager, partial_follow, partial_follow_in};
 use crate::tests_wire::{delta, i, l, rejects, snap_cx, wcx, writer_cx};
@@ -63,7 +63,7 @@ proptest! {
     #[test]
     fn seq_wire_matches_model_spec_3_2(seed in any::<u64>()) {
         let types = [Ty::Text, Ty::List(Box::new(inner()))];
-        wire_matches(seed, &types, (1..=3).map(MSource::node).collect());
+        wire_matches(seed, &types, (1..=3).map(|n| MSource::session(n, 0)).collect());
     }
 
     /// §3.3 rule 2: commit form.
@@ -76,7 +76,7 @@ proptest! {
     /// §7: snapshots carry embedded characters (Derived sources).
     #[test]
     fn seq_wire_slots_spec_7(seed in any::<u64>()) {
-        wire_matches(seed, &[Ty::Register, Ty::Text], (1..=3).map(MSource::node).collect());
+        wire_matches(seed, &[Ty::Register, Ty::Text], (1..=3).map(|n| MSource::session(n, 0)).collect());
     }
 
     /// §4.7: strip of text and list states equals the model's and commutes with join.
@@ -135,7 +135,7 @@ proptest! {
     #[test]
     fn random_undelete_spec_5_7(seed in any::<u64>()) {
         let mut r = crate::testutil::rng(seed | 1);
-        let commits = history_with(&mut r, &[Ty::Text], vec![MSource::node(1), MSource::node(2)], 6);
+        let commits = history_with(&mut r, &[Ty::Text], vec![MSource::session(1, 0), MSource::session(2, 0)], 6);
         let mut full = Fragment::default();
         for c in &commits {
             full.join(frag(&c.delta));
@@ -148,7 +148,7 @@ proptest! {
         if dead.is_empty() {
             return Ok(());
         }
-        let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([7; 15]));
+        let src = sess(osis_base::Tid::from_bytes([7; 15]));
         let st = crate::stamp::Stamp::new(ts(1 << 30), src.clone(), 1);
         let mut d = crate::seq::Seq::empty(true);
         for x in &dead {
@@ -173,7 +173,7 @@ proptest! {
     #[test]
     fn mutated_seq_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
         let mut r = crate::testutil::rng(seed | 1);
-        let commits = history_with(&mut r, &[Ty::Text, Ty::List(Box::new(inner()))], vec![MSource::node(1), MSource::node(2)], 3);
+        let commits = history_with(&mut r, &[Ty::Text, Ty::List(Box::new(inner()))], vec![MSource::session(1, 0), MSource::session(2, 0)], 3);
         let mut state = Fragment::default();
         for c in &commits {
             let cx = writer_cx(&c.w);
@@ -193,9 +193,9 @@ proptest! {
 #[test]
 fn cycle_breaking_is_linear_spec_6_2() {
     use crate::seq::{Anchor, SeqElem};
-    use crate::stamp::{Dot, Source, Stamp};
+    use crate::stamp::{Dot, Stamp};
     let (len, k) = (20_000u64, 20_000u64);
-    let a = Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let a = sess(osis_base::Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(ts(t << 16), a.clone(), c);
     let mut elems = std::collections::BTreeMap::new();
     let mut prev = Anchor::Head;
@@ -257,12 +257,12 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         mapply(&mut m, d.clone());
     }
     if upgraded {
-        let mut w = MWriter::new(MSource::node(8), 100 << 16, 1);
+        let mut w = MWriter::new(MSource::session(8, 0), 100 << 16, 1);
         let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 12));
         let d = crdt_model::ops::create(&mut w, &Ty::Register, &v);
         mapply(&mut m, d.clone());
         deltas.push(d);
-        let mut w = MWriter::new(MSource::node(7), 101 << 16, 1);
+        let mut w = MWriter::new(MSource::session(7, 0), 101 << 16, 1);
         for k in 0..8 {
             w.next_commit((102 + k) << 16);
             if let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) {
@@ -288,7 +288,7 @@ pub(crate) fn snapshot_then_edit(mut r: crate::testutil::SeedRng, upgraded: bool
         }
     }
     let mread = |m: &Option<MFrag>| m.as_ref().and_then(|x| x.slot(9)).and_then(|x| x.read()).map(|v| crate::testutil::value(&v));
-    let mut w = MWriter::new(MSource::node(9), 1 << 30, 1);
+    let mut w = MWriter::new(MSource::session(9, 0), 1 << 30, 1);
     let mut deliver = |d: MFrag, w: &MWriter, m: &mut Option<MFrag>, ours: &mut Fragment| {
         mapply(m, d.clone());
         let cx = writer_cx(w);
@@ -433,7 +433,7 @@ fn seq_differential_large_spec_5_7() {
         lockstep(seed, &[Ty::Text], 4, 16);
         lockstep(seed, &[Ty::List(Box::new(inner()))], 4, 12);
         lockstep(seed, &[Ty::Register, Ty::Text], 4, 10);
-        wire_matches(seed, &[Ty::Text, Ty::List(Box::new(inner())), kitchen_sink()], (1..=4).map(MSource::node).collect());
+        wire_matches(seed, &[Ty::Text, Ty::List(Box::new(inner())), kitchen_sink()], (1..=4).map(|n| MSource::session(n, 0)).collect());
     }
 }
 
@@ -464,7 +464,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         assert_eq!(back, d, "delta round trip");
         mapply(&mut state, c.delta.clone());
         let st = state.as_ref().unwrap();
-        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
@@ -472,7 +472,7 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         crate::testutil::check_bound(&sbytes, &back.fragment);
         assert_eq!(back.fragment, as_carried(&s.fragment), "snapshot round trip");
         assert_eq!(back.fragment.read(), s.fragment.read());
-        let (mback, _) = crdt_model::wire::decode_snapshot(&sbytes, &mut Ctx::new(1 << 40, MSource::node(250), 1)).unwrap();
+        let (mback, _) = crdt_model::wire::decode_snapshot(&sbytes, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).unwrap();
         assert_eq!(frag(&mback), back.fragment, "model snapshot round trip");
     }
 }
@@ -483,21 +483,21 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
 fn snapshot_deleted_embedded_char_spec_3_3() {
     use crdt_model::value::Value as MValue;
     let mut m = None;
-    let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+    let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
-    let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+    let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
-    let mut w = MWriter::new(MSource::node(3), 102 << 16, 1);
+    let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
     let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
     mapply(&mut m, d);
     let st = m.as_ref().unwrap();
     assert!(matches!(st, MFrag::Slots { .. }));
-    let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+    let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
     let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
     assert_eq!(bytes, msnap);
     let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
-    let (mback, _) = crdt_model::wire::decode_snapshot(&bytes, &mut Ctx::new(1 << 40, MSource::node(250), 1)).unwrap();
+    let (mback, _) = crdt_model::wire::decode_snapshot(&bytes, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1)).unwrap();
     assert_eq!(back.read(), Some(Value::Str("b".into())));
     assert_eq!(back.read(), s.fragment.read());
     assert_eq!(frag(&mback).read(), back.read());
@@ -515,11 +515,11 @@ fn snapshot_deleted_embedded_char_spec_3_3() {
 fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     use crdt_model::value::Value as MValue;
     let mut m = None;
-    let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+    let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())));
-    let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+    let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
     mapply(&mut m, mops::create(&mut w, &Ty::Register, &MValue::Str("ab".into())));
-    let mut w = MWriter::new(MSource::node(3), 102 << 16, 1);
+    let mut w = MWriter::new(MSource::session(3, 0), 102 << 16, 1);
     let d = mops::seq_delete(&mut w, m.as_ref().and_then(|x| x.slot(9)).unwrap(), 0, 1).unwrap();
     mapply(&mut m, d);
     let full = frag(m.as_ref().unwrap());
@@ -534,7 +534,7 @@ fn bootstrapped_undelete_of_embedded_char_spec_4_6() {
     let Some(MFrag::Seq { elems, .. }) = m.as_ref().and_then(|x| x.slot(9)) else { panic!() };
     let dead: Vec<_> = elems.iter().filter(|(_, e)| e.is_deleted(true)).map(|(d, _)| d.clone()).collect();
     assert_eq!(dead.len(), 1);
-    let mut w = MWriter::new(MSource::node(4), 103 << 16, 1);
+    let mut w = MWriter::new(MSource::session(4, 0), 103 << 16, 1);
     let empty = MFrag::Seq { text: true, c: Default::default(), elems: BTreeMap::new() };
     let u = mops::seq_undelete(&mut w, &empty, &dead);
     let cx = writer_cx(&w);
@@ -573,11 +573,11 @@ fn slots_join_follows_cache_spec_7() {
     for seed in (1..12).step_by(2) {
         let mut r = crate::testutil::rng(seed);
         let (mut m, mut ours) = (None, Fragment::default());
-        let mut w = MWriter::new(MSource::node(1), 50 << 16, 1);
+        let mut w = MWriter::new(MSource::session(1, 0), 50 << 16, 1);
         put(mops::create(&mut w, &Ty::Text, &MValue::Str("xy".into())), &mut m, &mut ours);
-        let mut w = MWriter::new(MSource::node(2), 100 << 16, 1);
+        let mut w = MWriter::new(MSource::session(2, 0), 100 << 16, 1);
         put(mops::create(&mut w, &Ty::Register, &MValue::Str("abcdefghij".repeat(4))), &mut m, &mut ours);
-        let mut w = MWriter::new(MSource::node(3), 101 << 16, 1);
+        let mut w = MWriter::new(MSource::session(3, 0), 101 << 16, 1);
         for k in 0..40 {
             w.next_commit((102 + k) << 16);
             let Some(d) = crdt_model::r#gen::random_op(&mut r, &mut w, &Ty::Text, m.as_ref()) else { continue };
@@ -673,7 +673,7 @@ fn rejects_bad_runs_spec_3_3() {
 #[test]
 fn rejects_bare_and_oversized_runs_spec_3_3() {
     let other = osis_base::Tid::from_bytes([9; 15]);
-    let srcs = || vec![Value::Bytes(other.as_bytes().to_vec())];
+    let srcs = || vec![sess_value(other)];
     let m = crate::MAX_RUN as i64;
     let k = (osis_base::format::MAX_DELTA_BARE / crate::MAX_RUN) as i64;
     let flag = || vec![l(vec![i(0), i(m - 1), i(0), Value::Bool(true)])];
@@ -707,7 +707,7 @@ fn snapshot_carries_bare_anchors_spec_3_3() {
 #[test]
 fn rejects_segment_of_another_source_spec_3_3() {
     let (a, b) = (osis_base::Tid::from_bytes([1; 15]), osis_base::Tid::from_bytes([2; 15]));
-    let srcs = vec![Value::Bytes(a.as_bytes().to_vec()), Value::Bytes(b.as_bytes().to_vec())];
+    let srcs = vec![sess_value(a), sess_value(b)];
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(10), i(0), i(1)])])]), l(vec![i(2), l(vec![l(vec![i(10), i(0), i(1)])])])];
     let with = |ci: i64| {
         let r = run(l(vec![i(1), i(1)]), 1, l(vec![i(0), l(vec![l(vec![i(ci), i(1)])])]), s("a"), vec![], vec![]);
@@ -727,7 +727,7 @@ fn rejects_derived_creation_in_writer_delta_spec_3_3() {
     // an anchor at an embedded character is fine
     let f = text_with(vec![run(i(3), 1, l(vec![l(vec![i(2), i(1)]), l(vec![l(vec![i(0), i(1)])])]), s("q"), vec![], vec![])]);
     let other = osis_base::Tid::from_bytes([9; 15]);
-    let srcs = vec![Value::Bytes(other.as_bytes().to_vec()), l(vec![i(1), i(4)])];
+    let srcs = vec![sess_value(other), l(vec![i(1), i(4)])];
     decode_delta(&delta(srcs, vec![], f), &wcx(), &mut Interner::new(), None).unwrap();
 }
 
@@ -737,7 +737,7 @@ fn chars(x: &str) -> Vec<Content> {
     x.chars().map(Content::Char).collect()
 }
 fn mw(n: u8, t: u64) -> MWriter {
-    MWriter::new(MSource::node(n), t << 16, 1)
+    MWriter::new(MSource::session(n, 0), t << 16, 1)
 }
 fn joined(base: &Fragment, ds: &[&MFrag]) -> Fragment {
     let mut f = base.clone();
@@ -914,7 +914,7 @@ fn text_pages_spec_8() {
     let (_, mut st) = typed(&text);
     // every third char deleted by its own commit: one run per char
     let Fragment::Seq(s) = &mut st else { panic!() };
-    let b = crate::stamp::Source::node(osis_base::Tid::from_bytes([2; 15]));
+    let b = sess(osis_base::Tid::from_bytes([2; 15]));
     for (k, e) in s.elems_mut().values_mut().enumerate().filter(|(k, _)| k % 3 == 0) {
         e.deleted = Some((crate::stamp::Stamp::new(ts((k as u64 + 2) << 16), b.clone(), k as u64 + 1), true));
     }
@@ -930,7 +930,7 @@ fn text_pages_spec_8() {
 // ---- range records (spec/requirements.md Scale: input never causes unbounded allocation)
 
 fn n(b: u8) -> crate::stamp::Source {
-    crate::stamp::Source::node(osis_base::Tid::from_bytes([b; 15]))
+    sess(osis_base::Tid::from_bytes([b; 15]))
 }
 fn st(t: u64, b: u8, c: u64) -> Stamp {
     Stamp::new(ts(t << 16), n(b), c)
@@ -984,7 +984,7 @@ fn snapshot_runs_decode_to_ranges_spec_3_2() {
     assert_eq!(records(&deleted), len as usize, "a range write splits nothing into a per-element state");
     for (what, f) in [("bare", &bare), ("deleted", &deleted)] {
         let bytes = snapshot_of(f);
-        assert!(bytes.len() < 110, "{what}: {} bytes", bytes.len());
+        assert!(bytes.len() < 150, "{what}: {} bytes", bytes.len());
         let back = decode_snapshot(&bytes, &snap_cx(), &mut Interner::new(), None).unwrap().fragment;
         assert_eq!(records(&back), 1, "{what}");
         assert_eq!(back, as_carried(f), "{what}");
@@ -1199,7 +1199,7 @@ proptest! {
         for g in [f.clone(), via_snapshot(&f)] {
             let ws: Vec<Dot> = g.writes().into_iter().map(|(d, _)| d).collect();
             for n in 1..=3u8 {
-                let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([n; 15]));
+                let src = sess(osis_base::Tid::from_bytes([n; 15]));
                 for lo in [1u64, 2, 5, 9, 20] {
                     for len in [1u64, 3, 50] {
                         let want = ws.iter().any(|d| d.src == src && lo <= d.ctr && d.ctr < lo + len);
@@ -1237,7 +1237,7 @@ fn self_anchored_insert_placed_spec_6_2() {
 fn empty_placement_held_in_part_follows_spec_6() {
     use crate::{Batch, Op, PathOp, Writer};
     let view = crate::testutil::TyView(Ty::Text);
-    let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let src = sess(osis_base::Tid::from_bytes([1; 15]));
     let e = Fragment::default();
     let mut b = Batch::new(&e, Writer::new(ts(1 << 16), src, 1));
     b.apply(&PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![Value::Str("ab".into())] } }, &view).unwrap();
@@ -1295,7 +1295,7 @@ fn moved_row_keeps_key_spec_6_1() {
 fn hostile_writes(r: &mut crdt_model::r#gen::Rng, list: bool, slots: bool, n: usize) -> Vec<MFrag> {
     use crdt_model::stamp::{Dot as MDot, Source as MSrc, Stamp as MStamp};
     use crdt_model::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
-    let srcs = [MSource::node(1), MSource::node(2), MSource::node(3)];
+    let srcs = [MSource::session(1, 0), MSource::session(2, 0), MSource::session(3, 0)];
     // the dots of the register writes so far (their embedded chars: `Derived(d)`, 1..)
     let mut regs: Vec<MDot> = Vec::new();
     fn dot(r: &mut crdt_model::r#gen::Rng, srcs: &[MSrc; 3], regs: &[MDot]) -> MDot {
@@ -1481,7 +1481,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
         }
         assert_eq!(ours, crate::testutil::ostate(&reference), "converged");
         let st = reference.as_ref().unwrap();
-        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
         assert_eq!(sbytes, msnap, "snapshot bytes equal the model's");
@@ -1492,7 +1492,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     // model's and does not depend on the order; removing them in place from the state agrees
     // unless `dots_supersede` says the bodies are needed (the author held a winner or a top-2
     // position write)
-    let bad = crate::testutil::source(&MSource::node(2));
+    let bad = crate::testutil::source(&MSource::session(2, 0));
     let unmerged = |order: &mut dyn Iterator<Item = &MFrag>| {
         let mut out = Fragment::default();
         for w in order {
@@ -1505,7 +1505,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     let mut model = None;
     for w in &writes {
         let mut m = w.clone();
-        m.unmerge(&|s| *s == MSource::node(2));
+        m.unmerge(&|s| *s == MSource::session(2, 0));
         mapply(&mut model, m);
     }
     let ours = unmerged(&mut writes.iter());
@@ -1523,7 +1523,7 @@ fn hostile_lockstep(seed: u64, list: bool, slots: bool) {
     }
     // expiry of node 1's early dots (§4.7): stripping commutes with join, undeletes' chars
     // of those creations included
-    let gone = crate::testutil::source(&MSource::node(1));
+    let gone = crate::testutil::source(&MSource::session(1, 0));
     let exp = |d: &Dot| d.src == gone && d.ctr <= 6;
     let mut late = crate::testutil::ostate(&reference);
     late.strip(&exp);
@@ -1592,7 +1592,7 @@ proptest! {
 fn long_runs_match_model_spec_3_3() {
     use crdt_model::stamp::{Dot as MDot, Stamp as MStamp};
     use crdt_model::state::{Anchor as MAnchor, Composite, SeqElem as MElem};
-    let src = MSource::node(1);
+    let src = MSource::session(1, 0);
     let n = crate::MAX_RUN + 1000;
     let mut elems = BTreeMap::new();
     let mut a = MAnchor::Head;
@@ -1605,23 +1605,23 @@ fn long_runs_match_model_spec_3_3() {
     let mut state = Some(MFrag::Seq { text: true, c: Composite::default(), elems });
     // a delete of most of it, a move inside the deleted stretch, then a reset leaving bare
     // anchors below it for the first copy only
-    let del = MStamp { ts: 5 << 16, dot: MDot { source: MSource::node(2), ctr: 1 } };
+    let del = MStamp { ts: 5 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 1 } };
     let mut d = BTreeMap::new();
     for c in 10..n - 10 {
         d.insert(MDot { source: src.clone(), ctr: c }, MElem::write(Content::None, vec![], Some((del.clone(), true))));
     }
     mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
-    let mv = MStamp { ts: 6 << 16, dot: MDot { source: MSource::node(2), ctr: 2 } };
+    let mv = MStamp { ts: 6 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 2 } };
     let mut d = BTreeMap::new();
     d.insert(MDot { source: src.clone(), ctr: 2000 }, MElem::write(Content::None, vec![(mv, MAnchor::Head, None)], None));
     mapply(&mut state, MFrag::Seq { text: true, c: Composite::default(), elems: d });
     for reset in [false, true] {
         if reset {
-            let r = MStamp { ts: 7 << 16, dot: MDot { source: MSource::node(2), ctr: 3 } };
+            let r = MStamp { ts: 7 << 16, dot: MDot { source: MSource::session(2, 0), ctr: 3 } };
             mapply(&mut state, MFrag::Seq { text: true, c: Composite { reset: Some(r), w: None }, elems: BTreeMap::new() });
         }
         let st = state.as_ref().unwrap();
-        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let msnap = m_encode_snapshot(st, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let ours = frag(st);
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: ours.clone(), frontiers: Frontiers::default() };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();

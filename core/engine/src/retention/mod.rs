@@ -55,7 +55,6 @@ const T_AT_MOST: u8 = 2;
 /// A non-`Derived` source's bytes (its length tells the kind).
 fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
     match src.kind() {
-        osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
         osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
         osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
         osis_crdt::SourceKind::Derived(_) => Vec::new(),
@@ -64,7 +63,6 @@ fn source_bytes(src: &osis_crdt::Source) -> Vec<u8> {
 
 pub(crate) fn read_source(r: &mut Rd<'_>) -> Result<osis_crdt::Source> {
     Ok(match r.u8()? {
-        15 => osis_crdt::Source::node(r.tid()?),
         31 => osis_crdt::Source::session(osis_crdt::Session::from_bytes(&r.arr()?)),
         32 => osis_crdt::Source::commit(CommitId(r.arr()?)),
         _ => return Err(crate::error::Error::Corrupt("owned source")),

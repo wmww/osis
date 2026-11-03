@@ -122,16 +122,12 @@ impl W {
     fn tie(&mut self, t: &Tie) {
         self.ts(t.ts);
         match t.src {
-            TieSource::Node(n) => {
-                self.u8(0);
-                self.tid(&n);
-            }
             TieSource::Commit(c) => {
-                self.u8(1);
+                self.u8(0);
                 self.cid(&c);
             }
             TieSource::Session(n, nonce) => {
-                self.u8(2);
+                self.u8(1);
                 self.tid(&n);
                 self.out.extend_from_slice(&nonce);
             }
@@ -598,9 +594,8 @@ impl<'a> R<'a> {
     fn tie(&mut self) -> Option<Tie> {
         let ts = self.ts()?;
         let src = match self.u8()? {
-            0 => TieSource::Node(self.tid()?),
-            1 => TieSource::Commit(self.cid()?),
-            2 => TieSource::Session(self.tid()?, self.take(16)?.try_into().ok()?),
+            0 => TieSource::Commit(self.cid()?),
+            1 => TieSource::Session(self.tid()?, self.take(16)?.try_into().ok()?),
             _ => return None,
         };
         Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })

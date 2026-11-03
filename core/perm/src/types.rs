@@ -54,7 +54,6 @@ pub struct Tie {
 /// A dot's source (spec/crdt.md §2.1): a placement is durable, never `Derived`.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub enum TieSource {
-    Node(Tid),
     Commit(CommitId),
     /// A session of the node: its 16-byte nonce.
     Session(Tid, [u8; 16]),

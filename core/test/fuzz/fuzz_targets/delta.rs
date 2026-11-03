@@ -8,7 +8,7 @@
 use libfuzzer_sys::fuzz_target;
 use osis_base::{Tid, Ts};
 use osis_crdt::fuzzing::{decode_delta_whole, decode_snapshot_whole};
-use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner, MemoryPages, Source, decode_delta, decode_snapshot};
+use osis_crdt::{CounterRange, DeltaCtx, DeltaKind, Fragment, Interner, MemoryPages, SESSION_NONCE_LEN, Session, Source, decode_delta, decode_snapshot};
 
 fuzz_target!(|data: &[u8]| {
     let Some((&form, bytes)) = data.split_first() else { return };
@@ -18,7 +18,8 @@ fuzz_target!(|data: &[u8]| {
         1 => (DeltaKind::Snapshot, [9; 15], CounterRange::EMPTY),
         _ => (DeltaKind::Import, [9; 15], CounterRange::EMPTY),
     };
-    let cx = DeltaCtx { ts, own: Source::node(Tid::from_bytes(own)), range, kind };
+    let own = Source::session(Session { node: Tid::from_bytes(own), nonce: [0; SESSION_NONCE_LEN] });
+    let cx = DeltaCtx { ts, own, range, kind };
     let mut pages = MemoryPages::new();
     let mut interner = Interner::new();
     let fragment = if kind == DeltaKind::Snapshot {

@@ -328,9 +328,9 @@ fn steady_aspect_holds_steady_across_sessions() {
     assert!(many <= one + one / 50, "{many} B over 24 launches, {one} B in one");
 }
 
-// spec/crdt.md §8: a snapshot's frontier entries are exactly its fragment's node and session
-// sources: one naming a source the fragment lacks, or one missing for a source it holds, is
-// bad input at ingest.
+// spec/crdt.md §8: a snapshot's frontier entries are exactly its fragment's session sources:
+// one naming a source the fragment lacks, or one missing for a source it holds, is bad input at
+// ingest.
 #[test]
 fn untraced_frontier_entry_is_bad_input_spec_crdt_8() {
     let mut lp = net(2, 0x5e80);

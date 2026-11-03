@@ -16,7 +16,7 @@ fn main() {
         let Frag::Seq { elems, .. } = &state else { unreachable!() };
         let deleted = elems.values().filter(|e| e.deleted.is_some()).count();
         // snapshot by a compactor (other node, later ts): every stamp in full form
-        let mut cx = Ctx::new(u64::MAX / 2, Source::node(9), 1);
+        let mut cx = Ctx::new(u64::MAX / 2, Source::session(9, 0), 1);
         let bytes = crdt_model::wire::encode_delta(&state, [0; 16], &mut cx);
         let it = encode(&state, &cx);
         let frag_bytes = crdt_model::cbor::encode(&it).len();
@@ -58,7 +58,7 @@ fn main() {
 /// A commit carries its net effect (spec §4.5): elements inserted and deleted within one commit are omitted, and
 /// all deletions of one commit share one flag write (one stamp).
 fn replay(edits: &str, batch: usize) -> (Frag, usize) {
-    let src = Source::node(1);
+    let src = Source::session(1, 0);
     let mut elems: BTreeMap<Dot, SeqElem> = BTreeMap::new();
     let mut created_in: BTreeMap<Dot, u64> = BTreeMap::new();
     let mut children: BTreeMap<Dot, Vec<Dot>> = BTreeMap::new();

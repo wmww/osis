@@ -77,8 +77,6 @@ impl EphClass {
 /// Dot form (spec/commits.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
-    /// Node form: written by nothing, bad input (spec/commits.md §3).
-    Node,
     Commit,
     /// Session form: dots `(Session(author, nonce), counter)`, counters per (aspect, session);
     /// every content commit with own writes, durable or memory.
@@ -89,7 +87,6 @@ impl Form {
     /// The own source of a commit of this form by `author` (`commit` for commit form).
     pub fn own_source(&self, author: Tid, commit: CommitId) -> osis_crdt::Source {
         match self {
-            Form::Node => osis_crdt::Source::node(author),
             Form::Commit => osis_crdt::Source::commit(commit),
             Form::Session(nonce) => osis_crdt::Source::session(osis_crdt::Session { node: author, nonce: *nonce }),
         }
@@ -102,7 +99,6 @@ impl Form {
 
     fn value(&self) -> Value {
         match self {
-            Form::Node => uint(0),
             Form::Commit => uint(1),
             Form::Session(n) => Value::List(vec![uint(2), Value::bytes(n)]),
         }
@@ -116,7 +112,6 @@ impl Form {
             };
         }
         match as_uint(v)? {
-            0 => Ok(Form::Node),
             1 => Ok(Form::Commit),
             _ => Err(Error::Malformed("dot form")),
         }

@@ -802,7 +802,7 @@ mod tests {
         let mut st = osis_crdt::Fragment::default();
         for (n, b) in [(1u8, 0x11u8), (2, 0x22)] {
             let ts = osis_base::Ts::make(osis_base::WallMs(u64::from(n) * 1000), 0).unwrap();
-            let mut batch = Batch::new(&st, Writer::new(ts, Source::node(Tid::from_bytes([n; 15])), 1));
+            let mut batch = Batch::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: Tid::from_bytes([n; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
             batch.apply(&PathOp { path: vec![PathSeg::Field(1), PathSeg::Key(k.to_value())], op: Op::Put(Value::Bytes(vec![b; 8])) }, &view).unwrap();
             st.join(batch.finish().unwrap().0);
         }

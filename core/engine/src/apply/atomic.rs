@@ -793,7 +793,7 @@ fn unmerged(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, j: &mut Joins) -> Result<()> {
 /// before `strip_copies`: a session range overlapping a held one, any commit source).
 pub(super) fn core_holds_owner(core: &Core, tid: &Tid, ak: &Ak, src: &osis_crdt::Source, lo: u64, hi: u64) -> bool {
     match src.kind() {
-        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => core.ix.ranges.get(&(*tid, ak.clone(), src.clone())).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),
+        osis_crdt::SourceKind::Session(_) => core.ix.ranges.get(&(*tid, ak.clone(), src.clone())).is_some_and(|m| m.range(..hi).next_back().is_some_and(|(_, (h, _))| *h > lo)),
         osis_crdt::SourceKind::Commit(_) => true,
         osis_crdt::SourceKind::Derived(_) => false,
     }
@@ -1490,7 +1490,7 @@ mod tests {
     // `OwnedSet::owns` is `Owned::owns` of any of them, counters at both ends of the range too.
     #[test]
     fn owned_set_matches_owned_spec_crdt_4_6() {
-        let srcs = [Source::node(osis_base::Tid::from_bytes([1; 15])), Source::node(osis_base::Tid::from_bytes([2; 15])), Source::commit(osis_base::CommitId([3; 32])), Source::commit(osis_base::CommitId([4; 32]))];
+        let srcs = [Source::session(osis_crdt::Session { node: osis_base::Tid::from_bytes([1; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), Source::session(osis_crdt::Session { node: osis_base::Tid::from_bytes([2; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), Source::commit(osis_base::CommitId([3; 32])), Source::commit(osis_base::CommitId([4; 32]))];
         let ctrs: Vec<u64> = (1..14).chain([u64::MAX - 1, u64::MAX]).collect();
         let mut x = 0x9e37_79b9_7f4a_7c15u64;
         let mut next = |n: usize| {

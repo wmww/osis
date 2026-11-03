@@ -1,7 +1,7 @@
 //! Join laws across encodings (spec/crdt.md §4.1, §7) and size/time budgets (tier 2).
 
 use crate::fragment::Fragment;
-use crate::testutil::{mapply, ostate, sink_no_seq};
+use crate::testutil::{mapply, ostate, sess, sink_no_seq};
 use crdt_model::r#gen::random_op;
 use crdt_model::ops::{Ty, Writer as MWriter};
 use crdt_model::stamp::Source as MSource;
@@ -19,7 +19,7 @@ fn states(seed: u64, types: &[Ty]) -> Vec<Fragment> {
     (0..3u8)
         .map(|i| {
             let ty = &types[usize::from(i) % types.len()];
-            let mut w = MWriter::new(MSource::node(i + 1), ((r.below(5) as u64 + 1) << 16) + u64::from(i), 1);
+            let mut w = MWriter::new(MSource::session(i + 1, 0), ((r.below(5) as u64 + 1) << 16) + u64::from(i), 1);
             let mut st = None;
             for k in 0..4 {
                 w.next_commit(w.ts + ((r.below(3) as u64) << 16) + 1 + k);
@@ -75,7 +75,7 @@ fn forged_states(seed: u64, types: &[Ty]) -> (Vec<Fragment>, Vec<Option<crdt_mod
             let ty = &types[usize::from(i) % types.len()];
             let mut ro = crate::testutil::rng(seed.wrapping_add(u64::from(i) + 7));
             let (src, t0) = if i < 2 { (1, base) } else { (2, base + 2) };
-            let mut w = MWriter::new(MSource::node(src), t0, 1);
+            let mut w = MWriter::new(MSource::session(src, 0), t0, 1);
             let mut st = None;
             for k in &steps {
                 w.next_commit(w.ts + k);
@@ -162,11 +162,11 @@ proptest! {
 fn budget_big_map_spec_4_1() {
     use crate::codec::{decode_delta, encode_delta};
     use crate::page::MemoryPages;
-    use crate::stamp::{Interner, Source};
+    use crate::stamp::Interner;
     use crate::wire::{Delta, DeltaCtx, DeltaKind};
     use osis_base::{Tid, Ts, Value};
     use std::time::Instant;
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let ts = |t: u64| Ts::from_u64(t << 16).unwrap_or_default();
     let kv: std::collections::BTreeMap<Value, Value> = (0..100_000i64).map(|i| (Value::Int(i), Value::Int(i * 2))).collect();
     let mut w = crate::Writer::new(ts(1), node.clone(), 1);
@@ -190,7 +190,7 @@ fn budget_big_map_spec_4_1() {
     decode_delta(&bytes, &cx, &mut Interner::new(), Some(&mut pages)).unwrap();
     let decode = t.elapsed();
     // a one-entry delta into the big state
-    let mut w2 = crate::Writer::new(ts(2), Source::node(Tid::from_bytes([2; 15])), 1);
+    let mut w2 = crate::Writer::new(ts(2), sess(Tid::from_bytes([2; 15])), 1);
     let small = crate::create(&mut w2, &crate::AnyView, &Value::Map([(Value::Int(-1), Value::Int(0))].into_iter().collect())).unwrap();
     let t = Instant::now();
     for _ in 0..1000 {

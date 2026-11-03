@@ -1304,7 +1304,7 @@ impl Core {
         let d = d.owner();
         match d.src.kind() {
             SourceKind::Commit(c) => Some(*c),
-            SourceKind::Node(_) | SourceKind::Session(_) => {
+            SourceKind::Session(_) => {
                 let m = self.ix.ranges.get(&(*tid, ak.clone(), d.src.clone()))?;
                 let (_, (hi, c)) = m.range(..=d.ctr).next_back()?;
                 (d.ctr < *hi).then_some(*c)

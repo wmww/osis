@@ -952,22 +952,22 @@ pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Re
     dec.load_commits(commits)
 }
 
-/// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Node` or `Session`
-/// source of the table, in table order, 0 included (a source with no write in the fragment
-/// has none, so an absent source is one the snapshot holds nothing of).
+/// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Session` source of the
+/// table, in table order, 0 included (a source with no write in the fragment has none, so an
+/// absent source is one the snapshot holds nothing of).
 pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>), Error> {
     let mut frontiers = Frontiers::default();
-    let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Node(_) | SourceKind::Session(_)));
+    let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Session(_)));
     for e in as_array(fr)? {
         let [i, c] = as_array(e)? else { return Err(Error::Malformed("frontier")) };
         let src = dec.src(i)?;
         if counted.next() != Some(&src) {
-            return Err(Error::Malformed("frontier entries not the fragment's node and session sources in order"));
+            return Err(Error::Malformed("frontier entries not the fragment's session sources in order"));
         }
         frontiers.insert(&src, as_uint(c)?);
     }
     if counted.next().is_some() {
-        return Err(Error::Malformed("a node or session source of the fragment without a frontier entry"));
+        return Err(Error::Malformed("a session source of the fragment without a frontier entry"));
     }
     let mut absorbed = BTreeMap::new();
     for e in as_array(ab)? {

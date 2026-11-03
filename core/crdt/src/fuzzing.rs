@@ -2,7 +2,7 @@
 //! its seeds (osis-vectors `corpus.rs`), and under `--cfg fuzzing` the `seq_ops` target's script
 //! replay. Not part of the API.
 
-use crate::{Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
+use crate::{Batch, CounterRange, DeltaCtx, DeltaKind, Encoding, Fragment, Interner, Op, PathOp, SESSION_NONCE_LEN, Session, Snapshot, Source, View, Writer, decode_snapshot, encode_snapshot};
 use osis_base::{Tid, Ts, Value};
 use std::borrow::Cow;
 
@@ -33,23 +33,28 @@ impl View for TextView {
     }
 }
 
+/// Session source of writer `n`: tid and nonce all `n` bytes.
+fn session(n: u8) -> Source {
+    Source::session(Session { node: Tid::from_bytes([n; 15]), nonce: [n; SESSION_NONCE_LEN] })
+}
+
 /// The context frame `frame` of an input decodes under: writer `source % 4` at a rising time,
 /// with counters of its own (a writer never reuses a dot, §2.3).
 pub fn seq_follow_cx(source: u8, frame: u64) -> DeltaCtx {
     let ts = Ts::from_u64((1_700_000_000_000 + frame) << 16).unwrap_or_default();
     let lo = 1 + frame * (1 << 16);
-    DeltaCtx { ts, own: Source::node(Tid::from_bytes([source % 4 + 1; 15])), range: CounterRange { lo, hi: lo + (1 << 16) }, kind: DeltaKind::Writer }
+    DeltaCtx { ts, own: session(source % 4 + 1), range: CounterRange { lo, hi: lo + (1 << 16) }, kind: DeltaKind::Writer }
 }
 
 /// The snapshot context of `seq_follow_state` and of the target's whole-pass check.
 pub fn seq_follow_snap_cx() -> DeltaCtx {
-    DeltaCtx { ts: Ts::from_u64(1_800_000_000_000 << 16).unwrap_or_default(), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+    DeltaCtx { ts: Ts::from_u64(1_800_000_000_000 << 16).unwrap_or_default(), own: session(9), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// A text of a few hundred records typed and deleted in runs by two writers, through a
 /// snapshot, so its deleted stretches are range records.
 pub fn seq_follow_state() -> Fragment {
-    let srcs = [Source::node(Tid::from_bytes([20; 15])), Source::node(Tid::from_bytes([21; 15]))];
+    let srcs = [session(20), session(21)];
     let mut lo = [1u64; 2];
     let mut st = Fragment::default();
     let mut x = 7u64;
