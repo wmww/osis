@@ -1139,6 +1139,10 @@ struct Oracle {
     /// role commit, a creation, or one not played): a recompute plays those at the
     /// snapshot, not at their own `ts`, so the oracle does not judge them.
     carried: BTreeSet<(Tid, Ak)>,
+    /// Aspects of the commits the oracle took beyond the node's: a write only it holds may die
+    /// later than any the node knows, under a stamp a held snapshot shares (a creation's), so a
+    /// snapshot's last death there is not judged (nodes holding other commits date otherwise).
+    took: BTreeSet<(Tid, Ak)>,
 }
 
 fn oracle(played: &Played, held: &[usize]) -> Oracle {
@@ -1162,11 +1166,14 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
     }
     // carried writes whose own commit is not held: the oracle takes those commits too where
     // they are plain writes (no role part, no creation), so its recompute plays them at
-    // their own `ts`; more superseders date no later, so `dating` stays sound
+    // their own `ts`; more superseders date no later, so `dating` stays sound, but for one it
+    // judges invalid: its copy then dates at the snapshot, where the node, not holding that delta,
+    // dates at the write's own `ts` (spec/crdt.md §4.8), so that aspect is not judged
     let want: BTreeSet<(Tid, Ak, osis_crdt::Dot)> = aspects.iter().flat_map(|(t, a)| p.engine.carried_dots(t, a).into_iter().map(|d| (*t, a.clone(), d))).collect();
     // such a commit's other aspects: writes no held body gives, so the oracle does not judge
     // those aspects either (a node holds no superseder it could date a death at)
     let mut carried: BTreeSet<(Tid, Ak)> = BTreeSet::new();
+    let mut took = Vec::new();
     if !want.is_empty() {
         let whole = deliver(played, &(0..played.packs.len()).collect::<Vec<_>>());
         for (i, pk) in played.packs.iter().enumerate() {
@@ -1174,14 +1181,17 @@ fn oracle(played: &Played, held: &[usize]) -> Oracle {
             if !held.contains(&i) && common::owns_carried(&h, &pk.id, &want) && !h.kind.is_role() && h.kind.has_own_writes() && h.aspects.iter().all(|a| a.ak.as_str() != "created.0") {
                 let _ = p.engine.ingest(&pk.bytes, pk.blobs.clone());
                 carried.extend(h.aspects.iter().filter(|a| !want.iter().any(|(t, k, _)| *t == a.tid && *k == a.ak)).map(|a| (a.tid, a.ak.clone())));
+                took.push((pk.id, h));
             }
         }
     }
+    carried.extend(took.iter().flat_map(|(c, h)| h.aspects.iter().filter(|a| p.engine.body_valid(c, &a.tid, &a.ak) == Some(false)).map(|a| (a.tid, a.ak.clone()))));
+    let took: BTreeSet<(Tid, Ak)> = took.iter().flat_map(|(_, h)| h.aspects.iter().map(|a| (a.tid, a.ak.clone()))).collect();
     carried.extend(aspects.iter().filter(|(t, a)| !p.engine.carried_dots(t, a).is_empty()).cloned());
     for (t, a) in aspects {
         p.engine.replay_deaths(&t, &a).unwrap();
     }
-    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried }
+    Oracle { deaths: deaths_of(&mut p.engine), facts: facts_text(&mut p.engine), carried, took }
 }
 
 /// Whether node `p` dates deaths as spec/commits.md §5 allows against the oracle `o` (`None`),
@@ -1221,7 +1231,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 let ok = match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
-                    (Some(x), Some(y), true) => x.1 >= y.1,
+                    (x, Some(y), true) => x.is_some_and(|x| x.1 >= y.1) || o.took.contains(&(a.tid, a.ak.clone())),
                     _ => false,
                 };
                 if !ok {
@@ -2501,6 +2511,44 @@ fn seq_death_delete_first_spec_crdt_4_8() {
     assert_eq!(death((0..b).chain([b + 1, b]).collect()), after, "the delete held first dates it alike");
 }
 
+// spec/commits.md §5, order seed 27243: a body's write superseded only by a valid snapshot's copy of
+// a write whose own delta is held invalid, then a valid write stamped before that snapshot. The
+// node recomputes deaths without the late write, so the copy dates them: at the snapshot's `ts`,
+// not the invalid delta's, which is earlier than any valid superseder (was: `dating` failed).
+#[test]
+fn vouched_copy_dates_at_its_snapshot_spec_commits_5() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(NestedItem { by: 0, other: 2, t: 5, k: 1, compact: true, also: true }), a(Typed { by: 0, t: 0, op: 22, k: 1, v: 3 }), a(Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: true, also: true }), a(Nested { by: 1, other: 2, t: 6, k: 1, text: false, compact: true, also: false }), a(NestedItem { by: 1, other: 0, t: 1, k: 1, compact: false, also: true }), Sync { from: 2, to: 1 }, Forged { by: 0, a: 1, b: 4, how: 4, op: 11, k: 1, v: 0 }, a(NestedItem { by: 0, other: 1, t: 2, k: 0, compact: true, also: false }), Forged { by: 0, a: 0, b: 6, how: 2, op: 14, k: 1, v: 2 }];
+    let played = play(27243, &h);
+    let (body, invalid, late) = (12, 10, 19);
+    let n = played.packs.len();
+    let o = oracle(&played, &(0..n).collect::<Vec<_>>());
+    let order: Vec<usize> = (0..n).filter(|i| *i != late).chain([late]).collect();
+    let mut p = deliver(&played, &order);
+    let (t, m) = (played.things[0], ak("t:map.0"));
+    // the history still shows the case: the delta invalid, the late write the earliest valid superseder
+    assert_eq!(p.engine.body_valid(&played.packs[invalid].id, &t, &m), Some(false));
+    let late_ts = p.engine.header(&played.packs[late].id).unwrap().ts;
+    assert_eq!(o.deaths[&(played.packs[body].id, t, m.clone())].map(|d| d.0), Some(late_ts));
+    assert_eq!(dating(&mut p, &o, played.now), None);
+}
+
+// The same on arrival (seed 27243, another order): a body's write meets, in the state, a vouched
+// copy of an invalid delta's write, so the join reports the invalid commit's `ts`: the aspect's
+// deaths are recomputed, not noted from it.
+#[test]
+fn vouched_copy_met_in_state_dates_at_its_snapshot_spec_commits_5() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 0, t: 2, op: 28, k: 1, v: 8 }), a(Edge { by: 0, t: 4, holder: 2, role: Some(Role::Read) }), a(NestedItem { by: 0, other: 2, t: 5, k: 1, compact: true, also: true }), a(Typed { by: 1, t: 4, op: 12, k: 2, v: 0 }), a(Write { by: 2, t: 0, op: 27, k: 0, v: 5 }), a(Nested { by: 0, other: 2, t: 5, k: 0, text: true, compact: true, also: false }), a(Typed { by: 0, t: 0, op: 22, k: 1, v: 3 }), Advance { who: Some(1), ms: 1945 }, a(Nested { by: 2, other: 0, t: 5, k: 2, text: false, compact: true, also: true }), a(Edge { by: 0, t: 7, holder: 1, role: Some(Role::Write) }), a(Edge { by: 0, t: 1, holder: 1, role: Some(Role::Admin) }), a(New { by: 0, parent: 2, write: false }), a(New { by: 0, parent: 6, write: true }), a(New { by: 2, parent: 5, write: true }), a(NestedItem { by: 0, other: 1, t: 6, k: 2, compact: true, also: false }), Sync { from: 2, to: 1 }, a(Typed { by: 2, t: 3, op: 21, k: 1, v: 2 }), a(NestedItem { by: 0, other: 1, t: 2, k: 0, compact: true, also: false }), a(Leave { by: 1, t: 5 }), a(Typed { by: 1, t: 1, op: 13, k: 1, v: 7 }), a(Typed { by: 2, t: 7, op: 26, k: 0, v: 5 }), Forged { by: 0, a: 0, b: 6, how: 2, op: 14, k: 1, v: 2 }, NewTop { by: 0 }, a(Typed { by: 2, t: 5, op: 12, k: 2, v: 0 })];
+    let played = with_syncs(play(27243, &h), 27243);
+    let order = [38, 37, 24, 10, 36, 25, 18, 27, 6, 15, 4, 31, 8, 23, 11, 16, 35, 14, 34, 30, 29, 1, 39, 26, 5, 13, 32, 33, 2, 0, 9, 12, 28, 22, 20, 21, 7, 17, 19, 3];
+    let o = oracle(&played, &(0..played.packs.len()).collect::<Vec<_>>());
+    let mut p = deliver(&played, &order);
+    assert_eq!(dating(&mut p, &o, played.now), None);
+}
+
 // spec/crdt.md §5.6 (the records of one dot are one entry for superseding), spec/commits.md §5:
 // order seed 338806. An expiring put of k0, a kept write of k1, a snapshot (k0's records
 // key-erased, value-less), then a put into k0's entry (nested writes, keyed). A node holding the
@@ -3067,7 +3115,9 @@ fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
 /// once covered bodies go (every role commit and snapshot whole; each other commit without its
 /// parts the first node finds covered by a held snapshot, or not at all when none is left) read
 /// every aspect and roster alike. Both keep every body past its keep-at-most bound, so only
-/// coverage tells them apart.
+/// coverage tells them apart. The one limit: an aspect a node flags for a part that went at its
+/// expiry while its commit waited (here, for a covered part not yet counted as held) may read
+/// differently, as in `alike`: that part counts as never received (spec/commits.md §5).
 fn check_new_device(seed: u64, steps: &[Step]) -> Result<(usize, usize), String> {
     let played = play(seed, steps);
     let ingest = |p: &mut Peer, bytes: &[u8], pk: &Package| {
@@ -3111,9 +3161,10 @@ fn check_new_device(seed: u64, steps: &[Step]) -> Result<(usize, usize), String>
         ingest(&mut fresh, &b.encode(), pk);
     }
     fresh.engine.reexamine().unwrap();
+    let expired: BTreeSet<(String, String)> = expired_pending(&mut full.engine).union(&expired_pending(&mut fresh.engine)).cloned().collect();
     for (t, a) in full.engine.all_aspects().unwrap() {
         let (want, got) = (full.engine.get(&t, &a).unwrap(), fresh.engine.get(&t, &a).unwrap());
-        if want != got {
+        if want != got && !expired.contains(&(format!("{t:?}"), a.as_str().to_string())) {
             return Err(format!("{t:?} {}: every body {want:?}, after covered drops {got:?}", a.as_str()));
         }
     }
@@ -3168,6 +3219,18 @@ fn run_new_device(name: &str, seeds: std::ops::Range<u64>, len: usize) {
 #[test]
 fn new_device_alike_spec_permissions_5_1() {
     run_new_device("new_device_alike_spec_permissions_5_1", 0..16, 20);
+}
+
+// spec/commits.md §5, seed 883125: the commit's expired part comes while the commit waits for its
+// covered part, so it goes with no stamp and the aspect is flagged; the node reads the older value.
+// Delivered the other way (snapshot first) the part joins value-less. The flag is what `check_new_device`
+// excuses: without it this is a difference.
+#[test]
+fn new_device_expired_part_flagged_spec_commits_5() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 0, t: 5, op: 27, k: 2, v: 2 }), a(Compact { by: 0, t: 3, op: 15 }), Advance { who: None, ms: 1000 }];
+    assert_eq!(check_new_device(883125, &h).unwrap().0, 1, "one covered part left out");
 }
 
 // The same at size.
