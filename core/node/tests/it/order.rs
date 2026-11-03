@@ -4454,3 +4454,47 @@ fn drops_alike_undeleted_char_after_reopen_spec_crdt_5_7() {
     let h = vec![a(Demote { by: 2, t: 7, holder: 1, at: 3, to_read: true }), Send { from: 2, to: 1, back: 0 }, a(Demote { by: 2, t: 3, holder: 2, at: 5, to_read: false }), a(Breaking { by: 1, t: 2, op: 10, v: 5, fits: false }), a(Edge { by: 2, t: 4, holder: 1, role: Some(Role::Write) }), Sync { from: 0, to: 1 }, Forged { by: 1, a: 0, b: 4, how: 1, op: 22, k: 1, v: 8 }, a(Undo { by: 1, back: 1 })];
     drops_alike(198, &h, LARGE).unwrap();
 }
+
+// spec/crdt.md §4.6, §4.7, seed 7340007 of `arrival_order_alike_large`: 2 puts k0 with its expiry
+// past (held value-less: the record is key-erased), then is demoted; 1 puts into k0 (its body
+// names the record by key) and 0's valid snapshot holds the key-erased record. A dot held
+// value-less has one record, so the snapshot's copy keeps 1's valid writes in it whichever of
+// 2's expired delta, 1's put, the demotion and the snapshot came first, and on arrival of the
+// expired delta before `retention::on_apply` lists it value-less.
+#[test]
+fn expired_record_keeps_keyed_valid_writes_seed_7340007_spec_crdt_4_6() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![NewTop { by: 1 }, a(Typed { by: 2, t: 7, op: 28, k: 0, v: 9 }), a(Typed { by: 2, t: 7, op: 22, k: 1, v: 4 }), Send { from: 2, to: 1, back: 1 }, NewTop { by: 2 }, a(Edge { by: 0, t: 5, holder: 2, role: Some(Role::Read) }), Advance { who: None, ms: 6647992 }, a(Nested { by: 0, other: 1, t: 3, k: 2, text: false, compact: true, also: true }), a(Demote { by: 0, t: 5, holder: 1, at: 4, to_read: true }), NewTop { by: 1 }, a(Nested { by: 1, other: 0, t: 4, k: 0, text: false, compact: true, also: false }), NewTop { by: 1 }, NewTop { by: 1 }, Forged { by: 0, a: 6, b: 6, how: 2, op: 17, k: 1, v: 2 }];
+    check(7340007, &h, Cfg { all_up_to: 0, every_held: false, random: 8, subsets: 4, split: 2, par_orders: false, threads: 1, sync: true }).unwrap();
+}
+
+// spec/crdt.md §4.8, spec/commits.md §5, seed 52040 of `arrival_order_alike_large`: 1 puts k2,
+// 0 writes into it under keep at most 0, 0 removes k2 (a reset on 1's dot), and 1 is demoted
+// below its put. 0's nested write is un-merged with 1's record, yet 0's later valid reset
+// supersedes it (judged against the write alone), so its body has a death and is dropped at a
+// node that joined it before the demotion (the thing's creation last: everything applies at
+// once, newest first) and at one that un-merged it on join (as made); the oracle's recompute
+// dates it too.
+#[test]
+fn nested_write_dies_under_unmerged_record_seed_52040_spec_crdt_4_8() {
+    use Step::*;
+    let a = |s: Step| Aim(Box::new(s));
+    let h = vec![a(Typed { by: 2, t: 3, op: 20, k: 1, v: 9 }), a(Typed { by: 0, t: 5, op: 15, k: 0, v: 0 }), Send { from: 0, to: 2, back: 2 }, a(Demote { by: 0, t: 0, holder: 1, at: 4, to_read: true }), a(Undo { by: 0, back: 2 }), a(Compact { by: 0, t: 4, op: 19 }), a(Nested { by: 1, other: 0, t: 1, k: 0, text: true, compact: true, also: false }), a(Typed { by: 0, t: 1, op: 14, k: 2, v: 7 }), Send { from: 2, to: 0, back: 1 }, a(Demote { by: 0, t: 1, holder: 1, at: 3, to_read: false }), a(Typed { by: 1, t: 6, op: 19, k: 2, v: 1 }), Forged { by: 1, a: 7, b: 7, how: 2, op: 29, k: 2, v: 8 }, Sync { from: 0, to: 1 }, a(Breaking { by: 2, t: 0, op: 11, v: 2, fits: false }), a(Breaking { by: 2, t: 1, op: 2, v: 5, fits: false }), Forged { by: 0, a: 2, b: 5, how: 2, op: 15, k: 1, v: 6 }, Sync { from: 2, to: 0 }, Advance { who: Some(0), ms: 1697 }, Send { from: 1, to: 0, back: 2 }, a(Write { by: 2, t: 0, op: 6, k: 1, v: 8 }), a(Write { by: 2, t: 6, op: 0, k: 1, v: 1 }), Forged { by: 2, a: 6, b: 3, how: 0, op: 6, k: 1, v: 1 }, a(Typed { by: 2, t: 2, op: 17, k: 1, v: 0 }), a(Typed { by: 1, t: 6, op: 26, k: 1, v: 6 }), a(Nested { by: 0, other: 1, t: 7, k: 2, text: true, compact: true, also: true }), a(Demote { by: 2, t: 3, holder: 1, at: 4, to_read: false }), a(Compact { by: 1, t: 3, op: 17 }), a(Breaking { by: 0, t: 2, op: 14, v: 1, fits: false }), Advance { who: Some(0), ms: 6 }, Advance { who: Some(0), ms: 83 }, a(Nested { by: 0, other: 1, t: 4, k: 1, text: true, compact: true, also: false }), Sync { from: 1, to: 2 }, a(Typed { by: 0, t: 3, op: 7, k: 2, v: 8 }), a(Typed { by: 1, t: 2, op: 22, k: 1, v: 6 }), a(NestedItem { by: 0, other: 1, t: 7, k: 0, compact: true, also: true }), a(Breaking { by: 2, t: 0, op: 4, v: 6, fits: false }), a(Require { by: 0, t: 0, op: 15, rule: 1 }), a(Require { by: 0, t: 1, op: 19, rule: 1 }), Forged { by: 2, a: 1, b: 0, how: 0, op: 7, k: 1, v: 1 }, a(Edge { by: 2, t: 1, holder: 1, role: Some(Role::Read) }), a(Breaking { by: 1, t: 0, op: 28, v: 1, fits: true }), Advance { who: None, ms: 5662678 }, a(Typed { by: 1, t: 7, op: 26, k: 0, v: 5 }), a(Typed { by: 0, t: 4, op: 14, k: 2, v: 2 }), a(Typed { by: 2, t: 5, op: 9, k: 2, v: 8 }), a(Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: false, also: false }), a(Typed { by: 0, t: 6, op: 3, k: 0, v: 1 }), a(Typed { by: 1, t: 1, op: 4, k: 2, v: 6 }), Send { from: 1, to: 2, back: 2 }, a(Typed { by: 0, t: 0, op: 11, k: 1, v: 4 }), a(Edge { by: 2, t: 2, holder: 2, role: Some(Role::Write) }), a(Edge { by: 0, t: 5, holder: 2, role: Some(Role::Write) }), a(Compact { by: 0, t: 7, op: 1 }), Sync { from: 1, to: 0 }, a(Write { by: 0, t: 6, op: 19, k: 2, v: 0 }), a(Leave { by: 2, t: 2 }), a(Require { by: 0, t: 2, op: 12, rule: 0 }), a(Breaking { by: 1, t: 0, op: 14, v: 9, fits: false }), a(Breaking { by: 1, t: 2, op: 19, v: 4, fits: false }), a(Typed { by: 1, t: 6, op: 20, k: 2, v: 4 }), a(Demote { by: 2, t: 5, holder: 1, at: 3, to_read: false }), Forged { by: 2, a: 1, b: 7, how: 4, op: 13, k: 0, v: 3 }, Advance { who: None, ms: 7162431 }, a(Write { by: 2, t: 3, op: 27, k: 0, v: 6 }), a(Typed { by: 2, t: 7, op: 26, k: 2, v: 6 }), a(Compact { by: 2, t: 6, op: 20 }), a(NestedItem { by: 0, other: 1, t: 2, k: 1, compact: false, also: false }), a(New { by: 2, parent: 7, write: true }), Advance { who: None, ms: 3964782 }, a(Typed { by: 1, t: 0, op: 14, k: 2, v: 0 })];
+    let played = with_syncs(play(52040, &h), 52040);
+    let held = vec![0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 12, 13, 14, 15, 16, 17, 19, 20, 23, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 39, 40, 42, 43, 44, 46, 47, 49, 50, 51, 52, 54, 55, 57];
+    let rev: Vec<usize> = held.iter().rev().copied().collect();
+    let o = oracle(&played, &held);
+    let (mut w, mut g) = (deliver(&played, &held), deliver(&played, &rev));
+    assert_eq!(dating(&mut w, &o, played.now), None);
+    assert_eq!(dating(&mut g, &o, played.now), None);
+    assert!(!w.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "the dead body under keep at most 0 is dropped as made");
+    assert!(!g.engine.body_not_dropped(&played.packs[46].id, &tid_of(&played, "t:gonemap.0"), &ak("t:gonemap.0")), "and reversed");
+    let (want, got) = (judged(&mut w, &played), judged(&mut g, &played));
+    assert_eq!(alike_exchanged(&played, &want, &held, &got, &rev, None, &|t, a| flipped(&played, &held, None, t, a) || flipped(&played, &rev, None, t, a)), None);
+}
+
+/// The thing an aspect `ak` is written on in `played` (one thing per aspect name in a history).
+fn tid_of(played: &Played, ak: &str) -> Tid {
+    played.packs.iter().find_map(|pk| osis_commit::CommitBlob::decode_stored(&pk.bytes).ok()?.header.aspects.iter().find(|a| a.ak.as_str() == ak).map(|a| a.tid)).unwrap()
+}
