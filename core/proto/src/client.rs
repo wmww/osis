@@ -31,9 +31,15 @@ pub const WINDOW: usize = 16 << 20;
 /// can have waiting to be written (the window plus one request or reply that overshoots it, and
 /// its frame header): a send queue cap at or above it (plus pushes) never closes such a session.
 pub const WINDOW_QUEUE: usize = WINDOW + MAX_MESSAGE + 4;
-/// Reply allowance of a request whose reply holds no events, items, steps or ranges (Status of
-/// 1024 codes and a head step, Opened, Budget, Pong, Ok, Error).
-pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
+/// Reply allowance of a request whose reply is bounded small (Status of 1024 codes, Opened, a Path
+/// page of `MAX_PATH_STEPS`, Budget, Pong, Ok, Error) and the smallest `max_reply`: the requests per
+/// round trip are `WINDOW` over it. 0 fits no reply; at `MAX_MESSAGE` two go per round trip.
+pub const SMALL_REPLY: usize = 16 << 10;
+/// What a first Sync page asks, and a Fetch per ID: most replies fit (a role commit with its boxes
+/// is about 15 KiB), a larger one takes one more round trip under `REPLY_BUDGET`. The Syncs and
+/// Fetches per round trip are `WINDOW` over it: at `SMALL_REPLY` a role commit is asked twice, at
+/// `REPLY_BUDGET` two go per round trip.
+pub const FIRST_REPLY: usize = 64 << 10;
 /// Frame bytes plus allowances of the requests a session within `WINDOW` can have unanswered:
 /// below `WINDOW` before its last one, which adds at most a whole frame and `MAX_MESSAGE`. A peer
 /// that receives more before answering any of them closes the connection (spec/sync.md §6;
@@ -41,14 +47,14 @@ pub const SMALL_REPLY: usize = MAX_MESSAGE - REPLY_BUDGET;
 pub const MAX_UNANSWERED: usize = WINDOW + (MAX_MESSAGE + 4) + MAX_MESSAGE;
 
 /// The most reply bytes the peer may queue for a request (spec/sync.md §6): `MAX_MESSAGE` for
-/// Path, Sync, Reconcile and Fetch, its `max_reply` for a Call or Sub, `SMALL_REPLY` for every
-/// other request, 0 for a message that is no request.
+/// Reconcile, its `max_reply` for Sync, Fetch, Call and Sub, `SMALL_REPLY` for every other
+/// request, 0 for a message that is no request.
 pub fn allowance(msg: &Message) -> usize {
     use Message as M;
     match msg {
-        M::Path { .. } | M::Sync { .. } | M::Reconcile { .. } | M::Fetch { .. } => MAX_MESSAGE,
-        M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
-        M::Ping { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } => SMALL_REPLY,
+        M::Reconcile { .. } => MAX_MESSAGE,
+        M::Sync { max_reply, .. } | M::Fetch { max_reply, .. } | M::Call { max_reply, .. } | M::Sub { max_reply, .. } => usize::try_from(*max_reply).unwrap_or(usize::MAX),
+        M::Ping { .. } | M::Path { .. } | M::Open { .. } | M::Register { .. } | M::Upload { .. } | M::Deposit { .. } | M::Delete { .. } | M::Subscribe { .. } | M::Unsubscribe { .. } | M::Auth { .. } | M::Unsub { .. } => SMALL_REPLY,
         M::Error { .. } | M::Ok { .. } | M::Pong { .. } | M::Opened { .. } | M::Step { .. } | M::PathReply { .. } | M::Status { .. } | M::Budget { .. } | M::SyncReply { .. } | M::ReconcileReply { .. } | M::FetchReply { .. } | M::Push { .. } | M::Reply { .. } | M::Notify { .. } => 0,
     }
 }
@@ -225,9 +231,10 @@ enum Pending {
     Delete(LabelId, Vec<BlobId>),
     /// `gained`: the IDs the request listed (a Want may name only those); `empty`: pages in a
     /// row without events before this one.
-    Sync { label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, inline_limit: u64, gained: Vec<BlobId>, empty: u32 },
+    Sync { label: LabelId, cursor: Option<Cursor>, entries: Vec<Entry>, inline_limit: u64, max_reply: u64, gained: Vec<BlobId>, empty: u32 },
     Reconcile(LabelId, u64),
-    Fetch(LabelId, Vec<BlobId>),
+    /// With the `max_reply` it asked.
+    Fetch(LabelId, Vec<BlobId>, u64),
     Subscribe(Vec<LabelId>),
     Unsubscribe,
     /// An Auth, Call or Sub with its token.
@@ -239,7 +246,7 @@ enum Pending {
 impl Pending {
     fn label(&self) -> Option<LabelId> {
         match self {
-            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, _) => Some(*l),
+            Pending::Open(l) | Pending::Register(l) | Pending::Path(l) | Pending::PathStopped(l) | Pending::Upload(l, _) | Pending::Deposit(l, _) | Pending::Delete(l, _) | Pending::Reconcile(l, _) | Pending::Fetch(l, ..) => Some(*l),
             Pending::Sync { label, .. } => Some(*label),
             Pending::Ping { .. } | Pending::Subscribe(_) | Pending::Unsubscribe | Pending::Api(_) | Pending::ApiUnsub(_) => None,
         }
@@ -545,8 +552,10 @@ impl ClientSession {
                         rest.push(e);
                     }
                 }
-                let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit, gained: gained.clone(), empty: 0 };
-                self.request(|id| Message::Sync { id, label, cursor, inline_limit, entries: inline, gained }, pending);
+                // small first, whatever the label holds: the rest pages under the whole budget
+                let max_reply = (FIRST_REPLY + 40 * gained.len() + 10 * inline.len()).min(REPLY_BUDGET) as u64;
+                let pending = Pending::Sync { label, cursor, entries: inline.clone(), inline_limit, max_reply, gained: gained.clone(), empty: 0 };
+                self.request(|id| Message::Sync { id, label, cursor, inline_limit, max_reply, entries: inline, gained }, pending);
                 self.upload(label, rest);
             }
             Command::Reconcile { label, mut ids } => {
@@ -557,7 +566,9 @@ impl ClientSession {
             }
             Command::Fetch { label, ids } => {
                 for chunk in ids.chunks(MAX_ITEMS) {
-                    self.request(|id| Message::Fetch { id, label, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec()));
+                    // a larger blob is asked again (`Pending::Fetch`)
+                    let max_reply = FIRST_REPLY.saturating_mul(chunk.len()).min(REPLY_BUDGET) as u64;
+                    self.request(|id| Message::Fetch { id, label, max_reply, ids: chunk.to_vec() }, Pending::Fetch(label, chunk.to_vec(), max_reply));
                 }
             }
             Command::Upload { label, entries } => self.upload(label, entries),
@@ -766,7 +777,7 @@ impl ClientSession {
                     event(out, E::Refused { label: Some(label), kind: Request::Reconcile, code, fetch: Vec::new() });
                 }
             }
-            (Pending::Fetch(label, ids), M::Error { code, .. }) => event(out, E::Refused { label: Some(label), kind: Request::Fetch, code, fetch: ids }),
+            (Pending::Fetch(label, ids, _), M::Error { code, .. }) => event(out, E::Refused { label: Some(label), kind: Request::Fetch, code, fetch: ids }),
             (Pending::Api(token), M::Error { id, code }) => {
                 // a refused Sub's id is free; one unsubscribed meanwhile has nobody waiting
                 if self.api_subs.remove(&id) != Some(None) {
@@ -807,13 +818,15 @@ impl ClientSession {
             (Pending::Subscribe(labels), M::Status { codes, .. }) if codes.len() == labels.len() => event(out, E::Subscribed { labels, codes }),
             (Pending::Unsubscribe, M::Ok { .. }) => {}
             (Pending::Deposit(label, blob_id), M::Budget { code, budget, .. }) => event(out, E::Budget { label, blob_id, code, budget }),
-            (Pending::Sync { label, cursor: asked, entries, inline_limit, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
+            (Pending::Sync { label, cursor: asked, entries, inline_limit, max_reply, gained, empty }, M::SyncReply { events, want, codes, cursor, more, .. }) if codes.len() == entries.len() => {
                 if !entries.is_empty() {
                     let blob_ids = entries.iter().map(|e| osis_label::blob_id(&e.blob)).collect();
                     event(out, E::EntryStatus { label, blob_ids, codes });
                 }
                 let empty = if events.is_empty() { empty.saturating_add(1) } else { 0 };
-                let stuck = more && events.is_empty() && (asked == Some(cursor) || empty >= MAX_EMPTY_PAGES);
+                // a page under a small cap may hold nothing: its first event did not fit
+                let whole = max_reply >= REPLY_BUDGET as u64;
+                let stuck = more && events.is_empty() && whole && (asked == Some(cursor) || empty >= MAX_EMPTY_PAGES);
                 event(out, E::Events { label, events, cursor: Some(cursor) });
                 // a Want answers the gained IDs this Sync listed, nothing else (spec/wire.md §11.2)
                 let asked_for: std::collections::BTreeSet<BlobId> = gained.into_iter().collect();
@@ -828,8 +841,9 @@ impl ClientSession {
                 if stuck {
                     event(out, E::PeerError(Error::Malformed("sync page without progress")));
                 } else if more {
-                    let next = |id| Message::Sync { id, label, cursor: Some(cursor), inline_limit, entries: vec![], gained: vec![] };
-                    self.request(next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, gained: vec![], empty });
+                    let max_reply = REPLY_BUDGET as u64;
+                    let next = |id| Message::Sync { id, label, cursor: Some(cursor), inline_limit, max_reply, entries: vec![], gained: vec![] };
+                    self.request(next, Pending::Sync { label, cursor: Some(cursor), entries: vec![], inline_limit, max_reply, gained: vec![], empty });
                 } else {
                     event(out, E::Synced { label });
                 }
@@ -840,7 +854,7 @@ impl ClientSession {
                     self.reconcile_send(label, out);
                 }
             }
-            (Pending::Fetch(label, ids), M::FetchReply { items, .. }) => {
+            (Pending::Fetch(label, ids, asked), M::FetchReply { items, .. }) => {
                 let n = items.len();
                 let consistent = n <= ids.len() && items.iter().zip(&ids).all(|(f, i)| f.blob_id == *i);
                 if !consistent {
@@ -849,8 +863,9 @@ impl ClientSession {
                 }
                 event(out, E::Fetched { label, items });
                 let rest: Vec<BlobId> = ids.get(n..).unwrap_or(&[]).to_vec();
-                if n > 0 && !rest.is_empty() {
-                    self.request(|id| Message::Fetch { id, label, ids: rest.clone() }, Pending::Fetch(label, rest.clone()));
+                let max_reply = REPLY_BUDGET as u64;
+                if (n > 0 || asked < max_reply) && !rest.is_empty() {
+                    self.request(|id| Message::Fetch { id, label, max_reply, ids: rest.clone() }, Pending::Fetch(label, rest.clone(), max_reply));
                 } else if !rest.is_empty() {
                     event(out, E::Refused { label: Some(label), kind: Request::Fetch, code: Code::TOO_LARGE, fetch: rest });
                 }

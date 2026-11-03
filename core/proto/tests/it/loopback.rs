@@ -8,6 +8,7 @@ use osis_label::{Prefix, sign_deposit};
 use osis_proto::msg::{DeleteItem, Wrap};
 use osis_proto::*;
 use osis_proto::examples::{Label, bid, blob, blob_sized, blob_with, salt};
+use osis_proto::client::SMALL_REPLY;
 use std::collections::VecDeque;
 
 fn s32(b: u8) -> Secret32 {
@@ -673,6 +674,13 @@ fn client_stops_on_a_stuck_sync() {
     let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
     let [f] = &sends[..] else { panic!("{out:?}") };
     let Message::Sync { id, .. } = Message::decode(&f[4..]).unwrap() else { panic!() };
+    // an empty page under the small first cap is asked on under the whole budget
+    let reply = Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor, more: true };
+    let out = net.clients[0].handle(T0, ClientInput::Bytes(encode_frame(&reply.encode())));
+    let sends: Vec<&Vec<u8>> = out.iter().filter_map(|o| if let ClientOutput::Send(f) = o { Some(f) } else { None }).collect();
+    let [f] = &sends[..] else { panic!("{out:?}") };
+    let Message::Sync { id, max_reply, .. } = Message::decode(&f[4..]).unwrap() else { panic!() };
+    assert_eq!(max_reply, serving::REPLY_BUDGET as u64);
     let reply = Message::SyncReply { id, events: vec![], want: vec![], codes: vec![], cursor, more: true };
     let out = net.clients[0].handle(T0, ClientInput::Bytes(encode_frame(&reply.encode())));
     assert!(out.iter().any(|o| matches!(o, ClientOutput::Event(ClientEvent::PeerError(_)))));
@@ -806,4 +814,73 @@ fn queued_requests_stay_within_the_unanswered_bound() {
     assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::Fetched { .. })).count(), 8, "{ev:?}");
     assert_eq!(ev.iter().filter(|e| matches!(e, ClientEvent::PathSteps { .. })).count(), 8, "{ev:?}");
     assert_eq!(net.clients[1].outstanding(), 0);
+}
+
+// spec/sync.md §6, spec/wire.md §11.2 (Sync, Fetch `max_reply`): a request's allowance is what it
+// asks, so a connection opens and syncs many labels in a few round trips, not two labels per trip.
+#[test]
+fn many_labels_sync_in_few_round_trips() {
+    let mut net = Net::new(1, 0);
+    let labels: Vec<Label> = (0..=255).map(Label::new).collect();
+    for l in &labels {
+        net.setup(l);
+        net.open(0, l);
+    }
+    let ids: Vec<LabelId> = labels.iter().map(|l| l.id).collect();
+    let n = ids.len();
+    let start = net.flights;
+    let mut out = vec![];
+    for id in &ids {
+        out.extend(net.clients[0].handle(net.now, ClientInput::Command(sync(*id, None, vec![], vec![]))));
+    }
+    net.client_out(0, out);
+    net.pump();
+    let synced = net.events[0].iter().filter(|e| matches!(e, ClientEvent::Synced { .. })).count();
+    assert_eq!(synced, n);
+    assert!(net.flights - start <= 4, "{} flights for {n} labels", net.flights - start);
+}
+
+// spec/wire.md §11.2 Sync: a first page stays under a small `max_reply`, an inline blob that does
+// not fit waits for the next page (a page with no event, not a stuck peer), nothing is lost.
+#[test]
+fn small_first_page_then_the_whole_budget() {
+    let mut net = Net::new(2, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.open(0, &l);
+    net.open(1, &l);
+    let big: Vec<Vec<u8>> = (0..4).map(|i| blob_sized(i, 0, vec![], 5 * SMALL_REPLY)).collect();
+    let entries: Vec<Entry> = big.iter().map(|b| l.entry(b.clone())).collect();
+    net.run(0, Command::Upload { label: l.id, entries });
+    let start = net.flights;
+    let ev = net.run(1, sync(l.id, None, vec![], vec![]));
+    let (evs, _) = events_of(&ev);
+    assert_eq!(added(&evs).len(), 4);
+    assert!(evs.iter().all(|e| matches!(e, Event::Added { blob: Some(_), .. })), "inline");
+    assert!(ev.contains(&ClientEvent::Synced { label: l.id }));
+    assert!(!ev.iter().any(|e| matches!(e, ClientEvent::PeerError(_))), "{ev:?}");
+    assert_eq!(net.flights - start, 4, "the small page, then one under the whole budget");
+}
+
+// spec/wire.md §11.2 Fetch: a blob over a small `max_reply` is asked again under the whole budget.
+#[test]
+fn fetch_over_a_small_cap_asks_again() {
+    let mut net = Net::new(1, 0);
+    let l = Label::new(3);
+    net.setup(&l);
+    net.open(0, &l);
+    let b = blob_sized(9, 0, vec![], 5 * SMALL_REPLY);
+    let id = osis_label::blob_id(&b);
+    let small = blob(1);
+    net.run(0, Command::Upload { label: l.id, entries: vec![l.entry(small.clone()), l.entry(b)] });
+    let start = net.flights;
+    let ev = net.run(0, Command::Fetch { label: l.id, ids: vec![id] });
+    assert_eq!(net.flights - start, 4, "asked twice");
+    let got: Vec<_> = ev.iter().filter_map(|e| if let ClientEvent::Fetched { items, .. } = e { Some(items.clone()) } else { None }).flatten().collect();
+    assert_eq!(got.len(), 1);
+    assert!(got[0].entry.is_some());
+    // a small one in one trip
+    let start = net.flights;
+    net.run(0, Command::Fetch { label: l.id, ids: vec![osis_label::blob_id(&small)] });
+    assert_eq!(net.flights - start, 2);
 }

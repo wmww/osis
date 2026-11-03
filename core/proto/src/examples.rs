@@ -251,8 +251,8 @@ pub fn messages() -> Vec<(&'static str, Message)> {
         ("deposit", Message::Deposit { id: 12, label: l, blob: deposited, wrap: dep_wrap, sig: dep_sig }),
         ("budget", Message::Budget { id: 12, code: Code::OK, budget: Some((63, 2_064_384)) }),
         ("delete", Message::Delete { id: 14, label: l, items: vec![DeleteItem::sign(&f.delete, &l, id(0xd1), None).expect("fixed delete"), DeleteItem::sign_by(&f.sync, &dk, 2, &[0x7d; 16], &[0x7e; 16], &l, id(0xd2), Some(WallMs(1_700_000_100_000))).expect("fixed delete")] }),
-        ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
-        ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, entries: vec![], gained: vec![] }),
+        ("cursor sync", Message::Sync { id: 15, label: l, cursor: Some(cursor), inline_limit: 65_536, max_reply: 16_384, entries: vec![entry], gained: vec![id(0xa1), id(0xa2)] }),
+        ("sync without cursor", Message::Sync { id: 16, label: l, cursor: None, inline_limit: 0, max_reply: 16_384, entries: vec![], gained: vec![] }),
         (
             "sync reply",
             Message::SyncReply {
@@ -288,7 +288,7 @@ pub fn messages() -> Vec<(&'static str, Message)> {
                 ranges: vec![Range { lower: Bound::of(&id(0x40)), upper: Bound::new(vec![0x80]).unwrap_or_default(), mode: Mode::Diff { theirs: vec![id(0x43)], lacking: vec![id(0x42)] } }],
             },
         ),
-        ("fetch", Message::Fetch { id: 19, label: l, ids: vec![id(0xb2), id(0xb5)] }),
+        ("fetch", Message::Fetch { id: 19, label: l, max_reply: 32_768, ids: vec![id(0xb2), id(0xb5)] }),
         (
             "fetch reply",
             Message::FetchReply { id: 19, items: vec![Fetched { blob_id: id(0xb2), entry: Some((Fixture::blob(3), [0x79; WRAP_LEN], None)) }, Fetched { blob_id: id(0xb5), entry: None }] },

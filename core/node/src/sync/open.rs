@@ -33,6 +33,9 @@ pub(crate) enum Try {
     /// peer holding this node's `reach.0` opens while the node reads the label (spec/sync.md
     /// §5, co-reader peer). The transport key stays ephemeral.
     CoReader { key: SigningSecret },
+    /// The claim and static tries of a recorded label, made when reached: a claim key per held
+    /// read epoch of every actor, nearly always not needed. Never sent.
+    Rest,
 }
 
 impl Try {
@@ -42,13 +45,14 @@ impl Try {
             Try::Claim { step, key } => OpenKey::Claim { step: step.id(), key: key.clone() },
             Try::Static { key, .. } => OpenKey::Static(key.clone()),
             Try::CoReader { key } => OpenKey::CoReader(key.clone()),
+            Try::Rest => unreachable!("expanded by try_next"),
         }
     }
     fn step(&self) -> Option<&Step> {
         match self {
             Try::Sync { step, .. } => step.as_ref(),
             Try::Claim { step, .. } => Some(step),
-            Try::Static { .. } | Try::CoReader { .. } => None,
+            Try::Static { .. } | Try::CoReader { .. } | Try::Rest => None,
         }
     }
 }
@@ -133,6 +137,17 @@ impl SyncEngine {
                 v.push(Try::Sync { step: Some((*s).clone()), key });
             }
         }
+        v.push(Try::Rest);
+        (index, v)
+    }
+
+    /// `Try::Rest` of `l`: by claim key at each recorded step, deepest first, then by static entry.
+    fn rest_tries(&mut self, g: &Tid, l: &LabelId) -> Vec<Try> {
+        let Some(gl) = self.group_label(g, l) else { return Vec::new() };
+        self.stats.claim_lists += 1;
+        let mut v = Vec::new();
+        let mut steps: Vec<(&Step, &Option<ClaimSet>)> = gl.steps.values().map(|(s, c)| (s, c)).collect();
+        steps.sort_by_cached_key(|(s, _)| std::cmp::Reverse(path_to(&gl.steps, s.id()).map_or(0, |p| p.len())));
         let xs = self.claim_keys_of(None);
         for (s, set) in &steps {
             for x in &xs {
@@ -147,7 +162,7 @@ impl SyncEngine {
         // and name the key to the host
         let holders = self.engine.get_typed(g, &osis_schema::core_types::ROLES).ok().flatten().unwrap_or_default();
         v.extend(self.static_tries().into_iter().filter(|(t, _)| holders.contains_key(t)).map(|(_, x)| x));
-        (index, v)
+        v
     }
 
     /// Static-entry opens for the key actors this node holds that are not nodes, by tid.
@@ -204,6 +219,12 @@ impl SyncEngine {
 
     /// Sends the next open attempt; none left: failed (stranded after a refused claim).
     fn try_next(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        if let Some(g) = self.lc(conn, &l).filter(|x| matches!(x.tries.first(), Some(Try::Rest))).map(|x| x.group) {
+            let rest = self.rest_tries(&g, &l);
+            if let Some(lc) = self.lc_mut(conn, &l) {
+                lc.tries.splice(0..1, rest);
+            }
+        }
         let Some(lc) = self.lc_mut(conn, &l) else { return Ok(()) };
         if lc.tries.is_empty() {
             let (g, claimed) = (lc.group, lc.tried_claim && !lc.receipts);

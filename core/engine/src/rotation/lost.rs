@@ -380,7 +380,6 @@ fn drop_actors(tx: &mut Tx<'_>, lost: Vec<Tid>, dropped: &[Tid], rejudge: bool) 
         tx.core.ix.secrets.remove(a);
         tx.core.role_changed();
         tx.core.waits.secrets_changed(a);
-        tx.core.waits.wake_boxes();
         tx.txn.remove_local(&[b"k/".as_slice(), a.as_bytes()].concat(), osis_store::Shred::Yes)?;
         let now = tx.now();
         tx.core.events.diagnostic(crate::Diagnostic { kind: crate::DiagnosticKind::Removed, tids: vec![*a], commit: None, peer: None, detail: if kept.contains_key(a) { "lost read access: secrets dropped, a read-only copy kept" } else { "lost read access: secrets and what only they read dropped" }.into() }, now);

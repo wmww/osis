@@ -81,11 +81,11 @@ pub fn messages() -> VecFile {
             vec![],
         ),
         ("delete of 1025 items", Value::List(vec![int(14), int(1), label.clone(), list(&item, 1025)]), item.clone(), 1025, vec![]),
-        ("fetch of 1025 ids", Value::List(vec![int(19), int(1), label.clone(), list(&id, 1025)]), id.clone(), 1025, vec![]),
+        ("fetch of 1025 ids", Value::List(vec![int(19), int(1), label.clone(), int(16_384), list(&id, 1025)]), id.clone(), 1025, vec![]),
         ("fetch reply of 1025 items", Value::List(vec![int(20), int(1), list(&fetched, 1025)]), fetched.clone(), 1025, vec![]),
         ("subscribe to 1025 labels", Value::List(vec![int(21), int(1), list(&label, 1025)]), label.clone(), 1025, vec![]),
         ("unsubscribe from 1025 labels", Value::List(vec![int(22), int(1), list(&label, 1025)]), label.clone(), 1025, vec![]),
-        ("sync with 4097 gained", Value::List(vec![int(15), int(1), label.clone(), empty.clone(), int(0), empty.clone(), list(&id, 4097)]), id.clone(), 4097, vec![]),
+        ("sync with 4097 gained", Value::List(vec![int(15), int(1), label.clone(), empty.clone(), int(0), int(16_384), empty.clone(), list(&id, 4097)]), id.clone(), 4097, vec![]),
         (
             "sync reply with 4097 wanted",
             Value::List(vec![int(16), int(1), empty.clone(), list(&id, 4097), empty.clone(), cursor.clone(), Value::Bool(false)]),

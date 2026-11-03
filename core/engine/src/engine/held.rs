@@ -119,6 +119,11 @@ impl Held {
         out
     }
 
+    /// Everyone named as a holder on `t`, of any validity and whatever followed.
+    pub fn named_holders(&self, t: &Tid) -> Vec<Tid> {
+        self.named_with(t, Role::Read).map(|(_, h)| h).collect()
+    }
+
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
     /// followed: edge writes, roster and ledger entries.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {

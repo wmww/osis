@@ -296,7 +296,7 @@ fn unanswered_calls_past_the_window_close() {
         }
     }
     let mut closed = false;
-    for id in 0..1000u32 {
+    for id in 0..2 * osis_proto::client::MAX_UNANSWERED as u32 / per as u32 {
         let out = s.handle(T0, &mut st, ServingInput::Bytes(frame(&call(1_000_000 + id))));
         if out.contains(&ServingOutput::Close) {
             closed = true;

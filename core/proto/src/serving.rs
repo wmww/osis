@@ -19,6 +19,12 @@ use std::sync::Arc;
 
 /// Room left in a reply for everything but its events or items.
 pub const REPLY_BUDGET: usize = MAX_MESSAGE - 64 * 1024;
+/// Room in a reply for its head, and for one event without bytes on a page that must not be empty.
+const REPLY_HEAD: usize = 1024;
+/// Bytes of events or items a reply under `max_reply` may hold.
+fn reply_bound(max_reply: u64) -> usize {
+    usize::try_from(max_reply).unwrap_or(usize::MAX).min(REPLY_BUDGET).saturating_sub(REPLY_HEAD)
+}
 /// Log records or entries read from the store per call.
 const LOG_BATCH: usize = 256;
 /// Labels whose head keys a connection caches (cleared when full). Performance switch: a peer
@@ -661,7 +667,7 @@ impl ServingSession {
                 changed(&codes, &label, out);
                 M::Status { id, codes }
             }
-            M::Sync { id, label, cursor, inline_limit, entries, gained } => self.sync(store, now, id, label, cursor, inline_limit, entries, gained, out)?,
+            M::Sync { id, label, cursor, inline_limit, max_reply, entries, gained } => self.sync(store, now, id, label, cursor, inline_limit, max_reply, entries, gained, out)?,
             M::Reconcile { id, label, ranges } => {
                 if !self.still_open(store, &label)? {
                     return Ok(Some(M::Error { id, code: Code::NOT_OPENED }));
@@ -680,7 +686,7 @@ impl ServingSession {
                     Err(_) => M::Error { id, code: Code::MALFORMED },
                 }
             }
-            M::Fetch { id, label, ids } => self.fetch(store, id, label, ids)?,
+            M::Fetch { id, label, max_reply, ids } => self.fetch(store, id, label, max_reply, ids)?,
             M::Subscribe { id, labels } => {
                 let mut codes = Vec::with_capacity(labels.len());
                 for l in labels {
@@ -841,7 +847,7 @@ impl ServingSession {
         Ok(Message::PathReply { id, steps, more: at.is_some() })
     }
 
-    fn fetch(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, ids: Vec<BlobId>) -> Result<Message, StoreError> {
+    fn fetch(&mut self, store: &dyn LabelStore, id: Id, label: LabelId, max_reply: u64, ids: Vec<BlobId>) -> Result<Message, StoreError> {
         if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
@@ -853,7 +859,7 @@ impl ServingSession {
                 None => None,
             };
             let size = 120 + entry.as_ref().map_or(0, |e| e.0.len());
-            if used + size > REPLY_BUDGET {
+            if used + size > reply_bound(max_reply) {
                 break;
             }
             used += size;
@@ -897,7 +903,7 @@ impl ServingSession {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
+    fn sync(&mut self, store: &mut dyn LabelStore, now: u64, id: Id, label: LabelId, cursor: Option<Cursor>, inline_limit: u64, max_reply: u64, entries: Vec<Entry>, gained: Vec<BlobId>, out: &mut Vec<ServingOutput>) -> Result<Message, StoreError> {
         if !self.still_open(store, &label)? {
             return Ok(Message::Error { id, code: Code::NOT_OPENED });
         }
@@ -942,7 +948,10 @@ impl ServingSession {
         }
         // The requester holds what it gained and what it just sent: no add events for those.
         let gained: HashSet<BlobId> = gained.into_iter().chain(ids).collect();
-        let budget = REPLY_BUDGET.saturating_sub(40 * want.len() + 10 * codes.len());
+        let budget = reply_bound(max_reply).saturating_sub(40 * want.len() + 10 * codes.len());
+        // under the whole budget a first event goes whatever its size; under a smaller one a page
+        // may hold none, and the requester asks on under the whole budget
+        let may_empty = max_reply < REPLY_BUDGET as u64;
         let (mut events, mut used, mut more) = (Vec::new(), 0, false);
         let cursor = match from {
             From::Log(seq) => {
@@ -955,7 +964,7 @@ impl ServingSession {
                     for (seq, rec) in recs {
                         if let Some(e) = self.event(store, &label, seq, rec, inline_limit, &gained)? {
                             let size = event_size(&e);
-                            if used + size > budget && !events.is_empty() {
+                            if used + size > budget && (may_empty || !events.is_empty()) {
                                 more = true;
                                 break 'log;
                             }
@@ -978,7 +987,7 @@ impl ServingSession {
                         if !gained.contains(&b) {
                             let e = self.added(store, b, m, inline_limit)?;
                             let size = event_size(&e);
-                            if used + size > budget && !events.is_empty() {
+                            if used + size > budget && (may_empty || !events.is_empty()) {
                                 more = true;
                                 break 'live;
                             }
@@ -989,12 +998,13 @@ impl ServingSession {
                         after = Some(b);
                     }
                 }
-                match (more, after) {
-                    (true, Some(last)) => {
+                match more {
+                    true => {
                         self.replays.insert(label, start);
-                        Cursor { log_id: replay_id(&log_id), seq: replay_pos(&last) }
+                        // no position yet (the first page held nothing): before every ID
+                        Cursor { log_id: replay_id(&log_id), seq: after.as_ref().map_or(0, replay_pos) }
                     }
-                    _ => {
+                    false => {
                         self.replays.remove(&label);
                         Cursor { log_id, seq: start }
                     }
@@ -1236,7 +1246,7 @@ mod tests {
         let n = MAX_CROSSED / 2 + 1;
         for round in 0..3u32 {
             let entries = (0..n).map(|i| Entry { blob: [round.to_be_bytes(), (i as u32).to_be_bytes()].concat(), wrap: [0; WRAP_LEN], stamp: Signature([0; 64]), replaces: Vec::new() }).collect();
-            feed(&mut c, Message::Sync { id: 2 + round, label: f.label, cursor: None, inline_limit: 0, entries, gained: vec![] }.encode());
+            feed(&mut c, Message::Sync { id: 2 + round, label: f.label, cursor: None, inline_limit: 0, max_reply: REPLY_BUDGET as u64, entries, gained: vec![] }.encode());
             assert!(c.crossed.len() <= MAX_CROSSED, "{}", c.crossed.len());
         }
         assert!(!c.is_closed());
@@ -1274,7 +1284,7 @@ mod tests {
         for id in 0..50u32 {
             let mut bytes = Vec::new();
             for k in 0..2 {
-                bytes.extend(encode_frame(&Message::Fetch { id: 10 + 2 * id + k, label: f.label, ids: vec![blob_id] }.encode()));
+                bytes.extend(encode_frame(&Message::Fetch { id: 10 + 2 * id + k, label: f.label, max_reply: REPLY_BUDGET as u64, ids: vec![blob_id] }.encode()));
             }
             let out = c.handle(0, &mut store, ServingInput::Bytes(bytes));
             sent += out.iter().map(|x| if let ServingOutput::Send(b) = x { b.len() } else { 0 }).sum::<usize>();

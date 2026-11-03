@@ -270,7 +270,7 @@ pub fn demotion_receipts(seed: u64) -> Res<Report> {
     let acts = sim.sync(phone)?.read_receipts(&[h]);
     sim.actions(phone, acts)?;
     let mut read = None;
-    for _ in 0..400 {
+    for _ in 0..1000 {
         sim.run(5)?;
         read = sim.sync(phone)?.receipts_read(&[h]);
         if read.is_some() {

@@ -47,6 +47,10 @@ impl MemStore {
     pub fn held_bytes(&self) -> u64 {
         self.backend.held_bytes()
     }
+    /// Rows in the store now (scale checks, notes/growth.md).
+    pub fn rows(&self) -> usize {
+        self.backend.dump().len()
+    }
     /// An independent copy of the store as it is now, as a device backup takes it (the host
     /// store left out): opening it later is a restore.
     pub fn backup(&self) -> MemStore {

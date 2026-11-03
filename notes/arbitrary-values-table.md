@@ -52,7 +52,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_SAMPLE_RTT_MS` 10 s | M (spec: ignore long round trips) | no samples / suspend-length errors |
 | `STALL_TIMEOUT_MS` 2 min | M (liveness: nothing moved either way while requests are in flight) | every session closes / a hung peer holds it; a link moving under one `WRITE_CHUNK` per timeout counts as stalled |
 | `FILL_BATCH` 128 (`node/sync/fill.rs`) | M (a first sync's order and the lock held per batch, against a round trip per batch; only speed changes) | at least 1 is taken; order lost to what a reply fits, node's lock held minutes |
-| `WINDOW` 16 MiB (spec), `SMALL_REPLY` 64 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
+| `WINDOW` 16 MiB (spec), `SMALL_REPLY` 16 KiB | R/P (per-peer buffer vs throughput, `WINDOW` per round trip; one request always goes) | one request at a time / queues overflow the caps |
 | `MAX_RECONCILE_MESSAGES` 4096, `MAX_RECONCILE_IDS` 2^21, `MAX_RECONCILE_QUEUED` 2^17 | R (abandon as peer error) | no reconciliation / a splitting responder holds us forever |
 | `MAX_EMPTY_PAGES` 16 | R | first empty page fails / a cursor-only peer loops forever |
 
@@ -113,7 +113,10 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `UPLOAD_POLL` 50 ms (osis `sources`, `group_source` asking a node whether its writes reached a host) | M (bounded by `wait_timeout`) | spins on the node's worker / never finishes, `wait_timeout` ends it |
 | `wait_timeout` reused (`Config`, default 60 s): the client's connection attempt and Auth, a held write across a drop, `group_source`'s waits | M (past it `Network`, a held write "outcome unknown") | every attach and move fails, a write in flight at a drop is unknown at once (safe) / a silent node or a dead link blocks the caller for ever |
 | `MAX_SUBS` 4096 per connection (osis-proto `api`, spec/wire.md §11.2) | R (code 4; counted apart from open labels) | no remote watching / one connection grows the dirty-flag table and per-change filter walk without bound |
-| `SMALL_REPLY` 64 KiB (`MAX_MESSAGE` − `REPLY_BUDGET`; the smallest `max_reply`, Auth's and Unsub's allowance) | R (a larger reply is `TooLarge`; the client asks again under a larger `max_reply`) | every reply `TooLarge` / one reply per window |
+| `SMALL_REPLY` 16 KiB (holds a Status of 1024 codes, a Path page of 48 steps; the smallest `max_reply`, the allowance of every request whose reply is bounded small) | P (requests per round trip are `WINDOW` over it; a larger reply is `TooLarge` or pages under `REPLY_BUDGET`) | every reply `TooLarge` / two requests per round trip |
+| `FIRST_REPLY` 64 KiB (a first Sync page, a Fetch per ID) | P (Syncs and Fetches per round trip are `WINDOW` over it; a larger reply takes one more round trip) | a role commit asked twice / two per round trip |
+| `MAX_PATH_STEPS` 48 (a page fits `SMALL_REPLY` at 323 bytes a step) | P (a long path takes a round trip per 48 steps) | no path / a Path's allowance grows with it |
+| `REPLY_HEAD` 1 KiB (`serving`) | R (a reply's head and one bare event inside its `max_reply`) | a reply can pass its allowance / less room for events |
 | `WRITE_NONCES` 64 per session (osis `port`) | R (an older nonce is "outcome unknown") | every retry an unknown outcome / unbounded per session |
 | `MAX_WAITS` 16 per connection (osis `port`, rows that wait still running) | R (`Invalid`; a finished wait counts no more) | no waiting through the port / `MAX_SUBS` waiters each O(labels) per change under `eng` |
 | `MAX_CONNS_PER_CLIENT` 8 (osis-node `sync`, client port (c)) | R (a further Auth of that client is Error 4; also the nonce sessions kept per client) | no client served / one client takes the whole `max_clients` pool |

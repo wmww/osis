@@ -43,9 +43,18 @@ impl SyncEngine {
         if done.drop_lost {
             self.left = Some(LeftCheck::default());
         }
+        let all = done.drop_lost;
+        let things: BTreeSet<Tid> = done.commits.iter().filter_map(|c| self.engine.header(c)).flat_map(|h| h.aspects.iter().map(|a| a.tid).collect::<Vec<_>>()).collect();
         self.take_done(done)?;
-        // placements wait for a pass
-        self.mark_dirty();
+        // placements wait for a pass: the labels they concern and those they went under
+        if all || things.iter().any(|t| self.engine.core.is_key_actor(t)) {
+            self.mark_dirty();
+        } else {
+            let scope = self.downstream(&things);
+            self.mark_dirty_of(&scope);
+            let under: BTreeSet<LabelId> = self.state.touched.iter().map(|(l, _)| *l).collect();
+            self.mark_labels(&under);
+        }
         Ok(())
     }
 
@@ -174,6 +183,7 @@ impl SyncEngine {
             c.req.reopens.retain(|l, _| !gone(l));
             c.req.refusals.retain(|l, _| !gone(l));
         }
+        self.synced.key.0 = u64::MAX;
         self.synced.actors.retain(|l, _| !gone(l));
         self.passes.retain(|(_, l), _| !gone(l));
         self.peer_received.retain(|l, _| !gone(l));

@@ -12,7 +12,7 @@
 //! An examination also reads the commit's `secrets.0` boxes (`keys::read_pending_boxes`). That
 //! reads the epochs of the actors they are on, of those actors' owner chains and of the holders they
 //! box to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
-//! (`Waits::secrets_changed`, `Waits::wake_boxes`). `Engine::check_unchanged` checks it. A chat's
+//! (`Waits::secrets_changed`, `Waits::wake_refused`). `Engine::check_unchanged` checks it. A chat's
 //! joiner holds one such commit per member, waiting for that member's records.
 //!
 //! - A record wait stands while each record it names (several: parts on things waiting for
@@ -114,6 +114,10 @@ pub(crate) struct Waits {
     woken: BTreeSet<CommitId>,
     /// Pending commits set since `reexamine` last looked, and pending commits without a wait.
     cold: BTreeSet<CommitId>,
+    /// Pending commits read again by `reexamine` so far (scale checks).
+    pub examined: u64,
+    /// Commits whose boxes the reading-only budget refused (`box_refused`).
+    refused: BTreeSet<CommitId>,
     /// What `reexamine` last looked at; `None`: look at every pending commit.
     seen: Option<Seen>,
     /// The latest corrected clock a wait was judged at: below it, the clock went back.
@@ -206,13 +210,26 @@ impl Waits {
         }
     }
 
-    /// The reading-only budget has room again: every pending box is read again, in full.
-    pub fn wake_boxes(&mut self) {
-        let ids: BTreeSet<CommitId> = self.by_opener.values().flatten().copied().collect();
-        for id in ids {
+    /// A pending commit's boxes had no room in the reading-only budget (`read_pending_boxes`).
+    pub fn box_refused(&mut self, id: CommitId) {
+        self.refused.insert(id);
+    }
+
+    /// The budget has room for `room` actors: that many refused commits read their boxes again,
+    /// or their grants wait for good on what those secrets would open. Not all of them: past the
+    /// room each is only refused again, and a burst of grants would cost its square.
+    fn wake_refused(&mut self, room: usize) {
+        for _ in 0..room {
+            let Some(id) = self.refused.pop_first() else { break };
             self.remove(&id);
             self.cold.insert(id);
         }
+    }
+
+    /// Whether `id`'s boxes wait for room in the budget, so their turn comes (`wake_refused`).
+    #[cfg(debug_assertions)]
+    pub fn is_refused(&self, id: &CommitId) -> bool {
+        self.refused.contains(id)
     }
 
     /// `id` was set pending (or its pending reason changed): examined at the next `reexamine`
@@ -358,6 +375,10 @@ fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeS
 pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
     let records = core.ix.held.take_records();
     let moved = core.ix.held.take_moved();
+    if !core.waits.refused.is_empty() {
+        let room = core.reading_room();
+        core.waits.wake_refused(room);
+    }
     let w = &mut core.waits;
     let by_reach: Vec<CommitId> = moved.iter().flat_map(|t| w.by_reach.get(t).into_iter().flatten()).copied().collect();
     w.woken.extend(by_reach);

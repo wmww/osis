@@ -215,7 +215,9 @@ pub struct State {
     pub by_label_commit: BTreeMap<(LabelId, CommitId), BTreeSet<BlobId>>,
     /// Inbox entries with a stamp, by the commit they carry.
     pub stamped_inbox: BTreeSet<(LabelId, CommitId, BlobId)>,
+    pub commit_labels: BTreeSet<(CommitId, LabelId)>,
     pub by_kind: BTreeSet<(LabelId, u8, BlobId)>,
+    pub by_tag: BTreeSet<(u8, LabelId, BlobId)>,
     pub cert_entries: BTreeSet<(LabelId, BlobId)>,
     pub blob_labels: BTreeSet<(BlobId, LabelId)>,
     /// `present` and `gone` by (label, blob, host).
@@ -306,6 +308,8 @@ pub struct State {
     /// Bumped by every change of entries, presence or the outbox (`SyncEngine::placed` caches
     /// by it; in memory).
     pub version: u64,
+    /// Entries and hosts' copies gone so far, in memory (`InboxCopied`).
+    pub losses: u64,
     writes: BTreeMap<Vec<u8>, Option<Vec<u8>>>,
 }
 
@@ -575,14 +579,19 @@ impl State {
                 let k = (l, *commit);
                 if add {
                     self.by_label_commit.entry(k).or_default().insert(b);
+                    self.commit_labels.insert((*commit, l));
                 } else if let Some(x) = self.by_label_commit.get_mut(&k) {
                     x.remove(&b);
                     if x.is_empty() {
                         self.by_label_commit.remove(&k);
+                        self.commit_labels.remove(&(*commit, l));
                     }
                 }
             }
-            (_, Some(t)) => set(&mut self.by_kind, (l, t, b), add),
+            (_, Some(t)) => {
+                set(&mut self.by_kind, (l, t, b), add);
+                set(&mut self.by_tag, (t, l, b), add);
+            }
             _ => {}
         }
         if let (Kind::Inbox(Some(c)), Some(_)) = (&e.kind, &e.stamp) {
@@ -627,6 +636,16 @@ impl State {
     /// The entries under `l` of a kind other than `Commit` (`Kind::tag`).
     pub fn of_kind(&self, l: &LabelId, tag: u8) -> Vec<BlobId> {
         self.by_kind.range((*l, tag, BlobId([0; 32]))..=(*l, tag, BlobId([0xff; 32]))).map(|(_, _, b)| *b).collect()
+    }
+
+    /// The entries of `Kind::tag` `tag` over every label.
+    pub fn of_tag(&self, tag: u8) -> Vec<(LabelId, BlobId)> {
+        self.by_tag.range((tag, LabelId([0; 16]), BlobId([0; 32]))..=(tag, LabelId([0xff; 16]), BlobId([0xff; 32]))).map(|(_, l, b)| (*l, *b)).collect()
+    }
+
+    /// The labels with an entry of commit `c`.
+    pub fn labels_of_commit(&self, c: &CommitId) -> Vec<LabelId> {
+        self.commit_labels.range((*c, LabelId([0; 16]))..=(*c, LabelId([0xff; 16]))).map(|(_, l)| *l).collect()
     }
 
     /// Whether any label has an entry of blob `b`.
@@ -714,6 +733,7 @@ impl State {
         let Some(e) = self.entries.remove(&(l, b)) else { return false };
         self.index(l, b, &e, false);
         self.version += 1;
+        self.losses += 1;
         self.del(key(ENTRY, &[&l.0, &b.0]));
         self.feed.deleted(l, b);
         true
@@ -782,6 +802,7 @@ impl State {
             self.present_by.remove(&(l, b, s));
             self.touch(l, b);
             self.version += 1;
+            self.losses += 1;
             self.deposited.remove(&(s, l, b));
             self.del(k);
             self.drop_doubt(s, l, b);
@@ -1037,6 +1058,7 @@ impl State {
 
     pub fn set_gone(&mut self, s: HostKey, l: LabelId, b: BlobId) {
         if !self.gone.contains_key(&(s, l, b)) {
+            self.losses += 1;
             self.gone.insert((s, l, b), self.now);
             self.gone_by.insert((l, b, s));
             self.touch(l, b);

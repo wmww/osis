@@ -311,3 +311,261 @@ fn joiner_reads_each_pending_commit_few_times() {
     let n = reads(m);
     assert!(n <= 2 * m as u64, "{n} reads of pending commits at {m} members");
 }
+
+// Costs against the number of labels: an app with thousands of individually shared things. Each
+// thing is a group with a label of its own, shared with one other person, two nodes and a host.
+// `OSIS_SCALE_N=1000 cargo test --release -p osis-sim --test it -- --ignored --nocapture scale::many_labels`
+
+const TEXT: &str = "app:text:y1.0";
+
+fn write(a: &Osis, t: Tid, i: usize) {
+    a.write_with(|w| w.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))).unwrap();
+}
+
+/// The one thing's text, as `b` reads it.
+fn read(b: &Osis, t: Tid) -> Option<Value> {
+    b.get(t, Ak::new(TEXT).unwrap()).unwrap()
+}
+
+fn node(w: &mut World, seed: u64, host: usize) -> (Osis, MemStore) {
+    let store = MemStore::new();
+    let mut cfg = w.cfg(seed, &[host]);
+    cfg.store = StoreAt::Memory(store.clone());
+    let (db, _) = Osis::create(cfg).unwrap();
+    (db, store)
+}
+
+/// This thread's CPU time: wall time says little on a shared box.
+fn cpu() -> Duration {
+    let s = std::fs::read_to_string("/proc/thread-self/schedstat").unwrap_or_default();
+    Duration::from_nanos(s.split(' ').next().and_then(|x| x.parse().ok()).unwrap_or(0))
+}
+
+/// Runs one measured phase: CPU time, round trips, passes, what `dbs` sent and got, frames by kind.
+fn phase(w: &mut World, name: &str, n: usize, dbs: &[&Osis], f: impl FnOnce(&mut World)) {
+    use osis::internals::Internals;
+    w.start_tally();
+    let before: Vec<_> = dbs.iter().map(|d| w.traffic(d)).collect();
+    let passes = |dbs: &[&Osis]| dbs.iter().map(|d| d.sync_engine(|s| (s.pass_stats().passes, s.pass_stats().examined))).fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1));
+    let spans = std::env::var_os("OSIS_SCALE_SPANS").is_some();
+    if spans {
+        osis_node::costs::take();
+    }
+    let (t, hops, p) = (cpu(), w.hops(), passes(dbs));
+    f(w);
+    let took = cpu() - t;
+    if spans {
+        println!("  SPANS {}", show_spans(osis_node::costs::take(), 1));
+    }
+    let (q, e) = passes(dbs);
+    let (trips, p, e) = ((w.hops() - hops) / 2, q - p.0, e.saturating_sub(p.1));
+    let mut kinds: BTreeMap<String, (u64, u64)> = BTreeMap::new();
+    let (mut up, mut down) = (0, 0);
+    for (d, b) in dbs.iter().zip(&before) {
+        let a = w.traffic(d);
+        up += a.up - b.up;
+        down += a.down - b.down;
+        for (k, (c, by)) in w.tally(d) {
+            let e = kinds.entry(k).or_default();
+            e.0 += c;
+            e.1 += by;
+        }
+    }
+    let frames: Vec<String> = kinds.iter().filter(|(k, _)| !k.starts_with("down")).map(|(k, (c, _))| format!("{k} {c}")).collect();
+    println!("{name:<12} n={n:<6} {took:>10.1?}  {:>8.1?}/label  {trips} trips, {p} passes, {e} exams, up {up} B, down {down} B; {}", took / n.max(1) as u32, frames.join(", "));
+}
+
+// spec/sync.md §6, spec/requirements.md (Scale): costs per label. `OSIS_SCALE_N` (default 10^3).
+#[test]
+#[ignore = "tier 2, by hand"]
+fn many_labels() {
+    let n = env("OSIS_SCALE_N", 1000);
+    let mut w = World::new();
+    let host = w.add_host();
+    w.no_storm = true;
+    let (a, a_store) = node(&mut w, 1, host);
+    let (b, b_store) = node(&mut w, 2, host);
+    w.run();
+    let card = b.contact_card().unwrap();
+    w.run();
+    let p = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    // each knows the other: a stranger's invites wait for the user, at most `INBOX_WAITING` of them
+    let card = a.contact_card().unwrap();
+    w.run();
+    w.until(b.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    let empty = (a_store.rows(), b_store.rows(), w.hosts[host].backend.dump().len());
+
+    let mut things = Vec::with_capacity(n);
+    phase(&mut w, "create", n, &[&a, &b], |w| {
+        for i in 0..n {
+            let t = a
+                .write_with(|x| {
+                    let t = x.create(a.me())?;
+                    x.make_group(t)?;
+                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
+                    Ok(t)
+                })
+                .unwrap();
+            a.sync(t, &[]).unwrap();
+            things.push(t);
+            if (i + 1) % 100 == 0 {
+                w.pump();
+            }
+        }
+        w.run();
+    });
+    let unread = |b: &Osis| things.iter().filter(|t| read(b, **t).is_none()).count();
+    phase(&mut w, "first sync", n, &[&a, &b], |w| {
+        for (i, t) in things.iter().enumerate() {
+            a.share(*t, p, Role::Read, EdgeOpts::default()).unwrap();
+            if (i + 1) % 100 == 0 {
+                w.pump();
+            }
+        }
+        w.run();
+        // a burst past the inbox's deposit budget goes as its slots free
+        let mut waits = 0;
+        while unread(&b) > 0 {
+            assert!(waits < 100, "b lacks {} of {n}", unread(&b));
+            w.advance(61_000);
+            waits += 1;
+        }
+        println!("first sync: {waits} resyncs");
+    });
+    let (ar, br, hr) = (a_store.rows(), b_store.rows(), w.hosts[host].backend.dump().len());
+    println!("rows per label: writer {:.1}, reader {:.1}, host {:.1}", (ar.saturating_sub(empty.0)) as f64 / n as f64, (br.saturating_sub(empty.1)) as f64 / n as f64, (hr.saturating_sub(empty.2)) as f64 / n as f64);
+
+    phase(&mut w, "idle tick", n, &[&a, &b], |w| w.run());
+    phase(&mut w, "idle resync", n, &[&a, &b], |w| w.advance(61_000));
+    phase(&mut w, "idle again", n, &[&a, &b], |w| w.advance(61_000));
+    phase(&mut w, "one write", n, &[&a, &b], |w| {
+        write(&a, things[n / 2], n + 1);
+        w.run();
+    });
+    assert_eq!(read(&b, things[n / 2]), Some(Value::Bytes(format!("text {}", n + 1).into_bytes())));
+
+    w.set_online(&b, false);
+    write(&a, things[n / 3], n + 2);
+    w.run();
+    phase(&mut w, "connect", n, &[&b], |w| {
+        w.set_online(&b, true);
+        w.advance(61_000);
+        w.run();
+    });
+    assert_eq!(read(&b, things[n / 3]), Some(Value::Bytes(format!("text {}", n + 2).into_bytes())));
+}
+
+/// `n` shared things, settled: the writer, the reader, the reader's tid at the writer.
+fn labels_world(n: usize) -> (World, Osis, Osis, Tid, Vec<Tid>) {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = node(&mut w, 1, host);
+    let (b, _) = node(&mut w, 2, host);
+    w.run();
+    let card = b.contact_card().unwrap();
+    w.run();
+    let p = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    w.run();
+    let things = (0..n).map(|i| share_new(&mut w, &a, p, i)).collect();
+    w.advance(61_000);
+    w.advance(61_000);
+    (w, a, b, p, things)
+}
+
+fn share_new(w: &mut World, a: &Osis, p: Tid, i: usize) -> Tid {
+    let t = a
+        .write_with(|x| {
+            let t = x.create(a.me())?;
+            x.make_group(t)?;
+            x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {i}").into_bytes()))?;
+            Ok(t)
+        })
+        .unwrap();
+    a.sync(t, &[]).unwrap();
+    a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    t
+}
+
+/// The work counters of `dbs` over `f`.
+fn counted_work(dbs: &[&Osis], f: impl FnOnce()) -> osis_node::sync::PassStats {
+    use osis::internals::Internals;
+    let stats = |dbs: &[&Osis]| dbs.iter().map(|d| d.sync_engine(|s| s.pass_stats())).collect::<Vec<_>>();
+    let before = stats(dbs);
+    f();
+    let mut out = osis_node::sync::PassStats::default();
+    for (x, y) in before.iter().zip(stats(dbs)) {
+        out.passes += y.passes - x.passes;
+        out.label_reads += y.label_reads - x.label_reads;
+        out.vets += y.vets - x.vets;
+        out.claim_lists += y.claim_lists - x.claim_lists;
+        out.inbox_keys += y.inbox_keys - x.inbox_keys;
+        out.examined += y.examined.saturating_sub(x.examined);
+    }
+    out
+}
+
+// spec/sync.md §6, spec/requirements.md (Scale): a new shared thing, a write and a connect
+// do work by what changed, not by how many labels there are (counted, not timed).
+#[test]
+fn label_costs_do_not_grow_with_labels() {
+    let measure = |n: usize| {
+        let (mut w, a, b, p, things) = labels_world(n);
+        let shared = counted_work(&[&a, &b], || {
+            share_new(&mut w, &a, p, n);
+        });
+        let wrote = counted_work(&[&a, &b], || {
+            write(&a, things[0], n + 1);
+            w.run();
+        });
+        w.set_online(&b, false);
+        w.run();
+        let connect = counted_work(&[&b], || {
+            w.set_online(&b, true);
+            w.advance(61_000);
+        });
+        assert_eq!(read(&b, things[0]), Some(Value::Bytes(format!("text {}", n + 1).into_bytes())));
+        println!("{n} labels: shared {shared:?}, wrote {wrote:?}, connect {connect:?}");
+        (shared, wrote, connect)
+    };
+    let (small, large) = (measure(2), measure(10));
+    assert!(large.0.passes <= small.0.passes + 4, "share: {} passes against {}", large.0.passes, small.0.passes);
+    assert!(large.0.label_reads <= small.0.label_reads + 8, "share: {} label reads against {}", large.0.label_reads, small.0.label_reads);
+    assert!(large.0.inbox_keys <= small.0.inbox_keys, "share: {} inbox keys against {}", large.0.inbox_keys, small.0.inbox_keys);
+    assert!(large.1.passes <= small.1.passes, "write: {} passes against {}", large.1.passes, small.1.passes);
+    assert_eq!(large.2.claim_lists, 0, "connect: the held sync keys open every label");
+    assert!(large.2.label_reads <= small.2.label_reads + 8, "connect: {} label reads against {}", large.2.label_reads, small.2.label_reads);
+}
+
+// spec/crypto.md §4, spec/sync.md §3: a burst of grants reads each pending one about once, however
+// many wait, and a request waiting for the user is opened once, not at each vet (counted).
+#[test]
+fn a_burst_of_shares_costs_each_about_once() {
+    const BURST: usize = 12;
+    let (mut w, a, b, p, _) = labels_world(0);
+    let burst = |w: &mut World, from: usize| {
+        for i in 0..BURST {
+            let t = a
+                .write_with(|x| {
+                    let t = x.create(a.me())?;
+                    x.make_group(t)?;
+                    x.at(t, Ak::new(TEXT).unwrap()).replace(&Value::Bytes(format!("text {}", from + i).into_bytes()))?;
+                    Ok(t)
+                })
+                .unwrap();
+            a.sync(t, &[]).unwrap();
+            a.share(t, p, Role::Read, EdgeOpts::default()).unwrap();
+        }
+        w.run();
+    };
+    let held = w.index(&b).unwrap();
+    w.holds_invites.insert(held);
+    let waiting = counted_work(&[&b], || burst(&mut w, 100));
+    assert!(waiting.inbox_keys <= 2 * BURST as u64, "{} inbox keys tried for {BURST} requests waiting", waiting.inbox_keys);
+    w.holds_invites.remove(&held);
+    let accepted = counted_work(&[&b], || w.run());
+    assert!(accepted.examined <= 4 * BURST as u64, "{} pending commits read for {BURST} grants", accepted.examined);
+    assert!(accepted.inbox_keys <= 2 * BURST as u64, "{} inbox keys tried for {BURST} accepted", accepted.inbox_keys);
+}

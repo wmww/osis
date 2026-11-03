@@ -1,8 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 //! Pass work sets against full passes (spec/sync.md §6, §7): the same scenario and seed run
 //! with work sets and with every pass judging everything (`osis_sim::net::with_full_passes`)
-//! give the same run: every message, the host logs (uploads and deletes in order, in the
-//! report's digest) and the final state. A trigger the work sets miss shows as a divergence.
+//! give the same run: the host logs (uploads and deletes in order, in the report's digest) and the
+//! final state. Not every message: a pass the work sets leave out saves what it would have sent
+//! again. A trigger the work sets miss shows as a divergence.
 
 use osis_sim::net::with_full_passes;
 use osis_sim::replay;
@@ -15,7 +16,8 @@ fn same(name: &str, seed: u64) {
     });
     let work = work.unwrap_or_else(|f| panic!("{f}"));
     let full = full.unwrap_or_else(|f| panic!("full passes: {f}"));
-    assert_eq!(work, full, "{name} seed {seed}: work sets {work:?}, full passes {full:?}");
+    let outcome = |r: &osis_sim::Report| osis_sim::Report { sent: 0, delivered: 0, ..r.clone() };
+    assert_eq!(outcome(&work), outcome(&full), "{name} seed {seed}: work sets {work:?}, full passes {full:?}");
 }
 
 // spec/sync.md §6, §7: keep-at-most writes, their drops and compaction under crashes: work sets
