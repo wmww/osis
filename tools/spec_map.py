@@ -128,6 +128,7 @@ RULES = [
     ("spec/crypto.md", "3", "fresh deposit seed", "MUST write a fresh one in each rotation of the read role"),
     ("spec/data-model.md", "5", "cbor profile", "A decoder MUST reject anything outside it"),
     ("spec/data-model.md", "6", "chunk threshold", "MUST be chunked; one at or below it MUST NOT be"),
+    ("spec/data-model.md", "6", "unreadable link", "A read that materializes a link it cannot read"),
     ("spec/permissions.md", "1", "owner not removable", "cannot be removed by other admins"),
     ("spec/permissions.md", "1", "role-class by admins", "are written only by its admins"),
     ("spec/permissions.md", "2", "invite scope", "Invite holders cannot change or remove any other edge"),

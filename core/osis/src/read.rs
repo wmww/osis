@@ -72,31 +72,61 @@ pub(crate) fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
     Ak::new(key.ak()).map_err(|_| Error::Invalid(format!("bad AK {:?}", key.ak())))
 }
 
-fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mut usize) -> Result<Value> {
+/// A link's value, `None` when it cannot be read here (spec/data-model.md §6): a blob of its
+/// tree is not held (not fetched yet, or named by no blob) or fails verification (another
+/// thing's dedup secret, bad bytes, an unknown format). The bound and local storage failures
+/// stay errors.
+fn read_link(e: &mut Engine, tid: &Tid, l: &osis_base::Link, limit: usize, budget: &mut usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
+    use osis_base::{Classified, ErrorClass};
     let too_large = Error::TooLarge { limit };
-    Ok(match v {
-        Value::Link(l) => {
-            let x = e.read_large_max(tid, &l, *budget).map_err(|err| match err {
-                osis_node::Error::Label(osis_label::Error::TooLarge(_)) => too_large.clone(),
-                other => other.into(),
-            })?;
-            let n = osis_base::cbor::encode(&x).len();
-            *budget = budget.checked_sub(n).ok_or(too_large)?;
-            x
+    let x = match e.read_large_max(tid, l, *budget) {
+        Ok(x) => x,
+        Err(osis_node::Error::Label(osis_label::Error::TooLarge(_))) => return Err(too_large),
+        Err(osis_node::Error::Label(err)) if err == osis_label::Error::Missing || err.class() != ErrorClass::Local => {
+            bad.push(err);
+            return Ok(None);
         }
-        Value::List(l) => Value::List(l.into_iter().map(|x| materialize_in(e, tid, x, limit, budget)).collect::<Result<_>>()?),
-        Value::Set(s) => Value::Set(s.into_iter().map(|x| materialize_in(e, tid, x, limit, budget)).collect::<Result<_>>()?),
-        Value::Map(m) => Value::Map(m.into_iter().map(|(k, x)| Ok((materialize_in(e, tid, k, limit, budget)?, materialize_in(e, tid, x, limit, budget)?))).collect::<Result<_>>()?),
-        Value::Enum(c, Some(p)) => Value::Enum(c, Some(Box::new(materialize_in(e, tid, *p, limit, budget)?))),
-        v => v,
-    })
+        Err(other) => return Err(other.into()),
+    };
+    let n = osis_base::cbor::encode(&x).len();
+    *budget = budget.checked_sub(n).ok_or(too_large)?;
+    Ok(Some(x))
 }
 
-/// Replaces every link by its value; fails `TooLarge` past `limit` canonical bytes.
-fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize) -> Result<Value> {
+/// `v` with its links replaced; `None` when `v` itself is gone. An unreadable link (`read_link`)
+/// is gone, and with it the list or set element, map entry (struct field) or enum it is in or
+/// is; the rest stays.
+fn materialize_in(e: &mut Engine, tid: &Tid, v: Value, limit: usize, budget: &mut usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
+    if let Value::Link(l) = v {
+        return read_link(e, tid, &l, limit, budget, bad);
+    }
+    let mut m = |x: Value| materialize_in(e, tid, x, limit, budget, bad);
+    Ok(Some(match v {
+        Value::List(l) => Value::List(l.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
+        Value::Set(s) => Value::Set(s.into_iter().filter_map(|x| m(x).transpose()).collect::<Result<_>>()?),
+        Value::Map(map) => {
+            let mut out = BTreeMap::new();
+            for (k, x) in map {
+                if let (Some(k), Some(x)) = (m(k)?, m(x)?) {
+                    out.insert(k, x);
+                }
+            }
+            Value::Map(out)
+        }
+        Value::Enum(c, Some(p)) => match m(*p)? {
+            Some(p) => Value::Enum(c, Some(Box::new(p))),
+            None => return Ok(None),
+        },
+        v => v,
+    }))
+}
+
+/// Replaces every link by its value, dropping unreadable ones into `bad` (`materialize_in`);
+/// fails `TooLarge` past `limit` canonical bytes.
+fn materialize(e: &mut Engine, tid: &Tid, v: Value, limit: usize, bad: &mut Vec<osis_label::Error>) -> Result<Option<Value>> {
     let mut budget = limit;
-    let v = materialize_in(e, tid, v, limit, &mut budget)?;
-    if osis_base::cbor::encode(&v).len() > limit {
+    let v = materialize_in(e, tid, v, limit, &mut budget, bad)?;
+    if v.as_ref().is_some_and(|v| osis_base::cbor::encode(v).len() > limit) {
         return Err(Error::TooLarge { limit });
     }
     Ok(v)
@@ -155,19 +185,36 @@ impl Reader<'_> {
         Ok((tid, v))
     }
 
-    fn materialize(&mut self, tid: &Tid, v: Value) -> Result<Value> {
-        materialize(self.e, tid, v, self.limit)
+    /// `v` (of `tid`'s `ak`) materialized up to the bound; an unreadable link reads as absent at
+    /// its position with an `Unreadable` diagnostic (spec/data-model.md §6), `None` when it is
+    /// `v` itself or the enum `v` is.
+    fn materialize(&mut self, tid: &Tid, ak: &Ak, v: Value) -> Result<Option<Value>> {
+        let mut bad = Vec::new();
+        let v = materialize(self.e, tid, v, self.limit, &mut bad)?;
+        if !bad.is_empty() {
+            let why = bad.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
+            self.e.report(Diagnostic { kind: osis_node::DiagnosticKind::Unreadable, tids: vec![*tid], commit: None, peer: None, detail: format!("{ak}: {} link(s) read as absent: {why}", bad.len()) });
+        }
+        Ok(v)
     }
 
-    /// `v` with its links replaced, up to `limit` bytes.
+    /// `v` with its links replaced, up to `limit` bytes; any unreadable link fails it whole.
     pub(crate) fn materialized(&mut self, tid: &Tid, v: Value, limit: usize) -> Result<Value> {
-        materialize(self.e, tid, v, limit)
+        let mut bad = Vec::new();
+        let v = materialize(self.e, tid, v, limit, &mut bad)?;
+        match (bad.into_iter().next(), v) {
+            (None, Some(v)) => Ok(v),
+            (err, _) => Err(Error::Invalid(err.map_or_else(|| "unreadable link".into(), |e| e.to_string()))),
+        }
     }
 
     /// The whole value of an aspect, untyped, materialized up to the bound.
     pub fn value(&mut self, tid: Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, v) = self.raw(tid, ak)?;
-        v.map(|v| self.materialize(&tid, v)).transpose()
+        Ok(match v {
+            Some(v) => self.materialize(&tid, ak, v)?,
+            None => None,
+        })
     }
 
     /// A typed read (spec/versioning.md §5): `None` when absent, and when the stored value
@@ -180,21 +227,25 @@ impl Reader<'_> {
                 Some(v) => v,
                 None => return Ok(None),
             },
-            _ => self.materialize(&t, raw)?,
+            _ => match self.materialize(&t, &ak, raw)? {
+                Some(v) => v,
+                None => return Ok(None),
+            },
         };
         Ok(lenient(t, &ak, key.decode(&v), |d| self.e.report(d)))
     }
 
     /// `v`, of `tid`'s `ak` at `path` (type `ty`, `atomic` inside a set element or map key),
     /// materialized; `None` with a `Mismatch` diagnostic when it holds a link where the type takes
-    /// none (spec/data-model.md §6): a mismatch like any other, never fetched.
+    /// none (spec/data-model.md §6): a mismatch like any other, never fetched. An unreadable link
+    /// where the type takes one reads as absent at its position (`materialize`).
     #[allow(clippy::too_many_arguments)]
     fn materialize_typed(&mut self, tid: Tid, ak: &Ak, s: &Schema, v: Value, ty: &Type, atomic: bool, path: &Path) -> Result<Option<Value>> {
         if misplaced_link(s, &v, ty, atomic) {
             self.e.report(mismatch(tid, ak, &PathError::new(path.clone(), PathErrorKind::Mismatch { expected: "no link here" })));
             return Ok(None);
         }
-        self.materialize(&tid, v).map(Some)
+        self.materialize(&tid, ak, v)
     }
 
     /// `v` if it decodes through `key`, else `None` with a `Mismatch` diagnostic.
@@ -211,7 +262,7 @@ impl Reader<'_> {
         let (tid, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
         let (Some(s), Some(ty)) = (key.schema(), key.ty()) else {
             let Some(sub) = value_at(&raw, path) else { return Ok(None) };
-            return Ok(Some(self.materialize(&tid, sub.clone())?));
+            return self.materialize(&tid, &ak, sub.clone());
         };
         let (t, atomic) = type_at(s, ty, path)?;
         if let Some(sub) = value_at(&raw, path) {
