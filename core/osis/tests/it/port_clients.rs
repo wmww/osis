@@ -71,7 +71,7 @@ fn node() -> Node {
         })
         .unwrap();
     for x in [t, placed, out, u] {
-        n.write_with(|w| w.at(x, ak("name.0")).set(&Value::Str("x".into()))).unwrap();
+        n.write_with(|w| w.at(x, ak("t:name.0")).set(&Value::Str("x".into()))).unwrap();
     }
     Node { n, net, clock, store, g, t, placed, out, h, u }
 }
@@ -135,7 +135,7 @@ impl Node {
 /// Everything a client can ask about a tid, errors with the tid taken out: a thing its actor may
 /// not read must answer this exactly as a tid nobody knows.
 pub(crate) fn answers(c: &Osis, t: Tid) -> String {
-    let k = ak("name.0");
+    let k = ak("t:name.0");
     let e = |r: osis::Result<String>| r.unwrap_or_else(|e| format!("{e:?}").replace(&format!("{t:?}"), "T"));
     let mut out = vec![
         e(c.at(t, k.clone()).get_value().map(|v| format!("{v:?}"))),
@@ -167,7 +167,7 @@ fn reads_are_exactly_the_actors() {
     let (a, _, c) = x.client(Role::Read);
     assert_eq!(c.me(), a);
     assert_eq!(c.home(), a);
-    assert_eq!(c.at(x.t, ak("name.0")).get_value().unwrap(), Some(Value::Str("x".into())));
+    assert_eq!(c.at(x.t, ak("t:name.0")).get_value().unwrap(), Some(Value::Str("x".into())));
     assert_eq!(c.role_on(x.t), Some(Role::Read));
     assert_eq!(c.role_on(x.g), Some(Role::Read));
     assert!(c.knows(x.t));
@@ -193,7 +193,7 @@ fn reads_are_exactly_the_actors() {
         assert_eq!(d(t), gd, "{name}");
     }
     // nothing of it changed through those attempts
-    assert_eq!(x.n.get(x.out, ak("name.0")).unwrap(), Some(Value::Str("x".into())));
+    assert_eq!(x.n.get(x.out, ak("t:name.0")).unwrap(), Some(Value::Str("x".into())));
     assert!(x.n.knows(x.out));
     // unscoped: no entry on what it may not read, and status lists no group it may not read
     let all = c.commits(&CommitQuery::new()).unwrap();
@@ -208,7 +208,7 @@ fn reads_are_exactly_the_actors() {
 #[test]
 fn writes_are_the_actors() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, s, c) = x.client(Role::Read);
     assert!(matches!(c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Int(1))), Err(Error::Permission { tid, .. }) if tid == x.t));
     assert!(matches!(c.write_with(|w| w.create(x.g)), Err(Error::Permission { .. })), "read on the owner is no write");
@@ -251,7 +251,7 @@ fn writes_are_the_actors() {
 #[test]
 fn client_purge_is_judged_by_the_actor_spec_perm_8() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Admin);
     let only = osis::Retention { by: osis::schema::PurgeBy::Author, ..Default::default() };
     let held = |k: &osis_base::Ak| x.n.engine(|e| e.commit_ids().into_iter().filter(|i| e.header(i).is_some_and(|h| h.aspects.iter().any(|y| y.tid == x.t && y.ak == *k && y.retention.by == only.by))).collect::<Vec<_>>().into_iter().map(|i| e.body_not_dropped(&i, &x.t, k)).collect::<Vec<_>>());
@@ -359,14 +359,14 @@ fn undo_and_revert_are_the_actors() {
 #[test]
 fn until_ends_the_client() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     assert!(matches!(x.n.add_client(Some(WallMs(T0))), Err(Error::Invalid(_))));
     assert!(matches!(x.n.add_client(Some(WallMs(T0 - 1))), Err(Error::Invalid(_))));
     let (a, s) = x.n.add_client(Some(WallMs(T0 + 60_000))).unwrap();
     x.n.grant(x.g, a, Role::Write, Default::default()).unwrap();
     assert_eq!(x.n.clients().unwrap(), vec![osis::Client { actor: a, until: Some(WallMs(T0 + 60_000)) }]);
     let mut r = x.raw(&s);
-    assert!(matches!(r.call_at(1, GET, vec![Value::Tid(x.t), Value::Str("name.0".into()), Value::List(vec![])]), Outcome::Ok { .. }));
+    assert!(matches!(r.call_at(1, GET, vec![Value::Tid(x.t), Value::Str("t:name.0".into()), Value::List(vec![])]), Outcome::Ok { .. }));
     let c = x.attach(&s).unwrap();
     c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Int(1))).unwrap();
     x.clock.advance(60_000);
@@ -422,7 +422,7 @@ fn remove_client_revokes() {
     assert_ne!(x.n.engine(|e| e.epochs(&x.g).map(|ep| format!("{:?}", ep.role(Role::Read).newest_held().map(|h| h.0)))), keys_before, "the removal rotated");
     assert!(x.n.clients().unwrap().is_empty());
     assert!(matches!(x.attach(&s), Err(Error::Unsupported(_))));
-    assert!(c.get(x.t, ak("name.0")).is_err());
+    assert!(c.get(x.t, ak("t:name.0")).is_err());
     // the entry on its way out read ended under any clock (undoing its removal shows that write): a half removal revives under no clock (half_removed_client_stays_ended)
     let node_thing = x.n.node();
     let last = x.n.commits(&CommitQuery::new().scope(Scope::Aspects(vec![(node_thing, ak("clients.0^"))]))).unwrap()[0].commit.id;
@@ -452,7 +452,7 @@ fn remove_client_revokes() {
 #[test]
 fn queued_request_rechecked_at_execution() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, s, _c) = x.client(Role::Write);
     let mut r = x.raw(&s);
     // the node's dispatcher blocks on this callback, the worker on its settle behind it
@@ -496,7 +496,7 @@ fn secret_hash_and_rotation() {
     let s2 = x.n.rotate_client_secret(a).unwrap();
     assert_ne!(s2.expose(), s.expose());
     x.until(|x| x.served() == 0);
-    assert!(c.get(x.t, ak("name.0")).is_err());
+    assert!(c.get(x.t, ak("t:name.0")).is_err());
     assert!(matches!(x.attach(&s), Err(Error::Unsupported(_))));
     let c2 = x.attach(&s2).unwrap();
     assert_eq!(c2.me(), a);
@@ -507,7 +507,7 @@ fn secret_hash_and_rotation() {
 #[test]
 fn nonces_per_client() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, s, _c) = x.client(Role::Write);
     let (b, s2, _d) = x.client(Role::Write);
     let mut ra = x.raw(&s);
@@ -524,7 +524,7 @@ fn nonces_per_client() {
 #[test]
 fn watches_and_rows() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Read);
     let w = c.at(x.t, name.clone()).watch().unwrap();
     let hidden = c.at(x.out, name.clone()).watch().unwrap();
@@ -684,7 +684,7 @@ fn group_aspect_ops_place_only_what_it_reads() {
 #[test]
 fn hidden_group_scopes_nothing() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
     x.n.write_with(|w| w.place(x.t, x.h)).unwrap();
     c.write_with(|w| w.at(x.t, name.clone()).set(&Value::Int(1))).unwrap();
@@ -705,7 +705,7 @@ fn hidden_group_scopes_nothing() {
 #[test]
 fn revert_names_only_what_it_reads() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
     let id = {
         let mut w = x.n.write();
@@ -730,7 +730,7 @@ fn revert_names_only_what_it_reads() {
 #[test]
 fn revert_of_a_creation_needs_what_the_delete_writes() {
     let x = node();
-    let (name, adm) = (ak("name.0"), ak("t:adm.0^"));
+    let (name, adm) = (ak("t:name.0"), ak("t:adm.0^"));
     let (_, _, c) = x.client(Role::Write);
     let made = |x: &Node| {
         let mut w = x.n.write();
@@ -817,7 +817,7 @@ fn key(v: Value) -> Value {
 #[test]
 fn a_client_writes_no_link() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, s, c) = x.client(Role::Write);
     let mut r = x.raw(&s);
     x.n.write_with(|w| w.at(x.out, name.clone()).set(&Value::Str("q".repeat(1 << 20)))).unwrap();
@@ -828,7 +828,7 @@ fn a_client_writes_no_link() {
     let in_list = Value::List(vec![bogus.clone()]);
     let in_map = Value::Map([(bogus.clone(), n(1))].into_iter().collect());
     let cases: Vec<(&str, Tid, Vec<Value>, Vec<Value>)> = vec![
-        ("name.0", x.t, vec![], vec![n(0), hidden.clone()]),
+        ("t:name.0", x.t, vec![], vec![n(0), hidden.clone()]),
         ("t:b.0", x.t, vec![], vec![n(0), bogus.clone()]),
         ("t:b.0", x.t, vec![], vec![n(1), in_list.clone()]),
         ("t:b.0", x.t, vec![], vec![n(2), in_map]),
@@ -871,7 +871,7 @@ fn a_client_writes_no_link() {
 #[test]
 fn revert_tells_no_hidden_body_dropped() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (_, _, c) = x.client(Role::Write);
     let id = {
         let mut w = x.n.write();
@@ -891,7 +891,7 @@ fn revert_tells_no_hidden_body_dropped() {
 #[test]
 fn refused_undo_blocks_only_its_scope() {
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let (a, _, c) = x.client(Role::Write);
     let set = |v: i64| {
         let mut w = c.write();
@@ -938,7 +938,7 @@ fn hidden_answers_writes_as_unknown() {
 }
 
 fn write_answers(c: &Osis, x: &Node, t: Tid) -> String {
-    let k = ak("name.0");
+    let k = ak("t:name.0");
     let items = osis_schema::Path(vec![osis_schema::Step::Field(0)]);
     let read = |r: osis::Result<String>| r.unwrap_or_else(|e| format!("{e:?}"));
     let write = |f: &dyn Fn(&mut osis::Write<'_>) -> osis::Result<()>| {
@@ -1019,7 +1019,7 @@ fn revert_lists_nothing_hidden() {
     assert!(matches!(c.undo(&Scope::Group(x.g)), Err(Error::Permission { .. })));
     assert!(!listed(x.placed));
     // what it reads goes back
-    let mine = c.write_with(|w| { let m = w.create(x.g)?; w.at(m, ak("name.0")).set(&Value::Int(1))?; w.place(m, x.g)?; Ok(m) }).unwrap();
+    let mine = c.write_with(|w| { let m = w.create(x.g)?; w.at(m, ak("t:name.0")).set(&Value::Int(1))?; w.place(m, x.g)?; Ok(m) }).unwrap();
     let id = unplaced(mine);
     c.revert(id).unwrap();
     assert!(listed(mine));
@@ -1046,7 +1046,7 @@ fn revert_lists_nothing_hidden() {
     x.n.revert(id).unwrap();
     assert!(listed(x.out));
     // a client's draft saved, undone and redone: its own, placed by it
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     let d = c.write_with(|w| { let m = w.create(x.g)?; w.at(m, ak("t:e.0~")).set(&Value::Int(1))?; w.place(m, x.g)?; Ok(m) }).unwrap();
     assert!(x.n.engine(|e| e.ephemeral_thing(&d).is_some()));
     c.write_with(|w| w.at(d, name.clone()).set(&Value::Int(2))).unwrap();
@@ -1090,8 +1090,8 @@ fn persisting_converts_only_placements_the_actor_may_write() {
             Ok(e)
         })
         .unwrap();
-    c.write_with(|w| w.at(e, ak("name.0")).set(&Value::Int(1))).unwrap();
-    assert_eq!(x.n.get(e, ak("name.0")).unwrap(), Some(Value::Int(1)));
+    c.write_with(|w| w.at(e, ak("t:name.0")).set(&Value::Int(1))).unwrap();
+    assert_eq!(x.n.get(e, ak("t:name.0")).unwrap(), Some(Value::Int(1)));
     assert!(!x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&e), "written durably with this node's rights");
     // the same write by the node converts it
     let e2 = x
@@ -1102,7 +1102,7 @@ fn persisting_converts_only_placements_the_actor_may_write() {
             Ok(e)
         })
         .unwrap();
-    x.n.write_with(|w| w.at(e2, ak("name.0")).set(&Value::Int(1))).unwrap();
+    x.n.write_with(|w| w.at(e2, ak("t:name.0")).set(&Value::Int(1))).unwrap();
     assert!(x.n.get(x.h, ct::GROUP).unwrap().unwrap().items.contains(&e2));
 }
 
@@ -1128,7 +1128,7 @@ fn client_session_differential_against_grants() {
 fn walk(seed: u64) {
     let mut rng = Rng(seed);
     let x = node();
-    let name = ak("name.0");
+    let name = ak("t:name.0");
     // the model: per group the role granted; a direct grant on a thing; the thing's owner
     let things = [(x.t, Some(x.g)), (x.u, Some(x.h)), (x.placed, None), (x.out, None)];
     let mut on_group: [Option<Role>; 2] = [None, None];
@@ -1411,7 +1411,7 @@ fn history_watch_past_its_budget_lapses() {
         let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
     }));
     let c2 = c.clone();
-    let (t, k2) = (x.t, ak("name.0"));
+    let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.write_with(|w| w.at(t, k2).set(&Value::Int(7))).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
     let n = osis::SIGNAL_BYTES / osis::HISTORY_DIRTY_BYTES + 1;
@@ -1465,7 +1465,7 @@ fn history_watch_of_a_hidden_thing_takes_no_budget() {
         let _ = wait.lock().unwrap().recv_timeout(Duration::from_secs(60));
     }));
     let c2 = c.clone();
-    let (t, k2) = (x.t, ak("name.0"));
+    let (t, k2) = (x.t, ak("t:name.0"));
     let writer = std::thread::spawn(move || c2.write_with(|w| w.at(t, k2).set(&Value::Int(7))).map(|_| ()));
     busy.recv_timeout(Duration::from_secs(60)).unwrap();
     let ids = |n: usize, on: Tid| -> Vec<(Tid, osis::Ak, osis::ChangeId)> { (0..n as u32).map(|i| (on, k.clone(), osis::ChangeId::Commit(osis::CommitId([&i.to_be_bytes()[..], &[0; 28]].concat().try_into().unwrap())))).collect() };

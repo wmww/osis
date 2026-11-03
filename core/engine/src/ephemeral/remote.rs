@@ -1815,7 +1815,13 @@ impl Engine {
     fn forge_ephemeral_under(&mut self, tid: Tid, ak: &Ak, v: Value, src: Source) -> Result<Option<EphCommit>> {
         let ts = self.core.hlc.next();
         let w = Writer::new(ts, src, self.eph.ctr(&tid, ak));
-        let Some((f, r)) = run_ops(&Fragment::default(), w, &[PathOp { path: Vec::new(), op: Op::Set(v) }], &AnyView)? else { return Ok(None) };
+        // a core aspect through its core type: the forger's own receive check judges the rest
+        let ops = [PathOp { path: Vec::new(), op: Op::Set(v) }];
+        let made = match osis_schema::core_schema().view(ak.as_str()) {
+            Some(view) => run_ops(&Fragment::default(), w, &ops, &view)?,
+            None => run_ops(&Fragment::default(), w, &ops, &AnyView)?,
+        };
+        let Some((f, r)) = made else { return Ok(None) };
         self.eph.take_ctrs(&tid, ak, r.hi);
         let me = self.tid();
         self.build_ephemeral_with(EphClass::Plain, me, vec![(tid, ak.clone(), f, None)], &BTreeMap::new(), true)

@@ -53,3 +53,43 @@ impl View for AnyView {
         Some(AnyView)
     }
 }
+
+impl crate::fragment::Fragment {
+    /// Whether every position this fragment carries fits `view`: each non-register fragment has
+    /// the view's encoding (a register may stand anywhere: its value is judged), each value (a
+    /// register's write, a map key) projects at its position, and each enum case write names a
+    /// case the view declares. Positions the view does not declare (unknown struct fields,
+    /// payloads of undeclared cases) are not looked into.
+    pub fn fits<V: View>(&self, view: &V) -> bool {
+        use crate::fragment::{Bag, Fragment, Register, Set, Slots};
+        let value = |v: &Value| view.project(v).is_some();
+        let reg = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_none_or(value);
+        let elems = |es: &mut dyn Iterator<Item = &Fragment>| match view.element() {
+            Some(e) => Iterator::all(&mut &mut *es, |f| f.fits(&e)),
+            None => true,
+        };
+        if !matches!(self, Fragment::Register(_) | Fragment::Slots(_)) && view.encoding().is_some_and(|e| e != self.encoding()) {
+            return false;
+        }
+        match self {
+            Fragment::Register(r) => reg(r),
+            Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().is_none_or(reg) && slots.values().all(|f| f.fits(view)),
+            Fragment::Bag(Bag { elems: es, .. }) | Fragment::Set(Set { elems: es, .. }) => elems(&mut es.values().filter_map(|e| e.frag.as_deref())),
+            Fragment::Struct(s) => s.fields.iter().all(|(id, f)| view.field(*id).is_none_or(|v| f.fits(&v))),
+            Fragment::Enum(e) => {
+                // a payload-less case is declared iff its bare value projects
+                let declared = |c: u64| view.case(c).is_some() || value(&Value::Enum(c, None));
+                e.case.as_ref().and_then(|w| w.case).is_none_or(declared) && e.payloads.iter().all(|(id, f)| view.case(*id).is_none_or(|v| f.fits(&v)))
+            }
+            Fragment::Map(m) => {
+                let key = view.key();
+                m.entries.keys().all(|id| id.key().zip(key.as_ref()).is_none_or(|(k, kv)| kv.project(k).is_some()))
+                    && elems(&mut m.entries.values().filter_map(|e| e.frag.as_deref()))
+            }
+            Fragment::Seq(s) => elems(&mut s.elems().values().filter_map(|el| match &el.content {
+                crate::seq::SeqContent::Frag(f) => Some(&**f),
+                _ => None,
+            })),
+        }
+    }
+}
