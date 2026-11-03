@@ -30,6 +30,7 @@ Format constants (fixed by format version 1, spec/versioning.md §1):
 | `ROLE_KEEP` | 90 days |
 | `AT_MOST_GRACE` | 1 hour: added to the relative keep-at-most bound of a body with a live write (spec/commits.md §5) |
 | `INBOX_LIFETIME` | 90 days |
+| `INBOX_WAITING`, `INBOX_WAITING_BYTES` | 32 entries, 1 MiB (1 048 576 bytes): half the recommended minimum deposit budget (spec/sync.md §5) |
 | `HEARTBEAT_MIN_LIFETIME`, `HEARTBEAT_MAX_LIFETIME`, `HEARTBEAT_MIN_INTERVAL` | 1 day, 14 days, 6 hours |
 | `MAX_HEARTBEAT_SUSPECTS` | 32 |
 | `RESOLUTION_HOPS` | 8 (spec/permissions.md §7) |

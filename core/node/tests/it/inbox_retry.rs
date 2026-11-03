@@ -297,6 +297,8 @@ fn more_grants_than_the_budget_arrive_spec_sync_5() {
 fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
     let (mut net, host, a, b, alice, bob) = two_persons();
     let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    // away, so nothing clears the budget
+    net.set_online(b, false);
     let junk = fill_budget(&mut net, host, &home, 0);
     let waiting = grants(&mut net, a, alice, bob, 1);
     // refused long enough to back off to the cap
@@ -309,9 +311,99 @@ fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
         osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), &home, id, now).unwrap();
     }
     let fresh = grants(&mut net, a, alice, bob, 1);
+    net.set_online(b, true);
     for _ in 0..2 {
         net.advance(60_000);
     }
     assert_eq!(net.engine(b).role_on(&fresh[0]), Some(Role::Read), "the new one went at once");
     assert_eq!(net.engine(b).role_on(&waiting[0]), Some(Role::Read), "and the waiting one with it");
+}
+
+/// What is left of the deposit budget of `l` at the host: (entries, bytes).
+fn budget_left(net: &mut Net, host: usize, l: &osis_base::LabelId) -> (u64, u64) {
+    let b = osis_proto::LabelStore::budget(net.hosts[host].hub.store_mut(), l).unwrap();
+    (b.entries_left, b.bytes_left)
+}
+
+// spec/sync.md §5: junk with no expiry fills an inbox's budget while its person is away; the grants refused meanwhile get through once a device of hers comes back, and what she does not clear leaves the rest of the budget free
+#[test]
+fn stranger_fill_ends_with_a_pass_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob) = two_persons();
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    net.set_online(b, false);
+    fill_budget(&mut net, host, &home, 0);
+    let things = grants(&mut net, a, alice, bob, 2);
+    for _ in 0..4 {
+        net.advance(60_000);
+    }
+    assert_eq!(budget_left(&mut net, host, &home).0, 0, "nothing clears it with nobody there");
+    net.set_online(b, true);
+    for _ in 0..8 {
+        net.advance(60_000);
+    }
+    assert!(things.iter().all(|t| net.engine(b).role_on(t) == Some(Role::Read)), "the grants got through");
+    assert!(budget_left(&mut net, host, &home).0 >= osis_base::format::INBOX_WAITING as u64, "half stays free");
+}
+
+// spec/sync.md §5: the same fill by bytes, in few large blobs
+#[test]
+fn stranger_fill_in_bytes_ends_with_a_pass_spec_sync_5() {
+    let (mut net, host, _, b, _, bob) = two_persons();
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    net.set_online(b, false);
+    let size = 512 * 1024;
+    let mut i = 0u8;
+    while budget_left(&mut net, host, &home).1 >= size as u64 {
+        // what a host takes: a well-formed prefix, then anything
+        let mut blob = osis_label::Prefix::new([i; 16], None, Vec::new()).unwrap().to_bytes();
+        blob.resize(size, 0);
+        let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &home, put).unwrap();
+        i += 1;
+    }
+    assert!(i < 32, "under the cap in entries: {i}");
+    net.set_online(b, true);
+    for _ in 0..8 {
+        net.advance(60_000);
+    }
+    assert!(budget_left(&mut net, host, &home).1 >= osis_base::format::INBOX_WAITING_BYTES as u64, "half stays free");
+}
+
+// spec/sync.md §5: only an inbox is cleared: deposits under another label stay, here blobs its admin holds the bytes of from another group
+#[test]
+fn junk_under_another_label_stays_spec_sync_5() {
+    let (mut net, host, a, _, alice, _) = two_persons();
+    let group = |net: &mut Net| {
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let g = e.new_thing(&mut m, alice);
+        m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        let addr = net.address(host);
+        let (l, acts) = net.sync(a).create_label(&g, vec![addr]).unwrap();
+        net.actions(a, acts);
+        net.run();
+        (g, l)
+    };
+    let (g, gl) = group(&mut net);
+    let (_, l) = group(&mut net);
+    // chunks: no commit of hers says where they belong
+    let text: String = (0..180_000u32).map(|i| format!("{:x}", i.wrapping_mul(2_654_435_761))).collect();
+    net.item(a, g, g, &text);
+    net.run();
+    let junk: Vec<_> = net.sync(a).entries(&gl).into_iter().filter(|(_, k)| !matches!(k, osis_node::sync::EntryKind::Commit { .. })).map(|x| x.0).collect();
+    let size: usize = junk.iter().map(|id| net.engine(a).blob(id).unwrap().unwrap().len()).sum();
+    assert!(size > osis_base::format::INBOX_WAITING_BYTES, "{size}");
+    net.set_online(a, false);
+    for id in &junk {
+        let blob = net.engine(a).blob(id).unwrap().unwrap();
+        let put = osis_proto::Put { blob_id: *id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        assert_eq!(osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &l, put).unwrap(), osis_proto::Code::OK);
+    }
+    net.set_online(a, true);
+    for _ in 0..4 {
+        net.advance(60_000);
+    }
+    let held = net.host_ids(host, &l);
+    assert!(junk.iter().all(|x| held.contains(x)), "kept");
 }
