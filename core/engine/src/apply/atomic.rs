@@ -83,7 +83,7 @@ pub(crate) fn index_commit(core: &mut Core, id: &CommitId, h: &crate::engine::Vi
         if a.ak.as_str() == crate::flows::LINK_SEED {
             core.links = None;
         }
-        core.ix.by_thing.insert(a.tid, *id);
+        core.ix.by_thing.insert((a.tid, h.author), *id);
         if h.form.counted() && h.kind.has_own_writes() && a.lo < a.hi {
             core.ix.ranges.insert((a.tid, a.ak.clone(), h.form.own_source(h.author, *id)), a.lo, (a.hi, *id));
         }
@@ -156,6 +156,8 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     // joined in place (evicted on rollback), so a join costs O(delta), not a copy of the state
     let k = (*tid, ak.clone());
     tx.core.touch();
+    // `secrets.0` read before: this join's entries read again from the pages it touched
+    let secrets = (ak.as_str() == "secrets.0").then(|| tx.core.secrets_read.get(tid).cloned().map(|s| (s, delta.clone()))).flatten();
     tx.core.wrote(k.clone());
     let mut st = tx.core.states.get_mut(&k).and_then(Option::take).unwrap_or_default();
     let before = held_only.then(|| st.stamps());
@@ -163,11 +165,15 @@ pub(crate) fn join_into_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, mut delta: Fr
     if let Some(b) = before {
         ch.retain_deaths(|d| b.holds(&d.stamp));
     }
+    let secrets = secrets.and_then(|(mut read, d)| super::keys::secrets_patch(std::sync::Arc::make_mut(&mut read), &d, &st).then_some(read));
     let st = tx.kept(tid, ak, st)?;
     if ch.is_changed() || !ch.deaths().is_empty() {
         tx.set_state_touched(tid, ak, st, &touch, Shred::No)?;
     } else {
         tx.core.states.insert(k, st);
+    }
+    if let Some(read) = secrets {
+        tx.core.secrets_read.insert(*tid, read);
     }
     Ok(ch)
 }

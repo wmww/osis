@@ -1016,7 +1016,7 @@ impl Engine {
         }
         let candidates: BTreeSet<CommitId> = match only {
             Some(o) => o.clone(),
-            None => core.ix.required.keys().flat_map(|t| core.ix.by_thing.get(t).into_iter().flatten().copied()).collect(),
+            None => core.ix.required.keys().flat_map(|t| core.on_thing(t)).collect(),
         };
         let mut due: Vec<(CommitId, usize)> = Vec::new();
         for c in &candidates {

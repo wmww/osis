@@ -703,9 +703,7 @@ pub(crate) fn update_timelines_saved(tx: &mut Tx<'_>) -> Result<()> {
     let txn = &mut tx.txn;
     let core = &mut *tx.core;
     let changed = core.timelines.update_touched_cached(&core.ix.held, &touched, &mut |r| txn.table_get(t, r.as_bytes()).ok().flatten(), VERSION.as_bytes());
-    core.stale_things.extend(changed.evaluated);
-    let below = core.ix.held.reach(&changed.extended);
-    core.stale_things.extend(below);
+    core.timelines_changed(changed);
     core.role_changed();
     Ok(())
 }

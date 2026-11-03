@@ -46,7 +46,7 @@ Fallback, no core change: **segments**. The app's chat is a chain of osis chats;
 
 ## Costs
 
-Members (notes/testing.md, `scale::chat_members`): per node a receive and a plain post stay about 2 ms from 10 to 500 members; an add costs each node about 0.4-0.8 ms per member and 120 us per message, a joiner 11-16 ms per member and 1.1 ms per message; each member stores about 52 KB at every device. So 10^4 members would be 520 MB per device and 4-8 s per add per node, before its messages: issues/chat-add-cost.md.
+Members (notes/testing.md, `scale::chat_members`): per node a receive and a plain post stay about 2 ms from 10 to 500 members; an add costs each node about 10-35 ms, flat in messages, a joiner 11-16 ms per member and 1.1 ms per message; each member stores about 52 KB at every device. So 10^4 members would be 520 MB per device: issues/chat-add-cost.md.
 
 Message about 0.5 KB on the wire, about 1.2 KB stored at every device for good; join about 35 KB; kick 2.7 KB per remaining member plus a few 60 B heads. Expired or purged: about 33 B residue; a purged permanent delta 300 B for its header, and 300 B for its purge commit's unless that is permanent too. Open is O(all commits): about 6 s at 10^6 messages, first sync about 15 min (extrapolated, e-review §6); re-adding a member rebuilds the year's aspect, about 70 s at 10^6. A hostile 10^7-message flood costs every member about 5 GB until purged by author.
 

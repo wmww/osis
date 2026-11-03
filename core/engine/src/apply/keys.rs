@@ -281,6 +281,51 @@ pub(crate) fn secrets_write(delta: &Fragment) -> SecretsWrite {
     w
 }
 
+/// Brings `read`, `secrets.0` as decoded before `delta` joined into `state`, up to date: the
+/// delta's keys alone read again, O(log n) each. False when it resets more than its entries or
+/// a key does not read as one value here: decode.
+pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fragment) -> bool {
+    /// The value of key `k` in map `m`, if it has one; `None` when it does not read as one.
+    fn one(m: Option<&osis_crdt::Map>, k: &Value) -> Option<Option<Value>> {
+        match m.map(|m| m.live(k)).unwrap_or_default().as_slice() {
+            [] => Some(None),
+            [(_, f)] => f.read().map(Some),
+            _ => None,
+        }
+    }
+    if delta.reset().is_some() || [0, 1].iter().any(|i| field(delta, *i).is_some_and(|f| f.reset().is_some())) {
+        return false;
+    }
+    for (_, _, k, _) in map(field(delta, 0)).into_iter().flat_map(|m| m.entries()) {
+        let Some(raw) = k else { return false };
+        let Some(key) = typed(raw, "box_key").and_then(|k| BoxKey::from_value(&k).ok()) else { return false };
+        match one(map(field(state, 0)), raw) {
+            Some(None) => {
+                read.boxes.remove(&key);
+            }
+            Some(Some(v)) => {
+                let Some(b) = typed(&v, "box").and_then(|b| SecretBox::from_value(&b).ok()) else { return false };
+                read.boxes.insert(key, b);
+            }
+            None => return false,
+        }
+    }
+    for (_, _, k, _) in map(field(delta, 1)).into_iter().flat_map(|m| m.entries()) {
+        let Some(raw) = k else { return false };
+        let Some(key) = typed(raw, "history_key").and_then(|k| HistoryKey::from_value(&k).ok()) else { return false };
+        match one(map(field(state, 1)), raw) {
+            Some(None) => {
+                read.history.remove(&key);
+            }
+            Some(Some(Value::Bytes(b))) => {
+                read.history.insert(key, b);
+            }
+            _ => return false,
+        }
+    }
+    true
+}
+
 /// The keysets a `keys.0` delta writes (whole keysets: a rotation replaces the field).
 pub(crate) fn keys_write(delta: &Fragment) -> KeysWrite {
     let mut w = KeysWrite::default();

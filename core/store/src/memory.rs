@@ -137,6 +137,12 @@ impl MemoryBackend {
         let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
         (rows + d.blobs.values().map(Vec::len).sum::<usize>()) as u64
     }
+    /// The bytes held in rows, and in blobs with their number (measures).
+    pub fn held_split(&self) -> (u64, u64, u64) {
+        let d = self.lock();
+        let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
+        (rows as u64, d.blobs.values().map(Vec::len).sum::<usize>() as u64, d.blobs.len() as u64)
+    }
     /// An independent copy of the durable state, as a backup takes it (sharing the faults, no
     /// history).
     pub fn copy(&self) -> MemoryBackend {

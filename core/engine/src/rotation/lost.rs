@@ -261,7 +261,7 @@ fn contested(core: &Core, k: &Tid) -> bool {
         let j = mc.ops.iter().position(|o| o.target == *k && o.holder == mc.author && o.edge.is_none())?;
         mc.ops.iter().any(|o| o.target == *k && o.holder != mc.author && o.edge.is_some()).then_some(j)
     };
-    let reds: Vec<_> = core.ix.by_thing.get(k).into_iter().flatten().filter_map(|c| tl.role_commit(c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
+    let reds: Vec<_> = core.on_thing(k).filter_map(|c| tl.role_commit(&c)).filter_map(|mc| Some((mc, leave(mc)?))).collect();
     reds.iter().any(|(mc, j)| {
         tl.lowered_unaudited(&mc.author, k)
             && mc.ops.iter().enumerate().any(|(i, o)| i != *j && o.target == *k && o.edge.is_some() && ours(core, &o.holder) && !tl.is_applied(&op(mc, i)))

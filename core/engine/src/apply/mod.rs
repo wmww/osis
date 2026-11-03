@@ -1731,6 +1731,8 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
     if fast {
         // every delta's validity is persisted: nothing to re-judge
         tx.core.stale_things.clear();
+        tx.core.stale_authors.clear();
+        tx.core.stale_under.clear();
         tx.core.stale_commits.clear();
         tx.core.stale_all = false;
     } else {

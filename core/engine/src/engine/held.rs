@@ -124,6 +124,38 @@ impl Held {
         self.named_with(t, Role::Read).map(|(_, h)| h).collect()
     }
 
+    /// `from` and everything authority comes to them from: their owners or first admins and the
+    /// holders named on them, transitively (the search `reach` answers forward). A changed edge
+    /// to holder `z` changes the roles only of `upstream({z})`.
+    pub fn upstream(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        let mut stack: Vec<Tid> = from.iter().copied().collect();
+        while let Some(t) = stack.pop() {
+            if !out.insert(t) {
+                continue;
+            }
+            match self.created(&t) {
+                Some(CreationRecord::Thing { owner, .. }) => stack.push(*owner),
+                Some(CreationRecord::Ownerless { admin, .. }) => stack.push(*admin),
+                _ => {}
+            }
+            stack.extend(self.holders_of(&t).copied());
+        }
+        out
+    }
+
+    /// `from` and everything below them by owner links: the things whose owner chains hold them.
+    pub fn below(&self, from: &BTreeSet<Tid>) -> BTreeSet<Tid> {
+        let mut out = BTreeSet::new();
+        let mut stack: Vec<Tid> = from.iter().copied().collect();
+        while let Some(t) = stack.pop() {
+            if out.insert(t) {
+                stack.extend(self.owned(&t).copied());
+            }
+        }
+        out
+    }
+
     /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
     /// followed: edge writes, roster and ledger entries.
     fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {

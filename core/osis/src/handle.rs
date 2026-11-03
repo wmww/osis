@@ -51,6 +51,10 @@ impl MemStore {
     pub fn rows(&self) -> usize {
         self.backend.dump().len()
     }
+    /// The bytes held in rows, and in blobs with their number (measures).
+    pub fn held_split(&self) -> (u64, u64, u64) {
+        self.backend.held_split()
+    }
     /// An independent copy of the store as it is now, as a device backup takes it (the host
     /// store left out): opening it later is a restore.
     pub fn backup(&self) -> MemStore {

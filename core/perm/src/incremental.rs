@@ -9,7 +9,8 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{RoleCommit, RosterSnapshot};
+use crate::types::{Edge, Point, RoleCommit, RosterSnapshot};
+use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -56,6 +57,39 @@ pub struct Changed {
     /// things added by a `created.0` record alone (a new leaf). Authority changed only on what
     /// is reachable from them (owned things, targets of their edges).
     pub extended: BTreeSet<Tid>,
+    /// The (holder, target) edges whose value now or at any point of the walk differs after
+    /// the update, however the walk got there: a late write's or a dropped one's effects on
+    /// others' edges included. A role at any point changes only through these or `created`.
+    pub edges: BTreeSet<(Tid, Tid)>,
+    /// Things whose `created.0` record came or went.
+    pub created: BTreeSet<Tid>,
+}
+
+/// Adds the (holder, target) pairs whose changes differ between `old` and `new`: past their
+/// common beginning, each by (point, pair).
+fn history_diff(old: &[&Change], new: &[&Change], out: &mut BTreeSet<(Tid, Tid)>) {
+    let same = |a: &&Change, b: &&Change| a.point == b.point && a.holder == b.holder && a.target == b.target && a.edge == b.edge;
+    let n = old.iter().zip(new).take_while(|(a, b)| same(a, b)).count();
+    let map = |l: &[&Change]| -> BTreeMap<(Point, Tid, Tid), Option<Edge>> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), c.edge)).collect() };
+    let (a, b) = (map(old), map(new));
+    out.extend(a.iter().filter(|(k, e)| b.get(k) != Some(*e)).chain(b.iter().filter(|(k, e)| a.get(k) != Some(*e))).map(|(k, _)| (k.1, k.2)));
+}
+
+/// What a component's walk was, to tell what an update changed (`Changed::edges`).
+struct WalkWas {
+    edges: crate::graph::Edges,
+    history: Vec<Change>,
+}
+
+impl WalkWas {
+    fn of(tl: &Timeline) -> WalkWas {
+        WalkWas { edges: tl.edges().clone(), history: tl.history().to_vec() }
+    }
+
+    fn diff(&self, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) {
+        tl.edges().diff(&self.edges, out);
+        history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), out);
+    }
 }
 
 /// One component's timeline.
@@ -202,6 +236,8 @@ impl Timelines {
         // components `append` continued before one declined: cache hits there
         if let Some((c, things, _)) = fast {
             changed.extended.extend(c.extended);
+            changed.edges.extend(c.edges);
+            changed.created.extend(c.created);
             self.changed.extend(things);
         }
         changed
@@ -335,6 +371,7 @@ impl Timelines {
         let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
         for (i, (new, per, join, leaves)) in work {
             let Some(mut c) = self.comps.remove(&i) else { continue };
+            let was = WalkWas::of(&c.tl);
             if !leaves.is_empty() {
                 match c.tl.add_leaves(&leaves) {
                     Ok(tl) => c.tl = tl,
@@ -348,6 +385,7 @@ impl Timelines {
                 for (x, _) in leaves {
                     self.adopt(&mut c, i, x, true);
                     changed.extended.insert(x);
+                    changed.created.insert(x);
                 }
                 things.extend(c.inputs.0.iter().copied());
                 self.unsaved.insert(i);
@@ -359,6 +397,7 @@ impl Timelines {
                     Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
+                        was.diff(&c.tl, &mut changed.edges);
                         self.comps.insert(i, c);
                         return Some((changed, things, false));
                     }
@@ -367,6 +406,9 @@ impl Timelines {
                 self.placed += c.tl.placed;
                 c.inputs.1.extend(new.keys().copied());
                 for (x, rec) in join {
+                    if rec.is_some() {
+                        changed.created.insert(x);
+                    }
                     self.adopt(&mut c, i, x, rec.is_some());
                 }
                 changed.extended.extend(per.iter().filter(|(_, ids)| ids.iter().any(|x| new.contains_key(x))).map(|(t, _)| *t));
@@ -381,6 +423,7 @@ impl Timelines {
                 }
             }
             c.per.extend(per);
+            was.diff(&c.tl, &mut changed.edges);
             self.comps.insert(i, c);
         }
         Some((changed, things, true))
@@ -405,8 +448,13 @@ impl Timelines {
         // old components by their inputs: (timeline, basis, not saved since it changed)
         let mut cache: BTreeMap<Inputs, (Timeline, usize, bool)> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
+        let (mut before, mut after) = (crate::graph::Edges::default(), crate::graph::Edges::default());
+        let (mut history, mut records): (Vec<Change>, BTreeSet<Tid>) = (Vec::new(), BTreeSet::new());
         for c in old {
             if let Some(comp) = self.comps.remove(&c) {
+                before.take_targets(comp.tl.edges());
+                history.extend_from_slice(comp.tl.history());
+                records.extend(comp.inputs.2.iter().copied());
                 for t in &comp.inputs.0 {
                     self.of.remove(t);
                 }
@@ -441,6 +489,8 @@ impl Timelines {
         }
         let mut evaluated = 0;
         let mut changed = Changed::default();
+        let mut new_history: Vec<Change> = Vec::new();
+        let mut new_records: BTreeSet<Tid> = BTreeSet::new();
         self.changed.clear();
         self.restored = 0;
         self.appended = 0;
@@ -514,6 +564,9 @@ impl Timelines {
                     }
                 }
             };
+            after.take_targets(tl.edges());
+            new_history.extend_from_slice(tl.history());
+            new_records.extend(inputs.2.iter().copied());
             let i = self.next;
             self.next += 1;
             for t in &inputs.0 {
@@ -528,6 +581,9 @@ impl Timelines {
         for (k, (_, basis, _)) in cache {
             self.retire(&k, basis);
         }
+        after.diff(&before, &mut changed.edges);
+        history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges);
+        changed.created.extend(records.symmetric_difference(&new_records).copied());
         (evaluated, changed)
     }
 

@@ -458,7 +458,7 @@ indexes! {
     /// (`copies::Carried`).
     pub carried: JMap<(Tid, Ak), Vec<crate::apply::copies::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
-    pub by_thing: JSetMap<Tid, CommitId>,
+    pub by_thing: JSetMap<(Tid, Tid), CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
     /// `validity::acts_for` when the actor's timeline changes, a demotion's frontier, the
     /// actors this node acts for (`Core::acting`).
@@ -596,6 +596,9 @@ pub struct Core {
     /// changed, commits whose other inputs changed (void, required roles, overreach), or
     /// everything (a rebuild at open).
     pub stale_things: BTreeSet<Tid>,
+    /// Parts on `stale_under` by `stale_authors` wait for `rejudge_all` too.
+    pub stale_authors: BTreeSet<Tid>,
+    pub stale_under: BTreeSet<Tid>,
     pub stale_commits: BTreeSet<CommitId>,
     pub stale_all: bool,
     /// Linked tenure frontiers decoded (by link content hash) with their canonical size; content
@@ -669,7 +672,7 @@ pub struct Core {
     pub bodies: BTreeMap<CommitId, Vec<crate::labeling::Body>>,
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
-    pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
+    pub live_bodies: BTreeMap<CommitId, BTreeMap<(Tid, Ak), bool>>,
     /// Held snapshots' writes by dot (`copies::differing_copies`: deltas arriving after
     /// snapshots that copied their writes compare against it; `copies::vouched`). A snapshot never changes, so
     /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
@@ -736,11 +739,13 @@ pub struct Changed {
     /// Commits with a part dropped under a cover since turned invalid, missing again
     /// (`retention::uncover`): node-sync fetches its entries again.
     pub undropped: BTreeSet<CommitId>,
+    /// (holder, target) edges whose current value changed (`osis_perm::Changed::edges`).
+    pub edges: BTreeSet<(Tid, Tid)>,
 }
 
 impl Changed {
     pub fn is_empty(&self) -> bool {
-        self.commits.is_empty() && self.aspects.is_empty() && self.undropped.is_empty()
+        self.commits.is_empty() && self.aspects.is_empty() && self.undropped.is_empty() && self.edges.is_empty()
     }
 }
 
@@ -764,6 +769,27 @@ impl Core {
     pub fn aspects_of(&self, t: &Tid) -> impl Iterator<Item = (&(Tid, Ak), &std::collections::BTreeSet<(Ts, CommitId)>)> {
         let t = *t;
         self.ix.by_aspect.range((t, Ak::MIN)..).take_while(move |((x, _), _)| *x == t)
+    }
+
+    /// The held commits with a delta on `t`, by author.
+    pub fn on_thing(&self, t: &Tid) -> impl Iterator<Item = CommitId> + '_ {
+        let t = *t;
+        self.ix.by_thing.range((t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).flat_map(|(_, s)| s.iter().copied())
+    }
+
+    /// Notes what a timeline update changed (`osis_perm::Changed`): a role at any point moves
+    /// only for those upstream of a changed edge's holder or a new record, and only down from
+    /// its target or that record; what is below a new record has a new owner chain.
+    fn timelines_changed(&mut self, c: osis_perm::Changed) {
+        self.stale_things.extend(c.evaluated);
+        self.stale_things.extend(self.ix.held.below(&c.created));
+        let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
+        let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
+        self.stale_authors.extend(self.ix.held.upstream(&holders));
+        self.stale_under.extend(self.ix.held.reach(&targets));
+        if let Some(s) = &mut self.changed {
+            s.edges.extend(c.edges);
+        }
     }
 
     /// The held commits acting for `actor` by another author (a range of `by_actor`).
@@ -813,17 +839,14 @@ impl Core {
         if !touched.is_empty() {
             self.unrouted = None;
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
-            self.stale_things.extend(changed.evaluated);
-            // a walk that only went on changed authority only below what it touched
-            let below = self.ix.held.reach(&changed.extended);
-            self.stale_things.extend(below);
+            self.timelines_changed(changed);
         }
         self.role_changed();
     }
 
     /// Whether some validity waits for `rejudge_all`.
     pub fn stale(&self) -> bool {
-        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty()
+        self.stale_all || !self.stale_things.is_empty() || !self.stale_commits.is_empty() || !self.stale_authors.is_empty()
     }
 
     /// Drops what is derived from the state of `(tid, ak)` (a write changes it).
@@ -837,12 +860,22 @@ impl Core {
     /// Forgets the cached liveness of every body with a delta on `(tid, ak)` (its state
     /// changed): a body's liveness spans every aspect of its class, whichever one was asked.
     pub fn forget_live(&mut self, tid: &Tid, ak: &Ak) {
-        let commits = &self.ix.commits;
-        self.live_bodies.retain(|(c, t, a), _| {
-            if t == tid && a == ak {
-                return false;
+        let k = (*tid, ak.clone());
+        // whichever is fewer: the commits on the aspect (a roster's, not a chat's messages) or
+        // those with a cached answer
+        if let Some(on) = self.ix.by_aspect.get(&k)
+            && on.len() < self.live_bodies.len()
+        {
+            for (_, c) in on {
+                self.live_bodies.remove(c);
             }
-            !commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|x| x.tid == *tid && x.ak == *ak))
+            return;
+        }
+        let commits = &self.ix.commits;
+        self.live_bodies.retain(|c, m| {
+            drop(crate::costs::span("live bodies: walked"));
+            m.remove(&k);
+            !m.is_empty() && !commits.get(c).is_some_and(|m| m.header.aspects.iter().any(|x| x.tid == *tid && x.ak == *ak))
         });
     }
 
@@ -956,6 +989,8 @@ impl Core {
             self.timelines.update_touched(&self.ix.held, &touched);
         }
         self.stale_things.clear();
+        self.stale_authors.clear();
+        self.stale_under.clear();
         self.stale_commits.clear();
     }
 
@@ -978,6 +1013,8 @@ impl Core {
             walk_cache_min: index::WALK_CACHE_MIN,
             walks_done: None,
             stale_things: BTreeSet::new(),
+            stale_authors: BTreeSet::new(),
+            stale_under: BTreeSet::new(),
             stale_commits: BTreeSet::new(),
             stale_all: true,
             dirty: false,
@@ -1967,6 +2004,25 @@ mod tests {
                 f(&mut p.engine).unwrap()
             }
         }
+    }
+
+    // spec: none (costs, spec/requirements.md Scale): a write on an aspect with few commits (a
+    // roster) forgets their cached liveness without walking the others' (a chat's messages).
+    #[test]
+    fn forget_live_walks_no_other_bodies() {
+        let mut lp = LocalPeer::new(1, 953, WallMs(1_700_000_000_000)).unwrap();
+        let core = &mut lp.peers[0].engine.core;
+        let (t, roster, msgs) = (core.id.tid(), Ak::new("roles.0").unwrap(), Ak::new("chat:msgs:y1.0").unwrap());
+        let id = |i: u8| osis_base::CommitId([i; 32]);
+        for i in 0..9 {
+            core.live_bodies.entry(id(i)).or_default().insert((t, msgs.clone()), true);
+        }
+        core.live_bodies.entry(id(9)).or_default().insert((t, roster.clone()), true);
+        core.ix.by_aspect.insert((t, roster.clone()), (osis_base::Ts::default(), id(9)));
+        crate::costs::take();
+        core.forget_live(&t, &roster);
+        assert!(!crate::costs::take().iter().any(|x| x.0 == "live bodies: walked"));
+        assert_eq!(core.live_bodies.len(), 9);
     }
 
     fn holder(t: Tid, m: Tid, role: Option<Role>) -> Mutation {

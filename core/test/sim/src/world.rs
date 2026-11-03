@@ -53,6 +53,9 @@ pub struct Traffic {
     pub down: u64,
 }
 
+/// Cost spans by name: time and count.
+type DbSpans = BTreeMap<&'static str, (Duration, u64)>;
+
 pub struct World {
     pub clock: Arc<ManualClock>,
     pub hosts: Vec<Host>,
@@ -80,6 +83,8 @@ pub struct World {
     /// Per database, by start order: time inside its `take_actions` and `feed` (its passes and
     /// receives). All databases share a thread, so this is what one device would spend.
     busy: Vec<Duration>,
+    /// Per database, the cost spans since `spans_by_db` (a scale check's breakdown).
+    db_spans: Option<BTreeMap<usize, DbSpans>>,
     /// Time inside host hubs.
     hub_busy: Duration,
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
@@ -112,6 +117,7 @@ impl World {
             holds_invites: BTreeSet::new(),
             traffic: Vec::new(),
             busy: Vec::new(),
+            db_spans: None,
             hub_busy: Duration::ZERO,
             tally: None,
             decoders: BTreeMap::new(),
@@ -316,9 +322,29 @@ impl World {
         self.hub_busy
     }
 
+    /// Starts keeping cost spans per database (`take_db_spans`).
+    pub fn spans_by_db(&mut self) {
+        osis_node::costs::take();
+        self.db_spans = Some(BTreeMap::new());
+    }
+
+    /// The spans of database `d` since `spans_by_db`, and stops keeping them.
+    pub fn take_db_spans(&mut self, d: usize) -> Vec<(&'static str, Duration, u64)> {
+        let mut all = self.db_spans.take().unwrap_or_default();
+        all.remove(&d).unwrap_or_default().into_iter().map(|(k, (t, n))| (k, t, n)).collect()
+    }
+
     fn charge(&mut self, d: usize, t: Instant) {
         if let Some(b) = self.busy.get_mut(d) {
             *b += t.elapsed();
+        }
+        if let Some(m) = &mut self.db_spans {
+            let m = m.entry(d).or_default();
+            for (k, t, n) in osis_node::costs::take() {
+                let e = m.entry(k).or_default();
+                e.0 += t;
+                e.1 += n;
+            }
         }
     }
 
