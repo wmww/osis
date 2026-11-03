@@ -146,6 +146,14 @@ pub fn settings(db: &Osis, c: Tid) -> Result<Settings> {
     Ok(s)
 }
 
+/// The chats this node holds: its synced groups (`Osis::status`) with chat settings, in tid order.
+/// The set changes with the status: re-list on `Osis::watch_status`.
+pub fn chats(db: &Osis) -> Result<Vec<Tid>> {
+    let ak = settings_ak()?;
+    // a value of another shape is someone's junk: not a chat
+    Ok(db.status()?.groups.into_keys().filter(|&t| matches!(db.get(t, ak.clone()), Ok(Some(_)))).collect())
+}
+
 /// Sets the disappearing timer: later messages take it, earlier ones keep what they have. A member
 /// who has not seen the change writes under the old rule, and its node hears `on_rejected`.
 pub fn set_disappearing(db: &Osis, c: Tid, d: Option<Duration>) -> Result<()> {

@@ -841,3 +841,19 @@ fn across_a_new_year_spec_data_model_2() {
     assert_eq!(page.entries[0].id, old);
     assert!(page.more);
 }
+
+/// `chats` lists the chats a node holds, not its other synced groups (Bob's profile group from
+/// his contact card), and a joined chat once it is here.
+#[test]
+fn chats_lists_held_chats() {
+    let mut r = room(Options::default());
+    assert!(r.b.status().unwrap().groups.contains_key(&r.b.profile().unwrap()));
+    assert_eq!(chats(&r.a).unwrap(), vec![r.c]);
+    assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
+    let c2 = create(&r.a, &Options::default()).unwrap();
+    r.w.run();
+    let mut both = vec![r.c, c2];
+    both.sort();
+    assert_eq!(chats(&r.a).unwrap(), both);
+    assert_eq!(chats(&r.b).unwrap(), vec![r.c]);
+}
