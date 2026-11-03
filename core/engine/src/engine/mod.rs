@@ -785,8 +785,12 @@ impl Core {
         self.stale_things.extend(self.ix.held.below(&c.created));
         // a write on a changed edge may have stopped or started applying, whoever signed it, and
         // an invite grant's boxes rest on that (`validity::valid_on`)
+        let mut on_target: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
         for (h, t) in &c.edges {
-            let on = self.ix.held.commits_on(t).iter().filter(|r| r.ops.iter().any(|o| o.target == *t && o.holder == *h));
+            on_target.entry(*t).or_default().insert(*h);
+        }
+        for (t, hs) in &on_target {
+            let on = self.ix.held.commits_on(t).iter().filter(|r| r.ops.iter().any(|o| o.target == *t && hs.contains(&o.holder)));
             self.stale_commits.extend(on.map(|r| r.id));
         }
         let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();

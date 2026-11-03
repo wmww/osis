@@ -1461,6 +1461,35 @@ fn work_waiting_bounded_spec_sync_6() {
     assert!(net.sync(a).work_waiting() < cap / 2, "and nothing waits after: {}", net.sync(a).work_waiting());
 }
 
+// spec: none (costs, spec/requirements.md Scale): what a pass left for the next (here uploads a full
+// host refuses) is not work waiting: over `work_max` of it does not make every following pass full.
+#[test]
+fn work_left_by_a_pass_is_not_waiting_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host_with(HostPolicy { cap_entries: 60, ..HostPolicy::default() });
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.address(host);
+    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 1);
+    let t = net.item(a, g0, g0, "t");
+    net.run();
+    let cap = 16;
+    net.sync(a).config_mut().work_max = cap;
+    for i in 0..6 * cap {
+        net.write(a, t, &format!("v{i}"));
+    }
+    net.run();
+    let s0 = net.sync(a).pass_stats();
+    for i in 0..4 {
+        net.write(a, t, &format!("w{i}"));
+        net.run();
+    }
+    let s1 = net.sync(a).pass_stats();
+    assert!(s1.bodies - s0.bodies > 4 * cap as u64, "those waiting are judged again: {}", s1.bodies - s0.bodies);
+    assert!(s1.passes > s0.passes);
+    assert_eq!(s1.full, s0.full, "no pass over them is full");
+}
+
 // spec/sync.md §5 (an open holds under the head's sync key): a removed reader still connected
 // and subscribed when the remover registers the new step (ignoring all it is sent from then on)
 // is told of no entry added after it, while the remaining reader and the admin go on over the

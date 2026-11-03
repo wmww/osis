@@ -155,6 +155,8 @@ pub(crate) struct Work {
     pub full: bool,
     pub commits: BTreeSet<CommitId>,
     pub blobs: BTreeSet<BlobId>,
+    /// Changes from elsewhere since the last pass (`bound`).
+    pub elsewhere: usize,
     pub aspects: BTreeSet<(Tid, Ak)>,
     pub states: BTreeSet<(Tid, Ak)>,
     pub whole: BTreeSet<(Tid, Ak)>,
@@ -225,16 +227,21 @@ impl Work {
         self.roles.merge(&o.roles);
         self.actors.extend(o.actors);
         self.keys |= o.keys;
+        self.elsewhere = self.elsewhere.saturating_add(o.elsewhere);
     }
 
-    /// What grows with changes elsewhere until the next pass.
+    /// What the set holds (a measure).
     pub fn waiting(&self) -> usize {
         self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len()
     }
 
-    /// Past `max` waiting, the next pass judges everything instead (`SyncConfig::work_max`).
-    pub fn bound(&mut self, max: usize) {
-        if self.waiting() > max {
+    /// Notes `n` more changes from elsewhere. Past `max` since the last pass, the next pass judges
+    /// everything instead (`SyncConfig::work_max`). What the pass left and the label's own touches
+    /// do not count: at most what the label holds, and uploads a host has yet to take would make
+    /// every pass full.
+    pub fn bound(&mut self, n: usize, max: usize) {
+        self.elsewhere = self.elsewhere.saturating_add(n);
+        if self.elsewhere > max {
             self.full = true;
             self.commits.clear();
             self.blobs.clear();
@@ -250,6 +257,7 @@ impl Work {
         self.full = false;
         self.commits = left.commits;
         self.blobs = left.blobs;
+        self.elsewhere = 0;
         for (t, cs) in left.due {
             self.due.entry(t).or_default().extend(cs);
         }

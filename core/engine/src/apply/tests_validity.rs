@@ -181,6 +181,62 @@ mod tests {
         assert_eq!(lp.peers[3].engine.body_valid(&id, &t, &secrets), lp.peers[4].engine.body_valid(&id, &t, &secrets));
         assert_eq!(lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap(), lp.peers[4].engine.get_typed(&t, &ct::SECRETS).unwrap());
     }
+    // spec/permissions.md §2, §5.1 step 4: a late grant makes an invite holder an admin earlier,
+    // so its write on another's edge turns from an invite grant (no audit) into an audited write
+    // (restores what the holder gave up, demotes): the edge's value is the same, the holder's
+    // write falls, as where the grant came first.
+    #[test]
+    fn invite_grant_turned_audited_any_order_spec_perm_5_1() {
+        let mut lp = LocalPeer::new(5, 972, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        // 0 admin, 1 invite holder, 2 holder, 3 and 4 receivers
+        let (a, b, h) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let ak = osis_base::Ak::new("x:a.0").unwrap();
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &ak, &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.peers[0].engine.grant(&t, &h, &ct::Edge { role: Role::Write, ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        // the holder writes (no one hears yet), then gives its edge up
+        lp.advance(1000);
+        let mut m = Mutation::new();
+        m.set(t, &ak, &Value::Int(2)).unwrap();
+        let write = lp.peers[2].commit(m).unwrap().unwrap();
+        let write = lp.peers[2].engine.package(&write).unwrap().unwrap();
+        lp.advance(1000);
+        let left = crate::flows::Demotion { holder: h, new: None, presync: crate::flows::PreSync::Unsynced { proceed: true }, keep: None };
+        let left = *lp.peers[2].engine.demote(&t, &left).unwrap().commits.last().unwrap();
+        let left = lp.peers[2].engine.package(&left).unwrap().unwrap();
+        lp.deliver(1, &left).unwrap();
+        lp.advance(1000);
+        let to_admin = *lp.peers[0].engine.grant(&t, &b, &ct::Edge { role: Role::Admin, ..read.clone() }).unwrap().commits.last().unwrap();
+        let to_admin = lp.peers[0].engine.package(&to_admin).unwrap().unwrap();
+        lp.advance(1000);
+        // an invite grant at its author, which has heard neither the write nor the rise
+        // (by hand: an honest writer waits for the rotation; the walk does not care)
+        let mut m = Mutation::new();
+        crate::flows::put_edge(&mut m, t, h, &read).unwrap();
+        m.unchecked = true;
+        lp.peers[1].engine.core.skip_writer_rules = true;
+        let again = lp.peers[1].commit(m).unwrap().unwrap();
+        lp.peers[1].engine.core.skip_writer_rules = false;
+        let again = lp.peers[1].engine.package(&again).unwrap().unwrap();
+        let id = write.id;
+        for pk in [&write, &left, &again] {
+            lp.deliver(3, pk).unwrap();
+        }
+        assert_eq!(lp.peers[3].engine.body_valid(&id, &t, &ak), Some(true), "no audit yet");
+        lp.deliver(3, &to_admin).unwrap();
+        for pk in [&to_admin, &write, &left, &again] {
+            lp.deliver(4, pk).unwrap();
+        }
+        for r in [3, 4] {
+            assert_eq!(lp.peers[r].engine.body_valid(&id, &t, &ak), Some(false), "receiver {r}");
+        }
+    }
     // spec/permissions.md §2: an invite grant's `secrets.0` entries are new, created by its own
     // delta. A record claiming the grantee's key at another holder's entry dot would merge into
     // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.
