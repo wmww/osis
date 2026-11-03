@@ -291,6 +291,8 @@ pub use history::{HISTORY_PAGE, HistoryBody, HistoryEntry, HistoryEvent, History
 pub use watch::{Change, Changed, CommitInfo, Dispatcher, Source, Subscription, Watch};
 pub use write::{AspectWrite, Committed, PathWrite, Write};
 
+/// Keep at least this, as an absolute time: for good (`Retention.at_least.abs`).
+pub use osis_commit::FOREVER;
 pub use osis_base::{Ak, Clock, CommitId, CreationRecord, ManualClock, Role, Tid, Ts, Value, WallMs};
 pub use osis_node::{Cause, ChangeId, Diagnostic, DiagnosticKind, EphemeralId};
 pub use osis_schema::{Aspect, AspectKey, CaseId, Codec, FieldId, Path, PathError, Lifetime, Retention, Schema, Step, p};

@@ -496,6 +496,26 @@ fn every_api_method_has_a_command_plan_cli_tests() {
     assert!(missing.is_empty(), "API methods without a command (notes/cli.md table): {missing:?}");
 }
 
+// notes/cli.md Command table `chat`, notes/chat.md: a local chat through the commands: post and read, the JSON, a cursor, edit, delete, bad arguments
+#[test]
+fn chat_commands_plan_cli() {
+    let s = S::mem();
+    let c = s.ok(&["chat", "create", "--name", "room"]).line().to_string();
+    let one = s.ok(&["chat", "post", &c, "--from", "ann", "--subject", "head", "body"]).line().to_string();
+    let read = s.ok(&["--json", "chat", "read", &c]).out;
+    assert!(read.contains(&format!("\"id\":\"{one}\"")) && read.contains("\"name\":\"ann\"") && read.contains("head\\n\\nbody") && read.contains("\"reply_to\":null") && read.contains("\"cursor\""), "{read}");
+    let two = s.ok(&["chat", "post", &c, "--reply-to", &one, "two"]).line().to_string();
+    assert!(s.ok(&["chat", "read", &c, "--after", &one]).out.contains(&format!("(to {one}): two")));
+    assert_eq!(s.ok(&["chat", "read", &c, "--max", "1"]).out.lines().count(), 2, "a message and the cursor");
+    s.ok(&["chat", "edit", &c, &two, "two!"]);
+    assert!(s.ok(&["chat", "read", &c]).out.contains("(edited): two!"));
+    s.ok(&["chat", "delete", &c, &one]);
+    assert!(s.ok(&["chat", "read", &c]).out.contains("<deleted>"));
+    assert!(s.ok(&["chat", "members", &c]).out.contains("Admin"));
+    assert_ne!(s.code(&["chat", "create", "--purge", "x"]), 0);
+    assert_ne!(s.code(&["chat", "edit", &c, "not/an/id", "x"]), 0);
+}
+
 // notes/cli.md Command table `clients`, notes/client-port.md §3: `add` prints the actor and the secret once (only the hash stays), `ls` lists them, `rotate` prints a new secret, `rm` removes (again: exit 3); an until not in the future is refused; `--node` needs `--client-secret` and a readable secret file
 #[test]
 fn clients_commands_plan_cli() {

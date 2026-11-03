@@ -2591,12 +2591,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "osis-chat"
+version = "0.1.0"
+dependencies = [
+ "osis",
+ "osis-sim",
+ "osis-transport",
+]
+
+[[package]]
 name = "osis-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "osis",
+ "osis-chat",
  "osis-schema",
  "proptest",
 ]

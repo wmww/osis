@@ -433,7 +433,7 @@ impl<'d> Write<'d> {
                     b.m.purge(PurgeItem::Author { tid, ak: key(k)?.ak.clone(), actor });
                 }
                 WriteOp::Delete(t) => {
-                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && !is_role_class(a.as_str())) {
+                    for ak in r.aspects(t)?.iter().filter(|a| !read_only(a.as_str()) && osis_schema::core_types::is_content(a.as_str())) {
                         // the key decides the side that holds it
                         b.m.remove_aspect(t, ak)?;
                     }

@@ -17,6 +17,7 @@ Review gates (second review, items by its numbering; settled in the note, the br
 - [ ] **(g) `client-cache`**: cached values only for live-subscribed aspects, invalidated when the subscription lapses, never offline, no write-through; bounded by `materialize_limit`.
 
 ## Follows from it
+- **`redeem` and `demote` through a socket** (`osis chat join`, `kick`): both `local_only`, so beside a running `osis serve` one stops the daemon first. An Owner row each; they wait on the network, so the row has to wait too.
 - **Thin clients' sharing and sync rows** (from (c)): `grant`, `change_edge`, `share_into`, `remove_edge_of`, `leave`, `make_link`, `sync`, `unsync`, `sync_now` and `wait_synced` are Owner only: the engine flows they call act with the node's authority and take no actor, so a client row would be a confused deputy. Giving them an actor is the rest of `Osis::act_as` (issues/grant-rename-multi-actor.md).
 - **Thin clients' schemas** (from (c)): `register_schema_source` is Owner only (it stays in the engine's store, process-wide, keyed by version: a client's could retype the node's aspects). A client's typed write reaches the node untyped unless the node's owner registered the schema. Needs per-session schemas at the replay, or a decision that the owner registers them.
 - **A removed client's actor stays** (from (c)): placed in the home group with its secrets forever; one record per client ever added. Its commits' certificates may need it.

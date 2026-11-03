@@ -1422,7 +1422,7 @@ impl Engine {
         let aspects = self.core.ix.by_aspect.range((*tid, osis_base::Ak::MIN)..).take_while(|((t, _), _)| t == tid);
         for ((_, ak), ids) in aspects {
             let a = ak.as_str();
-            if a == "created.0" || a == "group.0" || osis_schema::core_types::is_role_class(a) {
+            if a == "group.0" || !osis_schema::core_types::is_content(a) {
                 continue;
             }
             for (ts, id) in ids.iter().rev() {

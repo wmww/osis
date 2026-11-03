@@ -17,6 +17,12 @@ pub fn is_role_class(ak: &str) -> bool {
     ROLE_CLASS.contains(&ak)
 }
 
+/// Whether `ak` is a thing's content: what a delete removes, an undone creation resets and a read
+/// of the thing counts: no creation record, no rights and no retention rule (spec/commits.md §5).
+pub fn is_content(ak: &str) -> bool {
+    !is_role_class(ak) && ak != "created.0" && ak != "required.0^"
+}
+
 /// Whether `ak` is a core schema key by its form: one name segment, no tid (spec/data-model.md
 /// §2), declared there or not.
 pub fn is_core_key(ak: &str) -> bool {

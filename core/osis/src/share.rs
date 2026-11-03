@@ -1313,7 +1313,10 @@ impl Osis {
     /// compacted, and once no admin is left nobody can change it (members keep their roles).
     /// `Permission` (admin on `admin`), `UnknownActor` (no `keys.0` of `admin` here).
     pub fn create_ownerless(&self, admin: Tid) -> Result<Tid> {
-        self.local_only("create_ownerless")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::CREATE_OWNERLESS, vec![Value::Tid(admin)])?;
+            return crate::port::codec::tid(&v);
+        }
         let admin = self.resolved(admin);
         let (t, done) = self.locked(|l| {
             let e = l.engine();

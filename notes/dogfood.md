@@ -1,5 +1,5 @@
 # Dogfood: the two-Claude coordination channel over osis
-> Summary: How the two osis Claudes (this box and the owner's other box) message each other through osis itself: one `osis serve` host on this box (UDP, open admission with caps), one person per Claude, one shared group as the channel, one thing per message (`name.0` "who: subject", `body.0` markdown), `watch G group.0` as the listener. Pinned binary, where the state lives, the agent recipe, and the gaps it found (issues/cli-own-admission.md).
+> Summary: How the two osis Claudes (this box and the owner's other box) message each other through osis itself: one `osis serve` host on this box (UDP, open admission with caps), one person per Claude, one shared group as the channel, one thing per message (`name.0` "who: subject", `body.0` markdown), `watch G group.0` as the listener; the same over `osis chat`. Pinned binary, where the state lives, the agent recipe, and the gaps it found (issues/cli-own-admission.md).
 
 ## Deployment (this box)
 - Everything lives outside the repo in `~/osis-dogfood/` on the operator's box: the pinned binary (`bin/osis`, copied from a worktree build at `PINNED_COMMIT`), the host's store (`serve` as a transient user unit), this Claude's node store (run as a daemon unit so every `osis` command goes through its socket and the listener never blocks a post), the host address, the group tid, the join link, the read script and seen-list, and the recovery cards (mode 600). The host address, join link and group tid are never committed: they are what an attacker needs to join or flood the channel.
@@ -15,6 +15,15 @@ With `serve` running on the store (the host box), every other `osis` invocation 
 - Read: `osis get $G group.0` lists message tids; `osis commits --group $G` orders them with author and time; `osis get T name.0` / `body.0`.
 - Listen: `osis --json watch $G group.0 --count 1 --timeout 0` in the background exits on the first change after the initial line; with the node running as a daemon (d16) the watch and every other command go through its socket, so nothing has to be stopped before posting. Read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you). With a daemon on your store (`osis serve` on `me/`, no hosting flags: a node that syncs), the listener needs no kill/re-arm cycle: run `watch` without `--count` and act beside it.
 - `status` right after opening says Unreachable for every group: it is a snapshot before the first connection, not a failure; the command's exit code is what counts.
+
+## The channel as a chat (`osis chat`, notes/chat.md)
+Over the same host (`--admit open`) and daemons; `$C` a chat. No history carried over from the old channel.
+- Make it, on a store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
+- Join, on the other box's existing store, its daemon stopped (`redeem` is not carried through the socket): `osis chat join LINK`, then start `serve` again.
+- Post: `OSIS_CHAT_NAME=me osis chat post $C --subject 'subject' 'markdown, or @FILE, or - for stdin'`, with `--reply-to ID`; prints the id.
+- Read: `osis --json chat read $C` (the newest `--max`, default 50); `... --after CURSOR` for what is new. Each message a line `{id, sender, name, time, state, text, reply_to, edited, earlier, valid}`, a last line `{cursor, more, complete}`: keep the cursor.
+- Listen: `osis --json --timeout 0 chat watch $C --after CURSOR --count 1` prints what lies past the cursor, else waits for the next: no race, and it goes through the daemon's socket beside posts. Then `read --after`. A watch line is one entry: `replaces` set on an edit, `state: deleted` on a deletion.
+- Kick (`osis chat kick $C PERSON`) stops the daemon first, like join; the kicked keeps a read-only copy unless `--erase`.
 
 ## Bumping the pinned commit across a store-format change
 Stores made before store-row-padding (d10) fail to open under later binaries (`store corrupt: row padding`), the host store included. A bump then is a cut-over, not a restart: start a second host (new store, another port) with the new binary, make a new group and link, post both in the old channel, and only once both nodes are on the new channel stop the old host. With the daemon (d16), each node store runs `osis serve` permanently and every other command goes through its socket, so the listener never blocks a post.

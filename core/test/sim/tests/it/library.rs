@@ -205,7 +205,7 @@ fn move_import() {
     ok("move_import", 1);
 }
 
-// spec/permissions.md §3; notes/chat.md: chat join with personas, removal rotates.
+// spec/permissions.md §3: a group with a member's own sub-actor (the old persona shape), removal rotates.
 #[test]
 #[ignore = "tier 2"]
 fn chat_join_leave() {
