@@ -145,6 +145,8 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     // two tasks, the first's tags holding a link that names no blob
     let tasks = vec![task("a"), task("b")];
     db.write_with(|w| w.at(n, notes::TASKS).set(&tasks)).unwrap();
+    // calls coalesce (a late call reads the latest state): take this one before the next write
+    assert_eq!(recv(&changes), Ok(Some(tasks.clone())));
     let Some(Value::List(mut raw)) = db.at(n, ak("note:tasks.0")).get_value().unwrap() else { panic!() };
     let Value::Map(first) = &mut raw[0] else { panic!() };
     let bogus = Value::Link(Link { hash: [3; 32], blob: BlobId([4; 32]), suite: 1, key: [5; 32] });
@@ -163,8 +165,7 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert!(d.detail.contains("blob missing") && d.detail.contains("verification failed"), "{}", d.detail);
     assert_eq!(db.at(n, notes::TASKS).path(p![0, task::TAGS]).get::<BTreeSet<String>>().unwrap(), Some(["kept".to_string()].into()));
     assert_eq!(db.at(n, notes::TASKS).path(p![1]).get::<Task>().unwrap(), Some(task("b")));
-    // on_change: the plain write, then the one with the link; the watch holds the latter
-    assert_eq!(recv(&changes), Ok(Some(tasks)));
+    // on_change: the write with the link; the watch holds it too
     assert_eq!(recv(&changes), Ok(Some(want.clone())));
     assert_eq!(watch.current(), Ok(Some(want)));
     // at the aspect root: the aspect reads absent, not an error
