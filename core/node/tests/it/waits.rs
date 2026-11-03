@@ -838,6 +838,41 @@ fn cross_thing_learned_late_stays_until_the_part_comes_spec_commits_4() {
     assert_eq!(read(false), (Some(s("t")), Some(s("t")), Some(s("u"))));
 }
 
+// spec/commits.md §4 (the stated limit): a writer of a synced group lists a thing the node never
+// reads. A commit across it and a held thing waits whole for its part, until the listing goes.
+#[test]
+fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {
+    let mut lp = net(2, 97);
+    let (g, t) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
+    sync(&mut lp, 0, 1);
+    lp.peers[1].engine.set_syncing(g, true).unwrap();
+    // created now: its record never reaches peer 1
+    let v = new_thing(&mut lp, 0);
+    let mut write_group = |lp: &mut LocalPeer, items: &[Tid]| {
+        lp.peers[0].clock.advance(10);
+        let mut m = Mutation::new();
+        m.set(g, &osis_schema::core_types::GROUP, &osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: Default::default() }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let listed = write_group(&mut lp, &[t, v]);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("t")).unwrap();
+    m.set(v, &REG, &s("v")).unwrap();
+    let id = lp.peers[0].commit(m).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&id).unwrap();
+    let unlisted = write_group(&mut lp, &[t]);
+    let pks = packages(&mut lp, 0);
+    let pk = |c: &osis_base::CommitId| pks.iter().find(|p| p.id == *c).unwrap();
+    let e = &mut lp.peers[1].engine;
+    e.ingest(&pk(&listed).bytes, Vec::new()).unwrap();
+    e.ingest(&only(&pk(&id).bytes, &h, |x, _| x == t), Vec::new()).unwrap();
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("new")), "waits whole");
+    assert!(e.pending().iter().any(|(c, _)| *c == id));
+    e.ingest(&pk(&unlisted).bytes, Vec::new()).unwrap();
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "the listing gone");
+    assert!(e.pending().is_empty(), "{:?}", e.pending());
+}
+
 // spec/commits.md §4: a commit no part of which is held (a pending part went at its expiry) waits
 // for its other deltas synced or not: whether it is recorded applied reads no sync set.
 #[test]
