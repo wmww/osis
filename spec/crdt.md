@@ -190,7 +190,7 @@ Each encoding below gives: state, delta shape (= grammar of §3.2, restated wher
 - Join: greater stamp wins. Prune per §4.2.
 - Read: the value.
 - Ops: `set v` → `[0, [], D, v]` = `[0, [], 0, v]`. `remove_aspect` (root) → `[0, [D]]`. `replace v` (root) → `[0, [D], D, v]` (reset and content share the delta stamp; content wins by `>=`).
-- Undo of a write: previous value if still winner (§4.6).
+- Undo of a write: previous value if still winner (§4.6). Undo of `remove_aspect` or `replace`: the fragment reset rule (§4.6), whatever wins now.
 - Tombstones: none; the reset stamp is the whole removed state.
 
 ### 5.2 Bags: counter (1), max (2), min (3)

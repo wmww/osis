@@ -1,12 +1,11 @@
 # Spec audit 2 leftovers: engine parts not yet audited
-> Summary: Parts of the engine part 2 of the spec audit did not compare against the spec: death re-dating after a validity flip or un-merge, keep-bound drops counting as never received, purge mechanics, epoch-start rounds, undo of ephemeral creations, crdt-model undo vs engine undo.
-> Tags: spec, engine, crdt, permissions
-
-The audited items (undo in effect, frontier decode, carrier covers, node-form role code, list presence, demotion order, `Slots` undo, register absent before, outermost absent, demotion scope as restored) were fixed on branch engine-audit-fix.
+> Summary: What is left of the engine spec audit after deaths, purge, epoch-start rounds, ephemeral creation undo and crdt-model undo were compared: the host side of purge, and open questions.
+> Tags: spec, engine
 
 ## Not audited
-- Death re-dating after a validity flip or un-merge (`retention/deaths.rs` `rejudge_deaths`, `replay_all`) and spec/commits.md §5 (a body dropped for its keep bounds counts as never received).
-- Purge mechanics beyond `known_purged`.
-- Epoch-start rounds (spec/permissions.md §6).
-- Undo of ephemeral creations (`unmake_ephemeral`).
-- crdt-model undo vs `osis-crdt` undo line by line (the outermost-absent difference below map entries and list elements was one; the `Undone::restored` judgment of the engine and the model's `restored` closure are not compared).
+- Node-sync's half of purge: host deletes and rewrites (`sync/pass/delete.rs`), spec/sync.md §5, §6, §7. Engine side done; the re-snapshot after a purge only spot-checked (`deletion.rs` test).
+- `Input::cyclic` and resuming a timeline from old starts (spec/permissions.md §6 says rounds begin from none): the fixed-point argument in `walk::drive` read, not proved; `check_scratch` tests it in debug builds.
+
+## Questions, not traced to a concrete harm
+- `chain_judge` (engine/src/undo/mod.rs:332): `undone_by` holds every held undo commit naming a commit, whatever its validity, and an invalid later commit counts as "in effect". §4.6 does not say whether an invalid undo commit undoes, or whether an invalid delta "holds writes of the aspect". Effect limited to undo's step-back.
+- A held later compaction snapshot counts as a later change in effect, so step-back stops after any compaction here (literal §4.6, same in code); intended?
