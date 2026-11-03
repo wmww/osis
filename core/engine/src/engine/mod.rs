@@ -645,8 +645,8 @@ pub struct Core {
     /// a write there can move many answers (`inbox_moved`).
     pub inbox_labels: BTreeMap<Tid, Option<LabelId>>,
     pub inbox_uppers: BTreeSet<Tid>,
-    /// `acting` at this engine generation.
-    acting_memo: Option<(u64, Arc<Vec<Tid>>)>,
+    /// `acting` at this engine generation (both: memory commits are in `by_actor` too).
+    acting_memo: Option<(u64, u64, Arc<Vec<Tid>>)>,
     /// Actors with secrets held by inbox label, the topmost first (`Engine::inbox_actors`).
     pub inbox_actors: Option<Arc<BTreeMap<LabelId, Vec<Tid>>>>,
     /// Page indexes of the cached states kept paged in the store.
@@ -917,13 +917,13 @@ impl Core {
             c.ix.by_actor.keys().filter(|(_, au)| *au == me).map(|(a, _)| *a).collect()
         };
         match &self.acting_memo {
-            Some((g, v)) if *g == self.generation => {
+            Some((g, m, v)) if (*g, *m) == (self.generation, self.memory_generation) => {
                 debug_assert_eq!(**v, read(self), "acting cached");
                 v.clone()
             }
             _ => {
                 let v = Arc::new(read(self));
-                self.acting_memo = Some((self.generation, v.clone()));
+                self.acting_memo = Some((self.generation, self.memory_generation, v.clone()));
                 v
             }
         }

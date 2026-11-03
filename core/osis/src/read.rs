@@ -337,7 +337,8 @@ impl Reader<'_> {
         let t = self.resolve(tid);
         if self.hidden(t) {
             return false;
-        }        self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&t) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
+        }
+        self.e.ephemeral_thing(&t).is_some_and(|x| !x.deleted) || self.e.is_draft_again(&t) || (self.e.knows(&t) && self.e.has_content(&t).unwrap_or(true))
     }
 
     /// Whether the thing's creation is held or it is ephemeral here, deleted or not: what a

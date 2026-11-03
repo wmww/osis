@@ -924,3 +924,21 @@ fn unplaced_placement_does_not_persist_its_group_spec_data_model_8() {
     assert_eq!(db.created(g).unwrap().commit, None);
     assert!(!group_of(&db, g).items.contains(&x));
 }
+
+// spec/permissions.md §4: a memory commit acting for the person counts among the actors this
+// node acts for (its chain certificates go under every label it places in): the actors cache
+// keyed on the durable generation alone missed it, and the sync driver's check of it died
+#[test]
+fn ephemeral_write_counts_as_acting_spec_permissions_4() {
+    let (db, _c) = setup(1);
+    let state = db.key("win:state.0~").unwrap();
+    let before = db.engine(|e| e.core.acting());
+    assert!(!before.contains(&db.me()), "nothing acted for the person yet: {before:?}");
+    db.write_with(|w| {
+        let win = w.create(db.me())?;
+        w.at(win, state.clone()).set(&Value::Map([(Value::Int(0), s("draft")), (Value::Int(1), Value::List(vec![]))].into()))
+    })
+    .unwrap();
+    let after = db.engine(|e| e.core.acting());
+    assert!(after.contains(&db.me()), "{after:?}");
+}
