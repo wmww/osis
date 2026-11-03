@@ -1,4 +1,11 @@
-//! What holds a commit back (spec/commits.md §4).
+//! What holds a commit back (spec/commits.md §4): the missing deltas that can (`gating`), and when
+//! one counts as held (`counts_held`).
+//!
+//! Invariant (arrival-order independence): counting as held decides when a commit's held parts join,
+//! never what they join to: the delta joins on arrival, judged as ever. So every clause reads only
+//! what grows, of any validity and whatever followed it: what let a commit apply goes on letting it
+//! apply, at any node in any order. A signer's word counts only from one that could ever have had
+//! the right (`signed_by_possible_admin`, `retention::counts_as_purged`), so a forger gets nothing.
 
 use super::validity::{meets, under_required};
 use super::{receipt, whole_part};
@@ -114,12 +121,8 @@ pub(super) fn held_units(h: &Header, parts: impl Iterator<Item = (usize, usize)>
 /// the aspect's next commit (issues/atomic-wait-no-later-commit.md). A live delta still on its
 /// way waits unless such a commit exists and its bound passed; a bound passing here earlier than
 /// at its holders (an unrelated later commit, this node's clock) only applies the rest sooner.
-///
-/// Invariant (arrival-order independence): this decides when a commit's held parts join, never
-/// what they join to. Every input only grows (commits held, any validity, so no flip can take it
-/// back; the clock going back unapplies nothing), an applied commit's missing delta joins on
-/// arrival as if it had come with the rest (join commutes; retention judges it then), and one
-/// that never comes held only writes every holder's state supersedes or a carrier holds.
+/// The clock going back unapplies nothing, and a delta that never comes held only writes every
+/// holder's state supersedes or a carrier holds.
 pub(crate) fn at_most_bound(core: &crate::engine::Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<u64> {
     let held = core.ix.by_aspect.get(&(a.tid, a.ak.clone()))?;
     let later = held.range((h.ts, CommitId([0; 32]))..).find(|x| x.1 != *id)?.0.wall_ms().0;
@@ -130,12 +133,9 @@ pub(crate) fn at_most_bound(core: &crate::engine::Core, h: &Header, id: &CommitI
 /// (spec/commits.md §4): it breaks a held `required.0^` delta ordered before its key, whatever
 /// that delta's validity, signed by a possible admin (`Held::ever_admins`). The broken delta may
 /// be gone without a right, so its commit's other deltas must not wait for it; a writer's setting
-/// says nothing of a delta a host hides.
-///
-/// Invariant (arrival-order independence): this reads no validity, so a setting or a grant falling
-/// or rising changes nothing here. Possible admins only grow and a setting by one never goes
-/// (`never_could_set`), so what this let apply it goes on letting apply. A valid setting's author is
-/// a possible admin (`Judge::settings` checks), so no good part waits for good behind one.
+/// says nothing of a delta a host hides. A setting by a possible admin never goes
+/// (`never_could_set`), and a valid setting's author is one (`Judge::settings` checks), so no good
+/// part waits for good behind one.
 fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
     if !under_required(h, &a.ak) {
         return false;
@@ -146,7 +146,7 @@ fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &osis_commit
 }
 
 /// Whether one of `signers` is a possible admin of `t` (`Held::ever_admins`), the set walked only if
-/// there is one: what lets a missing delta count as held on a signer's word must not be anyone's.
+/// there is one.
 fn signed_by_possible_admin(core: &Core, t: &Tid, signers: impl Iterator<Item = Tid>) -> bool {
     let mut signers = signers.peekable();
     signers.peek().is_some() && {
@@ -161,13 +161,11 @@ fn signed_by_possible_admin(core: &Core, t: &Tid, signers: impl Iterator<Item = 
 /// wait: its author, cut from the label, may never place it. A frontier tells a demotion from a plain
 /// grant of a low role, as the write alone cannot.
 ///
-/// Invariant (arrival-order independence, `examine`): the input only grows. So this reads the role
-/// commits and ledgers held, of any validity and whatever follows them, never the timeline: a
-/// re-grant, the lowering's fall or the fall of its signer's grant would end the release at nodes that
-/// learn of them first, while those that applied stay applied. It decides when the commit's held parts
-/// join, never what they join to: the delta joins on arrival, judged as ever. The price: such an
-/// author's later commits on that thing, once re-granted, may show part by part as they arrive; so may
-/// those of an author an ex-admin claims to lower. A reader or writer forging a lowering gets nothing.
+/// So this reads the role commits and ledgers held, never the timeline: a re-grant, the lowering's
+/// fall or the fall of its signer's grant would end the release at nodes that learn of them first,
+/// while those that applied stay applied. The price: such an author's later commits on that thing,
+/// once re-granted, may show part by part as they arrive; so may those of an author an ex-admin
+/// claims to lower.
 fn removed_author(core: &Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> bool {
     let required = if h.kind.is_compaction() { crate::engine::write::snapshot_role(a.ak.as_str()) } else { required_role(a.ak.as_str()) };
     let is_author = |t: &Tid| *t == h.author || *t == h.actor;

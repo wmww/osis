@@ -117,6 +117,17 @@ impl Held {
         out
     }
 
+    /// Who named whom on `t` with `role` or above, as (signer, holder), of any validity and whatever
+    /// followed: edge writes, roster and ledger entries.
+    fn named_with(&self, t: &Tid, role: Role) -> impl Iterator<Item = (Tid, Tid)> {
+        let edges = self.commits_on(t).iter().flat_map(move |r| r.ops.iter().filter(move |o| o.target == *t && o.edge.as_ref().is_some_and(|e| e.role >= role)).map(|o| (r.author, o.holder)));
+        let snaps = self.snapshots_of(t).iter().flat_map(move |s| {
+            let roster = s.roster.iter().filter(move |(_, e)| e.role >= role).map(|(h, _)| *h);
+            roster.chain(s.ledger.iter().filter(move |l| l.role >= role).map(|l| l.holder)).map(|h| (s.author, h))
+        });
+        edges.chain(snaps)
+    }
+
     /// `t`'s possible admins (spec/commits.md §4): the least set holding `t` and, with each member, its
     /// owner or first admin and any holder named with admin on it by an edge write, roster or ledger
     /// entry a member signed; of any validity and whatever followed. So a forger is in it only if a
@@ -134,12 +145,7 @@ impl Held {
             if let Some(Owner::Actor(x) | Owner::Ownerless(x)) = self.created(&c).map(CreationRecord::owner_link) {
                 named.push(x);
             }
-            let edges = self.commits_on(&c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Admin)).map(|o| (r.author, o.holder)));
-            let snaps = self.snapshots_of(&c).iter().flat_map(|s| {
-                let roster = s.roster.iter().filter(|(_, e)| e.role >= Role::Admin).map(|(h, _)| *h);
-                roster.chain(s.ledger.iter().filter(|l| l.role >= Role::Admin).map(|l| l.holder)).map(|h| (s.author, h))
-            });
-            for (by, h) in edges.chain(snaps) {
+            for (by, h) in self.named_with(&c, Role::Admin) {
                 if set.contains(&by) { named.push(h) } else { waiting.entry(by).or_default().push(h) }
             }
             for h in named {
@@ -159,12 +165,7 @@ impl Held {
         let (mut set, mut todo, mut seen) = (BTreeSet::new(), vec![*t], BTreeSet::from([*t]));
         while let Some(c) = todo.pop() {
             let admins = self.ever_admins(&c);
-            let edges = self.commits_on(&c).iter().flat_map(|r| r.ops.iter().filter(|o| o.target == c && o.edge.as_ref().is_some_and(|e| e.role >= Role::Write)).map(|o| (r.author, o.holder)));
-            let snaps = self.snapshots_of(&c).iter().flat_map(|s| {
-                let roster = s.roster.iter().filter(|(_, e)| e.role >= Role::Write).map(|(h, _)| *h);
-                roster.chain(s.ledger.iter().filter(|l| l.role >= Role::Write).map(|l| l.holder)).map(|h| (s.author, h))
-            });
-            for (by, h) in edges.chain(snaps) {
+            for (by, h) in self.named_with(&c, Role::Write) {
                 if admins.contains(&by) {
                     set.insert(h);
                     if seen.insert(h) {
