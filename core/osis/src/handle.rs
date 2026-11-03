@@ -43,6 +43,10 @@ impl MemStore {
     pub fn new() -> MemStore {
         MemStore::default()
     }
+    /// The bytes the node's store holds (measures).
+    pub fn held_bytes(&self) -> u64 {
+        self.backend.held_bytes()
+    }
     /// An independent copy of the store as it is now, as a device backup takes it (the host
     /// store left out): opening it later is a restore.
     pub fn backup(&self) -> MemStore {

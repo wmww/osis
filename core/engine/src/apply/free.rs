@@ -143,6 +143,9 @@ fn unindex_aspect(core: &mut Core, tid: &Tid, ak: &Ak) {
     core.ix.carried.remove(&k);
     core.ix.valueless.remove(&k);
     core.ix.deaths_due.remove(&k);
+    if ak.as_str() == "secrets.0" {
+        core.secrets_read.remove(tid);
+    }
     core.states.remove(&k);
     core.pages.remove(&k);
 }

@@ -294,7 +294,20 @@ pub(crate) fn deposit_of(tx: &mut Tx<'_>, actor: &Tid) -> Result<[u8; 32]> {
     Core::keys_in(tx, actor)?.and_then(|k| k.deposit_seed).ok_or(Error::Misuse("no deposit seed in keys.0"))
 }
 
-pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
+/// `secrets.0` of `actor`, decoded, held until its state changes (`Core::secrets_read`).
+pub(crate) fn secrets_in(tx: &mut Tx<'_>, actor: &Tid) -> Result<Arc<Secrets>> {
+    if let Some(s) = tx.core.secrets_read.get(actor).cloned() {
+        #[cfg(debug_assertions)]
+        assert_eq!(*s, secrets_decoded(tx, actor)?, "secrets_read of {actor:?} went stale");
+        return Ok(s);
+    }
+    let _s = crate::costs::span("secrets: decode");
+    let s = Arc::new(secrets_decoded(tx, actor)?);
+    tx.core.secrets_read.insert(*actor, s.clone());
+    Ok(s)
+}
+
+fn secrets_decoded(tx: &mut Tx<'_>, actor: &Tid) -> Result<Secrets> {
     Ok(tx.state(actor, &ak("secrets.0")?)?.and_then(Fragment::read).and_then(|v| crate::engine::secrets::secrets_value(&v)).unwrap_or_default())
 }
 
@@ -306,6 +319,7 @@ pub(crate) fn secrets_alts(tx: &mut Tx<'_>, actor: &Tid) -> Result<osis_keys::Hi
 /// Persists the epochs held for `actor` (the `k/` record node-core loads).
 pub(crate) fn save_epochs(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.role_changed();
+    tx.core.waits.secrets_changed(actor);
     if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -372,6 +386,8 @@ impl Engine {
         let t = id.tid();
         self.core.key_actors.insert(t, Arc::new(id));
         self.core.role_changed();
+        // boxes of pending commits may open to it
+        self.core.waits.clear();
         self.run(reopen_all)?;
         Ok(t)
     }

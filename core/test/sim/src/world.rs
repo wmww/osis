@@ -16,6 +16,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
+use std::time::{Duration, Instant};
 
 /// Start of the world's wall clock (ms).
 pub const T0: u64 = 1_700_000_000_000;
@@ -63,6 +64,8 @@ pub struct World {
     next_hub: u64,
     /// Databases cut off the network.
     offline: Vec<bool>,
+    /// Databases put to sleep for good (`sleep`): not polled, not ticked.
+    asleep: BTreeSet<usize>,
     /// (db, host): a database cut off one host only.
     cut: BTreeSet<(usize, usize)>,
     /// Databases whose user leaves invite requests alone (the others accept each as it
@@ -70,9 +73,14 @@ pub struct World {
     pub holds_invites: BTreeSet<usize>,
     /// Per database, by start order.
     traffic: Vec<Traffic>,
+    /// Per database, by start order: time inside its `take_actions` and `feed` (its passes and
+    /// receives). All databases share a thread, so this is what one device would spend.
+    busy: Vec<Duration>,
+    /// Time inside host hubs.
+    hub_busy: Duration,
     /// With `tally`: upstream frames per (database, message kind): count and bytes.
     tally: Option<BTreeMap<(usize, String), (u64, u64)>>,
-    decoders: BTreeMap<(usize, ConnId), FrameDecoder>,
+    decoders: BTreeMap<(usize, ConnId, bool), FrameDecoder>,
     /// Engine diagnostics per database since the last `diagnostics` call.
     diags: Arc<Mutex<BTreeMap<usize, Vec<String>>>>,
 }
@@ -93,9 +101,12 @@ impl World {
             queue: VecDeque::new(),
             next_hub: 1,
             offline: Vec::new(),
+            asleep: BTreeSet::new(),
             cut: BTreeSet::new(),
             holds_invites: BTreeSet::new(),
             traffic: Vec::new(),
+            busy: Vec::new(),
+            hub_busy: Duration::ZERO,
             tally: None,
             decoders: BTreeMap::new(),
             diags: Arc::default(),
@@ -216,6 +227,7 @@ impl World {
             }
             self.offline.resize(v.len(), false);
             self.traffic.resize(v.len(), Traffic::default());
+            self.busy.resize(v.len(), Duration::ZERO);
         }
         v
     }
@@ -257,19 +269,21 @@ impl World {
         self.tally = Some(BTreeMap::new());
     }
 
-    /// What `db` sent since `start_tally`: message kind -> (count, frame bytes).
+    /// What `db` sent since `start_tally`, and got (`down <kind>`; one first frame of a connection
+    /// decodes as `Hello`): message kind -> (count, frame bytes).
     pub fn tally(&mut self, db: &Osis) -> BTreeMap<String, (u64, u64)> {
         let Some(i) = self.index(db) else { return BTreeMap::new() };
         let Some(t) = &self.tally else { return BTreeMap::new() };
         t.iter().filter(|((d, _), _)| *d == i).map(|((_, k), v)| (k.clone(), *v)).collect()
     }
 
-    fn count(&mut self, d: usize, conn: ConnId, bytes: &[u8]) {
+    fn count(&mut self, d: usize, conn: ConnId, bytes: &[u8], down: bool) {
         let Some(t) = &mut self.tally else { return };
-        let dec = self.decoders.entry((d, conn)).or_default();
+        let dec = self.decoders.entry((d, conn, down)).or_default();
         dec.push(bytes);
         while let Ok(Some(f)) = dec.next_frame() {
-            let e = t.entry((d, frame_kind(&f))).or_default();
+            let k = frame_kind(&f);
+            let e = t.entry((d, if down { format!("down {k}") } else { k })).or_default();
             e.0 += 1;
             e.1 += f.len() as u64 + 4;
         }
@@ -280,9 +294,33 @@ impl World {
         self.index(db).and_then(|i| self.traffic.get(i).copied()).unwrap_or_default()
     }
 
+    /// Time `db` spent in its passes and receives so far (not the caller's direct calls on it).
+    pub fn busy(&mut self, db: &Osis) -> Duration {
+        self.index(db).and_then(|i| self.busy.get(i).copied()).unwrap_or_default()
+    }
+
+    /// Time every database spent so far, by start order.
+    pub fn busy_all(&mut self) -> Vec<Duration> {
+        self.dbs();
+        self.busy.clone()
+    }
+
+    /// Time host hubs spent so far.
+    pub fn hub_busy(&self) -> Duration {
+        self.hub_busy
+    }
+
+    fn charge(&mut self, d: usize, t: Instant) {
+        if let Some(b) = self.busy.get_mut(d) {
+            *b += t.elapsed();
+        }
+    }
+
     fn with(&mut self, d: usize, f: impl FnOnce(&Osis)) {
         if let Some(Some(db)) = self.dbs().get(d) {
-            f(db)
+            let t = Instant::now();
+            f(db);
+            self.charge(d, t);
         }
     }
 
@@ -305,6 +343,15 @@ impl World {
                 db.feed(Event::Down { conn: c });
             }
             db.take_actions();
+        }
+    }
+
+    /// Cuts a database off the network for good and stops polling it: a scale check's M-node sizes,
+    /// where the sim's own work per step would otherwise be O(M).
+    pub fn sleep(&mut self, db: &Osis) {
+        self.set_online(db, false);
+        if let Some(i) = self.index(db) {
+            self.asleep.insert(i);
         }
     }
 
@@ -351,7 +398,7 @@ impl World {
                         if let Some(t) = self.traffic.get_mut(d) {
                             t.up += bytes.len() as u64;
                         }
-                        self.count(d, conn, &bytes);
+                        self.count(d, conn, &bytes, false);
                         self.queue.push_back(Msg::ToHub(s, hc, bytes));
                     }
                 }
@@ -422,8 +469,10 @@ impl World {
         let mut moved = false;
         let dbs = self.dbs();
         for (d, db) in dbs.iter().enumerate() {
-            let Some(db) = db else { continue };
+            let Some(db) = db.as_ref().filter(|_| !self.asleep.contains(&d)) else { continue };
+            let t = Instant::now();
             let acts = db.take_actions();
+            self.charge(d, t);
             if !acts.is_empty() {
                 moved = true;
                 if let Some(seen) = seen.as_deref_mut() {
@@ -460,16 +509,19 @@ impl World {
         match m {
             Msg::Up(d, c) => self.with(d, |db| db.feed(Event::Up { conn: c })),
             Msg::ToHub(s, hc, b) => {
+                let t = Instant::now();
                 let out = match self.hosts.get_mut(s) {
                     Some(host) => host.hub.input(now, hc, b),
                     None => Vec::new(),
                 };
+                self.hub_busy += t.elapsed();
                 self.hub_out(s, out);
             }
             Msg::ToDb(d, c, b) => {
                 if let Some(t) = self.traffic.get_mut(d) {
                     t.down += b.len() as u64;
                 }
+                self.count(d, c, &b, true);
                 self.with(d, |db| db.feed(Event::Bytes { conn: c, bytes: b }))
             }
             Msg::Down(d, c) => self.with(d, |db| db.feed(Event::Down { conn: c })),
@@ -495,8 +547,11 @@ impl World {
     fn tick_all(&mut self) {
         let dbs = self.dbs();
         // an offline database's clock runs too: expiry, retention and timeouts
-        for db in dbs.iter().flatten() {
+        for (d, db) in dbs.iter().enumerate() {
+            let Some(db) = db.as_ref().filter(|_| !self.asleep.contains(&d)) else { continue };
+            let t = Instant::now();
             db.feed(Event::Tick);
+            self.charge(d, t);
         }
     }
 
@@ -521,6 +576,7 @@ impl World {
         let mut any = false;
         for (d, db) in self.dbs().iter().enumerate() {
             if let Some(db) = db
+                && !self.asleep.contains(&d)
                 && !self.holds_invites.contains(&d)
                 && !self.offline.get(d).copied().unwrap_or(false)
             {

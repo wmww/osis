@@ -217,17 +217,26 @@ impl Core {
     /// Returns whether anything new was learned.
     /// `alts`: the live entries of history keys holding several (each tried).
     pub(crate) fn ingest_secrets(&mut self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> bool {
+        let Some(epochs) = self.ingest_view(actor, secrets, unchecked, alts) else { return false };
+        self.ix.secrets.insert(*actor, epochs);
+        self.role_changed();
+        true
+    }
+
+    /// What `ingest_secrets` would make of `actor`'s epochs, when it changes them.
+    pub(crate) fn ingest_view(&self, actor: &Tid, secrets: &Secrets, unchecked: Option<Unchecked>, alts: &HistoryAlts) -> Option<ActorEpochs> {
         let before = self.ix.secrets.get(actor).cloned();
         // a bounded number of actors held through reading-only secrets alone
         let reading_only = |e: &ActorEpochs| ROLES.iter().all(|r| e.role(*r).held().next().is_none()) && e.holds_any();
         if unchecked.is_some() && before.as_ref().is_none_or(|e| !e.holds_any()) && self.ix.secrets.iter().filter(|(t, e)| *t != actor && reading_only(e)).count() >= MAX_READING_ACTORS {
-            return false;
+            return None;
         }
         let mut epochs = before.clone().unwrap_or_default();
         let seed = self.id.seed().clone();
         let me = self.id.tid();
-        let mut openers: Vec<(Tid, ActorEpochs)> = self.ix.secrets.iter().filter(|(t, _)| *t != actor).map(|(t, e)| (*t, e.clone())).collect();
-        openers.sort_by_key(|x| x.0);
+        // only a holder with a box here opens anything: not O(actors known) per ingest
+        let holders: std::collections::BTreeSet<Tid> = secrets.boxes.keys().map(|k| k.holder).filter(|t| t != actor).collect();
+        let openers: Vec<(Tid, &ActorEpochs)> = holders.iter().filter_map(|t| Some((*t, self.ix.secrets.get(t)?))).collect();
         let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: me, seed: &seed }, &mut epochs, unchecked);
         for (t, k) in &self.key_actors {
             let _ = osis_keys::ingest_with(actor, secrets, alts, &Opener::KeyActor { holder: *t, seed: k.seed() }, &mut epochs, unchecked);
@@ -237,12 +246,7 @@ impl Core {
         }
         self.adopt_derived(actor, &mut epochs);
         let held_any = epochs.holds_any();
-        if held_any && Some(&epochs) != before.as_ref() {
-            self.ix.secrets.insert(*actor, epochs);
-            self.role_changed();
-            return true;
-        }
-        false
+        (held_any && Some(&epochs) != before.as_ref()).then_some(epochs)
     }
 
     /// `ingest_secrets` over the entries of `actor`'s `secrets.0` state `st` that a change touched:

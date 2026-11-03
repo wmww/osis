@@ -11,10 +11,10 @@ thread_local! {
     static COSTS: RefCell<BTreeMap<&'static str, (Duration, u64)>> = const { RefCell::new(BTreeMap::new()) };
 }
 
-pub(crate) struct Span(Option<(&'static str, Instant)>);
+pub struct Span(Option<(&'static str, Instant)>);
 
 #[inline]
-pub(crate) fn span(name: &'static str) -> Span {
+pub fn span(name: &'static str) -> Span {
     Span(ON.with(Cell::get).then(|| (name, Instant::now())))
 }
 

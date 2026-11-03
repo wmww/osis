@@ -54,7 +54,7 @@ fn fresh(t: Tid, holders: &[Recipient], seed: u64) -> Actor {
 fn held(actors: &[&Actor]) -> MemoryHeldActors {
     let mut h = MemoryHeldActors::default();
     for a in actors {
-        h.map.insert(a.tid, (a.s.clone(), a.view.clone()));
+        h.map.insert(a.tid, (std::sync::Arc::new(a.s.clone()), a.view.clone()));
     }
     h
 }

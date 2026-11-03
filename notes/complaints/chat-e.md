@@ -2,7 +2,7 @@
 - The task named examples/chat and said to remove its code: it went in 69574b7b (`git log`); only a sim scenario keeps the persona shape. Then the crate moved to core/chat mid-task.
 - A global clap flag eats a subcommand's flag of the same name: `chat read --limit` with a default of 50 set the materialization bound to 50 bytes, `TooLarge` on every read. `--max` it is, as `commits` does; nothing warns.
 - A background `cargo ... | grep` shows nothing until it ends; a timeout kills it with nothing to show: write to a file. Lost 10 min of a measure so.
-- 100 members on the sim took over 20 min before the first message; the 10^4 run did not finish. See issues/held-actors-per-pass.md.
+- 100 members on the sim took over 20 min before the first message; the 10^4 run did not finish. See issues/chat-add-cost.md.
 
 ## API annoyances (for issues/api-review.md)
 - `replace` of a `Value::Map` on a long aspect costs a write O(writes so far), a scalar stays flat: nothing says so. A kept-write aspect wants a scalar.

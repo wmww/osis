@@ -5,23 +5,32 @@
 //! A commit waits for a creation record (`UnknownCreated`, `MissingChain`) or for deltas
 //! (`WaitDeltas`). Its examination read the commit (fixed), the held set, what the node syncs,
 //! the corrected clock (drift, expiry) and, for missing deltas, the held snapshots and purge
-//! records of their aspects. Kept only for commits whose header is inline (no header-list blobs) and
-//! that carry no `secrets.0` part (pending boxes are read at every examination), within byte
-//! bounds (a record wait keeps its order key and things, a delta wait its header too); the
-//! others are examined at every `reexamine`, as all were.
+//! records of their aspects. Kept only for commits whose header is inline (no header-list blobs),
+//! within byte bounds (a record wait keeps its order key and things, a delta wait its header too);
+//! the others are examined at every `reexamine`, as all were.
 //!
-//! - A record wait stands while what `validity::reaches` reads is the same (`Held::edges`: edge
-//!   writes and owner links, the author's certificates) and each record it names (several: parts
-//!   on things waiting for different ones) is still held or not as before; records held only
-//!   accumulate, so every lookup that found one finds the same. Any of them wakes it.
+//! An examination also reads the commit's `secrets.0` boxes (`keys::read_pending_boxes`). That
+//! reads the epochs of the actors they are on, of those actors' owners and of the holders they box
+//! to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
+//! (`Waits::secrets_changed`, `Waits::wake_boxes`). `Engine::check_unchanged` checks it. A chat's
+//! joiner holds one such commit per member, waiting for that member's records.
+//!
+//! - A record wait stands while each record it names (several: parts on things waiting for
+//!   different ones) is still held or not as before; records held only accumulate, so every lookup
+//!   that found one finds the same. If it waits for its author's certificates (`MissingChain` of
+//!   the author), also while `validity::reaches` reads the same: the edges and owner links of the
+//!   things its backward search reaches (`reach_watch`, `Held::take_moved`). Any of them wakes it.
+//!   The other record waits read no edge: the reason that comes first stands until its record
+//!   comes. So a joiner's waits on members' records and certificates, one per member, are not all
+//!   judged again after each role commit it applies.
 //! - A delta wait is judged again (`still_waits`, without reading the commit) once anything of
 //!   the held set changed (perm judges purge rights), a snapshot part or purge record of a
 //!   missing delta's aspect was applied or written (`Waits::wake`), or the earliest expiry of its missing deltas
 //!   passed; the rest of the examination (records, chain, signature) gave the same answer.
 //! - A wait on a thing the node starts or stops syncing is dropped (examined in full); every
-//!   pending commit is examined once the held edges changed or the clock is below the latest
-//!   one a wait was judged at (drift), and after a clock offset change, a rollback that
-//!   changed anything (the cache is dropped) or a reload.
+//!   pending commit is examined once the clock is below the latest one a wait was judged at
+//!   (drift), and after a clock offset change, a rollback that changed anything (the cache is
+//!   dropped) or a reload.
 //!
 //! `reexamine` takes only what may have changed since it last looked (`candidates`):
 //! pending commits without a wait, woken ones, record waits on records added, delta waits
@@ -45,7 +54,9 @@ enum On {
     /// Creation records: each held (`true`) or not when examined (several: parts on things that
     /// wait for different ones).
     /// `memory`: the waiting commit is memory class (it sees memory records too).
-    Record { records: Vec<(Tid, bool)>, memory: bool },
+    /// `reach`: when it waits for its author's certificates, the things whose edges may end that
+    /// (`reach_watch`).
+    Record { records: Vec<(Tid, bool)>, memory: bool, reach: BTreeSet<Tid> },
     /// The missing deltas, and the earliest expiry or keep-at-most bound among them still to come
     /// (`next_expiry`). Only commits
     /// whose signature and chain were checked get here: the header judges the missing deltas
@@ -65,19 +76,21 @@ pub(crate) struct Wait {
     edges: u64,
     /// The corrected clock when examined.
     now: u64,
+    /// Actors whose held epochs its boxes read (module doc).
+    openers: BTreeSet<Tid>,
     /// About what it keeps in memory.
     bytes: usize,
 }
 
 impl Wait {
-    fn new(h: &Header, reason: Reason, on: On, core: &Core, now: u64) -> Wait {
+    fn new(h: &Header, reason: Reason, on: On, core: &Core, now: u64, openers: BTreeSet<Tid>) -> Wait {
         let things: BTreeSet<Tid> = h.aspects.iter().map(|a| a.tid).collect();
         let header = match &on {
             On::Deltas { header, missing, .. } => header.encode().len() + 16 * missing.len(),
-            On::Record { records, .. } => 48 * records.len(),
+            On::Record { records, reach, .. } => 48 * (records.len() + reach.len()),
         };
-        let bytes = 160 + 48 * things.len() + header;
-        Wait { key: (!h.kind.is_role(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, bytes }
+        let bytes = 160 + 48 * (things.len() + openers.len()) + header;
+        Wait { key: (!h.kind.is_role(), h.ts), things, reason, on, generation: core.ix.held.generation(), edges: core.ix.held.edges(), now, openers, bytes }
     }
 }
 
@@ -90,6 +103,10 @@ pub(crate) struct Waits {
     by_thing: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Record waits by the record's thing.
     by_record: BTreeMap<Tid, BTreeSet<CommitId>>,
+    /// Record waits by the things of their `reach`.
+    by_reach: BTreeMap<Tid, BTreeSet<CommitId>>,
+    /// Waits by `Wait::openers`.
+    by_opener: BTreeMap<Tid, BTreeSet<CommitId>>,
     /// Delta waits by the earliest expiry or bound of their missing deltas (`next_expiry`).
     expiring: BTreeSet<(u64, CommitId)>,
     /// Waits whose inputs changed since examined: held snapshots or purge records of a delta wait's
@@ -105,10 +122,9 @@ pub(crate) struct Waits {
     bytes: usize,
 }
 
-/// The held set's generations and the corrected clock when `reexamine` last looked.
+/// The held set's generation and the corrected clock when `reexamine` last looked.
 struct Seen {
     generation: u64,
-    edges: u64,
     now: u64,
 }
 
@@ -134,14 +150,20 @@ impl Waits {
                         self.expiring.remove(&(*e, *id));
                     }
                 }
-                On::Record { records, .. } => {
+                On::Record { records, reach, .. } => {
                     for (t, _) in records {
                         unindex(&mut self.by_record, t, id);
+                    }
+                    for t in reach {
+                        unindex(&mut self.by_reach, t, id);
                     }
                 }
             }
             for t in &w.things {
                 unindex(&mut self.by_thing, t, id);
+            }
+            for t in &w.openers {
+                unindex(&mut self.by_opener, t, id);
             }
         }
         self.woken.remove(id);
@@ -169,6 +191,24 @@ impl Waits {
     /// so its waits are examined in full.
     pub fn wake_thing(&mut self, tid: &Tid) {
         let ids: Vec<CommitId> = self.by_thing.get(tid).into_iter().flatten().copied().collect();
+        for id in ids {
+            self.remove(&id);
+            self.cold.insert(id);
+        }
+    }
+
+    /// This node's epochs of `a` changed: pending boxes reading them are read again, in full.
+    pub fn secrets_changed(&mut self, a: &Tid) {
+        let ids: Vec<CommitId> = self.by_opener.get(a).into_iter().flatten().copied().collect();
+        for id in ids {
+            self.remove(&id);
+            self.cold.insert(id);
+        }
+    }
+
+    /// The reading-only budget has room again: every pending box is read again, in full.
+    pub fn wake_boxes(&mut self) {
+        let ids: BTreeSet<CommitId> = self.by_opener.values().flatten().copied().collect();
         for id in ids {
             self.remove(&id);
             self.cold.insert(id);
@@ -208,14 +248,20 @@ impl Waits {
                     self.expiring.insert((*e, id));
                 }
             }
-            On::Record { records, .. } => {
+            On::Record { records, reach, .. } => {
                 for (t, _) in records {
                     self.by_record.entry(*t).or_default().insert(id);
+                }
+                for t in reach {
+                    self.by_reach.entry(*t).or_default().insert(id);
                 }
             }
         }
         for t in &w.things {
             self.by_thing.entry(*t).or_default().insert(id);
+        }
+        for t in &w.openers {
+            self.by_opener.entry(*t).or_default().insert(id);
         }
         self.by_id.insert(id, w);
     }
@@ -245,10 +291,11 @@ fn next_expiry(core: &Core, h: &Header, id: &CommitId, missing: &[super::Gate], 
 /// different things.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob, inline: bool, reason: &Reason, others: &[Reason], now: u64, skip: &BTreeSet<(usize, usize)>) {
-    if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none_or(|a| a.ak.as_str() == "secrets.0")) {
+    if !inline || blob.parts.iter().any(|p| blob.header.aspects.get(p.ai).is_none()) {
         return;
     }
     let h = &blob.header;
+    let openers = openers(core, blob, &id);
     let on = match reason {
         Reason::UnknownCreated(_) | Reason::MissingChain(_) => {
             let memory = h.ephemeral.is_some();
@@ -257,7 +304,8 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
                 let (Reason::UnknownCreated(t) | Reason::MissingChain(t)) = r else { return };
                 records.push((*t, core.created_for(t, memory).is_some()));
             }
-            On::Record { records, memory }
+            let needs_chain = std::iter::once(reason).chain(others).any(|r| *r == Reason::MissingChain(h.author));
+            On::Record { records, memory, reach: if needs_chain { reach_watch(core, blob, &id) } else { BTreeSet::new() } }
         }
         Reason::WaitDeltas if !others.is_empty() => return,
         Reason::WaitDeltas => {
@@ -267,18 +315,57 @@ pub(crate) fn note(core: &mut Core, id: CommitId, blob: &osis_commit::CommitBlob
         }
         _ => return,
     };
-    let w = Wait::new(h, reason.clone(), on, core, now);
+    let w = Wait::new(h, reason.clone(), on, core, now, openers);
     core.waits.insert(id, w);
+}
+
+/// What decides whether pending commit `id`'s author reaches its things (`apply::thing_wait`,
+/// `validity::reaches`): every thing its search backward from them can come to, by owner, first
+/// admin or holder. A path can appear only by an edge or a record on one of these.
+fn reach_watch(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeSet<Tid> {
+    let carried = super::carried_records(&blob.header, blob, id);
+    let mut stack: Vec<Tid> = blob.header.aspects.iter().map(|a| a.tid).collect();
+    let mut seen: BTreeSet<Tid> = stack.iter().copied().collect();
+    while let Some(t) = stack.pop() {
+        let above = match core.ix.held.created(&t).or_else(|| carried.get(&t)) {
+            Some(osis_base::CreationRecord::Thing { owner, .. }) => Some(*owner),
+            Some(osis_base::CreationRecord::Ownerless { admin, .. }) => Some(*admin),
+            _ => None,
+        };
+        for y in above.into_iter().chain(core.ix.held.holders_of(&t).copied()) {
+            if seen.insert(y) {
+                stack.push(y);
+            }
+        }
+    }
+    seen
+}
+
+/// `Wait::openers` of pending commit `id`.
+fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeSet<Tid> {
+    let mut out = BTreeSet::new();
+    for (a, w) in super::keys::pending_secrets_writes(blob, id) {
+        out.insert(a);
+        if let Some(osis_base::CreationRecord::Thing { owner, .. }) = core.created(&a) {
+            out.insert(*owner);
+        }
+        out.extend(w.boxes.keys().map(|k| k.holder));
+    }
+    out
 }
 
 /// The pending commits that may not wait as when last examined, in `CommitId` order; the rest
 /// are left out of `reexamine`. Woken waits stay woken until examined.
 pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
     let records = core.ix.held.take_records();
-    let (generation, edges) = (core.ix.held.generation(), core.ix.held.edges());
-    let all = now < core.waits.max_now || core.waits.seen.as_ref().is_none_or(|s| s.edges != edges || now < s.now);
+    let moved = core.ix.held.take_moved();
+    let w = &mut core.waits;
+    let by_reach: Vec<CommitId> = moved.iter().flat_map(|t| w.by_reach.get(t).into_iter().flatten()).copied().collect();
+    w.woken.extend(by_reach);
+    let generation = core.ix.held.generation();
+    let all = now < core.waits.max_now || core.waits.seen.as_ref().is_none_or(|s| now < s.now);
     let held_changed = core.waits.seen.as_ref().is_none_or(|s| s.generation != generation);
-    core.waits.seen = Some(Seen { generation, edges, now });
+    core.waits.seen = Some(Seen { generation, now });
     if all {
         return core.ix.pending.keys().filter(|id| !unchanged(core, id, now)).copied().collect();
     }
@@ -296,12 +383,12 @@ pub(crate) fn candidates(core: &mut Core, now: u64) -> Vec<CommitId> {
 /// Whether pending commit `id` certainly still waits as when last examined (memory only).
 pub(crate) fn unchanged(core: &Core, id: &CommitId, now: u64) -> bool {
     let Some(w) = core.waits.by_id.get(id) else { return false };
-    if core.ix.pending.get(id) != Some(&w.reason) || core.waits.woken.contains(id) || now < w.now || core.ix.held.edges() != w.edges {
+    if core.ix.pending.get(id) != Some(&w.reason) || core.waits.woken.contains(id) || now < w.now {
         return false;
     }
     match &w.on {
-        On::Record { records, memory } => records.iter().all(|(t, had)| core.created_for(t, *memory).is_some() == *had),
-        On::Deltas { expiry, .. } => core.ix.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
+        On::Record { records, memory, .. } => records.iter().all(|(t, had)| core.created_for(t, *memory).is_some() == *had),
+        On::Deltas { expiry, .. } => core.ix.held.edges() == w.edges && core.ix.held.generation() == w.generation && expiry.is_none_or(|e| now < e),
     }
 }
 
@@ -323,7 +410,8 @@ pub(crate) fn still_waits(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
     }
     // judged again now: left out until something changes once more
     let on = On::Deltas { header: h.clone(), expiry: next_expiry(tx.core, &h, id, &missing, now), missing };
-    let w = Wait::new(&h, Reason::WaitDeltas, on, tx.core, now);
+    let openers = tx.core.waits.by_id.get(id).map(|w| w.openers.clone()).unwrap_or_default();
+    let w = Wait::new(&h, Reason::WaitDeltas, on, tx.core, now, openers);
     tx.core.waits.insert(*id, w);
     Ok(true)
 }

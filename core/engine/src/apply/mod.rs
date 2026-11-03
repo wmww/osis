@@ -238,6 +238,7 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
 /// more) or still unreadable by this build.
 fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
+    let _s = crate::costs::span("reexamine: read pending");
     let Some((_, bytes)) = tx.txn.get_pending(id)? else {
         tx.core.ix.pending.remove(id);
         tx.core.waits.unpended(id);
@@ -757,13 +758,17 @@ fn pend_aside(tx: &mut Tx<'_>, id: &CommitId, applied: &CommitBlob, w: Waiting) 
     }
     let kind = if w.reason == Reason::Parked { PendingKind::Parked } else { PendingKind::Pending };
     pend(tx, id, kind, &rest.encode(), w.reason.clone())?;
+    // its boxes are not read yet: `reexamine` comes for them, and notes the wait then
+    if rest.parts.iter().any(|p| rest.header.aspects.get(p.ai).is_some_and(|a| a.ak.as_str() == "secrets.0")) {
+        return Ok(());
+    }
     let now = tx.now().0;
     if w.reason == Reason::WaitDeltas {
         // judged with what is applied, as `late_parts` will
         let (held, skip) = held_and_skip(tx, id)?;
         waits::note(tx.core, *id, &merge_parts(held, rest), true, &w.reason, &w.others, now, &skip);
     } else {
-        // judged on the waiting parts: a `secrets.0` one among them stays out, so that `reexamine` comes
+        // judged on the waiting parts
         waits::note(tx.core, *id, &rest, true, &w.reason, &w.others, now, &BTreeSet::new());
     }
     Ok(())
@@ -1286,6 +1291,9 @@ impl Engine {
                 } else {
                     BTreeSet::new()
                 };
+                for (a, s, from) in keys::pending_boxes(tx, &b, id)? {
+                    debug_assert!(tx.core.ingest_view(&a, &s, Some(from), &osis_keys::HistoryAlts::new()).is_none(), "pending commit {id:?} left out of reexamine: its boxes teach {a:?} something");
+                }
                 match examine(tx, &mut b, id, &skip) {
                     Ok(Exam::Pending(r, _)) => debug_assert_eq!(Some(r), want, "pending commit {id:?} left out of reexamine"),
                     Ok(Exam::Ready(_)) => debug_assert!(false, "pending commit {id:?} left out of reexamine would apply"),

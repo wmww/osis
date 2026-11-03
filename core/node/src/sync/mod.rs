@@ -31,7 +31,7 @@ use crate::engine::Engine;
 use crate::error::Result;
 use crate::events::{Diagnostic, DiagnosticKind, Origin};
 use crate::labeling::{GroupLabel, HeadKeys};
-use osis_base::{Clock, LabelId, Tid};
+use osis_base::{Ak, Clock, LabelId, Tid};
 use osis_crypto::CryptoRngCore;
 use osis_label::{Address, Step};
 use osis_proto::{ClientConfig, ClientEvent, ClientInput, ClientOutput, ClientSession, Code, Command};
@@ -956,6 +956,8 @@ impl SyncEngine {
     /// touch.
     pub(crate) fn engine_events(&mut self) -> Result<()> {
         let mut changed = false;
+        // who wants a pass: every label (`wide`), or those holding what these aspects are on
+        let (mut wide, mut narrow): (bool, BTreeSet<(Tid, Ak)>) = (false, BTreeSet::new());
         // things whose roster or creation record changed
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         let mut own = false;
@@ -969,12 +971,18 @@ impl SyncEngine {
                     self.tied.touched(&aspects);
                     self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
                     self.placed_cache.0 = u64::MAX;
-                    let Some(h) = self.engine.header(&id) else { continue };
+                    narrow.extend(aspects.iter().cloned());
+                    let Some(h) = self.engine.header(&id) else {
+                        wide = true;
+                        continue;
+                    };
+                    narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                     // a placement applied invalid changes no state but may decide a tie
                     self.tied.groups.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "group.0").map(|a| a.tid));
                     // a creation record moves the roles downstream of the thing
                     roots.extend(h.aspects.iter().filter(|a| a.ak.as_str() == "created.0").map(|a| a.tid));
                     let role_commit = h.kind.is_role();
+                    wide |= role_commit;
                     if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "label.0") {
                         self.served_cache = None;
                         self.holders_moved = true;
@@ -1005,6 +1013,8 @@ impl SyncEngine {
                 crate::Event::Changed { cause: crate::events::Cause::Expiry, changed: aspects } if aspects.iter().all(|(t, a)| self.engine.only_ephemeral(t, a)) => {}
                 crate::Event::Changed { cause, changed: aspects } => {
                     changed = true;
+                    wide |= cause == crate::events::Cause::LostAccess;
+                    narrow.extend(aspects.iter().cloned());
                     self.tied.touched(&aspects);
                     self.clients_moved |= aspects.iter().any(|(t, a)| *t == me && a.as_str() == clients);
                     if cause == crate::events::Cause::LostAccess {
@@ -1017,6 +1027,8 @@ impl SyncEngine {
                 crate::Event::Joined { id } => {
                     changed = true;
                     if let Some(h) = self.engine.header(&id) {
+                        wide |= h.kind.is_role();
+                        narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                         if h.kind.is_role() {
                             self.touched.keys = true;
                         }
@@ -1026,6 +1038,7 @@ impl SyncEngine {
                 }
                 crate::Event::Roster { thing } => {
                     changed = true;
+                    wide = true;
                     self.tied.targets.insert(thing);
                     roots.insert(thing);
                     self.served_cache = None;
@@ -1045,6 +1058,7 @@ impl SyncEngine {
             self.touched.actors.extend(now.symmetric_difference(&self.own_keys).copied());
             self.own_keys = now;
             changed = true;
+            wide = true;
         }
         // changed commits: their aspects' states (verdicts waiting on them), their chunks (bodies
         // waiting on a linked blob), and the blobs of their dropped parts
@@ -1054,19 +1068,29 @@ impl SyncEngine {
             if let Some(h) = self.engine.header(c) {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                 self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
+                wide |= h.kind.is_role();
+                narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
             }
         }
         changed |= !ch.is_empty();
+        wide |= !ch.undropped.is_empty();
+        narrow.extend(ch.aspects.iter().cloned());
         self.touched.states.extend(ch.aspects.iter().cloned());
         self.touched.whole.extend(ch.aspects);
         let cs = ch.commits;
+        // this node's own write passes a filling label too (`mark_dirty`)
         if own {
             for l in self.conns.values_mut().flat_map(|c| c.labels.values_mut()) {
-                l.dirty = true;
+                l.dirty |= l.fill.is_some();
             }
         }
         if changed {
-            self.mark_dirty();
+            if wide || self.touched.full || self.cfg.full_passes || !narrow.iter().all(|(t, a)| self.narrow_aspect(t, a)) {
+                self.mark_dirty();
+            } else {
+                let things: BTreeSet<Tid> = narrow.iter().map(|x| x.0).collect();
+                self.mark_dirty_of(&things);
+            }
             let all = self.touched.full || self.cfg.full_passes;
             self.forget_dropped(if all { None } else { Some(&cs) })?;
         }
@@ -1095,6 +1119,31 @@ impl SyncEngine {
                     state::Touch::Commit(c) => w.commits.insert(*c),
                     state::Touch::Blob(b) => w.blobs.insert(*b),
                 };
+            }
+        }
+    }
+
+    /// Whether a change on `(t, a)` concerns only labels holding `t`: content of a thing, no role,
+    /// creation or group record and no node's card (which go under every label).
+    fn narrow_aspect(&self, t: &Tid, a: &Ak) -> bool {
+        let s = a.as_str();
+        !osis_schema::core_types::is_role_class(s) && !matches!(s, "created.0" | "group.0" | "groups.0" | "placed.0~") && !self.engine.core.is_key_actor(t)
+    }
+
+    /// `mark_dirty`, of the labels on connections whose closure holds one of `things`, and the
+    /// local ones: a content write on one thing leaves a label of another nothing new to judge.
+    /// Each still passes at its next resync (`timers`). O(labels), against a whole pass per label.
+    fn mark_dirty_of(&mut self, things: &BTreeSet<Tid>) {
+        self.local_dirty = true;
+        let mut closures: BTreeMap<Tid, bool> = BTreeMap::new();
+        let engine = &self.engine;
+        for c in self.conns.values_mut() {
+            for l in c.labels.values_mut() {
+                let holds = *closures.entry(l.group).or_insert_with(|| {
+                    let cl = engine.closure(&l.group);
+                    things.iter().any(|t| cl.contains(t))
+                });
+                l.dirty |= holds && l.fill.is_none();
             }
         }
     }

@@ -193,6 +193,7 @@ fn inside(h: &osis_commit::Header, closure: &BTreeSet<Tid>) -> BTreeSet<usize> {
 
 impl SyncEngine {
     pub(crate) fn pass(&mut self, conn: ConnId, l: LabelId, out: &mut Vec<super::Action>) -> Result<()> {
+        let _s = crate::costs::span("pass");
         let Some(c) = self.conns.get(&conn) else { return Ok(()) };
         let host = c.host;
         let Some(lc) = c.labels.get(&l).filter(|x| !x.receipts) else { return Ok(()) };
@@ -581,6 +582,7 @@ impl SyncEngine {
     /// heartbeat), stamped when this node writes; carriers are asked for before keep-at-most
     /// bounds; then `local_deletions`.
     fn local_pass(&mut self, g: Tid, l: LabelId, index: u64, head: &osis_label::Step) -> Result<()> {
+        let _s = crate::costs::span("pass: local");
         let (mut keys, read_ok) = self.usable_keys(&g, index, head)?;
         let recorded = self.group_label(&g, &l).is_some_and(|gl| gl.steps.contains_key(&head.id()));
         if recorded && self.step_due(&g, &l, &keys) && self.step_settled(&g) {
@@ -875,12 +877,17 @@ impl SyncEngine {
     /// expired or purged values). Once per reported entry (heartbeat commit, aspect): each node
     /// beats at most once per `HEARTBEAT_MIN_INTERVAL` per label. Every entry acted on is a
     /// diagnostic, so silent repairs hide nothing.
-    fn repair_suspects(&mut self, w: &Work) -> Result<()> {
-        let beats: Vec<(Tid, CommitId)> = w.beats.iter().filter_map(|(n, s)| s.iter().next_back().map(|(_, c)| (*n, *c))).collect();
+    fn repair_suspects(&mut self, w: &mut Work) -> Result<()> {
         let seen_ak = Ak::new("seen.0").map_err(|_| crate::Error::Misuse("ak"))?;
-        for (node, c) in beats {
+        for node in std::mem::take(&mut w.beats_repair) {
+            let Some(c) = w.beats.get(&node).and_then(|s| s.iter().next_back()).map(|x| x.1) else { continue };
+            let _s = crate::costs::span("heartbeat: read");
             let Some(v) = self.engine.part_value(&c, &node, &seen_ak)? else { continue };
             let Ok(seen) = <ct::Seen as osis_schema::Codec>::from_value(&v) else { continue };
+            // read again: the closure may yet grow to a suspect's thing
+            if !seen.suspect.is_empty() {
+                w.beats_repair.insert(node);
+            }
             for s in seen.suspect {
                 let Ok(ak) = Ak::new(&s.ak) else { continue };
                 if !w.closure.contains(&s.thing) || ct::is_role_class(ak.as_str()) || ak.as_str() == "created.0" || !self.repaired.insert((c, s.thing, ak.clone())) {
@@ -912,7 +919,7 @@ impl SyncEngine {
     /// §3): holders seen without a box at a current epoch (`Engine::reseal_due`) and holders
     /// whose node's heartbeat under the label reports it stranded (§4); delivered by inbox and
     /// placed under the actor's labels like any role commit.
-    fn reseal(&mut self, g: &Tid, w: &Work) -> Result<()> {
+    fn reseal(&mut self, g: &Tid, w: &mut Work) -> Result<()> {
         let Some(a) = self.engine.core.secret_actor(g) else { return Ok(()) };
         if self.engine.core.is_key_actor(&a) || !self.complete_pass(&a) {
             return Ok(());
@@ -934,8 +941,8 @@ impl SyncEngine {
         // the newest heartbeat of each node under the label, when it reports it stranded
         // (`Work::beats`); before the boxes `reseal_due` adds, which would box a stranded holder
         // lacking one twice
-        let beats: Vec<(Tid, CommitId)> = w.beats.iter().filter_map(|(n, s)| s.iter().next_back().map(|(_, c)| (*n, *c))).collect();
-        for (node, c) in beats {
+        for node in std::mem::take(&mut w.beats_reseal) {
+            let Some(c) = w.beats.get(&node).and_then(|s| s.iter().next_back()).map(|x| x.1) else { continue };
             if self.resealed.contains(&c) || !self.engine.get_typed(&node, &ct::SEEN)?.is_some_and(|s| s.stranded) {
                 continue;
             }
@@ -1627,6 +1634,7 @@ impl SyncEngine {
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
     /// opens under the newest read secret.
     fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>) -> Result<()> {
+        let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
         let mut own_removals = BTreeSet::new();
         let wanted = if revokes_only {

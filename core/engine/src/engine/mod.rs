@@ -555,6 +555,19 @@ pub struct Core {
     pub id: Identity,
     pub hlc: Hlc,
     pub states: HashMap<(Tid, Ak), Option<Fragment>>,
+    /// `flows::secrets_in` per actor: `secrets.0` decoded, until its state is written (`wrote`) or
+    /// freed. A pass reads it many times and it grows with the roster.
+    pub secrets_read: HashMap<Tid, Arc<osis_schema::core_types::Secrets>>,
+    /// `Engine::head_keys` per (group, index, step): deriving them is some curve work per pass.
+    /// Cleared by `role_changed` and any role-class write (`wrote`).
+    pub head_keys: HashMap<(Tid, u64, osis_label::StepId), crate::labeling::HeadKeys>,
+    /// `Engine::holders_named` per commit: an admin's pass reads it for every inbox copy, and it
+    /// decodes role parts. Cleared with `head_keys`: a role-class write, `role_changed`.
+    pub holders_named: HashMap<CommitId, Arc<BTreeMap<usize, BTreeSet<Tid>>>>,
+    /// Actors whose re-seal trigger found no holder lacking a box (`rotation::reseal_candidates`):
+    /// O(roster) a pass otherwise. Holds while `ix.departures` holds its entry (same roster, same
+    /// clock horizon); cleared with it.
+    pub reseal_quiet: BTreeSet<Tid>,
     /// Page indexes of the cached states kept paged in the store.
     pub pages: HashMap<(Tid, Ak), pages::PageIndex>,
     pub timelines: Timelines,
@@ -761,6 +774,9 @@ impl Core {
     /// Drops what is derived from rosters, `secrets.0` and held epochs (the departures cache):
     /// called wherever those change.
     pub fn role_changed(&mut self) {
+        self.head_keys.clear();
+        self.holders_named.clear();
+        self.reseal_quiet.clear();
         if !self.ix.departures.is_empty() {
             self.ix.departures.retain(|_, _| false);
         }
@@ -834,8 +850,14 @@ impl Core {
         if k.1.as_str() == "label.0" {
             self.labels.remove(&k.0);
         }
+        if k.1.as_str() == "secrets.0" {
+            self.secrets_read.remove(&k.0);
+        }
         if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
             self.unrouted = None;
+            self.head_keys.clear();
+            self.holders_named.clear();
+            self.reseal_quiet.clear();
         }
         if k.1.as_str() == crate::flows::LINK_SEED {
             self.links = None;
@@ -880,6 +902,9 @@ impl Core {
             self.unrouted = None;
             self.links = None;
             for k in std::mem::take(&mut self.written) {
+                if k.1.as_str() == "secrets.0" {
+                    self.secrets_read.remove(&k.0);
+                }
                 self.states.remove(&k);
                 self.pages.remove(&k);
             }
@@ -900,6 +925,10 @@ impl Core {
             id,
             hlc: Hlc::new(clock, Ts::default()),
             states: HashMap::new(),
+            secrets_read: HashMap::new(),
+            head_keys: HashMap::new(),
+            holders_named: HashMap::new(),
+            reseal_quiet: BTreeSet::new(),
             pages: HashMap::new(),
             timelines: Timelines::new(),
             walk_cache_min: index::WALK_CACHE_MIN,

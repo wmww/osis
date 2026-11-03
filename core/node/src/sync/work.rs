@@ -116,6 +116,10 @@ pub(crate) struct Work {
     pub unjudged: BTreeMap<CommitId, Tid>,
     /// Other nodes' heartbeats under the label.
     pub beats: BTreeMap<Tid, BTreeSet<(osis_base::Ts, CommitId)>>,
+    /// Nodes of `beats` `repair_suspects` has yet to read, and those `reseal` has: a heartbeat
+    /// touched since, or (repair) one reporting a suspect. O(new beats) a pass, not O(nodes).
+    pub beats_repair: BTreeSet<Tid>,
+    pub beats_reseal: BTreeSet<Tid>,
     /// Other nodes' card commits under the label (`stale_card` reads their author's roster).
     pub cards: BTreeSet<CommitId>,
 }
@@ -485,6 +489,8 @@ impl SyncEngine {
                 if set.is_empty() {
                     w.beats.remove(&h.author);
                 }
+                w.beats_repair.insert(h.author);
+                w.beats_reseal.insert(h.author);
             }
         }
         if bs.is_empty() {

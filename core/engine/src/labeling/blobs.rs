@@ -112,6 +112,12 @@ impl HeadKeys {
     pub fn is_writer(&self) -> bool {
         self.write.is_some()
     }
+
+    /// What tells two apart: the public keys and the rest.
+    #[cfg(debug_assertions)]
+    fn public(&self) -> ([Option<osis_crypto::VerifyingKey>; 4], bool, [Option<Epoch>; 3]) {
+        ([&self.sync, &self.write, &self.delete, &self.deposit].map(|k| k.as_ref().map(SigningSecret::verifying_key)), self.sync_established, self.epochs)
+    }
 }
 
 /// The held epoch of `role` whose label key at `index` is `pk`, with the secret deriving it
@@ -362,6 +368,19 @@ impl Engine {
     /// The keys this node holds for `head` of label `index` of `g` (spec/sync.md §2, §5): any
     /// held secret opens; stamps and deletes need an established epoch (spec/crypto.md §4).
     pub fn head_keys(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
+        let key = (*g, index, head.id());
+        if let Some(k) = self.core.head_keys.get(&key).cloned() {
+            #[cfg(debug_assertions)]
+            debug_assert_eq!(k.public(), self.head_keys_derived(g, index, head)?.public(), "head_keys of {g:?} went stale");
+            return Ok(k);
+        }
+        let _s = crate::costs::span("head keys: derive");
+        let k = self.head_keys_derived(g, index, head)?;
+        self.core.head_keys.insert(key, k.clone());
+        Ok(k)
+    }
+
+    fn head_keys_derived(&mut self, g: &Tid, index: u64, head: &Step) -> Result<HeadKeys> {
         let mut k = HeadKeys::default();
         if let Some(e) = self.epochs(g) {
             if let Some((ep, s, _)) = matching(&e, Role::Read, index, &head.keys.sync) {

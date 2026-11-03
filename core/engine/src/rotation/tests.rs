@@ -297,7 +297,7 @@ type Decisions = (BTreeSet<(Key, [bool; 3])>, Vec<BTreeSet<Key>>, BTreeSet<Role>
 /// second actor, actor left, holder, role) with the first actor's verdicts, the uncovered
 /// classes per role at `a`'s newest held epoch, and the uncovered roles.
 fn decisions(tx: &mut Tx<'_>, a: &Tid, deps: Vec<Departure>) -> Decisions {
-    let held = super::held_actors(tx).unwrap();
+    let held = super::departures::held_actors(tx).unwrap();
     let key = |d: &Departure| (d.via.first().copied(), d.via.get(1).copied(), d.via.last().copied().unwrap_or(*a), d.holder, d.from, d.upto);
     let classes = deps
         .iter()

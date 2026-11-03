@@ -241,12 +241,12 @@ pub trait HeldActors {
 /// In-memory `HeldActors`.
 #[derive(Clone, Debug, Default)]
 pub struct MemoryHeldActors {
-    pub map: BTreeMap<Tid, (Secrets, ActorEpochs)>,
+    pub map: BTreeMap<Tid, (Arc<Secrets>, ActorEpochs)>,
 }
 
 impl HeldActors for MemoryHeldActors {
     fn secrets(&self, actor: &Tid) -> Option<&Secrets> {
-        self.map.get(actor).map(|x| &x.0)
+        self.map.get(actor).map(|x| &*x.0)
     }
     fn epochs(&self, actor: &Tid) -> Option<&ActorEpochs> {
         self.map.get(actor).map(|x| &x.1)

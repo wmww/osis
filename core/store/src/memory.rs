@@ -133,6 +133,12 @@ impl MemoryBackend {
     }
     /// An independent copy of the durable state, as a backup takes it (sharing the faults, no
     /// history).
+    /// The bytes held: row keys and values, and blobs (measures).
+    pub fn held_bytes(&self) -> u64 {
+        let d = self.lock();
+        let rows: usize = d.kv.iter().map(|(k, v)| k.len() + v.len()).sum();
+        (rows + d.blobs.values().map(Vec::len).sum::<usize>()) as u64
+    }
     pub fn copy(&self) -> MemoryBackend {
         let d = self.lock();
         let data = Data { kv: d.kv.clone(), blobs: d.blobs.clone(), history: None, blob_history: Vec::new(), syncs: 0 };
