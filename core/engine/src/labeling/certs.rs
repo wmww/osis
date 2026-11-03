@@ -165,6 +165,17 @@ impl Engine {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
         }
+        // and the owners' keysets: a thing's history names its owner's keyset (spec/crypto.md §4),
+        // and the owner's newest `keys.0` may be an inbox write that carries none
+        let owners: Vec<Tid> = self.core.owner_chain(g).filter_map(|s| s.thing()).filter(|t| t != g).collect();
+        for t in owners {
+            for c in self.newest_keysets(&t) {
+                let parts = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
+                if !parts.is_empty() {
+                    out.entry(c).or_default().extend(parts);
+                }
+            }
+        }
         if let Some(tl) = self.core.timelines.get(g) {
             let certs = tl.certificates(&me, g);
             self.cert_parts(&certs, &mut out);
@@ -176,6 +187,22 @@ impl Engine {
             self.cert_parts(&certs, &mut out);
         }
         out
+    }
+
+    /// The rotation commits of `t`'s newest keyset per role, forks included.
+    fn newest_keysets(&self, t: &Tid) -> BTreeSet<CommitId> {
+        let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>)> = BTreeMap::new();
+        for (r, e) in self.core.ix.keyset_epochs.get(t).into_iter().flatten() {
+            let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
+            let n = newest.entry(*r).or_default();
+            if e.n() > n.0 {
+                *n = (e.n(), BTreeSet::new());
+            }
+            if e.n() == n.0 {
+                n.1.insert(*c);
+            }
+        }
+        newest.into_values().flat_map(|(_, c)| c).collect()
     }
 
     /// `node`'s chain certificates for `t` with the owner chains of both up to their key

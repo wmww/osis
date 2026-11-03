@@ -972,7 +972,7 @@ fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: u
         osis::HistoryBody::Held(Some(v)) => format!("{v:?}"),
         osis::HistoryBody::Held(None) => "held-empty".to_string(),
         osis::HistoryBody::TooLarge { .. } => "too-large".to_string(),
-        osis::HistoryBody::Purged { by } => format!("purged={}", change_text(by)),
+        osis::HistoryBody::Purged { by, actor } => format!("purged={} by={}", change_text(by), actor.map_or_else(|| "?".to_string(), |a| a.to_uri())),
         osis::HistoryBody::Dropped => "dropped".to_string(),
         osis::HistoryBody::NotFetched => "not-fetched".to_string(),
     };

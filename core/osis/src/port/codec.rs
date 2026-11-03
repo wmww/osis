@@ -533,7 +533,7 @@ pub(crate) fn hist_entry_v(e: &crate::HistoryEntry<Value>) -> Value {
     let body = match &e.body {
         B::Held(v) => vec![u(0), opt(v.clone(), |x| x)],
         B::TooLarge { limit } => vec![u(1), u(*limit as u64)],
-        B::Purged { by } => vec![u(2), change_v(by)],
+        B::Purged { by, actor } => vec![u(2), change_v(by), opt(*actor, Value::Tid)],
         B::Dropped => vec![u(3)],
         B::NotFetched => vec![u(4)],
     };
@@ -549,7 +549,7 @@ pub(crate) fn hist_entry(v: Value) -> Result<crate::HistoryEntry<Value>> {
     let body = match b.uint()? {
         0 => B::Held(b.opt()?),
         1 => B::TooLarge { limit: usize::try_from(b.uint()?).unwrap_or(usize::MAX) },
-        2 => B::Purged { by: change(b.next()?)? },
+        2 => B::Purged { by: change(b.next()?)?, actor: b.opt()?.map(|v| Args::of(vec![v]).tid()).transpose()? },
         3 => B::Dropped,
         4 => B::NotFetched,
         _ => return Err(bad("history body")),

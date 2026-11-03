@@ -706,10 +706,12 @@ pub enum ChatCmd {
     },
     /// Replaces one's own message
     Edit { chat: String, id: String, text: String },
+    /// Sends one's own undelivered message again
+    Resend { chat: String, id: String },
     /// Deletes a message for everyone
     Delete { chat: String, id: String },
     Leave { chat: String },
-    /// Who holds what, and the chat's settings
+    /// Who holds what (a link joiner: via its link), the links that work, and the chat's settings
     Members { chat: String },
     /// The disappearing timer: DUR, or `off`
     Disappear { chat: String, after: String },

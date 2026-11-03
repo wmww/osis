@@ -88,7 +88,7 @@ fn purge_commit_is_delete_for_everyone_spec_commits_5() {
     let page = db.at(t, msgs()).history(HistoryFrom::Oldest, 10).unwrap();
     assert_eq!(page.entries.len(), 2, "no entry for the request");
     assert_eq!(page.entries[0].commit.id, a);
-    assert_eq!(page.entries[0].body, HistoryBody::Purged { by: rq });
+    assert_eq!(page.entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
     assert_eq!(page.entries[1].commit.id, b);
     assert_eq!(db.get(t, msgs()).unwrap(), Some(s("next")));
     let got = heard(&db, &rx);
@@ -141,7 +141,7 @@ fn purge_author_through_the_api_spec_perm_8() {
     for db in [&alice, &bob] {
         let page = db.at(g, msgs()).history(HistoryFrom::Oldest, 10).unwrap();
         let of = |c: ChangeId| page.entries.iter().find(|e| e.commit.id == c).unwrap().body.clone();
-        assert_eq!(of(flood), HistoryBody::Purged { by: rq });
+        assert_eq!(of(flood), HistoryBody::Purged { by: rq, actor: Some(alice.me()) });
         assert_eq!(of(own), HistoryBody::Held(Some(s("mine"))));
     }
 }
@@ -325,7 +325,7 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let mut w = db.write();
     w.at(t, msgs()).purge_commit(a).unwrap();
     let rq = w.commit().unwrap().unwrap().id;
-    assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq });
+    assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq, actor: Some(db.me()) });
 }
 
 // spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `knows`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
