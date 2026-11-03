@@ -158,13 +158,13 @@ fn same_delta(bytes: &[u8], c: &MCommit) -> Result<(), String> {
 /// Accept/reject agreement on one snapshot.
 fn same_snapshot(bytes: &[u8]) -> Result<(), String> {
     let imp = decode_snapshot(bytes, &snap_cx(), &mut Interner::new(), None);
-    let model = m_decode_snapshot(bytes, &mut Ctx::new(1 << 40, MSource::node(250), 1));
+    let model = m_decode_snapshot(bytes, &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
     match (imp, model) {
         (Ok(s), Ok((f, _))) if s.fragment == frag(&f) => Ok(()),
         (Err(_), Err(_)) => Ok(()),
         (Ok(x), Err(MError::Bad("tag"))) if unmodeled_tag(&x.fragment) => Ok(()),
         (i, m) => {
-            let again = m.as_ref().ok().map(|(f, _)| hex(&crdt_model::wire::encode_snapshot(f, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1))));
+            let again = m.as_ref().ok().map(|(f, _)| hex(&crdt_model::wire::encode_snapshot(f, &[], [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1))));
             Err(format!("snapshot {}: model re-encodes {:?}; implementation {:?}, model {:?}", hex(bytes), again, i.map(|s| s.fragment), m))
         }
     }
@@ -173,7 +173,7 @@ fn same_snapshot(bytes: &[u8]) -> Result<(), String> {
 /// A random history's deltas and snapshots, each mutated `per` times; the first disagreement.
 fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
     let mut r = crate::testutil::rng(seed | 1);
-    let commits = history_with(&mut r, types, (1..=3).map(MSource::node).collect(), 3);
+    let commits = history_with(&mut r, types, (1..=3).map(|n| MSource::session(n, 0)).collect(), 3);
     let mut state = None;
     for c in &commits {
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: frag(&c.delta) }, &writer_cx(&c.w), None).map_err(|e| e.to_string())?;
@@ -209,7 +209,7 @@ fn differential(seed: u64, types: &[Ty], per: usize) -> Result<(), String> {
 // 2814254534854219504: the model checked only a run's first dot).
 #[test]
 fn run_past_counter_range_rejected_spec_2_3() {
-    let w = crdt_model::ops::Writer::new(MSource::node(1), 3 << 16, 7); // range [7, 8)
+    let w = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 7); // range [7, 8)
     let l = |v: Vec<Value>| Value::List(v);
     let int = Value::Int;
     // a text delta deleting own elements first..first+n-1 at the delta stamp

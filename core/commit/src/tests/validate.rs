@@ -98,15 +98,12 @@ pub(crate) fn role_header(ak: &str) -> Header {
 fn validate_role_commit() {
     let h = role_header("roles.0");
     h.validate().unwrap();
-    // spec/commits.md §3 (commit form kinds), §4: a session-form role commit is bad input, as is
-    // node form anywhere
+    // spec/commits.md §3 (commit form kinds), §4: a session-form role commit is bad input
     for k in [Kind::Role, Kind::RosterSnapshot] {
         let mut x = h.clone();
         x.kind = k;
         x.form = crate::tests::SESSION;
         assert!(invalid(&x).to_string().contains("session form outside a content commit"));
-        x.form = crate::header::Form::Node;
-        assert!(invalid(&x).to_string().contains("node form"));
         // spec/wire.md §4: a role commit's or roster snapshot's actor is its author
         let mut x = h.clone();
         x.kind = k;
@@ -259,8 +256,6 @@ fn session_form_spec_commits_3() {
     h.ephemeral = Some(EphClass::Plain);
     h.validate().unwrap();
     let mut x = h.clone();
-    x.form = Form::Node;
-    assert!(invalid(&x).to_string().contains("node form"));
     x.form = Form::Commit;
     assert!(invalid(&x).to_string().contains("ephemeral commit"));
     // the session's dots are its own: `(Session(author, nonce), ctr)`

@@ -9,7 +9,7 @@ use crate::ops::Writer;
 use crate::stamp::{CounterRange, Interner};
 use crate::tests_wire::writer_cx;
 use crate::wire::Delta;
-use crate::testutil::{TyView, check_lin, frag, mapply, source, ts, value};
+use crate::testutil::{TyView, check_lin, frag, mapply, sess, source, ts, value};
 use crate::undo::{Undone, undo};
 use crdt_model::r#gen::{Rng, random_op, random_value};
 use crdt_model::ops::{Ty, Writer as MWriter};
@@ -166,7 +166,7 @@ fn case(r: &mut Rng, hits: &mut Hits) {
     let tys = types();
     let ty = tys[r.below(tys.len())].clone();
     let view = TyView(ty.clone());
-    let (n1, n2) = (MSource::node(1), MSource::node(2));
+    let (n1, n2) = (MSource::session(1, 0), MSource::session(2, 0));
     let mut w1 = MWriter::new(n1.clone(), 1 << 16, 1);
     let mut w2 = MWriter::new(n2.clone(), 1 << 16, 1);
     let mut base: Option<Frag> = None;
@@ -381,7 +381,7 @@ fn seen_concurrent(ty: &Ty, base: &MValue, v1: &MValue, v2: &MValue, t2: u64) {
 /// `seen_concurrent` with node 2's delta built by `d2` against the base.
 fn seen_concurrent_by(ty: &Ty, base: &MValue, v1: &MValue, d2: &dyn Fn(&mut MWriter, Option<&Frag>) -> Frag, t2: u64, what: &str) {
     let view = TyView(ty.clone());
-    let (n1, n2) = (MSource::node(1), MSource::node(2));
+    let (n1, n2) = (MSource::session(1, 0), MSource::session(2, 0));
     let mut base = Some(crdt_model::ops::create(&mut MWriter::new(n1.clone(), 1 << 16, 1), ty, base));
     base.as_mut().unwrap().prune(None);
     let mut w1 = MWriter::new(n1.clone(), 20 << 16, 10);
@@ -456,7 +456,7 @@ fn undo_absent_outermost_only_below_entry_spec_4_6() {
     let ty = Ty::Map(Box::new(Ty::Register), Box::new(vt));
     let view = TyView(ty.clone());
     let k = MValue::Str("k".into());
-    let (n1, n2) = (MSource::node(1), MSource::node(2));
+    let (n1, n2) = (MSource::session(1, 0), MSource::session(2, 0));
     let base = crdt_model::ops::create(&mut MWriter::new(n2, 1 << 16, 1), &ty, &MValue::map(vec![(k.clone(), MValue::fields(vec![(1, MValue::Int(0))]))]));
     let mut w1 = MWriter::new(n1.clone(), 20 << 16, 10);
     let d1 = crdt_model::diff::diff(&mut w1, Some(&base), &ty, &MValue::map(vec![(k, MValue::fields(vec![(1, MValue::Int(7))]))])).unwrap();
@@ -496,7 +496,7 @@ fn undo_register_absent_before_skipped_writes_nothing_spec_4_6() {
             false
         }
     }
-    let src = crate::stamp::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let src = sess(osis_base::Tid::from_bytes([1; 15]));
     let d = crate::ops::create(&mut Writer::new(ts(5), src.clone(), 1), &crate::view::AnyView, &osis_base::Value::Int(7)).unwrap();
     let u = Undone { delta: &d, source: &src, range: CounterRange { lo: 1, hi: 2 }, restored: &|_| false };
     assert_eq!(undo(&mut Writer::new(ts(9), src.clone(), 2), &u, &d, &Partial, &crate::view::AnyView).unwrap(), None);

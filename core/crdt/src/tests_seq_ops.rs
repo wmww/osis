@@ -6,7 +6,7 @@ use crate::fragment::Fragment;
 use crate::ops::{Op, PathOp, PathSeg, Writer, create, diff, diff_values};
 use crate::seq::visible;
 use crate::stamp::{CounterRange, Interner, Source};
-use crate::testutil::{TyView, frag, mapply, ostate, ts, value, writer};
+use crate::testutil::{TyView, frag, mapply, ostate, sess, ts, value, writer};
 use crate::undo::{Undone, undo};
 use crate::wire::{Delta, DeltaCtx, DeltaKind};
 use crdt_model::r#gen::{Rng, random_value};
@@ -16,7 +16,7 @@ use osis_base::{Tid, Value};
 use proptest::prelude::*;
 
 fn node(n: u8) -> Source {
-    Source::node(Tid::from_bytes([n; 15]))
+    sess(Tid::from_bytes([n; 15]))
 }
 fn s(x: &str) -> Value {
     Value::Str(x.into())
@@ -198,7 +198,7 @@ proptest! {
             }
         }
         if r.chance(1, 3) {
-            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 30 << 16, 1);
+            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 30 << 16, 1);
             let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
             reps[0].state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
         }
@@ -544,7 +544,7 @@ fn budget_big_text_spec_6() {
     let upgraded = {
         let mut u = Replica::new(4);
         u.commit(1, &[op(Op::Set(s("xy")))], &text_view());
-        let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 2 << 16, 1);
+        let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 2 << 16, 1);
         u.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &crdt_model::ops::Ty::Register, &crdt_model::value::Value::Str(run.repeat(1000)))));
         let mut v = Replica { state: u.state.clone(), src: node(6), lo: 1 };
         let (d, src, range) = v.commit(3, &[op(Op::Insert { at: 50_000, items: vec![s("e")] })], &text_view()).unwrap();
@@ -1011,7 +1011,7 @@ fn random_list_op(r: &mut Rng, st: &Fragment, ty: &Ty) -> PathOp {
 fn ops_match_model_spec_5_7() {
     let mut r = crate::testutil::rng(7);
     for _ in 0..20 {
-        let mut mw = MWriter::new(crdt_model::stamp::Source::node(1), 1 << 16, 1);
+        let mut mw = MWriter::new(crdt_model::stamp::Source::session(1, 0), 1 << 16, 1);
         let text = crdt_model::r#gen::random_text(&mut r, 8) + "xyz";
         let mv = crdt_model::value::Value::Str(text.clone());
         let mut w = writer(&mw);
@@ -1062,7 +1062,7 @@ fn move_matches_model_over_histories_spec_5_7() {
             let at = r.below(n - 1);
             let len = 1 + r.below((n - at).min(4));
             let to = r.below(n - len + 1);
-            let mut mw = MWriter::new(crdt_model::stamp::Source::node(9), 1 << 16, 1);
+            let mut mw = MWriter::new(crdt_model::stamp::Source::session(9, 0), 1 << 16, 1);
             mw.next_commit(100 << 16);
             let mut w = writer(&mw);
             let md = mops::seq_move(&mut mw, &ms, at, len, to);
@@ -2417,7 +2417,7 @@ proptest! {
         } else {
             let mut a = Replica::new(1);
             a.commit(1, &[op(Op::Set(s("the quick brown fox jumps over")))], &text_view());
-            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::node(5), 30 << 16, 1);
+            let mut mw = crdt_model::ops::Writer::new(crdt_model::stamp::Source::session(5, 0), 30 << 16, 1);
             let v = crdt_model::value::Value::Str(crdt_model::r#gen::random_text(&mut r, 20) + "s");
             a.state.join(crate::testutil::frag(&crdt_model::ops::create(&mut mw, &Ty::Register, &v)));
             (a.state, a.lo)

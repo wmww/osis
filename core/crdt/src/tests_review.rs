@@ -5,7 +5,7 @@ use crate::fragment::{Bag, BagKind, Elem, Encoding, Fragment, Meta, RegWrite, Re
 use crate::ops::{Writer, create, diff};
 use crate::page::{MemoryPages, PageParams, PageSink};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{TyView, ts};
+use crate::testutil::{TyView, sess, ts};
 use crate::undo::{Undone, undo};
 use crate::view::{AnyView, View};
 use crate::wire::{DeltaCtx, DeltaKind, Frontiers, Snapshot};
@@ -15,7 +15,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 
 fn st(t: u64, n: u8, c: u64) -> Stamp {
-    Stamp { ts: ts(t << 16), dot: Dot::new(Source::node(Tid::from_bytes([n; 15])), c) }
+    Stamp { ts: ts(t << 16), dot: Dot::new(sess(Tid::from_bytes([n; 15])), c) }
 }
 fn reg(s: Stamp, v: i64) -> Register {
     Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) }
@@ -76,7 +76,7 @@ impl View for OldKeys {
 fn map_diff_keeps_stored_keys_spec_5_6() {
     let key = |b: i64| Value::Map([(Value::Int(1), Value::Int(1)), (Value::Int(2), Value::Int(b))].into_iter().collect());
     let short = Value::Map([(Value::Int(1), Value::Int(1))].into_iter().collect());
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut w = Writer::new(ts(1 << 16), node.clone(), 1);
     let base = Value::Map([(key(2), Value::Int(0)), (key(3), Value::Int(0))].into_iter().collect());
     let mut s = create(&mut w, &AnyView, &base).unwrap();
@@ -93,7 +93,7 @@ fn map_diff_keeps_stored_keys_spec_5_6() {
 #[test]
 fn bag_redo_spec_4_6() {
     let view = TyView(Ty::Counter);
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let mut w = Writer::new(ts(10 << 16), node.clone(), 1);
     let s0 = create(&mut w, &view, &Value::Int(5)).unwrap();
     let mut wu = Writer::new(ts(20 << 16), node.clone(), 2);
@@ -113,7 +113,7 @@ fn bag_redo_spec_4_6() {
 const SMALL: PageParams = PageParams { target: 2000, cut: ChunkParams { min: 128, max: 1024, mask_bits: 6 }, fanout: 8, ..PageParams::FORMAT };
 
 fn scx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+    DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([250; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// A snapshot whose root set's element array is `elems`: hand-built bytes.
@@ -157,7 +157,7 @@ fn paging_rejections_spec_8() {
 fn paging_limits_accept_valid_spec_8() {
     let mut s = Fragment::default();
     for i in 0..400u64 {
-        let mut w = Writer::new(ts(1 << 16), Source::node(Tid::from_bytes([1; 15])), 1 + i);
+        let mut w = Writer::new(ts(1 << 16), sess(Tid::from_bytes([1; 15])), 1 + i);
         s.join(create(&mut w, &AnyView, &Value::Set([Value::Str(format!("item {i}"))].into_iter().collect())).unwrap());
     }
     let mut pages = MemoryPages::with_params(SMALL);
@@ -181,9 +181,9 @@ fn written(f: &Fragment) -> Stamp {
 #[test]
 fn register_undo_chain_spec_4_6() {
     let view = TyView(Ty::Register);
-    let me = Source::node(Tid::from_bytes([1; 15]));
+    let me = sess(Tid::from_bytes([1; 15]));
     let write = |t: u64, n: u8, lo: u64, v: i64| {
-        let mut w = Writer::new(ts(t << 16), Source::node(Tid::from_bytes([n; 15])), lo);
+        let mut w = Writer::new(ts(t << 16), sess(Tid::from_bytes([n; 15])), lo);
         let f = create(&mut w, &view, &Value::Int(v)).unwrap();
         (f, w.range())
     };
@@ -237,7 +237,7 @@ fn register_undo_chain_spec_4_6() {
 /// values (a forged copy of another's write inside a snapshot) join alike in either order.
 #[test]
 fn same_stamp_substitution_diverges() {
-    let src = Source::node(Tid::from_bytes([3; 15]));
+    let src = sess(Tid::from_bytes([3; 15]));
     let alice = create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &Value::Str("alice".into())).unwrap();
     let forged = create(&mut Writer::new(ts(1 << 16), src, 1), &AnyView, &Value::Str("forged".into())).unwrap();
     let mut x = alice.clone();
@@ -251,7 +251,7 @@ fn same_stamp_substitution_diverges() {
 /// creation with differing chars, join alike in both orders (the greater key, the greater char).
 #[test]
 fn same_stamp_copies_converge_spec_4_1() {
-    let src = Source::node(Tid::from_bytes([3; 15]));
+    let src = sess(Tid::from_bytes([3; 15]));
     let mk = |v: Value| create(&mut Writer::new(ts(1 << 16), src.clone(), 1), &AnyView, &v).unwrap();
     let m = |k: i64| Value::Map([(Value::Int(k), Value::Int(9))].into_iter().collect());
     for (a, b, want) in [
@@ -305,7 +305,7 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
     stripped.strip_copies(&|d| d.src == b.dot.src);
     assert!(matches!(&stripped, Fragment::Slots(s) if s.slots.contains_key(&Encoding::Map)), "{stripped:?}");
     let mut un = stripped.clone();
-    un.remove_dots(&|d| d.src == Source::node(Tid::from_bytes([4; 15])));
+    un.remove_dots(&|d| d.src == sess(Tid::from_bytes([4; 15])));
     assert_eq!(un, stripped, "nothing of the fourth author");
     for (name, x) in [("stripped", stripped), ("stripped, un-merged", un)] {
         let mut y = bdelta.clone();
@@ -322,7 +322,7 @@ fn slots_unmerge_keeps_slot_creation_spec_7() {
 #[test]
 fn forged_creation_ts_undelete_char_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
-    let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
+    let d = Dot::new(sess(Tid::from_bytes([5; 15])), 1);
     let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
     let s2 = Stamp { ts: ts(2 << 16), dot: d.clone() };
     let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
@@ -333,7 +333,7 @@ fn forged_creation_ts_undelete_char_spec_5_7() {
     // a reset between the two creations prunes the lesser one and nothing else
     let mut reset = Fragment::Seq(Seq::empty(true));
     if let Fragment::Seq(s) = &mut reset {
-        s.meta.reset = Some(Stamp { ts: ts(1 << 16 | 1), dot: Dot::new(Source::node(Tid::from_bytes([7; 15])), 1) });
+        s.meta.reset = Some(Stamp { ts: ts(1 << 16 | 1), dot: Dot::new(sess(Tid::from_bytes([7; 15])), 1) });
     }
     all_orders(&[a.clone(), b.clone(), c.clone(), reset], Some(Value::Str("w".into())));
     // no creation char held: the undelete's char reads
@@ -348,7 +348,7 @@ fn forged_creation_ts_undelete_char_spec_5_7() {
 #[test]
 fn forged_creation_ts_snapshot_round_trip_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
-    let n = |c: u64| Dot::new(Source::node(Tid::from_bytes([5; 15])), c);
+    let n = |c: u64| Dot::new(sess(Tid::from_bytes([5; 15])), c);
     let (x, y, z) = (n(1), n(2), n(3));
     let mk = |s: &Stamp, a: Anchor, c: char| SeqElem { created: Some((s.clone(), a.clone())), content: SeqContent::Char(c), pos: vec![(s.clone(), a, None)], ..SeqElem::bare() };
     let at = |t: u64, d: &Dot| Stamp { ts: ts(t << 16), dot: d.clone() };
@@ -362,7 +362,7 @@ fn forged_creation_ts_snapshot_round_trip_spec_5_7() {
     f.join(lesser.clone());
     // the cycle x -> y -> x demotes x (t7 < t9) to END, not to the dropped lesser creation's HEAD
     assert_eq!(f.read(), Some(Value::Str("zxy".into())));
-    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &cx, None).unwrap();
     let back = decode_snapshot(&bytes, &cx, &mut Interner::new(), None).unwrap().fragment;
@@ -503,12 +503,12 @@ fn repro_forged_key_hidden_by_erased_reset() {
 #[test]
 fn creationless_text_char_spec_5_7() {
     use crate::seq::{Anchor, Seq, SeqContent, SeqElem};
-    let d = Dot::new(Source::node(Tid::from_bytes([5; 15])), 1);
+    let d = Dot::new(sess(Tid::from_bytes([5; 15])), 1);
     let s1 = Stamp { ts: ts(1 << 16), dot: d.clone() };
     let mk = |e: SeqElem| Fragment::Seq(Seq::new(true, Meta::default(), BTreeMap::from([(d.clone(), e)])));
     let made = mk(SeqElem { created: Some((s1.clone(), Anchor::Head)), content: SeqContent::Char('a'), pos: vec![(s1.clone(), Anchor::Head, None)], ..SeqElem::bare() });
     let bad = mk(SeqElem { content: SeqContent::Char('z'), pos: vec![(st(2, 9, 1), Anchor::Head, None)], ..SeqElem::bare() });
-    let cx = DeltaCtx { ts: ts(1 << 40), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let cx = DeltaCtx { ts: ts(1 << 40), own: sess(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: bad.clone(), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &cx, None).unwrap();
     assert!(decode_snapshot(&bytes, &cx, &mut Interner::new(), None).is_err());

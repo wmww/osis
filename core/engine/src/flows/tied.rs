@@ -27,7 +27,6 @@ pub enum Untie {
 
 pub fn tie_ct(t: Tie) -> ct::Tie {
     let source = match t.src {
-        TieSource::Node(n) => ct::Source::Node(n),
         TieSource::Commit(c) => ct::Source::Commit(c),
         TieSource::Session(n, nonce) => ct::Source::Session(Session { node: n, nonce }.to_bytes()),
     };
@@ -36,7 +35,6 @@ pub fn tie_ct(t: Tie) -> ct::Tie {
 
 pub fn tie_perm(t: ct::Tie) -> Tie {
     let src = match t.source {
-        ct::Source::Node(n) => TieSource::Node(n),
         ct::Source::Commit(c) => TieSource::Commit(c),
         ct::Source::Session(b) => {
             let s = Session::from_bytes(&b);
@@ -48,7 +46,6 @@ pub fn tie_perm(t: ct::Tie) -> Tie {
 
 fn stamp_of(t: &Tie) -> Stamp {
     let src = match t.src {
-        TieSource::Node(n) => Source::node(n),
         TieSource::Commit(c) => Source::commit(c),
         TieSource::Session(n, nonce) => Source::session(Session { node: n, nonce }),
     };
@@ -67,7 +64,6 @@ impl Engine {
         let Some(st) = self.state(group, &ak(ct::GROUP.ak())?)? else { return Ok(None) };
         let Some(s) = st.set_live_elem(field(subgroup), &Value::Tid(*t)) else { return Ok(None) };
         let src = match s.dot.src.kind() {
-            SourceKind::Node(n) => TieSource::Node(*n),
             SourceKind::Commit(c) => TieSource::Commit(*c),
             SourceKind::Session(x) => TieSource::Session(x.node, x.nonce),
             SourceKind::Derived(_) => return Ok(None),

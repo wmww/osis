@@ -150,16 +150,12 @@ pub fn is_paged(b: &[u8]) -> bool {
 /// dot order.
 fn dot_key(d: &Dot, out: &mut Vec<u8>) {
     match d.src.kind() {
-        SourceKind::Node(t) => {
-            out.push(0);
-            out.extend_from_slice(t.as_bytes());
-        }
         SourceKind::Session(s) => {
-            out.push(1);
+            out.push(0);
             out.extend_from_slice(&s.to_bytes());
         }
         SourceKind::Commit(c) => {
-            out.push(2);
+            out.push(1);
             out.extend_from_slice(&c.0);
         }
         SourceKind::Derived(x) => dot_key(x, out),
@@ -1773,6 +1769,11 @@ mod tests {
     use osis_crdt::{AnyView, Batch, Op, PathOp, PathSeg, Source, Writer, create};
     use osis_store::{MemoryBackend, MemoryRoot, Store, StoreConfig};
 
+    /// A session of the made-up node `n` (tid bytes all `n`).
+    fn sess(n: u8) -> Source {
+        Source::session(osis_crdt::Session { node: Tid::from_bytes([n; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] })
+    }
+
     /// The value of `n` ints keyed 0..n.
     fn ints(n: i64, x: i64) -> Value {
         Value::Map((0..n).map(|i| (Value::Int(i), Value::Int(i * x))).collect())
@@ -1786,7 +1787,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(80);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([5; 15]), osis_base::Ak::new("app:keys.0").unwrap());
-        let node = Source::node(Tid::from_bytes([1; 15]));
+        let node = sess(1);
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &ints(6000, 1)).unwrap();
         let mut txn = store.transaction(&mut rng).unwrap();
@@ -1821,8 +1822,8 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(82);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:nest.0").unwrap());
-        let a = Source::node(Tid::from_bytes([1; 15]));
-        let b = Source::node(Tid::from_bytes([2; 15]));
+        let a = sess(1);
+        let b = sess(2);
         let outer = |n: i64| Value::Map([(Value::Str("x".into()), ints(n, 1)), (Value::Str("y".into()), ints(n, 2))].into_iter().collect());
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), a.clone(), 1);
         let mut st = create(&mut w, &AnyView, &outer(3000)).unwrap();
@@ -1861,7 +1862,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(81);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([6; 15]), osis_base::Ak::new("app:set.0").unwrap());
-        let node = Source::node(Tid::from_bytes([1; 15]));
+        let node = sess(1);
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), node.clone(), 1);
         let body = create(&mut w, &AnyView, &Value::Set((0..6000).map(Value::Int).collect())).unwrap();
         let mut txn = store.transaction(&mut rng).unwrap();
@@ -1911,7 +1912,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(177);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:s.0").unwrap());
-        let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
+        let nodes = [sess(1), sess(2)];
         let link = |h: u8, b: u8| Value::Link(osis_base::Link { hash: [h; 32], blob: osis_base::BlobId([b; 32]), suite: 1, key: [b; 32] });
         let pool = |i: u64| -> Value {
             match i % 14 {
@@ -2002,7 +2003,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(77);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([3; 15]), osis_base::Ak::new("app:nested.0").unwrap());
-        let node = Source::node(Tid::from_bytes([1; 15]));
+        let node = sess(1);
         let big_set = Value::Set((0..2000).map(|i| Value::Str(format!("s{i}"))).collect());
         let v = Value::Map(
             [
@@ -2205,7 +2206,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(181);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
+        let nodes = [sess(1), sess(2)];
         let view = SeqView::Root(text);
         let field = || vec![PathSeg::Field(1)];
         let mut ts = 1u64 << 16;
@@ -2258,7 +2259,7 @@ mod tests {
                     // an expiry or purge of a received body: its writes held value-less
                     0 | 1 => {
                         let (body, range) = received[r(received.len() as u64) as usize].clone();
-                        let pred = move |d: &Dot| d.owner().src == Source::node(Tid::from_bytes([2; 15])) && (range.lo..range.hi).contains(&d.owner().ctr);
+                        let pred = move |d: &Dot| d.owner().src == sess(2) && (range.lo..range.hi).contains(&d.owner().ctr);
                         let touch = touch_of(&body, Some(&idx));
                         let t = touch.clone().unwrap();
                         assert!(ensure_touch(&mut txn, &tid, &ak, &mut idx, &mut f, &t).unwrap());
@@ -2465,7 +2466,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(187);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let nodes = [Source::node(Tid::from_bytes([1; 15])), Source::node(Tid::from_bytes([2; 15]))];
+        let nodes = [sess(1), sess(2)];
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
         let mut ts = 1u64 << 16;
@@ -2608,7 +2609,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(193);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let node = Source::node(Tid::from_bytes([1; 15]));
+        let node = sess(1);
         let view = SeqView::Root(false);
         let mut ts = 1u64 << 16;
         let mut w = Writer::new(Ts::from_u64(ts).unwrap(), node.clone(), 1);
@@ -2683,7 +2684,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(191);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([9; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let me = Source::node(Tid::from_bytes([1; 15]));
+        let me = sess(1);
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), me.clone(), 1);
@@ -2722,7 +2723,7 @@ mod tests {
         }
         // hostile: 300 single-element moves to HEAD in one delta, received cold
         let len = st.at(&field()).and_then(|s| s.visible_range(0..usize::MAX)).unwrap().len();
-        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(100 << 16).unwrap(), Source::node(Tid::from_bytes([2; 15])), 1));
+        let mut b = Batch::new(&st, Writer::new(Ts::from_u64(100 << 16).unwrap(), sess(2), 1));
         for k in 0..300 {
             b.apply(&PathOp { path: field(), op: Op::Move { at: (k * 13) % (len - 1) + 1, len: 1, to: 0 } }, &view).unwrap();
         }
@@ -2771,7 +2772,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(185);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([8; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), sess(1), 1);
         let st = create(&mut w, &SeqView::Root(true), &seq_value(true, 6_000)).unwrap();
         let want = vis_whole(&st);
         let field = [PathSeg::Field(1)];
@@ -2824,7 +2825,7 @@ mod tests {
         let mut rng = osis_crypto::SeededRng::from_u64(197);
         let mut store = Store::create(Box::new(MemoryBackend::new()), Box::new(MemoryRoot::new()), StoreConfig::default(), &mut rng).unwrap();
         let (tid, ak) = (Tid::from_bytes([7; 15]), osis_base::Ak::new("app:seq.0").unwrap());
-        let me = Source::node(Tid::from_bytes([1; 15]));
+        let me = sess(1);
         let view = SeqView::Root(true);
         let field = || vec![PathSeg::Field(1)];
         let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), me.clone(), 1);
@@ -2905,7 +2906,7 @@ mod tests {
             }
             assert!(got.as_ref() == Some(&want), "damage {damage}: same delta as on the whole state");
             let mut deltas = vec![want.0];
-            let mut b = Batch::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), Source::node(Tid::from_bytes([2; 15])), 1 + 10 * damage));
+            let mut b = Batch::new(&st, Writer::new(Ts::from_u64((2 + damage) << 16).unwrap(), sess(2), 1 + 10 * damage));
             b.apply(&PathOp { path: field(), op: Op::Delete { at: 140, len: 20 } }, &view).unwrap();
             deltas.push(b.finish().unwrap().0);
             for d in deltas {

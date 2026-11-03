@@ -113,7 +113,7 @@ fn snapshot() -> CommitBlob {
     let at = ts(1_700_000_002_000);
     let mut w = Writer::new(ts(1_700_000_000_000), own(SESSION), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("hello".into())).unwrap();
-    let frontiers = Frontiers { sessions: [(osis_crdt::Session { node: AUTHOR, nonce: NONCE }, 1)].into_iter().collect(), ..Default::default() };
+    let frontiers = Frontiers { sessions: [(osis_crdt::Session { node: AUTHOR, nonce: NONCE }, 1)].into_iter().collect() };
     let s = Snapshot { absorbed: Default::default(), nonce: [4; 16], fragment, frontiers };
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
@@ -130,7 +130,7 @@ fn ephemeral(class: osis_commit::EphClass) -> CommitBlob {
     let session = osis_crdt::Session { node: AUTHOR, nonce: [0x27; osis_crdt::SESSION_NONCE_LEN] };
     let mut w = Writer::new(ts(1_700_000_003_500), Source::session(session), 1);
     let fragment = create(&mut w, &AnyView, &Value::Str("typing".into())).unwrap();
-    let frontiers = Frontiers { sessions: [(session, 1)].into_iter().collect(), ..Default::default() };
+    let frontiers = Frontiers { sessions: [(session, 1)].into_iter().collect() };
     let s = Snapshot { absorbed: Default::default(), nonce: [6; 16], fragment, frontiers };
     let bytes = encode_snapshot(&s, &writer_ctx(Form::Commit, Kind::ContentSnapshot, at, AUTHOR, 0, 0), None).unwrap();
     let mut b = CommitBuilder::new(Kind::ContentSnapshot, at, AUTHOR, ACTOR, Form::Commit);
@@ -372,9 +372,6 @@ fn more_rejected(content: &Header) -> Vec<Record> {
     x.keys.remove(0);
     x.aspects[0].keys = vec![0];
     out.push(reject("author retention without its level-1 key", "spec/crypto.md §7", &x, "delete-levels"));
-    let mut x = content.clone();
-    x.form = Form::Node;
-    out.push(reject("node form", "spec/commits.md §3", &x, "form"));
     let mut x = m.clone();
     x.form = SESSION;
     out.push(reject("session form on a role commit", "spec/commits.md §3", &x, "form"));

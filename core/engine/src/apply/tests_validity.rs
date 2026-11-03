@@ -268,10 +268,10 @@ mod tests {
         let schema = osis_schema::core_schema();
         let view = schema.view("secrets.0").unwrap();
         let ts = osis_base::Ts::make(WallMs(1_700_000_000_100), 0).unwrap();
-        let mut batch = Batch::new(&st, Writer::new(ts, Source::node(b), 1));
+        let mut batch = Batch::new(&st, Writer::new(ts, Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1));
         batch.apply(&PathOp { path: vec![PathSeg::Field(0), PathSeg::Key(g_key.to_value())], op: Op::Put(bx.to_value()) }, &view).unwrap();
         let (d, range) = batch.finish().unwrap();
-        let own = crate::engine::Owned::Range { src: Source::node(b), lo: range.lo, hi: range.hi };
+        let own = crate::engine::Owned::Range { src: Source::session(osis_crdt::Session { node: b, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), lo: range.lo, hi: range.hi };
         let granted = std::collections::BTreeMap::from([((t, g), Role::Read)]);
         assert!(super::super::validity::grantee_boxes_only(&t, &d, &granted, &own), "an honest put");
         let (g_dot, _) = box_entries(&d).remove(0);
@@ -744,9 +744,9 @@ mod keys_tests {
         let s = lp.peers[0].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap();
         let admin = s.boxes.keys().find(|k| k.role == Role::Admin).unwrap().clone();
         let read = ct::BoxKey { role: Role::Read, ..admin.clone() };
-        let src = osis_crdt::Source::node(lp.peers[1].engine.tid());
+        let src = osis_crdt::Source::session(osis_crdt::Session { node: lp.peers[1].engine.tid(), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
         let w = osis_crdt::Writer::new(osis_base::Ts::make(WallMs(1_700_000_000_000), 0).unwrap(), src.clone(), 1).keyed_removals(true);
-        let dot = osis_crdt::Dot::new(osis_crdt::Source::node(me), 3);
+        let dot = osis_crdt::Dot::new(osis_crdt::Source::session(osis_crdt::Session { node: me, nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 3);
         let rm = |k: Option<&ct::BoxKey>| {
             let f = match k {
                 Some(k) => osis_crdt::reset_entries(&w, &[(dot.clone(), k.to_value())]),

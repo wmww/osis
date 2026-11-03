@@ -2,7 +2,7 @@
 //! §5.1–§5.6, §7).
 
 use crate::fragment::Fragment;
-use crate::testutil::{frag, history, mapply, ostate, sink_no_seq, value};
+use crate::testutil::{frag, history, mapply, ostate, sess, sink_no_seq, value};
 use crdt_model::ops::Ty;
 use proptest::prelude::*;
 
@@ -41,11 +41,11 @@ pub(crate) fn lockstep(seed: u64, types: &[Ty], n: usize, rounds: usize) {
 /// rebuild stop at the winner, in any encoding the position has seen (`Fragment::settled_above`).
 fn settled(seed: u64, types: &[Ty]) {
     use crate::fragment::{RegWrite, Register};
-    use crate::stamp::{Source, Stamp};
+    use crate::stamp::Stamp;
     let mut r = crate::testutil::rng(seed | 1);
     let commits = history(&mut r, types, 3, 6);
     // the same joins do change a register below them, and nothing else is settled
-    let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), Source::node(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
+    let low = Fragment::Register(Register { reset: Some(Stamp::new(crate::testutil::ts(0), sess(osis_base::Tid::from_bytes([7; 15])), 1)), write: None });
     assert!(commits.iter().any(|c| {
         let mut j = low.clone();
         j.join(frag(&c.delta));
@@ -54,7 +54,7 @@ fn settled(seed: u64, types: &[Ty]) {
     assert!(commits.iter().all(|c| matches!(frag(&c.delta), Fragment::Register(_)) || !frag(&c.delta).settled_above(crate::testutil::ts(1 << 45))));
     assert!(!Fragment::default().settled_above(crate::testutil::ts(0)));
     let top = osis_base::Tid::from_bytes([7; 15]);
-    let stamp = Stamp::new(crate::testutil::ts(1 << 45), Source::node(top), 1);
+    let stamp = Stamp::new(crate::testutil::ts(1 << 45), sess(top), 1);
     for st in [Register { reset: None, write: Some(RegWrite { stamp: stamp.clone(), value: Some(osis_base::Value::Int(1)) }) }, Register { reset: Some(stamp.clone()), write: None }] {
         let st = Fragment::Register(st);
         assert!(st.settled_above(crate::testutil::ts((1 << 45) - 1)));
@@ -139,9 +139,9 @@ fn model_order_independent_spec_7_large() {
 #[test]
 fn deaths_reported_spec_4_8() {
     use crate::fragment::{RegWrite, Register, Struct};
-    use crate::stamp::{Source, Stamp};
+    use crate::stamp::Stamp;
     use osis_base::{Tid, Ts, Value};
-    let n = Source::node(Tid::from_bytes([1; 15]));
+    let n = sess(Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(Ts::from_u64(t << 16).unwrap(), n.clone(), c);
     let reg = |s: Stamp, v: i64| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(v)) }) });
     let field = |s: Stamp, v: i64| Fragment::Struct(Struct { fields: [(1, reg(s, v))].into_iter().collect(), ..Default::default() });
@@ -167,16 +167,16 @@ fn deaths_reported_spec_4_8() {
 mod direct {
     use crate::fragment::{Bag, BagKind, CaseWrite, Elem, Enum, Fragment, Meta, RegWrite, Register, Set, Struct};
     use crate::stamp::{Dot, Source, Stamp};
-    use crate::testutil::ts;
+    use crate::testutil::{sess, ts};
     use osis_base::{Tid, Value};
     use std::collections::BTreeMap;
 
     fn src(n: u8) -> Source {
         let mut b = [0u8; 15];
         b[14] = n;
-        Source::node(Tid::from_bytes(b))
+        sess(Tid::from_bytes(b))
     }
-    /// Node 1's write at ts `t`·2^16, counter `c`.
+    /// Session 1's write at ts `t`·2^16, counter `c`.
     fn st(t: u64, c: u64) -> Stamp {
         Stamp::new(ts(t << 16), src(1), c)
     }

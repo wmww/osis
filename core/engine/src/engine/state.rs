@@ -101,7 +101,7 @@ mod tests {
     fn equal_pages_round_trip_spec_8() {
         let s = Value::Map((0..4).map(|i| (Value::Int(i), Value::Str("x".repeat(30_000)))).collect());
         let v = Value::Map((0..2).map(|k| (Value::Int(k), s.clone())).collect());
-        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::node(Tid::from_bytes([1; 15])), 1);
+        let mut w = Writer::new(Ts::from_u64(1 << 16).unwrap(), Source::session(osis_crdt::Session { node: Tid::from_bytes([1; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1);
         let st = create(&mut w, &V(0), &v).unwrap();
         assert_eq!(super::decode(&super::encode(&st).unwrap()).unwrap(), st);
     }

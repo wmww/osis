@@ -64,7 +64,7 @@ Header fields by position:
 0. `version`: uint, the format version (1).
 1. `author`: tid of the signing key actor. 2. `actor`: tid of the actor it acts for (spec/permissions.md §5.2); in a role commit or roster snapshot (`kind` 1, 5) equal to `author`, else bad input.
 3. `kind`: 0 content, 1 role, 2 content compaction snapshot, 3 role compaction snapshot, 4 import, 5 roster snapshot (spec/commits.md §2).
-4. `ts` (spec/crdt.md §2.2). 5. `form`: 1 commit form, or `[2, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3); 0 (node form) is bad input.
+4. `ts` (spec/crdt.md §2.2). 5. `form`: 1 commit form, or `[2, nonce]` session form with the session's 16-byte nonce (spec/commits.md §3).
 6. `aspects`: `[Aspect+]` sorted by the canonical bytes of `[tid, ak]`, distinct.
 7. `chunks`: `[Chunk*]` sorted by blob ID, distinct: every chunk, tree-node and page blob the deltas introduce; `ki` are indices into `keys`, ascending: the delete keys of the delta that created the blob.
 8. `purge`: `[PurgeItem*]` sorted by canonical bytes, distinct; empty when there is no purge request. `[commit_id, tid, ak]` names that commit's deltas on that aspect; `[tid, ak]` names every delta on that aspect of every commit with a smaller `ts`; `[tid, ak, actor]` those of them whose commit's purge actor is `actor` (spec/permissions.md §8: the actor its header names; an import's: its first origin's). The second place tells the three-item forms apart: a tid, or an AK's text.

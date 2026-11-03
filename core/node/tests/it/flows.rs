@@ -1056,7 +1056,7 @@ fn link_spec(target: Tid, role: Role, until: Option<osis_base::WallMs>) -> osis_
 // spec/crdt.md §3.2 (commit form: own writes first among commits), spec/commits.md §4: a
 // redemption signed as L rewrites K's history boxes (remove + put next to the sharer node's
 // entries); its deltas must encode canonically whichever way L's and the sharer's tids sort (the
-// writer once encoded own writes under the signer's node source, out of the reader's order).
+// writer once encoded own writes under the signer's own source, out of the reader's order).
 #[test]
 fn commit_form_redemption_canonical_spec_crdt_3_2() {
     for seed in 600..606 {

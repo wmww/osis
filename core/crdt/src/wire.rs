@@ -36,71 +36,53 @@ pub enum DeltaKind {
 #[derive(Clone, Debug)]
 pub struct DeltaCtx {
     pub ts: Ts,
-    /// Node form: the author node; commit form: this commit (writers use a placeholder, `Writer`).
+    /// Session form: the author's session; commit form: this commit (writers use a placeholder,
+    /// `Writer`).
     pub own: Source,
     pub range: CounterRange,
     pub kind: DeltaKind,
 }
 
-/// Per `Node` and `Session` source occurring in the snapshot's fragment, the largest counter up
-/// to which the snapshot writer applied all of that source's writes in the aspect (§8), 0 when
-/// it applied none contiguously. A source without an entry does not occur in the fragment
-/// (`lists`); on the wire every occurring source has an entry.
+/// Per `Session` source occurring in the snapshot's fragment, the largest counter up to which
+/// the snapshot writer applied all of that source's writes in the aspect (§8), 0 when it applied
+/// none contiguously. A source without an entry does not occur in the fragment (`lists`); on the
+/// wire every occurring source has an entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Frontiers {
-    pub nodes: BTreeMap<Tid, u64>,
     pub sessions: BTreeMap<Session, u64>,
 }
 
 impl Frontiers {
-    /// Node frontiers only.
-    pub fn of_nodes(nodes: BTreeMap<Tid, u64>) -> Frontiers {
-        Frontiers { nodes, sessions: BTreeMap::new() }
-    }
     /// Every entry as its source, with its counter.
     pub fn sources(&self) -> impl Iterator<Item = (Source, u64)> + '_ {
-        self.nodes.iter().map(|(t, c)| (Source::node(*t), *c)).chain(self.sessions.iter().map(|(s, c)| (Source::session(*s), *c)))
+        self.sessions.iter().map(|(s, c)| (Source::session(*s), *c))
     }
     /// Whether `src` has an entry: it occurs in the snapshot's fragment.
     pub fn lists(&self, src: &Source) -> bool {
-        match src.kind() {
-            SourceKind::Node(t) => self.nodes.contains_key(t),
-            SourceKind::Session(s) => self.sessions.contains_key(s),
-            _ => false,
-        }
+        src.as_session().is_some_and(|s| self.sessions.contains_key(&s))
     }
     /// Entries with a counter: tests comparing a snapshot with its decoding, which lists every
     /// source of the fragment.
     pub fn without_zeros(mut self) -> Frontiers {
-        self.nodes.retain(|_, c| *c > 0);
         self.sessions.retain(|_, c| *c > 0);
         self
     }
-    /// The frontier of `src` (0 when none, or not a `Node` or `Session` source).
+    /// The frontier of `src` (0 when none, or not a `Session` source).
     pub fn of(&self, src: &Source) -> u64 {
-        match src.kind() {
-            SourceKind::Node(t) => self.nodes.get(t).copied().unwrap_or(0),
-            SourceKind::Session(s) => self.sessions.get(s).copied().unwrap_or(0),
-            _ => 0,
-        }
+        src.as_session().and_then(|s| self.sessions.get(&s).copied()).unwrap_or(0)
     }
-    /// Sets the frontier of `src`; false when `src` is neither a `Node` nor a `Session` source.
+    /// Sets the frontier of `src`; false when `src` is not a `Session` source.
     pub fn insert(&mut self, src: &Source, ctr: u64) -> bool {
-        match src.kind() {
-            SourceKind::Node(t) => self.nodes.insert(*t, ctr).is_none(),
-            SourceKind::Session(s) => self.sessions.insert(*s, ctr).is_none(),
-            _ => false,
-        }
+        src.as_session().is_some_and(|s| self.sessions.insert(s, ctr).is_none())
     }
     /// Keeps the entries of the sources `keep` holds (a snapshot lists only sources that occur
     /// in its fragment, §8).
     pub fn retain(&mut self, keep: &std::collections::BTreeSet<Source>) {
-        self.nodes.retain(|t, _| keep.contains(&Source::node(*t)));
         self.sessions.retain(|s, _| keep.contains(&Source::session(*s)));
     }
 }
 
-/// Applied counter ranges per `Node` and `Session` source for one aspect: what a snapshot's
+/// Applied counter ranges per `Session` source for one aspect: what a snapshot's
 /// frontiers are built from (§8).
 /// Parked commits are not added until joined.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -110,9 +92,9 @@ impl Received {
     pub fn new() -> Received {
         Received::default()
     }
-    /// Records counters `range` of `src` (a `Node` or `Session` source) as applied.
+    /// Records counters `range` of `src` (a `Session` source) as applied.
     pub fn add(&mut self, src: &Source, range: CounterRange) {
-        if range.is_empty() || !matches!(src.kind(), SourceKind::Node(_) | SourceKind::Session(_)) {
+        if range.is_empty() || !matches!(src.kind(), SourceKind::Session(_)) {
             return;
         }
         let v = self.0.entry(src.clone()).or_default();
@@ -527,10 +509,10 @@ impl<'p> Enc<'p> {
         !c.bad && c.next == self.sources.len() as u64 + 1 && c.min.iter().zip(&self.commits).all(|(m, e)| *m == e.base)
     }
 
-    /// `Frontiers := [[Src, ctr]*]`: one entry per `Node` or `Session` source of the table, in
-    /// table order, `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
+    /// `Frontiers := [[Src, ctr]*]`: one entry per `Session` source of the table, in table order,
+    /// `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
     pub(crate) fn frontiers_value(&self, fr: &Frontiers) -> Value {
-        let entries = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Node(_) | SourceKind::Session(_))).map(|(i, s)| Value::List(vec![uint(i as u64 + 1), uint(fr.of(s))]));
+        let entries = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Session(_))).map(|(i, s)| Value::List(vec![uint(i as u64 + 1), uint(fr.of(s))]));
         Value::List(entries.collect())
     }
 
@@ -606,7 +588,6 @@ impl<'p> Enc<'p> {
             self.sources
                 .iter()
                 .map(|s| match s.kind() {
-                    SourceKind::Node(t) => Value::Bytes(t.as_bytes().to_vec()),
                     SourceKind::Session(x) => Value::Bytes(x.to_bytes().to_vec()),
                     SourceKind::Commit(c) => Value::Bytes(c.0.to_vec()),
                     SourceKind::Derived(d) => Value::List(vec![uint(self.src_index(&d.src)), uint(d.ctr)]),
@@ -876,9 +857,7 @@ impl<'a> Dec<'a> {
         for s in as_array(v)? {
             let src = match s {
                 Value::Bytes(b) => {
-                    if let Ok(t) = <[u8; 15]>::try_from(b.as_slice()) {
-                        Source::node(Tid::from_bytes(t))
-                    } else if let Ok(x) = <[u8; 31]>::try_from(b.as_slice()) {
+                    if let Ok(x) = <[u8; 31]>::try_from(b.as_slice()) {
                         Source::session(Session::from_bytes(&x))
                     } else if let Ok(c) = <[u8; 32]>::try_from(b.as_slice()) {
                         Source::commit(CommitId(c))
@@ -989,6 +968,9 @@ mod tests {
         b[14] = n;
         Tid::from_bytes(b)
     }
+    fn sess(n: u8) -> Source {
+        Source::session(Session { node: tid(n), nonce: [n; crate::SESSION_NONCE_LEN] })
+    }
     fn ts(wall: u64, logical: u64) -> Ts {
         Ts::make(WallMs(wall), logical).unwrap()
     }
@@ -997,8 +979,8 @@ mod tests {
     /// `ts` with delta-coded wall times and bases; bare forms where possible; decoding inverts.
     #[test]
     fn tables_round_trip_spec_3_2() {
-        let own = Source::node(tid(1));
-        let a = Source::node(tid(9));
+        let own = sess(1);
+        let a = sess(9);
         let b = Source::commit(CommitId([7; 32]));
         let d = Source::derived(Dot::new(b.clone(), 2)).unwrap();
         let cx = DeltaCtx { ts: ts(100, 0), own: own.clone(), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
@@ -1023,7 +1005,7 @@ mod tests {
             assert_eq!(
                 sources,
                 Value::List(vec![
-                    Value::Bytes(tid(9).as_bytes().to_vec()),
+                    Value::Bytes(Session { node: tid(9), nonce: [9; crate::SESSION_NONCE_LEN] }.to_bytes().to_vec()),
                     Value::Bytes(vec![7; 32]),
                     Value::List(vec![Value::Int(2), Value::Int(2)]),
                 ])
@@ -1061,7 +1043,7 @@ mod tests {
     /// `hi`; the commit table serves only sibling keys.
     #[test]
     fn writer_rejections_spec_3_3() {
-        let own = Source::node(tid(1));
+        let own = sess(1);
         let cx = DeltaCtx { ts: ts(100, 0), own, range: CounterRange { lo: 5, hi: 7 }, kind: DeltaKind::Writer };
         let mut interner = Interner::new();
         let mut dec = Dec::new(&cx, &mut interner, None);
@@ -1083,7 +1065,7 @@ mod tests {
     /// (the claims are kept as runs: against a plain set).
     #[test]
     fn claims_as_runs_spec_3_3() {
-        let own = Source::node(tid(1));
+        let own = sess(1);
         let cx = DeltaCtx { ts: ts(100, 0), own: own.clone(), range: CounterRange { lo: 1, hi: 64 }, kind: DeltaKind::Writer };
         for seed in 0..200u64 {
             let mut r = crate::testutil::rng(seed);
@@ -1105,10 +1087,10 @@ mod tests {
     fn own_commit_sorts_first_spec_3_3() {
         let own = Source::commit(CommitId([0xff; 32]));
         let other = Source::commit(CommitId([1; 32]));
-        let node = Source::node(tid(1));
+        let session = sess(1);
         let cx = DeltaCtx { ts: ts(1, 0), own: own.clone(), range: CounterRange { lo: 1, hi: 2 }, kind: DeltaKind::Writer };
         let enc = Enc::new(&cx, None);
         assert_eq!(enc.dot_order(&Dot::new(own.clone(), 1), &Dot::new(other.clone(), 1)), Ordering::Less);
-        assert_eq!(enc.dot_order(&Dot::new(node, 1), &Dot::new(own, 1)), Ordering::Less);
+        assert_eq!(enc.dot_order(&Dot::new(session, 1), &Dot::new(own, 1)), Ordering::Less);
     }
 }

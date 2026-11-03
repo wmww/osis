@@ -7,7 +7,7 @@ use crate::page::{PageError, PageParams, PageSink, PageSource};
 use crate::stamp::Interner;
 use crate::stream::Piece;
 use crate::tests_decoder::{mutate, mutate_tree};
-use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply};
+use crate::testutil::{MCommit, frag, history_bulk, history_with, mapply, sess};
 use crate::tests_wire::{snap_cx, writer_cx};
 use crate::wire::{Delta, DeltaCtx, Frontiers, Snapshot};
 use crate::{Fragment, decode_delta, decode_snapshot, stream_delta, stream_snapshot};
@@ -114,7 +114,7 @@ impl Input {
 fn inputs(seed: u64, types: &[Ty], params: Option<PageParams>) -> (Vec<Input>, Vec<MCommit>) {
     let mut r = crate::testutil::rng(seed | 1);
     // where paging is tested, writers start with large writes, so those and the states page
-    let sources = (1..=3).map(MSource::node).collect();
+    let sources = (1..=3).map(|n| MSource::session(n, 0)).collect();
     let commits = if params.is_some() { history_bulk(&mut r, types, sources, 12) } else { history_with(&mut r, types, sources, 3) };
     let mut out = Vec::new();
     let mut state = None;
@@ -470,16 +470,16 @@ fn chunk_cut_case(nested: bool) {
         }
         MV::fields(f)
     };
-    let mut a = crdt_model::ops::Writer::new(MSource::node(1), 5 << 16, 1);
+    let mut a = crdt_model::ops::Writer::new(MSource::session(1, 0), 5 << 16, 1);
     let mut state = None;
     let d = crdt_model::ops::create(&mut a, &ty, &MV::List((0..6).map(|i| elem(i, 0)).collect()));
     mapply(&mut state, d);
     // node 2 moves the first element (a position write in the first chunk)
-    let mut b = crdt_model::ops::Writer::new(MSource::node(2), 6 << 16, 1);
+    let mut b = crdt_model::ops::Writer::new(MSource::session(2, 0), 6 << 16, 1);
     let d = crdt_model::ops::seq_move(&mut b, state.as_ref().unwrap(), 0, 1, 2).unwrap();
     mapply(&mut state, d);
     // node 3 edits the fifth element's register (content of the second chunk)
-    let mut c = crdt_model::ops::Writer::new(MSource::node(3), 7 << 16, 1);
+    let mut c = crdt_model::ops::Writer::new(MSource::session(3, 0), 7 << 16, 1);
     let mut v = state.as_ref().unwrap().read().unwrap();
     let MV::List(items) = &mut v else { panic!() };
     let MV::Map(m) = &mut items[4] else { panic!("{:?}", items[4]) };
@@ -491,7 +491,7 @@ fn chunk_cut_case(nested: bool) {
     let d = crdt_model::diff::diff(&mut c, state.as_ref(), &ty, &v).unwrap();
     mapply(&mut state, d);
     let st = state.unwrap();
-    let mbytes = crdt_model::wire::encode_snapshot(&st, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, MSource::node(250), 1));
+    let mbytes = crdt_model::wire::encode_snapshot(&st, &[], [3; 16], &mut crdt_model::wire::Ctx::new(1 << 40, MSource::session(250, 0), 1));
     let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(&st), frontiers: Frontiers::default() };
     let mut flat = Blobs::new(PageParams { target: usize::MAX, ..PageParams::FORMAT });
     let bytes = encode_snapshot(&s, &snap_cx(), Some(&mut flat)).unwrap();
@@ -499,14 +499,14 @@ fn chunk_cut_case(nested: bool) {
     let i = Input { root: bytes, pages: Some(flat), cx: snap_cx(), snapshot: true };
     assert_eq!(i.streamed().unwrap(), s.fragment);
     assert!(i.agree().unwrap());
-    // the run was cut, and node 3 precedes node 2 in `Sources`
+    // the run was cut, and session 3 precedes session 2 in `Sources`
     let osis_base::Value::List(top) = osis_base::decode(&i.root, &osis_base::Limits { max_bytes: usize::MAX, ..osis_base::Limits::DEFAULT }).unwrap() else { panic!() };
     let osis_base::Value::List(srcs) = &top[1] else { panic!() };
-    let tid = |n: u8| match crate::testutil::source(&MSource::node(n)).kind() {
-        crate::SourceKind::Node(t) => osis_base::Value::Bytes(t.as_bytes().to_vec()),
+    let src = |n: u8| match crate::testutil::source(&MSource::session(n, 0)).kind() {
+        crate::SourceKind::Session(s) => osis_base::Value::Bytes(s.to_bytes().to_vec()),
         _ => panic!(),
     };
-    assert_eq!(srcs, &vec![tid(1), tid(3), tid(2)]);
+    assert_eq!(srcs, &vec![src(1), src(3), src(2)]);
     let osis_base::Value::List(f) = &top[3] else { panic!() };
     let osis_base::Value::List(runs) = &f[3] else { panic!() };
     assert!(runs.len() >= 2, "one run cut at CHUNK_MAX: {} runs", runs.len());
@@ -534,7 +534,7 @@ fn stream_memory_child(arg: &str) {
     let n: usize = String::from_utf8(read("pages")).unwrap().parse().unwrap();
     let mut pages = Blobs::new(PageParams::FORMAT);
     pages.pages = (0..n).map(|k| read(&format!("p{k}"))).collect();
-    let node = crate::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let node = sess(osis_base::Tid::from_bytes([1; 15]));
     let snapshot = name == "snapshot";
     let cx = if snapshot { snap_cx() } else { DeltaCtx { ts: crate::testutil::ts(1 << 20), own: node, range: crate::CounterRange { lo: range[0], hi: range[1] }, kind: crate::DeltaKind::Writer } };
     if let Some(old) = phase.strip_prefix("encode-").map(|x| x == "old") {
@@ -577,7 +577,7 @@ fn stream_memory_child(arg: &str) {
 /// A writer's delta creating a 10^5-key map, its context, and the map value (an encode step
 /// keeps it: freed, its memory would hide the encoder's peak).
 fn big_map() -> (Fragment, DeltaCtx, osis_base::Value) {
-    let node = crate::Source::node(osis_base::Tid::from_bytes([1; 15]));
+    let node = sess(osis_base::Tid::from_bytes([1; 15]));
     let map = osis_base::Value::Map((0..100_000).map(|i| (osis_base::Value::Str(format!("key {i}")), osis_base::Value::Int(i))).collect());
     let mut w = crate::Writer::new(crate::testutil::ts(1 << 20), node.clone(), 1);
     let d = crate::create(&mut w, &crate::testutil::TyView(Ty::Map(Box::new(Ty::Register), Box::new(Ty::Register))), &map).unwrap();
@@ -640,9 +640,9 @@ fn stream_memory_big_map() {
 #[test]
 fn map_dot_prunes_across_pages_spec_3_3() {
     use crate::fragment::{Eid, Entry, Map, Meta, RegWrite, Register};
-    use crate::stamp::{Dot, Source, Stamp};
+    use crate::stamp::{Dot, Stamp};
     use osis_base::{Tid, Value};
-    let node = Source::node(Tid::from_bytes([1; 15]));
+    let node = sess(Tid::from_bytes([1; 15]));
     let st = |t: u64, c: u64| Stamp::new(crate::testutil::ts(t << 16), node.clone(), c);
     let reg = |s: Stamp| Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s, value: Some(Value::Int(1)) }) }));
     let (mut straddled, mut seen) = (0, 0);

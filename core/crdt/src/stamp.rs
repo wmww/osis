@@ -10,8 +10,8 @@ use std::sync::Arc;
 /// Length of a session's random nonce (§2.1).
 pub const SESSION_NONCE_LEN: usize = 16;
 
-/// A node's in-memory session (§2.1): the node, and a nonce drawn at random at each start. Its
-/// writes belong to the node; its counters run per aspect, as a node's do.
+/// A node's session (§2.1): the node, and a nonce drawn at random at each start. Its writes
+/// belong to the node; its counters run per aspect.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Session {
     pub node: Tid,
@@ -38,9 +38,7 @@ impl Session {
 /// Who minted a run of counters (§2.1).
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum SourceKind {
-    /// A node's signing identity.
-    Node(Tid),
-    /// A node's in-memory session (ephemeral writes).
+    /// A node's session.
     Session(Session),
     /// A commit-form commit.
     Commit(CommitId),
@@ -51,18 +49,16 @@ pub enum SourceKind {
 impl SourceKind {
     fn rank(&self) -> u8 {
         match self {
-            SourceKind::Node(_) => 0,
-            SourceKind::Session(_) => 1,
-            SourceKind::Commit(_) => 2,
-            SourceKind::Derived(_) => 3,
+            SourceKind::Session(_) => 0,
+            SourceKind::Commit(_) => 1,
+            SourceKind::Derived(_) => 2,
         }
     }
 }
 
-/// Order of two sources that are not `Derived`: `Node` < `Session` < `Commit`, then bytes (§2.2).
+/// Order of two sources that are not `Derived`: `Session` < `Commit`, then bytes (§2.2).
 pub(crate) fn base_cmp(a: &Source, b: &Source) -> Ordering {
     match (a.kind(), b.kind()) {
-        (SourceKind::Node(x), SourceKind::Node(y)) => x.cmp(y),
         (SourceKind::Session(x), SourceKind::Session(y)) => x.cmp(y),
         (SourceKind::Commit(x), SourceKind::Commit(y)) => x.cmp(y),
         (x, y) => x.rank().cmp(&y.rank()),
@@ -95,17 +91,14 @@ fn split_dot(d: &Dot) -> (&Dot, Option<u64>) {
 pub struct Source(Arc<SourceKind>);
 
 impl Source {
-    pub fn node(tid: Tid) -> Source {
-        Source(Arc::new(SourceKind::Node(tid)))
-    }
     pub fn session(s: Session) -> Source {
         Source(Arc::new(SourceKind::Session(s)))
     }
     pub fn commit(id: CommitId) -> Source {
         Source(Arc::new(SourceKind::Commit(id)))
     }
-    /// `None` if `dot`'s source is itself `Derived` (§3.2: Derived of a Node, Session or Commit
-    /// dot only).
+    /// `None` if `dot`'s source is itself `Derived` (§3.2: Derived of a Session or Commit dot
+    /// only).
     pub fn derived(dot: Dot) -> Option<Source> {
         if dot.src.is_derived() {
             return None;
@@ -126,23 +119,16 @@ impl Source {
             _ => self,
         }
     }
-    pub fn as_node(&self) -> Option<Tid> {
-        match &*self.0 {
-            SourceKind::Node(t) => Some(*t),
-            _ => None,
-        }
-    }
     pub fn as_session(&self) -> Option<Session> {
         match &*self.0 {
             SourceKind::Session(s) => Some(*s),
             _ => None,
         }
     }
-    /// The node its writes belong to: a `Node` source's, a `Session` source's node, a `Derived`
-    /// source's underlying author's (§2.1); `None` for a `Commit` source.
+    /// The node its writes belong to: a `Session` source's node, a `Derived` source's underlying
+    /// author's (§2.1); `None` for a `Commit` source.
     pub fn node_of(&self) -> Option<Tid> {
         match self.author().kind() {
-            SourceKind::Node(t) => Some(*t),
             SourceKind::Session(s) => Some(s.node),
             _ => None,
         }
@@ -190,7 +176,6 @@ impl PartialOrd for Source {
 impl fmt::Debug for Source {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &*self.0 {
-            SourceKind::Node(t) => write!(f, "N{t:?}"),
             SourceKind::Session(s) => write!(f, "S{:?}/{}", s.node, osis_base::hex::encode(&s.nonce[..4])),
             SourceKind::Commit(c) => write!(f, "C{c:?}"),
             SourceKind::Derived(d) => write!(f, "D({d:?})"),
@@ -209,9 +194,6 @@ impl Interner {
     /// The shared copy of `s`.
     pub(crate) fn intern(&mut self, s: &Source) -> Source {
         self.0.entry(s.kind().clone()).or_insert_with(|| s.clone()).clone()
-    }
-    pub fn node(&mut self, tid: Tid) -> Source {
-        self.intern(&Source::node(tid))
     }
     pub fn session(&mut self, s: Session) -> Source {
         self.intern(&Source::session(s))
@@ -317,26 +299,26 @@ mod tests {
 
     #[test]
     fn stamp_order_spec_2_2() {
-        let n1 = Source::node(tid(1));
-        let n2 = Source::node(tid(2));
+        let sess = |n: u8, nonce: u8| Source::session(Session { node: tid(n), nonce: [nonce; SESSION_NONCE_LEN] });
+        let (s1, s2) = (sess(1, 0), sess(2, 0));
         let c = Source::commit(CommitId([0; 32]));
-        let s = Source::session(Session { node: tid(9), nonce: [0xff; SESSION_NONCE_LEN] });
-        let d = Source::derived(Dot::new(n1.clone(), 1)).unwrap();
+        let d = Source::derived(Dot::new(s1.clone(), 1)).unwrap();
         // ts first
-        assert!(Stamp::new(ts(1), d.clone(), 9) < Stamp::new(ts(2), n1.clone(), 1));
-        // then kind: Node < Session < Commit < Derived
-        assert!(Stamp::new(ts(1), n2.clone(), 9) < Stamp::new(ts(1), s.clone(), 1));
-        assert!(Stamp::new(ts(1), s.clone(), 9) < Stamp::new(ts(1), c.clone(), 1));
-        // Derived(d) right after d: above node 1's counter 1, below its counter 2 and node 2
-        assert!(Stamp::new(ts(1), n1.clone(), 1) < Stamp::new(ts(1), d.clone(), 7));
-        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), n1.clone(), 2));
-        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), n2.clone(), 1));
+        assert!(Stamp::new(ts(1), d.clone(), 9) < Stamp::new(ts(2), s1.clone(), 1));
+        // then kind: Session < Commit < Derived
+        assert!(Stamp::new(ts(1), s2.clone(), 9) < Stamp::new(ts(1), c.clone(), 1));
+        // Derived(d) right after d: above session 1's counter 1, below its counter 2 and session 2
+        assert!(Stamp::new(ts(1), s1.clone(), 1) < Stamp::new(ts(1), d.clone(), 7));
+        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), s1.clone(), 2));
+        assert!(Stamp::new(ts(1), d.clone(), 7) < Stamp::new(ts(1), s2.clone(), 1));
         assert!(Stamp::new(ts(1), d.clone(), 1) < Stamp::new(ts(1), d.clone(), 2));
-        // then source bytes, then counter
-        assert!(Stamp::new(ts(1), n1.clone(), 9) < Stamp::new(ts(1), n2.clone(), 1));
-        assert!(Stamp::new(ts(1), n1.clone(), 1) < Stamp::new(ts(1), n1.clone(), 2));
+        // then source bytes (tid, then nonce), then counter
+        assert!(Stamp::new(ts(1), s1.clone(), 9) < Stamp::new(ts(1), s2.clone(), 1));
+        assert!(Stamp::new(ts(1), sess(1, 0xff), 1) < Stamp::new(ts(1), s2.clone(), 1));
+        assert!(Stamp::new(ts(1), s1.clone(), 9) < Stamp::new(ts(1), sess(1, 1), 1));
+        assert!(Stamp::new(ts(1), s1.clone(), 1) < Stamp::new(ts(1), s1.clone(), 2));
         // Derived by the underlying dot
-        let d2 = Source::derived(Dot::new(n1.clone(), 2)).unwrap();
+        let d2 = Source::derived(Dot::new(s1.clone(), 2)).unwrap();
         assert!(d < d2);
         assert!(Source::derived(Dot::new(d, 1)).is_none());
     }
@@ -344,10 +326,11 @@ mod tests {
     #[test]
     fn interner_shares_spec_2_1() {
         let mut i = Interner::new();
-        let a = i.node(tid(3));
-        let b = i.intern(&Source::node(tid(3)));
+        let s = Session { node: tid(3), nonce: [0; SESSION_NONCE_LEN] };
+        let a = i.session(s);
+        let b = i.intern(&Source::session(s));
         assert!(Arc::ptr_eq(&a.0, &b.0));
-        assert_eq!(a, Source::node(tid(3)));
+        assert_eq!(a, Source::session(s));
         assert_eq!(Source::derived(Dot::new(a.clone(), 4)).unwrap().author(), &a);
     }
 

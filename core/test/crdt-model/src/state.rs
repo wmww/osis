@@ -173,7 +173,7 @@ impl SeqElem {
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
     }
-    /// Whether the record stays in the state (§4.2, §5.7): Node/Commit records are never dropped (a record with no
+    /// Whether the record stays in the state (§4.2, §5.7): Session/Commit records are never dropped (a record with no
     /// surviving write is a bare anchor); a `Derived` record exists only while it carries a write, since a node that
     /// only ever saw the value-less register has none (§4.7, §6.1).
     fn keeps_record(&self, d: &Dot) -> bool {

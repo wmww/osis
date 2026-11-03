@@ -4,7 +4,7 @@
 use crate::codec::{decode_delta, decode_snapshot, encode_delta, encode_snapshot};
 use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
 use crate::stamp::{CounterRange, Dot, Interner, Source, Stamp};
-use crate::testutil::{frag, history_with, mapply, sink_no_seq, source, ts};
+use crate::testutil::{frag, history_with, mapply, sess, sess_value, sink_no_seq, source, ts};
 use crate::wire::{Delta, DeltaCtx, DeltaKind, Frontiers, Snapshot};
 use crdt_model::ops::Ty;
 use crdt_model::stamp::Source as MSource;
@@ -18,7 +18,7 @@ pub(crate) fn writer_cx(w: &crdt_model::ops::Writer) -> DeltaCtx {
 }
 
 pub(crate) fn snap_cx() -> DeltaCtx {
-    DeltaCtx { ts: ts(1 << 40), own: source(&MSource::node(250)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
+    DeltaCtx { ts: ts(1 << 40), own: source(&MSource::session(250, 0)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot }
 }
 
 /// Every delta of a random history, node or commit form, encodes byte-identically with the model
@@ -44,10 +44,10 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
         // a snapshot lists frontiers for the sources of its fragment only (§8)
         let traced = crate::sources_of(&frag(st), &snap_cx()).unwrap();
         let mfr: Vec<(MSource, u64)> = fr.frontiers().into_iter().filter(|(s, _)| traced.contains(&source(s))).collect();
-        let msnap = crdt_model::wire::encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::node(250), 1));
+        let msnap = crdt_model::wire::encode_snapshot(st, &mfr, [3; 16], &mut Ctx::new(1 << 40, MSource::session(250, 0), 1));
         let mut frontiers = Frontiers::default();
         for (s, c) in &mfr {
-            assert!(frontiers.insert(&source(s), *c), "a node or session frontier");
+            assert!(frontiers.insert(&source(s), *c), "a session frontier");
         }
         let s = Snapshot { absorbed: Default::default(), nonce: [3; 16], fragment: frag(st), frontiers };
         let sbytes = encode_snapshot(&s, &snap_cx(), None).unwrap();
@@ -60,18 +60,18 @@ fn wire_matches(seed: u64, types: &[Ty], sources: Vec<MSource>) {
 }
 
 proptest! {
-    /// §3.2, §3.3 rules 1–6: node form.
+    /// §3.2, §3.3 rules 1–6: session form.
     #[test]
     fn wire_matches_model_spec_3(seed in any::<u64>()) {
-        let sources = (1..=3).map(MSource::node).collect();
+        let sources = (1..=3).map(|n| MSource::session(n, 0)).collect();
         wire_matches(seed, &[sink_no_seq()], sources);
     }
 
-    /// §2.1, §2.2, §8: session sources (two sessions of one node and another node's) beside a
-    /// node source: 31-byte `Source`, order `Node` < `Session`, frontiers per session.
+    /// §2.1, §2.2, §8: two sessions of one node beside other nodes': 31-byte `Source`, order by
+    /// tid then nonce, frontiers per session.
     #[test]
     fn wire_matches_model_sessions_spec_2_1(seed in any::<u64>()) {
-        let sources = vec![MSource::session(1, 0xf0), MSource::node(2), MSource::session(1, 0x10), MSource::session(3, 0x80)];
+        let sources = vec![MSource::session(1, 0xf0), MSource::session(2, 0), MSource::session(1, 0x10), MSource::session(3, 0x80)];
         wire_matches(seed, &[sink_no_seq()], sources);
     }
 
@@ -86,7 +86,7 @@ proptest! {
     #[test]
     fn wire_slots_spec_7(seed in any::<u64>()) {
         let set = Ty::Set(Box::new(Ty::Register));
-        let sources = (1..=4).map(MSource::node).collect();
+        let sources = (1..=4).map(|n| MSource::session(n, 0)).collect();
         wire_matches(seed, &[Ty::Register, Ty::Counter, set, Ty::Max], sources);
     }
 
@@ -101,7 +101,7 @@ proptest! {
     #[test]
     fn mutated_delta_never_panics_spec_3_3(seed in any::<u64>(), pos in any::<usize>(), byte in any::<u8>()) {
         let mut r = crate::testutil::rng(seed | 1);
-        let commits = history_with(&mut r, &[sink_no_seq()], vec![MSource::node(1)], 2);
+        let commits = history_with(&mut r, &[sink_no_seq()], vec![MSource::session(1, 0)], 2);
         for c in &commits {
             let cx = writer_cx(&c.w);
             let mut bytes = encode_delta(&Delta { nonce: [1; 16], fragment: frag(&c.delta) }, &cx, None).unwrap();
@@ -126,7 +126,7 @@ fn tid(n: u8) -> Tid {
 
 /// Writer of node 1 at ts 5·2^16 with range [3, 6).
 pub(crate) fn wcx() -> DeltaCtx {
-    DeltaCtx { ts: ts(5 << 16), own: Source::node(tid(1)), range: CounterRange { lo: 3, hi: 6 }, kind: DeltaKind::Writer }
+    DeltaCtx { ts: ts(5 << 16), own: sess(tid(1)), range: CounterRange { lo: 3, hi: 6 }, kind: DeltaKind::Writer }
 }
 
 pub(crate) fn i(n: i64) -> Value {
@@ -202,9 +202,9 @@ fn rejects_non_canonical_forms_spec_3_3() {
     // unsorted elements
     rejects(&delta(vec![], vec![], set_with(vec![elem(i(4), 1), elem(i(3), 2)])), &wcx(), ErrorClass::BadInput);
     // a source the fragment does not use
-    rejects(&delta(vec![Value::Bytes(vec![9; 15])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
+    rejects(&delta(vec![Value::Bytes(vec![9; 31])], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
     // the own source repeated in Sources
-    let own = Value::Bytes(tid(1).as_bytes().to_vec());
+    let own = sess_value(tid(1));
     rejects(&delta(vec![own], vec![], set_with(vec![elem(i(3), 1)])), &wcx(), ErrorClass::BadInput);
     // a bad nonce
     let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 15]), l(vec![]), l(vec![]), set_with(vec![])]));
@@ -246,8 +246,8 @@ fn rejects_bad_slots_spec_3_3() {
     // any slots in a writer's delta
     rejects(&delta(vec![], vec![], l(vec![i(10), l(vec![reg.clone()]), l(vec![set.clone()])])), &wcx(), ErrorClass::BadInput);
     // in a snapshot (stamps foreign: the snapshotter is node 2, writes by node 1)
-    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let srcs = vec![Value::Bytes(tid(1).as_bytes().to_vec())];
+    let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let srcs = vec![sess_value(tid(1))];
     let commits = vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])];
     let reg = l(vec![i(0), l(vec![]), i(1), i(1)]);
     let set = l(vec![i(6), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(3)]), l(vec![]), l(vec![l(vec![i(0), l(vec![]), i(1), i(1)])])])])]);
@@ -277,21 +277,22 @@ fn rejects_deep_values_spec_3_3() {
     rejects(&delta(vec![], vec![], l(vec![i(0), l(vec![]), i(0), v])), &wcx(), ErrorClass::BadInput);
 }
 
-// §8: one frontier entry per node or session source of the fragment, in table order, 0 where
+// §8: one frontier entry per session source of the fragment, in table order, 0 where
 // the writer claims nothing; a source of the fragment without an entry, an entry for a source
 // not in the fragment, or one for a commit source is bad input.
 #[test]
 fn snapshot_frontiers_spec_8() {
     let scx = DeltaCtx { ts: ts(9 << 16), own: Source::commit(osis_base::CommitId([0; 32])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let session = crate::Session { node: tid(5), nonce: [1; crate::SESSION_NONCE_LEN] };
-    // a set with elements of a node (first), a session and a commit source
+    // a set with elements of two sessions of one node and a commit source
     let mut elems = BTreeMap::new();
-    for (k, src) in [(1u8, Source::node(tid(5))), (2, Source::session(session)), (3, Source::commit(osis_base::CommitId([7; 32])))] {
+    for (k, src) in [(1u8, sess(tid(5))), (2, Source::session(session)), (3, Source::commit(osis_base::CommitId([7; 32])))] {
         let dot = Dot::new(src, 4);
         elems.insert(dot.clone(), Elem { reset: None, frag: Some(Box::new(Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp { ts: ts((u64::from(k) + 1) << 16), dot }, value: Some(Value::Int(i64::from(k))) }) }))) });
     }
     let fragment = Fragment::Set(Set { meta: Meta::default(), elems });
-    let frontiers = Frontiers { nodes: BTreeMap::from([(tid(5), 7)]), sessions: BTreeMap::new() };
+    let first = crate::Session { node: tid(5), nonce: [0; crate::SESSION_NONCE_LEN] };
+    let frontiers = Frontiers { sessions: BTreeMap::from([(first, 7)]) };
     let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment, frontiers };
     let b = encode_snapshot(&s, &scx, None).unwrap();
     let back = decode_snapshot(&b, &scx, &mut Interner::new(), None).unwrap();
@@ -299,7 +300,7 @@ fn snapshot_frontiers_spec_8() {
     assert_eq!(Snapshot { frontiers: back.frontiers.clone().without_zeros(), ..back.clone() }, s);
     let top = osis_base::decode(&b, &osis_base::Limits::DEFAULT).unwrap();
     let Value::List(a) = top else { panic!() };
-    assert_eq!(a[1], l(vec![Value::Bytes(tid(5).as_bytes().to_vec()), Value::Bytes(session.to_bytes().to_vec()), Value::Bytes(vec![7; 32])]));
+    assert_eq!(a[1], l(vec![Value::Bytes(first.to_bytes().to_vec()), Value::Bytes(session.to_bytes().to_vec()), Value::Bytes(vec![7; 32])]));
     assert_eq!(a[4], l(vec![l(vec![i(1), i(7)]), l(vec![i(2), i(0)])]));
     let bad = |fr: Value| {
         let mut a = a.clone();
@@ -310,7 +311,7 @@ fn snapshot_frontiers_spec_8() {
     assert_eq!(bad(l(vec![l(vec![i(1), i(7)]), l(vec![i(2), i(0)]), l(vec![i(3), i(1)])])), ErrorClass::BadInput, "a commit source");
     assert_eq!(bad(l(vec![l(vec![i(2), i(0)]), l(vec![i(1), i(7)])])), ErrorClass::BadInput, "out of table order");
     // a frontier for a source outside the fragment is refused at the encoder
-    let extra = Snapshot { frontiers: Frontiers::of_nodes(BTreeMap::from([(tid(5), 7), (tid(2), 3)])), ..s.clone() };
+    let extra = Snapshot { frontiers: Frontiers { sessions: BTreeMap::from([(first, 7), (crate::Session { node: tid(2), ..first }, 3)]) }, ..s.clone() };
     assert!(encode_snapshot(&extra, &scx, None).is_err());
 }
 
@@ -324,7 +325,7 @@ fn set_element_is_a_register_spec_3_2() {
     use crate::testutil::{TyView, writer};
     let pair = Ty::Struct([(1, Ty::Register), (2, Ty::Register)].into_iter().collect());
     let v = Value::Map([(Value::Int(1), Value::Int(1)), (Value::Int(2), Value::Int(2))].into());
-    let mw = crdt_model::ops::Writer::new(MSource::node(1), 3 << 16, 1);
+    let mw = crdt_model::ops::Writer::new(MSource::session(1, 0), 3 << 16, 1);
     let mut w: Writer = writer(&mw);
     let f = create(&mut w, &TyView(Ty::Set(Box::new(pair.clone()))), &Value::Set([v.clone()].into())).unwrap();
     let Fragment::Set(s) = &f else { panic!("set") };
@@ -355,13 +356,13 @@ fn set_element_is_a_register_spec_3_2() {
 /// stamp naming a table commit is foreign. Model and implementation agree on each.
 #[test]
 fn position_write_sibling_keys_spec_3_3() {
-    let n2 = Value::Bytes(tid(2).as_bytes().to_vec());
+    let n2 = sess_value(tid(2));
     // node 2's commit at wall 1, base counter 7 (Ci 1)
     let table = || vec![l(vec![i(1), l(vec![l(vec![i(1), i(0), i(7)])])])];
     // a position write on node 2's element 7: `[i, Stamp, HEAD, key?]`
     let posw = |w: Vec<Value>| l(vec![i(9), l(vec![]), l(vec![]), l(vec![l(vec![l(vec![i(1), i(7)]), i(1), l(vec![]), l(vec![]), l(vec![l(w)]), l(vec![])])])]);
     let alike = |b: &[u8]| {
-        let mut mcx = Ctx::writer(5 << 16, MSource::node(1), 3, 6);
+        let mut mcx = Ctx::writer(5 << 16, MSource::session(1, 0), 3, 6);
         let m = crdt_model::wire::decode_delta(b, &mut mcx);
         let d = decode_delta(b, &wcx(), &mut Interner::new(), None);
         assert_eq!(m.is_ok(), d.is_ok(), "model {m:?}, implementation {d:?}");
@@ -373,7 +374,7 @@ fn position_write_sibling_keys_spec_3_3() {
     let ok = alike(&delta(vec![n2.clone()], table(), posw(vec![i(0), i(0), i(0), i(1)]))).unwrap();
     let crate::Fragment::Seq(s) = &ok.fragment else { panic!("text") };
     let e = s.elems().values().next().unwrap();
-    assert_eq!(e.pos.first().and_then(|p| p.2.as_ref()), Some(&crate::stamp::Stamp::new(ts(1 << 16), Source::node(tid(2)), 7)));
+    assert_eq!(e.pos.first().and_then(|p| p.2.as_ref()), Some(&crate::stamp::Stamp::new(ts(1 << 16), sess(tid(2)), 7)));
     // the key equal to or above the stamp (own commit: counter 3 is the base), or below it at
     // the same ts (imports re-source both, which may reorder them)
     for k in [i(0), l(vec![i(0), i(4)]), l(vec![i(0), i(2)])] {
@@ -390,10 +391,10 @@ fn position_write_sibling_keys_spec_3_3() {
 /// Snapshot by node 2 at ts 9·2^16 of node 1's commit at ts 5·2^16 (base 3), plus `more`
 /// sources and commit entries.
 fn snap(more_src: Vec<Value>, more_commits: Vec<Value>, f: Value) -> (Vec<u8>, DeltaCtx) {
-    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
-    let srcs = [vec![Value::Bytes(tid(1).as_bytes().to_vec())], more_src].concat();
+    let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let srcs = [vec![sess_value(tid(1))], more_src].concat();
     let commits = [vec![l(vec![i(1), l(vec![l(vec![i(5), i(0), i(3)])])])], more_commits].concat();
-    // one frontier entry per node or session source of the table (§8), claiming nothing
+    // one frontier entry per session source of the table (§8), claiming nothing
     let fr: Vec<Value> = srcs.iter().enumerate().filter(|(_, s)| matches!(s, Value::Bytes(b) if b.len() == 15 || b.len() == 31)).map(|(k, _)| l(vec![i(k as i64 + 1), i(0)])).collect();
     let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(srcs), l(commits), f, l(fr), l(vec![])]));
     (b, scx)
@@ -447,8 +448,8 @@ fn rejects_set_value_of_another_source_spec_5_5() {
     // node 1's element 3 holding a value stamped by node 3 (the encoder writes it canonically)
     use crate::fragment::{Elem, Fragment, Meta, RegWrite, Register, Set};
     use crate::stamp::{Dot, Stamp};
-    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), Source::node(tid(3)), 1), value: Some(i(1)) }) });
-    let f = Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(Dot::new(Source::node(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)) })]) });
+    let reg = Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: Stamp::new(ts(5 << 16), sess(tid(3)), 1), value: Some(i(1)) }) });
+    let f = Fragment::Set(Set { meta: Meta::default(), elems: BTreeMap::from([(Dot::new(sess(tid(1)), 3), Elem { reset: None, frag: Some(Box::new(reg)) })]) });
     let b = encode_snapshot(&Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: f, frontiers: Frontiers::default() }, &cx, None).unwrap();
     assert!(!snap_ok(&b, &cx), "node 3 wrote node 1's element value");
 }
@@ -480,7 +481,7 @@ fn writer_refuses_out_of_profile_values_spec_3_3() {
     let nested = |n: usize| (0..n).fold(i(1), |v, _| l(vec![v]));
     let apply = |path: Vec<PathSeg>, op: Op| {
         let state = crate::Fragment::default();
-        let mut b = Batch::new(&state, Writer::new(ts(5 << 16), Source::node(tid(1)), 3));
+        let mut b = Batch::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
         b.apply(&PathOp { path, op }, &AnyView).err().map(|e| e.to_string())
     };
     let deep = |e: Option<String>| e.is_some_and(|e| e.contains("MAX_VALUE_DEPTH"));
@@ -519,7 +520,7 @@ fn writer_and_reader_depth_agree_spec_3_3() {
             let want = (0..n).fold(read.clone(), |v, _| Value::Map([(i(1), v)].into_iter().collect())).depth() <= 64;
             let path: Vec<PathSeg> = std::iter::repeat_n(PathSeg::Field(1), n).chain(below.iter().cloned()).collect();
             let state = crate::Fragment::default();
-            let mut b = Batch::new(&state, Writer::new(ts(5 << 16), Source::node(tid(1)), 3));
+            let mut b = Batch::new(&state, Writer::new(ts(5 << 16), sess(tid(1)), 3));
             let r = b.apply(&PathOp { path, op: op.clone() }, &TyView(ty));
             let wrote = match r {
                 Ok(()) => true,
@@ -551,7 +552,7 @@ fn links_compare_by_bytes_spec_3_3() {
     assert_eq!(a.cmp(&b), Ordering::Greater);
     assert!(osis_base::encode(&a) < osis_base::encode(&b));
     assert!(Key(a.clone()) < Key(b.clone()));
-    let src = Source::node(tid(1));
+    let src = sess(tid(1));
     let s = Stamp::new(ts(5 << 16), src.clone(), 3);
     let reg = |v: &Value| Fragment::Register(Register { reset: None, write: Some(RegWrite { stamp: s.clone(), value: Some(v.clone()) }) });
     for (x, y) in [(&a, &b), (&b, &a)] {
@@ -563,7 +564,7 @@ fn links_compare_by_bytes_spec_3_3() {
     let entry = || Entry { reset: None, frag: Some(Box::new(reg(&i(1)))), created: Some(s.clone()) };
     let entries: BTreeMap<Eid, Entry> = [(Eid::new(dot.clone(), Some(b.clone())), entry()), (Eid::new(dot, Some(a.clone())), entry())].into_iter().collect();
     assert_eq!(entries.keys().map(|e| e.key().cloned()).collect::<Vec<_>>(), vec![Some(a), Some(b)]);
-    let scx = DeltaCtx { ts: ts(9 << 16), own: Source::node(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let scx = DeltaCtx { ts: ts(9 << 16), own: sess(tid(2)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let snap = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: Fragment::Map(Map::new(Meta::default(), entries)), frontiers: Frontiers::default() };
     let bytes = encode_snapshot(&snap, &scx, None).unwrap();
     let mut back = decode_snapshot(&bytes, &scx, &mut Interner::new(), None).unwrap();
@@ -577,7 +578,7 @@ fn links_compare_by_bytes_spec_3_3() {
 fn snapshot_carries_no_own_writes_spec_2_4() {
     let f = l(vec![i(0), l(vec![]), i(0), i(1)]);
     assert!(decode_delta(&delta(vec![], vec![], f.clone()), &wcx(), &mut Interner::new(), None).is_ok());
-    let scx = DeltaCtx { ts: ts(5 << 16), own: Source::node(tid(1)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let scx = DeltaCtx { ts: ts(5 << 16), own: sess(tid(1)), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let b = osis_base::encode(&l(vec![Value::Bytes(vec![0; 16]), l(vec![]), l(vec![]), f, l(vec![]), l(vec![])]));
     assert!(decode_snapshot(&b, &scx, &mut Interner::new(), None).is_err());
 }

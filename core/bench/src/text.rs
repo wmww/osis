@@ -115,7 +115,7 @@ impl View for TextView {
 /// Replays `edits` as one writer, `per_commit` edits per commit (net effect, spec/crdt.md §4.5),
 /// one commit every 2 s. Returns the state and the number of commits.
 pub fn replay(edits: &[Edit], per_commit: usize) -> (Fragment, usize) {
-    let src = Source::node(Tid::from_bytes([1; 15]));
+    let src = Source::session(osis_crdt::Session { node: Tid::from_bytes([1; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] });
     let mut state = Fragment::default();
     let mut lo = 1;
     let mut commits = 0;
@@ -164,7 +164,7 @@ impl osis_crdt::PageSink for Counting {
 
 /// Bytes of the state as a foreign node's snapshot (§8), pages included.
 pub fn snapshot_len(state: &Fragment) -> usize {
-    let cx = DeltaCtx { ts: Ts::from_u64(u64::MAX >> 2).unwrap_or_default(), own: Source::node(Tid::from_bytes([9; 15])), range: osis_crdt::CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let cx = DeltaCtx { ts: Ts::from_u64(u64::MAX >> 2).unwrap_or_default(), own: Source::session(osis_crdt::Session { node: Tid::from_bytes([9; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: osis_crdt::CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let mut pages = Counting(osis_crdt::MemoryPages::new(), 0);
     let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default() };
     encode_snapshot(&s, &cx, Some(&mut pages)).map(|b| b.len() + pages.1).unwrap_or(usize::MAX)

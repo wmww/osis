@@ -60,10 +60,9 @@ pub fn dot_value(d: &osis_crdt::Dot) -> osis_base::Value {
     use osis_base::Value;
     use osis_crdt::SourceKind;
     let src = match d.src.kind() {
-        SourceKind::Node(t) => Value::List(vec![Value::Int(0), Value::Bytes(t.as_bytes().to_vec())]),
+        SourceKind::Session(s) => Value::List(vec![Value::Int(0), Value::Bytes(s.to_bytes().to_vec())]),
         SourceKind::Commit(c) => Value::List(vec![Value::Int(1), Value::Bytes(c.0.to_vec())]),
         SourceKind::Derived(x) => Value::List(vec![Value::Int(2), dot_value(x)]),
-        SourceKind::Session(s) => Value::List(vec![Value::Int(3), Value::Bytes(s.to_bytes().to_vec())]),
     };
     Value::List(vec![src, Value::uint(d.ctr)])
 }
@@ -75,10 +74,9 @@ pub fn dot_of(v: &osis_base::Value) -> Result<osis_crdt::Dot> {
     let Value::List(items) = v else { return Err(bad()) };
     let [Value::List(src), Value::Int(ctr)] = items.as_slice() else { return Err(bad()) };
     let src = match src.as_slice() {
-        [Value::Int(0), Value::Bytes(t)] => Source::node(Tid::from_bytes(t.as_slice().try_into().map_err(|_| bad())?)),
+        [Value::Int(0), Value::Bytes(s)] => Source::session(osis_crdt::Session::from_bytes(s.as_slice().try_into().map_err(|_| bad())?)),
         [Value::Int(1), Value::Bytes(c)] => Source::commit(CommitId(c.as_slice().try_into().map_err(|_| bad())?)),
         [Value::Int(2), x] => Source::derived(dot_of(x)?).ok_or_else(bad)?,
-        [Value::Int(3), Value::Bytes(s)] => Source::session(osis_crdt::Session::from_bytes(s.as_slice().try_into().map_err(|_| bad())?)),
         _ => return Err(bad()),
     };
     Ok(Dot::new(src, u64::try_from(*ctr).map_err(|_| bad())?))

@@ -226,7 +226,7 @@ pub fn owns_carried(h: &osis_commit::Header, id: &CommitId, dots: &std::collecti
         dots.iter().filter(|(t, k, _)| *t == a.tid && *k == a.ak).any(|(_, _, d)| match d.src.kind() {
             osis_crdt::SourceKind::Session(_) => h.form.counted() && d.src == h.form.own_source(h.author, *id) && a.lo <= d.ctr && d.ctr < a.hi,
             osis_crdt::SourceKind::Commit(c) => c == id,
-            osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Derived(_) => false,
+            osis_crdt::SourceKind::Derived(_) => false,
         })
     })
 }

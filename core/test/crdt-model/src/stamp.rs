@@ -3,8 +3,7 @@ use std::cmp::Ordering;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Source {
-    Node([u8; 15]),
-    /// A node's in-memory session: tid then 16-byte nonce (spec §2.1).
+    /// A node's session: tid then 16-byte nonce (spec §2.1).
     Session([u8; 31]),
     Commit([u8; 32]),
     /// Synthetic source produced by lattice embeddings (spec §7); belongs to the author of the dot.
@@ -14,10 +13,9 @@ pub enum Source {
 impl Source {
     fn rank(&self) -> u8 {
         match self {
-            Source::Node(_) => 0,
-            Source::Session(_) => 1,
-            Source::Commit(_) => 2,
-            Source::Derived(_) => 3,
+            Source::Session(_) => 0,
+            Source::Commit(_) => 1,
+            Source::Derived(_) => 2,
         }
     }
     /// Who authored writes under this source.
@@ -34,18 +32,11 @@ impl Source {
         b[14] = n;
         Source::Session(b)
     }
-    /// Test helper: node source from a small number.
-    pub fn node(n: u8) -> Source {
-        let mut b = [0u8; 15];
-        b[14] = n;
-        Source::Node(b)
-    }
 }
 
-/// Order of sources that are not `Derived`: `Node` < `Session` < `Commit`, then bytes (spec §2.2).
+/// Order of sources that are not `Derived`: `Session` < `Commit`, then bytes (spec §2.2).
 pub fn base_cmp(a: &Source, b: &Source) -> Ordering {
     match (a, b) {
-        (Source::Node(x), Source::Node(y)) => x.cmp(y),
         (Source::Session(x), Source::Session(y)) => x.cmp(y),
         (Source::Commit(x), Source::Commit(y)) => x.cmp(y),
         _ => a.rank().cmp(&b.rank()),

@@ -438,7 +438,7 @@ fn own_source(form: Form, node: Tid) -> Source {
 pub(crate) fn nonce_of(form: Form) -> [u8; osis_crdt::SESSION_NONCE_LEN] {
     match form {
         Form::Session(n) => n,
-        Form::Node | Form::Commit => [0; osis_crdt::SESSION_NONCE_LEN],
+        Form::Commit => [0; osis_crdt::SESSION_NONCE_LEN],
     }
 }
 
@@ -713,7 +713,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let lo = match form {
             Form::Commit => next_ctr,
             // a session's counters: memory rows, gone with the session
-            Form::Node | Form::Session(_) => tx.txn.counter(&tid, &ak, &nonce_of(form))?,
+            Form::Session(n) => tx.txn.counter(&tid, &ak, &n)?,
         };
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));

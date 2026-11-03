@@ -38,7 +38,7 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 fn took(fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
     let o = o.owner();
     match o.src.kind() {
-        osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => fr.of(&o.src) >= o.ctr,
+        osis_crdt::SourceKind::Session(_) => fr.of(&o.src) >= o.ctr,
         osis_crdt::SourceKind::Commit(c) => abs.iter().any(|(a, _)| a == c),
         osis_crdt::SourceKind::Derived(_) => false,
     }

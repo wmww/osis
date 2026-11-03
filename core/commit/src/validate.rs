@@ -31,13 +31,10 @@ impl Header {
 
         let kind = self.kind;
         use crate::header::Form;
-        // node form is written by nothing (spec/commits.md §3); session form belongs to content
-        // commits: role writes are commit form, so no later commit can void them, and a snapshot
-        // or import has no own writes
-        match self.form {
-            Form::Node => return Err(Error::Invalid("node form")),
-            Form::Session(_) if kind != Kind::Content => return Err(Error::Invalid("session form outside a content commit")),
-            Form::Commit | Form::Session(_) => {}
+        // session form belongs to content commits: role writes are commit form, so no later commit
+        // can void them, and a snapshot or import has no own writes (spec/commits.md §3)
+        if matches!(self.form, Form::Session(_)) && kind != Kind::Content {
+            return Err(Error::Invalid("session form outside a content commit"));
         }
         // edge writes are judged by the timeline, which never asks whom the author acts for
         // (spec/permissions.md §5.2)
@@ -164,7 +161,6 @@ impl Header {
             let shape = match self.form {
                 Form::Commit => kind == Kind::ContentSnapshot,
                 Form::Session(_) => kind == Kind::Content,
-                Form::Node => false,
             };
             if !shape {
                 return Err(Error::Invalid("ephemeral commit neither a commit-form content snapshot nor a session-form content commit"));

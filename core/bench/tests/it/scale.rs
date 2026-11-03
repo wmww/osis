@@ -32,7 +32,7 @@ fn ts(t: u64) -> Ts {
 }
 
 fn snapshot(state: &Fragment, pages: &mut Seen) -> usize {
-    let cx = DeltaCtx { ts: ts(1 << 30), own: Source::node(Tid::from_bytes([9; 15])), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
+    let cx = DeltaCtx { ts: ts(1 << 30), own: Source::session(osis_crdt::Session { node: Tid::from_bytes([9; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), range: CounterRange::EMPTY, kind: DeltaKind::Snapshot };
     let s = Snapshot { absorbed: Default::default(), nonce: [0; 16], fragment: state.clone(), frontiers: Frontiers::default() };
     encode_snapshot(&s, &cx, Some(pages)).unwrap().len()
 }
@@ -47,7 +47,7 @@ fn big_map_snapshot_rewrite() {
     let mut n = 10_000usize;
     while n <= max {
         let kv = (0..n as i64).map(|i| (Value::Int(i), Value::Int(i))).collect();
-        let mut w = Writer::new(ts(1), Source::node(Tid::from_bytes([1; 15])), 1);
+        let mut w = Writer::new(ts(1), Source::session(osis_crdt::Session { node: Tid::from_bytes([1; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1);
         let mut st = Fragment::default();
         st.join(create(&mut w, &AnyView, &Value::Map(kv)).unwrap());
         let mut pages = Seen { inner: MemoryPages::new(), hashes: HashSet::new(), new_pages: 0, new_bytes: 0, puts: 0 };
@@ -56,7 +56,7 @@ fn big_map_snapshot_rewrite() {
         let full = t0.elapsed();
         let (all_pages, all_bytes) = (pages.new_pages, pages.new_bytes);
         // One entry changed by another writer.
-        let mut w2 = Writer::new(ts(2), Source::node(Tid::from_bytes([2; 15])), 1);
+        let mut w2 = Writer::new(ts(2), Source::session(osis_crdt::Session { node: Tid::from_bytes([2; 15]), nonce: [0; osis_crdt::SESSION_NONCE_LEN] }), 1);
         let one = [(Value::Int(n as i64 / 2), Value::Int(-1))].into_iter().collect();
         st.join(create(&mut w2, &AnyView, &Value::Map(one)).unwrap());
         (pages.new_pages, pages.new_bytes, pages.puts) = (0, 0, 0);

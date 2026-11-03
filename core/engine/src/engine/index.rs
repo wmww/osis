@@ -179,7 +179,6 @@ impl<T: Rec> Rec for Vec<T> {
 impl Rec for osis_crdt::Source {
     fn to(&self) -> Value {
         Value::Bytes(match self.kind() {
-            osis_crdt::SourceKind::Node(t) => t.as_bytes().to_vec(),
             osis_crdt::SourceKind::Session(s) => s.to_bytes().to_vec(),
             osis_crdt::SourceKind::Commit(c) => c.0.to_vec(),
             osis_crdt::SourceKind::Derived(_) => Vec::new(),
@@ -187,9 +186,6 @@ impl Rec for osis_crdt::Source {
     }
     fn from(v: &Value) -> Option<Self> {
         let Value::Bytes(b) = v else { return None };
-        if let Ok(t) = <[u8; 15]>::try_from(b.as_slice()) {
-            return Some(osis_crdt::Source::node(Tid::from_bytes(t)));
-        }
         if let Ok(s) = <[u8; 31]>::try_from(b.as_slice()) {
             return Some(osis_crdt::Source::session(osis_crdt::Session::from_bytes(&s)));
         }
@@ -522,9 +518,8 @@ pub(super) fn meta_row(core: &Core, id: &CommitId, m: &Meta) -> Vec<u8> {
     let v = &m.view;
     let mut w = records::Wr(out).u64(v.ts.to_u64()).u8(v.kind.id() as u8);
     w = match v.form {
-        osis_commit::Form::Node => w.u8(0),
-        osis_commit::Form::Commit => w.u8(1),
-        osis_commit::Form::Session(n) => w.u8(2).raw(&n),
+        osis_commit::Form::Commit => w.u8(0),
+        osis_commit::Form::Session(n) => w.u8(1).raw(&n),
     };
     w = w.raw(v.author.as_bytes()).raw(v.actor.as_bytes()).u8(u8::from(v.linked) | (u8::from(v.memory) << 1) | (u8::from(v.purges) << 2));
     for a in &v.aspects {
@@ -560,9 +555,8 @@ fn parse_meta_row(row: &[u8]) -> Result<(&[u8], super::View)> {
     let ts = Ts::from_u64(r.u64()?).ok_or(Error::Corrupt("meta row ts"))?;
     let kind = osis_commit::Kind::from_id(<u64 as From<u8>>::from(r.u8()?)).ok_or(Error::Corrupt("meta row kind"))?;
     let form = match r.u8()? {
-        0 => osis_commit::Form::Node,
-        1 => osis_commit::Form::Commit,
-        2 => osis_commit::Form::Session(r.take(osis_crdt::SESSION_NONCE_LEN)?.try_into().map_err(|_| Error::Corrupt("meta row form"))?),
+        0 => osis_commit::Form::Commit,
+        1 => osis_commit::Form::Session(r.take(osis_crdt::SESSION_NONCE_LEN)?.try_into().map_err(|_| Error::Corrupt("meta row form"))?),
         _ => return Err(Error::Corrupt("meta row form")),
     };
     let (author, actor) = (r.tid()?, r.tid()?);
