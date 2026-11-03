@@ -687,3 +687,21 @@ fn moving_an_uncompacted_copy_keeps_its_imports_spec_perm_7() {
     let (copy4, _) = lp.peers[0].engine.move_thing(&copy3, a).unwrap();
     reads_alike(&mut lp, copy3, copy4);
 }
+
+// spec/permissions.md §7 (two imports holding one write, a hostile creator's only): the copy of
+// a copy so built reads as it.
+#[test]
+fn moving_a_copy_with_a_doubled_import_spec_perm_7() {
+    let mut lp = net(2, 83);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let a = lp.peers[0].engine.tid();
+    edit_round(&mut lp, t, 0, 0, 0);
+    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    lp.peers[0].engine.reimport(&t, &copy).unwrap();
+    let (copy2, _) = lp.peers[0].engine.move_thing(&copy, a).unwrap();
+    for k in MOVED_AKS {
+        let want = lp.peers[0].engine.get(&copy, &ak(k)).unwrap();
+        assert_eq!(lp.peers[0].engine.get(&copy2, &ak(k)).unwrap(), want, "{k}");
+    }
+}

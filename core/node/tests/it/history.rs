@@ -544,6 +544,51 @@ fn purge_import_takes_its_values_spec_commits_5() {
     }
 }
 
+// spec/commits.md §5, spec/permissions.md §7, spec/requirements.md Purge: a copy moved on
+// before any snapshot of it hands its import's writes on under that import. Naming the next
+// copy's import takes them there, in any order and from a stale copy, and a third move brings
+// nothing back; naming the first import before the move keeps them out of the next copy.
+#[test]
+fn purge_reaches_writes_moved_on_through_an_import_spec_commits_5() {
+    let (mut lp, d, ids) = setup(434);
+    let (copy, _, i1) = moved(&mut lp, d, ids[0]);
+    let (copy2, imports) = lp.peers[0].engine.move_thing(&copy, ids[0]).unwrap();
+    let i2 = *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == i1))).expect("an import of the import");
+    set_edge(&mut lp.peers[0].engine, copy2, ids[1], Some(edge(Role::Read)), None);
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    for p in [0, 1] {
+        assert_eq!(lp.peers[p].engine.get(&copy2, &reg()).unwrap(), Some(s("bob's")), "peer {p}");
+    }
+    let stale = pack(&mut lp, 0, &i2);
+    let base: Vec<Package> = all(&mut lp, 0).into_iter().filter(|x| x.id != i2).collect();
+    let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: i2, tid: copy2, ak: reg() });
+    lp.sync_all().unwrap();
+    for p in [0, 1] {
+        lp.peers[p].engine.ingest(&stale.bytes, stale.blobs.clone()).unwrap();
+        let e = &mut lp.peers[p].engine;
+        assert_eq!(e.get(&copy2, &reg()).unwrap(), None, "peer {p}");
+        assert!(!e.body_not_dropped(&i2, &copy2, &reg()), "peer {p}");
+    }
+    // the request before the import
+    let req = pack(&mut lp, 0, &rq);
+    let mut f = fresh(&mut lp, &base, 4341);
+    f.engine.ingest(&req.bytes, req.blobs.clone()).unwrap();
+    f.engine.ingest(&stale.bytes, stale.blobs.clone()).unwrap();
+    assert_eq!(f.engine.get(&copy2, &reg()).unwrap(), None, "request first");
+    let (copy3, _) = lp.peers[0].engine.move_thing(&copy2, ids[0]).unwrap();
+    assert_eq!(lp.peers[0].engine.get(&copy3, &reg()).unwrap(), None, "a third move");
+    assert_eq!(lp.peers[0].engine.get(&copy, &reg()).unwrap(), Some(s("bob's")), "a move is a copy");
+
+    let (mut lp, d, ids) = setup(435);
+    let (copy, _, i1) = moved(&mut lp, d, ids[0]);
+    purge(&mut lp, 0, PurgeItem::Commit { commit: i1, tid: copy, ak: reg() });
+    let (copy2, imports) = lp.peers[0].engine.move_thing(&copy, ids[0]).unwrap();
+    let e = &lp.peers[0].engine;
+    assert!(!imports.iter().any(|i| e.header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == i1))), "nothing of a purged import");
+    assert_eq!(lp.peers[0].engine.get(&copy2, &reg()).unwrap(), None);
+}
+
 // spec/permissions.md §7, spec/commits.md §5: another import listing the origin holds the same
 // writes: it goes with the one named, whether it is held already, comes later, or is written later.
 #[test]
