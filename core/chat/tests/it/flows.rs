@@ -1046,3 +1046,23 @@ fn chats_lists_held_chats() {
     assert_eq!(b.kept_copies().unwrap(), vec![c]);
     assert!(chats(&b).unwrap().is_empty());
 }
+
+// spec: none. notes/chat.md: joining a chat already held gives the chat: its maker or a member pasting a link, a used single-use link, a joiner's second redemption (each failed or hung before); a used link still fails for someone outside
+#[test]
+fn join_held_chat() {
+    let Room { mut w, a, b, c, .. } = room(Options::default());
+    let l = link(&a, c, Role::Write, false).unwrap();
+    let one = link(&a, c, Role::Write, true).unwrap();
+    let (d, _) = w.person(3, &[0]);
+    let (e, _) = w.person(4, &[0]);
+    w.run();
+    assert_eq!(w.until(join(&a, &l), 1000, 30).unwrap(), c, "its maker");
+    assert_eq!(w.until(join(&b, &l), 1000, 30).unwrap(), c, "a member");
+    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c);
+    w.run();
+    assert_eq!(w.until(join(&d, &one), 1000, 30).unwrap(), c, "used up, by this person");
+    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c);
+    w.run();
+    assert_eq!(w.until(join(&d, &l), 1000, 30).unwrap(), c, "again");
+    assert!(matches!(w.until(join(&e, &one), 1000, 30), Err(osis::Error::Invalid(_))), "used up, for someone else");
+}
