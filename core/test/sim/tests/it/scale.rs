@@ -759,3 +759,51 @@ fn add_judges_nothing_per_message() {
     assert_eq!(busy, quiet, "(full passes, commits judged, re-judged, decodes) with 12 messages, and none");
     assert_eq!((busy.0, busy.3), (0, 0), "no full pass, no decode");
 }
+
+// spec/sync.md §6: a quiet label's slowest pass stays one heartbeat interval away when the clock
+// goes back: its own `pass_at` and resync do not wait for the clock to catch up (counted).
+#[test]
+fn a_clock_gone_back_keeps_a_quiet_labels_bound() {
+    const N: usize = 4;
+    let (mut w, a, b, _, _) = labels_world(N);
+    // past the wait for peers (`peer_pass_wait_ms`), which brings a last pass
+    w.advance(310_000);
+    w.advance(61_000);
+    w.advance(61_000);
+    let idle = counted_work(&[&a, &b], || w.advance(61_000));
+    assert_eq!(idle.passes, 0, "quiet before the clock moves");
+    w.clock.set(osis_base::WallMs(w.now() - 10 * osis_base::format::HEARTBEAT_MIN_INTERVAL_MS));
+    let back = counted_work(&[&a, &b], || {
+        w.advance(61_000);
+        w.advance(61_000);
+    });
+    assert!(back.passes >= 2 * N as u64, "{} passes after the clock went back", back.passes);
+    w.advance(61_000);
+    let idle = counted_work(&[&a, &b], || w.advance(61_000));
+    assert_eq!(idle.passes, 0, "quiet again");
+    let day = counted_work(&[&a, &b], || {
+        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
+        w.advance(61_000);
+    });
+    assert!(day.passes >= 2 * N as u64, "{} passes a heartbeat interval on", day.passes);
+}
+
+// spec/sync.md §6: a heartbeat a pass cannot send is no reason to pass at every resync (a label
+// stranded once keeps that time for good; here, with heartbeats off) (counted).
+#[test]
+fn a_past_heartbeat_leaves_a_label_quiet() {
+    use osis::internals::Internals;
+    let (mut w, a, _, _, _) = labels_world(3);
+    w.advance(310_000);
+    w.advance(61_000);
+    a.sync_engine(|s| s.config_mut().heartbeats = false);
+    for _ in 0..2 {
+        w.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 61_000);
+        w.advance(61_000);
+    }
+    let idle = counted_work(&[&a], || {
+        w.advance(61_000);
+        w.advance(61_000);
+    });
+    assert_eq!(idle.passes, 0, "a past heartbeat passes the label at every resync");
+}

@@ -214,8 +214,8 @@ pub(crate) struct Work {
     /// The last pass left something only another pass finds out about (`Left`), or the label's
     /// own records were touched or a wait woken since: passes at its next resync.
     pub again: bool,
-    /// When time alone next wants a pass (raw ms; `SyncEngine::schedule_pass`). 0: at the next
-    /// resync.
+    /// When time alone next wants a pass (corrected wall ms, as the due times it comes from;
+    /// `SyncEngine::schedule_pass`). 0: at the next resync.
     pub pass_at: u64,
 }
 
@@ -232,9 +232,10 @@ impl Work {
         !self.full && !self.again && self.unopened.is_empty() && self.held_back.is_empty() && self.unsettled.is_empty() && self.settled.is_none_or(|s| s == (true, true))
     }
 
-    /// Whether a resync at raw ms `now` passes this label.
+    /// Whether a resync at `now` (corrected wall ms) passes this label. A `pass_at` further off
+    /// than one is ever set: the clock went back.
     pub fn resync_due(&self, now: u64) -> bool {
-        !self.quiet() || self.pass_at <= now
+        !self.quiet() || self.pass_at <= now || self.pass_at - now > osis_base::format::HEARTBEAT_MIN_INTERVAL_MS
     }
 
     /// Whether changes `t` wake a verdict waiting here (`prepare`): the next resync judges it.
