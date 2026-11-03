@@ -32,6 +32,15 @@ fn check(held: &osis_perm::MemoryHeldSet, inc: &Timelines, nodes: &[Tid]) -> Opt
                 return Some(format!("falls of {n:?} on {t:?}: part {:?} full {:?}", part.falls(n, &t), full.falls(n, &t)));
             }
         }
+        // the index `departures` reads, kept over this `inc`'s appends and resumes
+        let on = |tl: &Timeline| tl.applied_on(&t).map(|(c, o)| (c.point(), o.clone())).collect::<Vec<_>>();
+        let scan: Vec<_> = full.applied().keys().filter_map(|w| match w {
+            osis_perm::WriteId::Op(c, i) => full.role_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|o| (mc.point(), o.clone()))),
+            _ => None,
+        }).filter(|(_, o)| o.target == t).collect();
+        if on(part) != scan {
+            return Some(format!("edge writes applied on {t:?}: part {:?} scan {scan:?}", on(part)));
+        }
         if part.epoch_start(&t) != full.epoch_start(&t) {
             return Some(format!("epoch start of {t:?}"));
         }
