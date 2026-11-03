@@ -263,11 +263,31 @@ impl Engine {
         std::mem::take(&mut self.core.memory.applied)
     }
 
-    /// Memory aspects a held memory snapshot of which turned invalid since the last take: the
-    /// bodies it covered were forgotten here (durable's residual, spec/permissions.md §5.2), so
-    /// the lane reconciles their labels to get the copies holders still have.
-    pub fn take_memory_invalidated(&mut self) -> BTreeSet<(Tid, Ak)> {
-        std::mem::take(&mut self.core.memory.invalidated)
+    /// Memory aspects a held memory snapshot of which turned invalid since the last take (a
+    /// compactor's demotion: its frontier lists no memory commit, spec/permissions.md §5.2). The
+    /// bodies it covered were forgotten here (durable's residual) and deleted at hosts by any
+    /// writer, so a holder of nothing else reads nothing until the authors' copies come back
+    /// (they keep their own bodies under others' snapshots, `drop_covered`). A writer that still
+    /// holds a valid memory part of the aspect writes a fresh snapshot of what it holds (spec/
+    /// sync.md §9 Compaction): the lane uploads it as a new commit (a host's delete tombstone on
+    /// the old entries does not stop it) and, stamped after every held snapshot, nothing held
+    /// covers it away here. The lane also reconciles the aspects' labels for the rest.
+    pub fn take_memory_invalidated(&mut self) -> Result<BTreeSet<(Tid, Ak)>> {
+        let out = std::mem::take(&mut self.core.memory.invalidated);
+        for (tid, ak) in &out {
+            let holds_valid = self.core.ix.by_aspect.get(&(*tid, ak.clone())).into_iter().flatten().any(|(_, c)| {
+                self.core.ix.commits.get(c).is_some_and(|m| m.view.memory && m.aspect(tid, ak).is_some_and(|ai| m.holds(ai) && m.valid_at(ai)))
+            });
+            if !holds_valid {
+                continue;
+            }
+            // a node that may not write the aspect leaves it to the authors
+            match self.snapshot(tid, ak) {
+                Ok(_) | Err(Error::Permission { .. }) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(out)
     }
 
     /// The compaction trigger (spec/sync.md §9 Compaction): for each memory aspect changed since

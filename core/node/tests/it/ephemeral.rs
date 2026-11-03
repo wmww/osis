@@ -518,7 +518,7 @@ fn host_cap_one_huge_write_reports_spec_sync_5() {
 
 // spec/sync.md §9 (caps), notes/ephemeral.md Node cap: the node cap counts what a held commit
 // takes in memory, not its encoded bytes, and a commit is checked against the room left before it
-// is decoded (`Engine::ephemeral_bound`): one of many tiny entries (about 200 times its size
+// is decoded (`Engine::memory_bound`): one of many tiny entries (about 200 times its size
 // decoded) is refused whole and reported, never held past the cap; a small one is held, counted
 // at its decoded size
 #[test]
@@ -1152,8 +1152,12 @@ fn snapshot_survives_rebuild_spec_crdt_4_6() {
 // spec/permissions.md §5.2 (a valid snapshot vouches for the writes it carries, "except those
 // another writer compacted before it learned of the revocation, which stay"): a holder's write
 // compacted by others before its removal stays at every holder and at a node arriving later
+// Shape: c's automatic compaction is stamped last, so its snapshot covers every snapshot and
+// body at d and at the host (writers deleted them there); c's removal invalidates it, and d
+// holds nothing until a and b, still holding their own, snapshot afresh
+// (`Engine::take_memory_invalidated`; a re-upload of the deleted entries would meet the host's
+// delete tombstone).
 #[test]
-#[ignore = "issues/eph-host-deletes-under-others-snapshots.md: the host deleted the others' entries under the demoted compactor's snapshot"]
 fn compacted_write_of_removed_holder_stays_spec_permissions_5_2() {
     let mut net = Net::new();
     let host = net.add_host();
@@ -4432,7 +4436,7 @@ fn memory_compactor_demoted_keeps_others_writes_spec_permissions_5_2() {
     // `Engine::take_memory_invalidated`)
     assert!(holds_commit(&lp, 2, &x.0) && !holds_commit(&lp, 0, &x.0), "the author alone kept X");
     assert_eq!(memory_tags(&mut lp, 2, d), Some(Value::Set([s("X")].into())));
-    assert!(lp.peers[0].engine.take_memory_invalidated().contains(&(d, eph("t:tags.0~"))), "the holder reconciles");
+    assert!(lp.peers[0].engine.take_memory_invalidated().unwrap().contains(&(d, eph("t:tags.0~"))), "the holder reconciles");
     memory_deliver(&mut lp, 0, &x);
     memory_deliver(&mut lp, 1, &x);
     for i in 0..3 {

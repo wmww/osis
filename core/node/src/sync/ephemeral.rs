@@ -67,7 +67,7 @@ pub(crate) struct LaneEntry {
     pub tid: Tid,
     pub actor: Tid,
     pub keys: Vec<DeleteKey>,
-    /// What it counts against the label's cap (others' entries: `Engine::ephemeral_charge` of
+    /// What it counts against the label's cap (others' entries: `Engine::memory_charge` of
     /// its parts, at least its bytes).
     pub charge: u64,
 }
@@ -159,7 +159,7 @@ impl WaitingDeletes {
 }
 
 /// Ephemeral entries remembered per label with a value and a weight, at most `max` weight per
-/// label, the oldest forgotten past it (`Lane::unfit`, `Lane::share_refused`).
+/// label, the oldest forgotten past it (`Lane::unfit`).
 pub(crate) struct PerLabel<V> {
     map: BTreeMap<(LabelId, BlobId), (V, usize)>,
     /// Per label, its entries oldest first and their total weight.
@@ -274,11 +274,11 @@ pub(crate) struct Lane {
     /// covered entry; `waiting` while that cover is not held there), and not taken back
     /// meanwhile from a peer that has it (it is no longer covered by anything held).
     pub orphans: BTreeMap<(LabelId, BlobId, ConnId), (osis_label::DeleteItem, BTreeSet<CommitId>)>,
-    /// Deletes of absorbed entries at a host, waiting until the covers that absorb them (several
-    /// when a cover was split by aspect) are held there (`eph_flush`): deleting first lost their writes at that host for good when the
-    /// cover never came (its author crashed in between; the tombstone keeps holders from
-    /// bringing them back). The author's own cover refused for the cap deletes them at once and
-    /// goes again (room for it).
+    /// Deletes of covered entries at a host, waiting until the snapshots that cover them are
+    /// held there (`eph_flush`): deleting first lost their writes at that host for good when the
+    /// coverer never came (its author crashed in between; the tombstone keeps holders from
+    /// bringing them back). An own snapshot refused for the cap deletes them at once and goes
+    /// again (room for it).
     pub waiting: WaitingDeletes,
     /// Waiting deletes an own upload in flight carries as replacements (spec/sync.md §5,
     /// Replace: the host removes them iff it admits the upload), by upload: back in
@@ -436,6 +436,11 @@ impl SyncEngine {
         self.eph_promote(out)?;
         let busy = self.eph_busy();
         let signals = self.engine.take_signals()?;
+        // a snapshot fell invalid: a writer snapshots what it still holds (placed below), and
+        // the labels are reconciled for the rest
+        for (t, _) in self.engine.take_memory_invalidated()? {
+            self.eph_reconcile_thing(&t);
+        }
         self.engine.memory_compactions(false)?;
         let commits = self.engine.take_memory_commits(&busy)?;
         // what a snapshot covers is deleted at a host once the snapshot is held there
@@ -443,9 +448,6 @@ impl SyncEngine {
         // loses nothing
         let dropped = self.engine.take_memory_drops();
         self.eph_forget(&dropped, out)?;
-        for (t, _) in self.engine.take_memory_invalidated() {
-            self.eph_reconcile_thing(&t);
-        }
         for c in commits {
             if let Some(blob) = self.engine.memory_blob(&c)? {
                 self.eph_place(c, blob, EphClass::Plain, out)?;
@@ -1047,10 +1049,10 @@ impl SyncEngine {
                     self.eph.present.insert((host, l, b));
                 }
                 // the defined outcome (spec/sync.md §5): it stays out there until room appears;
-                // nothing is compacted for it (only authors compact, by their own rule)
+                // nothing is compacted for it (a host's refusal triggers nothing, §9)
                 Code::STORAGE_CAP => {
-                    // an own cover whose upload did not already count the room of what it
-                    // absorbs (carried as replacements): that goes first there, and it goes again
+                    // an own snapshot whose upload did not already count the room of what it
+                    // covers (carried as replacements): that goes first there, and it goes again
                     if !replaced && self.eph_free_for(conn, host, l, b, out)? {
                         self.eph_upload_on(conn, l, &[b], out)?;
                     } else if self.eph.capped.insert((conn, l, b)) {
