@@ -297,10 +297,14 @@ pub(crate) fn copy_index(tx: &mut Tx<'_>, s: &CommitId, tid: &Tid, ak: &Ak) -> R
     Ok(Some(ix))
 }
 
+/// Records (dot, key) a snapshot holds (`None`: any write but a keyed map entry's creation).
+pub(crate) type Records = BTreeSet<(Dot, Option<Value>)>;
+
 /// The records (dot, key: `CopyIndex::records_in`) among those `owned` matches under which a
 /// held valid snapshot of `(tid, ak)` holds a write: those writes count whatever their own
 /// delta's validity, as the snapshot's writer vouched for them (spec/permissions.md §5.2).
-pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<(BTreeSet<(Dot, Option<Value>)>, BTreeSet<Dot>)> {
+/// With them, the dots whose map record such a snapshot holds key-erased (`CopyIndex::erased_in`).
+pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> Result<(Records, BTreeSet<Dot>)> {
     let mut out = BTreeSet::new();
     let mut erased = BTreeSet::new();
     if owned.is_empty() {
