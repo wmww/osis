@@ -1242,3 +1242,48 @@ fn fresh_snapshot_covers_past_a_gap_spec_commits_5() {
     assert!(!net.engine(f).body_not_dropped(&c, &t, &k), "dropped as covered");
     assert_eq!(net.engine(f).get_typed(&t, &SEQ).unwrap(), net.engine(a).get_typed(&t, &SEQ).unwrap());
 }
+
+// spec/commits.md §5, spec/sync.md §7: past a frontier gap the join decides what is covered, not who
+// may drop it: under `author` and `nobody` an admin's fresh snapshot drops nothing, nor under a
+// keep-at-least forever (history).
+#[test]
+fn gap_covers_nothing_kept_spec_commits_5() {
+    use osis_schema::{PurgeBy, Retention};
+    let forever = Retention { by: PurgeBy::Writer, at_least: osis_schema::Bound { abs: Some(osis_commit::FOREVER), rel: None }, ..Default::default() };
+    let cases = [(Retention { by: PurgeBy::Nobody, ..Default::default() }, false), (Retention { by: PurgeBy::Author, ..Default::default() }, false), (forever, false), (Retention { by: PurgeBy::Writer, ..Default::default() }, true)];
+    for (r, goes) in cases {
+        let mut net = Net::new();
+        let host = net.add_host();
+        let (a, b, f) = (net.node(1, &[host]), net.node(2, &[host]), net.node(3, &[host]));
+        let g = net.group(a, &[(b, Role::Write), (f, Role::Admin)], &[host]);
+        let t = net.item(a, g, g, "x");
+        net.run();
+        net.set_online(f, false);
+        let k = Ak::new(REG.ak()).unwrap();
+        net.write(b, t, "first");
+        net.run();
+        let acts = net.sync(b).compact(&t, &k).unwrap();
+        net.actions(b, acts);
+        net.run();
+        net.advance(2 * 3_600_000);
+        net.run();
+        let c = with_retention(&mut net, b, t, "old", r);
+        net.run();
+        // b's session stays in the state, so a snapshot lists it, short of what b dropped
+        net.write(b, t, "new");
+        net.run();
+        net.set_online(f, true);
+        net.run();
+        let acts = net.sync(f).compact(&t, &k).unwrap();
+        net.actions(f, acts);
+        net.run();
+        let h = net.engine(f).header(&c).unwrap();
+        let (src, hi) = (h.form.own_source(h.author, c), h.aspects.iter().find(|x| x.tid == t && x.ak == k).unwrap().hi);
+        let short = net.engine(f).core.ix.snapshots.get(&(t, k.clone())).into_iter().flatten().any(|x| x.2.lists(&src) && x.2.of(&src) + 1 < hi);
+        assert!(!goes || short, "a snapshot short of the body");
+        net.advance(2 * 3_600_000);
+        net.run();
+        assert_eq!(net.engine(f).body_not_dropped(&c, &t, &k), !goes, "{r:?}");
+        assert_eq!(net.engine(f).get_typed(&t, &REG).unwrap(), net.engine(a).get_typed(&t, &REG).unwrap());
+    }
+}
