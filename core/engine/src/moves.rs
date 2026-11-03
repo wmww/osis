@@ -542,6 +542,32 @@ mod tests {
         assert_eq!(residues_holding(e, &copy, &body, b"SECRETD-value"), 0, "a residue keeps the purged value");
     }
 
+    // spec/permissions.md §7, spec/requirements.md Purge: an import holding a write under a
+    // source its origins table does not list is bad input at a receiver, so no such write outlives
+    // a purge naming the import (which takes its origins' dots).
+    #[test]
+    fn import_write_outside_its_origins_is_refused_spec_permissions_7() {
+        let (mut lp, t, z, body) = two_sources();
+        let me = lp.peers[0].engine.tid();
+        let (copy, _) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+        lp.advance(1_000);
+        let c = write_form(&mut lp, z, &body, "SECRETC-value");
+        let d = write_form(&mut lp, z, &body, "SECRETD-value");
+        lp.sync_all().unwrap();
+        let i = import_as(&mut lp, 0, copy, &body, &[(d, d)], &[c]);
+        let pi = lp.peers[0].engine.package(&i).unwrap().unwrap();
+        let refused = !matches!(lp.deliver(1, &pi), Ok(Ingested::Applied(_) | Ingested::Pending(..)));
+        let mut m = Mutation::new();
+        let now = lp.peers[0].engine.now();
+        m.set(copy, &osis_schema::core_types::PURGE, &now).unwrap();
+        m.purge(osis_commit::PurgeItem::Commit { commit: i, tid: copy, ak: body.clone() });
+        let r = lp.peers[0].commit(m).unwrap().unwrap();
+        let pr = lp.peers[0].engine.package(&r).unwrap().unwrap();
+        assert!(matches!(lp.deliver(1, &pr).unwrap(), Ingested::Applied(_)));
+        assert_eq!(lp.peers[1].engine.get(&copy, &body).unwrap(), None, "a purged import's value reads back");
+        assert!(refused, "an import write outside its origins is bad input");
+    }
+
     // spec/permissions.md §7: a void import's writes join nothing, its residue included: an origin
     // going on the list again rejoins no void import's residue (a rebuild reads none either).
     #[test]
