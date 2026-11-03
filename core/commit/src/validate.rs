@@ -30,9 +30,14 @@ impl Header {
         ord(strictly_ascending(&self.origins, |o| o.commit), "origins not sorted and distinct")?;
 
         let kind = self.kind;
-        // role writes are commit form, so no later commit can void them (spec/commits.md §3)
-        if matches!(kind, Kind::Role | Kind::RosterSnapshot) && self.form == crate::header::Form::Node {
-            return Err(Error::Invalid("node-form role commit"));
+        use crate::header::Form;
+        // node form is written by nothing (spec/commits.md §3); session form belongs to content
+        // commits: role writes are commit form, so no later commit can void them, and a snapshot
+        // or import has no own writes
+        match self.form {
+            Form::Node => return Err(Error::Invalid("node form")),
+            Form::Session(_) if kind != Kind::Content => return Err(Error::Invalid("session form outside a content commit")),
+            Form::Commit | Form::Session(_) => {}
         }
         // edge writes are judged by the timeline, which never asks whom the author acts for
         // (spec/permissions.md §5.2)
@@ -155,7 +160,6 @@ impl Header {
         }
         // an ephemeral commit is a commit-form content snapshot or a session-form content commit
         // and carries nothing a stored commit is for (spec/commits.md §2, §3)
-        use crate::header::Form;
         if let Some(c) = self.ephemeral {
             let shape = match self.form {
                 Form::Commit => kind == Kind::ContentSnapshot,
@@ -171,8 +175,6 @@ impl Header {
             if c != crate::header::EphClass::Plain && self.aspects.iter().any(|a| a.expires.is_some()) {
                 return Err(Error::Invalid("relay-only commit with an expiry"));
             }
-        } else if matches!(self.form, Form::Session(_)) {
-            return Err(Error::Invalid("session form outside an ephemeral commit"));
         }
         Ok(())
     }

@@ -66,7 +66,9 @@ fn death_records() {
     assert_eq!(s.epoch(), 2, "drop_body shreds");
 }
 
-// spec/crdt.md §2.3: counters never repeat, also across a whole-aspect purge and reopen.
+// spec/crdt.md §2.1, §2.3: a session's counters never repeat within the open, also across a
+// whole-aspect purge and an aborted transaction; they are memory only, so a reopen (a new
+// session) starts from 1 again.
 #[test]
 fn counters() {
     let dev = MemDevice::new();
@@ -79,12 +81,19 @@ fn counters() {
     assert_eq!(t.reserve_counters(&t1, &a, 2).unwrap(), 6);
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.reserve_counters(&t1, &a, 3).unwrap(), 8);
+    drop(t);
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.counter(&t1, &a).unwrap(), 8, "an aborted transaction gives its counters back");
     t.drop_aspect(&t1, &a).unwrap();
     t.commit().unwrap();
+    let mut t = s.transaction(&mut rng).unwrap();
+    assert_eq!(t.counter(&t1, &a).unwrap(), 8, "a purge keeps the session's counters");
+    drop(t);
     drop(s);
     let mut s = reopen(&dev);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.counter(&t1, &a).unwrap(), 8);
+    assert_eq!(t.counter(&t1, &a).unwrap(), 1, "a new session");
 }
 
 // spec/commits.md §4: pending and parked commits are stored as bytes until applied.

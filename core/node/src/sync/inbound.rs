@@ -542,11 +542,13 @@ impl SyncEngine {
             for b in entries {
                 let Some(r) = self.state.blobs.get(&b) else { continue };
                 let (parts, key) = (r.parts.clone(), r.key.clone());
-                if !forced && parts.iter().all(|p| held.contains(p)) {
-                    continue;
-                }
+                // a junk copy is marked wherever it sorts among the commit's entries, also when
+                // a true copy ingested before it already brought its slots
                 self.genuine(&b);
                 if self.genuine.get(&b) == Some(&false) {
+                    continue;
+                }
+                if !forced && parts.iter().all(|p| held.contains(p)) {
                     continue;
                 }
                 let Some(bytes) = self.engine.blob(&b)? else { continue };

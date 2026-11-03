@@ -130,6 +130,11 @@ impl W {
                 self.u8(1);
                 self.cid(&c);
             }
+            TieSource::Session(n, nonce) => {
+                self.u8(2);
+                self.tid(&n);
+                self.out.extend_from_slice(&nonce);
+            }
         }
         self.n(t.ctr);
         self.bool(t.subgroup);
@@ -595,6 +600,7 @@ impl<'a> R<'a> {
         let src = match self.u8()? {
             0 => TieSource::Node(self.tid()?),
             1 => TieSource::Commit(self.cid()?),
+            2 => TieSource::Session(self.tid()?, self.take(16)?.try_into().ok()?),
             _ => return None,
         };
         Some(Tie { ts, src, ctr: self.n()?, subgroup: self.bool()? })

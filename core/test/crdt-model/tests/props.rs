@@ -5,7 +5,7 @@ use crdt_model::received::Received;
 use crdt_model::stamp::{Dot, Source};
 use crdt_model::state::{Content, Frag};
 use crdt_model::value::Value;
-use crdt_model::wire::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, Ctx};
+use crdt_model::wire::{decode_delta, decode_snapshot, encode_delta, encode_snapshot, sources_of, Ctx};
 use proptest::prelude::*;
 
 /// Encode a delta, check the round trip and canonical re-encoding, return the decoded fragment.
@@ -76,7 +76,9 @@ struct Commit {
 fn snapshot_transfer(st: &Frag, received: &Received, expiring: &[Range]) -> (Frag, Vec<(Source, u64)>) {
     let mut f = st.clone();
     f.strip(&in_ranges(expiring));
-    let fr = received.frontiers();
+    // frontiers of the sources left in the fragment only (§8)
+    let traced = sources_of(&f, &mut Ctx::new(1 << 40, Source::node(250), 1));
+    let fr: Vec<(Source, u64)> = received.frontiers().into_iter().filter(|(s, _)| traced.contains(s)).collect();
     let mut cx = Ctx::new(1 << 40, Source::node(250), 1);
     let bytes = encode_snapshot(&f, &fr, [3; 16], &mut cx);
     let mut cx2 = Ctx::new(1 << 40, Source::node(250), 1);

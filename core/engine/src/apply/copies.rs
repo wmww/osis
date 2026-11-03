@@ -34,7 +34,7 @@ pub(crate) fn carried_of(core: &Core, tid: &Tid, ak: &Ak, f: &Fragment) -> BTree
 }
 
 /// Whether some held commit owning dot `d` on `(tid, ak)` (spec/permissions.md §5.2) has its
-/// delta of that aspect as `f` judges it: the node- or session-form commit whose range holds it; for
+/// delta of that aspect as `f` judges it: the session-form commit whose range holds it; for
 /// `Commit(c)`, `c` itself as a commit-form commit with the aspect, else any held import of `c`
 /// with it (§7, `Core::imports`; `c` on the moved thing owns nothing there).
 pub(crate) fn any_owner(core: &Core, tid: &Tid, ak: &Ak, d: &Dot, f: &dyn Fn(&CommitId, &Meta, usize) -> bool) -> bool {
@@ -215,7 +215,7 @@ fn regiven(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, d: &Dot, memo: &mut BTreeMap<(Co
 }
 
 /// Drops the carried writes a commit owns on the aspects whose deltas it now holds (`held`):
-/// its counters (node and session form), its whole source (commit form), its origins' sources (an import).
+/// its counters (session form), its whole source (commit form), its origins' sources (an import).
 /// Returns, per such aspect, the snapshots whose copies it dropped: they are compared with the
 /// delta (`differing_copies`).
 pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(usize) -> bool) -> Vec<(Tid, Ak, BTreeSet<CommitId>)> {
@@ -223,14 +223,14 @@ pub(crate) fn uncarry(core: &mut Core, id: &CommitId, h: &Header, held: &dyn Fn(
     if h.kind.has_own_writes() && h.form == Form::Commit {
         srcs.push(osis_crdt::Source::commit(*id));
     }
-    let node_src = (h.kind.has_own_writes() && h.form.counted()).then(|| h.form.own_source(h.author, *id));
+    let counted = (h.kind.has_own_writes() && h.form.counted()).then(|| h.form.own_source(h.author, *id));
     let mut out = Vec::new();
-    if srcs.is_empty() && node_src.is_none() {
+    if srcs.is_empty() && counted.is_none() {
         return out;
     }
     for (_, a) in h.aspects.iter().enumerate().filter(|(ai, _)| held(*ai)) {
         let k = (a.tid, a.ak.clone());
-        let owns = |src: &osis_crdt::Source, x: u64| srcs.contains(src) || (node_src.as_ref() == Some(src) && a.lo <= x && x < a.hi);
+        let owns = |src: &osis_crdt::Source, x: u64| srcs.contains(src) || (counted.as_ref() == Some(src) && a.lo <= x && x < a.hi);
         if !core.ix.carried.get(&k).is_some_and(|v| v.iter().any(|c| c.ctrs.iter().any(|x| owns(&c.src, *x)))) {
             continue;
         }

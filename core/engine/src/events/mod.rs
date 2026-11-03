@@ -94,7 +94,7 @@ pub enum DiagnosticKind {
     Parked,
     /// A commit is pending (spec/commits.md §4).
     Pending,
-    /// Two commits by one node overlap on node-form counters (spec/commits.md §4).
+    /// Two commits of one session overlap on counters (spec/commits.md §4).
     OverlappingCounters,
     /// This node lost read access to an actor and dropped its secrets (spec/permissions.md §3).
     Removed,

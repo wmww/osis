@@ -69,6 +69,7 @@ fn required_setting_kinds_spec_commits_5() {
     for k in [Kind::ContentSnapshot, Kind::Import] {
         let mut x = h.clone();
         x.kind = k;
+        x.form = crate::header::Form::Commit;
         assert!(x.validate().unwrap_err().to_string().contains("without own writes"), "{k:?}");
     }
     assert_eq!(retention::fixed_retention("required.0^"), Some(retention::CREATED_RETENTION));
@@ -89,6 +90,7 @@ fn created_only_in_commits_with_own_writes() {
     for k in [Kind::ContentSnapshot, Kind::Import] {
         let mut x = h.clone();
         x.kind = k;
+        x.form = Form::Commit;
         assert!(x.validate().unwrap_err().to_string().contains("without own writes"), "{k:?}");
     }
 }

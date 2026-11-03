@@ -252,8 +252,8 @@ fn part_missing_pages_waits_like_a_chainless_one_spec_commits_4() {
 #[test]
 fn parked_part_waits_like_a_chainless_one_spec_versioning_2() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net(2, 62);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     for pk in packages(&mut lp, 0) {
@@ -264,16 +264,14 @@ fn parked_part_waits_like_a_chainless_one_spec_versioning_2() {
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let own = Source::node(author);
-    let mut w = Writer::new(ts, own.clone(), 1000);
+    let form = crate::common::forged_session(author);
+    let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
     let view = osis_crdt::AnyView;
     let f = create(&mut w, &view, &s("ok")).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Content, ts, author, r.lo, r.hi);
-    cx.own = own;
-    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).unwrap();
     let parked = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:future.0"), 100, 101, parked));
     let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
@@ -451,12 +449,10 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
     let view = osis_schema::core_schema().view(secrets.as_str()).unwrap();
-    let own = Source::commit(osis_base::CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), 1);
+    let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &boxed).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
-    cx.own = own;
+    let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
     for t in [g, h] {
@@ -531,8 +527,8 @@ fn late_part_of_applied_commit_joins_alone_spec_commits_4() {
 #[test]
 fn bad_part_together_or_split_spec_commits_4() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net(2, 65);
     let (g, h) = (new_thing(&mut lp, 0), new_thing(&mut lp, 0));
     let setup = packages(&mut lp, 0);
@@ -541,15 +537,13 @@ fn bad_part_together_or_split_spec_commits_4() {
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap(), e.get_typed(&h, &osis_schema::core_types::CREATED).unwrap().unwrap()];
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let own = Source::node(author);
-    let mut w = Writer::new(ts, own.clone(), 1000);
+    let form = crate::common::forged_session(author);
+    let mut w = Writer::new(ts, form.own_source(author, osis_base::CommitId([0; 32])), 1000);
     let f = create(&mut w, &osis_crdt::AnyView, &s("ok")).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Content, ts, author, r.lo, r.hi);
-    cx.own = own;
-    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
+    let good = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi), None).unwrap();
     let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(AspectWrite::new(g, ak("t:reg.0"), r.lo, r.hi, good));
     cb.aspects.push(AspectWrite::new(h, ak("t:reg.0"), 100, 101, bad));
     let blob = cb.build(&e.identity().keys().signing, &crate::receive::Dedup(recs), &mut MemoryBlobs::default(), &mut osis_crypto::SeededRng::from_u64(1)).unwrap().commit;
@@ -579,8 +573,8 @@ fn bad_part_together_or_split_spec_commits_4() {
 #[test]
 fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Writer, create, encode_delta};
     let mut lp = net(2, 66);
     let g = new_thing(&mut lp, 0);
     let setup = packages(&mut lp, 0);
@@ -589,18 +583,18 @@ fn bad_part_under_a_unit_wait_stalls_only_its_commit_spec_commits_4() {
     let recs = vec![e.get_typed(&g, &osis_schema::core_types::CREATED).unwrap().unwrap()];
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let own = Source::node(author);
+    let form = crate::common::forged_session(author);
+    let own = form.own_source(author, osis_base::CommitId([0; 32]));
     let delta = |text: &str, nonce: u8, at: u64| {
         let mut w = Writer::new(ts, own.clone(), at);
         let f = create(&mut w, &osis_crdt::AnyView, &s(text)).unwrap();
         let r = w.range();
-        let mut cx = writer_ctx(Kind::Content, ts, author, r.lo, r.hi);
-        cx.own = own.clone();
+        let cx = writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi);
         (encode_delta(&Delta { nonce: [nonce; 16], fragment: f }, &cx, None).unwrap(), r.lo, r.hi)
     };
     let (one, two) = (delta("one", 7, 1000), delta("two", 8, 1000));
     let bad = osis_base::encode(&Value::List(vec![Value::Int(1)]));
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     cb.aspects.push(AspectWrite::new(g, ak("t:one.0"), one.1, one.2, one.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:two.0"), two.1, two.2, two.0));
     cb.aspects.push(AspectWrite::new(g, ak("t:bad.0"), 100, 101, bad));
@@ -1519,22 +1513,22 @@ enum Made {
 /// Peer 0's signed commit of `parts` (thing, key, what, expiry in ms from now), as no writer here makes it.
 fn forge(f: &mut Forge, parts: &[(Tid, &str, Made, Option<u64>)]) -> CommitBlob {
     use crate::common::*;
-    use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
-    use osis_crdt::{Delta, Source, Writer, create, encode_delta};
+    use osis_commit::{AspectWrite, CommitBuilder, Kind, MemoryBlobs, writer_ctx};
+    use osis_crdt::{Delta, Writer, create, encode_delta};
     f.lp.peers[0].clock.advance(10);
     let e = &mut f.lp.peers[0].engine;
     let recs = [f.x, f.y, f.z].iter().map(|t| e.get_typed(t, &osis_schema::core_types::CREATED).unwrap().unwrap()).collect();
     let author = e.tid();
     let ts = osis_base::Ts::make(e.now(), 0).unwrap();
-    let own = Source::node(author);
+    let form = crate::common::forged_session(author);
+    let own = form.own_source(author, osis_base::CommitId([0; 32]));
     let now = e.now().0;
-    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, Form::Node);
+    let mut cb = CommitBuilder::new(Kind::Content, ts, author, author, form);
     for (n, (t, k, how, exp)) in parts.iter().enumerate() {
         let mut w = Writer::new(ts, own.clone(), 1000 + n as u64 * 100);
         let c = create(&mut w, &osis_crdt::AnyView, &s("ok")).unwrap();
         let r = w.range();
-        let mut cx = writer_ctx(Kind::Content, ts, author, r.lo, r.hi);
-        cx.own = own.clone();
+        let cx = writer_ctx(form, Kind::Content, ts, author, r.lo, r.hi);
         let d = match how {
             Made::Good => encode_delta(&Delta { nonce: [7; 16], fragment: c }, &cx, None).unwrap(),
             Made::Bad => osis_base::encode(&Value::List(vec![Value::Int(1)])),
@@ -1978,7 +1972,7 @@ fn forge_lowering(lp: &mut osis_node::local_peer::LocalPeer, by: usize, t: Tid, 
     let mut w = Writer::new(ts, own.clone(), 1 << 40);
     let f = create(&mut w, &osis_schema::core_schema().view(roles.as_str()).unwrap(), &v).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
+    let mut cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
     cx.own = own;
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
     let mut aw = AspectWrite::new(t, roles.clone(), r.lo, r.hi, bytes);

@@ -2428,6 +2428,53 @@ fn frontier_at_the_bound_leaves_out_the_last_requests_spec_perm_5_1() {
     assert_eq!(run(0).1, [false, false, false], "none fits: the demotion still goes through");
 }
 
+// spec: none (a growth probe, notes/growth.md: a snapshot frontier lists only sources with a write
+// left in the aspect). A register overwritten and compacted once per launch over 1000 launches, what
+// a compaction covers dropped: one entry and one body at every launch; at the end the bytes of the
+// last snapshot's `Frontiers` and `Sources` items and of the whole delta. Run by hand:
+// `cargo test -p osis-node --test it -- --ignored retention::frontier_bytes_per_launch_probe --nocapture`.
+#[test]
+#[ignore = "probe"]
+fn frontier_bytes_per_launch_probe() {
+    let launches = 1000u64;
+    let mut lp = net(1, 0x5ea0);
+    let t = new_thing(&mut lp, 0);
+    let reg = ak("t:reg.0");
+    for i in 0..launches {
+        lp.peers[0].restart(0x5eb0 + i).unwrap();
+        lp.advance(1_000);
+        set(&mut lp, 0, t, &REG, &format!("launch {i}"));
+        lp.advance(1_000);
+        let e = &mut lp.peers[0].engine;
+        let snap = e.snapshot(&t, &reg).unwrap().unwrap();
+        let held: Vec<_> = e.core.ix.by_aspect.get(&(t, reg.clone())).into_iter().flatten().map(|x| x.1).collect();
+        for c in held {
+            if c != snap && e.body_not_dropped(&c, &t, &reg) && e.covered(&snap, &c, &t, &reg).unwrap() == Some(true) {
+                e.drop_body(&c, &t, &reg).unwrap();
+            }
+        }
+        assert_eq!(e.held_bodies(&t, &reg), 1, "launch {i}");
+    }
+    lp.advance(1_000);
+    let e = &mut lp.peers[0].engine;
+    let snap = e.snapshot(&t, &reg).unwrap().unwrap();
+    let pk = e.package(&snap).unwrap().unwrap();
+    let blob = osis_commit::CommitBlob::decode(&pk.bytes).unwrap();
+    let part = &blob.parts[0];
+    let mut interner = osis_crdt::Interner::new();
+    let cx = osis_commit::delta_ctx(&blob.header, &snap, part.ai, &mut interner).unwrap();
+    let snapshot = osis_crdt::decode_snapshot(&part.delta, &cx, &mut interner, None).unwrap();
+    let Value::List(top) = osis_base::decode(&part.delta, &osis_base::Limits::DEFAULT).unwrap() else { panic!() };
+    assert_eq!(snapshot.frontiers.sources().count(), 1);
+    eprintln!(
+        "{launches} launches: {} frontier entries, Frontiers {} B, Sources {} B, delta {} B",
+        snapshot.frontiers.sources().count(),
+        osis_base::encode(&top[4]).len(),
+        osis_base::encode(&top[1]).len(),
+        part.delta.len()
+    );
+}
+
 // spec/crdt.md §4.7, spec/commits.md §5: a second request on a delta dropped as covered keeps the
 // residue the first took from its coverers, when a coverer not carrying it is left (was: replaced
 // by nothing, so the older write came back once a later write fell, where a node that held the body

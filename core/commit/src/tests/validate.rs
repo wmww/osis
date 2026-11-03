@@ -45,6 +45,7 @@ fn validate_kinds() {
     assert!(matches!(invalid(&x), Error::Invalid(_)));
     let mut x = h.clone();
     x.kind = Kind::ContentSnapshot;
+    x.form = Form::Commit;
     assert!(invalid(&x).to_string().contains("counter range"));
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
@@ -55,6 +56,7 @@ fn validate_kinds() {
     x.validate().unwrap();
     let mut x = h.clone();
     x.kind = Kind::Import;
+    x.form = Form::Commit;
     x.aspects[0].lo = 0;
     x.aspects[0].hi = 0;
     assert!(invalid(&x).to_string().contains("delete levels"), "imports carry no level-2 key");
@@ -90,17 +92,21 @@ pub(crate) fn role_header(ak: &str) -> Header {
 // spec/commits.md §2, §5: role commits carry no expires, keep fixed retention, may carry
 // several sorted delta hashes per aspect, may touch secrets.0 and keys.0 of several things; a
 // frontier only on role commits; roster snapshots only roles.0 and tenures.0 of one thing.
-// spec/commits.md §2 (role commit no expires)
+// spec/commits.md §2 (role commit no expires); spec/commits.md §3 (commit form kinds): a role
+// commit in session form is bad input.
 #[test]
 fn validate_role_commit() {
     let h = role_header("roles.0");
     h.validate().unwrap();
-    // spec/commits.md §3, §4: a node-form role commit is bad input
+    // spec/commits.md §3 (commit form kinds), §4: a session-form role commit is bad input, as is
+    // node form anywhere
     for k in [Kind::Role, Kind::RosterSnapshot] {
         let mut x = h.clone();
         x.kind = k;
+        x.form = crate::tests::SESSION;
+        assert!(invalid(&x).to_string().contains("session form outside a content commit"));
         x.form = crate::header::Form::Node;
-        assert!(invalid(&x).to_string().contains("node-form role commit"));
+        assert!(invalid(&x).to_string().contains("node form"));
         // spec/wire.md §4: a role commit's or roster snapshot's actor is its author
         let mut x = h.clone();
         x.kind = k;
@@ -248,12 +254,13 @@ fn session_form_spec_commits_3() {
     h.form = Form::Session([6; 16]);
     assert_eq!(Header::decode(&h.encode()).unwrap(), h);
     assert_ne!(h.id(), Header { form: Form::Session([7; 16]), ..h.clone() }.id());
-    assert!(invalid(&h).to_string().contains("session form"));
+    // a durable content commit in session form, and an ephemeral one
+    h.validate().unwrap();
     h.ephemeral = Some(EphClass::Plain);
     h.validate().unwrap();
     let mut x = h.clone();
     x.form = Form::Node;
-    assert!(invalid(&x).to_string().contains("ephemeral commit"));
+    assert!(invalid(&x).to_string().contains("node form"));
     x.form = Form::Commit;
     assert!(invalid(&x).to_string().contains("ephemeral commit"));
     // the session's dots are its own: `(Session(author, nonce), ctr)`

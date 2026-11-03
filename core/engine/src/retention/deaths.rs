@@ -31,9 +31,9 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
 }
 
 /// Whether a snapshot with frontier `fr` and `Absorbed` `abs` on `tid` is known, from those
-/// alone, to have been taken after its author applied the write of dot `o`: a node- or
+/// alone, to have been taken after its author applied the write of dot `o`: a
 /// session-form one under its frontier, a commit-form one when `abs` lists its commit or a held import of it. A snapshot
-/// may carry writes past these (a node-form write applied before an earlier counter, an import
+/// may carry writes past these (a session write applied before an earlier counter, an import
 /// whose header this node does not hold): `Parts::holds` reads its body.
 fn took(core: &Core, tid: &Tid, fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
     let o = o.owner();
@@ -47,7 +47,7 @@ fn took(core: &Core, tid: &Tid, fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid
     }
 }
 
-/// The held commits of `(tid, ak)` whose own writes the dot `o` names: the node-form or
+/// The held commits of `(tid, ak)` whose own writes the dot `o` names: the session-form or
 /// commit-form commit owning it, and the held imports listing a commit-form dot's commit as
 /// origin (spec/permissions.md §7), each with its part's index.
 fn own_commits(core: &Core, tid: &Tid, ak: &Ak, o: &osis_crdt::Dot) -> Vec<(CommitId, usize)> {

@@ -42,8 +42,10 @@ pub struct DeltaCtx {
     pub kind: DeltaKind,
 }
 
-/// Per `Node` and `Session` source, the largest counter up to which the snapshot writer applied
-/// all of that source's writes in the aspect (§8).
+/// Per `Node` and `Session` source occurring in the snapshot's fragment, the largest counter up
+/// to which the snapshot writer applied all of that source's writes in the aspect (§8), 0 when
+/// it applied none contiguously. A source without an entry does not occur in the fragment
+/// (`lists`); on the wire every occurring source has an entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Frontiers {
     pub nodes: BTreeMap<Tid, u64>,
@@ -58,6 +60,21 @@ impl Frontiers {
     /// Every entry as its source, with its counter.
     pub fn sources(&self) -> impl Iterator<Item = (Source, u64)> + '_ {
         self.nodes.iter().map(|(t, c)| (Source::node(*t), *c)).chain(self.sessions.iter().map(|(s, c)| (Source::session(*s), *c)))
+    }
+    /// Whether `src` has an entry: it occurs in the snapshot's fragment.
+    pub fn lists(&self, src: &Source) -> bool {
+        match src.kind() {
+            SourceKind::Node(t) => self.nodes.contains_key(t),
+            SourceKind::Session(s) => self.sessions.contains_key(s),
+            _ => false,
+        }
+    }
+    /// Entries with a counter: tests comparing a snapshot with its decoding, which lists every
+    /// source of the fragment.
+    pub fn without_zeros(mut self) -> Frontiers {
+        self.nodes.retain(|_, c| *c > 0);
+        self.sessions.retain(|_, c| *c > 0);
+        self
     }
     /// The frontier of `src` (0 when none, or not a `Node` or `Session` source).
     pub fn of(&self, src: &Source) -> u64 {
@@ -74,6 +91,12 @@ impl Frontiers {
             SourceKind::Session(s) => self.sessions.insert(*s, ctr).is_none(),
             _ => false,
         }
+    }
+    /// Keeps the entries of the sources `keep` holds (a snapshot lists only sources that occur
+    /// in its fragment, §8).
+    pub fn retain(&mut self, keep: &std::collections::BTreeSet<Source>) {
+        self.nodes.retain(|t, _| keep.contains(&Source::node(*t)));
+        self.sessions.retain(|s, _| keep.contains(&Source::session(*s)));
     }
 }
 
@@ -472,14 +495,8 @@ impl<'p> Enc<'p> {
         self.src_idx.insert(s.clone(), self.sources.len() as u64);
     }
 
-    /// Ends the collecting pass: appends `extra` (a snapshot's frontier-only sources, ascending)
-    /// and orders the commit table (§3.2: by `Src`, then `ts`).
-    pub(crate) fn finish_collecting(&mut self, extra: &[Source]) {
-        let mut extra = extra.to_vec();
-        extra.sort();
-        for s in &extra {
-            self.note_source(s);
-        }
+    /// Ends the collecting pass and orders the commit table (§3.2: by `Src`, then `ts`).
+    pub(crate) fn finish_collecting(&mut self) {
         let idx = |s: &Source| if *s == self.own { 0 } else { self.src_idx.get(s).copied().unwrap_or(u64::MAX) };
         let mut commits = std::mem::take(&mut self.commits);
         commits.sort_by_key(|c| (idx(&c.src), c.ts));
@@ -492,24 +509,29 @@ impl<'p> Enc<'p> {
         if *s == self.own { 0 } else { self.src_idx.get(s).copied().unwrap_or(0) }
     }
 
-    /// Check mode, at the end: every source's first appearance came in table order, then the
-    /// frontier-only sources `extra` ascending; every commit entry's base is its smallest
-    /// counter seen (§3.3 rule 1).
-    pub(crate) fn check_tables(&mut self, extra: &[Source]) -> bool {
-        let mut extra = extra.to_vec();
-        extra.sort();
-        for s in &extra {
-            self.note(s);
-        }
+    /// Whether `s` appears in the fragment (after the collecting pass).
+    pub(crate) fn has_source(&self, s: &Source) -> bool {
+        *s == self.own || self.src_idx.contains_key(s)
+    }
+
+    /// The sources that appear in the fragment, own one aside (after the collecting pass).
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &Source> + '_ {
+        self.sources.iter()
+    }
+
+    /// Check mode, at the end: every source's first appearance came in table order and every
+    /// table entry appeared (a snapshot's frontier names no other source, §8); every commit
+    /// entry's base is its smallest counter seen (§3.3 rule 1).
+    pub(crate) fn check_tables(&mut self) -> bool {
         let Some(c) = self.check.as_ref() else { return false };
         !c.bad && c.next == self.sources.len() as u64 + 1 && c.min.iter().zip(&self.commits).all(|(m, e)| *m == e.base)
     }
 
-    /// `Frontiers := [[Src, ctr]*]`, sorted by `Src` (after the collecting pass).
+    /// `Frontiers := [[Src, ctr]*]`: one entry per `Node` or `Session` source of the table, in
+    /// table order, `ctr` 0 for a source `fr` has none for (§8; after the collecting pass).
     pub(crate) fn frontiers_value(&self, fr: &Frontiers) -> Value {
-        let mut entries: Vec<(u64, u64)> = fr.sources().map(|(s, c)| (self.src_index(&s), c)).collect();
-        entries.sort_unstable_by_key(|(i, _)| *i);
-        Value::List(entries.into_iter().map(|(i, c)| Value::List(vec![uint(i), uint(c)])).collect())
+        let entries = self.sources.iter().enumerate().filter(|(_, s)| matches!(s.kind(), SourceKind::Node(_) | SourceKind::Session(_))).map(|(i, s)| Value::List(vec![uint(i as u64 + 1), uint(fr.of(s))]));
+        Value::List(entries.collect())
     }
 
     /// `Src` of a source (0 = own).
@@ -722,6 +744,11 @@ impl<'a> Dec<'a> {
             _ => self.used.insert(c, after.unwrap_or(c)),
         };
         Ok(())
+    }
+
+    /// The table's sources in order (after `load_sources`).
+    pub(crate) fn sources(&self) -> impl Iterator<Item = &Source> + '_ {
+        self.sources.iter()
     }
 
     /// Source of `Src` index `i`.
@@ -988,7 +1015,7 @@ mod tests {
             let mut out: Vec<Value> = stamps.iter().map(|s| enc.stamp(s)).collect();
             out.extend(dots.iter().map(|d| enc.dot(d)));
             if pass == 0 {
-                enc.finish_collecting(&[]);
+                enc.finish_collecting();
                 continue;
             }
             // sources: a, then b (underlying of d), then d

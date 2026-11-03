@@ -12,7 +12,7 @@ use super::{receipt, whole_part};
 use crate::engine::write::required_role;
 use crate::engine::{Core, Tx};
 use crate::error::Result;
-use osis_base::{CommitId, Tid};
+use osis_base::{CommitId, Role, Tid};
 use osis_commit::{CommitBlob, Header, Kind};
 use osis_perm::{Frontier, Point, RoleCommit, RosterSnapshot};
 use osis_schema::core_types as ct;
@@ -50,7 +50,7 @@ pub(super) fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize)
     if a.ak.lifetime() != class_of(h) {
         return Ok(true);
     }
-    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai) || removed_author(tx.core, h, id, a) || breaks_a_held_setting(tx.core, h, id, a))
+    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, ai) || removed_author(tx.core, h, id, a) || breaks_a_held_setting(tx.core, h, id, a))
 }
 
 /// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be
@@ -145,13 +145,19 @@ fn breaks_a_held_setting(core: &Core, h: &Header, id: &CommitId, a: &osis_commit
     signed_by_possible_admin(core, &a.tid, broken.map(|(p, _)| p.node))
 }
 
-/// Whether one of `signers` is a possible admin of `t` (`Held::ever_admins`), the set walked only if
-/// there is one.
+/// Whether one of `signers` is a possible admin of `t` (`Held::ever_admins`).
 fn signed_by_possible_admin(core: &Core, t: &Tid, signers: impl Iterator<Item = Tid>) -> bool {
+    signed_by_possible(core, t, Role::Admin, signers)
+}
+
+/// Whether one of `signers` is a possible holder of `role` on `t` (`Held::ever_holders`), the set
+/// walked only if there is one: what lets a missing delta count as held on a signer's word must not
+/// be anyone's.
+pub(crate) fn signed_by_possible(core: &Core, t: &Tid, role: Role, signers: impl Iterator<Item = Tid>) -> bool {
     let mut signers = signers.peekable();
     signers.peek().is_some() && {
-        let admins = core.ix.held.ever_admins(t);
-        signers.any(|by| admins.contains(&by))
+        let holders = core.ix.held.ever_holders(t, role);
+        signers.any(|by| holders.contains(&by))
     }
 }
 

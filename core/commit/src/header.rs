@@ -77,10 +77,11 @@ impl EphClass {
 /// Dot form (spec/commits.md §3).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Form {
+    /// Node form: written by nothing, bad input (spec/commits.md §3).
     Node,
     Commit,
     /// Session form: dots `(Session(author, nonce), counter)`, counters per (aspect, session);
-    /// memory commits only.
+    /// every content commit with own writes, durable or memory.
     Session([u8; osis_crdt::SESSION_NONCE_LEN]),
 }
 
@@ -94,7 +95,7 @@ impl Form {
         }
     }
 
-    /// Counters per (aspect, source), contiguous: node and session form.
+    /// Counters per (aspect, source), contiguous: session form.
     pub fn counted(&self) -> bool {
         !matches!(self, Form::Commit)
     }

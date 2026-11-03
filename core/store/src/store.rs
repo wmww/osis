@@ -375,7 +375,7 @@ impl Transaction<'_> {
 
 
     /// Drops an aspect's unit, tables and death records, shredded (a whole-aspect purge). Its
-    /// counters stay: node-form counters never repeat.
+    /// counters stay: a session never takes a counter twice.
     pub fn drop_aspect(&mut self, tid: &Tid, ak: &Ak) -> Result<(), Error> {
         self.cat_remove(&aspect_key(kind::ASPECT, tid, ak), Shred::Yes)?;
         while self.cat_pop_prefix(&aspect_key(kind::DEATH, tid, ak), Shred::Yes)?.is_some() {}
@@ -600,30 +600,21 @@ impl Transaction<'_> {
         }
     }
 
-    // Counters per (aspect, this node).
+    // Counters per (aspect, this session): memory rows only (spec/crdt.md §2.1: a session's
+    // counters start from 1 at each open and never reach the disk), rolled back with an aborted
+    // transaction, so a session leaves no gap.
 
-    /// The next unused node-form counter of this node in the aspect (from 1).
+    /// The next unused session counter in the aspect (from 1).
     pub fn counter(&mut self, tid: &Tid, ak: &Ak) -> Result<u64, Error> {
-        Ok(u64_value(self.cat_get(&aspect_key(kind::COUNTER, tid, ak))?)?.unwrap_or(1))
+        Ok(u64_value(self.mem.o.cat.get(&aspect_key(kind::COUNTER, tid, ak)).cloned())?.unwrap_or(1))
     }
     /// Reserves `n` counters; returns the first. Commit this transaction before signing a commit
     /// that uses them (spec/crdt.md §2.3).
     pub fn reserve_counters(&mut self, tid: &Tid, ak: &Ak, n: u64) -> Result<u64, Error> {
         let first = self.counter(tid, ak)?;
         let next = first.checked_add(n).ok_or(Error::Misuse("counter overflow"))?;
-        let m = self.aspect_mem(tid, ak);
-        self.cat_put_to(&aspect_key(kind::COUNTER, tid, ak), W::new().u64(next).take(), Shred::No, m)?;
+        self.mem.cat_put(&aspect_key(kind::COUNTER, tid, ak), W::new().u64(next).take());
         Ok(first)
-    }
-
-    /// Raises the next counter to at least `next`: counters this node's lost commits used
-    /// (spec/crdt.md §2.1).
-    pub fn raise_counter(&mut self, tid: &Tid, ak: &Ak, next: u64) -> Result<(), Error> {
-        if next > self.counter(tid, ak)? {
-            let m = self.aspect_mem(tid, ak);
-            self.cat_put_to(&aspect_key(kind::COUNTER, tid, ak), W::new().u64(next).take(), Shred::No, m)?;
-        }
-        Ok(())
     }
 
     // Pending and parked commits.

@@ -100,7 +100,8 @@ fn crash_every_write_of_a_purging_commit() {
         let ids: Vec<_> = e.commit_ids();
         for id in ids.iter().filter(|c| **c != later) {
             let o = e.header(id).unwrap();
-            if o.author == h.author {
+            // counters are per session (spec/crdt.md §2.1): a commit of this open against its own
+            if o.author == h.author && o.form == h.form {
                 for a in &o.aspects {
                     for b in h.aspects.iter().filter(|b| b.tid == a.tid && b.ak == a.ak && b.lo < b.hi && a.lo < a.hi) {
                         assert!(a.lo >= b.hi || b.lo >= a.hi, "counters reused after a crash at write {n}");
@@ -114,12 +115,12 @@ fn crash_every_write_of_a_purging_commit() {
     }
 }
 
-// spec/crdt.md §2.1: a store restored from a backup that receives only a valid snapshot of the
-// commits it lost (their bodies dropped after compaction) takes its counter from the
-// snapshot's frontier for its own node: its next commit overlaps none of them, and when they
-// arrive after all, nothing is void (spec/commits.md §4).
+// spec/crdt.md §2.1 (a session per open; two copies of one store are two sessions),
+// spec/commits.md §4: two live copies of one store (an old phone kept in use, a backup restored
+// beside the original) write the same aspect concurrently; neither commit is void and both
+// copies read alike once exchanged.
 #[test]
-fn restored_counter_from_snapshot_frontier_spec_crdt_2_1() {
+fn two_live_copies_of_one_store_converge_spec_crdt_2_1() {
     let dev = Dev::new();
     let mut e = dev.create();
     let mut m = Mutation::new();
@@ -127,30 +128,30 @@ fn restored_counter_from_snapshot_frontier_spec_crdt_2_1() {
     let t = e.new_thing(&mut m, me);
     m.set(t, &REG, &s("one")).unwrap();
     e.commit(m).unwrap();
-    let backup = (dev.backend.copy(), dev.root.copy());
-    let lost: Vec<osis_base::CommitId> = (0..3)
-        .map(|i| {
-            dev.clock.advance(5);
-            set(&mut e, t, &format!("lost {i}"))
-        })
-        .collect();
-    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&REG)).unwrap();
-    let snap = e.compaction_snapshot(&t, &ak).unwrap().expect("a snapshot");
-    let packages: Vec<_> = std::iter::once(snap).chain(lost.iter().copied()).map(|c| e.package(&c).unwrap().unwrap()).collect();
-    let last_hi = lost.iter().map(|c| e.header(c).unwrap().aspects.iter().find(|a| a.ak == ak).unwrap().hi).max().unwrap();
-    drop(e);
-
+    let copy = (dev.backend.copy(), dev.root.copy());
     let c: Arc<dyn Clock> = dev.clock.clone();
-    let mut r = Engine::open(Box::new(backup.0), Box::new(backup.1), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
-    let [sp, rest @ ..] = packages.as_slice() else { unreachable!() };
-    r.ingest(&sp.bytes, sp.blobs.clone()).unwrap();
-    dev.clock.advance(5);
-    let mine = set(&mut r, t, "restored");
-    let lo = r.header(&mine).unwrap().aspects.iter().find(|a| a.ak == ak).unwrap().lo;
-    assert!(lo >= last_hi, "the restored node's counter {lo} is past the lost commits' {last_hi}");
-    for p in rest {
+    let mut r = Engine::open(Box::new(copy.0), Box::new(copy.1), Config::default(), c, Box::new(SeededRng::from_u64(11))).unwrap();
+    assert_eq!(r.tid(), me, "the same device identity");
+    let ak = osis_base::Ak::new(osis_schema::AspectKey::ak(&REG)).unwrap();
+    let (mut a, mut b) = (Vec::new(), Vec::new());
+    for i in 0..3 {
+        dev.clock.advance(5);
+        a.push(set(&mut e, t, &format!("original {i}")));
+        dev.clock.advance(5);
+        b.push(set(&mut r, t, &format!("copy {i}")));
+    }
+    let form = |x: &Engine, c: &osis_base::CommitId| x.header(c).unwrap().form;
+    assert!(matches!(form(&e, &a[0]), osis_commit::Form::Session(_)) && form(&e, &a[0]) != form(&r, &b[0]), "two sessions");
+    for c in &b {
+        let p = r.package(c).unwrap().unwrap();
+        e.ingest(&p.bytes, p.blobs.clone()).unwrap();
+    }
+    for c in &a {
+        let p = e.package(c).unwrap().unwrap();
         r.ingest(&p.bytes, p.blobs.clone()).unwrap();
     }
-    assert!(r.core.ix.void.is_empty(), "void: {:?}", r.core.ix.void.iter().collect::<Vec<_>>());
-    assert_eq!(r.get_typed(&t, &REG).unwrap(), Some(s("restored")));
+    assert!(e.core.ix.void.is_empty() && r.core.ix.void.is_empty(), "void: {:?} {:?}", e.core.ix.void, r.core.ix.void);
+    assert_eq!(e.get_typed(&t, &REG).unwrap(), Some(s("copy 2")));
+    assert_eq!(e.get_typed(&t, &REG).unwrap(), r.get_typed(&t, &REG).unwrap());
+    assert_eq!(e.state(&t, &ak).unwrap(), r.state(&t, &ak).unwrap());
 }

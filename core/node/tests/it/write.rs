@@ -71,7 +71,7 @@ fn write_and_read_spec_crdt_4_5() {
     assert_eq!(p.engine.get(&t, &a).unwrap(), None);
 }
 
-// spec/crdt.md §2.1, §2.3: node-form counters per (aspect, node) are contiguous from 1.
+// spec/crdt.md §2.1, §2.3: session-form counters per (aspect, session) are contiguous from 1.
 #[test]
 fn counters_contiguous_spec_crdt_2_3() {
     let mut p = peer(3);
@@ -152,7 +152,10 @@ fn restart_keeps_state() {
     m.set(t, &ak("app:x.0"), &Value::Str("again".into())).unwrap();
     let id = p.commit(m).unwrap().unwrap();
     let h = p.engine.header(&id).unwrap();
-    assert_eq!(h.aspects[0].lo, 2);
+    // a new open is a new session: its counters start from 1 (spec/crdt.md §2.1)
+    assert_eq!(h.aspects[0].lo, 1);
+    let first = p.engine.commit_ids().into_iter().filter(|c| *c != id).map(|c| p.engine.header(&c).unwrap()).find(|h| h.aspects.iter().any(|a| a.ak == ak("app:x.0"))).unwrap();
+    assert!(matches!(h.form, osis_commit::Form::Session(_)) && h.form != first.form, "another session");
 }
 
 // spec/crdt.md §4.1, §8 (a large state pages; the join of its pages is the state); notes/local-store.md,

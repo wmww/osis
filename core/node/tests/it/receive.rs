@@ -4,7 +4,7 @@
 
 use crate::common;
 use common::*;
-use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Form, Kind, MemoryBlobs};
+use osis_commit::{AspectWrite, CommitBlob, CommitBuilder, Kind, MemoryBlobs};
 use osis_base::Classified;
 use osis_base::{Role, Tid, Ts, Value, WallMs};
 use osis_crdt::{Op, PathOp};
@@ -256,7 +256,7 @@ fn parked_spec_versioning_2() {
     let delta = osis_base::encode(&Value::List(vec![Value::Bytes(vec![0; 16]), Value::List(vec![]), Value::List(vec![]), Value::List(vec![Value::Int(99)])]));
     let mut w = AspectWrite::new(t, ak("t:future.0"), 100, 101, delta);
     w.retention = Retention { by: PurgeBy::Nobody, at_least: Bound::default(), at_most: Bound::default() };
-    let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), Form::Node);
+    let mut b = CommitBuilder::new(Kind::Content, ts, e.tid(), e.tid(), crate::common::forged_session(e.tid()));
     b.aspects.push(w);
     let built = b.build(&e.identity().keys().signing, &Dedup(vec![rec]), &mut MemoryBlobs::default(), &mut SeededRng::from_u64(1)).unwrap();
     let bytes = built.commit.encode();

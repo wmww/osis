@@ -1931,9 +1931,7 @@ fn contains(c: &Fragment, x: &Fragment) -> bool {
 
 /// The encoding context of an ephemeral commit's snapshot deltas by `me` at `ts`.
 fn snapshot_ctx(ts: Ts, me: Tid) -> osis_crdt::DeltaCtx {
-    let mut cx = osis_commit::writer_ctx(Kind::ContentSnapshot, ts, me, 0, 0);
-    cx.own = Source::commit(CommitId([0; 32]));
-    cx
+    osis_commit::writer_ctx(osis_commit::Form::Commit, Kind::ContentSnapshot, ts, me, 0, 0)
 }
 
 /// The length of `f` encoded as an unpaged snapshot delta of an ephemeral commit by `me`.

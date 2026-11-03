@@ -1,14 +1,15 @@
 //! The invariant library. Each check returns the violated rule as text (the harness turns it
 //! into a `Failure` carrying the seed); none panics.
 //! - spec/requirements.md (convergence): nodes holding the same commits read the same values.
-//! - spec/crdt.md §2.3, spec/commits.md §4: an honest node never reuses a node-form counter.
+//! - spec/crdt.md §2.3, spec/commits.md §4: an honest session never reuses a counter.
 //! - spec/crdt.md §2.2: a node's own `ts` strictly increases (across restarts) and stays within
 //!   `MAX_DRIFT` of its wall clock; no remote commit applies more than `MAX_DRIFT` ahead.
 //! - spec/commits.md §4: pending commits drain once their reasons resolve (at quiescence).
 
-use osis_commit::{Form, Header};
+use osis_commit::Header;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, Tid, Ts, Value};
+use osis_crdt::Source;
 use osis_node::{Engine, Event, Origin, Result};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -20,8 +21,8 @@ type Ranges = BTreeMap<u64, (u64, CommitId)>;
 #[derive(Default)]
 pub struct Checker {
     seen: BTreeSet<CommitId>,
-    /// Node-form ranges per (author, tid, ak): lo -> (hi, commit).
-    ranges: BTreeMap<(Tid, Tid, Ak), Ranges>,
+    /// Session-form ranges per (session source, tid, ak): lo -> (hi, commit).
+    ranges: BTreeMap<(Source, Tid, Ak), Ranges>,
     /// Last own `ts` per node index.
     last_own: BTreeMap<usize, Ts>,
     pub applied: u64,
@@ -61,17 +62,18 @@ impl Checker {
         Ok(())
     }
 
-    /// spec/crdt.md §2.3: node-form counter ranges of distinct commits by one author never
-    /// overlap on one aspect.
+    /// spec/crdt.md §2.3: counter ranges of distinct commits of one session never overlap on
+    /// one aspect.
     fn header(&mut self, id: &CommitId, h: &Header) -> std::result::Result<(), String> {
-        if !self.seen.insert(*id) || h.form != Form::Node || self.equivocations.contains(id) {
+        if !self.seen.insert(*id) || !h.form.counted() || !h.kind.has_own_writes() || self.equivocations.contains(id) {
             return Ok(());
         }
+        let src = h.form.own_source(h.author, *id);
         for a in &h.aspects {
             if a.lo >= a.hi {
                 continue;
             }
-            let m = self.ranges.entry((h.author, a.tid, a.ak.clone())).or_default();
+            let m = self.ranges.entry((src.clone(), a.tid, a.ak.clone())).or_default();
             if let Some((lo, (hi, c))) = m.range(..a.hi).next_back()
                 && *hi > a.lo
                 && c != id

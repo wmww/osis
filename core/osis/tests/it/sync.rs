@@ -944,13 +944,12 @@ fn add_host_scope_spec_sync_2() {
     assert_eq!((hosts(alice.home()), hosts(mine), hosts(his), hosts(k)), (0, 1, 1, 1), "a shared group keeps its last host");
 }
 
-// spec/crdt.md §2.1 (a node's counters after a restore): a device restored from a backup of
-// its store keeps its signing key but an old counter. Its writes before its labels passed go
-// in commit form; the pass brings the commits written after the backup, whose counters it
-// then skips, so neither its commits nor theirs are voided (spec/commits.md §4) and every
-// write stands.
+// spec/crdt.md §2.1 (a session per open): a device restored from a backup of its store keeps
+// its signing key; it writes at once under a new session, so the commits written after the
+// backup (which the pass brings back) and its new ones never share a source: nothing is void
+// (spec/commits.md §4) and every write stands, at the device, its peers and a fresh device.
 #[test]
-fn restored_store_reuses_no_counter_spec_crdt_2_1() {
+fn restored_store_writes_at_once_spec_crdt_2_1() {
     let mut w = World::new();
     let host = w.add_host();
     let cfg = w.cfg(1, &[host]);
@@ -969,6 +968,8 @@ fn restored_store_reuses_no_counter_spec_crdt_2_1() {
     w.run();
     w.until(a.wait_synced(SyncScope::All, Duration::from_secs(60)), 1000, 10).unwrap();
     let node = a.node();
+    let lost = commit_with(&a, |wr| wr.at(u, ak("t:x.0")).set(&s("after the backup 3"))).id.commit().unwrap();
+    w.run();
     a.close().unwrap();
     w.advance(1000);
 
@@ -977,21 +978,21 @@ fn restored_store_reuses_no_counter_spec_crdt_2_1() {
     let b = Osis::open(rc).unwrap();
     assert_eq!(b.node(), node, "the same device identity");
     assert_eq!(x(&b, t), Some(s("before the backup")), "the backup's state");
-    // written before any pass: commit form
+    // written before any pass: session form, a new session
     let first = commit_with(&b, |wr| wr.at(t, ak("t:x.0")).set(&s("restored"))).id.commit().unwrap();
     let form = |db: &Osis, c| db.engine(|e| e.header(&c).unwrap().form);
-    assert_eq!(form(&b, first), osis_commit::Form::Commit);
+    assert!(matches!(form(&b, first), osis_commit::Form::Session(_)));
     // an undo before the pass too: of a creation, which also edits the home group's `group.0`
     let v = item(&b, b.me(), b.home(), "made after the restore");
     let undo = b.undo(&osis::Scope::Thing(v)).unwrap().unwrap().id.commit().unwrap();
-    assert_eq!(form(&b, undo), osis_commit::Form::Commit);
+    assert!(matches!(form(&b, undo), osis_commit::Form::Session(_)));
     assert_eq!(x(&b, v), None);
     w.run();
     assert_eq!(x(&b, t), Some(s("restored")), "the restored write stands");
-    assert_eq!(x(&b, u), Some(s("after the backup 2")), "the lost writes came back");
-    // after the pass: node form again, above every counter the lost commits used
+    assert_eq!(x(&b, u), Some(s("after the backup 3")), "the lost writes came back");
+    assert_ne!(form(&b, lost), form(&b, first), "the lost commits are another session's");
     let next = commit_with(&b, |wr| wr.at(u, ak("t:x.0")).set(&s("restored, caught up"))).id.commit().unwrap();
-    assert_eq!(form(&b, next), osis_commit::Form::Node);
+    assert_eq!(form(&b, next), form(&b, first), "one session per open");
     w.run();
     assert_eq!(x(&b, u), Some(s("restored, caught up")));
     let diags = w.diagnostics(&b);

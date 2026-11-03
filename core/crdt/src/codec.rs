@@ -14,7 +14,7 @@ use crate::wire::{Dec, Delta, DeltaCtx, DeltaKind, Enc, Frontiers, NONCE_LEN, Sn
 use osis_base::format::{MAX_BLOB, MAX_OBJECT_DEPTH, MAX_VALUE_DEPTH};
 use osis_base::{Limits, PageCutter, Value};
 use std::borrow::Cow;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(crate) const LIMITS: Limits = Limits { max_depth: MAX_OBJECT_DEPTH, max_bytes: MAX_BLOB };
 
@@ -398,11 +398,28 @@ fn encode_fragment_at(cx: &mut Enc, f: &Fragment) -> Result<Value, Error> {
 fn encode_top<'p>(cx: &DeltaCtx, f: &Fragment, frontiers: Option<&Frontiers>, pages: Option<&'p mut dyn PageSink>) -> Result<(Enc<'p>, Value, Option<Value>), Error> {
     let mut enc = Enc::new(cx, pages);
     encode_fragment(&mut enc, f)?;
-    let extra: Vec<Source> = frontiers.map(|fr| fr.sources().map(|(s, _)| s).collect()).unwrap_or_default();
-    enc.finish_collecting(&extra);
+    enc.finish_collecting();
     let frag = encode_fragment(&mut enc, f)?;
     let fr = frontiers.map(|fr| enc.frontiers_value(fr));
     Ok((enc, frag, fr))
+}
+
+/// The sources with a stamp, dot, anchor or sibling key in `f`'s canonical encoding (its
+/// `Sources` table, §3.3 rule 1), the own source aside: what a snapshot of `f` may list a
+/// frontier for (§8).
+pub fn sources_of(f: &Fragment, cx: &DeltaCtx) -> Result<BTreeSet<Source>, Error> {
+    let mut enc = Enc::new(cx, None);
+    encode_fragment(&mut enc, f)?;
+    enc.finish_collecting();
+    Ok(enc.sources().cloned().collect())
+}
+
+/// A snapshot's frontier entries all name sources of its fragment (§8).
+fn frontiers_traced(enc: &Enc<'_>, s: &Snapshot) -> Result<(), Error> {
+    if s.frontiers.sources().any(|(src, _)| !enc.has_source(&src)) {
+        return Err(Error::Mismatch("frontier of a source not in the fragment"));
+    }
+    Ok(())
 }
 
 /// Encodes a delta (§3.2) against its header facts.
@@ -428,10 +445,8 @@ pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageS
 }
 
 fn encode_snapshot_in(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-    if s.frontiers.sources().any(|(_, c)| c == 0) {
-        return Err(Error::Mismatch("frontier counter 0"));
-    }
     let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
+    frontiers_traced(&enc, s)?;
     let fr = fr.unwrap_or(Value::List(Vec::new()));
     let absorbed = absorbed_value(&s.absorbed);
     let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed];
@@ -937,19 +952,22 @@ pub(crate) fn root_tables(dec: &mut Dec, sources: &Value, commits: &Value) -> Re
     dec.load_commits(commits)
 }
 
-/// A snapshot's `Frontiers` and `Absorbed` (§8).
+/// A snapshot's `Frontiers` and `Absorbed` (§8): one frontier entry per `Node` or `Session`
+/// source of the table, in table order, 0 included (a source with no write in the fragment
+/// has none, so an absent source is one the snapshot holds nothing of).
 pub(crate) fn snapshot_tail(dec: &Dec, fr: &Value, ab: &Value) -> Result<(Frontiers, BTreeMap<osis_base::CommitId, osis_base::Tid>), Error> {
     let mut frontiers = Frontiers::default();
+    let mut counted = dec.sources().filter(|s| matches!(s.kind(), SourceKind::Node(_) | SourceKind::Session(_)));
     for e in as_array(fr)? {
         let [i, c] = as_array(e)? else { return Err(Error::Malformed("frontier")) };
         let src = dec.src(i)?;
-        if !matches!(src.kind(), SourceKind::Node(_) | SourceKind::Session(_)) {
-            return Err(Error::Malformed("frontier of a source neither node nor session"));
+        if counted.next() != Some(&src) {
+            return Err(Error::Malformed("frontier entries not the fragment's node and session sources in order"));
         }
-        let c = as_uint(c)?;
-        if c == 0 || !frontiers.insert(&src, c) {
-            return Err(Error::Malformed("frontier counter 0 or repeated"));
-        }
+        frontiers.insert(&src, as_uint(c)?);
+    }
+    if counted.next().is_some() {
+        return Err(Error::Malformed("a node or session source of the fragment without a frontier entry"));
     }
     let mut absorbed = BTreeMap::new();
     for e in as_array(ab)? {
@@ -1061,8 +1079,7 @@ pub mod oracle {
         let mut enc = Enc::new(cx, pages);
         enc.whole = true;
         encode_fragment(&mut enc, f)?;
-        let extra: Vec<Source> = frontiers.map(|fr| fr.sources().map(|(s, _)| s).collect()).unwrap_or_default();
-        enc.finish_collecting(&extra);
+        enc.finish_collecting();
         let frag = encode_fragment(&mut enc, f)?;
         let fr = frontiers.map(|fr| enc.frontiers_value(fr));
         Ok((enc, frag, fr))
@@ -1075,10 +1092,8 @@ pub mod oracle {
     }
 
     pub fn encode_snapshot(s: &Snapshot, cx: &DeltaCtx, pages: Option<&mut dyn PageSink>) -> Result<Vec<u8>, Error> {
-        if s.frontiers.sources().any(|(_, c)| c == 0) {
-            return Err(Error::Mismatch("frontier counter 0"));
-        }
         let (enc, frag, fr) = encode_top(cx, &s.fragment, Some(&s.frontiers), pages)?;
+        super::frontiers_traced(&enc, s)?;
         let fr = fr.unwrap_or(Value::List(Vec::new()));
         let top = vec![Value::Bytes(s.nonce.to_vec()), enc.sources_value(), enc.commits_value(), frag, fr, absorbed_value(&s.absorbed)];
         Ok(osis_base::encode(&Value::List(top)))

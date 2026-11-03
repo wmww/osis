@@ -783,12 +783,10 @@ mod tests {
         lp.peers[by].clock.advance(1);
         let ts = osis_base::Ts::make(lp.peers[by].engine.now(), 0).unwrap();
         let view = osis_schema::core_schema().view(ak.as_str()).unwrap();
-        let own = Source::commit(CommitId([0; 32]));
-        let mut w = Writer::new(ts, own.clone(), 1);
+        let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
         let f = create(&mut w, &view, v).unwrap();
         let r = w.range();
-        let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
-        cx.own = own;
+        let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
         let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, None).unwrap();
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
         let mut aw = AspectWrite::new(t, ak.clone(), r.lo, r.hi, bytes.clone());

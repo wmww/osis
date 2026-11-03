@@ -35,7 +35,7 @@ Classes: **R×D** retroactive validity × dropped data; **F** forged copies by a
 | 18 | Session-sources double-removal residual: a write left out of A's frontier because Y's snapshot Z covered it, then Y removed by a frontier not covering Z: the write is lost alike everywhere | issues/session-sources.md | L (loss, not divergence) | permanent | rare; a demoter listing every commit avoids it |
 | 19 | Writes the revoker had not received: unreachable hosts, P2P-only edits, in transit, backdated revokes | spec/requirements.md Permissions; issues/revoke-needs-whole-tree.md | L (loss alike; re-grant recovers) | until re-grant | the designed semantics |
 | 21 | A commit across things, or a roster snapshot, held in part when a thing entered the sync set after parts applied: the same bodies read differently while a part stays away; of a roster snapshot, holders not named read as gone with their writes | stated in spec/commits.md §4, issues/sync-learned-after-apply.md | C (hostile: permanent) | until the part, or a later whole snapshot, comes | needs a part withheld |
-| 20 | Two live copies of one store void each other's commits | issues/cloned-store.md | other | fixed by session-sources step 2 | rare |
+| 20 | Two live copies of one store void each other's commits | (issues/cloned-store.md, closed) | other | fixed: session-sources step 2 | rare |
 
 Of these, only 1-6 are honest-use read divergences; 1 and 2 are the permanent ones, and 1 is Tess's example. 3-6 heal (or are fixed by planned work). 7-11 are hostile-writer outcomes, bounded by "authenticated malicious writers are bounded, not prevented"; their nodes converge whenever both hold the same valid snapshots.
 

@@ -110,9 +110,10 @@ codec_struct! {
     pub struct EdgeKey { 0 ts: Ts, 1 node: Tid, 2 commit: CommitId }
 }
 codec_enum! {
-    /// A dot's source (spec/crdt.md §2.1).
+    /// A dot's source (spec/crdt.md §2.1); a session as `Sources` encodes it (spec/crdt.md
+    /// §3.2): the node's tid, then its 16-byte nonce.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-    pub enum Source { 0 Node(t: Tid), 1 Commit(c: CommitId) }
+    pub enum Source { 0 Node(t: Tid), 1 Commit(c: CommitId), 2 Session(s: [u8; 31]) }
 }
 codec_struct! {
     /// The `group.0` element a tied edge names: its creation stamp and whether it is a subgroup

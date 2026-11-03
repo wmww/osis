@@ -337,7 +337,7 @@ pub(crate) fn forensic_peer(seed: u64, faults: &osis_store::Faults) -> osis_node
     let c: std::sync::Arc<dyn osis_base::Clock> = clock.clone();
     let mut engine = osis_node::Engine::create(Box::new(backend.clone()), Box::new(root.clone()), forensic_cfg(), c, Box::new(osis_crypto::SeededRng::from_u64(seed))).unwrap();
     let events = engine.subscribe();
-    osis_node::local_peer::Peer { engine, clock, backend, root, events }
+    osis_node::local_peer::Peer { engine, clock, backend, root, events, restarts: 0 }
 }
 
 fn forensic_cfg() -> osis_node::Config {
@@ -910,7 +910,7 @@ fn late_joiner_after_compaction_agrees_spec_crdt_8() {
     send(&mut lp, 2, 0, &xr);
     lp.advance(1000);
     let snap = lp.peers[0].engine.snapshot(&t, &ak("secrets.0")).unwrap().unwrap();
-    assert_eq!(lp.peers[0].engine.header(&snap).unwrap().form, osis_commit::Form::Node);
+    assert_eq!(lp.peers[0].engine.header(&snap).unwrap().form, osis_commit::Form::Commit);
     lp.peers[0].engine.snapshot(&t, &ak("keys.0")).unwrap().unwrap();
     lp.peers[0].engine.roster_snapshot(&t, None).unwrap();
     // Bob joins late: everything Alice holds but X's removal itself
@@ -2315,12 +2315,10 @@ fn stranger_secrets(lp: &mut LocalPeer, t: Tid, secrets: &ct::Secrets) -> Vec<u8
     let ts = osis_base::Ts::make(lp.peers[0].engine.now(), 0).unwrap();
     let a = ak("secrets.0");
     let view = osis_schema::core_schema().view(a.as_str()).unwrap();
-    let own = Source::commit(CommitId([0; 32]));
-    let mut w = Writer::new(ts, own.clone(), 1);
+    let mut w = Writer::new(ts, Source::commit(CommitId([0; 32])), 1);
     let f = create(&mut w, &view, &secrets.to_value()).unwrap();
     let r = w.range();
-    let mut cx = writer_ctx(Kind::Role, ts, author, r.lo, r.hi);
-    cx.own = own;
+    let cx = writer_ctx(Form::Commit, Kind::Role, ts, author, r.lo, r.hi);
     // small enough to stay inline: no page blobs to deliver
     let mut pages = osis_crdt::MemoryPages::default();
     let bytes = encode_delta(&Delta { nonce: [7; 16], fragment: f }, &cx, Some(&mut pages)).unwrap();
