@@ -339,7 +339,7 @@ pub const HOST: Aspect<Host> = Aspect::new("host.0^", &CORE);
 pub const CLIENTS: Aspect<BTreeMap<Tid, Client>> = Aspect::new("clients.0^", &CORE);
 /// `required.0^`: whole-value writes; fixed retention (spec/commits.md §5).
 pub const REQUIRED: Aspect<RequiredRules> = Aspect::new("required.0^", &CORE);
-/// `purge.0`: the delta of a purge request naming no aspect to reset (spec/commits.md §5).
+/// `purge.0`: the delta of a purge request naming no aspect to reset; fixed retention (spec/commits.md §5).
 pub const PURGE: Aspect<WallMs> = Aspect::new("purge.0", &CORE);
 pub const GROUP: Aspect<Group> = Aspect::new("group.0", &CORE);
 /// The ephemeral placements into a group (spec/data-model.md §8): written by group ops only.

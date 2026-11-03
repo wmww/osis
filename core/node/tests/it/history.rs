@@ -314,6 +314,48 @@ fn events_per_commit_exact() {
     assert_eq!(got, want, "Bob's, the purged one's too: it turned invalid; not Dan's");
 }
 
+// spec/commits.md §5 (fixed retention): `purge.0` keeps its retention through a compaction; the
+// requests stand, and a receiver takes the snapshot.
+#[test]
+fn purge_aspect_compacts_spec_commits_5() {
+    let (mut lp, d, ids) = setup(32);
+    let a = write(&mut lp, 1, d, Retention::default(), "one");
+    lp.sync_all().unwrap();
+    let k = ak("purge.0");
+    let rq = purge(&mut lp, 0, PurgeItem::Commit { commit: a, tid: d, ak: reg() });
+    purge(&mut lp, 0, PurgeItem::Author { tid: d, ak: reg(), actor: ids[3] });
+    let snap = lp.peers[0].engine.snapshot(&d, &k).unwrap().unwrap();
+    let h = lp.peers[0].engine.header(&snap).unwrap();
+    assert_eq!(Some(h.aspects[0].retention), osis_commit::retention::fixed_retention("purge.0"));
+    assert_eq!(lp.peers[0].engine.history(&d, &reg(), HistoryFrom::Oldest, 5, MAX).unwrap().0[0].body, RowBody::Purged(rq));
+    lp.sync_all().unwrap();
+    let got = lp.peers[3].engine.get(&d, &k).unwrap();
+    assert_eq!(got, lp.peers[0].engine.get(&d, &k).unwrap());
+    assert!(got.is_some());
+}
+
+// spec/wire.md §2, §4 (`MAX_AUTHOR_ITEMS`): one commit names so many authors at most, its author's
+// node stopping it and a receiver refusing it: each walks the aspect.
+#[test]
+fn author_items_are_bounded_spec_wire_4() {
+    let (mut lp, d, _) = setup(31);
+    let items = |n: usize, m: &mut Mutation| {
+        for i in 0..n {
+            m.purge(PurgeItem::Author { tid: d, ak: reg(), actor: Tid::from_bytes([i as u8 + 1; 15]) });
+        }
+    };
+    let max = osis_base::format::MAX_AUTHOR_ITEMS;
+    for (n, ok) in [(max, true), (max + 1, false)] {
+        let mut m = Mutation::new();
+        let now = lp.peers[0].engine.now();
+        m.set(d, &ct::PURGE, &now).unwrap();
+        items(n, &mut m);
+        assert_eq!(lp.peers[0].commit(m).is_ok(), ok, "{n} items");
+        lp.advance(1_000);
+    }
+}
+
+
 // spec/wire.md §4: the wire form is told apart by its place, and round-trips.
 #[test]
 fn author_item_round_trips_spec_wire_4() {

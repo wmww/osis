@@ -947,7 +947,6 @@ fn kind_text(k: CommitKind) -> &'static str {
     KINDS.iter().find(|x| x.1 == k).map_or("?", |x| x.0)
 }
 
-/// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
 /// A place printed by `history`: `TS/COMMIT`.
 fn parse_pos(s: &str) -> anyhow::Result<osis::HistoryPos> {
     let (ts, c) = s.split_once('/').ok_or_else(|| usage(format!("a place is TS/COMMIT, not {s:?}")))?;
@@ -988,6 +987,7 @@ fn history(ctx: &mut Ctx<'_>, t: &str, ak: &str, from: osis::HistoryFrom, max: u
     ctx.emit(&lines, J::obj([("entries", J::Arr(entries)), ("more", J::Bool(page.more)), ("complete", J::Bool(page.complete))]))
 }
 
+/// One line per commit: id, ts, actor, node, kind, in-effect or reverted, flags, aspects.
 fn commits(ctx: &mut Ctx<'_>, q: &CommitQuery) -> anyhow::Result<()> {
     let cs = ctx.db.commits(q)?;
     let raw = ctx.g.raw;

@@ -118,6 +118,7 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `SIGNAL_BYTES` 1 MiB per connection (osis `port`) | R (the subscription whose signal or diagnostic does not fit lapses; the client subscribes again) | every signal dropped under backpressure / a slow client holds unbounded memory |
 | `MAX_SCHEMA_BYTES` 1 MiB per node (osis `port`, distinct sources; registrations are process-wide and kept) | R (`TooLarge`) | no typed set through the port / Owner clients fill memory |
 | `STREAM_CHUNK` 1 MiB (osis `port`, `stream_read` page) | P | nothing moves / one page bounded by `REPLY_BUDGET` |
+| `MAX_AUTHOR_ITEMS` 32 (osis-base `format`, by-author items of one commit's purge) | R (bad input; more in further commits) | no purge by author / one commit stalls every node for items x the aspect's length |
 | `HISTORY_PAGE` 256 (osis `history`, entries of a page) | R (a page ends early, `more`) | reads nothing / a whole aspect in one call under `eng` |
 | `HISTORY_DIRTY_BYTES` 64 (osis `port`, an ID waiting in a history subscription against `SIGNAL_BYTES`) | R (lapse; the client reads again) | nothing counted, unbounded for a slow client / the first ID lapses |
 | `HISTORY_SEND` 64 (osis `port`, entries read per send) | P | nothing sent / every waiting entry read per send, most not fitting |

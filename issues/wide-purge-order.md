@@ -1,13 +1,16 @@
 # A wide purge request with keep-at-most bodies or split commits depends on arrival order
-> Summary: A whole-aspect or by-author request with no reset in its commit, mixed into `order::history`, gives states or facts differing by arrival order in about 3% of histories: a differing value-less winner after a body dropped before a validity flip, then purged, and a body known at one node only. Reads were alike where looked at. The chat's own class (permanent bodies) passes.
+> Summary: A by-author or whole-aspect request with no reset, mixed into `order::history`, differs by arrival order in about 0.4% of histories (2 of 500; 3% was two seeds of 60): a differing value-less winner after a body dropped before a validity flip, then purged. Reads alike. The chat's class (permanent bodies, hostile writes too) passes. Mostly gone with purge-rejudge: see below.
 > Tags: engine, retention, tests
 
 Found on history-read, by mixing `Step::PurgeAuthor` into `order::purge_history`. `PurgeItem::Aspect` in its place fails on the same histories, so it is not the item; main only reaches it rarely, since `Step::Purge` writes the register and names commits.
 
-Repro: in `purge_history`, add `3 => out.push(Step::Aim(Box::new(Step::PurgeAuthor { by: 0, t, of: by })))` to the draw, then `cargo test -p osis-node --test it -- --ignored --exact order::arrival_order_purge_large_spec_commits_5` (default seeds 3000..3060): seeds 3028 and 3050.
+Repro: in `purge_history`, add `3 => out.push(Step::Aim(Box::new(Step::PurgeAuthor { by: 0, t, of: by })))` to the draw (`3 | 4 | 5` for more), then `OSIS_ORDER_START=3000 OSIS_ORDER_SEEDS=500 cargo test -p osis-node --test it -- --ignored --exact order::arrival_order_purge_large_spec_commits_5`.
 
-- 3028: reg state's winner `value: None` at stamp `..079:8` in made order, `..082:11` reversed. The `..082` body has a keep at most and an invalid write above it: dropped before the flip in made order, `order::flip` tolerates that because the body comes back (`alike_exchanged`), but the purge means it never does, so its residue never joins. A later write stamped between the two would read differently.
-- 3050 fails on main as it stands, no by-author step needed: `order::arrival_order_purge_large_spec_commits_5` at its default seeds, seen at 32677c5b (`OSIS_ORDER_SEED=3050 OSIS_ORDER_LEN=60`). With the step: `body (81bf.., t:map.0) known at one node only`, an order with late parts, on a commit with a part on `t:map.0` and one on the purged `t:reg.0`. Not analysed.
-- With the step also writing the register, seed 3018 differs on `t:map.0`. Not analysed.
+- 3028, and 5094 with `3 | 4 | 5` (1 of 300 from 5000): one cause. State winner `value: None` on the purged register at differing stamps. The later body has a keep at most with an invalid write above it: dropped before the flip in one order (`order::flip` tolerates that: the body comes back, `alike_exchanged`), and the purge means it never does, so its residue never joins. A later write stamped between the two would read differently.
+- 3050, no by-author step needed: `body (.., t:map.0) known at one node only`, an order with late parts, on a commit with a part on `t:map.0` and one on the purged `t:reg.0`. Another cause; a default seed of the oracle, failing on this branch and, by its worker, on main.
 
-`order::arrival_order_purge_author_*` uses its own history for this reason. Drop that restriction once fixed.
+With purge-rejudge merged (58a81d45, scratch merge, by-name requests found too): 3028 and 3050 pass, 0 of 120 without the step. With it 1 of 500 fails: 3265, a snapshot's index line differing after bodies dropped before a flip were given again. A dropped snapshot part keeps its `gives` at one node only (spec/commits.md §5 keeps them unless dropped as covered). Not analysed further; 5094's mix not rerun. With the step also writing the register, seed 3018 differs on `t:map.0` (seen by the worker, not analysed).
+
+Why only `Step::Purge`-free mixes hit it: `Step::Purge` writes the register and names commits, so the winner is that reset. `PurgeItem::Aspect` in the step's place fails on the same histories, so it is not the item.
+
+`order::arrival_order_purge_author_*` uses its own history for this reason: permanent messages, no keep at most. It also passes with `Breaking`, `Require` and `Forged` mixed in (150 seeds from 8000), so what a hostile member does in a chat is covered in fact, though not in the default mix. Drop the restriction once fixed.

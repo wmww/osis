@@ -140,6 +140,9 @@ impl Header {
             if self.purge.iter().any(|p| is_role_class(p.ak().as_str())) {
                 return Err(Error::Invalid("purge request naming role-class deltas"));
             }
+            if self.purge.iter().filter(|p| matches!(p, crate::header::PurgeItem::Author { .. })).count() > osis_base::format::MAX_AUTHOR_ITEMS {
+                return Err(Error::Invalid("too many purge items by author"));
+            }
         }
         if self.frontier.is_some() && kind != Kind::Role {
             return Err(Error::Invalid("frontier outside a role commit"));
