@@ -14,7 +14,7 @@ use crate::undo::in_effect;
 use osis_base::{Ak, Tid, Ts, WallMs};
 use crate::undo::{Before, undo_expiring};
 use osis_crdt::{AnyView, CounterRange, Dot, Fragment, Op, PathOp, Stamp, Undone, Writer};
-use osis_schema::core_types::{CREATED, PLACED, is_role_class};
+use osis_schema::core_types::{CREATED, PLACED, is_content};
 use osis_schema::{AspectKey, Schema};
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
@@ -354,7 +354,7 @@ impl Engine {
         let mut ops: BTreeMap<(Tid, Ak), Vec<PathOp>> = BTreeMap::new();
         for x in del {
             for (ak, a) in self.eph.aspects.get(x).into_iter().flatten() {
-                if a.state.present() && ak.as_str() != CREATED.ak() && !is_role_class(ak.as_str()) {
+                if a.state.present() && is_content(ak.as_str()) {
                     ops.entry((*x, ak.clone())).or_default().push(PathOp { path: Vec::new(), op: Op::RemoveAspect });
                 }
             }

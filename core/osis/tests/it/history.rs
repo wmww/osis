@@ -327,3 +327,21 @@ fn purge_answers_to_no_required_retention_spec_commits_5() {
     let rq = w.commit().unwrap().unwrap().id;
     assert_eq!(db.at(t, msgs()).history(HistoryFrom::Oldest, 1).unwrap().entries[0].body, HistoryBody::Purged { by: rq });
 }
+
+// spec/commits.md §5 (a writer does not undo `required.0^`), notes/api.md `knows`: a required retention is no content: a delete leaves it in force and the thing reads deleted; undoing the creation likewise
+#[test]
+fn required_is_no_content_spec_commits_5() {
+    use osis::schema::core_types as ct;
+    let db = db(12);
+    let rules = ct::RequiredRules { keep: true, ..Default::default() };
+    let t = thing(&db);
+    say(&db, t, "x");
+    db.write_with(|w| w.at(t, ct::REQUIRED).set(&rules)).unwrap();
+    db.write_with(|w| w.delete(t)).unwrap();
+    assert!(!db.knows(t), "deleted");
+    assert_eq!(db.get(t, ct::REQUIRED).unwrap(), Some(rules.clone()), "still in force");
+    let u = db.write_with(|w| { let u = w.create(db.me())?; w.at(u, msgs()).set(&s("x"))?; w.at(u, ct::REQUIRED).set(&rules)?; Ok(u) }).unwrap();
+    db.undo(&osis::Scope::Thing(u)).unwrap();
+    assert!(!db.knows(u), "undone");
+    assert_eq!(db.get(u, ct::REQUIRED).unwrap(), Some(rules));
+}

@@ -232,6 +232,88 @@ fn thin_cli_quic_localhost() {
     assert_ne!(r.0, 0, "without the attachment too: {}", r.1);
 }
 
+/// `osis serve` on `store` as a plain daemon, up once its socket is named.
+fn daemon(store: &Path) -> Host {
+    let c = cmd().arg("-s").arg(store).arg("serve").stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !store.join("sock").exists() {
+        assert!(std::time::Instant::now() < end, "no daemon");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    Host(c)
+}
+
+// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined from the other (daemon stopped for it: `redeem` is not carried), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick
+#[test]
+#[ignore]
+fn chat_channel_localhost() {
+    let (hs, a, b) = (dir("chat-host"), dir("chat-a"), dir("chat-b"));
+    osis(&hs, &["init"]);
+    let (_host, addr) = serve(&hs, &["--listen", "quic://127.0.0.1:0", "--admit", "open"]);
+    osis(&a, &["init", "--host", &addr]);
+    osis(&b, &["init", "--host", &addr]);
+    // stores already in use
+    osis(&b, &["create", "--owner", "me", "note:title.0", "\"before\""]);
+    let da = daemon(&a);
+    let c = osis(&a, &["chat", "create", "--name", "channel"]);
+    let link = osis(&a, &["chat", "link", &c]);
+    let first = osis(&a, &["chat", "post", &c, "--from", "alice", "--subject", "hello", "the body"]);
+    let bc = osis(&b, &["chat", "join", &link]);
+    assert_eq!(bc, c);
+    let read = osis(&b, &["--json", "chat", "read", &c]);
+    let line = read.lines().next().unwrap();
+    assert_eq!(field(line, "id"), first);
+    assert_eq!(field(line, "name"), "alice");
+    assert_eq!(field(line, "text"), "hello\\n\\nthe body");
+    assert!(field(line, "sender").starts_with("osis://"));
+    assert!(line.contains("\"reply_to\":null") && line.contains("\"time\":"), "{line}");
+    let cursor = field(read.lines().last().unwrap(), "cursor").to_string();
+    let db = daemon(&b);
+    // the listener: wakes on the next message, through the socket
+    let w = cmd().arg("-s").arg(&b).args(["--json", "--timeout", "60s", "chat", "watch", &c, "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let second = osis(&a, &["chat", "post", &c, "--from", "alice", "--reply-to", &first, "second"]);
+    let out = w.wait_with_output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let heard = String::from_utf8(out.stdout).unwrap();
+    assert_eq!(field(&heard, "id"), second, "{heard}");
+    assert_eq!(field(&heard, "reply_to"), first);
+    assert_eq!(field(&heard, "text"), "second");
+    // new since the cursor; a watch from it says the same at once
+    let new = osis(&b, &["--json", "chat", "read", &c, "--after", &cursor]);
+    assert_eq!(field(new.lines().next().unwrap(), "id"), second, "{new}");
+    let caught = osis(&b, &["--json", "chat", "watch", &c, "--after", &cursor, "--count", "1"]);
+    assert_eq!(field(&caught, "id"), second);
+    let mine = osis(&b, &["chat", "post", &c, "--from", "bob", "from bob"]);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !osis(&a, &["chat", "read", &c]).contains("from bob") {
+        assert!(std::time::Instant::now() < end, "not at Alice");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    let fixed = osis(&b, &["chat", "edit", &c, &mine, "from bob, fixed"]);
+    assert_ne!(fixed, mine);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while !osis(&a, &["chat", "read", &c]).contains("from bob, fixed") {
+        assert!(std::time::Instant::now() < end, "no edit at Alice");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    osis(&a, &["chat", "delete", &c, &second]);
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while osis(&b, &["chat", "read", &c]).contains(": second") {
+        assert!(std::time::Instant::now() < end, "no delete at Bob");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    // a kick needs the stores themselves (`demote` is not carried)
+    let bob = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
+    drop(db);
+    drop(da);
+    osis(&a, &["chat", "kick", &c, &bob]);
+    let r = run(&b, &["--timeout", "30s", "chat", "post", &c, "after"]);
+    let r = if r.0 == 0 { run(&b, &["--timeout", "30s", "chat", "post", &c, "after"]) } else { r };
+    assert_ne!(r.0, 0, "{}", r.1);
+    assert!(osis(&b, &["chat", "read", &c]).contains("from bob, fixed"), "a kicked member keeps a copy");
+}
+
 // spec/data-model.md §9 (`host.0^` `own`), notes/cli.md Hosting: a dedicated host device of
 // Alice's, paired and then hosting under `own` (its address from `hosting show`, before it
 // serves, so one port picked up front), the only host she has: her home, a group made afterwards and a

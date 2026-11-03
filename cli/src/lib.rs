@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 pub mod args;
+mod chat;
 mod cmd;
 pub mod json;
 pub mod text;

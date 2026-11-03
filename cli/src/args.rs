@@ -391,6 +391,9 @@ pub enum Cmd {
     /// Contact cards
     #[command(subcommand)]
     Card(CardCmd),
+    /// Group chat (notes/chat.md)
+    #[command(subcommand)]
+    Chat(ChatCmd),
     /// Move T to a new owner (prints the new tid)
     Move {
         t: String,
@@ -606,6 +609,108 @@ pub enum LinkCmd {
         #[command(flatten)]
         d: DemoteFlags,
     },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ChatCmd {
+    /// A new chat, this person its admin: prints its tid
+    Create {
+        #[arg(long, default_value = "")]
+        name: String,
+        /// Who deletes: author-or-admin, author, admin, nobody
+        #[arg(long, default_value = "author-or-admin")]
+        purge: String,
+        /// What an edit does to the old text: purge, keep, off
+        #[arg(long, default_value = "purge")]
+        edit: String,
+        /// Messages disappear after DUR
+        #[arg(long, value_name = "DUR")]
+        disappear: Option<String>,
+        /// A kicked member erases what it holds, unless the kick says otherwise
+        #[arg(long)]
+        no_keep: bool,
+        /// Where it syncs (default: the store's hosts); it must admit it (`admit own` does not)
+        #[arg(long, value_name = "ADDR")]
+        host: Vec<String>,
+    },
+    /// Adds a person (a tid from `card import`)
+    Add {
+        chat: String,
+        person: String,
+        #[arg(long, default_value = "write")]
+        role: String,
+    },
+    /// A link to join by: prints it
+    Link {
+        chat: String,
+        #[arg(long, default_value = "write")]
+        role: String,
+        #[arg(long)]
+        single_use: bool,
+    },
+    /// Joins by link: prints the chat's tid
+    Join { link: String },
+    /// Removes a person
+    Kick {
+        chat: String,
+        person: String,
+        /// They erase what they hold, whatever the chat's default
+        #[arg(long)]
+        erase: bool,
+        /// They keep a read-only copy, whatever the chat's default
+        #[arg(long, conflicts_with = "erase")]
+        keep: bool,
+        /// Also erase everything they sent
+        #[arg(long)]
+        purge: bool,
+        /// Stamp now, without first syncing what they wrote (a hostile member)
+        #[arg(long)]
+        no_sync: bool,
+    },
+    /// Sends a message (TEXT, `@FILE`, or `-` for stdin): prints its id
+    Post {
+        chat: String,
+        text: String,
+        /// A first line before the text
+        #[arg(long)]
+        subject: Option<String>,
+        /// The name to show
+        #[arg(long = "from", env = "OSIS_CHAT_NAME")]
+        from: Option<String>,
+        /// The message it answers
+        #[arg(long, value_name = "ID")]
+        reply_to: Option<String>,
+    },
+    /// Messages, oldest first; the newest MAX, or those after a cursor
+    Read {
+        chat: String,
+        #[arg(long, default_value_t = 50)]
+        max: usize,
+        /// Only older than this message
+        #[arg(long, value_name = "ID", conflicts_with = "after")]
+        before: Option<String>,
+        /// Only written after this cursor (printed last, as `cursor ID`)
+        #[arg(long, value_name = "ID")]
+        after: Option<String>,
+    },
+    /// Changes as they come: first what lies after `--after`, then new ones
+    Watch {
+        chat: String,
+        /// Stop after N
+        #[arg(long)]
+        count: Option<usize>,
+        #[arg(long, value_name = "ID")]
+        after: Option<String>,
+    },
+    /// Replaces one's own message
+    Edit { chat: String, id: String, text: String },
+    /// Deletes a message for everyone
+    Delete { chat: String, id: String },
+    Leave { chat: String },
+    /// Who holds what, and the chat's settings
+    Members { chat: String },
+    /// The disappearing timer: DUR, or `off`
+    Disappear { chat: String, after: String },
 }
 
 #[derive(Subcommand, Debug)]

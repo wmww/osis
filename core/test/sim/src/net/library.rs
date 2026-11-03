@@ -1,4 +1,4 @@
-//! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md, notes/chat.md): the
+//! Phase C scenario library (notes/testing.md, Phase C; notes/permissions.md): the
 //! named role and retention stories over sync engines and hosts. Each sets up with
 //! flows, runs a faulty schedule around the story's critical moment, checks the story's expected
 //! outcome, and ends with the quiescent invariants (`check`).
@@ -479,7 +479,7 @@ pub fn move_import(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Group chat join and leave (notes/chat.md): chat actor C with its own label, participants
+/// Group join and leave in the old persona shape: chat actor C with its own label, participants
 /// writers of C; each joins with a persona P owned by its person (secrets of its own), C made a
 /// reader of P, P listed in C's items and subgroups; messages are things owned by P in P's `group.0`. A
 /// participant is removed: C rotates; it holds no later epoch, the others keep posting and
@@ -548,7 +548,7 @@ pub fn chat_join_leave(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// A persona of person `p` on node `n` for chat `chat` (notes/chat.md).
+/// A persona of person `p` on node `n` for chat `chat`.
 pub fn persona(sim: &mut NetSim, n: usize, p: Tid, chat: Tid) -> Res<Tid> {
     let e = sim.engine(n)?;
     let mut m = Mutation::new();
@@ -718,7 +718,7 @@ pub fn bundles(seed: u64) -> Res<Report> {
     sim.finish()
 }
 
-/// Expiry races and disappearing messages (spec/commits.md §5; notes/chat.md): holders post
+/// Expiry races and disappearing messages (spec/commits.md §5): holders post
 /// messages (a thing with an expiring note, its placement expiring too) under a lossy network
 /// with crashes while time passes; after the expiry no honest node reads an expired note and no
 /// host holds a blob of one.

@@ -26,6 +26,7 @@ osis-host = { path = "core/host" }
 osis-engine = { path = "core/engine" }
 osis-node = { path = "core/node" }
 osis = { path = "core/osis" }
+osis-chat = { path = "core/chat" }
 osis-sim = { path = "core/test/sim" }
 crdt-model = { path = "core/test/crdt-model" }
 osis-vectors = { path = "core/test/vectors" }

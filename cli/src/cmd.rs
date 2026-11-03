@@ -32,7 +32,7 @@ fn edge_opts(until: &Option<String>, invite: &Option<String>) -> anyhow::Result<
     Ok(EdgeOpts { until: opt_ts(until)?, invite: invite.as_deref().map(parse_role).transpose()? })
 }
 
-fn parse_role(s: &str) -> anyhow::Result<Role> {
+pub(crate) fn parse_role(s: &str) -> anyhow::Result<Role> {
     match s {
         "read" => Ok(Role::Read),
         "write" => Ok(Role::Write),
@@ -112,7 +112,7 @@ fn block_on<F: Future>(f: F, timeout: Option<Duration>) -> Option<F::Output> {
     }
 }
 
-fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
+pub(crate) fn wait<T>(ctx: &Ctx<'_>, f: impl Future<Output = osis::Result<T>>) -> anyhow::Result<T> {
     match block_on(f, ctx.timeout()?) {
         Some(r) => Ok(r?),
         None => Err(exit(6, "timed out")),
@@ -197,6 +197,7 @@ fn needs_net(c: &Cmd) -> bool {
             | Cmd::Demote { .. }
             | Cmd::Link(LinkCmd::Redeem { .. } | LinkCmd::Revoke { .. })
             | Cmd::Card(CardCmd::Import { .. })
+            | Cmd::Chat(_)
             | Cmd::Status { .. }
             | Cmd::Sync { .. }
             | Cmd::Wait { .. }
@@ -227,7 +228,7 @@ fn shared(c: &Cmd) -> Option<String> {
 
 /// Sends what a `delivers` command queued (within `--timeout`): `wait_synced` on the shared
 /// thing's groups (a hostless one fails: its holders can never fetch it), then on `All`.
-fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
+pub(crate) fn deliver(ctx: &mut Ctx<'_>, shared: Option<String>) -> anyhow::Result<()> {
     let db = ctx.db.clone();
     db.sync_now()?;
     let t = ctx.timeout()?.unwrap_or(FOREVER);
@@ -533,6 +534,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let j = J::Arr(r.iter().map(|x| J::obj([("group", J::tid(x.group)), ("placed", J::Bool(x.placed)), ("share", J::str(share_text(x.share)))])).collect());
             ctx.emit(&lines, j)
         }
+        Cmd::Chat(c) => crate::chat::run(ctx, c),
         Cmd::Link(LinkCmd::Make { t, role, until, single_use }) => {
             let l = db.make_link(ctx.tid(&t)?, parse_role(&role)?, LinkOpts { until: opt_ts(&until)?, single_use, direct: false })?;
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
@@ -889,7 +891,7 @@ fn change_line(ctx: &Ctx<'_>, c: &Change<Value>) -> String {
 }
 
 /// Prints lines from `rx` until `count` lines, the timeout, or the senders are gone.
-fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
+pub(crate) fn stream_lines(ctx: &mut Ctx<'_>, rx: &mpsc::Receiver<String>, count: Option<usize>, timeout: Option<Duration>) -> anyhow::Result<()> {
     stream(ctx, rx, count, timeout, "line", false, |_, l| (l, true))
 }
 

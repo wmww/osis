@@ -102,6 +102,8 @@ pub(crate) mod method {
     /// `[target, holder, role, edge opts]` -> `[]` (`Osis::share`: `sync` when the holder has
     /// no route, then `grant`)
     pub const SHARE: u64 = 43;
+    /// `[admin]` -> tid (`Osis::create_ownerless`)
+    pub const CREATE_OWNERLESS: u64 = 44;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this

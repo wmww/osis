@@ -66,6 +66,7 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `grant` / `share` / `edge` / `demote [--keep B]` / `leave` / `keep-default T B` / `kept [--drop A]` | `grant` (the role alone) / `share` (`sync` when the holder has no route, then `grant`) / `change_edge` / `demote` / `leave` / `set_keep_default` / `kept_copies`, `drop_kept` | now |
 | `share-into T G ROLE [--subgroup] [--place-anyway]` / `remove-edge-of G T` / `reach T` | `share_into` / `remove_edge_of` / `reach` | now |
 | `link make/redeem` / `link ls/revoke [--joiner A]` | `make_link` / `redeem` / `links`, `revoke_link`, `revoke_joiner` | now |
+| `chat create/add/link/join/kick/post/read/watch/edit/delete/leave/members/disappear` (notes/chat.md; `read --after ID`, `watch --after ID --count N`; `--json` lines) | osis-chat over `create_ownerless`, `share`, `make_link`, `redeem`, `demote`, `history`, `on_history`, `purge_commit`, `purge_author`, `leave` | now; through a daemon but `join`, `kick` (`redeem`, `demote` not carried) |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |
 | `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |

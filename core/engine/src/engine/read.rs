@@ -245,7 +245,7 @@ impl Engine {
     /// Whether the thing holds content: some present aspect a content write sets (not
     /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
-        let content = |ak: &Ak| ak.as_str() != ct::CREATED.ak() && !ct::is_role_class(ak.as_str());
+        let content = |ak: &Ak| ct::is_content(ak.as_str());
         if self.ephemeral_aspects(tid).iter().any(content) {
             return Ok(true);
         }

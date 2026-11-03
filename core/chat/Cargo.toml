@@ -1,0 +1,21 @@
+[package]
+name = "osis-chat"
+description = "Group chat over the osis API: one ownerless actor, each message a kept write (notes/chat.md)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+doctest = false
+
+[lints]
+workspace = true
+
+[dependencies]
+osis.workspace = true
+
+[dev-dependencies]
+osis-sim.workspace = true
+osis-transport.workspace = true

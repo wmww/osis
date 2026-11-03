@@ -587,6 +587,7 @@ impl Worker {
                 db.remove_edge_of(a.tid()?, a.tid()?)?;
                 Value::List(vec![])
             }
+            method::CREATE_OWNERLESS => Value::Tid(db.create_ownerless(a.tid()?)?),
             method::LEAVE => {
                 db.leave(a.tid()?)?;
                 Value::List(vec![])
