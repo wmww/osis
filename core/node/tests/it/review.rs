@@ -584,18 +584,10 @@ fn body_live_spans_its_class_spec_commits_5() {
     assert!(!e.body_live(&c, &t, &a1).unwrap(), "asked by the other aspect of the body");
 }
 
-// spec/permissions.md §7 (every import write under a listed origin): honest moves of maps,
-// nested maps, sets, lists and text, written by two nodes into each other's elements, compacted
-// with the bodies kept and written again after, then the copy moved again: each import applies
-// at its importer and at a receiver, and the copies read as the source.
-#[test]
-fn honest_moves_after_compaction_apply_spec_perm_7() {
-    let mut lp = net(2, 81);
-    lp.sync_all().unwrap();
-    let t = new_thing(&mut lp, 0);
-    let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
-    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
-    sync(&mut lp, 0, 1);
+const MOVED_AKS: [&str; 5] = ["t:text.0", "t:list.0", "t:map.0", "t:docs.0", "t:tags.0"];
+
+/// One edit round on `t` by `i` (each kind of value), then `j` edits inside what `i` made.
+fn edit_round(lp: &mut osis_node::local_peer::LocalPeer, t: osis_base::Tid, i: usize, j: usize, n: usize) {
     let op = |lp: &mut osis_node::local_peer::LocalPeer, i: usize, k: &osis_schema::Aspect<Value>, path: Vec<PathSeg>, op: Op| {
         let mut m = Mutation::new();
         m.op(t, k, PathOp { path, op }).unwrap();
@@ -603,51 +595,95 @@ fn honest_moves_after_compaction_apply_spec_perm_7() {
         lp.advance(100);
     };
     let key = |x: &str| vec![PathSeg::Key(s(x))];
-    let round = |lp: &mut osis_node::local_peer::LocalPeer, n: usize| {
-        let (i, j) = (n % 2, 1 - n % 2);
-        let v = format!("v{n}");
-        op(lp, i, &TEXT, vec![], Op::Insert { at: 0, items: vec![s(&format!("ab{n}"))] });
-        op(lp, i, &LIST, vec![], Op::Insert { at: 0, items: vec![s(&v), s("x")] });
-        op(lp, i, &MAP, key(&v), Op::Set(item(&v, n as i64)));
-        op(lp, i, &DOCS, key(&v), Op::Set(s("hello")));
-        op(lp, i, &TAGS, vec![], Op::Add(s(&v)));
+    let v = format!("v{n}");
+    op(lp, i, &TEXT, vec![], Op::Insert { at: 0, items: vec![s(&format!("ab{n}"))] });
+    op(lp, i, &LIST, vec![], Op::Insert { at: 0, items: vec![s(&v), s("x")] });
+    op(lp, i, &MAP, key(&v), Op::Set(item(&v, n as i64)));
+    op(lp, i, &DOCS, key(&v), Op::Set(s("hello")));
+    op(lp, i, &TAGS, vec![], Op::Add(s(&v)));
+    if i != j {
         sync(lp, i, j);
-        // the other node edits inside what this one made
-        op(lp, j, &TEXT, vec![], Op::Delete { at: 1, len: 1 });
-        op(lp, j, &TEXT, vec![], Op::Move { at: 0, len: 1, to: 1 });
-        op(lp, j, &LIST, vec![], Op::Delete { at: 1, len: 1 });
-        op(lp, j, &LIST, vec![], Op::Insert { at: 1, items: vec![s("y")] });
-        op(lp, j, &MAP, vec![PathSeg::Key(s(&v)), PathSeg::Field(1)], Op::Set(Value::Int(100 + n as i64)));
-        op(lp, j, &DOCS, key(&v), Op::Insert { at: 2, items: vec![s("XY")] });
-        op(lp, j, &TAGS, vec![], Op::Remove(s(&v)));
-        sync(lp, j, i);
-    };
-    let aks = ["t:text.0", "t:list.0", "t:map.0", "t:docs.0", "t:tags.0"];
-    for n in 0..2 {
-        round(&mut lp, n);
     }
-    for k in aks {
+    op(lp, j, &TEXT, vec![], Op::Delete { at: 1, len: 1 });
+    op(lp, j, &TEXT, vec![], Op::Move { at: 0, len: 1, to: 1 });
+    op(lp, j, &LIST, vec![], Op::Delete { at: 1, len: 1 });
+    op(lp, j, &LIST, vec![], Op::Insert { at: 1, items: vec![s("y")] });
+    op(lp, j, &MAP, vec![PathSeg::Key(s(&v)), PathSeg::Field(1)], Op::Set(Value::Int(100 + n as i64)));
+    op(lp, j, &DOCS, key(&v), Op::Insert { at: 2, items: vec![s("XY")] });
+    op(lp, j, &TAGS, vec![], Op::Remove(s(&v)));
+    if i != j {
+        sync(lp, j, i);
+    }
+}
+
+/// A thing written by two nodes into each other's elements, compacted with the bodies kept and
+/// written again after: (the net, the thing, node 0's actor).
+fn edited_and_compacted(seed: u64) -> (osis_node::local_peer::LocalPeer, osis_base::Tid, osis_base::Tid) {
+    let mut lp = net(2, seed);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (a, b) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, b, Some(edge(Role::Write)), None);
+    sync(&mut lp, 0, 1);
+    for n in 0..2 {
+        edit_round(&mut lp, t, n % 2, 1 - n % 2, n);
+    }
+    for k in MOVED_AKS {
         lp.peers[0].engine.snapshot(&t, &ak(k)).unwrap().unwrap();
     }
     sync(&mut lp, 0, 1);
     for n in 2..4 {
-        round(&mut lp, n);
+        edit_round(&mut lp, t, n % 2, 1 - n % 2, n);
     }
-    let check = |lp: &mut osis_node::local_peer::LocalPeer, from: osis_base::Tid, to: osis_base::Tid| {
-        sync(lp, 0, 1);
-        for k in aks {
-            let want = lp.peers[0].engine.get(&from, &ak(k)).unwrap();
-            assert!(want.is_some(), "{k}");
-            assert_eq!(lp.peers[0].engine.get(&to, &ak(k)).unwrap(), want, "{k}: the copy");
-            assert_eq!(lp.peers[1].engine.get(&to, &ak(k)).unwrap(), want, "{k}: a receiver");
-        }
-    };
+    (lp, t, a)
+}
+
+/// `to` reads as `from` at node 0, both at the mover and at a receiver.
+fn reads_alike(lp: &mut osis_node::local_peer::LocalPeer, from: osis_base::Tid, to: osis_base::Tid) {
+    sync(lp, 0, 1);
+    for k in MOVED_AKS {
+        let want = lp.peers[0].engine.get(&from, &ak(k)).unwrap();
+        assert!(want.is_some(), "{k}");
+        assert_eq!(lp.peers[0].engine.get(&to, &ak(k)).unwrap(), want, "{k}: the copy");
+        assert_eq!(lp.peers[1].engine.get(&to, &ak(k)).unwrap(), want, "{k}: a receiver");
+    }
+}
+
+// spec/permissions.md §7 (every import write under a listed origin): honest moves of maps,
+// nested maps, sets, lists and text, written by two nodes into each other's elements, compacted
+// with the bodies kept and written again after, then the copy moved again: each import applies
+// at its importer and at a receiver, and the copies read as the source.
+#[test]
+fn honest_moves_after_compaction_apply_spec_perm_7() {
+    let (mut lp, t, a) = edited_and_compacted(81);
     let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
-    check(&mut lp, t, copy);
+    reads_alike(&mut lp, t, copy);
     // the copy compacted (its snapshots carry the imports' dots) and moved on
-    for k in aks {
+    for k in MOVED_AKS {
         lp.peers[0].engine.snapshot(&copy, &ak(k)).unwrap().unwrap();
     }
     let (copy2, _) = lp.peers[0].engine.move_thing(&copy, a).unwrap();
-    check(&mut lp, t, copy2);
+    reads_alike(&mut lp, t, copy2);
+}
+
+// spec/permissions.md §7 (an import is an origin of the writes it holds): a copy moved on before
+// any snapshot of it, after native edits inside its imported elements, gives the next copy all of
+// it; that copy edited, partly compacted and moved again likewise.
+#[test]
+fn moving_an_uncompacted_copy_keeps_its_imports_spec_perm_7() {
+    let (mut lp, t, a) = edited_and_compacted(82);
+    let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+    reads_alike(&mut lp, t, copy);
+    edit_round(&mut lp, copy, 0, 0, 4);
+    let (copy2, _) = lp.peers[0].engine.move_thing(&copy, a).unwrap();
+    reads_alike(&mut lp, copy, copy2);
+    edit_round(&mut lp, copy2, 0, 0, 5);
+    let (copy3, _) = lp.peers[0].engine.move_thing(&copy2, a).unwrap();
+    reads_alike(&mut lp, copy2, copy3);
+    for k in &MOVED_AKS[..3] {
+        lp.peers[0].engine.snapshot(&copy3, &ak(k)).unwrap().unwrap();
+    }
+    edit_round(&mut lp, copy3, 0, 0, 6);
+    let (copy4, _) = lp.peers[0].engine.move_thing(&copy3, a).unwrap();
+    reads_alike(&mut lp, copy3, copy4);
 }

@@ -3,10 +3,10 @@
 //! retention and schema), `was.0` on M; the guard against importing a thing a held copy already
 //! continues. Each write is imported from one origin: the newest held compaction snapshot of
 //! its aspect where that covers it (its frontier holds the write's counter, or it carries writes
-//! of the write's commit-form commit) and carries it, else its own commit. A write of origin C
-//! gets the dot `(Commit(C), k)` (k its counter in C, or for a snapshot its rank by (source,
-//! counter) among the writes the snapshot carries on the aspect), and references to writes (anchors,
-//! reset stamps) map the same way. A frontier is not trusted alone: a write it claims but the
+//! of the write's commit-form commit) and carries it, else its own commit (for a write T itself
+//! imported, the import holding it). A write of origin C gets the dot `(Commit(C), k)` (k its
+//! counter in C, or for a snapshot or import its rank by (source, counter) among the writes C
+//! carries on the aspect), and references to writes (anchors, reset stamps) map the same way. A frontier is not trusted alone: a write it claims but the
 //! snapshot does not carry is imported from its commit while the current state holds it.
 //! Resolution of moved tids in reads lives in `engine/read.rs`.
 
@@ -55,10 +55,22 @@ impl Carrier {
     }
 }
 
+/// Per aspect of the moved thing, each held import on it (in held order) with the writes it owns
+/// there (those under its origins' sources), each by its rank by (source, counter) among them.
+type Owners = BTreeMap<Ak, Vec<(CommitId, BTreeMap<Dot, u64>)>>;
+
+/// The import owning write `x` on an aspect, with its rank there: origin `c` if it does, else the
+/// first held (two imports owning one write is hostile).
+fn owner_of(imports: Option<&Vec<(CommitId, BTreeMap<Dot, u64>)>>, c: &CommitId, x: &Dot) -> Option<(CommitId, u64)> {
+    let imports = imports?;
+    let mine = imports.iter().find(|(i, _)| i == c).and_then(|(i, w)| Some((*i, *w.get(x)?)));
+    mine.or_else(|| imports.iter().find_map(|(i, w)| Some((*i, *w.get(x)?))))
+}
+
 /// The dot an imported write or reference gets (spec/permissions.md §7): covered and carried by
-/// the snapshot origin, its rank there; else its own commit's ID with its counter (a carried
-/// write whose commit is not held: its rank).
-fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, x: &Dot) -> Option<Dot> {
+/// the snapshot origin, its rank there; else its own commit's ID with its counter, or the import
+/// owning it with its rank there (a carried write whose commit is not held: its rank).
+fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, owners: (Option<&Vec<(CommitId, BTreeMap<Dot, u64>)>>, &CommitId), x: &Dot) -> Option<Dot> {
     let rank = carrier.and_then(|s| Some((s.id, *s.rank.get(x)?, s.covers_dot(x))));
     if let Some((s, r, true)) = rank {
         return Some(Dot::new(Source::commit(s), r));
@@ -75,6 +87,9 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
         && let Some(k) = core.commit_of(tid, ak, x)
     {
         return Some(Dot::new(Source::commit(k), x.ctr));
+    }
+    if let Some((i, r)) = owner_of(owners.0, owners.1, x) {
+        return Some(Dot::new(Source::commit(i), r));
     }
     rank.map(|(s, r, _)| Dot::new(Source::commit(s), r))
 }
@@ -105,11 +120,13 @@ fn excluded(tx: &Tx<'_>, tid: &Tid, ak: &Ak) -> Vec<Owned> {
 
 /// One import commit of origin `c` into `m`, its deltas on `aspects` (`None` when nothing of it
 /// is importable).
-fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Option<CommitId>> {
+#[allow(clippy::too_many_arguments)]
+fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeMap<Ak, Carrier>, owners: &Owners, live: &mut BTreeMap<Ak, BTreeSet<Dot>>, shown: &mut BTreeMap<Ak, Option<Shown>>) -> Result<Option<CommitId>> {
     let Some(meta) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let h = meta.header.clone();
     let snapshot = h.kind == Kind::ContentSnapshot;
-    if h.kind != Kind::Content && !snapshot {
+    let import = h.kind == Kind::Import;
+    if h.kind != Kind::Content && !snapshot && !import {
         return Ok(None);
     }
     // origins are commits of other things (spec/permissions.md §7); a hostile test writer
@@ -132,14 +149,14 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         }
         // an ordinary commit the snapshot claims to cover whole gives only what the current
         // state holds that the snapshot does not carry (a frontier is not trusted alone)
-        let claimed = !snapshot && carrier.is_some_and(|s| s.covers(&h, c, ai));
-        if claimed && !live.contains_key(&a.ak) {
+        let claimed = h.kind == Kind::Content && carrier.is_some_and(|s| s.covers(&h, c, ai));
+        if (claimed || (import && carrier.is_some())) && !live.contains_key(&a.ak) {
             tx.load(&a.tid, &a.ak)?;
             let w: BTreeSet<Dot> = tx.core.states.get(&(a.tid, a.ak.clone())).and_then(Option::as_ref).map(|f| f.writes().into_iter().map(|(d, _)| d).collect()).unwrap_or_default();
             live.insert(a.ak.clone(), w);
         }
         if let Some(o) = Owned::of(&h, c, ai)
-            && !snapshot
+            && h.kind == Kind::Content
             && tx.core.ix.valueless.get(&(a.tid, a.ak.clone())).is_some_and(|v| v.contains(&o))
         {
             continue;
@@ -155,6 +172,17 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             let out = excluded(tx, &a.tid, &a.ak);
             let (core, s) = (&*tx.core, carrier);
             f.remove_dots(&|d| out.iter().any(|o| o.owns(d)) || (s.is_some_and(|s| !s.covers_dot(d)) && from_own(core, &a.tid, &a.ak, d)));
+        } else if import {
+            // of its own writes: purged ones, and those the snapshot carries, or covers while the
+            // current state does not hold them (as for a commit-form commit it claims)
+            let out = excluded(tx, &a.tid, &a.ak);
+            let mine = owners.get(&a.ak).and_then(|v| v.iter().find(|(i, _)| i == c)).map(|(_, w)| w);
+            let l = live.get(&a.ak);
+            let own_write = |d: &Dot| mine.is_some_and(|w| w.contains_key(d));
+            f.remove_dots(&|d| own_write(d) && (out.iter().any(|o| o.owns(d)) || carrier.is_some_and(|s| s.covers_dot(d) && (s.rank.contains_key(d) || !l.is_some_and(|l| l.contains(d))))));
+            if !f.writes().iter().any(|(d, _)| own_write(d.owner())) {
+                continue;
+            }
         } else if let (Some(s), Some(o)) = (carrier, Owned::of(&h, c, ai)) {
             // its own writes the snapshot covers and carries come from the snapshot
             let l = live.get(&a.ak);
@@ -178,8 +206,8 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         }
         let core = &*tx.core;
         let (tid, ak, lo, hi, form) = (a.tid, a.ak.clone(), a.lo, a.hi, h.form);
-        let own_writes = (!snapshot).then_some((&own, c, form, lo, hi));
-        f.map_dots(&|x| imported(core, &tid, &ak, carrier, own_writes, x));
+        let own_writes = (h.kind == Kind::Content).then_some((&own, c, form, lo, hi));
+        f.map_dots(&|x| imported(core, &tid, &ak, carrier, own_writes, (owners.get(&ak), c), x));
         if f.is_empty() {
             continue;
         }
@@ -196,6 +224,27 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
     }
     let plan = CommitPlan { kind: Kind::Import, ts, actor: node, form: Form::Commit, creates: Default::default(), first: Default::default(), purge: Vec::new(), undoes: None, frontier: None, origins: vec![Origin { commit: *c, author: h.author, actor: h.actor, ts: h.ts }], signer: node, blind: crate::engine::write::draw_blind(&mut *tx.rng) };
     build_and_apply(tx, plan, deltas).map(Some)
+}
+
+/// Each held import on `t` valid and not dropped, per aspect, by its writes (`Owners`).
+fn owners(tx: &mut Tx<'_>, t: &Tid) -> Result<Owners> {
+    let mut out: Owners = BTreeMap::new();
+    let held: Vec<(Ak, Vec<(Ts, CommitId)>)> = tx.core.ix.by_aspect.iter().filter(|((x, _), _)| x == t).map(|((_, ak), v)| (ak.clone(), v.iter().copied().collect())).collect();
+    for (ak, mut cs) in held {
+        cs.sort();
+        for (_, c) in cs {
+            let Some(m) = tx.core.ix.commits.get(&c).cloned() else { continue };
+            let Some(ai) = m.aspect(t, &ak) else { continue };
+            if m.header.kind != Kind::Import || m.dropped.contains_key(&ai) || !m.valid_at(ai) {
+                continue;
+            }
+            let Some(Decoded::Delta(d)) = crate::apply::held_parts(tx, &c, ai)?.into_iter().next() else { continue };
+            let srcs: Vec<Source> = m.header.origins.iter().map(|o| Source::commit(o.commit)).collect();
+            let own: BTreeSet<Dot> = d.fragment.writes().into_iter().map(|(d, _)| d.owner().clone()).filter(|d| srcs.contains(&d.src)).collect();
+            out.entry(ak.clone()).or_default().push((c, own.into_iter().zip(1u64..).collect()));
+        }
+    }
+    Ok(out)
 }
 
 /// The snapshot each aspect of `t` imports from: the newest held one, valid and not dropped.
@@ -284,6 +333,7 @@ impl Engine {
 /// One import commit per held origin commit of `t`, into `copy`.
 fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
     let carriers = carriers(tx, t)?;
+    let owners = owners(tx, t)?;
     let mut live = BTreeMap::new();
     let mut shown = BTreeMap::new();
     let mut origins: Vec<(Ts, CommitId)> = tx.core.ix.by_aspect.iter().filter(|((x, _), _)| x == t).flat_map(|(_, s)| s.iter().copied()).collect();
@@ -291,7 +341,7 @@ fn import_all(tx: &mut Tx<'_>, t: &Tid, copy: &Tid) -> Result<Vec<CommitId>> {
     origins.dedup();
     let mut out = Vec::new();
     for (_, c) in origins {
-        if let Some(id) = import_one(tx, t, copy, &c, &carriers, &mut live, &mut shown)? {
+        if let Some(id) = import_one(tx, t, copy, &c, &carriers, &owners, &mut live, &mut shown)? {
             out.push(id);
         }
     }
