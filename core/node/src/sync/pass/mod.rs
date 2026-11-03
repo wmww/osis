@@ -407,6 +407,7 @@ impl SyncEngine {
         }
         if let Some(w) = &keys.write {
             self.promote(conn, host, &g, l, w, &mut uploads)?;
+            self.stamp_inbox(conn, host, l, w, &mut uploads)?;
         }
         if let Some(c) = self.conns.get_mut(&conn) {
             c.req.sent.extend(uploads.iter().map(|u| osis_label::blob_id(&u.blob)).chain(deposits.iter().map(|d| osis_label::blob_id(&d.0))).map(|b| ((l, b), (raw, super::UNTAGGED))));
@@ -1111,7 +1112,7 @@ impl SyncEngine {
 
     /// Deposited commit entries at `host` a writer may promote now: past this node's wait
     /// (`RELAY_MIN_MS`: a co-writer may promote it first), not in flight, never a heartbeat.
-    fn due_deposits(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<Deposit> {
+    fn due_entries(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<(BlobId, Entry)> {
         let ids: Vec<(BlobId, Entry)> = self.state.deposited_at(&host, &l).into_iter().filter_map(|b| self.state.entries.get(&(l, b)).map(|e| (b, e.clone()))).collect();
         let raw = self.raw_now();
         self.deposit_seen.retain(|k, _| self.state.deposited.contains(k));
@@ -1126,6 +1127,15 @@ impl SyncEngine {
                 self.settle_by(due);
                 continue;
             }
+            out.push((id, e));
+        }
+        out
+    }
+
+    /// The commit deposits among `due_entries`, but a heartbeat: due for promotion.
+    fn due_deposits(&mut self, conn: ConnId, host: HostKey, l: LabelId) -> Vec<Deposit> {
+        let mut out = Vec::new();
+        for (id, e) in self.due_entries(conn, host, l) {
             let Kind::Commit { commit, parts, .. } = &e.kind else { continue };
             let Some(h) = self.engine.header(commit) else { continue };
             if h.aspects.iter().any(|a| a.ak.as_str() == "seen.0") {
@@ -1226,6 +1236,36 @@ impl SyncEngine {
             // step registered meanwhile, leaves it for the next pass)
         }
         Ok(())
+    }
+
+    /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5): a valid applied
+    /// commit, or one this node's user declined. Each leaves the deposit budget and stays
+    /// readable for the actor's other devices until it expires. A request nobody answered and
+    /// an invalid commit stay deposited: the budget is what bounds a stranger.
+    fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
+        for (id, mut e) in self.due_entries(conn, host, l) {
+            let Kind::Inbox(Some(c)) = e.kind else { continue };
+            if !self.state.declined.contains(&c) && self.inbox_valid(&l, &id, &c)?.is_none() {
+                continue;
+            }
+            let Some(blob) = self.engine.blob(&id)? else { continue };
+            let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
+            uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
+            e.stamp = Some(stamp);
+            self.state.set_entry(l, id, e);
+        }
+        Ok(())
+    }
+
+    /// Commit `c` of opened inbox blob `b` under `l`, applied here and valid in every part the
+    /// blob carries, with what the blob opened to.
+    fn inbox_valid(&mut self, l: &LabelId, b: &BlobId, c: &CommitId) -> Result<Option<(osis_engine::engine::Meta, super::inbound::Opened)>> {
+        if self.engine.core.ix.pending.contains_key(c) {
+            return Ok(None);
+        }
+        let Some(m) = self.engine.core.ix.commits.get(c).cloned() else { return Ok(None) };
+        let Some(o) = self.inbox_opened(l, b)? else { return Ok(None) };
+        Ok(o.ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)).then_some((m, o)))
     }
 
     /// The author's chain `parts` of commit `c` need under a label (`Engine::author_chain`), less
@@ -1557,16 +1597,8 @@ impl SyncEngine {
         let now = self.now();
         let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, 2).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
         for (b, c) in opened {
-            if self.engine.core.ix.pending.contains_key(&c) {
-                continue;
-            }
-            let Some(m) = self.engine.core.ix.commits.get(&c).cloned() else { continue };
-            let Some(o) = self.inbox_opened(&li, &b)? else { continue };
+            let Some((m, o)) = self.inbox_valid(&li, &b, &c)? else { continue };
             if o.until < now.saturating_add(INBOX_COPY_MIN_LEFT) {
-                continue;
-            }
-            // a valid commit only
-            if !o.ais.iter().all(|ai| m.valid.get(*ai).copied().unwrap_or(false)) {
                 continue;
             }
             // the carried parts on the things the commit has an edge or box of the actor on (the

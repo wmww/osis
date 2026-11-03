@@ -227,3 +227,91 @@ fn hint_opens_a_label_replaced_many_times_spec_wire_9() {
     assert_eq!(net.read(b, item), Some(s("inside")), "the label opened from the hint");
     assert_eq!(net.sync(a).deliveries_pending(), 0);
 }
+
+/// `n` grants of label-less things of `alice` to `bob`, each as Alice's own commit; the things.
+fn grants(net: &mut Net, a: usize, alice: osis_base::Tid, bob: osis_base::Tid, n: usize) -> Vec<osis_base::Tid> {
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let mut things = Vec::new();
+    for _ in 0..n {
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, alice);
+        m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        let done = net.engine(a).grant(&t, &bob, &edge).unwrap();
+        let acts = net.sync(a).carry_out(done).unwrap();
+        net.actions(a, acts);
+        things.push(t);
+    }
+    things
+}
+
+/// Alice and Bob as persons on one host, Bob's card held by Alice: (net, host, a, b, alice, bob).
+fn two_persons() -> (Net, usize, usize, usize, osis_base::Tid, osis_base::Tid) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.address(host);
+    let (alice, done) = net.engine(a).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let (bob, done) = net.engine(b).create_person(std::slice::from_ref(&addr)).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    net.run();
+    net.pair(b, a);
+    (net, host, a, b, alice.person, bob.person)
+}
+
+/// Fills the deposit budget of `l` at the host with what nobody opens, but for `spare` slots.
+fn fill_budget(net: &mut Net, host: usize, l: &osis_base::LabelId, spare: u64) -> Vec<osis_base::BlobId> {
+    let left = osis_proto::LabelStore::budget(net.hosts[host].hub.store_mut(), l).unwrap().entries_left;
+    let mut junk = Vec::new();
+    for i in 0..left - spare {
+        let blob = [&i.to_be_bytes()[..], &[0; 24]].concat();
+        let id = osis_label::blob_id(&blob);
+        let put = osis_proto::Put { blob_id: id, blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: None, ephemeral: false, replaces: &[], now: 0 };
+        osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), l, put).unwrap();
+        junk.push(id);
+    }
+    junk
+}
+
+// spec/sync.md §5: a person takes in more grants than the deposit budget holds: each handled inbox blob leaves the budget, so the refused ones get through
+#[test]
+fn more_grants_than_the_budget_arrive_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob) = two_persons();
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    fill_budget(&mut net, host, &home, 2);
+    let things = grants(&mut net, a, alice, bob, 6);
+    for _ in 0..8 {
+        net.advance(60_000);
+    }
+    let lacking = things.iter().filter(|t| net.engine(b).role_on(t) != Some(Role::Read)).count();
+    assert_eq!(lacking, 0, "grants lacking after 8 minutes");
+}
+
+// spec/sync.md §5: a deposit taken at a host and label ends the back-off of the others waiting there: room has appeared
+#[test]
+fn taken_deposit_ends_the_back_off_of_others_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob) = two_persons();
+    let home = net.sync(b).labels().into_iter().find(|(x, _)| *x == bob).unwrap().1.id;
+    let junk = fill_budget(&mut net, host, &home, 0);
+    let waiting = grants(&mut net, a, alice, bob, 1);
+    // refused long enough to back off to the cap
+    for _ in 0..16 {
+        net.advance(600_000);
+    }
+    assert_ne!(net.engine(b).role_on(&waiting[0]), Some(Role::Read), "refused");
+    let now = net.now();
+    for id in &junk {
+        osis_proto::LabelStore::delete(net.hosts[host].hub.store_mut(), &home, id, now).unwrap();
+    }
+    let fresh = grants(&mut net, a, alice, bob, 1);
+    for _ in 0..2 {
+        net.advance(60_000);
+    }
+    assert_eq!(net.engine(b).role_on(&fresh[0]), Some(Role::Read), "the new one went at once");
+    assert_eq!(net.engine(b).role_on(&waiting[0]), Some(Role::Read), "and the waiting one with it");
+}

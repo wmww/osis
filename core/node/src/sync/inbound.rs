@@ -1473,6 +1473,13 @@ impl SyncEngine {
         }
         match code {
             Code::OK => {
+                // room there: what waits at this host and label goes now, not at its back-off (the
+                // host does not say when a budget frees)
+                let span = (host, l, BlobId([0; 32]))..=(host, l, BlobId([0xff; 32]));
+                for o in self.outbox.range_mut(span).map(|(_, o)| o) {
+                    o.tries = 0;
+                    o.after = 0;
+                }
                 self.state.set_present(host, l, b, true);
                 self.reached(&l, &b);
             }

@@ -38,7 +38,7 @@ Items are hard unless a section says goal. A design that cannot meet an item doe
 - Nothing stored or relayed links different groups of one owner beyond their overlap. What a connection reveals (its address, the labels it opens) is network metadata, hidden only by routing through a relay or an anonymity network.
 - One protocol for all nodes. Trusted and untrusted peers differ only in which keys they hold.
 - An untrusted node may hold the only copy. Reading never allows deleting data or forcing a re-upload.
-- Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's readers. They can clear the budget; while it is full, what goes through it (grants, readers' own edge writes) waits.
+- Read access never allows storing arbitrary content there. It stores content only on a writer's word, beyond a small flagged budget per group open to anyone who must reach the group's readers. They can clear the budget; while it is full, what goes through it (grants, readers' own edge writes) waits. Anyone holding an actor's public keys can fill its budget, per host, until its readers clear it or the entries expire (`INBOX_LIFETIME`, 90 days); grants wait that long at worst. Handled grants leave the budget, so only unanswered ones fill it.
 - It knows no role holders and never waits on their liveness.
 - Goal: it can limit abuse (storage, rate) without learning identities.
 
