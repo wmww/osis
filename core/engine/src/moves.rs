@@ -57,11 +57,12 @@ impl Carrier {
 
 /// Per aspect of the moved thing, each held import on it (in held order) with the writes it owns
 /// there (those under its origins' sources), each by its rank by (source, counter) among them.
-type Owners = BTreeMap<Ak, Vec<(CommitId, BTreeMap<Dot, u64>)>>;
+type Owners = BTreeMap<Ak, Vec<Owner>>;
+type Owner = (CommitId, BTreeMap<Dot, u64>);
 
 /// The import owning write `x` on an aspect, with its rank there: origin `c` if it does, else the
 /// first held (two imports owning one write is hostile).
-fn owner_of(imports: Option<&Vec<(CommitId, BTreeMap<Dot, u64>)>>, c: &CommitId, x: &Dot) -> Option<(CommitId, u64)> {
+fn owner_of(imports: Option<&Vec<Owner>>, c: &CommitId, x: &Dot) -> Option<(CommitId, u64)> {
     let imports = imports?;
     let mine = imports.iter().find(|(i, _)| i == c).and_then(|(i, w)| Some((*i, *w.get(x)?)));
     mine.or_else(|| imports.iter().find_map(|(i, w)| Some((*i, *w.get(x)?))))
@@ -70,7 +71,7 @@ fn owner_of(imports: Option<&Vec<(CommitId, BTreeMap<Dot, u64>)>>, c: &CommitId,
 /// The dot an imported write or reference gets (spec/permissions.md §7): covered and carried by
 /// the snapshot origin, its rank there; else its own commit's ID with its counter, or the import
 /// owning it with its rank there (a carried write whose commit is not held: its rank).
-fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, owners: (Option<&Vec<(CommitId, BTreeMap<Dot, u64>)>>, &CommitId), x: &Dot) -> Option<Dot> {
+fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, owners: (Option<&Vec<Owner>>, &CommitId), x: &Dot) -> Option<Dot> {
     let rank = carrier.and_then(|s| Some((s.id, *s.rank.get(x)?, s.covers_dot(x))));
     if let Some((s, r, true)) = rank {
         return Some(Dot::new(Source::commit(s), r));
