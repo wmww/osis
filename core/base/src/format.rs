@@ -85,6 +85,14 @@ pub const ROLE_KEEP_MS: u64 = 90 * DAY_MS;
 pub const AT_MOST_GRACE_MS: u64 = HOUR_MS;
 /// Inbox blob lifetime (spec/wire.md §2, §9). fixed.
 pub const INBOX_LIFETIME_MS: u64 = 90 * DAY_MS;
+/// Deposits an admin leaves waiting under an inbox label per host (spec/wire.md §2, spec/sync.md
+/// §5): half the recommended minimum budget, so the rest stays free. Resource bound against a
+/// stranger's fill; past it the earliest to expire is deleted (its sender re-sends after
+/// `INBOX_LIFETIME`). 0: nobody unconnected can invite; infinity: a stranger holds the budget for
+/// `INBOX_LIFETIME`.
+pub const INBOX_WAITING: usize = 32;
+/// See `INBOX_WAITING`, in bytes: that many recommended budget entries of 32 KiB.
+pub const INBOX_WAITING_BYTES: usize = INBOX_WAITING * 32 * 1024;
 /// Heartbeat bounds (spec/wire.md §2, spec/permissions.md §4). fixed.
 pub const HEARTBEAT_MIN_LIFETIME_MS: u64 = DAY_MS;
 /// See `HEARTBEAT_MIN_LIFETIME_MS`. fixed.

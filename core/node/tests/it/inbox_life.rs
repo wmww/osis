@@ -1076,3 +1076,107 @@ fn partless_blob_takes_no_stamp_spec_sync_3() {
         assert!(net.sync(b).entry_meta(&home, &x).unwrap().1.is_none());
     }
 }
+
+// spec/sync.md §5: a stranger's requests past the cap: those expiring too far ahead go first, then the earliest to expire, so a later request still reaches the user
+#[test]
+fn requests_past_the_cap_go_earliest_first_spec_sync_5() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(requests(&mut net, b), vec![c]);
+    net.set_online(a, false);
+    net.set_online(b, false);
+    let now = net.now();
+    let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
+    let n = osis_base::format::INBOX_WAITING as u64;
+    let far = plant_inbox(&mut net, a, (host, &home), bob, &c, t(0), now + 2 * INBOX_LIFETIME_MS);
+    let plant = |net: &mut Net, i: u64| plant_inbox(net, a, (host, &home), bob, &c, t(i), now + INBOX_LIFETIME_MS - 1000 * (n + 8 - i));
+    let ids: Vec<_> = (1..n + 8).map(|i| plant(&mut net, i)).collect();
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let held = net.host_ids(host, &home);
+    assert!(!held.contains(&far), "too far ahead goes first");
+    let (early, late) = ids.split_at(ids.len() - osis_base::format::INBOX_WAITING);
+    assert!(early.iter().all(|x| !held.contains(x)), "then the earliest to expire");
+    assert!(late.iter().all(|x| held.contains(x)), "the latest stay");
+    assert!(net.sync(b).entries(&home).iter().all(|(x, _)| !early.contains(x)), "and are forgotten here");
+    assert_eq!(requests(&mut net, b), vec![c], "the user still sees the invite");
+}
+
+// spec/sync.md §5: a burst of a connected sender's grants past the cap is stamped, none deleted while its stamp waits
+#[test]
+fn burst_of_grants_is_not_cleared_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "Alice is connected");
+    net.nodes[b].accepts = false;
+    net.set_online(b, false);
+    let n = osis_base::format::INBOX_WAITING + 8;
+    let mut commits = Vec::new();
+    for _ in 0..n {
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, alice);
+        m.set(t, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        commits.push(grant_commit(&mut net, a, t, bob));
+    }
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert!(requests(&mut net, b).is_empty(), "connected: no request");
+    let held = net.host_ids(host, &home);
+    let entries = net.sync(b).entries(&home);
+    for c in &commits {
+        let (id, _) = entries.iter().find(|(_, k)| matches!(k, EntryKind::Inbox(Some(x)) if x == c)).expect("its blob is kept");
+        assert!(held.contains(id) && net.sync(b).entry_meta(&home, id).unwrap().1.is_some(), "stamped at the host");
+    }
+}
+
+// spec/sync.md §5: a connected sender's commits still pending keep their blobs past the cap, unless they expire too far ahead: nobody could stamp those
+#[test]
+fn pending_grants_are_not_cleared_spec_sync_5() {
+    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read), "Alice is connected");
+    net.set_online(a, false);
+    net.set_online(b, false);
+    let n = osis_base::format::INBOX_WAITING as u64;
+    let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
+    let mut near = Vec::new();
+    let mut far = Vec::new();
+    for i in 0..2 * n + 2 {
+        // a grant on a new thing whose record Bob lacks, delivered without its chain
+        let e = net.engine(a);
+        let mut m = Mutation::new();
+        let x = e.new_thing(&mut m, alice);
+        m.set(x, &ct::GROUP, &ct::Group::default()).unwrap();
+        e.commit(m).unwrap();
+        let done = net.engine(a).grant(&x, &bob, &edge).unwrap();
+        let c = done.deliveries.iter().find_map(|d| if let osis_node::flows::Delivery::Inbox { resend, .. } = d { Some(resend.commit) } else { None }).unwrap();
+        let exp = net.now() + if i < n + 1 { INBOX_LIFETIME_MS } else { 2 * INBOX_LIFETIME_MS };
+        let id = plant_inbox(&mut net, a, (host, &home), bob, &c, t(i), exp);
+        if i < n + 1 { near.push(id) } else { far.push(id) }
+    }
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert!(net.engine(b).pending().len() as u64 > n, "pending: {:?}", net.engine(b).pending().len());
+    let held = net.host_ids(host, &home);
+    assert!(near.iter().all(|x| held.contains(x)), "kept while pending");
+    assert_eq!(far.iter().filter(|x| held.contains(x)).count() as u64, n, "too far ahead counts");
+}

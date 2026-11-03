@@ -308,6 +308,7 @@ impl SyncEngine {
         // a replaced label with everything to hold already there (`retire_at`)
         let quiet = replaced && sends.iter().all(|o| self.state.is_present(&host, &l, &o.id) || self.state.is_gone_at(&host, &l, &o.id));
         self.send(conn, p, sends, &mut left, out)?;
+        self.clear_inbox(conn, p, out)?;
         let settled = unsettled.is_empty();
         self.pull(Some(conn), &g, l, &mut scope, w);
         self.judge_touched(ctx, &g, &l, &scope, &judged, &mut bodies)?;
@@ -1238,34 +1239,100 @@ impl SyncEngine {
         Ok(())
     }
 
-    /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5): a valid applied
-    /// commit about an actor whose inbox this is, with parts a copy would take for it, or one this
-    /// node's user declined; only the first blob of a commit under the label, and none expiring
-    /// later than an honest sender's could (an expiry is the sender's word, and a stamp keeps the
-    /// blob until then). Each leaves the deposit budget and stays readable for the actor's other
-    /// devices until it expires. All else stays deposited: the budget is what bounds a stranger,
-    /// who can seal any commit he holds in any number of blobs, and a commit once declined or
-    /// held here would otherwise have them all stamped.
+    /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5; `inbox_stampable`).
+    /// Each leaves the deposit budget and stays readable for the actor's other devices until it
+    /// expires.
     fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
-        let latest = self.now().saturating_add(osis_base::format::INBOX_LIFETIME_MS + 2 * osis_base::format::MAX_DRIFT_MS);
         for (id, mut e) in self.due_entries(conn, host, l) {
             let Kind::Inbox(Some(c)) = e.kind else { continue };
-            if self.state.stamped_inbox_other(&l, &c, &id) || self.inbox_opened(&l, &id)?.is_none_or(|o| o.until > latest) {
+            if !self.inbox_stampable(&l, &id, &c)? {
                 continue;
-            }
-            if !self.state.declined.contains(&c) {
-                let Some((m, o)) = self.inbox_valid(&l, &id, &c)? else { continue };
-                let actors = self.inbox_actors(&l);
-                let on = self.inbox_about(&actors, &c, &m, &o);
-                if !o.ais.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))) {
-                    continue;
-                }
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
             let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
             uploads.push(osis_proto::Entry { blob, wrap: e.wrap, stamp, replaces: Vec::new() });
             e.stamp = Some(stamp);
             self.state.set_entry(l, id, e);
+        }
+        Ok(())
+    }
+
+    /// The latest prefix expiry an honest sender's inbox blob can carry (spec/sync.md §3).
+    fn inbox_latest(&self) -> u64 {
+        self.now().saturating_add(osis_base::format::INBOX_LIFETIME_MS + 2 * osis_base::format::MAX_DRIFT_MS)
+    }
+
+    /// Whether inbox blob `id` of commit `c` is one a writer stamps: a valid applied commit about
+    /// an actor whose inbox this is, with parts a copy would take for it, or one this node's user
+    /// declined; only the first blob of a commit under the label, and none expiring later than
+    /// an honest sender's could (an expiry is the sender's word, and a stamp keeps the blob until
+    /// then). A stranger can seal any commit he holds in any number of blobs: those stay
+    /// deposited, for `clear_inbox`.
+    fn inbox_stampable(&mut self, l: &LabelId, id: &BlobId, c: &CommitId) -> Result<bool> {
+        let latest = self.inbox_latest();
+        if self.state.stamped_inbox_other(l, c, id) || self.inbox_opened(l, id)?.is_none_or(|o| o.until > latest) {
+            return Ok(false);
+        }
+        if self.state.declined.contains(c) {
+            return Ok(true);
+        }
+        let Some((m, o)) = self.inbox_valid(l, id, c)? else { return Ok(false) };
+        let actors = self.inbox_actors(l);
+        let on = self.inbox_about(&actors, c, &m, &o);
+        Ok(o.ais.iter().any(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))))
+    }
+
+    /// An admin keeps at most `INBOX_WAITING` entries and bytes of them under an inbox label at a
+    /// host waiting for nothing it can do (spec/sync.md §5): a deposit that is no commit of the
+    /// label, past those it stamps or still judges. Over that, it deletes the ones expiring too
+    /// far ahead, then the earliest to expire, so a stranger's fill ends with this pass and the
+    /// rest of the budget stays free.
+    fn clear_inbox(&mut self, conn: ConnId, p: &Head, out: &mut Vec<super::Action>) -> Result<()> {
+        let (l, keys) = (p.l, &p.keys);
+        let Some(host) = p.host else { return Ok(()) };
+        if keys.delete.is_none() || self.inbox_actors(&l).is_empty() {
+            return Ok(());
+        }
+        let latest = self.inbox_latest();
+        let mut waiting = Vec::new();
+        for id in self.state.deposited_at(&host, &l) {
+            let Some(kind) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
+            let idle = match &kind {
+                Kind::Commit { .. } | Kind::Parked(_) => false,
+                Kind::Inbox(Some(c)) => {
+                    let pending = self.engine.core.ix.pending.contains_key(c) && self.inbox_opened(&l, &id)?.is_some_and(|o| o.until <= latest);
+                    !pending && !self.inbox_stampable(&l, &id, c)?
+                }
+                _ => true,
+            };
+            if !idle {
+                continue;
+            }
+            let Some(blob) = self.engine.blob(&id)? else { continue };
+            let until = osis_label::Prefix::parse(&blob).ok().and_then(|x| x.expiry()).map_or(u64::MAX, |w| w.0);
+            waiting.push((until <= latest, until, id, blob.len()));
+        }
+        let over = |w: &[(bool, u64, BlobId, usize)]| w.len() > osis_base::format::INBOX_WAITING || w.iter().map(|x| x.3).sum::<usize>() > osis_base::format::INBOX_WAITING_BYTES;
+        if !over(&waiting) {
+            return Ok(());
+        }
+        waiting.sort();
+        waiting.reverse();
+        let raw = self.raw_now();
+        let mut items = Vec::new();
+        while over(&waiting) {
+            let Some((_, _, id, _)) = waiting.pop() else { break };
+            let Some(c) = self.conns.get_mut(&conn) else { break };
+            if super::in_flight(c, &c.req.deleting, (l, id), raw) {
+                continue;
+            }
+            if let Some(item) = delete_item(keys, &l, id, None, None, &[]) {
+                c.req.deleting.insert((l, id), (raw, super::UNTAGGED));
+                items.push(item);
+            }
+        }
+        if !items.is_empty() {
+            self.command(conn, Command::Delete { label: l, items }, out)?;
         }
         Ok(())
     }
