@@ -1026,7 +1026,9 @@ impl SyncEngine {
                 }
                 crate::Event::Joined { id } => {
                     changed = true;
-                    if let Some(h) = self.engine.header(&id) {
+                    let h = self.engine.header(&id);
+                    wide |= h.is_none();
+                    if let Some(h) = h {
                         wide |= h.kind.is_role();
                         narrow.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                         if h.kind.is_role() {
@@ -1065,7 +1067,10 @@ impl SyncEngine {
         let ch = self.engine.take_changed();
         self.reopen_undropped(Some(&ch.undropped));
         for c in &ch.commits {
-            if let Some(h) = self.engine.header(c) {
+            let h = self.engine.header(c);
+            // a commit gone from here names no thing: the labels with its entries are unknown
+            wide |= h.is_none();
+            if let Some(h) = h {
                 self.touched.states.extend(h.aspects.iter().map(|a| (a.tid, a.ak.clone())));
                 self.touched.blobs.extend(h.chunks.iter().map(|ch| ch.blob));
                 wide |= h.kind.is_role();
@@ -1085,7 +1090,7 @@ impl SyncEngine {
             }
         }
         if changed {
-            if wide || self.touched.full || self.cfg.full_passes || !narrow.iter().all(|(t, a)| self.narrow_aspect(t, a)) {
+            if wide || narrow.is_empty() || self.touched.full || self.cfg.full_passes || !narrow.iter().all(|(t, a)| self.narrow_aspect(t, a)) {
                 self.mark_dirty();
             } else {
                 let things: BTreeSet<Tid> = narrow.iter().map(|x| x.0).collect();

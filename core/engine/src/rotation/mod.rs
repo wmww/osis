@@ -556,6 +556,9 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
         // is the horizon of `departures`, whose entry holds this memo
         departures(tx, a)?;
         tx.core.reseal_quiet.insert(*a);
+    } else {
+        // its horizon passed: `departures` takes a new entry, which must not vouch for this
+        tx.core.reseal_quiet.remove(a);
     }
     Ok(out)
 }

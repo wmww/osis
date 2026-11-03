@@ -10,8 +10,8 @@
 //! the others are examined at every `reexamine`, as all were.
 //!
 //! An examination also reads the commit's `secrets.0` boxes (`keys::read_pending_boxes`). That
-//! reads the epochs of the actors they are on, of those actors' owners and of the holders they box
-//! to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
+//! reads the epochs of the actors they are on, of those actors' owner chains and of the holders they
+//! box to (`Wait::openers`), and the reading-only budget: a change of any drops the wait
 //! (`Waits::secrets_changed`, `Waits::wake_boxes`). `Engine::check_unchanged` checks it. A chat's
 //! joiner holds one such commit per member, waiting for that member's records.
 //!
@@ -346,9 +346,8 @@ fn openers(core: &Core, blob: &osis_commit::CommitBlob, id: &CommitId) -> BTreeS
     let mut out = BTreeSet::new();
     for (a, w) in super::keys::pending_secrets_writes(blob, id) {
         out.insert(a);
-        if let Some(osis_base::CreationRecord::Thing { owner, .. }) = core.created(&a) {
-            out.insert(*owner);
-        }
+        // `Core::adopt_derived` reads the owner's epochs, derived from up its chain
+        out.extend(core.owner_chain(&a).filter_map(|s| s.thing()));
         out.extend(w.boxes.keys().map(|k| k.holder));
     }
     out

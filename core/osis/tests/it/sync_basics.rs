@@ -104,6 +104,87 @@ fn grant_to_ones_own_group_reaches_its_members_at_once_spec_sync_3() {
     assert_eq!(says(&b, m), Some(s("hello")));
 }
 
+// spec/sync.md §6 (a content write passes only the labels holding it): with no clock passing, so no resync: one commit across two chats, a message in two labels, one in a group nested in a chat, a member's write and a profile rename each reach every reader
+#[test]
+fn content_writes_reach_every_label_holding_them_at_once_spec_sync_6() {
+    let mut w = World::new();
+    let h0 = w.add_host();
+    let (a, b, bob) = pair(&mut w, &[h0]);
+    let (c, _) = w.person(3, &[h0]);
+    w.run();
+    let card = c.contact_card().unwrap();
+    w.run();
+    let carol = w.until(a.import_contact(&card), 1000, 10).unwrap();
+    let (g1, g2) = (chat(&a, &[]), chat(&a, &[]));
+    a.grant(g1, bob, Role::Write, Default::default()).unwrap();
+    a.grant(g2, carol, Role::Write, Default::default()).unwrap();
+    w.run();
+    // one commit across both, each thing new and placed in it
+    let (m1, m2) = a
+        .write_with(|x| {
+            let (m1, m2) = (x.create(g1)?, x.create(g2)?);
+            x.place(m1, g1)?;
+            x.place(m2, g2)?;
+            x.at(m1, text()).set(&s("one"))?;
+            x.at(m2, text()).set(&s("two"))?;
+            Ok((m1, m2))
+        })
+        .unwrap();
+    w.run();
+    assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one")), Some(s("two"))));
+    // no placement in the next ones, so only the labels holding them pass
+    a.write_with(|x| {
+        x.at(m1, text()).set(&s("one more"))?;
+        x.at(m2, text()).set(&s("two more"))
+    })
+    .unwrap();
+    w.run();
+    assert_eq!((says(&b, m1), says(&c, m2)), (Some(s("one more")), Some(s("two more"))));
+    // a group under the first with a label of its own: a message in it is in both labels
+    let sub = a
+        .write_with(|x| {
+            let t = x.create(g1)?;
+            x.make_group(t)?;
+            x.add_subgroup(g1, t)?;
+            Ok(t)
+        })
+        .unwrap();
+    a.sync(sub, &[]).unwrap();
+    a.grant(sub, carol, Role::Read, Default::default()).unwrap();
+    w.run();
+    let both = message(&a, sub, "both");
+    w.run();
+    assert_eq!((says(&b, both), says(&c, both)), (Some(s("both")), Some(s("both"))));
+    a.write_with(|x| x.at(both, text()).set(&s("both again"))).unwrap();
+    w.run();
+    assert_eq!((says(&b, both), says(&c, both)), (Some(s("both again")), Some(s("both again"))));
+    // a nested group without one, then a message in it
+    let nested = a
+        .write_with(|x| {
+            let t = x.create(g2)?;
+            x.make_group(t)?;
+            x.add_subgroup(g2, t)?;
+            Ok(t)
+        })
+        .unwrap();
+    w.run();
+    let inner = message(&a, nested, "inner");
+    w.run();
+    assert_eq!(says(&c, inner), Some(s("inner")));
+    a.write_with(|x| x.at(inner, text()).set(&s("inner again"))).unwrap();
+    w.run();
+    assert_eq!(says(&c, inner), Some(s("inner again")));
+    // a member's write
+    b.write_with(|x| x.at(m1, text()).set(&s("by bob"))).unwrap();
+    w.run();
+    assert_eq!(says(&a, m1), Some(s("by bob")));
+    // a profile rename reaches who holds the card
+    let p = b.profile().unwrap();
+    b.write_with(|x| x.at(p, osis::core::NAME).set(&"Robert".to_string())).unwrap();
+    w.run();
+    assert_eq!(a.get(p, osis::core::NAME).unwrap().as_deref(), Some("Robert"));
+}
+
 // spec: none (API surface, notes/api.md Sync configuration and status): a live node polled by `sync_now` stays Synced, so an app's polling cannot hold `wait_synced` back; a write made meanwhile still goes. It sends nothing but a ping, once a connection is quiet for `retry_ms`
 #[test]
 fn polling_sync_now_costs_nothing_and_holds_nothing_back() {
