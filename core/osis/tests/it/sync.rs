@@ -226,7 +226,7 @@ fn people(w: &mut World, n: usize) -> (Osis, Vec<Osis>, Vec<Tid>) {
 // spec/permissions.md §9 (links): Bob redeems a single-use write link to Alice's group and
 // reads what was there before; his redemption removes the link key (the link's `flags`,
 // spec/wire.md §10); Alice's device finalizes it when it sees that (K rotates), Bob stays a holder and
-// a second redeemer is refused (`Network` after `wait_timeout`).
+// a second redeemer is told the link ended.
 #[test]
 fn link_redeem_spec_permissions_9() {
     let mut w = World::new();
@@ -254,7 +254,7 @@ fn link_redeem_spec_permissions_9() {
     c.wait_timeout = Duration::from_secs(5);
     let carol = Osis::create(c).unwrap().0;
     w.run();
-    assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Network(_))), "used once");
+    assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "used once");
     assert_eq!(carol.role_on(g), None);
     assert_eq!(carol.engine(|e| e.held_key_actors()), 0, "the link key is forgotten");
 }
@@ -280,7 +280,7 @@ fn used_link_refused_at_once_spec_permissions_9() {
         c.wait_timeout = Duration::from_secs(5);
         let carol = Osis::create(c).unwrap().0;
         w.run();
-        assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Network(_))), "refused, attempt {i}");
+        assert!(matches!(w.until(carol.redeem(&link), 1000, 10), Err(osis::Error::Invalid(_))), "refused, attempt {i}");
         assert_eq!(carol.role_on(g), None);
     }
 }

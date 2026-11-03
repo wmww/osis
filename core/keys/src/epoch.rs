@@ -405,6 +405,13 @@ impl RoleEpochs {
         held.max_by_key(|(e, _)| self.by_order(e))
     }
 
+    /// The epoch a rotation to `e` is wrapped under (spec/crypto.md §5): what `e` supersedes whose
+    /// secret is held, the greatest n, ties by lowest nonce.
+    pub fn wrapped_under(&self, e: &Epoch) -> Option<(Epoch, &Secret32)> {
+        let info = self.get(e)?;
+        info.superseded_epochs().iter().filter_map(|s| self.secret(s).map(|x| (*s, x))).max_by_key(|(s, _)| by_n(s))
+    }
+
     /// The newest current epoch.
     pub fn newest(&self) -> Option<Epoch> {
         self.current().into_iter().max_by_key(|e| self.by_order(e))

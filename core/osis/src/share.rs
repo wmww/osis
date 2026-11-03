@@ -943,9 +943,10 @@ impl Osis {
 
     /// Redeems a link (spec/permissions.md §9): reaches its label by the link key, joins its actor
     /// as this person (removing the link key in the same commit when the link is single use), then
-    /// waits until the target is here. Returns the target. Each wait fails `Network` after
-    /// `Config::wait_timeout`; a used single-use link is refused that way (its key is no holder
-    /// of K any more). The link key is forgotten on every outcome, a dropped future included.
+    /// waits until the target is here. Returns the target. A link known to have ended (used,
+    /// revoked, expired, its host no longer listing its key) fails `Invalid` at once; each wait
+    /// fails `Network` after `Config::wait_timeout`, nobody having answered in time. The link key
+    /// is forgotten on every outcome, a dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
         if self.is_attached() {
             link.parse()?;
@@ -959,13 +960,23 @@ impl Osis {
         let t = Some(self.inner.wait_timeout);
         // L must be on K's roster in a view with nothing on K pending: a commit on K waiting
         // for its chain may be (or follow) an earlier redemption that removed L
+        let label = link.k_label;
         self.wait_until(t, Box::new(move |s, _, _| {
+            if s.static_entry_refused(&label) {
+                return Some(Err(link_ended()));
+            }
             // what judges K may still be in a later batch of its first sync
             if s.fill_before_passes() {
                 return None;
             }
             let e = s.engine_mut();
-            (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some()) && !pending_on(e, &k)).then_some(Ok(()))
+            if pending_on(e, &k) {
+                return None;
+            }
+            if e.link_key_gone(&k, &l) {
+                return Some(Err(link_ended()));
+            }
+            (e.roster(&k).contains_key(&l) && e.epochs(&k).is_some_and(|x| x.read.held().next().is_some())).then_some(Ok(()))
         }))
         .await?;
         let me = self.me();
@@ -1735,6 +1746,10 @@ impl Drop for ReceiptsGuard {
 }
 
 /// Whether a commit on `k` waits here (pending, not parked: spec/commits.md §4).
+fn link_ended() -> Error {
+    Error::Invalid("this link no longer works: ask for a new one".into())
+}
+
 fn pending_on(e: &mut osis_node::Engine, k: &Tid) -> bool {
     let ids: Vec<osis_base::CommitId> = e.pending().into_iter().filter(|(_, r)| *r != osis_node::Reason::Parked).map(|(c, _)| c).collect();
     ids.iter().any(|c| e.commit_bytes(c).ok().flatten().and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).is_some_and(|cb| cb.header.aspects.iter().any(|a| a.tid == *k)))

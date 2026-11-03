@@ -352,11 +352,10 @@ impl Engine {
             let f = d.into_fragment();
             let Some(ks) = crate::apply::keys::keys_write(&f).keysets.remove(&Role::Read) else { continue };
             let Ok(e) = osis_keys::aspects::from_schema(&ks.epoch) else { continue };
-            let Some(info) = epochs.read.get(&e) else { continue };
-            for s in &info.superseded_epochs() {
-                if epochs.read.secret(s).is_some() && best.is_none_or(|b| osis_keys::is_newer(s, &b)) {
-                    best = Some(*s);
-                }
+            if let Some((s, _)) = epochs.read.wrapped_under(&e)
+                && best.is_none_or(|b| osis_keys::is_newer(&s, &b))
+            {
+                best = Some(s);
             }
         }
         Ok(best)

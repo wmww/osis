@@ -13,7 +13,7 @@ use osis_base::{LabelId, Role, Tid, Value};
 use osis_crdt::{Fragment, Op, PathOp, PathSeg};
 use osis_crypto::{Epoch, KemPublicKey, LabelRole, Secret32, VerifyingKey, label_role_key};
 use osis_keys::{ActorEpochs, registration_epochs};
-use osis_label::{Address, ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register, step_record};
+use osis_label::{Address, ClaimSet, Parent, Reader, Step, StepId, StepKeys, genesis_label, label_steps, register_with, step_record};
 use osis_schema::core_types::{self as ct, KemKey};
 use osis_schema::{AspectKey, Codec};
 
@@ -101,7 +101,7 @@ pub(crate) fn issue(tx: &mut Tx<'_>, group: &Tid, epochs: &ActorEpochs, index: u
         None => Parent::Genesis(&del),
         Some((step, _)) => Parent::Child { step, delete: &del },
     };
-    Ok(register(p, keys, &rk, (group, re, rs), &mut *tx.rng)?)
+    Ok(register_with(p, keys, &rk, (group, re, rs), epochs.read.wrapped_under(&re), &mut *tx.rng)?)
 }
 
 /// `label.0` write: a new label of `group` with its genesis step, or a step added.

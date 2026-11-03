@@ -45,6 +45,14 @@ impl SyncEngine {
         out
     }
 
+    /// Whether a host answered that the head of `l` does not list this node's static entry, and
+    /// no connection has `l` open or is still trying: the key actor is no reader there, for a
+    /// link's key one it no longer holds K (spec/sync.md §5, spec/permissions.md §9).
+    pub fn static_entry_refused(&self, l: &LabelId) -> bool {
+        let on: Vec<&LConn> = self.conns.values().filter_map(|c| c.labels.get(l)).collect();
+        on.iter().all(|x| x.phase == Phase::Failed) && on.iter().any(|x| x.static_refused)
+    }
+
     /// Whether a hint names a label of `t` not read yet (an inbox blob or a link's: `vet_inbox_hints`).
     pub fn hinted(&self, t: &Tid) -> bool {
         self.state.hints.values().any(|h| h.thing == *t)
