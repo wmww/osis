@@ -170,6 +170,8 @@ pub(crate) struct Remote {
     link: Arc<LinkState>,
     /// The materialization bound of reads.
     limit: usize,
+    /// As a thin client, by a secret (not the socket's Owner).
+    keyed: bool,
 }
 
 /// A call sent whose connection ended before its reply.
@@ -191,7 +193,7 @@ impl Remote {
         let (tx, _) = mpsc::unbounded_channel();
         let link = Arc::new(LinkState::default());
         lock(&link.m).ended = Some(e);
-        Arc::new(Remote { addr: addr.to_string(), tx, link, limit: 0 })
+        Arc::new(Remote { addr: addr.to_string(), tx, link, limit: 0, keyed: false })
     }
 
     /// Whether the connection is up now.
@@ -752,6 +754,7 @@ fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_cryp
     let (tx, rx) = mpsc::unbounded_channel();
     let session = random();
     let link = Arc::new(LinkState::default());
+    let keyed = secret.is_some();
     let io = Io { cs: new_session(addr.key), peer_key: addr.key, secret, session, calls: BTreeMap::new(), writes: BTreeMap::new(), give_up: None, subs: BTreeMap::new(), schemas: Vec::new(), timer: None, taken: 0, nonce: 1, wait, clock, link: link.clone() };
     std::thread::Builder::new()
         .name("osis-port-client".into())
@@ -760,7 +763,7 @@ fn spawn_remote(via: Via, addr: Address, shown: String, secret: Option<osis_cryp
             rt.block_on(run(via, addr, io, rx));
         })
         .map_err(|e| Error::Storage(e.to_string()))?;
-    Ok(Arc::new(Remote { addr: shown, tx, link, limit }))
+    Ok(Arc::new(Remote { addr: shown, tx, link, limit, keyed }))
 }
 
 /// An attachment to the thin client `secret` stands for at `addr`.
@@ -781,8 +784,8 @@ impl Osis {
     /// Attaches to the node serving the unix socket at `socket` (notes/client-port.md §1):
     /// every call addressed by a tid or group goes there as Owner (the socket's peer has this
     /// process's uid), `me`/`node`/`home` are the node's; `settle` waits for the node's
-    /// deliveries too. Process-wide calls the port does not carry (pairing, devices, hosting,
-    /// links, cards, bundles, `read(|r| ..)`, `Internals`) fail `Unsupported`. `cfg` gives the
+    /// deliveries too. What needs this process to be the node (`read(|r| ..)`, `Internals`,
+    /// notes/client-port.md §1) fails `Unsupported`. `cfg` gives the
     /// clock, dispatcher and materialization bound; its store is not used (a scratch memory
     /// database stands in until the no-store profile, step (f)).
     pub fn attach(socket: &Path, cfg: Config) -> Result<Osis> {
@@ -1244,8 +1247,13 @@ impl Osis {
         out
     }
 
-    /// `remote_task` at the attached node of a handle with no store.
+    /// `remote_task` at the attached node of a handle with no store. A thin client has no such
+    /// rows: refused here too (the node's gate is `Worker::sub`), so a link's or card's secret never
+    /// goes to a node that would only refuse it.
     pub(crate) async fn rtask(&self, m: u64, args: Vec<Value>) -> Result<Value> {
+        if self.primary().keyed {
+            return Err(Error::Unsupported("a thin client: only its node's owner runs this".into()));
+        }
         self.remote_task(self.primary(), m, args).await
     }
 

@@ -507,6 +507,8 @@ pub enum PairCmd {
 pub enum DeviceCmd {
     Ls,
     Rm {
+        /// (Its own id: `node` is the global `--node`'s, whose value this would become.)
+        #[arg(id = "device", value_name = "NODE")]
         node: String,
         #[command(flatten)]
         d: DemoteFlags,

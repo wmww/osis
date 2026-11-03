@@ -30,6 +30,8 @@ pub trait Internals {
     /// The port worker's next job panics: before running (`false`), or after a Call ran and
     /// before its reply (`true`, the reply is lost).
     fn port_panic_next(&self, after_call: bool);
+    /// Pads the next pairing reply the port sends by `n` bytes.
+    fn port_pad_pair_reply(&self, n: usize);
     /// Runs `f` between each local write's route and its lock.
     fn after_route(&self, f: Box<dyn Fn() + Send>);
     /// Sets a route with nothing else `group_source` does.
@@ -65,6 +67,10 @@ impl Internals for Osis {
         here(self);
         self.act_as(actor)
     }
+    fn port_pad_pair_reply(&self, n: usize) {
+        self.inner.port.pad_pair_reply.store(n, std::sync::atomic::Ordering::Release);
+    }
+
     fn port_panic_next(&self, after_call: bool) {
         let p = &self.inner.port;
         (if after_call { &p.panic_after_call } else { &p.panic_next }).store(true, std::sync::atomic::Ordering::Release);

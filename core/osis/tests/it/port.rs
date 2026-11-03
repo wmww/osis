@@ -800,6 +800,51 @@ fn process_wide_rows_through_the_socket() {
     host.close().unwrap();
 }
 
+// spec: none (API surface); notes/client-port.md §2 (Bundles): export and import share one connection without mixing: a bundle exported, read to its end, and imported on the same handle
+#[test]
+fn bundle_out_and_in_on_one_handle() {
+    let d = Dir::new();
+    let sock = d.0.join("n.sock");
+    let net = osis_transport::Net::new(1);
+    let n = node(&MemStore::new(), &net, &sock, true);
+    let c = attach(&sock);
+    let mut out = Vec::new();
+    c.export_bundle(&[n.home()], &mut out).unwrap();
+    assert!(!out.is_empty());
+    c.import_bundle(&out[..]).unwrap();
+    // an import coming before an export ends: its pages stay its own
+    let mut raw = Raw::unix(&sock);
+    raw.auth([9; 16]).unwrap();
+    assert!(matches!(raw.call(1, 62, vec![Value::Bytes(out[..3].to_vec())]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(2, 60, vec![Value::List(vec![Value::Tid(n.home())])]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(3, 62, vec![Value::Bytes(out[3..].to_vec())]), Outcome::Ok { .. }));
+    assert!(matches!(raw.call(4, 63, vec![Value::uint(out.len() as u64)]), Outcome::Ok { .. }));
+    drop((raw, c));
+    n.close().unwrap();
+}
+
+// spec: none (API surface); notes/client-port.md §2: a pairing reply above the small allowance comes back from the one send: an offer is used once, so a retry under a larger allowance would be refused
+#[test]
+fn pair_reply_above_the_small_allowance() {
+    let d = Dir::new();
+    let net = osis_transport::Net::new(2);
+    let (host, addr) = mem_host(&net);
+    let sock = d.0.join("n.sock");
+    let n = node_on(&net, "n", vec![addr], &sock);
+    let c = attach(&sock);
+    let mut pc = Config::at(StoreAt::Memory(MemStore::new()));
+    pc.runtime = Runtime::Own;
+    pc.transport = Some(Transport::InProcess(net.endpoint("p")));
+    let join = Osis::pair(pc, &c.pair_offer().unwrap()).unwrap();
+    osis::internals::Internals::port_pad_pair_reply(&n, osis_proto::client::SMALL_REPLY * 2);
+    let (node, reply) = c.pair_accept(join.request()).unwrap();
+    let p = join.finish(&reply).unwrap();
+    assert_eq!(p.node(), node);
+    drop((c, p));
+    n.close().unwrap();
+    host.close().unwrap();
+}
+
 // spec/wire.md §11.2 (client port), notes/client-port.md §2 Writes: writes from several threads of one attached handle all apply: nonces leave the client in the order they were taken (on its I/O thread), so none reaches the node below a later one and reads "outcome unknown" without having run
 #[test]
 fn threads_writing_on_one_handle() {
