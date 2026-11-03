@@ -965,3 +965,57 @@ fn invalid_inbox_commit_keeps_its_slot_spec_sync_5() {
     assert_eq!(valid, Some(vec![false]), "applied, judged invalid; pending: {:?}", net.engine(b).pending());
     assert_eq!(budget_left(&mut net, host, &home), left - 1, "not stamped");
 }
+
+// spec/sync.md §3: a stranger holding a commit the actor applied or declined can seal it in many blobs: at most one leaves the budget, and a commit not about the actor none
+#[test]
+fn reseals_stay_in_the_budget_spec_sync_3() {
+    let (mut net, host, a, b, _, bob, g, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let left = budget_left(&mut net, host, &home);
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(net.sync(b).decline_invite(c).unwrap());
+    for _ in 0..2 {
+        net.advance(70_000);
+    }
+    assert_eq!(budget_left(&mut net, host, &home), left, "the declined one is out");
+    // his own card, which anyone with it holds; and the declined commit again
+    let card = net.engine(b).aspect_commit(&bob, "keys.0").expect("Bob's keys.0").0;
+    let exp = net.now() + INBOX_LIFETIME_MS;
+    let t = |i: u64| vec![osis_label::InboxThing { tid: osis_base::Tid::from_bytes([i as u8; 15]), label: None, delete_keys: None }];
+    net.set_online(b, false);
+    for i in 0..3 {
+        plant_inbox(&mut net, b, (host, &home), bob, &card, t(i), exp);
+        plant_inbox(&mut net, a, (host, &home), bob, &c, t(i), exp);
+    }
+    net.set_online(b, true);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(budget_left(&mut net, host, &home), left - 6, "not stamped");
+}
+
+// spec/sync.md §3: an inbox blob done with comes back when its thing gets a new `label.0`: the copy under home gains it
+#[test]
+fn done_inbox_blob_wakes_on_a_new_label_spec_sync_3() {
+    let (mut net, _, a, b, _, bob, g, home) = alice_and_bob();
+    grant(&mut net, a, g, bob);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    assert_eq!(net.engine(b).role_on(&g), Some(Role::Read));
+    let copies = |net: &mut Net, c: &osis_base::CommitId| net.sync(b).entries(&home).iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if commit == c));
+    let first = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
+    assert!(copies(&mut net, &first), "the first label's copy under home");
+    let old = net.engine(a).labels_of(&g).iter().find(|l| !l.replaced).unwrap().id;
+    let (_, acts) = net.sync(a).replace_label(&g, &old).unwrap();
+    net.actions(a, acts);
+    for _ in 0..4 {
+        net.advance(70_000);
+    }
+    let next = net.engine(b).aspect_commit(&g, "label.0").expect("Bob holds the label").0;
+    assert_ne!(first, next);
+    assert!(copies(&mut net, &next), "the new label's copy under home");
+}

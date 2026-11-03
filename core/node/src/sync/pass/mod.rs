@@ -288,14 +288,14 @@ impl SyncEngine {
         if !replaced && (keys.is_writer() || keys.deposit.is_some()) {
             if read_ok {
                 let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
-                self.certificates(&g, l, false, &authors)?;
+                self.certificates(&g, l, false, &authors, w)?;
                 let tight = self.lc(conn, &l).and_then(|x| x.budget).is_some_and(|b| b < self.cfg.tight_budget);
                 self.heartbeat(&g, l, keys, tight, &ctx.closure)?;
             } else if !self.may_rotate_read(&g) {
                 // the revokes of departures inside holders and their chains' keysets only: they
                 // tell the label's rotators what keeps its epoch uncovered and what to seal to
                 // (spec/permissions.md §4 exception)
-                self.certificates(&g, l, true, &BTreeSet::new())?;
+                self.certificates(&g, l, true, &BTreeSet::new(), w)?;
             }
         }
         if keys.write.is_some() && read_ok {
@@ -611,7 +611,7 @@ impl SyncEngine {
         let sends = self.body_sends(p, &bodies, &snaps, &snapping, &mut left)?;
         let ours: BTreeSet<BlobId> = sends.iter().filter(|o| o.fresh).map(|o| o.id).collect();
         let authors: BTreeSet<Tid> = w.unjudged.values().copied().collect();
-        self.certificates(&g, l, false, &authors)?;
+        self.certificates(&g, l, false, &authors, w)?;
         self.heartbeat(&g, l, keys, false, &ctx.closure)?;
         if let Some(wk) = &keys.write {
             self.local_promote(&g, l, wk, &scope, &ours, &mut left)?;
@@ -1239,14 +1239,23 @@ impl SyncEngine {
     }
 
     /// A writer stamps in place the inbox blobs handled here (spec/sync.md §5): a valid applied
-    /// commit, or one this node's user declined. Each leaves the deposit budget and stays
-    /// readable for the actor's other devices until it expires. A request nobody answered and
-    /// an invalid commit stay deposited: the budget is what bounds a stranger.
+    /// commit about an actor whose inbox this is, or one this node's user declined, and only the
+    /// first blob of a commit under the label. Each leaves the deposit budget and stays readable
+    /// for the actor's other devices until it expires. All else stays deposited: the budget is
+    /// what bounds a stranger, who can seal any commit he holds in any number of blobs, and a
+    /// commit once declined or held here would otherwise have them all stamped.
     fn stamp_inbox(&mut self, conn: ConnId, host: HostKey, l: LabelId, write: &osis_crypto::SigningSecret, uploads: &mut Vec<osis_proto::Entry>) -> Result<()> {
         for (id, mut e) in self.due_entries(conn, host, l) {
             let Kind::Inbox(Some(c)) = e.kind else { continue };
-            if !self.state.declined.contains(&c) && self.inbox_valid(&l, &id, &c)?.is_none() {
+            if self.state.stamped_inbox_other(&l, &c, &id) {
                 continue;
+            }
+            if !self.state.declined.contains(&c) {
+                let Some((m, o)) = self.inbox_valid(&l, &id, &c)? else { continue };
+                let actors = self.inbox_actors(&l);
+                if self.inbox_about(&actors, &c, &m, &o).is_empty() {
+                    continue;
+                }
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
             let stamp = osis_label::sign_stamp(write, &l, &id, &e.wrap);
@@ -1255,6 +1264,22 @@ impl SyncEngine {
             self.state.set_entry(l, id, e);
         }
         Ok(())
+    }
+
+    /// The things commit `c` (header in `m`) of opened inbox blob `o` is about for `actors`
+    /// (spec/sync.md §3): where it has an edge or box of one of them or of an actor one owns,
+    /// and, of a `label.0` write (it names no holder), the things the payload names that one of
+    /// them holds an edge on, by the roster as applied here, not the payload's word.
+    fn inbox_about(&mut self, actors: &[Tid], c: &CommitId, m: &osis_engine::engine::Meta, o: &super::inbound::Opened) -> BTreeSet<Tid> {
+        let named = self.engine.holders_named(c);
+        let mine = |x: &Tid| self.engine.owner_chain(x).any(|y| actors.contains(&y));
+        let mut on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(mine)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
+        for t in o.things.iter().map(|t| t.tid) {
+            if m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "label.0") && self.engine.roster(&t).keys().any(mine) {
+                on.insert(t);
+            }
+        }
+        on
     }
 
     /// Commit `c` of opened inbox blob `b` under `l`, applied here and valid in every part the
@@ -1586,7 +1611,15 @@ impl SyncEngine {
     /// the blob itself, and all of them copying would flood the label. The consumed inbox blob
     /// stays until it expires: its label hints are what a later holder that cannot apply the copied
     /// `label.0` yet opens the thing's label by.
-    fn inbox_certificates(&mut self, g: &Tid, l: LabelId) -> Result<BTreeMap<CommitId, Parts>> {
+    ///
+    /// A blob seen done is not walked again (`Work::inbox_done`; 90 days of a person's grants, a
+    /// hostile contact's up to the host's cap): all this judges is the commit's validity, its
+    /// things' rosters and `label.0` writes and the entries of its copy, so a commit on one of
+    /// the blob's things (entries touched and validity flips name their commit), a role moved on
+    /// one of them or on a holder it names, or a full pass (any change of the actor's own roster
+    /// or epochs) brings it back. What is not done stays walked and is bounded by the budget: it
+    /// is never stamped.
+    fn inbox_certificates(&mut self, g: &Tid, l: LabelId, w: &mut Work) -> Result<BTreeMap<CommitId, Parts>> {
         let mut out: BTreeMap<CommitId, Parts> = BTreeMap::new();
         // only under the actor's home label (spec/sync.md §3): an inbox at another group's label
         // would show that group's readers the actor's edges, labels and box keys
@@ -1595,25 +1628,18 @@ impl SyncEngine {
         }
         let Some(li) = self.inbox_label(g) else { return Ok(out) };
         let now = self.now();
-        let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, 2).into_iter().filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
+        let opened: Vec<(BlobId, CommitId)> = self.state.of_kind(&li, 2).into_iter().filter(|b| !w.inbox_done.contains(b)).filter_map(|b| if let Some(Kind::Inbox(Some(c))) = self.state.entries.get(&(li, b)).map(|e| &e.kind) { Some((b, *c)) } else { None }).collect();
         for (b, c) in opened {
             let Some((m, o)) = self.inbox_valid(&li, &b, &c)? else { continue };
+            // an expiry only comes nearer: done for good
             if o.until < now.saturating_add(INBOX_COPY_MIN_LEFT) {
+                w.inbox_done.insert(b);
                 continue;
             }
             // the carried parts on the things the commit has an edge or box of the actor on (the
             // payload carries the sender's choice of parts; a role commit's are all
             // role-class)
-            let named = self.engine.holders_named(&c);
-            let mine = |x: &Tid| self.engine.owner_chain(x).any(|y| y == *g);
-            let mut on: BTreeSet<Tid> = named.iter().filter(|(_, ms)| ms.iter().any(mine)).filter_map(|(ai, _)| m.header.aspects.get(*ai).map(|a| a.tid)).collect();
-            // a `label.0` write names no holder: it is about the named things the actor holds an
-            // edge on (the roster as applied here, not the payload's word)
-            for t in o.things.iter().map(|t| t.tid) {
-                if m.header.aspects.iter().any(|a| a.tid == t && a.ak.as_str() == "label.0") && self.engine.roster(&t).keys().any(mine) {
-                    on.insert(t);
-                }
-            }
+            let on = self.inbox_about(std::slice::from_ref(g), &c, &m, &o);
             let ais: BTreeSet<usize> = o.ais.iter().copied().filter(|ai| m.header.aspects.get(*ai).is_some_and(|a| on.contains(&a.tid))).collect();
             if ais.is_empty() {
                 continue;
@@ -1631,9 +1657,8 @@ impl SyncEngine {
                 }
             }
             // all there already (another holder's copy counts), the usual case: done, and not
-            // again (each pass walks 90 days of a person's grants; a chain taken now would carry
-            // what moved since). A thing's `label.0` arriving after the grant was copied (its
-            // first label, or a later step) is what brings the blob back here
+            // again; a chain taken now would carry what moved since. A thing's `label.0` arriving
+            // after the grant was copied (its first label, or a later step) brings the blob back
             let mut held = true;
             for (x, xs) in &copy {
                 if !self.held_whole(g, l, x, xs)? {
@@ -1642,6 +1667,8 @@ impl SyncEngine {
                 }
             }
             if held {
+                let named = self.engine.holders_named(&c);
+                w.inbox_rest(b, named.values().flatten().copied().chain(m.header.aspects.iter().map(|a| a.tid)).chain(o.things.iter().map(|t| t.tid)));
                 continue;
             }
             for (x, xs) in copy {
@@ -1665,7 +1692,7 @@ impl SyncEngine {
     /// label's older content, except a rotation commit of the label's actor, which is wrapped
     /// under the epoch it supersedes (spec/crypto.md §5): such an entry counts only when it
     /// opens under the newest read secret.
-    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>) -> Result<()> {
+    fn certificates(&mut self, g: &Tid, l: LabelId, revokes_only: bool, authors: &BTreeSet<Tid>, w: &mut Work) -> Result<()> {
         let _s = crate::costs::span("pass: certificates");
         let closure = self.engine.closure(g);
         let mut own_removals = BTreeSet::new();
@@ -1675,7 +1702,7 @@ impl SyncEngine {
             self.engine.inside_holder_revokes(&actor, &closure)
         } else {
             let mut wanted = self.card_certificates(g);
-            for (c, p) in self.inbox_certificates(g, l)? {
+            for (c, p) in self.inbox_certificates(g, l, w)? {
                 wanted.entry(c).or_default().extend(p);
             }
             // revokes and roster snapshots about authors seen under the label (spec/permissions.md
