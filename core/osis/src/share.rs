@@ -80,7 +80,8 @@ pub struct Demotion {
     /// a device that merely lacks a re-seal would discard an honest rotation. A direct edge only.
     pub repudiate: bool,
     /// A removal's word (spec/permissions.md §3, Keep): the removed holder's devices keep a
-    /// read-only copy, or erase. `None`: the thing's default (`Osis::set_keep_default`).
+    /// read-only copy, or erase. `None`: the thing's default (`Osis::set_keep_default`); erase for a
+    /// device leaving this person.
     pub keep: Option<bool>,
 }
 
@@ -757,7 +758,9 @@ impl Osis {
         };
         let things = self.engine(|e| e.presync_scope(&t, &m, new.as_ref()));
         let presync = self.presync(things, d).await?;
-        let fd = flows::Demotion { holder: m, new, presync, keep: d.keep };
+        // a person's default does not reach its devices (spec/permissions.md §2)
+        let keep = d.keep.or((t == self.inner.me).then_some(false));
+        let fd = flows::Demotion { holder: m, new, presync, keep };
         let done = self.guarded(&[t], |e| (if d.repudiate { e.demote_repudiating(&t, &fd) } else { e.demote(&t, &fd) }).map_err(needs_admin))?;
         self.carry(done)
     }

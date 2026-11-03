@@ -1228,3 +1228,24 @@ fn a_joiners_removal_overrides_the_default_spec_permissions_3() {
     }
 }
 
+
+// spec/permissions.md §2: a person's keep default does not reach a device's removal: the device erases.
+#[test]
+fn a_persons_default_does_not_reach_a_device_spec_permissions_2() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (da, _) = w.person(1, &[host]);
+    let t = item(&da, da.me(), da.home(), "before");
+    let join = Osis::pair(w.cfg(2, &[]), &da.pair_offer().unwrap()).unwrap();
+    let (_, reply) = da.pair_accept(join.request()).unwrap();
+    let db = join.finish(&reply).unwrap();
+    w.run();
+    assert_eq!(x(&db, t), Some(s("before")));
+    da.set_keep_default(da.me(), true).unwrap();
+    w.run();
+    let skip = osis::Demotion { sync: osis::WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    w.until(da.remove_device(db.node(), skip), 1000, 5).unwrap();
+    w.run();
+    assert_eq!(x(&db, t), None, "the device erases");
+    assert!(db.kept_copies().unwrap().is_empty());
+}

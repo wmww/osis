@@ -14,3 +14,5 @@ With purge-rejudge merged (58a81d45, scratch merge, by-name requests found too):
 Why only `Step::Purge`-free mixes hit it: `Step::Purge` writes the register and names commits, so the winner is that reset. `PurgeItem::Aspect` in the step's place fails on the same histories, so it is not the item.
 
 `order::arrival_order_purge_author_*` uses its own history for this reason: permanent messages, no keep at most. It also passes with `Breaking`, `Require` and `Forged` mixed in (150 seeds from 8000), so what a hostile member does in a chat is covered in fact, though not in the default mix. Drop the restriction once fixed.
+
+Seed 106342 of `order::arrival_order_alike_large_spec_permissions_5_2` (`OSIS_ORDER_SEED=106342 OSIS_ORDER_LEN=60`, about 3 min) fails on main at 2964db75 with no purge step: after bodies dropped before a flip were given again, one commit reads `missing: {1}` as made and `dropped: {1}` in another order. Likely the same family as 3265; not analysed.
