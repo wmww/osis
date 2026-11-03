@@ -1,2 +1,0 @@
-- `Net::label` returns the node's first label, and `at_host` filters on live ids at that moment: an upload-delete loop finishing inside one `net.run()` shows as "nothing at the host", no churn. The loop only showed by counting the uploader's known entries per round.
-- `body_not_dropped` reads as "body held" and is true for an applied commit with no body and no drop.

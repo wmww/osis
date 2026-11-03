@@ -1,4 +1,0 @@
-- `wt` was not on PATH; the brief gave the plugin cache path, which worked.
-- A first `cargo build -p osis-engine` in the claimed worktree took over 2 min and moved to the background mid-call (the worktree was behind main by many crates).
-- A concurrent-fork assertion ("both forks current") was wrong by design: `LocalPeer::sealed` runs `ensure_rotated`, so a later rotation may merge the forks before peers are compared. Compare the current set across peers instead.
-- Review: the rebase over main conflicted in spec/crypto.md and permissions.md (item 225 rewrote the same paragraphs); resolved by hand.

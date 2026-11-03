@@ -1,6 +1,0 @@
-# atomic-carrierless (tiller-atomic-carrierless)
-- The `order::` harness's fresh nodes never `set_syncing`, so a missing part never waits there: its "late parts" mode does not exercise atomic wait at all. My first differential passed with the fix disabled for this reason. New checks on atomic apply must sync the thing.
-- `cargo test -p X --test it a:: b::` fails (`unexpected argument`): several filters go after `--` (build.md says so; bit anyway).
-- A node learning it syncs a thing only with the batch holding the thing's commits applies them with no wait (nothing pending to re-examine), so my first node-level test, a truly fresh reader, passed with the fix disabled. It must sync the thing before the commit arrives.
-- Review: `net.hide_blobs` hides an entry for good once the cursor passes it (a reconnect does not list it again): to deliver it late, ingest the package directly. A node-level "slow body" needs `set_online(b, false)` before the commit, then `advance` tens of seconds after coming back.
-- Review 2: `m.op(t, &ak, ..)` with a bare `Ak` ignores the schema's keep bounds (no `Aspect` type, no retention): my differential passed with the fix disabled because no commit ever released. Always mutation-test a new harness. A reader's clock left behind the writers' has the same effect: nothing passes its bound.

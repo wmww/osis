@@ -1,4 +1,0 @@
-- `ls -t target/debug/deps/it-*` may pick another crate's `it` binary: pick by a test name in it.
-- A warm rebuild plus a seed run under load passes a 170 s foreground timeout: run oracles in the background from the start.
-- The order harness's `dating` and `oracle` read a body as held unless dropped; a fall makes it missing, so a bounded delta under a falling purge failed there (fixed).
-- `git rebase ... | tail` in a chained script hid a conflict and the script gated the half-rebased tree (the brief warned of this): rebase alone, read it, then gate.
