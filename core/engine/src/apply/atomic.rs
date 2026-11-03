@@ -424,7 +424,7 @@ fn copies_before(tx: &mut Tx<'_>, h: &Header, id: &CommitId, blob: &CommitBlob, 
 /// the snapshot's copy alone.
 pub(crate) struct Unmerge {
     owned: OwnedSet,
-    vouched: BTreeSet<(osis_crdt::Dot, Option<osis_base::Value>)>,
+    vouched: copies::Records,
     /// The dots whose map record a held valid snapshot holds key-erased (spec/crdt.md §4.7).
     erased: BTreeSet<osis_crdt::Dot>,
 }
