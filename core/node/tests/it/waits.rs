@@ -848,7 +848,7 @@ fn listed_thing_never_read_holds_a_commit_across_it_spec_commits_4() {
     lp.peers[1].engine.set_syncing(g, true).unwrap();
     // created now: its record never reaches peer 1
     let v = new_thing(&mut lp, 0);
-    let mut write_group = |lp: &mut LocalPeer, items: &[Tid]| {
+    let write_group = |lp: &mut LocalPeer, items: &[Tid]| {
         lp.peers[0].clock.advance(10);
         let mut m = Mutation::new();
         m.set(g, &osis_schema::core_types::GROUP, &osis_schema::core_types::Group { items: items.iter().copied().collect(), subgroups: Default::default() }).unwrap();
