@@ -173,9 +173,18 @@ pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
     db.redeem(l).await
 }
 
-/// Removes this person.
+/// Removes this person: every edge it holds the chat through (a link joiner's is on the link's key).
 pub fn leave(db: &Osis, c: Tid) -> Result<()> {
-    db.leave(c)
+    let mut last = Vec::new();
+    loop {
+        let path = db.holder_path(c, db.me());
+        let Some((t, _)) = path.last() else { return if last.is_empty() { db.leave(c) } else { Ok(()) } };
+        if path == last {
+            return Ok(());
+        }
+        db.leave(*t)?;
+        last = path;
+    }
 }
 
 /// Who holds what on the chat.
@@ -313,8 +322,13 @@ fn write_body(db: &Osis, c: Tid, d: &Draft, r: Option<&Replaces>) -> Result<Id> 
 /// A write claiming to replace `original`, past `edit`'s checks: what a hostile member can do. Tests.
 #[doc(hidden)]
 pub fn write_raw_edit(db: &Osis, c: Tid, text: &str, original: Id) -> Id {
-    let r = Replaces { original, prior: vec![original] };
-    write_body(db, c, &Draft::text(text), Some(&r)).unwrap_or(original)
+    write_raw_replaces(db, c, text, &Replaces { original, prior: vec![original] })
+}
+
+/// A write with any claim at all. Tests.
+#[doc(hidden)]
+pub fn write_raw_replaces(db: &Osis, c: Tid, text: &str, r: &Replaces) -> Id {
+    write_body(db, c, &Draft::text(text), Some(r)).unwrap_or(r.original)
 }
 
 /// What is here of a message's text.
@@ -340,6 +354,8 @@ pub struct Entry {
     pub node: Tid,
     /// The time to show: `min(ts, received)`.
     pub time: u64,
+    /// When it reached this node: what a cursor goes by.
+    pub received: u64,
     pub valid: bool,
     pub body: Body,
     /// The name its sender gave.
@@ -368,7 +384,7 @@ fn entry_of(year: u32, e: HistoryEntry<Value>) -> Option<Entry> {
         HistoryBody::Dropped => (Body::Gone, None),
         HistoryBody::NotFetched => (Body::NotFetched, None),
     };
-    Some(Entry { id: Id { year, pos }, sender: e.commit.actor, node: e.commit.node, time: e.commit.ts.wall_ms().0.min(e.commit.received.0), valid: e.valid, body, name, reply_to, replaces })
+    Some(Entry { id: Id { year, pos }, sender: e.commit.actor, node: e.commit.node, time: e.commit.ts.wall_ms().0.min(e.commit.received.0), received: e.commit.received.0, valid: e.valid, body, name, reply_to, replaces })
 }
 
 /// The years a chat's messages may be under: its creation's to next year's (a clock ahead).
@@ -555,34 +571,65 @@ impl Timeline {
     }
 }
 
-/// Messages after a cursor, oldest first.
+/// Messages that reached this node after a cursor, oldest stamp first.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Since {
-    /// By the original's place. An edit of an older message comes as that message again, under its
-    /// id: it replaces what the caller has. A deletion of an older message moves no cursor: `watch`.
+    /// Each under the original's id, in its newest version: an edit of an older message comes as
+    /// that message again, a late post (a member was offline) as what it is. A deletion of an older
+    /// message moves no cursor: `watch`.
     pub messages: Vec<Message>,
-    /// Where to go on from: the newest entry read (`None`: nothing read, the same cursor).
+    /// Where to go on from: the entry that arrived last of those read (`None`: nothing read, the
+    /// same cursor).
     pub cursor: Option<Id>,
     pub more: bool,
     pub complete: bool,
 }
 
-/// What was written after `after` (`None`: from the start), about `n` entries at most.
+/// An entry's place in this node's arrival order: a stamp says nothing of when a post got here.
+fn arrival(e: &Entry) -> (u64, HistoryPos) {
+    (e.received, e.id.pos)
+}
+
+/// What arrived after `after` (`None`: from the start), `n` entries at most, read in arrival order.
+/// A cursor is this node's: any entry's id does, and it means the arrival of that entry. Reads the
+/// whole history (no arrival index): an app showing a timeline uses `watch`.
+/// Limits: an entry arriving in the cursor's millisecond with a lesser ID, or after this node's
+/// clock jumped back past the cursor, is not returned.
 pub fn since(db: &Osis, c: Tid, after: Option<&Id>, n: usize) -> Result<Since> {
-    let got = entries(db, c, after.map_or(HistoryFrom::Oldest, |a| HistoryFrom::After(a.pos)), n)?;
-    let cursor = got.entries.last().map(|e| e.id);
+    let from = match after {
+        Some(a) => Some(entry_at(db, c, a)?.map_or((a.pos.ts.wall_ms().0, a.pos), |e| arrival(&e))),
+        None => None,
+    };
     let mut t = Timeline::new(db, c)?;
-    let mut messages = Vec::new();
-    for e in got.entries.into_iter().rev() {
-        messages.extend(t.take(db, e)?);
+    let (mut new, mut shown) = (Vec::new(), Vec::new());
+    while let Some(e) = t.next(db)? {
+        if from.is_none_or(|f| arrival(&e) > f) {
+            new.push(e.clone());
+        }
+        shown.extend(t.take(db, e)?);
     }
-    for o in t.edits.keys().copied().collect::<Vec<_>>() {
-        if let Some(e) = entry_at(db, c, &o)? {
-            messages.extend(t.take(db, e)?);
+    new.sort_by_key(arrival);
+    let more = new.len() > n;
+    new.truncate(n);
+    let mut touched = BTreeSet::new();
+    for e in &new {
+        touched.insert(replaces_of(db, c, e, t.mode)?.map_or(e.id, |r| r.original));
+    }
+    shown.retain(|m| touched.contains(&m.id));
+    shown.sort_by_key(|m| m.id.pos);
+    Ok(Since { messages: shown, cursor: new.last().map(|e| e.id), more, complete: t.complete })
+}
+
+/// The entry that arrived last here: the cursor of everything read so far. Reads the whole history.
+pub fn cursor(db: &Osis, c: Tid) -> Result<Option<Id>> {
+    let mut t = Timeline::new(db, c)?;
+    let mut last: Option<Entry> = None;
+    while let Some(e) = t.next(db)? {
+        if last.as_ref().is_none_or(|l| arrival(&e) > arrival(l)) {
+            last = Some(e);
         }
     }
-    messages.sort_by_key(|m| m.id.pos);
-    Ok(Since { messages, cursor, more: got.more, complete: got.complete })
+    Ok(last.map(|e| e.id))
 }
 
 /// The message `id` is a version of, reading back to its original.
@@ -611,7 +658,7 @@ pub fn edit(db: &Osis, c: Tid, m: &Message, text: &str) -> Result<Id> {
         return Err(Error::Invalid("editing is off in this chat".into()));
     }
     if m.sender != db.me() {
-        return Err(Error::Permission { tid: c, needs: Role::Admin });
+        return Err(Error::Invalid("only its sender edits a message".into()));
     }
     let held = versions_held(m);
     let mut prior = m.prior.clone();
@@ -685,7 +732,8 @@ pub fn purge_member(db: &Osis, c: Tid, actor: Tid) -> Result<()> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
     /// An entry reads otherwise now: a new message, an edit (`Entry::replaces`, checked), a
-    /// deletion, a late older one, turned invalid.
+    /// deletion, a late older one, turned invalid. An edit under `EditMode::Purge` is also a
+    /// deletion of the version it replaced: a timeline read tells the two apart.
     Entry(Box<Entry>),
     /// Events may have been missed: read again.
     Reread,

@@ -7,7 +7,7 @@ use crate::json::J;
 use crate::{exit, parse_dur, usage};
 use osis::{Tid, WaitForSync};
 use osis_chat::{Body, Draft, EditMode, Entry, Event, Id, Message, Options, PurgeBy, Timeline};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 fn id(s: &str) -> anyhow::Result<Id> {
     Ok(s.parse::<Id>()?)
@@ -77,7 +77,16 @@ fn entry_line(json: bool, e: &Entry) -> String {
     }
     let reply = e.reply_to.map_or_else(String::new, |r| format!(" (to {r})"));
     let what = of.map_or_else(String::new, |o| format!(" replaces {o}"));
-    format!("{} {} {}{reply}{what}: {}", e.id, who(e.sender, e.name.as_ref()), e.time, shown(s, t))
+    let bad = if e.valid { "" } else { " (invalid)" };
+    format!("{} {} {}{reply}{what}{bad}: {}", e.id, who(e.sender, e.name.as_ref()), e.time, shown(s, t))
+}
+
+/// `what` needs the store itself: a daemon on it does not carry the call (issues/cli-proxy.md).
+fn needs_store(ctx: &Ctx<'_>, what: &str) -> anyhow::Result<()> {
+    if ctx.db.is_attached() {
+        return Err(exit(1, format!("{what} is not carried through a daemon yet: stop `osis serve` on this store, run it, start `serve` again")));
+    }
+    Ok(())
 }
 
 fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Message> {
@@ -129,12 +138,14 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
         }
         ChatCmd::Join { link } => {
+            needs_store(ctx, "chat join")?;
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
             let t = wait(ctx, osis_chat::join(&db, &l))?;
             send_out(ctx, None)?;
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         ChatCmd::Kick { chat, person, erase, keep, purge, no_sync } => {
+            needs_store(ctx, "chat kick")?;
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&person)?);
             let word = if erase {
                 Some(false)
@@ -179,9 +190,10 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
                     break;
                 }
             }
+            more |= got.len() > max;
             got.truncate(max);
-            // the cursor to go on from is the newest entry, whatever the page shows
-            let cursor = osis_chat::entries(&db, t, osis::HistoryFrom::Newest, 1)?.entries.first().map(|e| e.id);
+            // the cursor to go on from is the last arrived entry, whatever the page shows
+            let cursor = osis_chat::cursor(&db, t)?;
             got.reverse();
             print_since(ctx, &osis_chat::Since { messages: got, cursor, more, complete }, None)
         }
@@ -189,14 +201,23 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let t = ctx.tid(&chat)?;
             let json = ctx.g.json;
             let (tx, rx) = mpsc::channel::<String>();
-            let (tx2, wake) = (tx.clone(), tx);
+            let wake = tx.clone();
+            // over for good: the stream ends, and the command says so
+            let ended = Arc::new(Mutex::new(None));
+            let (mut tx, why) = (Some(tx), ended.clone());
             let subs = osis_chat::watch(&db, t, move |_, e| {
                 let line = match e {
                     Event::Entry(e) => entry_line(json, &e),
                     Event::Reread => if json { J::obj([("reread", J::Bool(true))]).text() } else { "reread".to_string() },
-                    Event::Ended(m) => format!("ended: {m}"),
+                    Event::Ended(m) => {
+                        *why.lock().unwrap_or_else(|e| e.into_inner()) = Some(m);
+                        tx = None;
+                        return;
+                    }
                 };
-                let _ = tx2.send(line);
+                if let Some(tx) = &tx {
+                    let _ = tx.send(line);
+                }
             })?;
             // subscribed first: nothing between the page and the stream is missed; a repeat is harmless
             if let Some(a) = after {
@@ -216,7 +237,11 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             let timeout = ctx.timeout_or(None)?;
             let r = crate::cmd::stream_lines(ctx, &rx, count, timeout);
             drop(subs);
-            r
+            let why = ended.lock().unwrap_or_else(|e| e.into_inner()).take();
+            match why {
+                Some(m) if r.is_ok() => Err(exit(1, format!("watch ended: {m}"))),
+                _ => r,
+            }
         }
         ChatCmd::Edit { chat, id: i, text } => {
             let t = ctx.tid(&chat)?;
