@@ -1571,11 +1571,15 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     gf.retain(|k, _| !expired.contains(&(k.1.clone(), k.2.clone())));
     // a node given a commit before a part of it expired may have applied it by that part, where
     // one given it after holds it pending (issues/applied-by-part-before-expiry.md): with an
-    // early clock, a commit with a part on such an aspect applied at one node only ends the
-    // comparison
-    if (want.early || got.early) && all.iter().any(|k| expired.contains(&(k.1.clone(), k.2.clone())) && wf.keys().any(|x| x.0 == k.0) != gf.keys().any(|x| x.0 == k.0)) {
-        return None;
-    }
+    // early clock, a commit with a part on such an aspect applied at one node only is not
+    // compared (its bodies, index lines and pending line); everything else is
+    let parted: BTreeSet<String> = if want.early || got.early {
+        all.iter().filter(|k| expired.contains(&(k.1.clone(), k.2.clone())) && wf.keys().any(|x| x.0 == k.0) != gf.keys().any(|x| x.0 == k.0)).map(|k| k.0.clone()).collect()
+    } else {
+        BTreeSet::new()
+    };
+    wf.retain(|k, _| !parted.contains(&k.0));
+    gf.retain(|k, _| !parted.contains(&k.0));
     if wf.keys().ne(gf.keys()) {
         let k = wf.keys().find(|k| !gf.contains_key(*k)).or_else(|| gf.keys().find(|k| !wf.contains_key(*k)));
         return Some(format!("body {k:?} known at one node only"));
@@ -1585,7 +1589,7 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
     }
     let on_expired = |c: &CommitId| {
         let id = format!("{c:?}");
-        all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())))
+        parted.contains(&id) || all.iter().any(|k| k.0 == id && expired.contains(&(k.1.clone(), k.2.clone())))
     };
     match (&want.index, &got.index) {
         (Some(w), Some(g)) => {
@@ -1634,6 +1638,12 @@ fn alike(want: &Judged, got: &Judged) -> Option<String> {
                 }
             }
             continue;
+        }
+        if *name == "pending" && !parted.is_empty() {
+            let other = |s: &str| s.lines().filter(|l| !parted.iter().any(|c| l.starts_with(&format!("{c} ")))).collect::<Vec<_>>().join("\n");
+            if other(x) == other(y) {
+                continue;
+            }
         }
         return first_diff_parts(&[(name, x.clone())], &[(name, y.clone())]);
     }
