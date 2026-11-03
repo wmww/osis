@@ -541,4 +541,32 @@ mod tests {
         assert_eq!(residues_holding(e, &copy, &body, b"SECRETC-value"), 0, "a residue keeps the purged value");
         assert_eq!(residues_holding(e, &copy, &body, b"SECRETD-value"), 0, "a residue keeps the purged value");
     }
+
+    // spec/permissions.md §7: a void import's writes join nothing, its residue included: an origin
+    // going on the list again rejoins no void import's residue (a rebuild reads none either).
+    #[test]
+    fn void_import_residue_joins_nothing() {
+        let (mut lp, t, z, body) = two_sources();
+        let me = lp.peers[0].engine.tid();
+        let (copy, _) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+        lp.advance(1_000);
+        let d = write_form(&mut lp, z, &body, "SECRETD-value");
+        let x = write_form(&mut lp, z, &body, "SECRETX-value");
+        // c: a delta on the copy, so every import listing it is void there
+        let c = write_form(&mut lp, copy, &Ak::new("t:reg.0").unwrap(), "native");
+        let cd = import_as(&mut lp, 0, copy, &body, &[(d, d), (x, c)], &[c, d]);
+        lp.advance(1_000);
+        let ic = import_as(&mut lp, 0, copy, &body, &[(x, c)], &[c]);
+        lp.advance(1_000);
+        let id = import_as(&mut lp, 0, copy, &body, &[(d, d)], &[d]);
+        lp.advance(1_000);
+        let e = &lp.peers[0].engine;
+        assert!(e.core.ix.void.contains(&cd) && e.core.ix.void.contains(&ic) && !e.core.ix.void.contains(&id));
+        purge_import(&mut lp, copy, &body, id);
+        purge_import(&mut lp, copy, &body, ic);
+        let e = &mut lp.peers[0].engine;
+        let got = e.state(&copy, &body).unwrap();
+        e.run(|tx| crate::apply::rebuild_without(tx, &copy, &body, &[])).unwrap();
+        assert_eq!(got, e.state(&copy, &body).unwrap(), "the state is the join of what is held");
+    }
 }
