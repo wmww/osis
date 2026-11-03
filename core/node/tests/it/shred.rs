@@ -688,8 +688,9 @@ fn purged_part_waits_beside_a_part_past_expiry_spec_commits_5() {
         lp.deliver(1, &request).unwrap();
         let r = lp.peers[1].engine.ingest(&part.encode(), Vec::new()).unwrap();
         assert!(matches!(r, osis_node::Ingested::Pending(_, osis_node::Reason::WaitDeltas)), "{r:?}");
-        assert!(!recoverable(&mut lp.peers[1], b"SECRET-R4e2"), "held value-less");
-        assert!(!recoverable(&mut lp.peers[1], b"BRIEF-R4e2"), "gone");
+        let [secret, brief] = recovered(&mut lp.peers[1], [b"SECRET-R4e2", b"BRIEF-R4e2"]);
+        assert!(!secret, "held value-less");
+        assert!(!brief, "gone");
         let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().into_iter().map(|x| (x.0, x.1)).collect::<Vec<_>>();
         assert_eq!(flagged(&mut lp), vec![(t2, ak("t:brief.0"))]);
         lp.peers[1].engine.ingest(&rest.encode(), Vec::new()).unwrap();
@@ -927,8 +928,9 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                     }
                 }
                 // before the copies that would heal it: every item delivered once
-                assert!(!recoverable(&mut p, b"SECRET-R5c"), "order {order:?}: purged value kept");
-                assert!(!(k == 0 || tick) || !recoverable(&mut p, b"BRIEF-R5c"), "order {order:?}: expired value kept");
+                let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
+                assert!(!kept_secret, "order {order:?}: purged value kept");
+                assert!(!(k == 0 || tick) || !kept_brief, "order {order:?}: expired value kept");
                 if p.engine.pending().is_empty() {
                     assert_eq!(p.engine.stripped_count(&c).unwrap(), 0, "order {order:?}: nothing waits");
                 }
@@ -940,7 +942,8 @@ fn past_expiry_and_purge_alike_in_every_order_spec_commits_5() {
                 p.engine.reexamine().unwrap();
                 let e = &mut p.engine;
                 let got = format!("applied {} pending {:?} stripped {} flags {:?} reads {:?} {:?} {:?} digests {:?} {:?} {:?} {:?}", e.commit_ids().contains(&c), e.pending(), e.stripped_count(&c).unwrap(), e.suspects().unwrap().iter().map(|f| f.1.clone()).collect::<Vec<_>>(), e.get(&t, &reg).unwrap(), e.get(&t, &list).unwrap(), e.get(&t2, &brief).unwrap(), e.state_digest(&t, &reg).unwrap(), e.state_digest(&t, &list).unwrap(), e.state_digest(&t2, &brief).unwrap(), crate::judgment::observe(e, ids));
-                let gone = !recoverable(&mut p, b"SECRET-R5c") && !recoverable(&mut p, b"BRIEF-R5c");
+                let [kept_secret, kept_brief] = recovered(&mut p, [b"SECRET-R5c", b"BRIEF-R5c"]);
+                let gone = !kept_secret && !kept_brief;
                 outcomes.lock().unwrap().entry(format!("gone {gone} {got}")).or_insert(format!("sync {sync} k {k} tick {tick} order {order:?}"));
             });
         }

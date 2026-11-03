@@ -92,7 +92,7 @@ fn strip_purged(tx: &mut Tx<'_>, id: &CommitId, blob: &mut osis_commit::CommitBl
     // the stored copy, shredded
     if tx.core.ix.pending.contains_key(id)
         && let Some((kind, bytes)) = tx.txn.get_pending(id)?
-        && let Ok(mut b) = osis_commit::CommitBlob::decode(&bytes)
+        && let Ok(mut b) = osis_commit::CommitBlob::decode_stored(&bytes)
     {
         for p in b.parts.iter_mut().filter(|p| p.ai == ai && done.contains(&p.di)) {
             p.delta = emptied();
@@ -111,7 +111,7 @@ pub(super) fn purge_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
         return strip_pending(tx, c, ai, false);
     }
     let Some((_, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
-    let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
+    let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
     strip_purged(tx, c, &mut blob, &h, ai)
 }
 
@@ -187,7 +187,7 @@ pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool
         return Ok(());
     }
     let Some((kind, bytes)) = tx.txn.get_pending(c)? else { return Ok(()) };
-    let Ok(mut blob) = osis_commit::CommitBlob::decode(&bytes) else { return Ok(()) };
+    let Ok(mut blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { return Ok(()) };
     let n = blob.parts.len();
     blob.parts.retain(|p| p.ai != ai);
     if blob.parts.len() == n {

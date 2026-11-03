@@ -152,6 +152,12 @@ pub fn recoverable(p: &mut osis_node::local_peer::Peer, marker: &[u8]) -> bool {
     plaintexts(p).iter().any(|x| contains(x, marker))
 }
 
+/// `recoverable` of each marker, from one attack (an attack costs seconds).
+pub fn recovered<const N: usize>(p: &mut osis_node::local_peer::Peer, markers: [&[u8]; N]) -> [bool; N] {
+    let found = plaintexts(p);
+    markers.map(|m| found.iter().any(|x| contains(x, m)))
+}
+
 /// Every plaintext an attacker recovers.
 pub fn plaintexts(p: &mut osis_node::local_peer::Peer) -> Vec<Vec<u8>> {
     p.engine.forensic(&p.backend).unwrap().into_iter().map(|r| r.plain).collect()

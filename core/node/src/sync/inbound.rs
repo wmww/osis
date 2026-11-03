@@ -384,7 +384,7 @@ impl SyncEngine {
         let mut listed = BTreeSet::new();
         for (c, r) in self.engine.pending() {
             if r == crate::Reason::WaitBlobs
-                && let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).map(|cb| cb.header)
+                && let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).map(|cb| cb.header)
             {
                 listed.extend(h.chunks.iter().map(|ch| ch.blob));
             }
@@ -627,7 +627,7 @@ impl SyncEngine {
             if self.state.by_commit.get(&c).map_or(0, BTreeSet::len) < 2 {
                 continue;
             }
-            let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode(&b).ok()).map(|b| b.header) else { continue };
+            let Some(h) = self.engine.commit_bytes(&c)?.and_then(|b| osis_commit::CommitBlob::decode_stored(&b).ok()).map(|b| b.header) else { continue };
             if h.kind.is_role() && h.aspects.iter().any(|a| a.ak.as_str() == "secrets.0") {
                 out.push(c);
             }
@@ -1048,7 +1048,7 @@ impl SyncEngine {
         let mut missing = BTreeSet::new();
         for c in waiting {
             let Some(bytes) = self.engine.commit_bytes(&c)? else { continue };
-            let Ok(cb) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            let Ok(cb) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
             // asked of the label whether or not an entry was seen (an unstamped one that opened
             // under nothing is not kept, `drop_unvouched`)
             missing.extend(cb.header.chunks.iter().map(|ch| ch.blob).filter(|b| !self.engine.has_blob(b)));

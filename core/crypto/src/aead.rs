@@ -22,6 +22,22 @@ pub fn open(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ad: &[u8], ciphertext: &[u8
         .map_err(|_| Error::Decrypt)
 }
 
+/// The last plaintext byte of `ciphertext` (with its tag) under `key` and `nonce`, NOT
+/// authenticated: forensic tests only (`osis_store::attack`). Every padded plaintext ends in
+/// 0x80 or 0x00, so another byte rules the key out without `open`'s pass over the whole
+/// ciphertext. `None`: too short to hold a byte.
+#[doc(hidden)]
+pub fn last_plain_byte(key: &[u8; 32], nonce: &[u8; NONCE_LEN], ciphertext: &[u8]) -> Option<u8> {
+    use chacha20::cipher::{KeyIvInit, StreamCipher, StreamCipherSeek};
+    let at = ciphertext.len().checked_sub(TAG_LEN + 1)?;
+    let mut c = chacha20::XChaCha20::new(key.into(), nonce.into());
+    // keystream block 0 is the Poly1305 key; the message starts at block 1
+    c.seek(64 + at as u64);
+    let mut b = [*ciphertext.get(at)?];
+    c.apply_keystream(&mut b);
+    Some(b[0])
+}
+
 /// A 49-byte `suite || key` sealing (spec/wire.md §7): symmetric boxes.
 pub const SUITE_KEY_LEN: usize = 1 + 32 + TAG_LEN;
 
@@ -74,5 +90,18 @@ mod tests {
         assert_eq!(open(&key, &nonce, &ad, &ct).unwrap(), pt);
         assert_eq!(open(&key, &nonce, b"", &ct), Err(Error::Decrypt));
         assert_eq!(open(&key, &nonce, &ad, &ct[..10]), Err(Error::Decrypt));
+    }
+
+    // spec: none (forensic test support): the unauthenticated last byte is the plaintext's, at
+    // every length across block boundaries
+    #[test]
+    fn last_plain_byte_is_the_plaintexts() {
+        let (key, nonce) = ([3u8; 32], [5u8; NONCE_LEN]);
+        for n in 0..200usize {
+            let pt: Vec<u8> = (0..n).map(|i| (i * 7 + n) as u8).collect();
+            let ct = seal(&key, &nonce, b"ad", &pt).unwrap();
+            assert_eq!(last_plain_byte(&key, &nonce, &ct), pt.last().copied(), "length {n}");
+        }
+        assert_eq!(last_plain_byte(&key, &nonce, &[0; TAG_LEN]), None);
     }
 }

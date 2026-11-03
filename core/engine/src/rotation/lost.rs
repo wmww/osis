@@ -140,7 +140,7 @@ fn pending_grants(tx: &mut Tx<'_>) -> Result<Vec<PendingGrant>> {
         let n = page.len();
         for (id, _, bytes) in page {
             after = Some(id);
-            let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+            let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
             let (author, ts) = (blob.header.author, blob.header.ts.wall_ms().0);
             let until = ts.saturating_add(PENDING_GRANT_WAIT_MS);
             let recent = until > now && ts <= now.saturating_add(osis_base::format::MAX_DRIFT_MS);
@@ -185,7 +185,7 @@ impl Engine {
         self.run(|tx| {
             for id in ids {
                 let Some((_, bytes)) = tx.txn.get_pending(&id)? else { continue };
-                let Ok(blob) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+                let Ok(blob) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
                 let h = &blob.header;
                 if h.aspects.iter().any(|x| x.tid == a && x.ak.as_str() == "keys.0") && tx.core.role_now(&h.author, &a) == Some(Role::Admin) && authentic(tx.core, &blob, &id, &a) {
                     return Ok(true);

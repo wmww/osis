@@ -91,7 +91,13 @@ impl Engine {
             ev.secrets.extend(self.read_secrets(&t).iter().map(|s| *s.expose()));
         }
         let ciphers = osis_store::Ciphers {
-            open: |blob, key| osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p),
+            // a padded blob ends in 0x80 or 0x00 (`osis_crypto::unpad`): another last byte rules the
+            // key out without the whole AEAD pass (tens of thousands of candidates per blob)
+            open: |blob, key| {
+                let ct = osis_label::blob::Prefix::parse(blob).ok().and_then(|p| blob.get(p.len()..))?;
+                matches!(osis_crypto::aead::last_plain_byte(key, &osis_crypto::aead::ZERO_NONCE, ct), Some(0 | 0x80)).then_some(())?;
+                osis_label::open(blob, &osis_crypto::Secret32::from_bytes(*key)).ok().map(|(_, p)| p)
+            },
             unwrap: |secret, blob, wrap| osis_crypto::unwrap(&osis_crypto::Secret32::from_bytes(*secret), blob, wrap).ok().map(|k| *k.expose()),
             wrap_len: osis_crypto::WRAP_LEN,
         };

@@ -38,6 +38,7 @@ curve25519-dalek = { version = "4.1", default-features = false, features = ["zer
 x25519-dalek = { version = "2.0", default-features = false, features = ["static_secrets", "zeroize", "precomputed-tables"] }
 libcrux-ml-kem = { version = "0.0.11", default-features = false, features = ["mlkem768"] }
 chacha20poly1305 = { version = "0.10", default-features = false, features = ["alloc"] }
+chacha20 = { version = "0.9", default-features = false, features = ["zeroize"] }
 zeroize = { version = "1.8", features = ["std", "zeroize_derive"] }
 rand_core = { version = "0.6", default-features = false, features = ["getrandom"] }
 subtle = { version = "2.6", default-features = false }

@@ -244,7 +244,7 @@ fn read_pending(tx: &mut Tx<'_>, id: &CommitId) -> Result<Option<CommitBlob>> {
         tx.core.waits.unpended(id);
         return Ok(None);
     };
-    Ok(CommitBlob::decode(&bytes).ok())
+    Ok(CommitBlob::decode_stored(&bytes).ok())
 }
 
 /// A pending commit in `Engine::reexamine`: read and decoded, or still waiting for deltas
@@ -352,7 +352,7 @@ pub(crate) fn examine(tx: &mut Tx<'_>, blob: &mut CommitBlob, id: &CommitId, ski
         // a slot's stored first copy, kept while it could not be checked: a true copy may be held. Not a
         // copy just come (it kept nothing out), nor a part of the wrong class (it has no true copy)
         let kept_out = |p: &osis_commit::Part| junk.contains(&(p.ai, p.di)) && h.aspects.get(p.ai).is_none_or(|a| a.ak.lifetime() == class_of(&h));
-        if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
+        if tx.core.ix.pending.contains_key(id) && tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()).is_some_and(|b| b.parts.iter().any(kept_out)) {
             tx.core.redeliver.insert(*id);
         }
         blob.parts.retain(|p| !junk.contains(&(p.ai, p.di)));
@@ -792,7 +792,7 @@ fn unpend(tx: &mut Tx<'_>, id: &CommitId) -> Result<bool> {
 fn with_pending(tx: &mut Tx<'_>, id: &CommitId, mut blob: CommitBlob) -> Result<CommitBlob> {
     if tx.core.ix.pending.contains_key(id)
         && let Some((_, old)) = tx.txn.get_pending(id)?
-        && let Ok(mut old) = CommitBlob::decode(&old)
+        && let Ok(mut old) = CommitBlob::decode_stored(&old)
     {
         // what a true copy is judged by below; while the header's lists are away a `created.0` copy
         // cannot prove itself and is discarded like any other (issues/linked-header-junk-record.md)
@@ -1007,7 +1007,7 @@ impl Engine {
                 Arc::new(h)
             }
         };
-        let pending: Vec<osis_commit::Part> = self.run(|tx| Ok(tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()).map(|b| b.parts))).ok().flatten().unwrap_or_default();
+        let pending: Vec<osis_commit::Part> = self.run(|tx| Ok(tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()).map(|b| b.parts))).ok().flatten().unwrap_or_default();
         let mut all = blob.clone();
         all.parts.extend(pending);
         let carried = carried_records(&h, &all, &id);
@@ -1054,7 +1054,7 @@ impl Engine {
         self.run(|tx| {
             let now = tx.now().0;
             let mut out: BTreeSet<(usize, usize)> = BTreeSet::new();
-            let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok());
+            let pending = tx.txn.get_pending(&id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok());
             if let Some(b) = &pending {
                 out.extend(b.parts.iter().map(|p| (p.ai, p.di)));
                 for ai in 0..b.header.aspects.len() {
@@ -1089,7 +1089,7 @@ impl Engine {
         }
         self.run(|tx| {
             let meta = tx.core.ix.commits.get(id).cloned();
-            let pending = if tx.core.ix.pending.contains_key(id) { tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode(&b).ok()) } else { None };
+            let pending = if tx.core.ix.pending.contains_key(id) { tx.txn.get_pending(id)?.and_then(|(_, b)| CommitBlob::decode_stored(&b).ok()) } else { None };
             let Some(h) = meta.as_ref().map(|m| (*m.header).clone()).or_else(|| pending.as_ref().map(|b| b.header.clone())) else { return Ok(false) };
             let applied: BTreeSet<(usize, usize)> = match &meta {
                 Some(_) => tx.get_commit(id)?.map(|b| b.parts.iter().map(|p| (p.ai, p.di)).collect()).unwrap_or_default(),
@@ -1281,7 +1281,7 @@ impl Engine {
         let r: Result<()> = self.run(|tx| {
             for id in &ids {
                 let Some((_, bytes)) = tx.txn.get_pending(id)? else { continue };
-                let Ok(mut b) = CommitBlob::decode(&bytes) else { continue };
+                let Ok(mut b) = CommitBlob::decode_stored(&bytes) else { continue };
                 let want = tx.core.ix.pending.get(id).cloned();
                 // parts of an applied commit are examined with it, as `late_parts` does
                 let skip = if tx.core.ix.commits.contains_key(id) {
@@ -1352,7 +1352,7 @@ impl Engine {
             if !self.core.ix.pending.contains_key(c) {
                 continue;
             }
-            if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode(&b).ok()) {
+            if let Some(b) = self.commit_bytes(c)?.and_then(|b| CommitBlob::decode_stored(&b).ok()) {
                 out.extend(keys::pending_grantees(&b, c, thing));
                 for (a, w) in keys::pending_secrets_writes(&b, c) {
                     if a == *thing {

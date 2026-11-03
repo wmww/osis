@@ -58,7 +58,7 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     // a pending memory commit all of whose things are freed goes too (its records ride in it,
     // so it would bring them back when it applied)
     for (c, bytes) in tx.txn.memory_pending()? {
-        let Ok(b) = osis_commit::CommitBlob::decode(&bytes) else { continue };
+        let Ok(b) = osis_commit::CommitBlob::decode_stored(&bytes) else { continue };
         if !b.header.aspects.is_empty() && b.header.aspects.iter().all(|a| freed.contains(&a.tid)) {
             tx.txn.remove_pending(&c, Shred::No)?;
             tx.core.ix.pending.remove(&c);

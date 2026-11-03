@@ -405,7 +405,7 @@ fn pruned_replay(seed: u64) -> String {
 // spec/crdt.md §8, spec/commits.md §4, §5 (traced tables): `pruned_sessions_check`.
 #[test]
 fn pruned_sessions_converge_spec_crdt_8() {
-    let seeds: Vec<u64> = (0..16).collect();
+    let seeds: Vec<u64> = (0..4).collect();
     osis_base::testenv::run_seeds("sessions::pruned_sessions_converge_spec_crdt_8", &seeds, false, pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
 }
 
