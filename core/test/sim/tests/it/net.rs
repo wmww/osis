@@ -216,15 +216,13 @@ fn ephemeral_capped_seed_14() {
     ok("ephemeral_capped", 14);
 }
 
-// spec/sync.md §9: a run where covers absorbing others' commits left one stuck at the full host
-// (before own covers).
+// spec/sync.md §9: a run where compaction of others' commits left one stuck at the full host.
 #[test]
 fn ephemeral_seed_83() {
     ok("ephemeral", 83);
 }
 
-// spec/sync.md §9: a run where the full host held `created.0`-only commits no cover absorbed
-// (before own covers).
+// spec/sync.md §9: a run where the full host held `created.0`-only commits nothing covered.
 #[test]
 fn ephemeral_capped_seed_2400045() {
     ok("ephemeral_capped", 2400045);

@@ -659,7 +659,7 @@ fn ingest_blob(tx: &mut Tx<'_>, blob: CommitBlob, origin: Origin) -> Result<Inge
     match (blob.header.ephemeral, blob.header.form) {
         (None, _) => ingest_class(tx, blob, origin),
         (Some(osis_commit::EphClass::Plain), osis_commit::Form::Session(_) | osis_commit::Form::Commit) => tx.in_class(true, |tx| ingest_class(tx, blob, origin)),
-        // relay-only commits are delivered, never held (`Engine::ingest_ephemeral`)
+        // relay-only commits are delivered, never held (`Engine::ingest_relay`)
         _ => Err(Error::BadInput("a relay-only commit on the commit path")),
     }
 }
