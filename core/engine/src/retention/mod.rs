@@ -283,15 +283,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     // a snapshot dropped other than as covered keeps its frontiers and `Absorbed` (counters
     // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
     // a covered one's coverers reach them
-    let mut gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
-    // its body gone for a purge that fell: what it gave then (`rejudge_purges`)
-    if snapshot && !as_cover && gives.is_none() && m.missing.contains(&ai) {
-        let key = records::gave_key(&a.tid, &a.ak, c, ai);
-        if let Some(b) = tx.txn.get_local(&key)? {
-            gives = Some(crate::engine::index::read_gives(&mut Rd::new(&b))?);
-            tx.txn.remove_local(&key, Shred::No)?;
-        }
-    }
+    let gives = if snapshot && !as_cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::validity::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
@@ -1317,9 +1309,6 @@ pub(crate) fn rejudge_purges(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, changed: &mut 
     // until each comes back, this node may read less than one that kept it
     suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &back)?;
     for (c, ai) in back {
-        if let Some(g) = tx.core.ix.commits.get(&c).and_then(|m| m.dropped.get(&ai)?.gives.clone()) {
-            tx.txn.put_local(&records::gave_key(tid, ak, &c, ai), &crate::engine::index::write_gives(Wr::new(), &g).take(), Shred::No)?;
-        }
         reopen(tx, &c, ai)?;
         tx.core.mark_changed(c);
         if let Some(ch) = &mut tx.core.changed {
