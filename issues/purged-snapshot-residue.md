@@ -1,0 +1,7 @@
+# A snapshot dropped for carrying purged values keeps no residue
+> Summary: Option to close part of spec/crdt.md §4.6's drop-then-flip limit: keep a value-less residue of a purge-dropped snapshot's copies of the purged writes, as an import so dropped already keeps one. Needs a decision; not a bug today.
+> Tags: engine, crdt, retention
+
+Seed 34000 (`order::purged_snapshot_copy_after_flip_seed_34000_spec_crdt_4_6`): snapshot #22 is the only carrier of an import's purged write `m0`. Both nodes join it value-less and drop it (`purge::drop_purged_snapshot` -> `drop_carrying`, no residue row). Where a write that superseded `m0` in the state later turns invalid, the un-merge (`apply::atomic::rebuilt`) finds `m0` in no body or residue, and an older write shows at one node only. Today a stated limit (§4.6) and an order-harness excuse (`both_dropped_flips`).
+
+Fix shape: on that drop, store the snapshot's copies of the purged writes value-less as a residue row, counted by `residues` while the snapshot stays dropped for the purge (it comes back on a fall, `purge.rs` "every such one comes back with a fall"), and removed with it. Then the §4.6 excuse and the harness's snapshot case go. Costs: a new permanent-ish row class (notes/growth.md), lifecycle on fall/uncover. The flip that exposes it is honest (a demotion arriving before the grant that makes its author admin) but needs a copy, an import purge with a snapshot as the only carrier, and a concurrent demotion.
