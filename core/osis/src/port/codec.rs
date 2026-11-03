@@ -319,7 +319,7 @@ pub(crate) fn read(v: Value) -> Result<Result<Option<Value>>> {
     }
 }
 
-const STATES: [SyncState; 7] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::ReceiptsOnly];
+const STATES: [SyncState; 8] = [SyncState::Synced, SyncState::Syncing, SyncState::Unreachable, SyncState::NoHosts, SyncState::Refused, SyncState::Stranded, SyncState::ReceiptsOnly, SyncState::NoRoute];
 
 pub(crate) fn status_v(s: &Status) -> Value {
     let groups = s
@@ -333,6 +333,7 @@ pub(crate) fn status_v(s: &Status) -> Value {
                 Value::List(x.labels.iter().map(|l| Value::bytes(&l.0)).collect()),
                 Value::List(x.not_admitted.iter().map(|h| Value::Str(h.to_string())).collect()),
                 Value::Bool(x.leaving),
+                Value::List(x.unrouted.iter().map(|t| Value::Tid(*t)).collect()),
             ])
         })
         .collect();
@@ -351,8 +352,9 @@ pub(crate) fn status(v: Value) -> Result<Status> {
         let labels = b.list()?.into_iter().map(|l| Args::of(vec![l]).bytes().and_then(|x| x.try_into().map(LabelId).map_err(|_| bad("label")))).collect::<Result<_>>()?;
         let not_admitted = b.list()?.into_iter().map(|h| Args::of(vec![h]).text().and_then(|t| t.parse::<HostAddr>())).collect::<Result<_>>()?;
         let leaving = b.bool()?;
+        let unrouted = b.list()?.into_iter().map(|t| Args::of(vec![t]).tid()).collect::<Result<_>>()?;
         b.end()?;
-        st.groups.insert(t, GroupSync { state, last_sync, labels, not_admitted, leaving });
+        st.groups.insert(t, GroupSync { state, last_sync, labels, not_admitted, leaving, unrouted });
     }
     for t in a.list()? {
         st.split.insert(Args::of(vec![t]).tid()?);

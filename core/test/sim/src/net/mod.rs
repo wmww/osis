@@ -532,7 +532,7 @@ impl NetSim {
     }
 
     /// After any call into node `n`: checker events, diagnostics, a crash, then its actions.
-    fn after_node(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
+    pub fn after_node(&mut self, n: usize, acts: Vec<Action>) -> Res<()> {
         self.drain(n)?;
         if self.watch {
             self.observe_node(n);
@@ -1335,6 +1335,21 @@ impl NetSim {
         self.after_node(n, acts)?;
         self.groups.push(Group { g, owner, items: Vec::new() });
         Ok(g)
+    }
+
+    /// Node `n` creates a thing owned by `owner` with secrets of its own and no label, placed
+    /// nowhere (a grant's target with no route, spec/sync.md §2).
+    pub fn thing_with_secrets(&mut self, n: usize, owner: Tid) -> Res<Tid> {
+        let e = self.engine(n)?;
+        let mut m = Mutation::new();
+        let t = e.new_thing(&mut m, owner);
+        m.set(t, &workload::REG, &osis_base::Value::Str("plain".into())).map_err(|e| self.fail(e.to_string()))?;
+        let r = self.engine(n)?.commit(m);
+        r.map_err(|e| self.fail(format!("node {n} thing: {e}")))?;
+        let r = self.engine(n)?.give_own_secrets(&t);
+        let done = r.map_err(|e| self.fail(format!("node {n} own secrets: {e}")))?;
+        self.carry(n, done)?;
+        Ok(t)
     }
 
     /// Registers an existing labeled group (a person's home) as a write target.

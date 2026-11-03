@@ -258,16 +258,21 @@ pub(crate) fn recipient(tx: &mut Tx<'_>, holder: Tid, role: Role) -> Result<Reci
     Ok(Recipient { holder, role, keys })
 }
 
-/// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the
-/// nearest actor's above it. `None` for a key actor (direct delivery only).
+/// The inbox a role write about `holder` goes to (spec/sync.md §2): its own, else the nearest
+/// actor's above it; an ownerless thing that names none, its own label. `None` for a key actor
+/// (direct delivery only) and when none is known here.
 pub(crate) fn inbox_of(tx: &mut Tx<'_>, holder: &Tid) -> Result<Option<(Tid, Inbox)>> {
-    let chain: Vec<Tid> = tx.core.owner_chain(holder).filter_map(|s| s.thing()).collect();
-    for cur in chain {
-        if tx.core.is_key_actor(&cur) {
-            return Ok(None);
+    let steps: Vec<osis_base::ChainStep> = tx.core.owner_chain(holder).collect();
+    for s in steps {
+        let thing = match s {
+            osis_base::ChainStep::Up { thing, .. } | osis_base::ChainStep::Ownerless { thing, .. } => thing,
+            _ => return Ok(None),
+        };
+        if let Some(i) = Core::keys_in(tx, &thing)?.and_then(|k| k.inbox) {
+            return Ok(Some((thing, i)));
         }
-        if let Some(i) = Core::keys_in(tx, &cur)?.and_then(|k| k.inbox) {
-            return Ok(Some((cur, i)));
+        if matches!(s, osis_base::ChainStep::Ownerless { .. }) {
+            return Ok(own_label(tx, &thing)?.map(|(label, _, hosts)| (thing, Inbox { label, hosts })));
         }
     }
     Ok(None)

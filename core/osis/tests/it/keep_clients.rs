@@ -636,3 +636,34 @@ fn a_copy_beside_a_live_holder_spec_permissions_3() {
     assert!(b2.kept_copies().unwrap().contains(&xg));
     b2.close().unwrap();
 }
+
+// spec/sync.md §2 (Route), notes/client-port.md Routes for client actors: a thing granted to Bob that nothing carries shows without a route at Bob's node and to Bob's app (a thin client acting as his actor), and the app reads it once the granter syncs it
+#[test]
+fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
+    let x = chat(EdgeOpts::default(), Role::Read);
+    let (_, _, app) = x.app(Role::Read);
+    let t = x
+        .a
+        .write_with(|w| {
+            let t = w.create(x.a.me())?;
+            w.at(t, text()).set(&s("plain"))?;
+            Ok(t)
+        })
+        .unwrap();
+    x.a.grant(t, x.bob, Role::Read, Default::default()).unwrap();
+    let no_route = |db: &Osis| db.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::NoRoute && g.unrouted == vec![x.bob]);
+    assert!(no_route(&x.a), "the granter");
+    let nudge = Nudge::default();
+    until("Bob's node and his app show the missing route", || {
+        nudge.at(&x.b);
+        no_route(&x.b) && no_route(&app)
+    });
+    assert_ne!(app.get(t, text()).ok().flatten(), Some(s("plain")));
+    x.a.sync(t, &[]).unwrap();
+    until("the app reads it", || {
+        nudge.at(&x.b);
+        app.get(t, text()).ok().flatten() == Some(s("plain"))
+    });
+    assert!(!no_route(&x.a) && !no_route(&x.b) && !no_route(&app));
+    until("Bob's node syncs it", || x.b.status().unwrap().groups.get(&t).is_some_and(|g| g.state == osis::SyncState::Synced));
+}

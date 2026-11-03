@@ -70,10 +70,13 @@ pub enum Parts {
 /// blob for an actor, the commit itself over a direct connection for a node, nothing for a
 /// recovery or link key (it reads its label by static entry).
 pub(crate) fn deliver_to(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid]) -> Result<Vec<Delivery>> {
-    deliver_parts(tx, holder, c, things, Parts::All)
+    deliver_parts(tx, holder, c, things, Parts::All, Vec::new())
 }
 
-pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts) -> Result<Vec<Delivery>> {
+/// `deliver_to` with the carried `parts` and the author's `chain` for them (`CommitBlobPlaintext`
+/// values, spec/wire.md §9). A flow seals with no chain: node-sync seals again from the record it
+/// keeps (`SyncRecords::note_unsent`), with the chain, when it sends.
+pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], parts: Parts, chain: Vec<osis_base::Value>) -> Result<Vec<Delivery>> {
     if tx.core.is_key_actor(&holder) {
         let is_node = super::super::flows::is_node(tx, &holder)?;
         return Ok(if is_node { vec![super::owe(tx, Delivery::Direct { to: holder, commits: vec![c] })?] } else { Vec::new() });
@@ -82,8 +85,8 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
     // sealed to the holder's newest read keyset (its own, else the inbox actor's)
     let mut to = holder;
     let mut kem = None;
-    let chain: Vec<Tid> = tx.core.owner_chain(&holder).filter_map(|s| s.thing()).collect();
-    for cur in chain {
+    let owners: Vec<Tid> = tx.core.owner_chain(&holder).filter_map(|s| s.thing()).collect();
+    for cur in owners {
         if let Some(ks) = super::Core::keys_in(tx, &cur)?.and_then(|k| k.read) {
             let ct::KemKey::X25519MlKem768(b) = &ks.kem_key;
             kem = Some(osis_crypto::KemPublicKey::from_slice(b)?);
@@ -109,7 +112,7 @@ pub fn deliver_parts(tx: &mut Tx<'_>, holder: Tid, c: CommitId, things: &[Tid], 
         }
     }
     ts.sort_by_key(|t| t.tid);
-    let payload = InboxPayload { commit, things: ts };
+    let payload = InboxPayload { commit, things: ts, chain };
     let now = tx.now();
     let blob = seal_inbox_blob(&to, &kem, &payload, now, &mut *tx.rng)?;
     let resend = super::Resend { holder, commit: c, things: things.to_vec(), edge_only: parts == Parts::Edge };
@@ -383,7 +386,7 @@ pub(crate) fn demote_in(tx: &mut Tx<'_>, signer: Option<Tid>, target: Tid, d: &D
     done.add(c);
     if let Some(c) = c {
         for x in std::iter::once(holder).chain(gone.iter().map(|(x, _)| *x)) {
-            done.deliveries.extend(deliver_parts(tx, x, c, &[target], Parts::Edge)?);
+            done.deliveries.extend(deliver_parts(tx, x, c, &[target], Parts::Edge, Vec::new())?);
         }
         done.deliveries.extend(rotation::deliver_rotation(tx, target, Some(c), &unreached)?);
         // every label the removed parties could read: the target and what its roles open

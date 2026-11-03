@@ -566,7 +566,7 @@ impl Osis {
             return;
         }
         self.upkeep_links(l);
-        let status = crate::share::status_of(&mut l.sync);
+        let status = crate::share::status_of(&mut l.sync, self.inner.me);
         if status != l.status {
             for (g, s) in &status.groups {
                 if s.state == crate::share::SyncState::Stranded && l.status.groups.get(g).is_none_or(|o| o.state != s.state) {

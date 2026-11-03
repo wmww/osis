@@ -187,7 +187,7 @@ fn inbox_copy_names_only_touched_things_spec_sync_3() {
     let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
+    let payload = osis_label::InboxPayload { chain: Vec::new(), commit, things: vec![osis_label::InboxThing { tid: p, label: Some(osis_label::InboxLabel { id: home, index: 0, hosts: vec![net.address(host)] }), delete_keys: None }] };
     let now = osis_base::WallMs(net.now());
     let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, now, &mut osis_crypto::SeededRng::from_u64(5)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -246,7 +246,7 @@ fn plant_inbox(net: &mut Net, from: usize, (host, l): (usize, &LabelId), to: Tid
     let keys = net.engine(from).get_typed(&to, &ct::KEYS).unwrap().unwrap();
     let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
     let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
-    let payload = osis_label::InboxPayload { commit, things };
+    let payload = osis_label::InboxPayload { commit, things, chain: Vec::new() };
     // the prefix carries `now + INBOX_LIFETIME`: seal "earlier" for a shorter expiry
     let blob = osis_label::seal_inbox_blob(&to, &kem, &payload, osis_base::WallMs(expiry - INBOX_LIFETIME_MS), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
     let id = osis_label::blob_id(&blob);
@@ -394,6 +394,51 @@ fn stranger_invite_waits_for_accept_spec_sync_3() {
     assert!(requests(&mut net, b).is_empty(), "accepted: no request left");
     assert!(net.dialed.iter().any(|(n, x)| *n == b && x.key == rogue.key), "accepting dials g's hosts");
     assert_eq!(net.read(b, t), Some(s("for bob")), "and joins g");
+}
+
+// spec/wire.md §9: an inbox payload's chain gives only chain deltas: what else a commit in it carries (a box, a `label.0`, a group) is not applied
+#[test]
+fn an_inbox_chain_applies_only_chain_deltas_spec_wire_9() {
+    let (mut net, host, a, b, alice, bob, g, home) = alice_and_bob();
+    net.nodes[b].accepts = false;
+    let c = grant_commit(&mut net, a, g, bob);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    let (_, acts) = net.sync(b).accept_invite(c).unwrap();
+    net.actions(b, acts);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    net.set_online(b, false);
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let x = e.new_thing(&mut m, alice);
+    m.set(x, &ct::GROUP, &ct::Group::default()).unwrap();
+    let in_chain = e.commit(m).unwrap().unwrap();
+    let mut m = Mutation::new();
+    let y = e.new_thing(&mut m, alice);
+    m.set(y, &ct::GROUP, &ct::Group::default()).unwrap();
+    let main = e.commit(m).unwrap().unwrap();
+    let value = |net: &mut Net, c: &osis_base::CommitId| {
+        let bytes = net.engine(a).commit_bytes(c).unwrap().unwrap();
+        osis_base::decode(&bytes, &osis_base::Limits { max_depth: 64, max_bytes: bytes.len() }).unwrap()
+    };
+    let payload = osis_label::InboxPayload { commit: value(&mut net, &main), things: Vec::new(), chain: vec![value(&mut net, &in_chain)] };
+    let keys = net.engine(a).get_typed(&bob, &ct::KEYS).unwrap().unwrap();
+    let ct::KemKey::X25519MlKem768(kb) = &keys.read.unwrap().kem_key;
+    let kem = osis_crypto::KemPublicKey::from_slice(kb).unwrap();
+    let now = net.now();
+    let blob = osis_label::seal_inbox_blob(&bob, &kem, &payload, osis_base::WallMs(now), &mut osis_crypto::SeededRng::from_u64(9)).unwrap();
+    let put = osis_proto::Put { blob_id: osis_label::blob_id(&blob), blob: &blob, wrap: [7; osis_crypto::WRAP_LEN], stamp: None, expiry: Some(now + INBOX_LIFETIME_MS), ephemeral: false, replaces: &[], now: 0 };
+    osis_proto::LabelStore::put(net.hosts[host].hub.store_mut(), &home, put).unwrap();
+    net.set_online(b, true);
+    for _ in 0..3 {
+        net.advance(70_000);
+    }
+    assert!(holds(&mut net, b, &in_chain), "the chain went in");
+    assert!(net.engine(b).knows(&x), "its creation record");
+    assert!(net.engine(b).get_typed(&x, &ct::GROUP).unwrap().is_none(), "and nothing but chain deltas");
 }
 
 // spec/sync.md §3: a declined request is forgotten: never listed again, its commit never

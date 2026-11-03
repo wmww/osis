@@ -4,6 +4,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::indexing_slicing)]
 
 use crate::scenario::{introduce, new_tag, person};
+use osis::internals::Internals as _;
+use osis::internals::node::sync::EntryKind;
 use osis::core::{BODY, GROUP};
 use osis::{EdgeOpts, Error, GroupReach, Osis, Role, Share, ShareOpts, Tid};
 use osis_sim::world::World;
@@ -463,4 +465,481 @@ fn group_admin_learns_removal_elsewhere() {
     w.advance(3_600_000);
     w.run();
     assert!(!w.tally(&carol).contains_key("Upload"), "Carol uploads nothing: {:?}", w.tally(&carol));
+}
+
+// spec/sync.md §3: a removal by someone who knows the group's keys comes by its inbox: the admin's copy, with the remover's chain, leaves out the thing's newest `keys.0`: its fresh deposit seed is the removal's to keep from the group
+#[test]
+fn group_admin_copies_removal_without_new_keys() {
+    let Setup { mut w, alice, bob, carol, g } = setup();
+    let dave = person(&mut w, 4, 0);
+    let b = introduce(&mut w, &dave, &bob);
+    let a = introduce(&mut w, &dave, &alice);
+    let d = dave.me();
+    let h = new_tag(&dave, "H").unwrap();
+    dave.grant(h, b, Role::Write, EdgeOpts::default()).unwrap();
+    dave.grant(h, a, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    // dave learns g's keys
+    let met = card(&alice, "met");
+    alice.share(met, g, Role::Read, EdgeOpts::default()).unwrap();
+    alice.share(met, d, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    assert_eq!(text(&dave, met).as_deref(), Some("met"));
+    let t = card(&bob, "plan");
+    bob.write_with(|w| {
+        w.place(t, g)?;
+        w.place(t, h)
+    })
+    .unwrap();
+    bob.grant(t, g, Role::Read, EdgeOpts::default()).unwrap();
+    bob.grant(t, h, Role::Admin, EdgeOpts::default()).unwrap();
+    w.run();
+    assert_eq!(text(&carol, t).as_deref(), Some("plan"));
+    let seed = |db: &Osis| db.get(t, osis::core::KEYS).unwrap().and_then(|k| k.deposit_seed);
+    let old = seed(&carol);
+    w.until(dave.demote(t, g, osis::Lower::Remove, osis::Demotion::default()), 1000, 20).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert!(!carol.roster(t).contains_key(&g), "the removal reached carol");
+    assert_ne!(seed(&dave), old, "the removal refreshed the deposit seed");
+    assert_eq!(seed(&carol), old, "Carol does not learn the new one");
+}
+
+/// A removal that does not wait for sync.
+fn skip() -> osis::Demotion {
+    osis::Demotion { sync: osis::WaitForSync::Skip, ..Default::default() }
+}
+
+fn seed_of(db: &Osis, t: Tid) -> Option<[u8; 32]> {
+    db.get(t, osis::core::KEYS).ok().flatten().and_then(|k| k.deposit_seed)
+}
+
+// spec/sync.md §5, §6: Dave reads G and removes G's edge on his card outside G's closure: his deposit under G's label is promoted by its admin, who reads the card no more and holds none of its fresh `keys.0`, its author's chain complete without it; a reader joining later learns the removal and not the fresh deposit seed
+#[test]
+fn group_removal_deposit_promoted_without_new_keys() {
+    let Setup { mut w, alice, bob: _, carol: _, g } = setup();
+    let dave = person(&mut w, 4, 0);
+    let zoe = person(&mut w, 6, 0);
+    let d = introduce(&mut w, &alice, &dave);
+    let z = introduce(&mut w, &alice, &zoe);
+    alice.grant(g, d, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = card(&dave, "plan");
+    dave.share(t, g, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    assert_eq!(text(&alice, t).as_deref(), Some("plan"));
+    w.until(dave.demote(t, g, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    let (r, l) = dave.engine(|e| (e.aspect_commit(&t, "roles.0").unwrap().0, e.group_labels(&g).unwrap()[0].id));
+    let ids: Vec<_> = alice.sync_engine(|s| s.entries(&l)).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == r)).map(|(id, _)| id).collect();
+    assert!(!ids.is_empty(), "the removal is under G's label");
+    for id in &ids {
+        let e = osis_proto::store::LabelStore::entry(w.hosts[0].hub.store(), &l, id).unwrap().unwrap();
+        assert!(e.stamp.is_some(), "promoted");
+    }
+    alice.grant(g, z, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert!(!zoe.roster(t).contains_key(&g), "the removal reached zoe");
+    assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "zoe does not learn the fresh seed");
+}
+
+// spec/sync.md §3: M is owned by group O; Dave removes M's edge on his card; the copy under O's home label leaves out the fresh deposit seed, which a reader joining O later would otherwise read there
+#[test]
+fn owner_home_copy_of_removal_without_new_keys() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, eve, dave, zoe] = [1, 2, 4, 6].map(|s| person(&mut w, s, host));
+    let e = introduce(&mut w, &alice, &eve);
+    let d = introduce(&mut w, &alice, &dave);
+    let z = introduce(&mut w, &alice, &zoe);
+    let o = new_tag(&alice, "O").unwrap();
+    alice.grant(o, e, Role::Read, EdgeOpts::default()).unwrap();
+    let m = alice
+        .write_with(|w| {
+            let m = w.create(o)?;
+            w.make_group(m)?;
+            Ok(m)
+        })
+        .unwrap();
+    alice.sync(m, &[]).unwrap();
+    w.run();
+    alice.grant(m, d, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = card(&dave, "plan");
+    dave.share(t, m, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&alice, t).as_deref(), Some("plan"));
+    w.until(dave.demote(t, m, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    alice.grant(o, z, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_ne!(seed_of(&zoe, t), seed_of(&dave, t), "O's later reader learns the fresh seed");
+}
+
+/// Dave's card `t`, with H (Alice's tag, Eve co-admin, Carol reader) whose keys Dave knows.
+fn outsider() -> (World, Osis, Osis, Osis, Osis, Osis, Tid, Tid, Tid) {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, eve, dave, carol, bob] = [1, 2, 4, 5, 6].map(|s| person(&mut w, s, host));
+    let e = introduce(&mut w, &alice, &eve);
+    let d = introduce(&mut w, &alice, &dave);
+    let c = introduce(&mut w, &alice, &carol);
+    let b = introduce(&mut w, &alice, &bob);
+    let h = new_tag(&alice, "H").unwrap();
+    alice.grant(h, e, Role::Admin, EdgeOpts::default()).unwrap();
+    alice.grant(h, c, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    let m = card(&alice, "meeting");
+    alice.share(m, h, Role::Read, EdgeOpts::default()).unwrap();
+    alice.share(m, d, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.until(alice.demote(m, h, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    let t = card(&dave, "dave's");
+    w.run();
+    (w, alice, eve, dave, carol, bob, h, b, t)
+}
+
+// spec/sync.md §3: a `label.0` write after a rotation is a delta on the record an earlier one set: a grant to a group of a thing rotated before it copies them all, or the group's readers never find the thing's label
+#[test]
+fn grant_to_group_of_a_thing_rotated_before() {
+    let (mut w, alice, _eve, dave, carol, _bob, h, _b, t) = outsider();
+    let frank = person(&mut w, 7, 0);
+    let f = introduce(&mut w, &dave, &frank);
+    dave.share(t, f, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.until(dave.demote(t, f, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    dave.grant(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&alice, t).as_deref(), Some("dave's"));
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "the group's reader");
+}
+
+// spec/sync.md §3, §6: H lost the edge while its one copying admin was away and got it back: she holds the removal from the inbox without its `keys.0`, and a co-admin must not delete her copies for lack of it; a reader joining later reads the thing
+#[test]
+fn grant_lost_and_regained_with_the_admin_away() {
+    let (mut w, alice, eve, dave, carol, bob, h, b, t) = outsider();
+    dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
+    w.set_online(&alice, false);
+    w.until(dave.demote(t, h, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(30_000);
+    w.run();
+    w.set_online(&eve, false);
+    w.set_online(&alice, true);
+    dave.grant(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(30_000);
+    w.run();
+    w.set_online(&eve, true);
+    w.run();
+    w.advance(120_000);
+    w.run();
+    alice.grant(h, b, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("bob", &bob)] {
+        assert_eq!(text(db, t).as_deref(), Some("dave's"), "{n}");
+    }
+}
+
+// spec/sync.md §3, §6: a thing's edge to a group granted and removed in turn with its admins and a reader going away and back: all end alike, a later reader reads it or not by the last write and never learns a seed it should not, and the label goes quiet
+#[test]
+#[ignore = "tier 2: 40 seeds, about 3 minutes"]
+fn grant_and_removal_orders_large() {
+    for seed in 0..40u64 {
+        let mut r = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+        let mut next = move |m: u64| {
+            r ^= r << 13;
+            r ^= r >> 7;
+            r ^= r << 17;
+            r % m
+        };
+        let (mut w, alice, eve, dave, carol, bob, h, b, t) = outsider();
+        let ops = 1 + next(5);
+        let mut granted = false;
+        for _ in 0..ops {
+            for db in [&alice, &eve, &carol] {
+                let on = next(3) != 0;
+                w.set_online(db, on);
+            }
+            w.run();
+            if granted {
+                w.until(dave.demote(t, h, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+            } else {
+                dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
+            }
+            granted = !granted;
+            w.run();
+            if next(2) == 0 {
+                w.advance(1 + next(60_000));
+                w.run();
+            }
+        }
+        for db in [&alice, &eve, &carol] {
+            w.set_online(db, true);
+        }
+        w.run();
+        w.advance(120_000);
+        w.run();
+        // an admin copies a removal `SETTLE_MS` after it arrives, and it arrived in that advance
+        w.advance(120_000);
+        w.run();
+        for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("dave", &dave)] {
+            assert_eq!(db.roster(t).contains_key(&h), granted, "seed {seed}: {n}'s roster");
+        }
+        alice.grant(h, b, Role::Read, EdgeOpts::default()).unwrap();
+        w.run();
+        w.advance(120_000);
+        w.run();
+        if granted {
+            for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("bob", &bob)] {
+                assert_eq!(text(db, t).as_deref(), Some("dave's"), "seed {seed}: {n} reads");
+            }
+        } else {
+            assert_eq!(text(&bob, t), None, "seed {seed}: bob reads");
+            assert_ne!(seed_of(&bob, t), seed_of(&dave, t), "seed {seed}: bob's seed");
+        }
+        w.start_tally();
+        w.advance(3_600_000);
+        w.run();
+        for (n, db) in [("alice", &alice), ("eve", &eve), ("carol", &carol), ("bob", &bob), ("dave", &dave)] {
+            let tally = w.tally(db);
+            // a heartbeat an hour is all that goes up
+            assert!(!tally.contains_key("Delete") && tally.get("Upload").is_none_or(|u| u.0 < 4), "seed {seed}: {n}: {tally:?}");
+        }
+    }
+}
+
+
+// spec/sync.md §2, §3: a grant, then `unsync` and `sync`, with the holder and a reader of the holding group offline throughout (the first label replaced, the thing's new first label delivered again): both read it when they come back
+#[test]
+fn a_grant_survives_unsync_and_sync_with_the_holders_away() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let [alice, bob, carol] = [1, 2, 3].map(|s| person(&mut w, s, host));
+    let b = introduce(&mut w, &alice, &bob);
+    let c = introduce(&mut w, &alice, &carol);
+    let h = new_tag(&alice, "H").unwrap();
+    alice.grant(h, c, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = card(&alice, "first");
+    for db in [&bob, &carol] {
+        w.set_online(db, false);
+    }
+    alice.grant(t, b, Role::Read, EdgeOpts::default()).unwrap();
+    alice.grant(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    let first = alice.status().unwrap().groups[&t].labels.clone();
+    alice.unsync(t).unwrap();
+    w.run();
+    alice.sync(t, &[]).unwrap();
+    w.run();
+    assert_ne!(alice.status().unwrap().groups[&t].labels, first, "a new label");
+    edit(&alice, t, "later");
+    w.run();
+    w.advance(120_000);
+    w.run();
+    for db in [&bob, &carol] {
+        w.set_online(db, true);
+    }
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(text(&bob, t).as_deref(), Some("later"), "the holder");
+    assert_eq!(text(&carol, t).as_deref(), Some("later"), "the group's reader");
+}
+
+/// Bob joins H once all is quiet, and must read `t` from what its label holds.
+fn later_reader_reads(w: &mut World, alice: &Osis, bob: &Osis, h: Tid, b: Tid, t: Tid, what: &str) {
+    w.advance(120_000);
+    w.run();
+    alice.grant(h, b, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(text(bob, t).as_deref(), Some("dave's"), "{what}");
+}
+
+// spec/sync.md §6, spec/permissions.md §4: a copy's chain leaves out every `keys.0`: the outside granter rotating his person after the grant must not lose the copy
+#[test]
+fn a_copy_survives_its_granter_rotating() {
+    let (mut w, alice, _eve, dave, carol, bob, h, b, t) = outsider();
+    dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
+    let frank = person(&mut w, 7, 0);
+    let f = introduce(&mut w, &dave, &frank);
+    let keys = alice.get(dave.me(), osis::core::KEYS).unwrap();
+    dave.grant(dave.me(), f, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.until(dave.demote(dave.me(), f, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    assert_ne!(alice.get(dave.me(), osis::core::KEYS).unwrap(), keys, "alice holds his new keys");
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's keys moved");
+}
+
+/// Frank's `t` with Dave its admin by an edge, granted by Dave to H.
+fn franks_thing(w: &mut World, dave: &Osis, h: Tid) -> (Osis, Tid, Tid) {
+    let frank = person(w, 7, 0);
+    let fd = introduce(w, &frank, dave);
+    let t = card(&frank, "dave's");
+    frank.share(t, fd, Role::Admin, EdgeOpts::default()).unwrap();
+    w.run();
+    dave.grant(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    (frank, t, fd)
+}
+
+// spec/sync.md §6: the granter's chain moves after the copy (his edge lowered) with the copying admin away: the co-admin completes it rather than delete the copy
+#[test]
+fn a_copy_survives_its_granters_edge_changing() {
+    let (mut w, alice, eve, dave, carol, bob, h, b, _t) = outsider();
+    let (frank, t, fd) = franks_thing(&mut w, &dave, h);
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"));
+    w.set_online(&alice, false);
+    w.until(frank.demote(t, fd, osis::Lower::To(Role::Write), skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&eve, t).as_deref(), Some("dave's"));
+    w.set_online(&alice, true);
+    w.run();
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter's edge moved");
+    assert_eq!(text(&alice, t).as_deref(), Some("dave's"));
+}
+
+// spec/sync.md §6: the same with the granter removed from the thing
+#[test]
+fn a_copy_survives_its_granter_leaving() {
+    let (mut w, alice, _e, dave, _c, bob, h, b, _t) = outsider();
+    let (frank, t, fd) = franks_thing(&mut w, &dave, h);
+    w.until(frank.demote(t, fd, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "the granter removed");
+}
+
+// spec/sync.md §3: a copy carries no `keys.0` of the thing: a group's reader with write finds them under its label, stamps and is read by all
+#[test]
+fn a_write_grant_by_an_outsider_writes() {
+    let (mut w, alice, eve, dave, carol, bob, h, b, t) = outsider();
+    dave.share(t, h, Role::Write, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    alice.grant(h, b, Role::Write, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&bob, t).as_deref(), Some("dave's"));
+    edit(&bob, t, "by bob");
+    w.run();
+    w.advance(60_000);
+    w.run();
+    for (n, db) in [("alice", &alice), ("eve", &eve), ("dave", &dave), ("carol", &carol)] {
+        assert_eq!(text(db, t).as_deref(), Some("by bob"), "{n}");
+    }
+}
+
+// spec/sync.md §3, §6: a thing owned by a group the granter administers, and leaves after the grant
+#[test]
+fn a_grant_on_a_thing_a_group_owns_by_an_outsider() {
+    let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
+    let frank = person(&mut w, 7, 0);
+    let fd = introduce(&mut w, &frank, &dave);
+    let p = new_tag(&frank, "P").unwrap();
+    frank.grant(p, fd, Role::Admin, EdgeOpts::default()).unwrap();
+    w.run();
+    let t = dave.write_with(|x| { let c = x.create(p)?; x.at(c, BODY).set(&"dave's".to_string())?; Ok(c) }).unwrap();
+    w.run();
+    dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "carol");
+    // p rotates: dave leaves p
+    w.until(frank.demote(p, fd, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "owned by a group");
+}
+
+// spec/sync.md §3, spec/permissions.md §4: the granter's chain runs through an ownerless thing
+#[test]
+fn a_grant_by_a_chain_through_an_ownerless_thing() {
+    let (mut w, alice, _e, dave, carol, bob, h, b, _t) = outsider();
+    let frank = person(&mut w, 7, 0);
+    let fd = introduce(&mut w, &frank, &dave);
+    let df = introduce(&mut w, &dave, &frank);
+    let f = dave.create_ownerless(dave.me()).unwrap();
+    dave.sync(f, &[]).unwrap();
+    dave.grant(f, df, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    let _ = fd;
+    let t = card(&frank, "dave's");
+    frank.share(t, f, Role::Admin, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&dave, t).as_deref(), Some("dave's"), "dave reads through f");
+    dave.grant(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    assert_eq!(text(&carol, t).as_deref(), Some("dave's"), "carol");
+    later_reader_reads(&mut w, &alice, &bob, h, b, t, "through ownerless");
+}
+
+// spec/sync.md §3: after a removal a later reader of the group neither reads the thing nor learns its keys, however often it rotated since
+#[test]
+fn a_later_reader_learns_no_keys_of_a_thing_the_group_lost() {
+    let (mut w, alice, _e, dave, _c, bob, h, b, t) = outsider();
+    let frank = person(&mut w, 7, 0);
+    let f = introduce(&mut w, &dave, &frank);
+    dave.share(t, h, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    w.until(dave.demote(t, h, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(60_000);
+    w.run();
+    // t rotates on: its label moves while h is out
+    dave.grant(t, f, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.until(dave.demote(t, f, osis::Lower::Remove, skip()), 1000, 20).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    alice.grant(h, b, Role::Read, EdgeOpts::default()).unwrap();
+    w.run();
+    w.advance(120_000);
+    w.run();
+    assert_eq!(text(&bob, t), None);
+    assert_eq!(seed_of(&bob, t), None, "no keys of t for a later reader");
+    assert!(dave.get(t, osis::core::KEYS).unwrap().is_some());
 }

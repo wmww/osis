@@ -213,13 +213,14 @@ fn needs_net(c: &Cmd) -> bool {
 /// sent (inbox grants, a new label's first commits):
 /// they run with sync on and wait until it is at the hosts before the process exits.
 fn delivers(c: &Cmd) -> bool {
-    matches!(c, Cmd::Grant { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
+    matches!(c, Cmd::Grant { .. } | Cmd::Share { .. } | Cmd::Edge { .. } | Cmd::Leave { .. } | Cmd::ShareInto { .. } | Cmd::RemoveEdgeOf { .. } | Cmd::Link(LinkCmd::Make { .. }) | Cmd::Card(CardCmd::Show) | Cmd::Group(GroupCmd::Sync { .. }))
 }
 
-/// The thing a sharing command shares (a `delivers` command its holders fetch).
+/// The thing a sharing command shares (a `delivers` command its holders fetch). Not `grant` or
+/// `edge`: they record the role, route or no route (`status` shows it).
 fn shared(c: &Cmd) -> Option<String> {
     match c {
-        Cmd::Grant { t, .. } | Cmd::Edge { t, .. } | Cmd::ShareInto { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
+        Cmd::Share { t, .. } | Cmd::ShareInto { t, .. } | Cmd::Link(LinkCmd::Make { t, .. }) => Some(t.clone()),
         _ => None,
     }
 }
@@ -498,6 +499,7 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&[r.map_or("none", role_text).to_string()], J::obj([("role", J::opt(r.map(|r| J::str(role_text(r)))))]))
         }
         Cmd::Grant { t, holder, role, until, invite } => Ok(db.grant(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
+        Cmd::Share { t, holder, role, until, invite } => Ok(db.share(ctx.tid(&t)?, ctx.tid(&holder)?, parse_role(&role)?, edge_opts(&until, &invite)?)?),
         Cmd::Edge { t, holder, role, until, invite } => {
             let (t, m) = (ctx.tid(&t)?, ctx.tid(&holder)?);
             let role = match role {
@@ -1075,13 +1077,17 @@ fn status(ctx: &mut Ctx<'_>) -> anyhow::Result<()> {
 }
 
 fn status_lines(s: &osis::Status, raw: bool) -> Vec<String> {
-    let groups = s.groups.iter().map(|(g, x)| format!("{} {:?} {} {}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") }));
+    let groups = s.groups.iter().map(|(g, x)| {
+        let labels = if x.labels.is_empty() { "-".into() } else { x.labels.iter().map(|l| osis_schema::osis_base::hex::encode(&l.0)).collect::<Vec<_>>().join(",") };
+        let unrouted = if x.unrouted.is_empty() { String::new() } else { format!(" no route for {}", x.unrouted.iter().map(|t| t.to_uri()).collect::<Vec<_>>().join(",")) };
+        format!("{} {:?} {} {}{unrouted}", g.to_uri(), x.state, x.last_sync.map_or("-".into(), |t| ts_text(raw, t.0)), labels)
+    });
     // writes on these are refused until a group moves (Osis::group_source)
     groups.chain(s.split.iter().map(|t| format!("{} split: writes refused", t.to_uri()))).collect()
 }
 
 fn status_json(s: &osis::Status) -> J {
-    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect()))]));
+    let groups = s.groups.iter().map(|(g, x)| J::obj([("group", J::tid(*g)), ("state", J::str(format!("{:?}", x.state))), ("last_sync", J::opt(x.last_sync.map(|t| J::int(t.0)))), ("labels", J::Arr(x.labels.iter().map(|l| J::str(osis_schema::osis_base::hex::encode(&l.0))).collect())), ("unrouted", J::Arr(x.unrouted.iter().map(|t| J::tid(*t)).collect()))]));
     J::obj([("groups", J::Arr(groups.collect())), ("split", J::Arr(s.split.iter().map(|t| J::tid(*t)).collect()))])
 }
 

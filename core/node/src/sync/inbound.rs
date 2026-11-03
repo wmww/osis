@@ -38,6 +38,20 @@ impl Opened {
 /// Rounds of "new secrets opened more entries" per batch.
 const MAX_ROUNDS: usize = 16;
 
+/// The chain commits an inbox payload carries (spec/wire.md §9) that decode as commit blobs, each
+/// cut to its chain deltas. Admission judges the blob's commit, which anyone can name: a box or a
+/// `label.0` here would be an invite nobody was asked about; a bare edge is the limit (a status
+/// row at worst).
+fn chain_commits(p: &osis_label::InboxPayload) -> Vec<(Vec<u8>, osis_commit::CommitBlob)> {
+    p.chain.iter().filter_map(|v| {
+        let mut c = osis_commit::CommitBlob::decode(&osis_base::encode(v)).ok()?;
+        let aspects = &c.header.aspects;
+        let parts = c.parts.iter().filter(|x| aspects.get(x.ai).is_some_and(|a| matches!(a.ak.as_str(), "roles.0" | "tenures.0" | "created.0" | "keys.0"))).cloned().collect();
+        c.parts = parts;
+        (!c.parts.is_empty()).then(|| (c.encode(), c))
+    }).collect()
+}
+
 impl SyncEngine {
     /// The group a label belongs to, as an open connection or the recorded labels know it.
     pub(crate) fn group_of(&mut self, l: &LabelId) -> Option<Tid> {
@@ -405,10 +419,15 @@ impl SyncEngine {
     }
 
     /// Actor `a`'s inbox label: named in its `keys.0`, or the nearest one named up its owner
-    /// chain (spec/sync.md §2; bounded by `MAX_OWNER_DEPTH`).
+    /// chain; an ownerless thing that names none, its own label (spec/sync.md §2; bounded by
+    /// `MAX_OWNER_DEPTH`).
     pub(crate) fn inbox_label(&mut self, a: &Tid) -> Option<LabelId> {
         let chain: Vec<Tid> = self.engine.owner_chain(a).collect();
-        chain.iter().find_map(|t| self.engine.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)).map(|i| i.label)
+        if let Some(i) = chain.iter().find_map(|t| self.engine.get_typed(t, &ct::KEYS).ok().flatten().and_then(|k| k.inbox)) {
+            return Some(i.label);
+        }
+        let top = chain.last().filter(|t| matches!(self.engine.core.created(t), Some(osis_base::CreationRecord::Ownerless { .. })))?;
+        self.engine.labels_of(top).iter().filter(|l| !l.replaced).max_by_key(|l| l.index).map(|l| l.id)
     }
 
     /// Actors whose inbox is `l` (`inbox_label`), with their held read KEM secrets.
@@ -654,8 +673,11 @@ impl SyncEngine {
         } else {
             self.engine.note_delete_hints(id, &payload.things)?;
             e.kind = Kind::Inbox(Some(id));
+            // the author's chain first (spec/wire.md §9): the commit applies with no label of the
+            // thing read
+            commits.extend(chain_commits(&payload));
             commits.push((pt, c));
-            // the home labels' passes place its copy (`inbox_copies`); applying starts them only
+            // the home labels' passes place its copy (`inbox_certificates`); applying starts them only
             // if the commit is new here, and a sender's own deposit under its own inbox is not
             self.mark_dirty();
         }
@@ -752,6 +774,11 @@ impl SyncEngine {
                 self.state.set_entry(l, b, e);
             }
             self.engine.note_delete_hints(x, &payload.things)?;
+            for (cpt, cb) in chain_commits(&payload) {
+                if let Err(e) = self.engine.ingest(&cpt, Vec::new()) {
+                    self.diag(format!("ingest {:?}: {e}", cb.id()));
+                }
+            }
             if let Err(e) = self.engine.ingest(&pt, Vec::new()) {
                 self.diag(format!("ingest {:?}: {e}", blob.id()));
             }
@@ -792,8 +819,15 @@ impl SyncEngine {
         Ok(found)
     }
 
-    /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is.
+    /// Opens inbox blob `bytes` under the held keys of an actor whose inbox `l` is. A blob whose
+    /// prefix no inbox blob has (an expiry, no commitments: spec/wire.md §9) costs no KEM: an
+    /// ownerless group's label is its inbox too, with every chunk of its content under it.
     fn open_inbox(&mut self, l: &LabelId, bytes: &[u8]) -> Option<(osis_label::Prefix, osis_label::InboxPayload)> {
+        let p = osis_label::Prefix::parse(bytes).ok()?;
+        if p.expiry().is_none() || !p.commitments().is_empty() {
+            return None;
+        }
+        self.stats.inbox_tries += 1;
         self.inbox_of(l).into_iter().flat_map(|(a, keys)| keys.into_iter().map(move |s| (a, s))).find_map(|(a, s)| osis_label::open_inbox_blob(bytes, &a, &role_kem(&s)).ok())
     }
 

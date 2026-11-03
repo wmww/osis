@@ -234,3 +234,10 @@ fn ephemeral_capped_seed_2400045() {
 fn ephemeral_seed_21054() {
     ok("ephemeral", 21054);
 }
+
+// spec/sync.md §3, spec/permissions.md §3: a grant to a group reaches its readers with its admin down at the grant, and a later reader; a removal from the group ends the thing's later epochs for the removed reader.
+#[test]
+#[ignore = "tier 2"]
+fn grant_to_group() {
+    ok("grant_to_group", 1);
+}

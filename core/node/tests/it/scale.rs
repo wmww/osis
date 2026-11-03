@@ -1614,3 +1614,52 @@ fn purge_rejudge_cost() {
         }
     }
 }
+
+// spec/sync.md §2 (Route): the cost of `Engine::unrouted`, which every status runs under the engine lock: things with one holder, carried by a labeled group (the usual case) or with no route
+#[test]
+#[ignore = "tier 2"]
+fn unrouted_cost() {
+    let n = size("UNROUTED_N", 1000, 100);
+    for carried in [true, false] {
+        let (mut e, _, _) = engine(9);
+        let me = e.tid();
+        let group = |e: &mut Engine| {
+            let mut m = Mutation::new();
+            let g = e.new_thing(&mut m, me);
+            m.set(g, &ct::GROUP, &ct::Group::default()).unwrap();
+            e.commit(m).unwrap();
+            e.give_own_secrets(&g).unwrap();
+            g
+        };
+        let (g, other) = (group(&mut e), group(&mut e));
+        e.create_label(&g, &[osis_label::Address { url: "quic://h".into(), key: [1; 32] }]).unwrap();
+        let edge = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        let start = Instant::now();
+        let mut items = Vec::new();
+        for _ in 0..n {
+            let mut m = Mutation::new();
+            let t = e.new_thing(&mut m, me);
+            e.commit(m).unwrap();
+            e.give_own_secrets(&t).unwrap();
+            let holder = if carried { g } else { other };
+            let mut m = Mutation::new();
+            m.op(t, &ct::ROLES, PathOp { path: vec![PathSeg::Key(Value::Tid(holder))], op: Op::Set(edge.to_value()) }).unwrap();
+            e.commit(m).unwrap();
+            items.push(t);
+        }
+        if carried {
+            let mut m = Mutation::new();
+            m.set(g, &ct::GROUP, &ct::Group { items: items.iter().copied().collect(), ..Default::default() }).unwrap();
+            for t in &items {
+                m.set(*t, &ct::GROUPS, &BTreeSet::from([g])).unwrap();
+            }
+            e.commit(m).unwrap();
+        }
+        println!("carried {carried}: {n} things built in {:?}", start.elapsed());
+        for _ in 0..3 {
+            let t = Instant::now();
+            let rows = e.unrouted().len();
+            println!("  unrouted {:?}, {rows} rows", t.elapsed());
+        }
+    }
+}

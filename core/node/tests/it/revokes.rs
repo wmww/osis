@@ -122,3 +122,51 @@ fn nested_departure_revoke_placed_spec_permissions_4() {
     assert_eq!(net.read(r, u), Some(s("after w left")));
     assert_eq!(net.read(w, u), None, "W reads nothing written after it left");
 }
+
+// spec/permissions.md §4: a revoke on a thing the label's actor has no holder path from carries no keyset: W's removal from M, a stranger to G, has M's fresh deposit seed
+#[test]
+fn revoke_on_an_unrelated_thing_brings_no_keys() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let w = net.node(3, &[host]);
+    let r = net.node(4, &[host]);
+    let x = net.group_seeded(b, &[(w, Role::Write), (r, Role::Read)], vec![net.address(host)], 1);
+    let m = net.group_seeded(b, &[(w, Role::Read), (r, Role::Read)], vec![net.address(host)], 3);
+    net.pair(b, a);
+    let g = net.group_seeded(a, &[], vec![net.address(host)], 2);
+    let edge = ct::Edge { role: Role::Write, until: None, invite: None, since: None, tied: None, keyset: None };
+    let done = net.engine(a).grant(&g, &x, &edge).unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    net.pair(a, w);
+    net.pair(a, r);
+    net.run();
+    let t = net.item(w, g, g, "by w");
+    for _ in 0..2 {
+        net.advance(31_000);
+    }
+    assert_eq!(net.read(r, t), Some(s("by w")));
+    let lg = net.sync(a).labels().into_iter().find(|(x, _)| *x == g).unwrap().1.id;
+    let wt = net.tid(w);
+    let done = net.engine(b).demote(&m, &Demotion { holder: wt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let rm = *done.commits.first().unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    let done = net.engine(b).demote(&x, &Demotion { holder: wt, new: None, presync: PreSync::Synced, keep: None }).unwrap();
+    let acts = net.sync(b).carry_out(done).unwrap();
+    net.actions(b, acts);
+    for _ in 0..3 {
+        net.advance(31_000);
+    }
+    assert!(net.engine(r).header(&rm).is_some(), "R holds the revoke");
+    let ids = net.host_ids(host, &lg);
+    let h = net.engine(r).header(&rm).unwrap();
+    let placed: Vec<Vec<(usize, usize)>> = net.sync(r).entries(&lg).into_iter().filter(|(id, _)| ids.contains(id)).filter_map(|(_, k)| match k {
+        EntryKind::Commit { commit, parts, .. } if commit == rm => Some(parts),
+        _ => None,
+    }).collect();
+    assert!(!placed.is_empty(), "the revoke is under G's label");
+    assert!(placed.iter().flatten().all(|(ai, _)| h.aspects[*ai].ak.as_str() != "keys.0"), "no keyset of M");
+}

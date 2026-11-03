@@ -28,6 +28,7 @@ pub const SCENARIOS: &[(&str, Scenario)] = &[
     ("removed_writer", net::removed_writer),
     ("compaction", net::compaction),
     ("reader_relays", net::reader_relays),
+    ("grant_to_group", net::grant_to_group),
     ("stranded_reseal", net::stranded_reseal),
     ("host_loses_data", net::host_loses_data),
     ("offline_rotation", net::offline_rotation),

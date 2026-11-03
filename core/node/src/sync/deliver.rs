@@ -379,12 +379,12 @@ impl SyncEngine {
         out
     }
 
-    /// The actor up `to`'s owner chain whose `keys.0` names `label` as its inbox (its deposit
-    /// seed signs the deposit).
+    /// The actor up `to`'s owner chain whose inbox `label` is, named in its `keys.0` or its own
+    /// label (`inbox_label`; its deposit seed signs the deposit).
     pub(crate) fn inbox_owner(&mut self, to: &Tid, label: &LabelId) -> Result<Option<Tid>> {
         let chain: Vec<Tid> = self.engine.owner_chain(to).collect();
         for t in chain {
-            if self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) {
+            if self.engine.get_typed(&t, &ct::KEYS)?.and_then(|k| k.inbox).is_some_and(|i| i.label == *label) || self.engine.labels_of(&t).iter().any(|l| l.id == *label) {
                 return Ok(Some(t));
             }
         }

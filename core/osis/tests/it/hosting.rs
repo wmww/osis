@@ -296,7 +296,15 @@ fn own_random(seed: u64) {
                     if !granted.insert((g, who)) {
                         continue;
                     }
-                    bob.grant(g, who, role, Default::default()).unwrap();
+                    // a node that reads nothing of it yet takes a grant only by pairing; this one
+                    // may read it later
+                    match bob.grant(g, who, role, Default::default()) {
+                        Err(osis::Error::Invalid(_)) if who == alice.node() && !granted.contains(&(g, a)) => {
+                            granted.remove(&(g, who));
+                            continue;
+                        }
+                        r => r.unwrap(),
+                    }
                     ops.push(format!("bob grants {who:?} {role:?} on {g:?}"));
                 }
                 // Alice grants Bob's person admin on one of her groups

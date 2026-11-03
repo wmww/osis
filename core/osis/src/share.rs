@@ -243,6 +243,10 @@ pub enum SyncState {
     Stranded,
     /// Held for receipts only (`GroupPolicy::receipts_only`): not synced, what is here is stale.
     ReceiptsOnly,
+    /// No label carries the thing to one of its holders (`GroupSync::unrouted`): it holds a role
+    /// and reads nothing until `sync` gives the thing a label or a synced group it reads takes
+    /// the thing in. Only on things with no label of their own, so never beside another state.
+    NoRoute,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -258,6 +262,11 @@ pub struct GroupSync {
     /// This node left the group and keeps it until a host has its removal (spec/permissions.md
     /// §3); stays set while no host takes it.
     pub leaving: bool,
+    /// Holders of a role on the thing that read no live label carrying it, as this node knows
+    /// labels (`Engine::unrouted`; the holder's own node and the granter's show the same): this
+    /// person among them when it is the one without a route. Not this node's own clients on a
+    /// thing this person owns: they read what this node holds.
+    pub unrouted: Vec<Tid>,
 }
 
 /// Sync status: hosts connected and each synced group (`groups`: groups with a label this
@@ -302,13 +311,14 @@ fn label_state(s: &osis_node::sync::LabelStatus) -> SyncState {
     }
 }
 
-/// The status from the sync engine's labels (a group with several labels shows the worst).
-pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
+/// The status from the sync engine's labels (a group with several labels shows the worst) and
+/// the engine's routes; `me`: this database's person.
+pub(crate) fn status_of(sync: &mut SyncEngine, me: Tid) -> Status {
     let mut groups: BTreeMap<Tid, GroupSync> = BTreeMap::new();
     for s in sync.label_status() {
         let state = label_state(&s);
         let last = s.last_sync.map(WallMs);
-        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new(), leaving: false });
+        let g = groups.entry(s.group).or_insert(GroupSync { state, last_sync: last, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
         g.state = g.state.max(state);
         g.last_sync = g.last_sync.max(last);
         g.labels.push(s.label);
@@ -321,7 +331,24 @@ pub(crate) fn status_of(sync: &mut SyncEngine) -> Status {
         }
     }
     for g in sync.receipts_only() {
-        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false });
+        groups.insert(*g, GroupSync { state: SyncState::ReceiptsOnly, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted: Vec::new() });
+    }
+    // things a holder has a role on and no route to (spec/sync.md §2): none has a label of its
+    // own, so none is listed above. On a thing this person administers (it can `sync` it) nobody
+    // misses a route who reads only what this node holds: this person, its clients, and a group
+    // of its own held by no one else
+    let e = sync.engine_mut();
+    let node = e.tid();
+    let clients = e.get_typed(&node, &ct::CLIENTS).ok().flatten().unwrap_or_default();
+    let served: BTreeSet<Tid> = [me].into_iter().chain(clients.into_keys()).collect();
+    for (t, holders) in e.unrouted().iter() {
+        let t = *t;
+        let own = e.core.role_now(&me, &t) == Some(Role::Admin);
+        let local = |e: &osis_node::Engine, h: &Tid| served.contains(h) || (e.owner_chain(h).any(|x| x == me) && e.core.current_holders(h).iter().all(|(m, _, _)| served.contains(m)));
+        let unrouted: Vec<Tid> = holders.iter().copied().filter(|h| !(own && local(e, h))).collect();
+        if !unrouted.is_empty() && !groups.contains_key(&t) {
+            groups.insert(t, GroupSync { state: SyncState::NoRoute, last_sync: None, labels: Vec::new(), not_admitted: Vec::new(), leaving: false, unrouted });
+        }
     }
     Status { connected: sync.connected(), groups, remotes: Vec::new(), split: BTreeSet::new() }
 }
@@ -332,6 +359,15 @@ fn edge(role: Role, o: EdgeOpts) -> ct::Edge {
 
 fn share_of(e: crate::Edge) -> Share {
     if e.tied { Share::Tied(e.role) } else { Share::Untied(e.role) }
+}
+
+/// `UnknownActor` unless `h` is known here as an actor a grant can box: a thing with an owner,
+/// or a key actor (a node, a recovery or link key) whose `keys.0` is held.
+fn known_actor(e: &mut osis_node::Engine, h: Tid) -> Result<()> {
+    if !e.knows(&h) || (e.owner(&h).is_none() && e.get_typed(&h, &ct::KEYS)?.is_none()) {
+        return Err(Error::UnknownActor { tid: h });
+    }
+    Ok(())
 }
 
 fn needs_admin(e: osis_node::Error) -> Error {
@@ -354,7 +390,7 @@ pub(crate) fn fetched(l: &mut crate::handle::Locked, t: Tid) -> bool {
 
 /// Synced groups holding any of `things` (the thing itself or its closure).
 fn groups_holding(sync: &mut SyncEngine, status: &Status, things: &BTreeSet<Tid>) -> Vec<Tid> {
-    status.groups.iter().filter(|(_, s)| s.state != SyncState::ReceiptsOnly).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
+    status.groups.iter().filter(|(_, s)| !matches!(s.state, SyncState::ReceiptsOnly | SyncState::NoRoute)).map(|(g, _)| *g).filter(|g| things.contains(g) || sync.engine().closure(g).iter().any(|t| things.contains(t))).collect()
 }
 
 /// The sync wait's check (`Osis::groups_synced`): one rule over the labels in scope, `groups`
@@ -427,38 +463,15 @@ impl Osis {
         Ok(holder == self.me() || self.get(self.node(), ct::CLIENTS)?.unwrap_or_default().contains_key(&holder))
     }
 
-    /// Whether a grant needs `t` to get a label of its own (spec/sync.md §2): `holder` reads no live
-    /// label that carries it. `None`: a link's K, which gets `t`'s secrets alone, so only `t`'s own
-    /// label will do. The invariant: no grant is acknowledged and silently never reaches its holder.
-    /// `Permission` when it does and this node may not make one (an invite edge alone: `label.0` is
-    /// an admin's). Taken under the lock of the grant, before its edge is written.
-    fn grant_needs_label(&self, l: &mut crate::handle::Locked, t: Tid, holder: Option<Tid>) -> Result<bool> {
-        let reached = crate::sources::labeled(l, &t)
-            || holder.is_some_and(|h| {
-                l.engine().groups_of(&t).iter().any(|g| {
-                    let via = crate::sources::labeled(l, g);
-                    let e = l.engine();
-                    // a group granted its own item: the edge being written is what makes it carry it
-                    via && (*g == h || (e.may_read(&h, g) && e.may_read(&e.group_actor(g), &t)))
-                })
-            });
-        if reached {
-            return Ok(false);
-        }
-        let limit = self.inner.limit;
-        let role = crate::read::Reader { e: l.engine(), limit, actor: None }.role_on(t);
-        if role != Some(Role::Admin) {
-            return Err(Error::Permission { tid: t, needs: Role::Admin });
-        }
-        Ok(true)
-    }
-
     /// Grants `holder` `role` on `target` (spec/permissions.md §2): needs admin on the target
     /// (or an invite edge) and the holder's `keys.0` (a contact card, a shared group, pairing),
-    /// else `UnknownActor`. The grant reaches the holder's devices through its inbox. A holder who
-    /// reads no label carrying the target gets one: the target's own, made with the edge (spec/sync.md
-    /// §2), which needs admin (an invite edge alone: `Permission`). Grants one by one cost a label each:
-    /// share sets through a group.
+    /// else `UnknownActor`. Records the permission and nothing else: the grant reaches the
+    /// holder's devices through its inbox, a group holder's readers through the copy its admins
+    /// place under its label, and the holder reads the target only through a label that carries
+    /// it (spec/sync.md §2); with none it holds the role and no route, which `status` shows
+    /// (`SyncState::NoRoute`, `GroupSync::unrouted`) until `sync` gives the target a label
+    /// (`share` does both). Grants one by one each cost about 2.6 KB of boxes: share sets through
+    /// a group.
     pub fn grant(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             return r.call(crate::port::method::GRANT, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
@@ -468,30 +481,42 @@ impl Osis {
             return Err(Error::UnknownThing { tid: target });
         }
         self.persist(&[target])?;
-        let (served, hosts) = (self.served_here(holder)?, self.host_addrs());
         self.after_route();
         let done = self.locked(|l| {
             self.guard_local(l, &[target])?;
             let e = l.engine();
-            // unknown, or a key actor (a node, a recovery or link key) whose `keys.0` is not held
-            if !e.knows(&holder) || (e.owner(&holder).is_none() && e.get_typed(&holder, &ct::KEYS)?.is_none()) {
-                return Err(Error::UnknownActor { tid: holder });
-            }
-            let label = !served && self.grant_needs_label(l, target, Some(holder))?;
-            let e = l.engine();
+            known_actor(e, holder)?;
             // an edge change keeps its tie; a new hand grant is untied
             let cur = e.roster(&target).get(&holder).copied();
             let tied = cur.and_then(|x| x.tied).map(flows::tied::tie_ct);
-            let done = e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)?;
-            // after the edge, as `make_link`: its first pass then knows who reads it (`reach.0`). A
-            // crash or failure between leaves the edge alone, the call unacknowledged: the same
-            // grant again makes the label (separate transactions; one would save only that retry)
-            if label {
-                self.make_label(l, target, hosts)?;
-            }
-            Ok(done)
+            e.grant(&target, &holder, &ct::Edge { tied, ..edge(role, opts) }).map_err(needs_admin)
         })?;
         self.carry(done)
+    }
+
+    /// `grant`, with a route: when `holder` reads no live label carrying `target` as this node
+    /// knows them (`Engine::routed`), `target` is synced first (its own label on this database's
+    /// hosts; needs admin, else `Permission`), then the edge is written. Not for `me()` or this
+    /// node's own clients: they read what this node holds, and the thing stays as local as it
+    /// was. `share_into` is the other way to a route: placing the thing in a synced group.
+    pub fn share(&self, target: Tid, holder: Tid, role: Role, opts: EdgeOpts) -> Result<()> {
+        if let crate::sources::Source::Remote(r) = self.route_write(target)? {
+            return r.call(crate::port::method::SHARE, vec![Value::Tid(target), Value::Tid(holder), crate::port::codec::role_v(role), crate::port::codec::edge_opts_v(&opts)]).map(drop);
+        }
+        let (t, h) = (self.resolved(target), self.resolved(holder));
+        if !self.holds(t) {
+            return Err(Error::UnknownThing { tid: t });
+        }
+        let served = self.served_here(h)?;
+        let routed = self.locked(|l| {
+            let e = l.engine();
+            known_actor(e, h)?;
+            Ok::<_, Error>(served || e.routed(&h, &t))
+        })?;
+        if !routed {
+            self.sync_here(t, &[], false)?;
+        }
+        self.grant(t, h, role, opts)
     }
 
     /// Shares `tid` with the holders of `group` at `role` by placing it there (spec/permissions.md
@@ -812,7 +837,8 @@ impl Osis {
 
     /// Makes a share link to `target` with `role` (spec/permissions.md §9): its actor K and key L
     /// on this database's hosts. Anyone holding the link can redeem it until `until` or
-    /// `revoke_link`.
+    /// `revoke_link`. A composite like `share`: it syncs `target` when it has no label of its own,
+    /// the only place K can read it.
     pub fn make_link(&self, target: Tid, role: Role, opts: LinkOpts) -> Result<ShareLink> {
         if let crate::sources::Source::Remote(r) = self.route_write(target)? {
             let v = r.call(crate::port::method::MAKE_LINK, vec![Value::Tid(target), crate::port::codec::role_v(role), crate::port::codec::opt(opts.until, |w| Value::uint(w.0)), Value::Bool(opts.single_use), Value::Bool(opts.direct)])?;
@@ -831,7 +857,8 @@ impl Osis {
         self.after_route();
         let (mut link, keep, done) = self.locked(|l| {
             self.guard_local(l, &[t])?;
-            let label = self.grant_needs_label(l, t, None)?;
+            // K reads the target's own label alone (spec/sync.md §2): a link syncs the target
+            let label = !l.engine().labeled(&t);
             let made = l.engine().create_link(&me, &flows::LinkSpec { target: t, role, until: opts.until, hosts: hosts.clone(), peers: Vec::new(), single_use: opts.single_use }).map_err(needs_admin)?;
             // K is on it before the label's first pass: this device's `reach.0` never goes under
             // it, and nothing rotates (spec/permissions.md §4, §9)
@@ -1337,8 +1364,9 @@ impl Osis {
     /// Sync status now.
     pub fn status(&self) -> Result<Status> {
         let acting = self.acting;
+        let me = self.inner.me;
         let local = self.locked(|x| {
-            let mut s = status_of(&mut x.sync);
+            let mut s = status_of(&mut x.sync, me);
             if let Some(a) = acting {
                 s.groups.retain(|g, _| x.sync.engine().readable_by(&a, g));
             }
@@ -1356,7 +1384,8 @@ impl Osis {
             return self.remote_watch_status(Box::new(f));
         }
         // a node with attachments shows them too: not a watch of them, a status at each change here
-        let first = self.status().unwrap_or_else(|_| self.locked(|x| status_of(&mut x.sync)));
+        let me = self.inner.me;
+        let first = self.status().unwrap_or_else(|_| self.locked(|x| status_of(&mut x.sync, me)));
         self.subscribe(Filter::Status, true, move |_| {
             let mut first = Some(first);
             Box::new(move |db, d| match d {
@@ -1399,6 +1428,7 @@ impl Osis {
 
     /// `wait_synced` as a future holding no handle (the client port serves it so).
     pub(crate) fn wait_synced_pending(&self, scope: SyncScope, timeout: Duration) -> crate::net::Pending<Result<()>> {
+        let me = self.inner.me;
         use crate::net::Pending;
         let (groups, about) = match scope {
             SyncScope::All => {
@@ -1414,7 +1444,7 @@ impl Osis {
             }
             SyncScope::Group(t) => {
                 let (groups, about) = self.locked(|x| {
-                    let st = status_of(&mut x.sync);
+                    let st = status_of(&mut x.sync, me);
                     let t = x.engine().resolve(&t, &t);
                     let groups = groups_holding(&mut x.sync, &st, &[t].into_iter().collect());
                     // deliveries about t, what it holds, or a group holding it

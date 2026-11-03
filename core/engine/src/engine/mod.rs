@@ -639,6 +639,8 @@ pub struct Core {
     pub copy_index: BTreeMap<(CommitId, Tid, Ak), Arc<osis_crdt::CopyIndex>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches
     /// reload (it never goes back): caches derived from them (the sync engine's) compare it.
+    /// `Engine::unrouted`, until a role, label or placement is written.
+    pub unrouted: Option<Arc<BTreeMap<Tid, Vec<Tid>>>>,
     pub generation: u64,
     /// `generation` for memory transactions (`Tx::set_memory`): what they change is in memory
     /// only, so durable-derived caches (node-sync's) keep theirs.
@@ -769,6 +771,7 @@ impl Core {
         let _s = crate::costs::span("timelines");
         let touched = self.ix.held.take_touched();
         if !touched.is_empty() {
+            self.unrouted = None;
             let changed = self.timelines.update_touched(&self.ix.held, &touched);
             self.stale_things.extend(changed.evaluated);
             // a walk that only went on changed authority only below what it touched
@@ -830,6 +833,9 @@ impl Core {
         if k.1.as_str() == "label.0" {
             self.labels.remove(&k.0);
         }
+        if matches!(k.1.as_str(), "label.0" | "group.0" | "groups.0") || osis_schema::core_types::is_role_class(k.1.as_str()) {
+            self.unrouted = None;
+        }
         if k.1.as_str() == crate::flows::LINK_SEED {
             self.links = None;
         }
@@ -870,6 +876,7 @@ impl Core {
             }
             self.role_changed();
             self.labels.clear();
+            self.unrouted = None;
             self.links = None;
             for k in std::mem::take(&mut self.written) {
                 self.states.remove(&k);
@@ -934,6 +941,7 @@ impl Core {
             bodies: BTreeMap::new(),
             live_bodies: BTreeMap::new(),
             copy_index: BTreeMap::new(),
+            unrouted: None,
             generation: 0,
             memory_generation: 0,
             memory_tx: false,
