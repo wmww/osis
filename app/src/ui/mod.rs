@@ -9,6 +9,7 @@
 //! search text and the text being typed (sent on into osis text sessions); `ViewState` holds the
 //! few toggles of the open screen.
 
+mod chat;
 mod content;
 mod screens;
 
@@ -39,6 +40,8 @@ const RAIL_LIST: Slot = ("rail-list", WidgetTag::new("rail-list"));
 const RAIL_NEW: Slot = ("rail-new", WidgetTag::new("rail-new"));
 const PANE_EXTRA: Slot = ("pane-extra", WidgetTag::new("pane-extra"));
 const META: Slot = ("meta", WidgetTag::new("meta"));
+const CHAT_LOG: Slot = ("chat-log", WidgetTag::new("chat-log"));
+const CHAT_REPLY: Slot = ("chat-reply", WidgetTag::new("chat-reply"));
 /// Holds the status label (a tag cannot be given together with properties).
 const STATUS: WidgetTag<SizedBox> = WidgetTag::new("status");
 const STAR: WidgetTag<IconButton> = WidgetTag::new("star");
@@ -55,6 +58,12 @@ pub enum Msg {
     Remote(Tid),
     /// An osis diagnostic (a thing that will not sync, a callback that panicked, ...).
     Diagnostic(String),
+    /// A join by link ended: the chat, or why not.
+    Joined(Result<Tid, String>),
+    /// The open chat's watch ended: subscribe again.
+    ChatEnded,
+    /// The chat's timeline was rebuilt and laid out: scroll it to the newest.
+    ScrollEnd,
 }
 
 /// What a press on a widget does.
@@ -82,12 +91,18 @@ enum Act {
     /// Show or hide every field (the schema fallback view).
     AllFields,
     Repeat(Tid, Option<crate::event::RepeatFreq>),
+    OpenChat(Tid),
+    /// Answer this message with the next send (`None`: no longer).
+    Reply(Option<osis_chat::Id>),
+    /// Send what the open chat's composer holds.
+    Send(Tid),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Screen {
     Home,
     Thing(Tid),
+    Chat(Tid),
 }
 
 /// A form input: what it saves, the value last saved, the text it shows now.
@@ -170,6 +185,13 @@ pub struct Ui {
     focus_title: bool,
     editor: Option<Editor>,
     subs: BTreeMap<Tid, Subscription>,
+    /// The chat open instead of a thing (per window, not kept: chats are no things of the app).
+    chat: Option<Tid>,
+    /// The open chat's watch.
+    chat_sub: Option<(Tid, Vec<Subscription>)>,
+    /// The chat list's status watch.
+    _status_sub: Subscription,
+    compose: chat::Compose,
     _diag_sub: Subscription,
     diag: Option<String>,
 }
@@ -184,6 +206,11 @@ impl Ui {
             m.post(Msg::Diagnostic(format!("{:?}: {}", d.kind, d.detail)));
         });
         let look = Arc::new(Look::new(&theme, mode == Mode::Dark, None));
+        // a chat joined or left elsewhere on this store comes and goes with the synced groups
+        let m = mb.clone();
+        let status_sub = data.db.watch_status(move |_, _| {
+            m.post(Msg::Changed);
+        });
         Ui {
             data,
             window,
@@ -209,6 +236,10 @@ impl Ui {
             focus_title: false,
             editor: None,
             subs: BTreeMap::new(),
+            chat: None,
+            chat_sub: None,
+            _status_sub: status_sub,
+            compose: chat::Compose::default(),
             _diag_sub: diag_sub,
             diag: None,
         }
@@ -250,13 +281,14 @@ impl Ui {
 
     fn refresh_inner(&mut self, ctx: &mut DriverCtx<'_, '_>, force: bool) -> osis::Result<()> {
         self.narrow = self.is_narrow(ctx);
-        let screen = match self.data.opened()? {
-            Some(t) => Screen::Thing(t),
-            None => Screen::Home,
+        let screen = match (self.chat, self.data.opened()?) {
+            (Some(c), _) => Screen::Chat(c),
+            (None, Some(t)) => Screen::Thing(t),
+            (None, None) => Screen::Home,
         };
         let main = match screen {
             Screen::Thing(t) => self.data.main_color(t)?.and_then(|c| parse(&c)),
-            Screen::Home => None,
+            Screen::Home | Screen::Chat(_) => None,
         };
         let (theme, mode) = self.data.look()?;
         self.theme = Theme::named(theme.as_deref().unwrap_or("frost"));
@@ -279,10 +311,15 @@ impl Ui {
                 Screen::Home => self.search_ids.first().copied(),
                 Screen::Thing(_) if std::mem::take(&mut self.focus_title) => self.editor.as_ref().and_then(|e| e.fields.iter().find(|f| f.key == FieldKey::Name)).and_then(|f| f.id),
                 Screen::Thing(_) => None,
+                Screen::Chat(_) => self.compose.text_id(),
             };
             ctx.render_root(self.window).focus_on(id);
         }
         self.watch()?;
+        self.watch_chat(match screen {
+            Screen::Chat(c) => Some(c),
+            _ => None,
+        })?;
         if rebuild || self.diag.is_some() {
             let s = format!("device {}{}", short(self.data.db.node()), self.diag.as_deref().map(|d| format!(" · {d}")).unwrap_or_default());
             self.status(ctx, s);
@@ -328,6 +365,7 @@ impl Ui {
         self.reorder_grids.clear();
         self.slots.clear();
         self.search_ids.clear();
+        self.compose.ids.clear();
         if self.editor.as_ref().map(|e| Screen::Thing(e.tid)) != Some(screen) {
             // dropping the sessions commits pending typing
             self.editor = None;
@@ -335,10 +373,12 @@ impl Ui {
         let w = match screen {
             Screen::Home => self.home(),
             Screen::Thing(t) => self.thing(t)?,
+            Screen::Chat(c) => self.chat_screen(c)?,
         };
         // the background's arrangement: from the thing, varied by its kind
         let seed = match screen {
             Screen::Home => 0,
+            Screen::Chat(c) => seed_of(&c.to_string()),
             Screen::Thing(t) => seed_of(&t.to_string()) ^ seed_of(&format!("{:?}", self.data.kind(t)?)).rotate_left(17),
         };
         let look = self.look.clone();
@@ -373,6 +413,16 @@ impl Ui {
                 if root.get_widget_with_tag(STAR).is_some() {
                     root.edit_widget_with_tag(STAR, |mut w| IconButton::set_on(&mut w, fav));
                 }
+            }
+            Screen::Chat(c) => {
+                let log = self.chat_log_content(c)?;
+                if self.slots.get(CHAT_LOG.0) != Some(&log) {
+                    self.slot(ctx, CHAT_LOG, log, None);
+                    // once laid out: the new content's height is known only then
+                    self.mb.post(Msg::ScrollEnd);
+                }
+                let r = self.chat_reply_content(c)?;
+                self.slot(ctx, CHAT_REPLY, r, None);
             }
         }
         Ok(())
@@ -466,9 +516,27 @@ impl Ui {
             Act::None => Ok(()),
             Act::Open(t) => {
                 self.query.clear();
+                self.chat = None;
                 self.data.set_open(Some(t))
             }
-            Act::Home => self.data.set_open(None),
+            Act::Home => {
+                self.chat = None;
+                self.data.set_open(None)
+            }
+            Act::OpenChat(c) => {
+                self.query.clear();
+                self.chat = Some(c);
+                self.compose.reply = None;
+                Ok(())
+            }
+            Act::Reply(r) => {
+                self.compose.reply = r;
+                if let Some(id) = self.compose.text_id() {
+                    ctx.render_root(self.window).focus_on(Some(id));
+                }
+                Ok(())
+            }
+            Act::Send(c) => self.send(ctx, c),
             Act::New => {
                 self.view.creating = !self.view.creating;
                 Ok(())
@@ -521,6 +589,10 @@ impl Ui {
     }
 
     fn typed(&mut self, ctx: &mut DriverCtx<'_, '_>, id: WidgetId, a: TextAction) {
+        if self.compose.ids.contains_key(&id) {
+            self.chat_typed(ctx, id, a);
+            return;
+        }
         if self.search_ids.contains(&id) {
             match a {
                 TextAction::Changed(q) => {
@@ -639,6 +711,15 @@ impl AppDriver for Ui {
                         changed = true;
                     }
                     Msg::Remote(t) => self.remote(ctx, t),
+                    Msg::Joined(r) => {
+                        self.joined(ctx, r);
+                        changed = true;
+                    }
+                    Msg::ChatEnded => {
+                        self.chat_sub = None;
+                        changed = true;
+                    }
+                    Msg::ScrollEnd => self.scroll_end(ctx),
                 }
             }
             if changed {
@@ -650,7 +731,11 @@ impl AppDriver for Ui {
             }
         } else if action.is::<Blur>() {
             if let Some(input) = self.blur_panels.get(&id).copied() {
-                self.save_input(ctx, input);
+                if self.compose.ids.contains_key(&input) {
+                    self.chat_blur(ctx, input);
+                } else {
+                    self.save_input(ctx, input);
+                }
             }
         } else if let Some(Reorder { from, to }) = action.downcast_ref::<Reorder>().copied() {
             if self.reorder_grids.contains(&id) {

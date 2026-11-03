@@ -1,7 +1,7 @@
 # The GUI workspace (notes/app.md, kit and app): osis-kit and osis-app, apart from the core
 # workspace at the repo root so the GUI stack stays out of core's builds, gate and feature
 # unification. This manifest is its root (Cargo.lock and target/ live in kit/); `[patch]` entries
-# for forked low-level crates go here. Core crates come in by path: only osis and osis-schema.
+# for forked low-level crates go here. Core crates come in by path: only osis, osis-schema and osis-chat.
 [workspace]
 resolver = "2"
 members = [".", "../app"]
@@ -18,6 +18,7 @@ license = "MIT"
 [workspace.dependencies]
 osis = { path = "../core/osis" }
 osis-schema = { path = "../core/schema" }
+osis-chat = { path = "../core/chat" }
 osis-kit = { path = "." }
 # One pinned Masonry (notes/app.md Toolkit); re-exported as osis_kit::masonry.
 masonry = "=0.4.0"

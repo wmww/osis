@@ -3,6 +3,7 @@
 //! window over kit.
 #![forbid(unsafe_code)]
 
+pub mod chat;
 pub mod data;
 pub mod demo;
 pub mod edit;

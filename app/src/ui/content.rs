@@ -64,6 +64,8 @@ pub enum Block {
     Fields(Tid, Vec<crate::fields::Row>),
     /// A kind's own form (labels and inputs saved on Enter).
     Form(Tid, Vec<crate::fields::FormRow>),
+    /// A chat's messages, oldest first.
+    Messages(Vec<crate::chat::Line>),
 }
 
 /// What a slot shows.
@@ -135,6 +137,15 @@ impl Ui {
         c.blocks.push(Block::Tiles { tiles: tiles(d, &d.favorites()?)?, grid, new: !rail, favorites: true });
         if self.view.creating && !rail {
             c.blocks.push(new_kinds());
+        }
+        if !rail {
+            c.label("Chats");
+            let chats = crate::chat::chats(&d.db)?;
+            if chats.is_empty() {
+                c.line("No chats yet: paste a link below to join one.");
+            } else {
+                c.blocks.push(Block::Chips(chats.into_iter().map(|t| ChipM::action(Icon::People, &t.name, Act::OpenChat(t.tid))).collect()));
+            }
         }
         Ok(c)
     }
@@ -402,6 +413,11 @@ impl Ui {
                             .with_child(NewWidget::new(osis_kit::masonry::widgets::SizedBox::new(style::label(&look, &r.label, Text::Muted)).width(Length::px(120.0))))
                             .with_flex_child(field, 1.0);
                         col = col.with_child(NewWidget::new(row));
+                    }
+                }
+                Block::Messages(lines) => {
+                    for l in lines {
+                        col = col.with_child(self.message_widget(l));
                     }
                 }
                 Block::Chips(chips) => {
