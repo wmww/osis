@@ -1284,18 +1284,23 @@ impl SyncEngine {
 
     /// An admin keeps at most `INBOX_WAITING` entries and bytes of them under an inbox label at a
     /// host waiting for nothing it can do (spec/sync.md §5): a deposit that is no commit of the
-    /// label, past those it stamps or still judges. Over that, it deletes the ones expiring too
-    /// far ahead, then the earliest to expire, so a stranger's fill ends with this pass and the
-    /// rest of the budget stays free.
+    /// label, past those it stamps or still judges. Over that, it deletes all but invite requests
+    /// first, those expiring too far ahead before the rest, then the requests earliest to expire,
+    /// so a stranger's fill ends with this pass, what does not open never costs a user an invite,
+    /// and the rest of the budget stays free. A request goes only past `INBOX_WAITING` of them.
     fn clear_inbox(&mut self, conn: ConnId, p: &Head, out: &mut Vec<super::Action>) -> Result<()> {
         let (l, keys) = (p.l, &p.keys);
         let Some(host) = p.host else { return Ok(()) };
-        if keys.delete.is_none() || self.inbox_actors(&l).is_empty() {
+        if keys.delete.is_none() {
+            return Ok(());
+        }
+        let deposited = self.state.deposited_at(&host, &l);
+        if deposited.is_empty() || self.inbox_actors(&l).is_empty() {
             return Ok(());
         }
         let latest = self.inbox_latest();
         let mut waiting = Vec::new();
-        for id in self.state.deposited_at(&host, &l) {
+        for id in deposited {
             let Some(kind) = self.state.entries.get(&(l, id)).map(|e| e.kind.clone()) else { continue };
             let idle = match &kind {
                 Kind::Commit { .. } | Kind::Parked(_) => false,
@@ -1310,9 +1315,10 @@ impl SyncEngine {
             }
             let Some(blob) = self.engine.blob(&id)? else { continue };
             let until = osis_label::Prefix::parse(&blob).ok().and_then(|x| x.expiry()).map_or(u64::MAX, |w| w.0);
-            waiting.push((until <= latest, until, id, blob.len()));
+            let near = until <= latest;
+            waiting.push((near && matches!(kind, Kind::Request(_)), near, until, id, blob.len()));
         }
-        let over = |w: &[(bool, u64, BlobId, usize)]| w.len() > osis_base::format::INBOX_WAITING || w.iter().map(|x| x.3).sum::<usize>() > osis_base::format::INBOX_WAITING_BYTES;
+        let over = |w: &[(bool, bool, u64, BlobId, usize)]| w.len() > osis_base::format::INBOX_WAITING || w.iter().map(|x| x.4).sum::<usize>() > osis_base::format::INBOX_WAITING_BYTES;
         if !over(&waiting) {
             return Ok(());
         }
@@ -1321,7 +1327,7 @@ impl SyncEngine {
         let raw = self.raw_now();
         let mut items = Vec::new();
         while over(&waiting) {
-            let Some((_, _, id, _)) = waiting.pop() else { break };
+            let Some((_, _, _, id, _)) = waiting.pop() else { break };
             let Some(c) = self.conns.get_mut(&conn) else { break };
             if super::in_flight(c, &c.req.deleting, (l, id), raw) {
                 continue;
