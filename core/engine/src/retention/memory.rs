@@ -58,15 +58,15 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
         }
     }
     for c in cands {
-        if !superseded(tx, &c)? {
-            continue;
-        }
+        let Some(by) = superseded(tx, &c)? else { continue };
         let n = tx.core.ix.commits.get(&c).map_or(0, |m| m.view.aspects.len());
         for ai in 0..n {
             if tx.core.ix.commits.get(&c).is_some_and(|m| m.holds(ai)) {
                 changed.extend(vanish(tx, &c, ai)?);
             }
         }
+        // the lane deletes its entries once a superseder is held there (its author only)
+        tx.core.memory.reasons.insert(c, crate::engine::MemoryDrop::Superseded { by });
         if keep != Some(&c) {
             forget_if_spent(tx, &c)?;
         }
@@ -81,10 +81,17 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
 /// goes, as on the durable path. A function of the commits held, so holders of the same ones
 /// keep the same bodies. Run when a memory commit applies and when parts of a memory aspect turn
 /// valid. The commits dropped from.
+///
+/// An author keeps its own bodies until one of its own snapshots covers them
+/// (issues/eph-unify.md decision 1): a demotion's frontier lists no memory commit
+/// (spec/permissions.md §5.2), so a compactor's demotion invalidates every snapshot it made and
+/// what those covered is gone at every holder; each author then still holds its own writes and
+/// uploads them again where the lane reconciles (`MemorySync::invalidated`).
 pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep: Option<&CommitId>) -> Result<BTreeSet<CommitId>> {
     let mut dropped = BTreeSet::new();
+    let me = tx.core.id.tid();
     for (tid, ak) in aspects {
-        let held: Vec<(CommitId, usize, bool)> = tx
+        let held: Vec<(CommitId, usize, bool, Tid)> = tx
             .core
             .ix
             .by_aspect
@@ -94,17 +101,17 @@ pub(crate) fn drop_covered(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, keep:
             .filter_map(|(_, c)| {
                 let m = tx.core.ix.commits.get(c).filter(|m| m.view.memory)?;
                 let ai = m.aspect(tid, ak).filter(|ai| m.holds(*ai))?;
-                Some((*c, ai, m.view.kind.is_compaction()))
+                Some((*c, ai, m.view.kind.is_compaction(), m.view.author))
             })
             .collect();
-        let snaps: Vec<CommitId> = held.iter().filter(|x| x.2 && crate::apply::copies::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| x.0).collect();
+        let snaps: Vec<(CommitId, Tid)> = held.iter().filter(|x| x.2 && crate::apply::copies::snapshot_valid(tx.core, &x.0, tid, ak)).map(|x| (x.0, x.3)).collect();
         if snaps.is_empty() {
             continue;
         }
         let holds = |tx: &Tx<'_>, c: &CommitId| tx.core.ix.commits.get(c).is_some_and(|m| m.aspect(tid, ak).is_some_and(|ai| m.holds(ai)));
-        for (c, ai, is_snapshot) in held {
-            for s in &snaps {
-                if *s == c || !holds(tx, s) || !holds(tx, &c) {
+        for (c, ai, is_snapshot, author) in held {
+            for (s, snap_author) in &snaps {
+                if *s == c || !holds(tx, s) || !holds(tx, &c) || (author == me && *snap_author != me) {
                     continue;
                 }
                 if super::covered(tx, s, &c, tid, ak)? != Some(true) {
@@ -144,17 +151,19 @@ fn plain_memory(m: &crate::engine::Meta) -> bool {
 }
 
 /// Whether every held part of memory commit `c` (one at least, core aspects alike) expires and
-/// is superseded by a valid held part of another plain memory commit of its author on the aspect.
-fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
-    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(false) };
+/// is superseded by a valid held part of another plain memory commit of its author on the
+/// aspect: those superseders.
+fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<Option<BTreeSet<CommitId>>> {
+    let Some(m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
     let held: Vec<usize> = (0..m.header.aspects.len()).filter(|ai| m.holds(*ai)).collect();
     if held.is_empty() {
-        return Ok(false);
+        return Ok(None);
     }
+    let mut by = BTreeSet::new();
     for ai in held {
-        let Some(a) = m.header.aspects.get(ai) else { return Ok(false) };
+        let Some(a) = m.header.aspects.get(ai) else { return Ok(None) };
         if a.expires.is_none() {
-            return Ok(false);
+            return Ok(None);
         }
         let others: Vec<(CommitId, usize, Option<u64>)> = tx
             .core
@@ -170,21 +179,20 @@ fn superseded(tx: &mut Tx<'_>, c: &CommitId) -> Result<bool> {
             })
             .collect();
         if others.is_empty() {
-            return Ok(false);
+            return Ok(None);
         }
         let p = joined(tx, c, ai)?;
-        let mut any = false;
+        let mut any = None;
         for (x, xai, x_exp) in others {
             if supersedes(&joined(tx, &x, xai)?, x_exp, &p, a.expires) {
-                any = true;
+                any = Some(x);
                 break;
             }
         }
-        if !any {
-            return Ok(false);
-        }
+        let Some(x) = any else { return Ok(None) };
+        by.insert(x);
     }
-    Ok(true)
+    Ok(Some(by))
 }
 
 /// Held part `ai` of `c` as one fragment.

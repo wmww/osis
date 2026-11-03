@@ -11,7 +11,7 @@ use super::{Core, Engine, Tx};
 use crate::error::{Error, Result};
 use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, PurgeItem, writer_ctx};
 use osis_base::{Ak, ChainStep, CommitId, CreationRecord, Role, Tid, Ts, Value, WallMs, owner_chain};
-use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, View, Writer, encode_delta};
+use osis_crdt::{AnyView, Batch, CounterRange, Delta, Fragment, Op, PathOp, Source, Unpaged, View, Writer, encode_delta};
 use osis_label::{BlobWriter, Framing};
 use osis_perm::At;
 use osis_schema::core_types::{CREATED, is_role_class};
@@ -428,6 +428,14 @@ fn own_source(form: Form, node: Tid) -> Source {
     form.own_source(node, osis_base::CommitId([0; 32]))
 }
 
+/// The session nonce a form's counters are kept under (none for commit form).
+pub(crate) fn nonce_of(form: Form) -> [u8; osis_crdt::SESSION_NONCE_LEN] {
+    match form {
+        Form::Session(n) => n,
+        Form::Node | Form::Commit => [0; osis_crdt::SESSION_NONCE_LEN],
+    }
+}
+
 /// Encodes, pages, reserves counters, builds, signs and applies locally. Returns the ID.
 pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Resolved>) -> Result<CommitId> {
     let node = plan.signer;
@@ -441,16 +449,19 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let cx = writer_ctx(plan.form, plan.kind, plan.ts, node, d.lo, d.hi);
         // a roster snapshot: one delta per edge and per ledger entry (spec/commits.md §2)
         let fragments = if d.split { d.fragment.split_entries() } else { vec![d.fragment] };
+        let memory = tx.txn.is_memory();
         let mut blobs = TxBlobs::new(&mut tx.txn);
         let mut bytes = Vec::with_capacity(fragments.len());
         let mut frontiers = d.frontiers;
         for fragment in fragments {
             let mut nonce = [0u8; osis_crdt::NONCE_LEN];
             tx.rng.fill_bytes(&mut nonce);
+            // a memory delta is never paged (spec/crdt.md §8): it must fit a blob alone
             let mut bw = BlobWriter::new(&framing, &mut blobs, &mut *tx.rng);
-            bytes.push(match frontiers.take() {
-                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(&mut bw))?,
-                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(&mut bw))?,
+            let (fr, sink): (_, &mut dyn osis_crdt::PageSink) = (frontiers.take(), if memory { &mut Unpaged } else { &mut bw });
+            bytes.push(match fr {
+                Some((frontiers, absorbed)) => osis_crdt::encode_snapshot(&osis_crdt::Snapshot { nonce, fragment, frontiers, absorbed }, &cx, Some(sink))?,
+                None => encode_delta(&Delta { nonce, fragment }, &cx, Some(sink))?,
             });
         }
         let mut chunks = std::mem::take(&mut blobs.written);
@@ -470,7 +481,7 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         }
         chunks.extend(own);
         if plan.form.counted() && plan.kind.has_own_writes() {
-            let first = tx.txn.reserve_counters(&d.tid, &d.ak, d.hi.saturating_sub(d.lo))?;
+            let first = tx.txn.reserve_counters(&d.tid, &d.ak, &nonce_of(plan.form), d.hi.saturating_sub(d.lo))?;
             if first != d.lo {
                 return Err(Error::Misuse("counter moved under the writer"));
             }
@@ -498,7 +509,11 @@ pub(crate) fn build_and_apply(tx: &mut Tx<'_>, plan: CommitPlan, deltas: Vec<Res
         let signing = if node == core.id.tid() { &core.id.keys().signing } else { &core.key_actors.get(&node).ok_or(Error::Misuse("signer not held"))?.keys().signing };
         b.build(signing, &secrets, &mut sink, &mut *tx.rng)
     };
-    let built = built?;
+    let built = match built {
+        // an ephemeral delta past a blob is refused (spec/commits.md §2): no page carries it
+        Err(osis_commit::Error::Build(osis_commit::DELTA_PAST_BLOB)) if tx.txn.is_memory() => return Err(Error::Misuse("an ephemeral delta does not fit a blob")),
+        b => b?,
+    };
     let id = built.commit.id();
     if !tx.core.forge_bad.is_empty() {
         tx.core.forged = Some(built.commit.encode());
@@ -529,19 +544,6 @@ impl Engine {
     pub fn commit(&mut self, m: Mutation) -> Result<Option<CommitId>> {
         self.run(|tx| commit_in(tx, m))
     }
-
-    /// Commits `m` as a memory commit: session form under this open's session, the ephemeral
-    /// marker, every row it derives in the store's memory overlay (no disk I/O, gone at
-    /// restart). Benches and tests until memory commits land (issues/eph-unify.md step 3); the
-    /// aspects it writes must hold no durable row.
-    #[doc(hidden)]
-    pub fn commit_in_memory(&mut self, mut m: Mutation) -> Result<Option<CommitId>> {
-        m.commit_form = false;
-        self.run(|tx| {
-            tx.set_memory();
-            commit_in(tx, m)
-        })
-    }
 }
 
 pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<CommitId>> {
@@ -568,13 +570,22 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     if !tx.core.skip_writer_rules && m.aspects.keys().any(|(_, ak)| ak.lifetime() != class) {
         return Err(Error::Misuse(if memory { "a memory commit writes ephemeral aspects only" } else { "a durable commit writes durable aspects only" }));
     }
+    let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
+    // a memory commit's writes expire all or none (its session says which, below): the local
+    // write path splits a batch so
+    let expiring = memory && m.aspects.values().any(|a| a.expires.is_some() || a.default_expiry.is_some());
+    if expiring && m.aspects.values().any(|a| a.expires.is_none() && a.default_expiry.is_none()) {
+        return Err(Error::Misuse("a memory commit's writes expire all or none"));
+    }
     if memory {
         // a memory commit's records are held here at once and travel beside its deltas
         // (spec/commits.md §2): a thing made with no write is known all the same
+        let (actor, received) = (m.actor.unwrap_or(node), tx.now());
         for rec in std::mem::take(&mut m.creates).into_values() {
             let t = rec.tid();
             tx.txn.put_local(&[super::records::CREATED, t.as_bytes()].concat(), &osis_base::encode(&rec.to_value()), osis_store::Shred::No)?;
             tx.core.ix.held.create_memory(rec);
+            tx.core.memory.things.insert(t, super::MemoryThing { ts, node, actor, received, made_here: true });
         }
         tx.core.update_timelines();
     } else {
@@ -619,9 +630,9 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
     }
     // role commits use commit form: a later commit by the same node can never void them by
     // reusing their counters; content commits write under this open's session unless asked
-    // for commit form (spec/commits.md §3)
-    let form = if kind != Kind::Content || m.commit_form { Form::Commit } else { Form::Session(tx.core.session.nonce) };
-    let ts = m.ts.unwrap_or_else(|| tx.core.hlc.next());
+    // for commit form (spec/commits.md §3); expiring memory writes under its second session
+    // (`Core::expiring`)
+    let form = if kind != Kind::Content || m.commit_form { Form::Commit } else { Form::Session(if expiring { tx.core.expiring.nonce } else { tx.core.session.nonce }) };
     let plan = CommitPlan { kind, ts, actor: m.actor.unwrap_or(node), form, creates: std::mem::take(&mut m.creates), first: std::mem::take(&mut m.first), purge: std::mem::take(&mut m.purge), undoes: None, frontier: m.frontier.take(), origins: Vec::new(), signer: node, blind: draw_blind(&mut *tx.rng) };
     if !m.unchecked {
         check_acts(tx.core, node, &|t| plan.creates.get(t), &plan.actor, ts)?;
@@ -663,20 +674,21 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             _ => None,
         };
         // what the ops address (map keys, fields, set values: a large one by its link, as the
-        // state holds it)
-        let paths = match &framing {
-            Some(f) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
-            None => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
+        // state holds it); a memory commit holds every value inline (no chunks, no pages)
+        let paths = match (&framing, memory) {
+            (Some(f), false) => super::pages::op_paths(&am.ops, &mut |v| super::large::lookup_form(v, &f.dedup))?,
+            _ => super::pages::op_paths(&am.ops, &mut |v| Ok(v.clone()))?,
         };
         // a list edit's items by content hash and its window (what the pages it needs follow from)
-        let edits = match &framing {
-            Some(f) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
-            None => Vec::new(),
+        let edits = match (&framing, memory) {
+            (Some(f), false) => super::large::list_edits(&am.ops, am.schema.as_deref(), ak.as_str(), &f.dedup)?,
+            _ => Vec::new(),
         };
         let attached = tx.load_for_ops(&tid, &ak, paths, &am.ops, &edits)?;
         // large atomic values become chunk trees before the ops resolve
         let mut chunks = Vec::new();
-        if let Some(framing) = &framing {
+        if memory {
+        } else if let Some(framing) = &framing {
             chunks = super::large::chunk_ops(tx, &tid, &ak, &mut am.ops, &edits, am.schema.as_deref(), framing, &m.fresh)?;
         } else if kind == Kind::RosterSnapshot && ak.as_str() == "tenures.0" {
             let (_, _, framing) = framing_for(tx.core, &plan, &published, &tid, &ak, am.schema.as_deref(), am.retention, am.expires)?;
@@ -685,7 +697,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         let lo = match form {
             Form::Commit => next_ctr,
             // a session's counters: memory rows, gone with the session
-            Form::Node | Form::Session(_) => tx.txn.counter(&tid, &ak)?,
+            Form::Node | Form::Session(_) => tx.txn.counter(&tid, &ak, &nonce_of(form))?,
         };
         let empty = Fragment::default();
         let view = am.schema.as_ref().and_then(|s| s.view(ak.as_str()));

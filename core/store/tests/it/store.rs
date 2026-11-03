@@ -76,24 +76,24 @@ fn counters() {
     let mut s = create(&dev, &mut rng);
     let (t1, a) = (tid(1), ak("c.0"));
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.counter(&t1, &a).unwrap(), 1);
-    assert_eq!(t.reserve_counters(&t1, &a, 5).unwrap(), 1);
-    assert_eq!(t.reserve_counters(&t1, &a, 2).unwrap(), 6);
+    assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 1);
+    assert_eq!(t.reserve_counters(&t1, &a, &[7u8; 16], 5).unwrap(), 1);
+    assert_eq!(t.reserve_counters(&t1, &a, &[7u8; 16], 2).unwrap(), 6);
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.reserve_counters(&t1, &a, 3).unwrap(), 8);
+    assert_eq!(t.reserve_counters(&t1, &a, &[7u8; 16], 3).unwrap(), 8);
     drop(t);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.counter(&t1, &a).unwrap(), 8, "an aborted transaction gives its counters back");
+    assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 8, "an aborted transaction gives its counters back");
     t.drop_aspect(&t1, &a).unwrap();
     t.commit().unwrap();
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.counter(&t1, &a).unwrap(), 8, "a purge keeps the session's counters");
+    assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 8, "a purge keeps the session's counters");
     drop(t);
     drop(s);
     let mut s = reopen(&dev);
     let mut t = s.transaction(&mut rng).unwrap();
-    assert_eq!(t.counter(&t1, &a).unwrap(), 1, "a new session");
+    assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 1, "a new session");
 }
 
 // spec/commits.md §4: pending and parked commits are stored as bytes until applied.
@@ -336,7 +336,7 @@ fn memory_overlay_rows() {
         // a memory-class aspect's rows stay memory in a durable-mode transaction
         let mut t = s.transaction(&mut rng).unwrap();
         assert!(t.is_memory_aspect(&t1, &a) && !t.is_memory_aspect(&t1, &b));
-        t.reserve_counters(&t1, &a, 3).unwrap();
+        t.reserve_counters(&t1, &a, &[7u8; 16], 3).unwrap();
         t.put_local(b"z/3", b"durable", Shred::No).unwrap();
         t.table_put(ix, b"k1", b"d".to_vec(), Shred::No).unwrap();
         t.table_put(ix, b"k3", b"d".to_vec(), Shred::No).unwrap();
@@ -367,7 +367,7 @@ fn memory_overlay_rows() {
         assert_eq!(t.get_local(b"z/2").unwrap(), Some(b"memory".to_vec()));
         assert_eq!(t.get_local(b"z/4").unwrap(), None);
         assert_eq!(t.get_blob(&BlobId([7; 32])).unwrap(), Some(b"blob".to_vec()));
-        assert_eq!(t.counter(&t1, &a).unwrap(), 4);
+        assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 4);
         let tab = t.table(&t1, &a, 0).unwrap().expect("dropped table restored");
         assert_eq!(t.table_get(tab, b"x").unwrap(), Some(b"y".to_vec()));
         assert_eq!(t.table(&t1, &a, 1).unwrap(), None);
@@ -378,7 +378,7 @@ fn memory_overlay_rows() {
     let mut t = s.transaction(&mut rng).unwrap();
     assert_eq!(t.get_local(b"z/2").unwrap(), None);
     assert_eq!(t.get_aspect(&t1, &a).unwrap(), None);
-    assert_eq!(t.counter(&t1, &a).unwrap(), 1);
+    assert_eq!(t.counter(&t1, &a, &[7u8; 16]).unwrap(), 1);
     assert_eq!(t.get_blob(&BlobId([7; 32])).unwrap(), None);
     assert_eq!(t.table(&t1, &a, 0).unwrap(), None);
     assert_eq!(t.get_local(b"z/3").unwrap(), Some(b"durable".to_vec()));

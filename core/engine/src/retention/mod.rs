@@ -34,6 +34,7 @@ mod snapshot;
 mod oracle;
 pub(crate) mod forget;
 pub(crate) mod memory;
+pub(crate) use snapshot::memory_state;
 pub mod suspect;
 
 pub(crate) use bounds::drop_from;
@@ -972,12 +973,11 @@ impl Engine {
         Ok(out)
     }
 
-    /// Whether an expiry or keep-at-most timer, durable or ephemeral, is due by the corrected
+    /// Whether an expiry or keep-at-most timer, durable or memory, is due by the corrected
     /// clock: in memory, no store read (a timer removed without running may leave a false
     /// `true`, which the next `tick` clears).
     pub fn timers_due(&self) -> bool {
-        let now = self.now().0;
-        self.core.timer_floor <= now || self.next_ephemeral_timer().is_some_and(|t| t <= now)
+        self.core.timer_floor <= self.now().0
     }
 
     /// When the next expiry or keep-at-most timer is due (corrected wall ms).

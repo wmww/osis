@@ -75,6 +75,14 @@ fn aspect_key(k: u8, tid: &Tid, ak: &Ak) -> Vec<u8> {
     W::new().u8(k).raw(tid.as_bytes()).u32(a.len() as u32).raw(a).take()
 }
 
+/// A session's counter row: the aspect key with the session's nonce (an open's sessions share
+/// an aspect without sharing counters).
+fn counter_key(tid: &Tid, ak: &Ak, nonce: &[u8]) -> Vec<u8> {
+    let mut k = aspect_key(kind::COUNTER, tid, ak);
+    k.extend_from_slice(nonce);
+    k
+}
+
 fn named_key(k: u8, name: &[u8]) -> Vec<u8> {
     W::new().u8(k).bytes(name).take()
 }
@@ -604,15 +612,15 @@ impl Transaction<'_> {
     // counters start from 1 at each open and never reach the disk), rolled back with an aborted
     // transaction, so a session leaves no gap.
 
-    /// The next unused session counter in the aspect (from 1).
-    pub fn counter(&mut self, tid: &Tid, ak: &Ak) -> Result<u64, Error> {
-        Ok(u64_value(self.mem.o.cat.get(&aspect_key(kind::COUNTER, tid, ak)).cloned())?.unwrap_or(1))
+    /// The next unused counter of session `nonce` in the aspect (from 1).
+    pub fn counter(&mut self, tid: &Tid, ak: &Ak, nonce: &[u8]) -> Result<u64, Error> {
+        Ok(u64_value(self.mem.o.cat.get(&counter_key(tid, ak, nonce)).cloned())?.unwrap_or(1))
     }
-    /// Reserves `n` counters; returns the first.
-    pub fn reserve_counters(&mut self, tid: &Tid, ak: &Ak, n: u64) -> Result<u64, Error> {
-        let first = self.counter(tid, ak)?;
+    /// Reserves `n` counters of session `nonce`; returns the first.
+    pub fn reserve_counters(&mut self, tid: &Tid, ak: &Ak, nonce: &[u8], n: u64) -> Result<u64, Error> {
+        let first = self.counter(tid, ak, nonce)?;
         let next = first.checked_add(n).ok_or(Error::Misuse("counter overflow"))?;
-        self.mem.cat_put(&aspect_key(kind::COUNTER, tid, ak), W::new().u64(next).take());
+        self.mem.cat_put(&counter_key(tid, ak, nonce), W::new().u64(next).take());
         Ok(first)
     }
 

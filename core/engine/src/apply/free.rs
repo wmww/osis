@@ -72,6 +72,8 @@ pub(crate) fn free(tx: &mut Tx<'_>, things: &BTreeSet<Tid>) -> Result<()> {
     for t in &freed {
         tx.core.ix.freeing.remove(t);
         tx.core.ix.held.free(t);
+        tx.core.memory.things.remove(t);
+        tx.core.ix.placed.remove(t);
         tx.txn.remove_local(&[records::CREATED, t.as_bytes()].concat(), Shred::No)?;
         let residues = tx.txn.memory_local_keys(&[records::RESIDUE, t.as_bytes()].concat());
         let aks = tx.txn.drop_memory_thing(t, |ak| ASPECT_RECORDS.iter().map(|p| records::aspect_key(p, t, ak)).collect())?;
@@ -105,6 +107,17 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let core = &mut *tx.core;
     let Some(m) = core.take_meta(id) else { return Ok(()) };
     let v = &m.view;
+    // reported to the ephemeral lane with why (`MemorySync::reasons`, else covered by what
+    // the dropped parts record, else gone)
+    if v.memory {
+        let why = core.memory.reasons.remove(id).unwrap_or_else(|| {
+            let by: BTreeSet<CommitId> = m.dropped.values().filter(|d| d.why == crate::engine::DropFor::Cover).flat_map(|d| d.covered_by.iter().copied()).collect();
+            if by.is_empty() { crate::engine::MemoryDrop::Gone } else { crate::engine::MemoryDrop::Covered { by } }
+        });
+        core.memory.dropped.push((*id, why));
+        core.memory.unsent.retain(|c| c != id);
+        core.memory.dirty.extend(v.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+    }
     for a in &v.aspects {
         let k = (a.tid, a.ak.clone());
         core.ix.by_aspect.remove(&k, &(v.ts, *id));
@@ -139,6 +152,9 @@ pub(crate) fn unindex_commit(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
 /// Drops what the indexes and caches keep per aspect of `(tid, ak)` (no commit is on it).
 fn unindex_aspect(core: &mut Core, tid: &Tid, ak: &Ak) {
     let k = (*tid, ak.clone());
+    if ak.as_str() == "placed.0~" {
+        core.ix.placed.remove(tid);
+    }
     core.ix.snapshots.remove(&k);
     core.ix.carried.remove(&k);
     core.ix.valueless.remove(&k);

@@ -1065,6 +1065,13 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
                 && let Some(x) = h.aspects.get(ai)
             {
                 flipped.insert((x.tid, x.ak.clone()));
+                if m.view.memory {
+                    tx.core.memory.dirty.insert((x.tid, x.ak.clone()));
+                    // the bodies it covered were forgotten: the lane brings their copies back
+                    if *a && m.view.kind.is_compaction() {
+                        tx.core.memory.invalidated.insert((x.tid, x.ak.clone()));
+                    }
+                }
                 if *b {
                     rose.insert((x.tid, x.ak.clone()));
                 } else {

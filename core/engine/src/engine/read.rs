@@ -95,7 +95,10 @@ impl Engine {
     pub fn get(&mut self, tid: &Tid, ak: &Ak) -> Result<Option<Value>> {
         let (tid, ak) = (*tid, ak.clone());
         if self.core.created(&tid).is_none() {
-            let v = self.ephemeral_get(&tid, &ak)?;
+            return Ok(None);
+        }
+        // an ephemeral thing's record is held beside its deltas, not as `created.0` state
+        if let Some(v) = self.ephemeral_core_value(&tid, &ak)? {
             return Ok(self.resolved(&tid, &ak, v));
         }
         let v = match ak.as_str() {
@@ -106,7 +109,8 @@ impl Engine {
                 let r = self.core.roster_of(&tid);
                 (!r.is_empty()).then(|| Value::Map(r.iter().map(|(m, e)| (Value::Tid(*m), edge_value(e))).collect()))
             }
-            _ if self.has_ephemeral(&tid, &ak) => self.ephemeral_value(&tid, &ak)?,
+            // the group its items and subgroups make (`placed.0~` adds carry no presence)
+            "placed.0~" => self.placed_value(&tid),
             _ => self.run(|tx| Ok(tx.state(&tid, &ak)?.and_then(Fragment::read)))?,
         };
         Ok(self.resolved(&tid, &ak, v))
@@ -162,12 +166,8 @@ impl Engine {
     /// The value at `path` inside `(tid, ak)` (a field, a map key, a list index, a case payload);
     /// `None` if absent. A key of a large map costs O(log n), not a read of the whole aspect.
     pub fn get_at(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg]) -> Result<Option<Value>> {
-        if path.is_empty() || synthetic_ak(ak.as_str()) {
+        if path.is_empty() || synthetic_ak(ak.as_str()) || ak.as_str() == "placed.0~" {
             return Ok(self.get(tid, ak)?.and_then(|v| value_at(v, path)));
-        }
-        if self.has_ephemeral(tid, ak) {
-            let v = self.joined_state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|f| f.read());
-            return Ok(self.resolved(tid, ak, v));
         }
         if self.core.created(tid).is_none() {
             return Ok(None);
@@ -187,10 +187,6 @@ impl Engine {
     pub fn get_range(&mut self, tid: &Tid, ak: &Ak, path: &[osis_crdt::PathSeg], r: std::ops::Range<usize>) -> Result<Option<Value>> {
         if synthetic_ak(ak.as_str()) {
             return Ok(None);
-        }
-        if self.has_ephemeral(tid, ak) {
-            let v = self.joined_state(tid, ak)?.and_then(|f| f.at(path)).filter(Fragment::present).and_then(|s| s.read_elems(&s.visible_range(r)?));
-            return Ok(self.resolved(tid, ak, v));
         }
         if self.core.created(tid).is_none() {
             return Ok(None);
@@ -212,9 +208,8 @@ impl Engine {
     /// AKs present on the thing (`aspects.0`).
     pub fn aspects(&mut self, tid: &Tid) -> Result<Vec<Ak>> {
         let tid = *tid;
-        let eph = self.ephemeral_aspects(&tid);
         if self.core.created(&tid).is_none() {
-            return Ok(eph);
+            return Ok(Vec::new());
         }
         let mut out = self.run(|tx| {
             let mut aks = Vec::new();
@@ -232,12 +227,6 @@ impl Engine {
             }
             Ok(out)
         })?;
-        // an aspect with both sides lists once (its read is their join)
-        for ak in eph {
-            if !out.contains(&ak) {
-                out.push(ak);
-            }
-        }
         out.sort();
         Ok(out)
     }
@@ -246,9 +235,6 @@ impl Engine {
     /// `created.0`, not role-class), durable or ephemeral. Stops at the first.
     pub fn has_content(&mut self, tid: &Tid) -> Result<bool> {
         let content = |ak: &Ak| ct::is_content(ak.as_str());
-        if self.ephemeral_aspects(tid).iter().any(content) {
-            return Ok(true);
-        }
         if self.core.created(tid).is_none() {
             return Ok(false);
         }
@@ -277,7 +263,7 @@ impl Engine {
 
     /// This node's effective role on `tid` now.
     pub fn role_on(&self, tid: &Tid) -> Option<Role> {
-        if self.ephemeral_thing(tid).is_some() {
+        if self.core.ix.held.is_memory(tid) {
             return self.ephemeral_role(tid);
         }
         let ts = osis_base::Ts::make(self.now(), 0).unwrap_or_default();
@@ -301,9 +287,9 @@ impl Engine {
         self.core.epochs(tid).or_else(|| self.core.ix.secrets.get(tid).cloned())
     }
 
-    /// Whether `created.0` of `tid` is held, or it is an ephemeral thing here.
+    /// Whether the creation record of `tid` is held here, durable or memory class.
     pub fn knows(&self, tid: &Tid) -> bool {
-        self.core.created(tid).is_some() || self.ephemeral_thing(tid).is_some()
+        self.core.created(tid).is_some()
     }
 
     /// Every aspect with a held state, as `(tid, ak)` (simulator invariants).
