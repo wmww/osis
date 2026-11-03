@@ -3,5 +3,6 @@
 
 mod library;
 mod net;
+mod scale;
 mod scenarios;
 mod work_sets;

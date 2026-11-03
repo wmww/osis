@@ -14,6 +14,7 @@ use crate::flows::{now_ts, secrets_in};
 use osis_base::{Role, Tid, Ts, WallMs};
 use osis_keys::{ActorEpochs, Departure, MemoryHeldActors, Name, ROLES, uncovered};
 use osis_perm::{At, EdgeOp, RoleCommit, Timeline, WriteId};
+use std::sync::Arc;
 use osis_schema::core_types::{self as ct, BoxKey};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -214,9 +215,9 @@ pub(crate) fn sealers(tx: &mut Tx<'_>, a: &Tid, m: &Tid, roles: &BTreeSet<Role>)
     };
     let mut groups: Vec<Vec<Sealed>> = secrets_in(tx, a)?
         .boxes
-        .into_iter()
+        .iter()
         .filter(|(k, _)| k.holder == *m && roles.contains(&k.role))
-        .filter_map(|(k, b)| Some((k.role, osis_keys::aspects::from_schema(&k.epoch).ok()?, osis_keys::names_of(&b)?.clone())))
+        .filter_map(|(k, b)| Some((k.role, osis_keys::aspects::from_schema(&k.epoch).ok()?, osis_keys::names_of(b)?.clone())))
         .filter(|(r, e, _)| epochs.role(*r).is_current(e))
         .map(|x| vec![x])
         .collect();
@@ -410,6 +411,7 @@ pub(crate) fn departures(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<Departure>> {
     {
         return Ok(d.clone());
     }
+    let _s = crate::costs::span("departures: collect");
     let mut horizon = None;
     let out: Vec<Departure> = collect(tx, a, &mut horizon, &[])?.into_iter().collect();
     tx.core.ix.departures.insert(*a, (out.clone(), horizon));
@@ -436,7 +438,6 @@ pub(super) fn class_of(held: &dyn osis_keys::HeldActors, v: &Tid, d: &Departure)
 /// `a`'s own departures (`pending` added: ones a commit being made makes) and those inside its
 /// holders.
 pub(super) fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pending: &[Departure]) -> Result<BTreeSet<Departure>> {
-    let held = held_actors(tx)?;
     let (below, parents) = below_of(tx.core, a);
     let mut direct = Vec::with_capacity(below.len() + 1);
     let mut mine = direct_departures(tx, a, horizon)?;
@@ -446,6 +447,8 @@ pub(super) fn collect(tx: &mut Tx<'_>, a: &Tid, horizon: &mut Option<WallMs>, pe
         let d = direct_departures(tx, &v, horizon)?;
         direct.push((v, d));
     }
+    // no departure anywhere: `class_of` is never asked
+    let held = if direct.iter().any(|(_, d)| !d.is_empty()) { held_actors(tx)? } else { MemoryHeldActors::default() };
     let found = walk(&parents, direct, |v, d| class_of(&held, v, d));
     let mut out = mine;
     for (m, ps) in &parents {
@@ -528,7 +531,10 @@ pub(super) fn walk(parents: &Parents, direct: Vec<(Tid, BTreeSet<Departure>)>, c
 /// (`presumed_boxes`). Epochs observed without any secret (boxes or keysets seen) are not
 /// holding: such an actor is judged by its `keys.0` too, or a newer keyset arriving alone never
 /// counted.
+///
+/// O(actors known): only a departure inside a holder actor asks it (`held_for`).
 pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
+    let _s = crate::costs::span("held actors");
     let mut h = MemoryHeldActors::default();
     let actors: Vec<Tid> = tx.core.ix.secrets.keys().copied().collect();
     for a in actors {
@@ -551,10 +557,16 @@ pub(crate) fn held_actors(tx: &mut Tx<'_>) -> Result<MemoryHeldActors> {
             }
         }
         let mut s = secrets_in(tx, &a)?;
-        presumed_boxes(tx, &a, &e, &mut s)?;
+        presumed_boxes(tx, &a, &e, Arc::make_mut(&mut s))?;
         h.map.insert(a, (s, e));
     }
     Ok(h)
+}
+
+/// `held_actors` for judging holder actors against `deps`: only a departure inside a holder
+/// reads it (`role_keeps_out`), so with none an empty view gives the same answers.
+pub(crate) fn held_for(tx: &mut Tx<'_>, deps: &[Departure]) -> Result<MemoryHeldActors> {
+    if deps.iter().any(|d| !d.via.is_empty()) { held_actors(tx) } else { Ok(MemoryHeldActors::default()) }
 }
 
 /// Boxes presumed in actor `a`'s keyset epochs, on top of the `secrets.0` boxes held of it

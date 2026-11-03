@@ -351,6 +351,7 @@ pub(crate) fn before_join(tx: &mut Tx<'_>, h: &Header, parts: &[(usize, usize, D
 
 fn save(tx: &mut Tx<'_>, actor: &Tid) -> Result<()> {
     tx.core.role_changed();
+    tx.core.waits.secrets_changed(actor);
     if let Some(e) = tx.core.ix.secrets.get(actor) {
         let b = crate::engine::secrets::encode_epochs(e);
         tx.txn.put_local(&[b"k/".as_slice(), actor.as_bytes()].concat(), &b, Shred::Yes)?;
@@ -462,21 +463,28 @@ pub(crate) fn sealed_key(c: &CommitId, a: &Tid) -> Vec<u8> {
 /// decoded unverified, so what they yield is reading-only: never encrypted under, and replaced
 /// by an applied valid box (spec/crypto.md §4).
 pub(crate) fn read_pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<()> {
-    for (a, w) in pending_secrets_writes(blob, id) {
-        if (w.boxes.is_empty() && w.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
-            continue;
-        }
-        let s = ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() };
+    for (a, s, from) in pending_boxes(tx, blob, id)? {
         tx.core.touch();
-        // an author whose chain is not known here shares one budget with every such author (a
-        // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
-        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
-        let from = osis_keys::Unchecked { author, commit: *id };
         if tx.core.ingest_secrets(&a, &s, Some(from), &osis_keys::HistoryAlts::new()) {
             crate::flows::save_epochs(tx, &a)?;
         }
     }
     Ok(())
+}
+
+/// What `read_pending_boxes` reads of pending commit `id`.
+pub(crate) fn pending_boxes(tx: &mut Tx<'_>, blob: &osis_commit::CommitBlob, id: &CommitId) -> Result<Vec<(Tid, ct::Secrets, osis_keys::Unchecked)>> {
+    let mut out = Vec::new();
+    for (a, w) in pending_secrets_writes(blob, id) {
+        if (w.boxes.is_empty() && w.history.is_empty()) || tx.txn.get_local(&sealed_key(id, &a))?.is_some() {
+            continue;
+        }
+        // an author whose chain is not known here shares one budget with every such author (a
+        // claimed grant earns nothing: its `roles.0` part is as unverified as the boxes)
+        let author = if tx.core.created(&blob.header.author).is_some() { blob.header.author } else { osis_keys::UNKNOWN_AUTHOR };
+        out.push((a, ct::Secrets { boxes: w.boxes, history: w.history.into_iter().collect() }, osis_keys::Unchecked { author, commit: *id }));
+    }
+    Ok(out)
 }
 
 /// Drops the reading-only secrets pending commit `id` gave: it applied (its boxes are checked
@@ -505,6 +513,8 @@ pub(crate) fn forget_unchecked(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
         tx.core.touch();
         tx.core.ix.secrets.insert(a, e);
         crate::flows::save_epochs(tx, &a)?;
+        // room in the reading-only budget (`Core::ingest_view`)
+        tx.core.waits.wake_boxes();
     }
     crate::rotation::mark_lost_due(tx, lost)
 }

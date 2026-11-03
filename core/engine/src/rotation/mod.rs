@@ -20,7 +20,7 @@ use std::collections::{BTreeMap, BTreeSet};
 pub use departures::{departures_placing, may_rotate, uncovered_roles_of};
 pub use lost::{Dropped, Leaving, LostScope, PENDING_GRANT_WAIT_MS};
 pub(crate) use lost::{load_kept, without_frozen};
-pub(crate) use departures::{departures, grant_names, held_actors, uncovered_departures, uncovered_roles};
+pub(crate) use departures::{departures, grant_names, held_for, uncovered_departures, uncovered_roles};
 use departures::{below_of, collect, uncovered_by_role};
 pub(crate) use lost::{boxes_kept, load_lost_due, mark_lost_due};
 #[cfg(test)]
@@ -36,7 +36,7 @@ pub(crate) use lost::authentic;
 fn rotation_due(tx: &mut Tx<'_>, a: &Tid, may: &BTreeSet<Role>) -> Result<BTreeSet<Role>> {
     let deps = departures(tx, a)?;
     let Some(by_role) = uncovered_by_role(tx, a, &deps)? else { return Ok(BTreeSet::new()) };
-    let held = held_actors(tx)?;
+    let held = held_for(tx, &deps)?;
     let current: BTreeSet<Tid> = tx.core.current_holders(a).into_iter().map(|x| x.0).collect();
     let mut out = BTreeSet::new();
     let mut on_cycle: BTreeMap<Tid, bool> = BTreeMap::new();
@@ -212,7 +212,7 @@ pub(crate) fn left_out(tx: &mut Tx<'_>, a: &Tid, held: &MemoryHeldActors, deps: 
 /// once it is a holder.
 pub(crate) fn grantee_left_out(tx: &mut Tx<'_>, a: &Tid, rc: &Recipient) -> Result<Option<Boxed>> {
     let deps: Vec<Departure> = departures(tx, &rc.holder)?.iter().filter_map(|d| Departure::through(rc.holder, rc.role, d)).collect();
-    let held = held_actors(tx)?;
+    let held = held_for(tx, &deps)?;
     left_out(tx, a, &held, &deps, rc, &osis_keys::roles_up_to(rc.role))
 }
 
@@ -294,7 +294,7 @@ pub(crate) fn refreshes_deposit(core: &Core, who: &Tid, a: &Tid, roles: &BTreeSe
 pub(crate) fn rotation_into(tx: &mut Tx<'_>, m: &mut Mutation, a: Tid, roles: &BTreeSet<Role>, held: &ActorEpochs, holders: &[Recipient], pending: &[Departure]) -> Result<Rotation> {
     let secrets = secrets_in(tx, &a)?;
     let deps = if pending.is_empty() { departures(tx, &a)? } else { collect(tx, &a, &mut None, pending)?.into_iter().collect() };
-    let actors = held_actors(tx)?;
+    let actors = held_for(tx, &deps)?;
     let mut boxed = Vec::with_capacity(holders.len());
     let mut box_names = Vec::new();
     for rc in holders {
@@ -544,6 +544,23 @@ fn own_secrets_delivered(tx: &mut Tx<'_>, t: Tid) -> Result<Done> {
 /// a node holding it re-seals (issues/fork-held-by-non-rotators.md: one that may not, cannot).
 /// `tests::forked_reseals_settle_*` and `tests::forks_with_departures_settle_*` check it.
 pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
+    if tx.core.reseal_quiet.contains(a) && tx.core.ix.departures.get(a).is_some_and(|(_, until)| until.is_none_or(|u| tx.core.now() < u)) {
+        #[cfg(debug_assertions)]
+        assert_eq!(reseal_scan(tx, a)?, Vec::new(), "reseal_quiet of {a:?} went stale");
+        return Ok(Vec::new());
+    }
+    let _s = crate::costs::span("reseal: scan");
+    let out = reseal_scan(tx, a)?;
+    if out.is_empty() {
+        // the clock alone only takes holders away (an edge's `until`); a write ahead of the clock
+        // is the horizon of `departures`, whose entry holds this memo
+        departures(tx, a)?;
+        tx.core.reseal_quiet.insert(*a);
+    }
+    Ok(out)
+}
+
+fn reseal_scan(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BTreeSet<Role>)>> {
     let me = tx.core.id.tid();
     let may = may_rotate(tx.core, &me, a);
     if may.is_empty() {
@@ -554,8 +571,11 @@ pub(crate) fn reseal_candidates(tx: &mut Tx<'_>, a: &Tid) -> Result<Vec<(Tid, BT
     let holders: Vec<osis_keys::Holder> = tx.core.current_holders(a).into_iter().map(|(holder, role, until)| osis_keys::Holder { holder, role, until }).collect();
     let now = tx.core.now();
     let due = osis_keys::reseal_needed(&secrets, &epochs, &holders, now);
+    if due.is_empty() {
+        return Ok(Vec::new());
+    }
     let deps = departures(tx, a)?;
-    let held = held_actors(tx)?;
+    let held = held_for(tx, &deps)?;
     let mut out = Vec::new();
     for (m, roles) in due {
         let mut keep = BTreeSet::new();
@@ -605,7 +625,7 @@ pub(crate) fn reseal_one(tx: &mut Tx<'_>, a: Tid, holder: Tid, roles: &BTreeSet<
     // a holder actor at the keyset this node may seal it to (`left_out`)
     let rcpt = recipient(tx, holder, role)?;
     let deps = departures(tx, &a)?;
-    let held = held_actors(tx)?;
+    let held = held_for(tx, &deps)?;
     let b = left_out(tx, &a, &held, &deps, &rcpt, roles)?.ok_or(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"))?;
     let roles: BTreeSet<Role> = roles.iter().copied().filter(|r| *r <= b.rcpt.role).collect();
     let Some(mut w) = osis_keys::box_holder(&a, &epochs, &secrets, &b.rcpt, &roles, &mut *tx.rng)? else {
@@ -708,7 +728,7 @@ impl Engine {
                 return Err(Error::Misuse("this node may not re-seal that holder"));
             }
             let deps = departures(tx, &a)?;
-            let held = held_actors(tx)?;
+            let held = held_for(tx, &deps)?;
             for &r in &roles {
                 if !holder_keeps_out(tx, &a, &held, &deps, &m, r)? {
                     return Err(Error::Misuse("the holder's epoch does not cover a known departure (it must rotate first)"));

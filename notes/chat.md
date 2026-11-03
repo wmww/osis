@@ -21,7 +21,7 @@
 ## Costs
 On the sim (`--release`, every node in one process, `scale_long`, `scale_small`, `scale_post_read`):
 - 10^4 messages, 1 member: 624 B up per message; a local post at the end 8.8 ms, its pass included; newest 50 read 1.5 ms; all 10^4 by pages 0.2 s; `find` 5000 back 0.36 s; a new member's fetch 23 s, 6 MB down; a kick 3 s.
-- 20 members: joining took 17 s; 2000 messages did not finish in 10 minutes. 100 members: joining alone passed 20 minutes. Per-pass cost grows with members and people met: issues/held-actors-per-pass.md.
+- Many members: `scale::chat_members`, notes/testing.md; what is left: issues/chat-add-cost.md.
 
 ## Rotation costs (kept from the old pattern)
 - A read+write rotation costs 2.7 KB per remaining holder (`scale.rs` `roster_removal_cost`: 272 KB at 100 writers, 2.70 MB at 1000; 1.05 s to commit at 1000). Downloads multiply by the holder count, only on removals.

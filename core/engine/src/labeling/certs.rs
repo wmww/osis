@@ -9,6 +9,7 @@ use crate::error::Result;
 use osis_commit::Decoded;
 use osis_base::{Ak, BlobId, ChainStep, CommitId, Tid};
 use std::collections::{BTreeMap, BTreeSet};
+use std::sync::Arc;
 
 /// Aspects a node card holds (each its own commit, spec/permissions.md §4).
 const CARD: [&str; 3] = ["keys.0", "node.0", "reach.0"];
@@ -73,7 +74,18 @@ impl Engine {
     /// The holders each `roles.0` or `secrets.0` aspect of applied role commit `c` is
     /// about (spec/sync.md §3): those whose edge a `roles.0` delta writes, those a `secrets.0`
     /// delta boxes. Empty for any other commit kind.
-    pub fn holders_named(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
+    pub fn holders_named(&mut self, c: &CommitId) -> Arc<BTreeMap<usize, BTreeSet<Tid>>> {
+        if let Some(n) = self.core.holders_named.get(c).cloned() {
+            debug_assert_eq!(*n, self.holders_named_read(c), "holders_named of {c:?} went stale");
+            return n;
+        }
+        let _s = crate::costs::span("holders named: read");
+        let n = Arc::new(self.holders_named_read(c));
+        self.core.holders_named.insert(*c, n.clone());
+        n
+    }
+
+    fn holders_named_read(&mut self, c: &CommitId) -> BTreeMap<usize, BTreeSet<Tid>> {
         let mut out: BTreeMap<usize, BTreeSet<Tid>> = BTreeMap::new();
         let Some(h) = self.header(c) else { return out };
         if !h.kind.is_role() {

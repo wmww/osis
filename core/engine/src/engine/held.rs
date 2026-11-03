@@ -48,6 +48,8 @@ pub struct Held {
     ids: BTreeMap<CommitId, Records>,
     log: Vec<Undo>,
     touched: BTreeSet<Tid>,
+    /// The same, for `take_moved`.
+    moved: BTreeSet<Tid>,
     /// Count changes (rollbacks included), of anything and of what `validity::reaches` reads:
     /// the edge writes, a record replaced or removed, and a new record of a thing named as a
     /// holder or owning a held thing (its owner link) (`apply::waits`).
@@ -225,6 +227,7 @@ impl Held {
             self.edges += 1;
         }
         self.touched.insert(t);
+        self.moved.insert(t);
         self.generation += 1;
         // `reaches` climbs from a holder to its owners: a record of a holder or of an owner
         // of held things may complete a path
@@ -264,8 +267,10 @@ impl Held {
         for t in &targets {
             self.commits.entry(*t).or_default().push(c.clone());
         }
+        self.moved.extend(targets.iter().copied());
         self.touched.extend(targets);
         self.touched.insert(c.author);
+        self.moved.insert(c.author);
         self.count(named(&c), true);
         self.generation += 1;
         self.edges += 1;
@@ -276,6 +281,7 @@ impl Held {
     fn put_snapshot(&mut self, s: Arc<RosterSnapshot>) {
         self.snapshots.entry(s.thing).or_default().push(s.clone());
         self.touched.insert(s.thing);
+        self.moved.insert(s.thing);
         self.count(named_snapshot(&s), true);
         self.generation += 1;
         self.edges += 1;
@@ -284,6 +290,7 @@ impl Held {
 
     fn put_withheld(&mut self, s: Arc<RosterSnapshot>) {
         self.touched.insert(s.thing);
+        self.moved.insert(s.thing);
         self.count(named_snapshot(&s), true);
         self.generation += 1;
         self.edges += 1;
@@ -305,6 +312,7 @@ impl Held {
                     }
                 }
                 self.touched.insert(o.target);
+                self.moved.insert(o.target);
             }
             self.count(named(&c), false);
             cs.push(c);
@@ -317,10 +325,12 @@ impl Held {
                 }
             }
             self.touched.insert(s.thing);
+            self.moved.insert(s.thing);
             self.count(named_snapshot(s), false);
         }
         for s in &ws {
             self.touched.insert(s.thing);
+            self.moved.insert(s.thing);
             self.count(named_snapshot(s), false);
         }
         (cs, ss, ws)
@@ -400,6 +410,11 @@ impl Held {
     /// Things whose creation record was added since the last call.
     pub fn take_records(&mut self) -> Vec<Tid> {
         std::mem::take(&mut self.records)
+    }
+
+    /// Things whose held inputs changed since the last call of this one (`apply::waits`).
+    pub fn take_moved(&mut self) -> BTreeSet<Tid> {
+        std::mem::take(&mut self.moved)
     }
 
     /// Things whose held inputs changed since the last call.
