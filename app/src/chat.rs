@@ -3,16 +3,13 @@
 //!
 //! A chat is any synced group with chat settings (`chat:settings.0^`): chats made or joined here
 //! or by the CLI on this store alike. The sender's name is the profile's `name.0` (the same word
-//! `reach` shows for this person), else `OSIS_CHAT_NAME`, as the CLI's `--from`.
+//! `reach` shows for this person), else `OSIS_CHAT_NAME`, as the CLI's `--from`. A store without
+//! hosts has no profile (`profile()` would fail, and leave a thing behind at each try): only the
+//! variable names it.
 
 use osis::core::NAME;
 use osis::{Ak, Osis, Result, Tid};
-use osis_chat::{Body, Draft, Id, Timeline};
-use std::time::{Duration, Instant};
-
-/// How long a join waits for the link's host before giving up. 0 would fail every join; without
-/// a bound a dead host would leave the join pending for good.
-pub const JOIN_WAIT: Duration = Duration::from_secs(60);
+use osis_chat::{Body, Draft, Id, Message, Timeline};
 
 /// One chat as a list shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -60,21 +57,29 @@ pub fn name(db: &Osis, c: Tid) -> Result<String> {
 }
 
 /// Joins by an `osis://` link (`osis chat link`): the chat, once here. Blocks until the link's
-/// host answers, at most `JOIN_WAIT`.
+/// host answers (each of the redemption's waits ends at the store's `wait_timeout`).
 pub fn join(db: &Osis, link: &str) -> Result<Tid> {
     let l: osis::ShareLink = link.trim().parse().map_err(|e| osis::Error::Invalid(format!("not a chat link: {e}")))?;
-    block_on(osis_chat::join(db, &l), JOIN_WAIT).unwrap_or_else(|| Err(osis::Error::Invalid("the link's host did not answer".into())))
+    block_on(osis_chat::join(db, &l))
+}
+
+/// The profile, made on first use; `None` on a store without hosts.
+fn profile(db: &Osis) -> Result<Option<Tid>> {
+    if db.hosts().is_empty() { Ok(None) } else { db.profile().map(Some) }
 }
 
 /// The name messages go out under: the profile's `name.0`, else `OSIS_CHAT_NAME`.
 pub fn my_name(db: &Osis) -> Result<Option<String>> {
-    let own = db.get(db.profile()?, NAME)?.filter(|n| !n.trim().is_empty());
+    let own = match profile(db)? {
+        Some(p) => db.get(p, NAME)?.filter(|n| !n.trim().is_empty()),
+        None => None,
+    };
     Ok(own.or_else(|| std::env::var("OSIS_CHAT_NAME").ok().filter(|n| !n.trim().is_empty())))
 }
 
 /// Sets the profile's name (empty: none).
 pub fn set_name(db: &Osis, name: &str) -> Result<()> {
-    let p = db.profile()?;
+    let p = profile(db)?.ok_or_else(|| osis::Error::Invalid("a name needs a host: start with --host".into()))?;
     db.write_with(|w| if name.trim().is_empty() { w.at(p, NAME).remove() } else { w.at(p, NAME).set(&name.trim().to_string()) })
 }
 
@@ -100,8 +105,14 @@ fn text_of(b: &Body) -> String {
     }
 }
 
-fn who(sender: Tid, name: Option<&String>) -> String {
-    name.cloned().unwrap_or_else(|| sender.to_string().chars().take(8).collect())
+/// The name a message was sent under, else the start of its sender's tid.
+fn who(m: &Message) -> String {
+    m.name.clone().filter(|n| !n.trim().is_empty()).unwrap_or_else(|| m.sender.to_string().chars().take(8).collect())
+}
+
+/// A message as a reply names it: its sender and first line.
+pub fn quote(m: &Message) -> String {
+    format!("{}: {}", who(m), text_of(&m.body).lines().next().unwrap_or(""))
 }
 
 /// The newest `n` messages, oldest first.
@@ -119,17 +130,17 @@ pub fn recent(db: &Osis, c: Tid, n: usize) -> Result<Vec<Line>> {
                     // further back than the page: look it up
                     None => osis_chat::find(db, c, &r)?,
                 };
-                let what = to.map_or_else(|| r.to_string(), |x| format!("{}: {}", who(x.sender, x.name.as_ref()), text_of(&x.body).lines().next().unwrap_or("")));
+                let what = to.map_or_else(|| r.to_string(), |x| quote(&x));
                 Some((r, what))
             }
         };
-        out.push(Line { id: m.id, who: who(m.sender, m.name.as_ref()), time: m.time, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
+        out.push(Line { id: m.id, who: who(m), time: m.time, text: text_of(&m.body), reply_to, mine: m.sender == me, edited: m.edited.is_some() });
     }
     Ok(out)
 }
 
-/// Polls `f` on this thread until it is ready or `timeout` passes (`None`).
-fn block_on<F: Future>(f: F, timeout: Duration) -> Option<F::Output> {
+/// Polls `f` on this thread until it is ready.
+fn block_on<F: Future>(f: F) -> F::Output {
     struct Unpark(std::thread::Thread);
     impl std::task::Wake for Unpark {
         fn wake(self: std::sync::Arc<Self>) {
@@ -139,15 +150,10 @@ fn block_on<F: Future>(f: F, timeout: Duration) -> Option<F::Output> {
     let mut f = std::pin::pin!(f);
     let waker = std::task::Waker::from(std::sync::Arc::new(Unpark(std::thread::current())));
     let mut cx = std::task::Context::from_waker(&waker);
-    let end = Instant::now() + timeout;
     loop {
         if let std::task::Poll::Ready(v) = f.as_mut().poll(&mut cx) {
-            return Some(v);
+            return v;
         }
-        let now = Instant::now();
-        if now >= end {
-            return None;
-        }
-        std::thread::park_timeout(end - now);
+        std::thread::park();
     }
 }

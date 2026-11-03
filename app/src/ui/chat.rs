@@ -156,13 +156,7 @@ impl Ui {
         let mut blocks = Vec::new();
         if let Some(r) = self.compose.reply {
             let what = match osis_chat::find(&self.data.db, c, &r)? {
-                Some(m) => {
-                    let text = match &m.body {
-                        osis_chat::Body::Text(t) => t.lines().next().unwrap_or("").to_string(),
-                        _ => String::new(),
-                    };
-                    format!("Replying to {}: {text}", m.name.unwrap_or_else(|| "?".into()))
-                }
+                Some(m) => format!("Replying to {}", chat::quote(&m)),
                 None => format!("Replying to {r}"),
             };
             blocks.push(Block::Line(what));
@@ -307,6 +301,7 @@ impl Ui {
         match r {
             Ok(c) => {
                 self.compose.join.clear();
+                self.compose.reply = None;
                 self.chat = Some(c);
                 self.diag = None;
             }
