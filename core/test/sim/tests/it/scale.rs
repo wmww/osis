@@ -3,7 +3,9 @@
 //! one aspect. Numbers in notes/testing.md, "Scale checks". By hand, release, one size at a time:
 //! `OSIS_SCALE_M=100 OSIS_SCALE_N=200 cargo test --release -p osis-sim --test it -- --ignored --nocapture --test-threads 1 scale::chat_members`
 //! Per node: the time inside one database's passes and receives, what one device would spend. The
-//! sim's own run time is the sum over M nodes and says little.
+//! sim's own run time is the sum over M nodes and says little. `OSIS_SCALE_ACTIVE`: past so many a
+//! member sleeps once its join settled; `OSIS_SCALE_CARDS=0`: before it, so no card (an admin's cost
+//! at sizes where every joiner reading all before it takes hours).
 
 use osis::schema::core_types as ct;
 use osis::schema::{Bound, PurgeBy};
@@ -71,6 +73,7 @@ fn last_settle(w: &mut World) {
 #[inline(never)]
 fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, start: Instant) -> (Vec<Osis>, Vec<MemStore>) {
     let active = env("OSIS_SCALE_ACTIVE", m);
+    let cards = env("OSIS_SCALE_CARDS", 1) != 0;
     let (mut members, mut stores) = (Vec::new(), Vec::new());
     for i in 0..m {
         let store = MemStore::new();
@@ -80,8 +83,9 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         let (b, _) = Osis::create(cfg).unwrap();
         w.run();
         let p = meet(w, a, &b);
-        // past `active`, a member's node sleeps (the last one's joins): M-node sizes the sim's sum cannot reach
-        if i >= active && i + 1 < m {
+        // `OSIS_SCALE_CARDS=0`: asleep before its join, no card placed, so an admin's cost at sizes
+        // whose every joiner reading all before it would take hours (the last one still joins)
+        if i >= active && i + 1 < m && !cards {
             w.sleep(&b);
         }
         let (before, hub, up) = (w.busy_all(), w.hub_busy(), w.traffic(a).up);
@@ -101,6 +105,8 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
         }
         let world = t.elapsed();
         members.push(b);
+        // past `active`, a member's node sleeps once its join settled, its card placed: M-node
+        // sizes the sim's sum cannot reach
         if (i + 1) % every == 0 || i + 1 == m {
             let d = since(w, &before);
             let joiner = w.index(members.last().unwrap()).unwrap();
@@ -116,6 +122,9 @@ fn joins(w: &mut World, a: &Osis, c: Tid, host: usize, m: usize, every: usize, s
                 w.traffic(members.last().unwrap()).down - mine,
                 start.elapsed(),
             );
+        }
+        if i >= active && cards {
+            w.sleep(members.last().unwrap());
         }
     }
     (members, stores)
@@ -187,6 +196,45 @@ fn posts(w: &mut World, a: &Osis, members: &[Osis], c: Tid, m: usize, n: usize) 
     }
 }
 
+/// The rest of a joiner's fill (by name: `valgrind --toggle-collect='*fill_rest*'`).
+#[inline(never)]
+fn fill_rest(w: &mut World) {
+    // (not folded into `last_settle`: the same code)
+    std::hint::black_box(w.now());
+    w.run();
+}
+
+/// Runs the world one message at a time until `b` reads a full newest page of the chat, the
+/// newest message on top, as a chat opening would (by name: `--toggle-collect='*joiner_reads_newest*'`).
+/// The messages' steps taken.
+#[inline(never)]
+fn joiner_reads_newest(w: &mut World, b: &Osis, c: Tid, newest: &[u8]) -> u64 {
+    let k = Ak::new(MSGS).unwrap();
+    let want = Value::Bytes(newest.to_vec());
+    let (mut steps, mut idle) = (0u64, 0);
+    loop {
+        steps += 1;
+        if w.step(None) {
+            idle = 0;
+        } else {
+            // nothing moves: the user's click on the invite, or a timer's turn
+            for r in b.invite_requests().unwrap() {
+                b.accept_invite(r).unwrap();
+            }
+            idle += 1;
+            assert!(idle < 200, "the fill stopped: {:?}", b.at(c, k.clone()).history(osis::HistoryFrom::Newest, 50).map(|p| p.entries.len()));
+            w.tick(1000);
+        }
+        if steps % 8 == 0 {
+            let Ok(p) = b.at(c, k.clone()).history(osis::HistoryFrom::Newest, 50) else { continue };
+            let held = |e: &osis::HistoryEntry<Value>| matches!(e.body, osis::HistoryBody::Held(Some(_)));
+            if p.entries.len() == 50 && p.entries.iter().all(held) && matches!(&p.entries[0].body, osis::HistoryBody::Held(Some(v)) if *v == want) {
+                return steps;
+            }
+        }
+    }
+}
+
 // spec: none (a measure, spec/requirements.md Scale): members join, one posts, every node receives.
 #[test]
 #[ignore = "scale: by hand"]
@@ -219,13 +267,21 @@ fn chat_members() {
     w.run();
     let p = meet(&mut w, &a, &b);
     let before = w.busy_all();
+    let joiner0 = w.busy(&b);
     let t = Instant::now();
     osis_node::costs::take();
     a.share(c, p, Role::Write, EdgeOpts::default()).unwrap();
-    w.run();
-    println!("SPANS of the add after the messages at all nodes: {}", show_spans(osis_node::costs::take(), 1));
-    let d = since(&mut w, &before);
     let joiner = w.index(&b).unwrap();
+    w.spans_by_db();
+    let newest = format!("message number {:0>180}", n + 39).into_bytes();
+    let to_page = joiner_reads_newest(&mut w, &b, c, &newest);
+    let page_spans = w.take_db_spans(joiner);
+    println!("SPANS of the joiner to its newest page: {}", show_spans(page_spans, 1));
+    println!("NEWEST PAGE m={m} n={n}: joiner {:.1?} inside its node, {} B down, {} steps", w.busy(&b) - joiner0, w.traffic(&b).down, to_page);
+    w.spans_by_db();
+    fill_rest(&mut w);
+    println!("SPANS of the joiner, the rest of its fill: {}", show_spans(w.take_db_spans(joiner), 1));
+    let d = since(&mut w, &before);
     let others: Vec<Duration> = d.iter().enumerate().filter(|(j, _)| *j != 0 && *j != joiner && *j <= env("OSIS_SCALE_ACTIVE", m)).map(|(_, t)| *t).collect();
     println!("JOIN after the {n} messages m={m}: other member median {:.1?}, joiner {:.1?}, joiner down {} B, sim {:.1?}", median(others), d[joiner], w.traffic(&b).down, t.elapsed());
     // and one with its joiner asleep: what the others spend

@@ -4,7 +4,7 @@
 use crate::graph::{Class, Edges, EdgesAt, Owners, Standing, View};
 use osis_base::Owner;
 use crate::held::HeldSet;
-use crate::types::{Edge, RoleCommit, Point, RosterSnapshot, WriteId};
+use crate::types::{Edge, EdgeOp, RoleCommit, Point, RosterSnapshot, WriteId};
 use crate::walk::{self, Applied, Demotion, Input};
 use osis_base::{CommitId, CreationRecord, Role, Tid, Ts, WallMs};
 use std::collections::{BTreeMap, BTreeSet};
@@ -88,6 +88,9 @@ pub(crate) struct Memo {
     pub forward_walks: std::sync::atomic::AtomicU64,
     /// Held records by the edges and things they write, for certificates.
     pub certs: std::sync::OnceLock<crate::cert::CertIndex>,
+    /// The edge writes applied, by their target; and the indexes built (a measure).
+    pub on_target: std::sync::OnceLock<BTreeMap<Tid, Vec<WriteId>>>,
+    pub on_target_built: std::sync::atomic::AtomicU64,
 }
 
 /// Kept edge states (`Timeline::checkpoints`).
@@ -341,6 +344,7 @@ impl Timeline {
         new.sort_by_key(|c| c.point());
         // chain certificates list held writes; what is ever reached and owned moves
         self.memo.certs = std::sync::OnceLock::new();
+        self.memo.on_target = std::sync::OnceLock::new();
         *self.memo.forward.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         *self.memo.roles_now.get_mut().unwrap_or_else(|e| e.into_inner()) = BTreeMap::new();
         self.placed = 0;
@@ -504,6 +508,34 @@ impl Timeline {
     /// Edge writes applied by the timeline, with their attribution.
     pub fn applied(&self) -> &BTreeMap<WriteId, Applied> {
         &self.walked.applied
+    }
+    /// The commit and op of an edge write.
+    fn edge_write(&self, w: &WriteId) -> Option<(&RoleCommit, &EdgeOp)> {
+        let WriteId::Op(c, i) = w else { return None };
+        let mc = self.input.commits.get(c)?;
+        Some((&**mc, mc.ops.get(*i as usize)?))
+    }
+    /// The edge writes applied on `t`, each with its commit and op, in `applied` order: not a walk
+    /// of every write of the component per thing (a chat's members share one).
+    pub fn applied_on<'t>(&'t self, t: &Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
+        let index = self.memo.on_target.get_or_init(|| {
+            self.memo.on_target_built.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let mut by: BTreeMap<Tid, Vec<WriteId>> = BTreeMap::new();
+            for w in self.walked.applied.keys() {
+                if let Some((_, o)) = self.edge_write(w) {
+                    by.entry(o.target).or_default().push(*w);
+                }
+            }
+            by
+        });
+        let on = index.get(t).map_or(&[][..], Vec::as_slice);
+        #[cfg(debug_assertions)]
+        assert!(on.iter().eq(self.walked.applied.keys().filter(|w| self.edge_write(w).is_some_and(|(_, o)| o.target == *t))), "on_target of {t:?} went stale");
+        on.iter().filter_map(|w| self.edge_write(w))
+    }
+    /// Indexes `applied_on` built (a measure).
+    pub fn applied_on_built(&self) -> u64 {
+        self.memo.on_target_built.load(std::sync::atomic::Ordering::Relaxed)
     }
     pub fn is_applied(&self, w: &WriteId) -> bool {
         self.walked.applied.contains_key(w)

@@ -531,6 +531,38 @@ fn text_partly_erased_kept_to_compaction_spec_commits_5() {
     assert!(!ec.body_not_dropped(&old, &t, &ak));
 }
 
+// spec: none (a measure, spec/requirements.md Scale; issues/covered-cost-whole-snapshot.md): one
+// `covered` of a body of a text aspect against a snapshot, by the text's size. By hand, release:
+// `OSIS_SCALE_BODIES=1000 cargo test --release -p osis-node --test it -- --ignored --nocapture deletion::covered_text_cost`
+#[test]
+#[ignore = "scale: by hand"]
+fn covered_text_cost() {
+    use osis_crdt::{Op, PathOp};
+    let bodies: usize = std::env::var("OSIS_SCALE_BODIES").ok().and_then(|x| x.parse().ok()).unwrap_or(200);
+    let chunk = 100;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let g = net.group(a, &[], &[host]);
+    let t = net.item(a, g, g, "x");
+    let ak = Ak::new(GONETEXT.ak()).unwrap();
+    let mut ids = Vec::new();
+    for k in 0..bodies {
+        let mut m = Mutation::new();
+        m.op(t, &GONETEXT, PathOp { path: Vec::new(), op: Op::Insert { at: k * chunk, items: vec![s(&"b".repeat(chunk))] } }).unwrap();
+        ids.push(net.engine(a).commit(m).unwrap().unwrap());
+    }
+    let snap = net.engine(a).snapshot(&t, &ak).unwrap().unwrap();
+    osis_node::costs::take();
+    let at = std::time::Instant::now();
+    let checks = ids.len().min(50);
+    let every = ids.len() / checks;
+    for c in ids.iter().step_by(every).take(checks) {
+        assert_eq!(net.engine(a).covered(&snap, c, &t, &ak).unwrap(), Some(true));
+    }
+    println!("COVERED {bodies} bodies of {chunk} chars: {:?} a check; spans {:?}", at.elapsed() / checks as u32, osis_node::costs::take());
+}
+
 // spec/commits.md §5 (a deleted text element's creation stays a live write: a body whose
 // text was all erased keeps to the next compaction or its first death plus `AT_MOST_GRACE`;
 // the erased data may persist that long), spec/crdt.md §4.8: under keep at most 0, a word

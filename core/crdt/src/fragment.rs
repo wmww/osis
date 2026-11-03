@@ -397,8 +397,9 @@ impl Fragment {
 
     /// The piece of this fragment at `x`'s positions: of a struct the fields `x` holds (each
     /// narrowed the same way), of a map every record of the dots `x` holds records of, of a set
-    /// or bag the elements `x` holds, each with this fragment's meta; anything else whole. A
-    /// narrowed field left empty is left out (a join drops empty children).
+    /// or bag the elements `x` holds, of a sequence the records holding a dot of `x`'s, each with
+    /// this fragment's meta; anything else whole. A narrowed field left empty is left out (a join
+    /// drops empty children).
     pub fn part_at(&self, x: &Fragment) -> Fragment {
         match (self, x) {
             (Fragment::Struct(s), Fragment::Struct(d)) => Fragment::Struct(Struct { meta: s.meta.clone(), fields: d.fields.iter().filter_map(|(id, df)| Some((*id, s.fields.get(id)?.part_at(df)))).filter(|(_, f)| !f.is_empty()).collect() }),
@@ -413,6 +414,7 @@ impl Fragment {
             }
             (Fragment::Set(s), Fragment::Set(d)) => Fragment::Set(Set { meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
             (Fragment::Bag(s), Fragment::Bag(d)) if s.kind == d.kind => Fragment::Bag(Bag { kind: s.kind, meta: s.meta.clone(), elems: d.elems.keys().filter_map(|k| Some((k.clone(), s.elems.get(k)?.clone()))).collect() }),
+            (Fragment::Seq(s), Fragment::Seq(d)) if s.encoding() == d.encoding() => Fragment::Seq(s.footprint(d)),
             _ => self.clone(),
         }
     }

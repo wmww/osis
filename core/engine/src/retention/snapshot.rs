@@ -261,7 +261,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     let mut outside = false;
     let gives = crate::apply::each_held_piece(tx, s, sai, &mut |_, p| {
         // a copy in `p` is compared with the body's write at its position
-        outside = outside || !p.copy_index().outside(&ranges, &osis_crdt::CopySet::of(&[&joined.part_at(&p)])).is_empty();
+        outside = outside || !p.copy_index_in(&ranges).outside(&ranges, &osis_crdt::CopySet::of(&[&joined.part_at(&p)])).is_empty();
         part.join(p.part_at(&joined));
         Ok(())
     })?;

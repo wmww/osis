@@ -126,6 +126,8 @@ pub struct Timelines {
     placed: usize,
     /// `append` off: every update takes the general path (tests compare the two).
     general_only: bool,
+    /// Things the last general path queued to find its region (scale checks).
+    region_queued: usize,
 }
 
 /// Walks to write to and delete from a node's cache, by component root (`Timelines::to_save`).
@@ -226,13 +228,21 @@ impl Timelines {
         };
         let mut region: BTreeSet<Tid> = BTreeSet::new();
         let mut queue: Vec<Tid> = touched.iter().copied().collect();
+        // a component's things once, not once per thing of it
+        let mut whole: BTreeSet<u64> = BTreeSet::new();
+        self.region_queued = queue.len();
         while let Some(t) = queue.pop() {
             if !region.insert(t) {
                 continue;
             }
-            if let Some(c) = self.of.get(&t).and_then(|c| self.comps.get(c)) {
+            let n = queue.len();
+            if let Some(&i) = self.of.get(&t)
+                && whole.insert(i)
+                && let Some(c) = self.comps.get(&i)
+            {
                 queue.extend(c.inputs.0.iter().filter(|x| !region.contains(x)).copied());
             }
+            self.region_queued += queue.len() - n;
             queue.extend(links(held, &t).into_iter().filter(|x| !region.contains(x)));
         }
         let mut changed = self.update_region(held, region, saved, salt).1;
@@ -704,6 +714,13 @@ impl Timelines {
     /// Components the last update restored from a saved walk.
     pub fn restored(&self) -> usize {
         self.restored
+    }
+
+    /// Things of old components the last general path queued to find its region (scale checks):
+    /// about the things of the components it met, not their square.
+    #[doc(hidden)]
+    pub fn region_queued(&self) -> usize {
+        self.region_queued
     }
 
     /// Components the last update continued by `Timeline::append` alone (no re-partition, no

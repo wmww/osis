@@ -30,13 +30,7 @@ fn above_role(cur: Option<Role>) -> Option<Role> {
 
 /// The applied writes on edges into `t` in its timeline `tl`, each with its commit.
 fn edge_writes<'t>(tl: &'t Timeline, t: &'t Tid) -> impl Iterator<Item = (&'t RoleCommit, &'t EdgeOp)> + 't {
-    tl.applied()
-        .keys()
-        .filter_map(|w| match w {
-            WriteId::Op(c, i) => tl.role_commit(c).and_then(|mc| mc.ops.get(*i as usize).map(|op| (&**mc, op))),
-            _ => None,
-        })
-        .filter(move |(_, op)| op.target == *t)
+    tl.applied_on(t)
 }
 
 /// The departure edge write `op` of `mc` on `t` makes, if it lowers the holder's edge. An edge
