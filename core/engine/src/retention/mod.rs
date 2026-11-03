@@ -245,7 +245,9 @@ pub(crate) fn check_at_most(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<
         // under a purge request's floor, which this does not cut short
         let zero = a.retention.at_most.rel == Some(0) && !live && d.is_some_and(|d| t <= d.0.wall_ms().0);
         if t <= tx.now().0 || zero {
-            for x in holders {
+            // a part of the body still missing has nothing here to drop: it stays missing (never
+            // received, fetched as such), as at a node that judged the body before it was held
+            for x in holders.into_iter().filter(|x| !m.missing.contains(x)) {
                 drop_part(tx, c, x)?;
             }
         } else {
