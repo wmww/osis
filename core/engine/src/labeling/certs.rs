@@ -245,7 +245,7 @@ impl Engine {
 
     /// The commits and parts certificates `certs` name (spec/permissions.md §4), added to `out`:
     /// edge writes projected to their edge deltas on the chain's things, roster snapshots to
-    /// their holders' entries, the newest `created.0` of each thing and `keys.0` of each actor.
+    /// their holders' entries, the newest `created.0` of each thing and the current `keys.0` of each actor.
     fn cert_parts(&mut self, certs: &osis_perm::Certificates, out: &mut BTreeMap<CommitId, Parts>) {
         let mut add = |c: CommitId, parts: Parts| {
             if !parts.is_empty() {
@@ -274,8 +274,8 @@ impl Engine {
     /// Revokes of the departures inside holders of `actor` that leave its epochs uncovered now
     /// (`rotation::uncovered_departures`: a departure from M, the last actor on its chain, with
     /// secrets of its own and outside `closure`; the newest applied write lowering the departed
-    /// holder's edge on M), each the whole write on M with what judges it, and the newest `keys.0`
-    /// commit of each actor on the chain, projected to that `keys.0`, with its author's chain: the only
+    /// holder's edge on M), each the whole write on M with what judges it, and the current `keys.0`
+    /// commits of each actor on the chain, projected to that `keys.0`, with its author's chain: the only
     /// certificates a node that may not rotate places under such an epoch (spec/permissions.md
     /// §4). A departure by `until` has no write and places only the keysets.
     pub fn inside_holder_revokes(&mut self, actor: &Tid, closure: &BTreeSet<Tid>) -> BTreeMap<CommitId, Parts> {

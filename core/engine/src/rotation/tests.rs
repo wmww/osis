@@ -3471,3 +3471,43 @@ fn bad_rotation_parts_read_as_missing_spec_commits_4() {
         assert_eq!(removal_with(9931, bad, false), removal_with(9931, bad, true), "{bad:?}");
     }
 }
+
+// spec/permissions.md §4, spec/crypto.md §5: an owner's holder with K's keyset and none of K's secrets has K's derived read epochs, to open its label and nothing more: it wraps nothing, rotates and boxes nothing; a node not holding the owner has none; K's real box then replaces them
+#[test]
+fn keyset_before_box_reads_only_spec_permissions_4() {
+    let mut lp = LocalPeer::new(3, 3_391, WallMs(1_700_000_000_000)).unwrap();
+    lp.sync_all().unwrap();
+    let (a, b, c) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+    let admin = ct::Edge { role: Role::Admin, until: None, invite: None, since: None, tied: None, keyset: None };
+    let mut m = Mutation::new();
+    let o = lp.peers[0].engine.new_thing(&mut m, a);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&o).unwrap();
+    lp.peers[0].engine.grant(&o, &b, &admin).unwrap();
+    lp.sync(0, 1).unwrap();
+    let mut m = Mutation::new();
+    let k = lp.peers[0].engine.new_thing(&mut m, o);
+    lp.peers[0].commit(m).unwrap();
+    lp.peers[0].engine.give_own_secrets(&k).unwrap();
+    deliver_without_secrets(&mut lp, 0, 1, k);
+    deliver_without_secrets(&mut lp, 0, 2, k);
+
+    let e = &mut lp.peers[1].engine;
+    assert!(e.core.ix.own_keys.contains(&k) && e.core.ix.secrets.get(&k).is_none(), "the keyset and no box");
+    let held = e.epochs(&k).unwrap();
+    assert!(held.read.holds_any() && held.read.current().is_empty(), "read epochs, none established");
+    assert!(!held.write.holds_any() && !held.admin.holds_any());
+    assert!(e.read_secrets(&k).iter().any(|s| held.read.held().any(|(_, x)| x.expose() == s.expose())));
+    assert!(e.wrap_secret(&k, None).unwrap().is_none() && e.stranded_secret(&k).is_none(), "wraps nothing");
+    let before = e.core.ix.commits.len();
+    assert!(e.ensure_rotated(&k).unwrap().1.is_empty());
+    assert!(e.grant(&k, &c, &admin).is_err(), "boxes nothing");
+    assert!(e.run(|tx| super::rotate_now(tx, b, k, &BTreeSet::from([Role::Read]))).is_err(), "rotates nothing");
+    assert_eq!(e.core.ix.commits.len(), before, "wrote nothing");
+    assert!(lp.peers[2].engine.core.epochs(&k).is_none_or(|e| !e.holds_any()), "not the owner's holder");
+
+    lp.sync(0, 1).unwrap();
+    let e = &lp.peers[1].engine;
+    let real = e.epochs(&k).unwrap();
+    assert!(e.core.ix.secrets.get(&k).is_some() && real.read.newest_held().is_some() && real.admin.newest_held().is_some(), "the box replaces them");
+}
