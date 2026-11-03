@@ -243,7 +243,7 @@ fn copies_held(tx: &mut Tx<'_>, t: &Tid, ak: &Ak, f: &Fragment) -> Result<bool> 
     }
     let own: Vec<&Fragment> = own.iter().collect();
     let core = &*tx.core;
-    Ok(f.copies_within(&own, &|d| crate::apply::validity::owner_held(core, t, ak, d)))
+    Ok(f.copies_within(&own, &|d| crate::apply::copies::owner_held(core, t, ak, d)))
 }
 
 impl Engine {

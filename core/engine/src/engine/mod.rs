@@ -439,8 +439,8 @@ indexes! {
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
     /// Writes held snapshots carry whose own delta was never received, per aspect
-    /// (`validity::Carried`).
-    pub carried: JMap<(Tid, Ak), Vec<crate::apply::validity::Carried>>,
+    /// (`copies::Carried`).
+    pub carried: JMap<(Tid, Ak), Vec<crate::apply::copies::Carried>>,
     /// Held commits per thing they hold a delta of (re-judging a thing's deltas).
     pub by_thing: JSetMap<Tid, CommitId>,
     /// Held commits per (header actor, author), where those differ: re-judging
@@ -633,8 +633,8 @@ pub struct Core {
     /// `Engine::body_live` per body, forgotten per aspect when its state changes (`forget_live`)
     /// and wholly on rollback.
     pub live_bodies: BTreeMap<(CommitId, Tid, Ak), bool>,
-    /// Held snapshots' writes by dot (`validity::differing_copies`: deltas arriving after
-    /// snapshots that copied their writes compare against it; `validity::vouched`). A snapshot never changes, so
+    /// Held snapshots' writes by dot (`copies::differing_copies`: deltas arriving after
+    /// snapshots that copied their writes compare against it; `copies::vouched`). A snapshot never changes, so
     /// entries never go stale; all go past `COPY_CACHE_MAX` writes.
     pub copy_index: BTreeMap<(CommitId, Tid, Ak), Arc<osis_crdt::CopyIndex>>,
     /// Bumped whenever a transaction changes the indexes or a state, rolls back, or the caches

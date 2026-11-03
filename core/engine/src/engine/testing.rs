@@ -140,7 +140,7 @@ impl Engine {
     #[doc(hidden)]
     pub fn carried_dots(&self, tid: &Tid, ak: &osis_base::Ak) -> Vec<osis_crdt::Dot> {
         let groups = self.core.ix.carried.get(&(*tid, ak.clone())).into_iter().flatten();
-        groups.filter(|g| !crate::apply::validity::invalid_snapshot(&self.core, &g.snap, tid, ak)).flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
+        groups.filter(|g| !crate::apply::copies::invalid_snapshot(&self.core, &g.snap, tid, ak)).flat_map(|g| g.ctrs.iter().map(|x| osis_crdt::Dot::new(g.src.clone(), *x))).collect()
     }
 
     /// Keeps every body past its keep-at-most bound (tests: an oracle for the earliest

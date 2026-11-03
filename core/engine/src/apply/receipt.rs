@@ -124,7 +124,7 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: 
 /// §5.2; a suspect flag's body, `retention::suspect`).
 pub(crate) fn listed_by_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
-    listed_where(core, h, id, ai, |s| crate::apply::validity::snapshot_valid(core, &s, &a.tid, &a.ak))
+    listed_where(core, h, id, ai, |s| crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak))
 }
 
 fn listed_where(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize, by: impl Fn(CommitId) -> bool) -> bool {

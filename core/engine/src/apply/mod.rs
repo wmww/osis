@@ -4,12 +4,16 @@
 //! engine's indexes from the store lives here too, since it replays what apply records.
 
 mod atomic;
+pub(crate) mod copies;
 mod free;
+mod gates;
 pub(crate) mod memory;
 mod waits;
 pub(crate) mod keys;
 pub(crate) mod receipt;
 pub(crate) mod validity;
+#[cfg(test)]
+mod tests_validity;
 #[cfg(test)]
 mod tests_linked;
 #[cfg(test)]
@@ -20,6 +24,8 @@ mod oracle;
 mod tests_paged;
 
 pub(crate) use free::unindex_commit;
+pub(crate) use gates::{Gate, at_most_bound, gating, still_gated};
+use gates::{class_of, counts_held, held_units, never_whole, waits_whole};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
 pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
@@ -227,120 +233,6 @@ pub(crate) fn carried_records(h: &Header, blob: &CommitBlob, id: &CommitId) -> B
         }
     }
     out
-}
-
-/// The storage class of a commit's aspects: a key's lifetime marker, alike at every node
-/// (spec/commits.md §2). A part on an aspect of another is never applied, by anyone, so none is
-/// waited for: judged from the header, whatever the part.
-fn class_of(h: &Header) -> osis_base::Lifetime {
-    if h.ephemeral.is_some() { osis_base::Lifetime::Ephemeral } else { osis_base::Lifetime::Durable }
-}
-
-/// Whether the missing deltas `gates` (`gating`) still hold back all that they held: one holding
-/// the whole commit does not count as held, or none of the others does (each holds only its thing).
-pub(super) fn still_gated(tx: &mut Tx<'_>, h: &Header, id: &CommitId, gates: &[Gate]) -> Result<bool> {
-    let mut counted = false;
-    for ((ai, _), holds) in gates {
-        let here = counts_held(tx, h, id, *ai)?;
-        if *holds && !here {
-            return Ok(true);
-        }
-        counted |= here;
-    }
-    Ok(!counted)
-}
-
-/// Whether a missing delta of aspect `ai` counts as held: expired, past keep at most, purged,
-/// listed by a held snapshot of any validity, its author's removal leaves it invalid, or breaking
-/// a held `required.0^` delta by a possible admin (spec/commits.md §4).
-fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<bool> {
-    let now = tx.now().0;
-    let Some(a) = h.aspects.get(ai) else { return Ok(true) };
-    // a part on a key of another storage class is dropped alone, wherever it comes from
-    if a.ak.lifetime() != class_of(h) {
-        return Ok(true);
-    }
-    Ok(a.expires.is_some_and(|t| t <= now) || at_most_bound(tx.core, h, id, a).is_some_and(|t| t <= now) || crate::retention::counts_as_purged(tx, h, id, ai)? || receipt::listed(tx.core, h, id, ai) || validity::removed_author(tx.core, h, id, a) || validity::breaks_a_held_setting(tx.core, h, id, a))
-}
-
-/// Whether commit `id` waits whole for nothing. A role commit any part of which is held: it may be
-/// held only as a projection (a certificate copy, an inbox blob, spec/sync.md §3), whose rest need
-/// never come, and the node cannot tell one from its things' labels' bodies; the rest joins on
-/// arrival. An applied commit, unless only creation records of it are applied: it has nothing left
-/// to hold back.
-fn never_whole(core: &crate::engine::Core, h: &Header, id: &CommitId, blob: &CommitBlob, skip: &BTreeSet<(usize, usize)>) -> bool {
-    // a part dropped since it applied may be out of `skip` (`takes_late`): that commit was shown
-    let opened = |m: &crate::engine::Meta| m.dropped.is_empty() && !skip.is_empty() && skip.iter().all(|(ai, _)| h.aspects.get(*ai).is_some_and(|a| a.ak.as_str() == osis_commit::retention::CREATED));
-    core.ix.commits.get(id).is_some_and(|m| !opened(m)) || (h.kind == Kind::Role && !blob.parts.is_empty())
-}
-
-/// Whether a commit with no part held waits for every thing and delta of it, synced or not, so that
-/// whether it is recorded applied does not read what the node syncs when it comes. A lasting header
-/// may be all that ever comes under the label (spec/commits.md §5), so a permanent delta or a purge
-/// item on a thing the node syncs stands for a held part: the commit waits as if that part were
-/// here, for what is on its synced things, and no more than a held part's commit does. The delta
-/// itself still gates until a held request counts it as held.
-fn waits_whole(core: &crate::engine::Core, h: &Header, blob: &CommitBlob, never: bool) -> bool {
-    let stands = h.ephemeral.is_none() && (h.aspects.iter().any(|a| a.permanent() && core.syncs(&a.tid)) || h.purge.iter().any(|i| core.syncs(i.tid())));
-    blob.parts.is_empty() && !never && !stands
-}
-
-/// A missing delta and whether it holds the whole commit (`gating`).
-pub(crate) type Gate = ((usize, usize), bool);
-
-/// The missing deltas (not in `skip`: applied or gone for good) that can hold something back, each
-/// with whether it holds the whole commit: those on a thing the node syncs and all of a commit no
-/// part of which is here do; the content deltas of a thing a content part of which is here hold
-/// that thing's. The other things' are not this node's to wait for.
-pub(crate) fn gating(core: &crate::engine::Core, blob: &CommitBlob, id: &CommitId, skip: &BTreeSet<(usize, usize)>) -> Vec<Gate> {
-    let h = &blob.header;
-    let never = never_whole(core, h, id, blob, skip);
-    let whole = waits_whole(core, h, blob, never);
-    let units = held_units(h, blob.parts.iter().map(|p| (p.ai, p.di)).filter(|x| !skip.contains(x)));
-    let mut out = Vec::new();
-    for x in blob.missing().into_iter().filter(|x| !skip.contains(x)) {
-        let Some(a) = h.aspects.get(x.0) else { continue };
-        let holds = whole || (!never && core.syncs(&a.tid));
-        if holds || (units.contains(&a.tid) && !whole_part(a.ak.as_str())) {
-            out.push((x, holds));
-        }
-    }
-    out
-}
-
-/// The things with a content part among `parts`: each is a unit of atomic apply whatever the node
-/// syncs. A role commit's or roster snapshot's parts and a `created.0` chain copy are not: a
-/// projection of them is all a node may ever get. Nor is an ephemeral snapshot atomic.
-fn held_units(h: &Header, parts: impl Iterator<Item = (usize, usize)>) -> BTreeSet<Tid> {
-    if h.ephemeral.is_some() && h.kind.delta_kind() == osis_crdt::DeltaKind::Snapshot {
-        return BTreeSet::new();
-    }
-    parts.filter_map(|(ai, _)| h.aspects.get(ai)).filter(|a| !whole_part(a.ak.as_str())).map(|a| a.tid).collect()
-}
-
-/// From when missing delta `a` of commit `id` counts as held for its keep at most
-/// (spec/commits.md §4): `None` while nothing here shows it could have left.
-///
-/// A body with no live write goes from hosts with no carrier (§5), and without its body a node
-/// cannot tell whether a write is live: the header gives counters and a hash, not positions. What
-/// it can tell is the condition such a delete needs: a superseder, which is a commit on the aspect
-/// stamped no earlier than this one, and the bound counted from it. An absolute bound passing
-/// alone shows nothing: a body with a live write leaves only with a carrier (`receipt::listed`).
-/// The last write on an aspect stays as its own body or a carrier unless it expired or was purged,
-/// so a killer stamped later stays to be seen; those cases and a killer stamped earlier wait for
-/// the aspect's next commit (issues/atomic-wait-no-later-commit.md). A live delta still on its
-/// way waits unless such a commit exists and its bound passed; a bound passing here earlier than
-/// at its holders (an unrelated later commit, this node's clock) only applies the rest sooner.
-///
-/// Invariant (arrival-order independence): this decides when a commit's held parts join, never
-/// what they join to. Every input only grows (commits held, any validity, so no flip can take it
-/// back; the clock going back unapplies nothing), an applied commit's missing delta joins on
-/// arrival as if it had come with the rest (join commutes; retention judges it then), and one
-/// that never comes held only writes every holder's state supersedes or a carrier holds.
-pub(super) fn at_most_bound(core: &crate::engine::Core, h: &Header, id: &CommitId, a: &osis_commit::AspectEntry) -> Option<u64> {
-    let held = core.ix.by_aspect.get(&(a.tid, a.ak.clone()))?;
-    let later = held.range((h.ts, CommitId([0; 32]))..).find(|x| x.1 != *id)?.0.wall_ms().0;
-    osis_commit::retention::body_keep(h, &a.retention, Some(later), Some(later), false).at_most
 }
 
 /// The stored bytes of pending commit `id`, decoded: `None` when they are gone (it pends no
@@ -1702,7 +1594,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 }
             }
             atomic::index_commit(tx.core, &id, &m.view);
-            validity::note_imports(tx.core, &id, &h);
+            copies::note_imports(tx.core, &id, &h);
             tx.core.put_meta(id, m);
             atomic::note_gives(tx.core, &id);
             if blob.header.kind.is_compaction() {
@@ -1726,7 +1618,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                     if keys {
                         keys::note_keysets(tx.core, &blob.header, &a.tid, &keys::keysets_of(&blob.header, ai, std::slice::from_ref(&f)));
                     }
-                    for (src, ctrs) in validity::carried_of(tx.core, &a.tid, &a.ak, &f) {
+                    for (src, ctrs) in copies::carried_of(tx.core, &a.tid, &a.ak, &f) {
                         carried.entry(src).or_default().extend(ctrs);
                     }
                     Ok(())
@@ -1734,7 +1626,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
                 .into_iter()
                 .flatten()
                 {
-                    validity::note_carried_of(tx.core, &a.tid, &a.ak, &id, std::mem::take(&mut carried));
+                    copies::note_carried_of(tx.core, &a.tid, &a.ak, &id, std::mem::take(&mut carried));
                     atomic::note_snapshot(tx.core, &a.tid, &a.ak, blob.header.ts, &id, g);
                 }
             }

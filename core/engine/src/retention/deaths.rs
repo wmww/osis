@@ -80,7 +80,7 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death) -
         .into_iter()
         .flatten()
         // an invalid snapshot carries nothing (spec/permissions.md §5.2)
-        .filter(|(_, s, _, _)| !crate::apply::validity::invalid_snapshot(core, s, tid, ak))
+        .filter(|(_, s, _, _)| !crate::apply::copies::invalid_snapshot(core, s, tid, ak))
         .filter_map(|(ts, s, fr, abs)| bounded_part(core, s, tid, ak).map(|ai| (*ts, *s, ai, took(core, tid, fr, abs, dot), took(core, tid, fr, abs, &d.by))))
         .collect();
     for (ts, s, ai, has, saw) in snaps {
@@ -160,7 +160,7 @@ impl Parts {
                 .get(&(*tid, ak.clone()))
                 .into_iter()
                 .flatten()
-                .filter(|(ts, s, _, _)| s != c && *ts >= d.at && !crate::apply::validity::invalid_snapshot(core, s, tid, ak))
+                .filter(|(ts, s, _, _)| s != c && *ts >= d.at && !crate::apply::copies::invalid_snapshot(core, s, tid, ak))
                 .filter_map(|(_, s, fr, abs)| held_part(core, s, tid, ak).map(|sai| (*s, sai, took(core, tid, fr, abs, &d.by))))
                 .collect();
             let mut v = Vec::new();
@@ -405,7 +405,7 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             }
             continue;
         };
-        if crate::apply::validity::invalid_snapshot(tx.core, c, tid, ak) {
+        if crate::apply::copies::invalid_snapshot(tx.core, c, tid, ak) {
             continue;
         }
         let _s = crate::costs::span("deaths: join bodies");
