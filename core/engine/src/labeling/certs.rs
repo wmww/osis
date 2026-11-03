@@ -165,17 +165,6 @@ impl Engine {
                 add(c, self.parts_of(&c, &BTreeSet::from([t]), &["created.0"]));
             }
         }
-        // and the owners' keysets: a thing's history names its owner's keyset (spec/crypto.md §4),
-        // and the owner's newest `keys.0` may be an inbox write that carries none
-        let owners: Vec<Tid> = self.core.owner_chain(g).filter_map(|s| s.thing()).filter(|t| t != g).collect();
-        for t in owners {
-            for c in self.newest_keysets(&t) {
-                let parts = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
-                if !parts.is_empty() {
-                    out.entry(c).or_default().extend(parts);
-                }
-            }
-        }
         if let Some(tl) = self.core.timelines.get(g) {
             let certs = tl.certificates(&me, g);
             self.cert_parts(&certs, &mut out);
@@ -189,8 +178,10 @@ impl Engine {
         out
     }
 
-    /// The rotation commits of `t`'s newest keyset per role, forks included.
-    fn newest_keysets(&self, t: &Tid) -> BTreeSet<CommitId> {
+    /// The commits of `t`'s current `keys.0` (spec/permissions.md §4): the newest, and the rotation
+    /// commits of its newest keyset per role, forks included. The newest may be an inbox write
+    /// carrying no keyset, and a rotation of what `t` holds names `t`'s keyset (spec/crypto.md §4).
+    pub fn current_keys(&self, t: &Tid) -> BTreeSet<CommitId> {
         let mut newest: BTreeMap<osis_base::Role, (u64, BTreeSet<CommitId>)> = BTreeMap::new();
         for (r, e) in self.core.ix.keyset_epochs.get(t).into_iter().flatten() {
             let Some((_, c)) = self.core.ix.epoch_intro.get(&(*t, *r, *e)) else { continue };
@@ -202,7 +193,7 @@ impl Engine {
                 n.1.insert(*c);
             }
         }
-        newest.into_values().flat_map(|(_, c)| c).collect()
+        newest.into_values().flat_map(|(_, c)| c).chain(self.latest_on(t, "keys.0")).collect()
     }
 
     /// `node`'s chain certificates for `t` with the owner chains of both up to their key
@@ -274,7 +265,7 @@ impl Engine {
             }
         }
         for t in &certs.keys {
-            if let Some(c) = self.latest_on(t, "keys.0") {
+            for c in self.current_keys(t) {
                 add(c, self.parts_of(&c, &BTreeSet::from([*t]), &["keys.0"]));
             }
         }
@@ -331,17 +322,18 @@ impl Engine {
             self.cert_parts(cs, &mut out);
         }
         for t in keyed {
-            let Some(c) = self.latest_on(&t, "keys.0") else { continue };
-            if whole.contains(&(c, t)) {
-                continue;
+            for c in self.current_keys(&t) {
+                if whole.contains(&(c, t)) {
+                    continue;
+                }
+                // its `keys.0` delta, like a chain certificate's (not its boxes: a covered removal
+                // that rotated it stays unplaced as a whole write)
+                let p = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
+                for (x, q) in self.author_chain(&c, &p).unwrap_or_default() {
+                    out.entry(x).or_default().extend(q);
+                }
+                out.entry(c).or_default().extend(p);
             }
-            // its `keys.0` delta, like a chain certificate's (not its boxes: a covered removal
-            // that rotated it stays unplaced as a whole write)
-            let p = self.parts_of(&c, &BTreeSet::from([t]), &["keys.0"]);
-            for (x, q) in self.author_chain(&c, &p).unwrap_or_default() {
-                out.entry(x).or_default().extend(q);
-            }
-            out.entry(c).or_default().extend(p);
         }
         // the whole write on M (its rotation's `keys.0` and `secrets.0` too: boxes sealed to M's
         // holders): a reader that syncs M waits for every delta of it (spec/commits.md §4)

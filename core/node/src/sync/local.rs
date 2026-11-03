@@ -397,7 +397,7 @@ impl SyncEngine {
     }
 
     /// The author's chain certificates for `parts` of `c` (`chain_under`: without any `keys.0`
-    /// but the author's own) and the current `keys.0` of each of `keys_of` (the things a grant
+    /// but the author's own) and the current `keys.0` commits of each of `keys_of` (the things a grant
     /// boxes the recipient on: it reads them, and judges them by their keyset) as plaintext commit
     /// values, each projected to those deltas: an inbox payload's `chain` (spec/wire.md §9).
     /// Empty for a commit not applied here.
@@ -405,10 +405,9 @@ impl SyncEngine {
         let mut out = Vec::new();
         let mut chain = self.chain_under(c, parts).unwrap_or_default();
         for t in keys_of {
-            if let Some((x, ais)) = self.engine.aspect_commit(t, "keys.0")
-                && let Some(h) = self.engine.header(&x)
-            {
-                chain.entry(x).or_default().extend(super::pass::parts_of(&h, |i| ais.contains(&i)));
+            for x in self.engine.current_keys(t) {
+                let Some(h) = self.engine.header(&x) else { continue };
+                chain.entry(x).or_default().extend(super::pass::parts_of(&h, |i| h.aspects.get(i).is_some_and(|a| a.tid == *t && a.ak.as_str() == "keys.0")));
             }
         }
         for (x, q) in chain {

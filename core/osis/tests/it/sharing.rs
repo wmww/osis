@@ -114,6 +114,121 @@ fn redeem_link_of_a_person_with_a_late_host_spec_permissions_4() {
     assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
 }
 
+fn device(w: &mut World, db: &Osis, seed: u64) -> Tid {
+    let join = Osis::pair(w.cfg(seed, &[]), &db.pair_offer().unwrap()).unwrap();
+    let (node, reply) = db.pair_accept(join.request()).unwrap();
+    join.finish(&reply).unwrap();
+    w.run();
+    node
+}
+
+fn skip_sync() -> Demotion {
+    Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None }
+}
+
+// spec/permissions.md §4 (current `keys.0`), spec/crypto.md §4 (keyset names): a rotation of a group names a holder's keyset; a holder with a late host has an inbox write as its newest `keys.0`; an admin who joins after the rotation still gets the keyset, or holds no established epoch to box a grant with
+#[test]
+fn newcomer_admin_after_a_rotation_naming_a_late_host_holder_spec_crypto_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (dave, _) = w.person(4, &[host]);
+    let (erin, _) = w.person(5, &[host]);
+    let (frank, _) = w.person(6, &[host]);
+    let (bob, _) = Osis::create(w.cfg(2, &[])).unwrap();
+    bob.add_host(&alice.hosts()[0]).unwrap();
+    w.run();
+    let mut ids = Vec::new();
+    for d in [&bob, &dave, &erin] {
+        let card = d.contact_card().unwrap();
+        w.run();
+        ids.push(w.until(alice.import_contact(&card), 1000, 10).unwrap());
+    }
+    let g = group(&alice);
+    alice.grant(g, ids[0], Role::Write, Default::default()).unwrap();
+    alice.grant(g, ids[1], Role::Read, Default::default()).unwrap();
+    w.run();
+    w.until(alice.demote(g, ids[1], Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    alice.grant(g, ids[2], Role::Admin, Default::default()).unwrap();
+    w.run();
+    let card = frank.contact_card().unwrap();
+    w.run();
+    let f = w.until(erin.import_contact(&card), 1000, 10).unwrap();
+    erin.grant(g, f, Role::Read, Default::default()).unwrap();
+    w.run();
+    assert_eq!(frank.role_on(g), Some(Role::Read));
+    let t = item(&erin, g, g, "from erin");
+    w.run();
+    assert_eq!((x(&bob, t), x(&frank, t)), (Some(s("from erin")), Some(s("from erin"))));
+}
+
+// spec/permissions.md §4 (current `keys.0`), §3: the person rotates (a device removed), then gets another host, then makes a link: its keyset is not its newest `keys.0`
+#[test]
+fn redeem_link_after_a_rotation_and_a_late_host_spec_permissions_4() {
+    let mut w = World::new();
+    let h0 = w.add_host();
+    let h1 = w.add_host();
+    let (alice, _) = w.person(1, &[h0]);
+    let (bob, _) = w.person(2, &[h0]);
+    let node = device(&mut w, &alice, 7);
+    let g = group(&alice);
+    w.until(alice.remove_device(node, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    alice.add_host(&w.addr(h1).unwrap()).unwrap();
+    w.run();
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+}
+
+// spec/permissions.md §9, §4: a link made before its person's recovery still works, and one made after
+#[test]
+fn links_around_a_recovery_spec_permissions_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, card) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let (carol, _) = w.person(3, &[host]);
+    let g = group(&alice);
+    let before = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    let back = w.until(Osis::restore(w.cfg(9, &[]), &card), 1000, 30).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&before), 1000, 30).unwrap(), g);
+    let g2 = group(&back);
+    let after = back.make_link(g2, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(carol.redeem(&after), 1000, 30).unwrap(), g2);
+}
+
+// spec/permissions.md §4, spec/sync.md §5: an owner's new device holds K's keyset under the target's label before any secret of K (K's box is under K's label alone): it still opens K's label, by the epochs its owner's derive, and gets K's secrets
+#[test]
+fn new_device_gets_k_keyset_before_its_box_spec_permissions_4() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (alice, _) = w.person(1, &[host]);
+    let (bob, _) = w.person(2, &[host]);
+    let g = group(&alice);
+    let link = alice.make_link(g, Role::Write, Default::default()).unwrap();
+    w.run();
+    assert_eq!(w.until(bob.redeem(&link), 1000, 30).unwrap(), g);
+    w.run();
+    let k = alice.links(g)[0].id;
+    // K rotates when the joiner leaves
+    w.until(bob.demote(k, bob.me(), Lower::Remove, skip_sync()), 1000, 10).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    let join = Osis::pair(w.cfg(7, &[]), &alice.pair_offer().unwrap()).unwrap();
+    let (_, reply) = alice.pair_accept(join.request()).unwrap();
+    let dev = join.finish(&reply).unwrap();
+    w.run();
+    w.advance(70_000);
+    w.run();
+    assert!(dev.engine(|e| e.epochs(&k).is_some_and(|x| x.read.held().next().is_some() && x.admin.held().next().is_some())), "the device holds K's secrets");
+}
+
 // spec/permissions.md §5.3, notes/api.md Demotion: offline, `Required` fails `Unsynced` after
 // `PRESYNC_WAIT`; `Try` proceeds after its timeout with an `Unsynced` diagnostic.
 #[test]

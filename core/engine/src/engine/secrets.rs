@@ -44,7 +44,7 @@ impl Core {
     /// for a plain thing without secrets of its own. A plain thing's epochs learned from a
     /// rotation since found invalid (`stale_epochs`) are added for reading only.
     pub(crate) fn epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
-        let d = self.chain_epochs(tid);
+        let d = self.chain_epochs(tid).or_else(|| self.unboxed_epochs(tid));
         let Some(x) = self.stale_epochs(tid) else { return d };
         // no owner's epochs held: the leftovers alone, still reading-only
         let mut d = d.unwrap_or_default();
@@ -81,6 +81,24 @@ impl Core {
             }
         }
         None
+    }
+
+    /// A thing whose keyset came under another label (spec/permissions.md §4) before any secret of
+    /// it: the read epochs its owner's derive, reading only. Its owner's devices open its label
+    /// with them; the rotation boxing the owner is wrapped under them (spec/crypto.md §5).
+    fn unboxed_epochs(&self, tid: &Tid) -> Option<ActorEpochs> {
+        if !self.ix.own_keys.contains(tid) || self.ix.secrets.get(tid).is_some() {
+            return None;
+        }
+        let Owner::Actor(owner) = self.created(tid)?.owner_link() else { return None };
+        let derived = ActorEpochs::derived(&self.chain_epochs(&owner)?, tid);
+        let mut out = ActorEpochs::default();
+        for (ep, info) in derived.role(Role::Read).epochs() {
+            let i = out.role_mut(Role::Read).observe(*ep);
+            *i = info.clone();
+            i.established = None;
+        }
+        Some(out)
     }
 
     /// `own_record` established (spec/crypto.md §4): a function of what this node holds now (its
