@@ -185,7 +185,13 @@ fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
     db.write_with(|w| w.at(n, k.clone()).set(&big)).unwrap();
     let Some(Value::Link(l)) = db.engine(|e| e.get(&n, &k)).unwrap() else { panic!() };
     let bytes = db.engine(|e| e.blob(&l.blob)).unwrap().unwrap();
-    db.engine(|e| e.run(|tx| Ok(tx.txn.delete_blob(&l.blob)))).unwrap();
+    db.engine(|e| {
+        e.run(|tx| {
+            tx.txn.delete_blob(&l.blob);
+            Ok(())
+        })
+    })
+    .unwrap();
     let watch = db.at(n, k.clone()).watch().unwrap();
     assert_eq!(watch.current(), Ok(None), "not held: absent");
     let (tx, changes) = std::sync::mpsc::channel();
