@@ -260,7 +260,15 @@ pub(crate) fn roster(v: Value) -> Result<Roster> {
     Ok(out)
 }
 
-const CAUSES: [Cause; 5] = [Cause::Validity, Cause::Expiry, Cause::Purge, Cause::LateDelta, Cause::LostAccess];
+const CAUSES: [Cause; 6] = [Cause::Validity, Cause::Expiry, Cause::Purge, Cause::LateDelta, Cause::LostAccess, Cause::Fetched];
+
+/// Fails to compile when a cause is added: list it in `CAUSES` too.
+#[allow(dead_code)]
+fn causes_listed(c: Cause) {
+    match c {
+        Cause::Validity | Cause::Expiry | Cause::Purge | Cause::LateDelta | Cause::LostAccess | Cause::Fetched => {}
+    }
+}
 
 fn info_v(i: &CommitInfo) -> Value {
     Value::List(vec![change_v(&i.id), Value::Tid(i.actor), Value::Tid(i.node), ts_v(i.ts), u(i.received.0)])
@@ -384,6 +392,16 @@ const KINDS: [DiagnosticKind; 19] = [
     DiagnosticKind::OwnWriteInvalid,
     DiagnosticKind::Unreadable,
 ];
+
+/// Fails to compile when a kind is added: list it in `KINDS` too (an unlisted one went out as
+/// `BadInput`).
+#[allow(dead_code)]
+fn kinds_listed(k: DiagnosticKind) {
+    use DiagnosticKind::*;
+    match k {
+        BadInput | CollidingRecord | Parked | Pending | OverlappingCounters | Removed | Callback | NotSynced | PlacementNotPersisted | Unsynced | Stranded | Uncommitted | EphemeralRefused | Mismatch | Misstated | Storage | Repair | OwnWriteInvalid | Unreadable => {}
+    }
+}
 
 pub(crate) fn diag_v(d: &Diagnostic) -> Value {
     Value::List(vec![u(KINDS.iter().position(|k| *k == d.kind).unwrap_or(0) as u64), tids_v(&d.tids), opt(d.commit, |c| Value::bytes(&c.0)), opt(d.peer, Value::Tid), Value::Str(d.detail.clone())])

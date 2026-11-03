@@ -187,12 +187,17 @@ impl Reader<'_> {
 
     /// `v` (of `tid`'s `ak`) materialized up to the bound; an unreadable link reads as absent at
     /// its position with an `Unreadable` diagnostic (spec/data-model.md §6), `None` when it is
-    /// `v` itself or the enum `v` is.
+    /// `v` itself or the enum `v` is. A blob not held is noted: its arrival re-delivers the aspect
+    /// to watches (`Engine::missed_blob`).
     fn materialize(&mut self, tid: &Tid, ak: &Ak, v: Value) -> Result<Option<Value>> {
         let mut bad = Vec::new();
         let v = materialize(self.e, tid, v, self.limit, &mut bad)?;
+        if bad.contains(&osis_label::Error::Missing) {
+            self.e.missed_blob(*tid, ak.clone());
+        }
         if !bad.is_empty() {
-            let why = bad.iter().map(|e| e.to_string()).collect::<Vec<_>>().join("; ");
+            // each kind of failure once: the detail stays small however many links fail
+            let why = bad.iter().map(|e| e.to_string()).collect::<std::collections::BTreeSet<_>>().into_iter().collect::<Vec<_>>().join("; ");
             self.e.report(Diagnostic { kind: osis_node::DiagnosticKind::Unreadable, tids: vec![*tid], commit: None, peer: None, detail: format!("{ak}: {} link(s) read as absent: {why}", bad.len()) });
         }
         Ok(v)

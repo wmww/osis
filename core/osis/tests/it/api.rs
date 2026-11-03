@@ -173,6 +173,29 @@ fn unreadable_link_reads_absent_at_its_position_spec_dm_6() {
     assert_eq!(db.at(n, k).get_value().unwrap(), None);
 }
 
+// spec/data-model.md §6 (unreadable link): a link whose blob is not held yet reads absent, and
+// once the blob arrives the aspect's watches and `on_change` get its value without any change
+// to the aspect.
+#[test]
+fn missed_blob_arriving_redelivers_watches_spec_dm_6() {
+    let db = db(1);
+    let n = db.write_with(|w| w.create_in(db.me(), &[db.home()])).unwrap();
+    let k = ak("t:big.0");
+    let big = s(&"x".repeat(200 << 10));
+    db.write_with(|w| w.at(n, k.clone()).set(&big)).unwrap();
+    let Some(Value::Link(l)) = db.engine(|e| e.get(&n, &k)).unwrap() else { panic!() };
+    let bytes = db.engine(|e| e.blob(&l.blob)).unwrap().unwrap();
+    db.engine(|e| e.run(|tx| Ok(tx.txn.delete_blob(&l.blob)))).unwrap();
+    let watch = db.at(n, k.clone()).watch().unwrap();
+    assert_eq!(watch.current(), Ok(None), "not held: absent");
+    let (tx, changes) = std::sync::mpsc::channel();
+    let _sub = db.at(n, k.clone()).on_change(move |_, c| tx.send((c.value, c.source)).unwrap()).unwrap();
+    assert_eq!(recv(&changes), (Ok(None), osis::Source::Initial));
+    db.engine(|e| e.put_blobs(vec![(l.blob, bytes)])).unwrap();
+    assert_eq!(recv(&changes), (Ok(Some(big.clone())), osis::Source::Derived(osis::Cause::Fetched)));
+    assert_eq!(watch.current(), Ok(Some(big)));
+}
+
 // notes/api.md Keys: a schema registered at run time types `Key` reads (reader defaults) and
 // validates writes; unknown AKs stay untyped.
 // spec: none (API surface, notes/api.md)

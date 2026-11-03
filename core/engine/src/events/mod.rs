@@ -28,6 +28,8 @@ pub enum Cause {
     LateDelta,
     /// This node lost read access and forgot the aspects (spec/permissions.md §3).
     LostAccess,
+    /// A blob arrived that a read of these aspects had missed (spec/data-model.md §6).
+    Fetched,
 }
 
 /// An ephemeral batch of this node (notes/ephemeral.md): its session's nonce (spec/crdt.md §2.1)

@@ -1,7 +1,7 @@
 //! Blob ciphertexts in the store, behind the traits of osis-label (pages, chunks) and
 //! osis-commit (header-list chunk trees).
 
-use osis_base::{BlobId, Link, WallMs};
+use osis_base::{Ak, BlobId, Link, Tid, WallMs};
 use osis_crypto::{CryptoRngCore, Secret32};
 use osis_store::Transaction;
 
@@ -70,16 +70,29 @@ impl crate::engine::Engine {
             return Ok(());
         }
         self.run(|tx| {
+            let mut fresh = false;
             for (id, b) in blobs {
                 if osis_label::blob_id(&b) == id && tx.txn.read_blob(&id, 0, 0)?.is_none() {
                     tx.txn.put_blob(&id, b)?;
+                    fresh = true;
                 }
+            }
+            // a read that missed it: watches read again (one still missing a blob notes it again)
+            if fresh && !tx.core.missed.is_empty() {
+                let changed = std::mem::take(&mut tx.core.missed).into_iter().collect();
+                tx.core.events.queue(crate::events::Event::Changed { cause: crate::events::Cause::Fetched, changed });
             }
             Ok(())
         })?;
         // a node blob may complete a tree walk that lacked it
         self.core.live_trees.retain(|_, t| t.missing.is_empty());
         Ok(())
+    }
+
+    /// A read of `tid`'s `ak` found a link whose blob is not held: the next blob stored
+    /// re-delivers the aspect to watches (`put_blobs`).
+    pub fn missed_blob(&mut self, tid: Tid, ak: Ak) {
+        self.core.missed.insert((tid, ak));
     }
 
     pub fn has_blob(&mut self, id: &BlobId) -> bool {
