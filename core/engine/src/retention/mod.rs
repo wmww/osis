@@ -476,7 +476,7 @@ pub(crate) fn unbreak(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    // a snapshot dropped for its keep bounds stands in no more (`Dropped::stands_in`)
+    // missing again, a dropped snapshot stands in no more (`Dropped::stands_in`)
     if m.dropped.remove(&ai).is_some_and(|d| d.stands_in)
         && let Some(a) = m.view.aspects.get(ai)
     {

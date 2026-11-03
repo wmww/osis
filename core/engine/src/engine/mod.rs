@@ -114,9 +114,9 @@ pub struct Dropped {
     /// A compaction snapshot whose body had a write in the state when dropped (what it carried
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
-    /// A held compaction snapshot dropped other than as covered: it still counts as held for
-    /// atomic apply and suspect flags (`receipt::listed`, `settled`; indexed by
-    /// `ix.dropped_snapshots`). One dropped as covered does not need to: a coverer is valid and
+    /// A compaction snapshot's part dropped other than as covered, held then or not: it still
+    /// counts as held for atomic apply and suspect flags (`receipt::listed`, `settled`; indexed
+    /// by `ix.dropped_snapshots`). One dropped as covered does not need to: a coverer is valid and
     /// stamped no earlier, so it counts for all it did.
     pub stands_in: bool,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
