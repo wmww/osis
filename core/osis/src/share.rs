@@ -111,7 +111,7 @@ pub struct LinkOpts {
     pub direct: bool,
 }
 
-/// A link this node made (`links`).
+/// A link of this person (`links`, `all_links`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LinkInfo {
     /// The link's actor K: what `revoke_link` takes.
@@ -801,8 +801,8 @@ impl Osis {
             match via {
                 None => self.demote_edge(t, m, to, d).await?,
                 Some(k) => {
-                    if !self.locked(|x| x.links.get(&k).is_some_and(|l| l.target == t)) {
-                        return Err(Error::Invalid(format!("{m} reaches {t} through {k} (a group actor, or a link made on another device): demote or revoke it there")));
+                    if !self.held_links().iter().any(|h| h.k == k && h.target == t) {
+                        return Err(Error::Invalid(format!("{m} reaches {t} through {k}, a group actor: demote it there")));
                     }
                     if to != Lower::Remove {
                         return Err(Error::Invalid(format!("{m} joined {t} by a link: it can only be removed")));
@@ -1011,21 +1011,47 @@ impl Osis {
         Ok(KeyGuard { db: self.downgrade(), l, link: Some(link.k) })
     }
 
-    /// The links this node made to `target` that still work.
+    /// The person's links to `target` that still work, whichever device made them (each holds
+    /// the seed thing; one whose seed has not arrived is not listed).
     pub fn links(&self, target: Tid) -> Vec<LinkInfo> {
         if let crate::sources::Source::Remote(r) = self.route(target) {
             return self.infallible(r.call(crate::port::method::LINKS, vec![Value::Tid(target)]).and_then(crate::port::codec::links));
         }
         let t = self.resolved(target);
-        self.locked(|x| {
-            let made: Vec<(Tid, MadeLink)> = x.links.iter().filter(|(_, m)| m.target == t).map(|(k, m)| (*k, *m)).collect();
-            made.into_iter()
-                .filter_map(|(k, m)| {
-                    let e = x.engine().roster(&k).get(&m.l).copied()?;
-                    Some(LinkInfo { id: k, target: m.target, role: e.role, until: e.until, single_use: m.single_use })
-                })
-                .collect()
+        self.live_links().into_iter().filter(|i| i.target == t).collect()
+    }
+
+    /// All the person's links that still work (`links`).
+    pub fn all_links(&self) -> Vec<LinkInfo> {
+        if self.is_attached() {
+            return self.infallible(self.rcall(crate::port::method::ALL_LINKS, vec![]).and_then(crate::port::codec::links));
+        }
+        self.live_links()
+    }
+
+    fn live_links(&self) -> Vec<LinkInfo> {
+        self.held_links()
+            .into_iter()
+            .filter_map(|h| {
+                let e = self.engine(|e| e.roster(&h.k).get(&h.l).copied())?;
+                Some(LinkInfo { id: h.k, target: h.target, role: e.role, until: e.until, single_use: h.single_use })
+            })
+            .collect()
+    }
+
+    /// The links whose seed thing is the person's and whose K it owns (a co-reader can place a
+    /// seed thing in a shared group: it names no link of ours).
+    fn held_links(&self) -> Vec<flows::HeldLink> {
+        let me = self.me();
+        self.engine(|e| {
+            let held = e.held_links().map(|h| h.to_vec()).unwrap_or_default();
+            held.into_iter().filter(|h| h.owner == me && e.owner(&h.k) == Some(me)).collect()
         })
+    }
+
+    /// Link `id`'s key L (`held_links`).
+    fn link_key(&self, id: Tid) -> Result<Tid> {
+        self.held_links().iter().find(|h| h.k == id).map(|h| h.l).ok_or(Error::Invalid(format!("no link {id} of this person")))
     }
 
     /// Ends a link (spec/permissions.md §9): removes its key from K (joiners stay holders of K;
@@ -1035,7 +1061,7 @@ impl Osis {
             return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id), crate::port::codec::demotion_v(&d)]).await.map(drop);
         }
         self.not_routed("revoke_link", id)?;
-        let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
+        let l = self.link_key(id)?;
         self.demote_edge(id, l, Lower::Remove, d).await
     }
 
@@ -1050,7 +1076,7 @@ impl Osis {
         if d.repudiate {
             return Err(Error::Invalid("repudiating rotations needs the holder's direct edge".into()));
         }
-        let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
+        let l = self.link_key(id)?;
         let m = self.resolved(joiner);
         let things = self.engine(|e| {
             let mut s = e.presync_scope(&id, &m, None);
@@ -1291,9 +1317,15 @@ impl Osis {
     }
 
     /// Removes a device from the person (a lost or stolen one: `Demotion { sync: Skip, .. }` or a
-    /// backdate; spec/permissions.md §5.3).
-    pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<()> {
-        self.demote(self.me(), node, Lower::Remove, d).await
+    /// backdate; spec/permissions.md §5.3). Returns the person's links still working: the device
+    /// keeps their seeds, so whoever holds it can read and join through each until `revoke_link`
+    /// (spec/permissions.md §9). Those are links shared in advance too: ending them is the
+    /// caller's choice. None when `node` was no device.
+    pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<Vec<LinkInfo>> {
+        let me = self.me();
+        let was = self.roster(me).contains_key(&node);
+        self.demote(me, node, Lower::Remove, d).await?;
+        Ok(if was { self.all_links() } else { Vec::new() })
     }
 
     /// The hosts new labels go to (and kept connected).

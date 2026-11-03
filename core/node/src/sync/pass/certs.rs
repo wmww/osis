@@ -102,13 +102,26 @@ impl SyncEngine {
             if bodies.is_empty() {
                 continue;
             }
-            for b in bodies {
-                self.place(g, l, &b, true)?;
-            }
-            self.place_linked(l, &c, &missing)?;
-            self.state.add_cert(l, c);
+            self.place_copy(g, l, &c, &missing, bodies)?;
         }
         Ok(())
+    }
+
+    /// Places `bodies` of `parts` of `c` as this node's certificate copy under `l` and records it;
+    /// whether all were placed. With no current read secret nothing wraps them and nothing is
+    /// recorded: a later pass places them.
+    pub(super) fn place_copy(&mut self, g: &Tid, l: LabelId, c: &CommitId, parts: &BTreeSet<(usize, usize)>, bodies: Vec<Body>) -> Result<bool> {
+        let (mut any, mut all) = (false, true);
+        for b in bodies {
+            let placed = self.place(g, l, &b, true)?.is_some();
+            any |= placed;
+            all &= placed;
+        }
+        if any {
+            self.place_linked(l, c, parts)?;
+            self.state.add_cert(l, *c);
+        }
+        Ok(all)
     }
 
     /// Whether `parts` of `c` are this node's own card (its `node.0`, `reach.0`, `keys.0` writes)

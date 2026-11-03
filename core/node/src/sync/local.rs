@@ -171,6 +171,7 @@ impl SyncEngine {
         let own = self.engine.core.ix.commits.get(c).is_some_and(|m| m.origin == crate::events::Origin::Local);
         let seed = if own && self.engine.role_on(&self.engine.group_actor(g)) < Some(Role::Write) { self.engine.deposit_seed(g)? } else { None };
         let want = self.engine.header(c).map(|h| super::pass::parts_of(&h, |i| aspects.contains(&i))).unwrap_or_default();
+        let mut unwrapped = false;
         for (l, hosts) in labels {
             // by part: a chain may have copied this commit's edge here, and a later copy wants its
             // boxes. A copy placed and gone since is not placed again
@@ -185,10 +186,15 @@ impl SyncEngine {
             if bodies.is_empty() {
                 continue;
             }
+            let mut placed = false;
             for b in bodies {
                 // a rotation-carrying copy is wrapped like the body (spec/crypto.md §5): other
                 // holders take it as the body's entry
-                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else { continue };
+                let Some(secret) = self.engine.wrap_secret(g, Some((&b.commit, &b.parts)))? else {
+                    unwrapped = true;
+                    continue;
+                };
+                placed = true;
                 let s = seal_body(&b, &mut *self.rng)?;
                 let wrap = osis_crypto::wrap(&secret, &s.id, &s.key, b.order)?;
                 if let Some(d) = &deposit {
@@ -197,6 +203,9 @@ impl SyncEngine {
                 self.engine.put_blobs(vec![(s.id, s.blob)])?;
                 self.state.add_blob(s.id, super::state::BlobRec { commit: b.commit, parts: b.parts.clone(), key: s.key.clone(), cert: true });
                 self.state.set_entry(l, s.id, Entry { wrap, stamp: None, cert: true, kind: Kind::Commit { commit: b.commit, parts: b.parts.clone(), salt: s.salt } });
+            }
+            if !placed {
+                continue;
             }
             self.place_linked(l, c, &parts)?;
             if let Some(d) = &deposit {
@@ -208,6 +217,10 @@ impl SyncEngine {
                 }
             }
             self.state.add_cert(l, *c);
+        }
+        // nothing wrapped part of it (no current read secret): it waits like an uncovered epoch
+        if unwrapped {
+            self.deferred.push((*g, *c, aspects.clone(), owed));
         }
         Ok(())
     }

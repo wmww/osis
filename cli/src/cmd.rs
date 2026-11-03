@@ -141,6 +141,10 @@ fn not_admitted(db: &Osis, e: Error) -> anyhow::Error {
     if hint.is_empty() { e.into() } else { anyhow::Error::from(e).context(hint.join("; ")) }
 }
 
+fn links_j(ls: &[osis::LinkInfo]) -> J {
+    J::Arr(ls.iter().map(|l| J::obj([("id", J::tid(l.id)), ("target", J::tid(l.target)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect())
+}
+
 fn demotion(d: &DemoteFlags, ctx: &Ctx<'_>) -> anyhow::Result<Demotion> {
     let sync = match d.sync.as_deref() {
         None | Some("required") => WaitForSync::Required,
@@ -375,10 +379,25 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             let ds = db.devices()?;
             ctx.emit(&ds.iter().map(|d| d.node.to_uri()).collect::<Vec<_>>(), J::Arr(ds.iter().map(|d| J::obj([("node", J::tid(d.node))])).collect()))
         }
-        Cmd::Device(DeviceCmd::Rm { node, d }) => {
+        Cmd::Device(DeviceCmd::Rm { node, d, end_links }) => {
             let n = ctx.tid(&node)?;
             let d = demotion(&d, ctx)?;
-            wait(ctx, db.remove_device(n, d))
+            let open = wait(ctx, db.remove_device(n, d))?;
+            if end_links {
+                // not backdated: joiners since that time stay joiners, as with any link revoked
+                let end = Demotion { sync: if d.backdate.is_some() { WaitForSync::Skip } else { d.sync }, ..Demotion::default() };
+                for l in &open {
+                    wait(ctx, db.revoke_link(l.id, end))?;
+                }
+            }
+            let say = |l: &osis::LinkInfo| {
+                if end_links {
+                    format!("ended link {} to {}", l.id.to_uri(), l.target.to_uri())
+                } else {
+                    format!("link {} to {} still works for whoever holds that device: osis link revoke {}", l.id.to_uri(), l.target.to_uri(), l.id.to_uri())
+                }
+            };
+            ctx.emit(&open.iter().map(say).collect::<Vec<_>>(), J::obj([("links", links_j(&open)), ("ended", J::Bool(end_links))]))
         }
         Cmd::Hosts(HostsCmd::Ls) => {
             let s = db.hosts();
@@ -545,10 +564,12 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         Cmd::Link(LinkCmd::Ls { t }) => {
-            let ls = db.links(ctx.tid(&t)?);
-            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" })).collect();
-            let j = J::Arr(ls.iter().map(|l| J::obj([("id", J::tid(l.id)), ("role", J::str(role_text(l.role).to_string())), ("single_use", J::Bool(l.single_use))])).collect());
-            ctx.emit(&lines, j)
+            let ls = match t {
+                Some(t) => db.links(ctx.tid(&t)?),
+                None => db.all_links(),
+            };
+            let lines: Vec<String> = ls.iter().map(|l| format!("{} {} {} {}", l.id.to_uri(), role_text(l.role), if l.single_use { "single-use" } else { "-" }, l.target.to_uri())).collect();
+            ctx.emit(&lines, links_j(&ls))
         }
         Cmd::Link(LinkCmd::Revoke { id, joiner, d }) => {
             let id = ctx.tid(&id)?;

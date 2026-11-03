@@ -84,14 +84,11 @@ impl SyncEngine {
             }
             bodies.push((*x, p.clone(), bs));
         }
+        let mut complete = host.is_none();
         for (x, p, bs) in bodies {
-            for b in bs {
-                self.place(g, l, &b, true)?;
-            }
-            self.place_linked(l, &x, &p)?;
-            self.state.add_cert(l, x);
+            complete &= self.place_copy(g, l, &x, &p, bs)?;
         }
-        Ok(Some(host.is_none()))
+        Ok(Some(complete))
     }
 
     /// A writer serving `l` with no host promotes the deposits there as at a host

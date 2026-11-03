@@ -1603,3 +1603,55 @@ fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     assert!(net.engine(c).suspects().unwrap().iter().any(|x| x.0 == t && x.1 == reg), "the flag stays");
     assert_eq!(net.read(c, t), net.read(b, t));
 }
+
+// spec/permissions.md §4: a pass with no current read secret places nothing and marks nothing:
+// `c` learns of a rotation it has no box for before its first pass; once re-sealed, its node card
+// and heartbeat land under the label.
+#[test]
+fn card_and_beat_wait_for_a_wrap_spec_permissions_4() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(2, &[host]);
+    net.set_online(c, false);
+    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    net.run();
+    let l = net.label(a);
+    let at = net.tid(a);
+    let tc = net.tid(c);
+    // a rotates offline, leaving c out; the head at the host stays where c can claim it
+    net.set_online(a, false);
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin)]);
+    let rot = rotation(e, g, &rs, 77, false);
+    let p = net.engine(a).package(&rot).unwrap().unwrap();
+    net.engine(c).ingest(&p.bytes, p.blobs).unwrap();
+    net.set_online(c, true);
+    net.run();
+    assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_none(), "c holds no current read secret");
+    // a flow's copy waits too: a commit of c's on no thing under the label (`place_certificate`)
+    let mut m = Mutation::new();
+    m.set(tc, &GONE, &s("x")).unwrap();
+    let own = net.engine(c).commit(m).unwrap().unwrap();
+    let ais = BTreeSet::from([0usize]);
+    let copies = |net: &mut Net| net.sync(c).entries(&l).into_iter().filter(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if *commit == own)).count();
+    let before = copies(&mut net);
+    let acts = net.sync(c).place_certificate(&g, &own, &ais).unwrap();
+    net.actions(c, acts);
+    assert_eq!(copies(&mut net), before, "nothing wraps it");
+    // a rotation boxing c, before any heartbeat interval has passed since the pass above
+    let e = net.engine(a);
+    let rs = recipients_of(e, &[(at, Role::Admin), (tc, Role::Read)]);
+    let rot = rotation(e, g, &rs, 78, false);
+    let p = net.engine(a).package(&rot).unwrap().unwrap();
+    net.engine(c).ingest(&p.bytes, p.blobs).unwrap();
+    net.set_online(a, true);
+    net.run();
+    assert!(copies(&mut net) > before, "the flow's copy");
+    // a deposit is promoted after a writer's relay wait (spec/sync.md §5)
+    net.advance(30_000);
+    assert!(net.engine(c).wrap_secret(&g, None).unwrap().is_some(), "re-sealed");
+    let under = commits_under(&mut net, a, &l);
+    assert!(under.iter().any(|(_, au, aks)| *au == tc && aks.contains("node.0")), "c's card: {under:?}");
+    assert!(net.engine(a).get_typed(&tc, &ct::SEEN).unwrap().is_some(), "c's heartbeat");
+}
