@@ -1,9 +1,0 @@
-# A writer's snapshot never covers one listing a session it got only through snapshots
-> Summary: A writer that got session S's writes only through snapshot Z1 (S's deltas dropped as covered) lists S at 0 in its own snapshot ZB, so ZB never reaches Z1's entry and never covers it; Z1 stays at every holder until S's author (or a node holding S's headers) compacts again, for good if it never does. One stuck body per such writer and aspect. Also on main; session-25's "a snapshot covers none stamped later" adds the case where ZB holds no more than Z1.
-> Tags: engine, retention, growth
-
-Found by the session-25 review (rv3). Repro (osis-node `it`, sessions.rs helpers): A adds a tag, snapshots `t:tags.0` (Z1); B, a writer syncing the thing, gets Z1's package only (no header of A's delta), adds a tag, snapshots (ZB). At B: ZB lists A's session at 0, Z1 at 1; `covered(ZB, Z1)` and `covered(Z1, ZB)` are both `Some(false)`. A then getting ZB alone and compacting lists B's session at 0, so its snapshot does not cover ZB either: each writer's latest snapshot stays beside the others'.
-
-Cause: the durable frontier build (`Engine::compaction_snapshot`) counts only `ix.ranges` (applied delta headers); the snapshot ⊇ check (`retention::covered`, sessions both list) then fails on every session the writer knows only from a snapshot. The memory branch already continues from held valid snapshots' frontiers. Candidate fix: do the same for durable aspects (a valid held snapshot's writes are joined, so its frontier is reflected), weighed against rule 3's "applied contiguously" and the lying-frontier residue it once closed (issues/session-sources.md).
-
-Growth: one body per writer device that compacted the aspect after the deltas it lacked left hosts; with a sequence aspect (sessions stay traced for good) it never clears. Against spec/requirements.md Cost.

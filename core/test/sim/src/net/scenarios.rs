@@ -890,8 +890,8 @@ pub fn snapshot_rights(seed: u64) -> Res<Report> {
     sim.pair(b, fresh, pb)?;
     sim.quiet(40)?;
     sim.run(40)?;
-    // the author's other device compacts with its right; its frontier may stop short of a body
-    // (issues/atomic-wait-snapshot-gap.md), so what it may drop is not certain to go
+    // the author's other device compacts with its right; a body whose live write it lacks stays
+    // uncovered, so what it may drop is not certain to go
     let fresh_compacted = d.below(2) == 0;
     if fresh_compacted {
         let acts = sim.sync(fresh)?.compact(&t, &k).map_err(|e| sim.fail(format!("fresh compact: {e}")))?;

@@ -59,8 +59,7 @@ fn drop_covered_by(e: &mut Engine, s: &CommitId, t: &Tid, a: &Ak) {
 // spec/crdt.md §2.1, §8, spec/commits.md §5: a register written once per launch (each launch a
 // session): the snapshot lists the one session with a write left, covers every earlier launch's
 // body (their sessions left no trace in it) and covers an earlier snapshot that listed a session
-// since pruned (the frontier check runs over sessions both list); the older snapshot covers
-// nothing newer.
+// since pruned; the older snapshot covers nothing newer.
 #[test]
 fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
     let mut lp = net(1, 0x5e55);
@@ -96,6 +95,87 @@ fn snapshot_lists_only_traced_sessions_spec_crdt_8() {
     assert_eq!(e.covered(&snap, &first_snap, &t, &reg).unwrap(), Some(true), "the newer snapshot covers the older, whose session it holds nothing of");
     assert_eq!(e.covered(&first_snap, &snap, &t, &reg).unwrap(), Some(false), "not the other way round");
     assert_eq!(e.get(&t, &reg).unwrap(), Some(s("launch 7")));
+}
+
+// spec/commits.md §5: a held body is judged by the join, whatever the frontier. W gets only the later
+// of A's two writes per aspect, so its snapshots list A's session short of them. When the earlier writes
+// come, the dead register write is covered (holders must not keep uploading it for a right holder
+// to delete, `snapshot_rights`), and the live tag is not.
+#[test]
+fn frontier_gap_covers_what_joins_unchanged_spec_commits_5() {
+    let mut lp = net(2, 0x5e90);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let tag = |lp: &mut LocalPeer, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap()
+    };
+    let old = set(&mut lp, 0, t, &REG, "old");
+    let old_tag = tag(&mut lp, "x");
+    lp.advance(1_000);
+    let new = set(&mut lp, 0, t, &REG, "new");
+    let new_tag = tag(&mut lp, "y");
+    let pks = packages(&mut lp, 0);
+    let pk = |c: &CommitId| pks.iter().find(|p| p.id == *c).unwrap();
+    lp.deliver(1, pk(&new)).unwrap();
+    lp.deliver(1, pk(&new_tag)).unwrap();
+    lp.advance(1_000);
+    let (reg, tags) = (ak("t:reg.0"), ak("t:tags.0"));
+    let snap = lp.peers[1].engine.snapshot(&t, &reg).unwrap().unwrap();
+    let snap_tags = lp.peers[1].engine.snapshot(&t, &tags).unwrap().unwrap();
+    let src = source_of(&lp, 0, &new);
+    // the register's first write is the thing's creation
+    for (z, a, stops) in [(&snap, &reg, 1), (&snap_tags, &tags, 0)] {
+        let fr = frontiers_of(&lp.peers[1].engine, z, &t, a);
+        assert!(fr.lists(&src) && fr.of(&src) == stops, "the session listed short of the earlier write");
+    }
+    lp.deliver(1, pk(&old)).unwrap();
+    lp.deliver(1, pk(&old_tag)).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.covered(&snap, &old, &t, &reg).unwrap(), Some(true), "dead in the snapshot");
+    assert_eq!(e.covered(&snap, &new, &t, &reg).unwrap(), Some(true));
+    assert_eq!(e.covered(&snap_tags, &old_tag, &t, &tags).unwrap(), Some(false), "live, not in the snapshot");
+    assert_eq!(e.covered(&snap_tags, &new_tag, &t, &tags).unwrap(), Some(true));
+}
+
+// spec/commits.md §5: a later snapshot covers an earlier one by the join, whatever the frontiers. B
+// knows A's session only through A's snapshot, so its own lists it at 0, below A's. Each writer's
+// latest snapshot would otherwise stay beside the others' for good.
+#[test]
+fn snapshot_covers_one_reaching_further_spec_commits_5() {
+    let mut lp = net(2, 0x5e91);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let w = lp.peers[1].engine.tid();
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    let tags = ak("t:tags.0");
+    let add = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let c = add(&mut lp, 0, "a");
+    lp.advance(1_000);
+    let z1 = lp.peers[0].engine.snapshot(&t, &tags).unwrap().unwrap();
+    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == z1).unwrap();
+    lp.deliver(1, &pk).unwrap();
+    lp.advance(1_000);
+    add(&mut lp, 1, "b");
+    lp.advance(1_000);
+    let zb = lp.peers[1].engine.snapshot(&t, &tags).unwrap().unwrap();
+    let src = source_of(&lp, 0, &c);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(frontiers_of(e, &z1, &t, &tags).of(&src), 1);
+    let fr = frontiers_of(e, &zb, &t, &tags);
+    assert!(fr.lists(&src) && fr.of(&src) == 0);
+    assert_eq!(e.covered(&zb, &z1, &t, &tags).unwrap(), Some(true));
+    assert_eq!(e.covered(&z1, &zb, &t, &tags).unwrap(), Some(false));
+    assert_eq!(e.get(&t, &tags).unwrap(), Some(Value::Set([s("a"), s("b")].into())));
 }
 
 // spec/commits.md §4 (atomic apply: a missing delta counts as held when a later snapshot of its
