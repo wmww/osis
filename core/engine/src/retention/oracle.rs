@@ -15,6 +15,9 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || super::snapshot::carrier_at(tx.core, s, sai) {
         return Ok(Some(false));
     }
+    if super::snapshot::stamped_later(tx.core, c, s) {
+        return Ok(Some(false));
+    }
     if tx.core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction() && m.missing.contains(&cai)) {
         return Ok(None);
     }
@@ -27,7 +30,7 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), super::snapshot::by_id(h.kind, h.form)) {
             (true, _) => !sn.frontiers.lists(&h.form.own_source(h.author, *c)),
             (_, true) => !sn.absorbed.contains_key(c),
-            _ => false,
+            _ => h.kind == osis_commit::Kind::Import,
         };
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
@@ -120,16 +123,15 @@ fn snapshot_live(tx: &mut Tx<'_>, h: &Header, c: &CommitId, holders: &[usize]) -
 }
 
 /// The dates `note_copies` gives, sorted, each once.
-pub(crate) fn copies_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, ts: Ts, saw: &dyn Fn(&crate::engine::Core, &osis_crdt::Death) -> bool) -> Result<Vec<Ts>> {
+pub(crate) fn copies_deaths(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak: &Ak, ts: Ts, saw: &dyn Fn(&osis_crdt::Death) -> bool) -> Result<Vec<Ts>> {
     let Some(st) = tx.state(tid, ak)?.cloned() else { return Ok(Vec::new()) };
     let mut deaths = Vec::new();
     let fs = crate::apply::held_fragments(tx, c, ai)?;
-    let core = &*tx.core;
     for f in fs {
         let mut st = st.clone();
         let mut ch = Changes::new();
         st.join_into(f.clone(), None, &mut ch);
-        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !saw(core, d) && super::deaths::dies_in(&f, d))).map(|d| d.at.max(ts)));
+        deaths.extend(ch.into_deaths().into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !saw(d) && super::deaths::dies_in(&f, d))).map(|d| d.at.max(ts)));
     }
     deaths.sort();
     deaths.dedup();

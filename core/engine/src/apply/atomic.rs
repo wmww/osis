@@ -26,18 +26,17 @@ pub(crate) fn note_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, ts: osis_base::
     }
 }
 
-/// Indexes the dropped parts of `id` that kept their frontiers (`Dropped::gives`).
-pub(crate) fn note_gives(core: &mut Core, id: &CommitId) {
+/// Indexes the dropped parts of `id` that still stand in (`Dropped::stands_in`).
+pub(crate) fn note_stands_in(core: &mut Core, id: &CommitId) {
     let Some(m) = core.ix.commits.get(id) else { return };
-    let ks: Vec<(Tid, Ak)> = m.dropped.iter().filter(|x| x.1.gives.is_some()).filter_map(|x| m.view.aspects.get(*x.0)).map(|a| (a.tid, a.ak.clone())).collect();
+    let ks: Vec<(Tid, Ak)> = m.dropped.iter().filter(|x| x.1.stands_in).filter_map(|x| m.view.aspects.get(*x.0)).map(|a| (a.tid, a.ak.clone())).collect();
     for k in ks {
         core.ix.dropped_snapshots.insert(k, *id);
     }
 }
 
 /// Forgets snapshot `id` of `(tid, ak)` when its body drops: its carried writes are index
-/// entries derived from the body (spec/commits.md §5), which a rebuild cannot read; its
-/// frontiers and `Absorbed` stay in its record when kept (`Dropped::gives`, `retention::drop_part`).
+/// entries derived from the body (spec/commits.md §5), which a rebuild cannot read.
 pub(crate) fn forget_snapshot(core: &mut Core, tid: &Tid, ak: &Ak, id: &CommitId) {
     let k = (*tid, ak.clone());
     if let Some(mut v) = core.ix.snapshots.get(&k).cloned()

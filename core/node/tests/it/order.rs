@@ -1391,7 +1391,7 @@ struct Fact {
     /// Under a relative keep at most: dropped by the node's own dating (at most 0 with a live
     /// write: at its grace bound; without one `dating` checks it dropped).
     approx: bool,
-    /// The node-form counters its writes own: `NTid(author):lo-hi`, or `-`.
+    /// The session counters its writes own: `source:lo-hi`, or `-`.
     owns: String,
     /// A snapshot or import body (copies): its carried writes die for it at its `ts` when
     /// killed by a lower-stamped write (spec/commits.md §5).
@@ -3814,7 +3814,7 @@ fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &order), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gone.0")).unwrap().clone();
-    assert!(snap(&want).gives.is_empty() && !snap(&got).gives.is_empty(), "dropped in one order only, keeping its frontiers");
+    assert!(snap(&want).stands_in.is_empty() && !snap(&got).stands_in.is_empty(), "dropped in one order only, still standing in");
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &order, None, &|_, _| false), None);
     check(3401073, &h, LARGE).unwrap();
     // the seed's longer shrink: the dropped snapshot leaves the carried-writes index too
@@ -3843,7 +3843,7 @@ fn snapshot_dropped_by_earlier_stamped_kill_joins_again_spec_commits_5() {
     let want = judged(&mut deliver(&played, &made), &played);
     let got = judged(&mut deliver(&played, &rev), &played);
     let snap = |j: &Judged| j.index.as_ref().unwrap().commits.values().find(|c| c.kind == osis_commit::Kind::ContentSnapshot && c.rest.contains("t:gonemap.0")).unwrap().clone();
-    assert!(!snap(&want).dropped.is_empty() && !snap(&want).gives.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, keeping its frontiers");
+    assert!(!snap(&want).dropped.is_empty() && !snap(&want).stands_in.is_empty() && snap(&got).dropped.is_empty(), "dropped in one order only, still standing in");
     assert_eq!(alike_exchanged(&played, &want, &made, &got, &rev, None, &|_, _| false), None);
     check(21187, &h, LARGE).unwrap();
 }

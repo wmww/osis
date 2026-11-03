@@ -948,6 +948,7 @@ fn add_host_scope_spec_sync_2() {
 // its signing key; it writes at once under a new session, so the commits written after the
 // backup (which the pass brings back) and its new ones never share a source: nothing is void
 // (spec/commits.md §4) and every write stands, at the device, its peers and a fresh device.
+// (see also `reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1`)
 #[test]
 fn restored_store_writes_at_once_spec_crdt_2_1() {
     let mut w = World::new();
@@ -2047,4 +2048,30 @@ fn share_of_a_group_carries_its_items() {
     w.run();
     assert_eq!(x(bob, t), Some(s("in g")));
     assert!(no_routes(bob));
+}
+
+// spec/crdt.md §2.1: a session per open, also under one test seed (`Config::seed`): one nonce drawn
+// twice would make the second open's writes reuse the first's dots and void both commits.
+#[test]
+fn reopen_under_one_seed_draws_a_new_session_spec_crdt_2_1() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let cfg = w.cfg(1, &[host]);
+    let (a, _) = Osis::create(cfg.clone()).unwrap();
+    w.run();
+    let t = item(&a, a.me(), a.home(), "first");
+    let mut forms = vec![];
+    let mut db = a;
+    for v in ["second", "third"] {
+        db.close().unwrap();
+        w.advance(1000);
+        db = Osis::open(cfg.clone()).unwrap();
+        let c = commit_with(&db, |wr| wr.at(t, ak("t:x.0")).set(&s(v))).id.commit().unwrap();
+        forms.push(db.engine(|e| e.header(&c).unwrap().form));
+        w.run();
+        assert_eq!(x(&db, t), Some(s(v)));
+    }
+    assert_ne!(forms[0], forms[1], "two opens, two sessions");
+    let diags = w.diagnostics(&db);
+    assert!(!diags.iter().any(|d| d.starts_with("OverlappingCounters")), "{diags:?}");
 }

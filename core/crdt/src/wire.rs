@@ -100,8 +100,8 @@ impl Frontiers {
     }
 }
 
-/// Received counter ranges per `Node` and `Session` source for one aspect: what a snapshot's
-/// frontiers say and what revoke frontiers are built from (§8; spec/permissions.md §5.1).
+/// Applied counter ranges per `Node` and `Session` source for one aspect: what a snapshot's
+/// frontiers are built from (§8).
 /// Parked commits are not added until joined.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Received(BTreeMap<Source, Vec<(u64, u64)>>);

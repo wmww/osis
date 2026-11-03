@@ -77,7 +77,7 @@ pub(crate) fn drop_superseded(tx: &mut Tx<'_>, aspects: &BTreeSet<(Tid, Ak)>, au
 /// spec/sync.md §9 (Compaction, memory class): on `aspects`, each held memory body a valid held
 /// memory snapshot covers (`covered`, spec/commits.md §5) is dropped as covered at once, its keep
 /// bounds aside (memory class keeps none), and its commit forgotten once spent (`keep` aside: the
-/// commit being applied, its caller forgets it). Of covered-equal snapshots the higher commit ID
+/// commit being applied, its caller forgets it). Of covered-equal snapshots (equal `ts`) the higher commit ID
 /// goes, as on the durable path. A function of the commits held, so holders of the same ones
 /// keep the same bodies. Run when a memory commit applies and when parts of a memory aspect turn
 /// valid. The commits dropped from.

@@ -34,6 +34,8 @@ pub struct MemStore {
     root: MemoryRoot,
     /// The store of the node's host, its own key root beside it, while it hosts (`set_hosting`).
     pub(crate) host: MemoryBackend,
+    /// Opens under a test seed, this store's and its backups' (`open_salt`).
+    opens: Arc<std::sync::atomic::AtomicU64>,
     pub(crate) host_root: MemoryRoot,
 }
 
@@ -44,7 +46,7 @@ impl MemStore {
     /// An independent copy of the store as it is now, as a device backup takes it (the host
     /// store left out): opening it later is a restore.
     pub fn backup(&self) -> MemStore {
-        MemStore { backend: self.backend.copy(), root: self.root.copy(), ..MemStore::default() }
+        MemStore { backend: self.backend.copy(), root: self.root.copy(), opens: self.opens.clone(), ..MemStore::default() }
     }
 }
 
@@ -299,6 +301,25 @@ fn rng(cfg: &Config, salt: u64) -> Box<dyn CryptoRngCore + Send> {
     }
 }
 
+/// The rng salt of an open under a test seed: differs per open of a store, or every open would
+/// draw one session nonce and void its earlier commits (spec/crdt.md §2.1). Deterministic per
+/// store, kept beside it. Without a seed the rng is the OS's, so nothing is counted.
+fn open_salt(cfg: &Config) -> Result<u64> {
+    if cfg.seed.is_none() {
+        return Ok(0);
+    }
+    let n = match &cfg.store {
+        StoreAt::Memory(m) => m.opens.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        StoreAt::Dir(p) => {
+            let f = p.join("seeded-opens");
+            let n = std::fs::read_to_string(&f).ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+            std::fs::write(&f, n.wrapping_add(1).to_string()).map_err(|e| Error::Storage(e.to_string()))?;
+            n
+        }
+    };
+    Ok(n.wrapping_add(1).wrapping_mul(0x9e37_79b9_7f4a_7c15))
+}
+
 fn clock(cfg: &Config) -> Arc<dyn Clock> {
     cfg.clock.clone().unwrap_or_else(|| Arc::new(SystemClock))
 }
@@ -371,7 +392,7 @@ impl Osis {
     pub fn open(cfg: Config) -> Result<Osis> {
         let (b, r) = parts(&cfg)?;
         let clock = clock(&cfg);
-        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, 0))?;
+        let mut e = Engine::open(b, r, engine_cfg(&cfg), clock.clone(), rng(&cfg, open_salt(&cfg)?))?;
         let me = tid_record(&mut e, PERSON)?;
         let hosts = load_hosts(&mut e)?.unwrap_or_else(|| cfg.hosts.clone());
         let sync = sync_over(e, &clock, &cfg, &hosts)?;

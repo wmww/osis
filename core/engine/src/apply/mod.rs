@@ -28,7 +28,7 @@ pub(crate) use gates::{Gate, at_most_bound, gating, still_gated};
 use gates::{class_of, counts_held, held_units, never_whole, waits_whole};
 pub use memory::PART_OVERHEAD;
 pub(crate) use waits::Waits;
-pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_gives, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
+pub(crate) use atomic::{join_into_state, Unmerge, apply_verified, forget_snapshot, index_commit, note_stands_in, ingest_secrets_keys, invalid_of, rebuild, rebuild_without, rebuilt, unmerge_fell};
 
 use crate::engine::blobs::TxBlobs;
 use crate::engine::{Engine, Meta, Tx, decode_commit_record, records};
@@ -1589,7 +1589,7 @@ pub(crate) fn load(tx: &mut Tx<'_>, rebuild: bool) -> Result<Option<Vec<(Tid, os
             atomic::index_commit(tx.core, &id, &m.view);
             copies::note_imports(tx.core, &id, &h);
             tx.core.put_meta(id, m);
-            atomic::note_gives(tx.core, &id);
+            atomic::note_stands_in(tx.core, &id);
             if blob.header.kind.is_compaction() {
                 snaps.push(blob.clone());
             }

@@ -113,10 +113,17 @@ pub(super) fn unseen_by(fr: &osis_crdt::Frontiers, h: &Header, c: &CommitId, hi:
     fr.lists(&src) && fr.of(&src).saturating_add(1) < hi
 }
 
-/// Whether a commit's writes are judged by its ID (commit form, imports: a snapshot lists
-/// those whose writes it holds as absorbed) rather than by counters under a frontier.
+/// Whether a commit's own writes are judged by its ID (commit form: a snapshot lists those whose
+/// writes it holds as absorbed) rather than by counters under a frontier. An import has no writes
+/// of its own (they sit under its origins' sources) and is in neither table.
 pub(super) fn by_id(kind: Kind, form: Form) -> bool {
-    kind == Kind::Import || (form == Form::Commit && kind.has_own_writes())
+    form == Form::Commit && kind.has_own_writes()
+}
+
+/// Whether `c` is a compaction snapshot stamped later than `s`.
+pub(super) fn stamped_later(core: &Core, c: &CommitId, s: &CommitId) -> bool {
+    let ts = |x: &CommitId| core.ix.commits.get(x).map(|m| m.view.ts);
+    core.ix.commits.get(c).is_some_and(|m| m.view.kind.is_compaction()) && ts(c) > ts(s)
 }
 
 /// `Engine::covered` in `tx`: the body whole, the snapshot a piece at a time (its part at the
@@ -129,6 +136,11 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     // an invalid snapshot gives nothing, so covers nothing (spec/permissions.md §5.2); a
     // carrier only covers none (spec/commits.md §5)
     if !crate::apply::copies::snapshot_valid(tx.core, s, tid, ak) || carrier_at(tx.core, s, sai) {
+        return Ok(Some(false));
+    }
+    // a snapshot stamped later stands in for more commits than this one (atomic apply, §4), and
+    // dropped as covered it would stop: never covered by one stamped earlier
+    if stamped_later(tx.core, c, s) {
         return Ok(Some(false));
     }
     // a snapshot body still to arrive (or missing again, `uncover`): nothing is established
@@ -191,11 +203,12 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
         }
         // the snapshot holds nothing of the body's session or commit (spec/crdt.md §8): its
         // writes are dead where the body is held and joins unchanged (below); a body not held
-        // here establishes nothing, as the writer may never have applied it
+        // here establishes nothing, as the writer may never have applied it. An import is in
+        // no table, so its tables never say the writer applied it.
         let untraced = match (h.form.counted() && h.kind.has_own_writes(), by_id(h.kind, h.form)) {
             (true, _) => !fr.lists(&h.form.own_source(h.author, *c)),
             (_, true) => !abs.iter().any(|x| x.0 == *c),
-            _ => false,
+            _ => h.kind == Kind::Import,
         };
         if untraced && m.missing.contains(&cai) {
             return Ok(None);
@@ -348,7 +361,8 @@ impl Engine {
                     frontiers.insert(n, next - 1);
                 }
             }
-            // commits judged by ID (commit form, imports) whose valid writes the state reflects
+            // commit-form commits whose valid writes the state reflects (an import's sit under
+            // its origins' sources: it has no entry)
             let mut absorbed = std::collections::BTreeMap::new();
             for (_, c) in tx.core.ix.by_aspect.get(&(tid, ak.clone())).into_iter().flatten() {
                 let Some(m) = tx.core.ix.commits.get(c) else { continue };
@@ -390,8 +404,8 @@ impl Engine {
     /// unchanged, and the snapshot's frontier for a session-form body's session, when it lists
     /// one, holds its counters (a session it does not list left no write in it, spec/crdt.md
     /// §8, so every holder of the snapshot counts the dropped body's delta as listed in atomic
-    /// apply). A carrier only covers none. `None` when either is not held (nothing is
-    /// established).
+    /// apply). A carrier only covers none, nor does a snapshot cover one stamped later. `None`
+    /// when either is not held (nothing is established).
     pub fn covered(&mut self, s: &CommitId, c: &CommitId, tid: &Tid, ak: &Ak) -> Result<Option<bool>> {
         let (s, c, tid, ak) = (*s, *c, *tid, ak.clone());
         self.run(|tx| {

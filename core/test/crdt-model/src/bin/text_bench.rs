@@ -54,7 +54,7 @@ fn main() {
     }
 }
 
-/// Replays with `batch` edits per commit (counter continues across commits as a node-form dot does).
+/// Replays with `batch` edits per commit (counter continues across commits as a session's dot does).
 /// A commit carries its net effect (spec §4.5): elements inserted and deleted within one commit are omitted, and
 /// all deletions of one commit share one flag write (one stamp).
 fn replay(edits: &str, batch: usize) -> (Frag, usize) {

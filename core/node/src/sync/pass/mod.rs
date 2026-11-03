@@ -1328,7 +1328,7 @@ impl SyncEngine {
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
                 if *s != b.commit && self.covered_noted(s, &b.commit, t, a, note)? == Some(true) {
-                    // covered-equal snapshots: the one with the higher commit ID goes
+                    // covered-equal snapshots (equal `ts`): the one with the higher commit ID goes
                     if is_snapshot(h.kind) && self.covered_noted(&b.commit, s, t, a, note)? == Some(true) && b.commit < *s {
                         continue;
                     }

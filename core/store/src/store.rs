@@ -608,8 +608,7 @@ impl Transaction<'_> {
     pub fn counter(&mut self, tid: &Tid, ak: &Ak) -> Result<u64, Error> {
         Ok(u64_value(self.mem.o.cat.get(&aspect_key(kind::COUNTER, tid, ak)).cloned())?.unwrap_or(1))
     }
-    /// Reserves `n` counters; returns the first. Commit this transaction before signing a commit
-    /// that uses them (spec/crdt.md §2.3).
+    /// Reserves `n` counters; returns the first.
     pub fn reserve_counters(&mut self, tid: &Tid, ak: &Ak, n: u64) -> Result<u64, Error> {
         let first = self.counter(tid, ak)?;
         let next = first.checked_add(n).ok_or(Error::Misuse("counter overflow"))?;

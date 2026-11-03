@@ -10,7 +10,6 @@ use crate::error::Result;
 use osis_base::format::MAX_DRIFT_MS;
 use osis_base::{Ak, CommitId, CreationRecord, Tid, Ts, WallMs};
 use osis_commit::{CommitBlob, Header};
-use osis_crdt::Frontiers;
 use osis_crypto::VerifyingKey;
 use osis_perm::DemotionScope;
 use osis_schema::core_types::{Frontier, is_role_class};
@@ -56,17 +55,12 @@ fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &Receipt) -> Result<()> {
     tx.put_aspect_local(records::RECEIPT, tid, ak, &r.encode())
 }
 
-/// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped with their frontiers
-/// kept, `Dropped::gives`): ID, `ts`, frontiers, `Absorbed`.
-fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts, &'a Frontiers, &'a [(CommitId, Tid)])> + 'a {
+/// The held snapshots of `(tid, ak)`, any validity (bodies held, or dropped and still standing in,
+/// `Dropped::stands_in`): ID and `ts`.
+fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -> impl Iterator<Item = (CommitId, Ts)> + 'a {
     let k = (*tid, ak.clone());
-    let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|(ts, s, fr, abs)| (*s, *ts, fr, abs.as_slice()));
-    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| {
-        let m = core.ix.commits.get(s)?;
-        let ai = m.aspect(tid, ak)?;
-        let (fr, abs) = m.dropped.get(&ai)?.gives.as_ref()?;
-        Some((*s, m.view.ts, fr, abs.as_slice()))
-    });
+    let held = core.ix.snapshots.get(&k).into_iter().flatten().map(|x| (x.1, x.0));
+    let kept = core.ix.dropped_snapshots.get(&k).into_iter().flatten().filter_map(move |s| Some((*s, core.ix.commits.get(s)?.view.ts)));
     held.chain(kept)
 }
 
@@ -76,7 +70,7 @@ fn held_snapshots<'a>(core: &'a crate::engine::Core, tid: &'a Tid, ak: &'a Ak) -
 /// (`retention::coverers`, coverers dropped in turn included), or held, droppable here now
 /// (`retention::drop_from`: this node may purge it and its keep-at-least bound is `MAX_DRIFT`
 /// past, as node-sync's `drop_covered` judges) and covered by a held valid snapshot stamped after
-/// it, received by then, whose actor holds the right over it (of two covered-equal snapshots only the lower ID stays, as there).
+/// it, received by then, whose actor holds the right over it.
 /// A demoter leaves a commit out of its frontier only when each of its parts in question is
 /// such: the covering snapshot vouches for its live writes (spec/permissions.md §5.2), and its
 /// dead writes are what compaction erases anyway; a kept body's history stays valid. A coverer
@@ -92,13 +86,13 @@ fn droppable_here(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak, as_of: Wall
     if m.missing.contains(&ai) {
         return Ok(false);
     }
-    let (ts, snapshot) = (m.view.ts, m.view.kind.is_compaction());
+    let ts = m.view.ts;
     if !crate::retention::drop_from(tx, c, tid, ak)?.is_some_and(|due| due <= tx.now().0) {
         return Ok(false);
     }
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().filter(|x| x.0 > ts && x.1 != *c && by_then(tx.core, &x.1)).map(|x| x.1).collect();
     for s in snaps {
-        if crate::retention::snapshot_right(tx.core, &s, c, tid, ak) && crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) && !(snapshot && *c < s && crate::retention::covered(tx, c, &s, tid, ak)? == Some(true)) {
+        if crate::retention::snapshot_right(tx.core, &s, c, tid, ak) && crate::retention::covered(tx, &s, c, tid, ak)? == Some(true) {
             return Ok(true);
         }
     }
@@ -141,21 +135,13 @@ pub(crate) fn listed(core: &crate::engine::Core, h: &Header, ai: usize) -> bool 
     crate::apply::gates::signed_by_possible(core, &a.tid, role, later().filter_map(|x| author(&x.0)))
 }
 
-/// Whether a held snapshot valid here gave the delta's writes (spec/permissions.md §5.2; a
-/// suspect flag's body, `retention::suspect`): its frontier reaches the delta's counters, or
-/// its `Absorbed` names the commit. One holding nothing of the delta's session or commit
-/// repaired nothing.
-pub(crate) fn listed_by_valid(core: &crate::engine::Core, h: &Header, id: &CommitId, ai: usize) -> bool {
+/// Whether a held snapshot valid here is stamped after the delta's commit: a suspect flag about the
+/// delta is settled while one is (spec/permissions.md §4; `retention::suspect`). Rule 5's "any
+/// later snapshot": no frontier can say more, since one holding nothing of the delta's session
+/// or commit is all a writer that held the delta may have left.
+pub(crate) fn settled(core: &crate::engine::Core, h: &Header, ai: usize) -> bool {
     let Some(a) = h.aspects.get(ai) else { return false };
-    let counted = (h.form.counted() && h.kind.has_own_writes()).then(|| h.form.own_source(h.author, *id));
-    held_snapshots(core, &a.tid, &a.ak).any(|(s, ts, fr, abs)| {
-        crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak)
-            && ts > h.ts
-            && match &counted {
-                Some(src) => fr.of(src) > 0 && fr.of(src) >= a.hi.saturating_sub(1),
-                None => abs.iter().any(|x| x.0 == *id),
-            }
-    })
+    held_snapshots(core, &a.tid, &a.ak).any(|(s, ts)| ts > h.ts && crate::apply::copies::snapshot_valid(core, &s, &a.tid, &a.ak))
 }
 
 impl Engine {

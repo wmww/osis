@@ -415,3 +415,312 @@ fn pruned_sessions_converge_spec_crdt_8() {
 fn pruned_sessions_converge_large_spec_crdt_8() {
     osis_base::testenv::Seeds::from_env("OSIS_SESSIONS_START", "OSIS_SESSIONS_SEEDS", 0..200).run("sessions::pruned_sessions_converge_large_spec_crdt_8", pruned_replay, |seed| pruned_sessions_check(seed).unwrap_or_else(|e| panic!("seed {seed}: {e}")));
 }
+
+// spec/commits.md §4, §5: Z1 (earlier) and Z2 (after c, no trace of c's session) hold the same. Z2
+// counts c's missing part as held, so Z1 stamped before c must not cover it away: both holders of
+// Z2 apply c alike, also the one that dropped Z2.
+#[test]
+fn snapshot_dropped_for_an_earlier_equal_keeps_standing_in_spec_commits_4() {
+    let mut lp = net(5, 0x5e81);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    for p in [2, 3] {
+        let w = lp.peers[p].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.peers[4].engine.set_syncing(t, true).unwrap();
+    let tags = ak("t:tags.0");
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    sync(&mut lp, 2, 3);
+    lp.advance(1_000);
+    let z1 = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    lp.advance(1_000);
+    // a Z2 with the higher ID
+    let mut z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
+    while z2 < z1 {
+        lp.advance(1_000);
+        z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
+    }
+    sync(&mut lp, 2, 1);
+    sync(&mut lp, 2, 4);
+    // only the Z2 with the higher ID: the earlier tries stay at peer 3
+    let z2p = packages(&mut lp, 3).into_iter().find(|p| p.id == z2).unwrap();
+    lp.deliver(1, &z2p).unwrap();
+    lp.deliver(4, &z2p).unwrap();
+    let e = &mut lp.peers[4].engine;
+    assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "a snapshot covers none stamped later");
+    assert_eq!(e.covered(&z2, &z1, &t, &tags).unwrap(), Some(true), "Z2 covers Z1");
+    // Z2 goes all the same (its keep bounds): it still stands in
+    e.drop_body(&z2, &t, &tags).unwrap();
+    let mut read = Vec::new();
+    for p in [1, 4] {
+        let e = &mut lp.peers[p].engine;
+        e.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
+        e.reexamine().unwrap();
+        read.push((e.pending().len(), e.get(&t, &ak("t:reg.0")).unwrap()));
+    }
+    eprintln!("z1 {z1:?} z2 {z2:?} c {c:?} peer 1 and 4 (pending, reg): {read:?}");
+    assert_eq!(read[0], read[1], "both hold the same bodies but the one a covered-equal rule dropped");
+}
+
+// spec/permissions.md §4: a Flip flag about a body whose writes died settles under a later valid
+// snapshot though it lists no session of the body.
+#[test]
+fn flip_flag_on_a_pruned_session_settles_spec_permissions_4() {
+    let mut lp = net(4, 0x5e82);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    let short = ak("t:short.0");
+    // a snapshot stamped before the body settles nothing
+    set(&mut lp, 3, t, &SHORT, "v0");
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    lp.peers[3].engine.snapshot(&t, &short).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    let c1 = set(&mut lp, 0, t, &SHORT, "v1");
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    set(&mut lp, 2, t, &SHORT, "v2");
+    lp.sync_all().unwrap();
+    // peer 1 lets the dead body go (its keep bounds; no snapshot held, so not as covered)
+    lp.peers[1].engine.drop_body(&c1, &t, &short).unwrap();
+    lp.advance(1_000);
+    let f = osis_schema::core_types::Frontier { commits: Default::default() };
+    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
+    // only the demotion: a full sync would give peer 1 the dropped body again
+    let fp = packages(&mut lp, 0).into_iter().find(|p| p.id == fall).unwrap();
+    lp.deliver(1, &fp).unwrap();
+    lp.deliver(3, &fp).unwrap();
+    let flagged = |lp: &mut LocalPeer| lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == short);
+    assert!(flagged(&mut lp), "W's write fell where a body was dropped: flagged");
+    lp.advance(1_000);
+    let v3 = set(&mut lp, 3, t, &SHORT, "v3");
+    lp.advance(1_000);
+    let z = lp.peers[3].engine.snapshot(&t, &short).unwrap().unwrap();
+    for pk in packages(&mut lp, 3).into_iter().filter(|p| p.id == v3 || p.id == z) {
+        lp.deliver(1, &pk).unwrap();
+    }
+    let e = &mut lp.peers[1].engine;
+    assert!(e.commit_ids().contains(&z));
+    eprintln!("reads {:?} digest alike {}", e.get(&t, &short).unwrap(), lp.peers[1].engine.state_digest(&t, &short).unwrap() == lp.peers[3].engine.state_digest(&t, &short).unwrap());
+    assert!(!flagged(&mut lp), "a valid later snapshot settles the flag");
+    // its author removed, listing none of its commits: it gives nothing, the flag shows again
+    let f = osis_schema::core_types::Frontier { commits: Default::default() };
+    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(osis_schema::Codec::to_value(&f)));
+    let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
+    lp.deliver(1, &gp).unwrap();
+    assert!(flagged(&mut lp), "the snapshot that settled it turned invalid");
+}
+
+// spec/sync.md §7, spec/commits.md §5: snapshots of equal `ts` holding the same cover each other;
+// the higher commit ID goes, as covered, and the lower counts for all it did (a commit stamped
+// before both, its missing part held under either).
+#[test]
+fn equal_stamped_snapshots_cover_each_other_spec_sync_7() {
+    let mut lp = net(5, 0x5e83);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    for p in [2, 3] {
+        let w = lp.peers[p].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    lp.peers[4].engine.set_syncing(t, true).unwrap();
+    let tags = ak("t:tags.0");
+    let mut m = Mutation::new();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("w")) }).unwrap();
+    lp.peers[2].commit(m).unwrap().unwrap();
+    sync(&mut lp, 2, 3);
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    lp.advance(1_000);
+    let a = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
+    let b = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
+    assert_eq!(lp.peers[2].engine.header(&a).unwrap().ts.to_u64(), lp.peers[3].engine.header(&b).unwrap().ts.to_u64(), "one wall, no later clock seen");
+    for from in [2, 3] {
+        sync(&mut lp, from, 1);
+        sync(&mut lp, from, 4);
+    }
+    let (lo, hi) = if a < b { (a, b) } else { (b, a) };
+    let e = &mut lp.peers[4].engine;
+    assert_eq!(e.covered(&lo, &hi, &t, &tags).unwrap(), Some(true));
+    assert_eq!(e.covered(&hi, &lo, &t, &tags).unwrap(), Some(true));
+    e.drop_body(&hi, &t, &tags).unwrap();
+    assert!(e.core.ix.commits.get(&hi).unwrap().dropped.values().all(|d| d.why == osis_node::engine::DropFor::Cover && !d.stands_in));
+    let mut read = Vec::new();
+    for p in [1, 4] {
+        let e = &mut lp.peers[p].engine;
+        e.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
+        e.reexamine().unwrap();
+        read.push((e.pending().len(), e.get(&t, &ak("t:reg.0")).unwrap()));
+    }
+    assert_eq!(read[0], (0, Some(s("a"))));
+    assert_eq!(read[0], read[1]);
+}
+
+// spec/commits.md §4, §5: a snapshot stamped after c by a writer since removed still stands in, and
+// the valid older snapshot, however alike, does not cover it away: one holder given c's part late
+// and one given it first read alike. A later snapshot holding less than an earlier one (a lagging
+// writer's) stays the same way.
+#[test]
+fn invalid_or_lagging_later_snapshot_stays_and_stands_in_spec_commits_5() {
+    let mut lp = net(4, 0x5e84);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    let tags = ak("t:tags.0");
+    let add = |lp: &mut LocalPeer, i: usize, v: &str| {
+        let mut m = Mutation::new();
+        m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s(v)) }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    add(&mut lp, 2, "w");
+    sync(&mut lp, 2, 3);
+    // W's earlier snapshot holds more than Y's later one: W's "x" never reached Y
+    add(&mut lp, 2, "x");
+    lp.advance(1_000);
+    let z1 = lp.peers[2].engine.snapshot(&t, &tags).unwrap().unwrap();
+    lp.advance(1_000);
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("a")).unwrap();
+    m.op(t, &TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(s("a")) }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    let pk = packages(&mut lp, 0).into_iter().find(|p| p.id == c).unwrap();
+    let h = lp.peers[0].engine.header(&c).unwrap();
+    lp.advance(1_000);
+    let z2 = lp.peers[3].engine.snapshot(&t, &tags).unwrap().unwrap();
+    sync(&mut lp, 2, 1);
+    sync(&mut lp, 3, 1);
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "a lagging later snapshot is not covered");
+    // Y removed, its snapshot listed by nothing: invalid, and still not covered
+    let f = osis_schema::core_types::Frontier { commits: Default::default() };
+    let gone = set_edge(&mut lp.peers[0].engine, t, y, None, Some(osis_schema::Codec::to_value(&f)));
+    let gp = packages(&mut lp, 0).into_iter().find(|p| p.id == gone).unwrap();
+    lp.deliver(1, &gp).unwrap();
+    let e = &mut lp.peers[1].engine;
+    assert_eq!(e.covered(&z2, &z1, &t, &tags).unwrap(), Some(false), "an invalid snapshot covers nothing");
+    assert_eq!(e.covered(&z1, &z2, &t, &tags).unwrap(), Some(false), "nor is it covered by an older one");
+    e.ingest(&only(&pk.bytes, &h, "t:reg.0"), Vec::new()).unwrap();
+    e.reexamine().unwrap();
+    assert_eq!(e.pending().len(), 0, "Y could write: its snapshot counts the tags part held");
+    assert_eq!(e.get(&t, &ak("t:reg.0")).unwrap(), Some(s("a")));
+}
+
+/// A Flip flag about `body` of `(t, short)` at peer 1, dropped for its bounds: W's write falls.
+fn flip_flag_on(lp: &mut LocalPeer, t: Tid, short: &Ak, body: &CommitId) {
+    let w = lp.peers[2].engine.tid();
+    lp.peers[1].engine.drop_body(body, &t, short).unwrap();
+    lp.advance(1_000);
+    let f = osis_schema::core_types::Frontier { commits: Default::default() };
+    let fall = set_edge(&mut lp.peers[0].engine, t, w, None, Some(osis_schema::Codec::to_value(&f)));
+    for p in packages(lp, 0).into_iter().filter(|p| p.id == fall) {
+        lp.deliver(1, &p).unwrap();
+    }
+    assert!(lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *short), "flagged");
+}
+
+/// Y's later write and snapshot of `(t, short)` reach peer 1.
+fn later_snapshot_settles(lp: &mut LocalPeer, t: Tid, short: &Ak) {
+    lp.advance(1_000);
+    let v = set(lp, 3, t, &SHORT, "later");
+    lp.advance(1_000);
+    let z = lp.peers[3].engine.snapshot(&t, short).unwrap().unwrap();
+    for p in packages(lp, 3).into_iter().filter(|p| p.id == v || p.id == z) {
+        lp.deliver(1, &p).unwrap();
+    }
+    assert!(!lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == t && x.1 == *short), "settled");
+}
+
+// spec/permissions.md §4: a flag about a dropped snapshot body settles like any other. Its dormancy
+// read `Absorbed`, which never lists a snapshot, so it never did, and it filled the heartbeat.
+#[test]
+fn flip_flag_on_a_snapshot_body_settles_spec_permissions_4() {
+    let mut lp = net(4, 0x5e85);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    for p in [2, 3] {
+        let w = lp.peers[p].engine.tid();
+        set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    }
+    lp.sync_all().unwrap();
+    lp.peers[1].engine.set_syncing(t, true).unwrap();
+    let short = ak("t:short.0");
+    set(&mut lp, 0, t, &SHORT, "v1");
+    lp.advance(1_000);
+    let z = lp.peers[0].engine.snapshot(&t, &short).unwrap().unwrap();
+    lp.sync_all().unwrap();
+    lp.advance(1_000);
+    set(&mut lp, 2, t, &SHORT, "v2");
+    lp.sync_all().unwrap();
+    flip_flag_on(&mut lp, t, &short, &z);
+    later_snapshot_settles(&mut lp, t, &short);
+}
+
+// spec/permissions.md §4, §7: a flag about a dropped import settles like any other (an import is in
+// no snapshot's tables, spec/crdt.md §8).
+#[test]
+fn flip_flag_on_an_import_settles_spec_permissions_4() {
+    let mut lp = net(4, 0x5e86);
+    lp.sync_all().unwrap();
+    let t = new_thing(&mut lp, 0);
+    let team = new_thing(&mut lp, 0);
+    let (w, y) = (lp.peers[2].engine.tid(), lp.peers[3].engine.tid());
+    set_edge(&mut lp.peers[0].engine, t, w, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, t, y, Some(edge(Role::Write)), None);
+    lp.sync_all().unwrap();
+    set(&mut lp, 0, t, &SHORT, "v1");
+    lp.sync_all().unwrap();
+    let (copy, imports) = lp.peers[0].engine.move_thing(&t, team).unwrap();
+    set_edge(&mut lp.peers[0].engine, copy, w, Some(edge(Role::Write)), None);
+    set_edge(&mut lp.peers[0].engine, copy, y, Some(edge(Role::Write)), None);
+    lp.peers[1].engine.set_syncing(copy, true).unwrap();
+    lp.sync_all().unwrap();
+    let short = ak("t:short.0");
+    let import = imports.into_iter().find(|c| {
+        let h = lp.peers[0].engine.header(c).unwrap();
+        h.kind == osis_commit::Kind::Import && h.aspects.iter().any(|a| a.tid == copy && a.ak == short)
+    }).expect("an import of the aspect");
+    lp.advance(1_000);
+    set(&mut lp, 2, copy, &SHORT, "v2");
+    lp.sync_all().unwrap();
+    let later = {
+        let v = set(&mut lp, 3, copy, &SHORT, "v3");
+        lp.advance(1_000);
+        (v, lp.peers[3].engine.snapshot(&copy, &short).unwrap().unwrap())
+    };
+    let z = lp.peers[3].engine.core.ix.snapshots.get(&(copy, short.clone())).unwrap().iter().find(|x| x.1 == later.1).unwrap().3.clone();
+    assert!(z.iter().all(|x| x.0 != import), "no import in `Absorbed`");
+    flip_flag_on(&mut lp, copy, &short, &import);
+    for p in packages(&mut lp, 3).into_iter().filter(|p| p.id == later.0 || p.id == later.1) {
+        lp.deliver(1, &p).unwrap();
+    }
+    assert!(!lp.peers[1].engine.suspects().unwrap().iter().any(|x| x.0 == copy && x.1 == short), "settled");
+}

@@ -588,8 +588,8 @@ impl SyncEngine {
     /// Whether a later snapshot of `(t, a)` under the label at the host carries body `body`'s
     /// writes there: one covering it, or for a `dropped` delta (its content is gone, so `covered`
     /// checks only the frontier) the snapshot that covered it when it was dropped, or one
-    /// covered-equal to that whose frontier holds the body's counters (a co-writer's that went
-    /// up in its place).
+    /// covering that whose frontier holds the body's counters (a co-writer's that went up in its
+    /// place).
     fn snapshot_carries(&mut self, at: &At, body: &CommitId, t: &Tid, a: &Ak, dropped: bool) -> Result<bool> {
         let (l, host, snaps) = (&at.l, at.host.as_ref(), at.snaps);
         let carrier = self.carrier_of(body, t, a);
@@ -603,7 +603,7 @@ impl SyncEngine {
             }
             let covers = self.engine.covered(&s, body, t, a)? == Some(true);
             let stand_in = match carrier {
-                Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true) && self.engine.covered(&k, &s, t, a)? == Some(true)),
+                Some(k) => k == s || (covers && self.engine.covered(&s, &k, t, a)? == Some(true)),
                 None => false,
             };
             if stand_in || (!dropped && covers) {

@@ -41,7 +41,7 @@ pub(crate) fn still_gated(tx: &mut Tx<'_>, h: &Header, id: &CommitId, gates: &[G
 }
 
 /// Whether a missing delta of aspect `ai` counts as held: expired, past keep at most, purged,
-/// listed by a held snapshot of any validity, its author's removal leaves it invalid, or breaking
+/// under a later held snapshot of any validity (`receipt::listed`), its author's removal leaves it invalid, or breaking
 /// a held `required.0^` delta by a possible admin (spec/commits.md §4).
 pub(super) fn counts_held(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<bool> {
     let now = tx.now().0;
