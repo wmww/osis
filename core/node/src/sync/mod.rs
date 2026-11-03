@@ -992,7 +992,7 @@ impl SyncEngine {
         let (mut wide, mut narrow): (bool, BTreeSet<(Tid, Ak)>) = (false, BTreeSet::new());
         // things whose roles or reader actors moved: labels downstream of them want a pass
         let mut scoped: BTreeSet<Tid> = BTreeSet::new();
-        // things whose roster or creation record changed
+        // things with a new creation record (`note_role_moves`)
         let mut roots: BTreeSet<Tid> = BTreeSet::new();
         let mut own = false;
         let me = self.engine.tid();
@@ -1169,7 +1169,7 @@ impl SyncEngine {
         let st = std::mem::take(&mut self.state.touched);
         let carriers = std::mem::take(&mut self.state.touched_commits);
         let max = self.cfg.work_max;
-        let elsewhere = t.commits.len() + carriers.len() + t.states.len() + t.whole.len() + t.blobs.len() + t.moved.len() + t.roles.reached.len();
+        let elsewhere = t.commits.len() + carriers.len() + t.states.len() + t.whole.len() + t.blobs.len() + t.moved.len() + t.roles.reached.len() + t.roles.subjects.len();
         let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
         for (l, w) in conns.chain(self.local_work.iter_mut()) {
             w.full |= t.full;
