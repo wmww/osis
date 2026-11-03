@@ -59,8 +59,14 @@ fn build_content() {
 fn build_role_commit_and_refusals() {
     let at = ts(1_000_000);
     let mut b = CommitBuilder::new(Kind::Role, at, t(1), t(1), Form::Commit);
-    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, register_delta(t(1), at, 1, "a"));
-    a.deltas.push(register_delta(t(1), at, 1, "b"));
+    // empty `roles.0` maps: a core-aspect delta must fit the core type
+    let roles = |nonce: u8| {
+        let mut w = Writer::new(at, Form::Commit.own_source(t(1), CommitId([0; 32])), 1);
+        let fragment = create(&mut w, &AnyView, &Value::Map(Default::default())).unwrap();
+        encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(Form::Commit, Kind::Role, at, t(1), 1, 2), None).unwrap()
+    };
+    let mut a = AspectWrite::new(t(3), Ak::new("roles.0").unwrap(), 1, 2, roles(1));
+    a.deltas.push(roles(2));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     let mut sink = MemoryBlobs::default();

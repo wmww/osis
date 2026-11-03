@@ -53,6 +53,20 @@ fn delta(form: Form, kind: Kind, at: Ts, lo: u64, v: Value, nonce: u8) -> Vec<u8
     encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(form, kind, at, AUTHOR, lo, lo + 1), None).unwrap()
 }
 
+/// `delta` of core aspect `ak`, written through its core type (a core-aspect delta must fit it,
+/// spec/crdt.md §3.3 rule 7).
+fn core_delta(ak: &str, form: Form, kind: Kind, at: Ts, lo: u64, v: Value, nonce: u8) -> Vec<u8> {
+    let mut w = Writer::new(at, own(form), lo);
+    let fragment = create(&mut w, &osis_schema::core_schema().view(ak).unwrap(), &v).unwrap();
+    encode_delta(&Delta { nonce: [nonce; 16], fragment }, &writer_ctx(form, kind, at, AUTHOR, lo, lo + 1), None).unwrap()
+}
+
+/// A `roles.0` value granting `role` (an enum case id) to the tid of bytes `m`.
+fn grant(m: u8, role: u64) -> Value {
+    let edge = Value::Map([(Value::Int(0), Value::Enum(role, None))].into_iter().collect());
+    Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), edge)].into_iter().collect())
+}
+
 fn built(b: CommitBuilder) -> CommitBlob {
     let key = SigningSecret::from_seed(&s32(0x35));
     let c = b.build(&key, &VSecrets, &mut MemoryBlobs::default(), &mut FixedRng::new(&[&BLIND])).unwrap().commit;
@@ -86,9 +100,8 @@ fn content() -> CommitBlob {
 fn role_commit() -> CommitBlob {
     let at = ts(1_700_000_001_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
-    let edge = |m: u8| Value::Map([(Value::Tid(Tid::from_bytes([m; 15])), Value::Int(1))].into_iter().collect());
-    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Role, at, 1, edge(0x41), 2));
-    a.deltas.push(delta(Form::Commit, Kind::Role, at, 1, edge(0x42), 3));
+    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 1), 2));
+    a.deltas.push(core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x42, 1), 3));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     built(b)
@@ -250,7 +263,7 @@ fn more_accepted() -> Vec<Record> {
     // purge request, created.0 kept forever
     let at = ts(1_700_000_005_000);
     let mut b = CommitBuilder::new(Kind::Content, at, AUTHOR, ACTOR, SESSION);
-    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("record".into()), 7));
+    let mut cr = AspectWrite::new(THING, Ak::new("created.0").unwrap(), 1, 2, core_delta("created.0", SESSION, Kind::Content, at, 1, osis_base::CreationRecord::Thing { owner: ACTOR, nonce: [0x2e; 32], creator: None }.to_value(), 7));
     cr.retention = retention::CREATED_RETENTION;
     b.aspects.push(cr);
     b.aspects.push(AspectWrite::new(THING, Ak::new("app:body.0").unwrap(), 1, 2, delta(SESSION, Kind::Content, at, 1, Value::Str("".into()), 8)));
@@ -262,7 +275,7 @@ fn more_accepted() -> Vec<Record> {
     // role commit with a frontier
     let at = ts(1_700_000_006_000);
     let mut b = CommitBuilder::new(Kind::Role, at, AUTHOR, AUTHOR, Form::Commit);
-    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, delta(Form::Commit, Kind::Role, at, 1, Value::Map([(Value::Tid(Tid::from_bytes([0x41; 15])), Value::Int(0))].into_iter().collect()), 9));
+    let mut a = AspectWrite::new(THING, Ak::new("roles.0").unwrap(), 1, 2, core_delta("roles.0", Form::Commit, Kind::Role, at, 1, grant(0x41, 0), 9));
     a.retention = retention::ROLE_RETENTION;
     b.aspects.push(a);
     b.frontier = Some(Value::Map([(Value::Int(0), Value::Map(Default::default())), (Value::Int(1), Value::Set(Default::default()))].into_iter().collect()));

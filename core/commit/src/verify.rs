@@ -62,6 +62,7 @@ pub fn verify_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         DeltaKind::Writer | DeltaKind::Import => Decoded::Delta(decode_delta(&part.delta, &cx, interner, pages)?),
     };
     check_entry_keys(a.ak.as_str(), d.fragment())?;
+    check_types(a.ak.as_str(), d.fragment())?;
     Ok(d)
 }
 
@@ -75,7 +76,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
         return Err(Error::DeltaHash { ai: part.ai, di: part.di });
     }
     let cx = delta_ctx(h, id, part.ai, interner)?;
-    // the keyed-removal rule holds of the whole iff of every piece (it is per record); a bad
+    // the keyed-removal and type rules hold of the whole iff of every piece (per record, per position); a bad
     // delta still streams to its end, so a decoding error wins as in `verify_part`
     let ak = a.ak.as_str();
     let mut keyed = Ok(());
@@ -84,7 +85,7 @@ pub fn stream_part<'a>(h: &Header, id: &CommitId, part: &Part, dedup: &Secret32,
             Piece::Skeleton(f) | Piece::Page { fragment: f, .. } => f,
         };
         if keyed.is_ok() {
-            keyed = check_entry_keys(ak, &f);
+            keyed = check_entry_keys(ak, &f).and_then(|()| check_types(ak, &f));
         }
         if keyed.is_ok() { each(f) } else { Ok(()) }
     };
@@ -104,6 +105,17 @@ pub fn check_entry_keys(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> 
         return Err(Error::Malformed("keyed map removal outside a role-class aspect"));
     }
     Ok(())
+}
+
+/// A core-aspect delta must fit the core schema's type (`Fragment::fits`: encodings, values,
+/// enum cases; a link only where the type takes one, spec/data-model.md §6): every node judges it
+/// alike from the delta and its build's core schema, so a reader of the aspect never meets a
+/// value its type does not take (one bad element would make a whole `group.0` unreadable).
+pub fn check_types(ak: &str, f: &osis_crdt::Fragment) -> Result<(), Error> {
+    match osis_schema::core_schema().view(ak) {
+        Some(v) if !f.fits(&v) => Err(Error::Malformed("a value the core type does not take")),
+        _ => Ok(()),
+    }
 }
 
 /// Verifies a received commit blob whose header lists are resolved: signature under the

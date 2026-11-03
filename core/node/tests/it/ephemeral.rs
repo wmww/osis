@@ -2815,7 +2815,7 @@ fn core_aspect_part_refused_spec_sync_9() {
     let t = net.item(a, g, g, "durable");
     net.run();
     let ak = osis_base::Ak::new("reach.0").unwrap();
-    let forged = net.engine(a).forge_ephemeral(t, &ak, s("injected")).unwrap().unwrap();
+    let forged = net.engine(a).forge_ephemeral(t, &ak, osis_schema::Codec::to_value(&ct::Reach { dialable: [1; 32], relays: vec![], lan_secret: [2; 32] })).unwrap().unwrap();
     net.engine(b).ingest_ephemeral(forged.blob).unwrap();
     assert_eq!(net.eph_read(b, t, "reach.0"), None, "not joined");
 }

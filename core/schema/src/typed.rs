@@ -17,7 +17,8 @@ enum Mode {
 }
 
 /// Typed read of `v` as `ty`: the projection (unknown field IDs dropped, absent defaulted fields
-/// filled). Large atomic values may be links (spec/data-model.md §6) and pass as they are.
+/// filled). Large values may be links (spec/data-model.md §6) and pass as they are, where the type
+/// takes one (`takes_link`).
 pub fn typed_read(schema: &Schema, v: &Value, ty: &Type) -> Result<Value, PathError> {
     typed_read_at(schema, v, ty, false)
 }
@@ -77,6 +78,40 @@ pub fn value_at<'a>(v: &'a Value, path: &Path) -> Option<&'a Value> {
     Some(cur)
 }
 
+/// Whether a position of (expanded) type `t` may hold a link (spec/data-model.md §6): a blob,
+/// string or `any`, or (`atomic`: inside a set element or map key) any type but a small one, whose values
+/// can never exceed `CHUNK_THRESHOLD`.
+fn takes_link(t: &Type, atomic: bool) -> bool {
+    let small = match t {
+        Type::Bool | Type::Int | Type::Float | Type::Tid | Type::Counter(_) | Type::Max(_) | Type::Min(_) => true,
+        Type::Enum(en) => en.cases.values().all(|c| c.payload.is_none()),
+        _ => false,
+    };
+    matches!(t, Type::Any | Type::String | Type::Blob) || (atomic && !small)
+}
+
+/// Whether `v`, at a position of type `ty` (`atomic`: inside a set element or map key), holds a
+/// link where the type takes none (spec/data-model.md §6). Only links count: positions the type
+/// does not declare, and values of another kind, are not looked into.
+pub fn misplaced_link(schema: &Schema, v: &Value, ty: &Type, atomic: bool) -> bool {
+    let Ok(t) = schema.expand(ty) else { return false };
+    let t = t.as_ref();
+    let at = |x: &Value, ty: &Type, atomic: bool| misplaced_link(schema, x, ty, atomic);
+    match (t, v) {
+        (_, Value::Link(_)) => !takes_link(t, atomic),
+        (Type::Counter(i) | Type::Max(i) | Type::Min(i), _) => at(v, i, atomic),
+        (Type::List(e), Value::List(xs)) => xs.iter().any(|x| at(x, e, atomic)),
+        (Type::Set(e), Value::Set(xs)) => xs.iter().any(|x| at(x, e, true)),
+        (Type::Map(kt, vt), Value::Map(m)) => m.iter().any(|(k, x)| at(k, kt, true) || at(x, vt, atomic)),
+        (Type::Struct(st), Value::Map(m)) => m.iter().any(|(k, x)| match k {
+            Value::Int(id) => u64::try_from(*id).ok().and_then(|id| st.fields.get(&id)).is_some_and(|f| at(x, &f.ty, atomic)),
+            _ => false,
+        }),
+        (Type::Enum(en), Value::Enum(c, Some(p))) => en.cases.get(c).and_then(|c| c.payload.as_ref()).is_some_and(|pt| at(p, pt, atomic)),
+        _ => false,
+    }
+}
+
 struct Walk<'s> {
     schema: &'s Schema,
     mode: Mode,
@@ -125,8 +160,7 @@ impl Walk<'_> {
                 };
             }
             (_, Value::Unknown(u)) => return Err(self.err(K::UnknownTag(u.tag()))),
-            (Type::String | Type::Blob, Value::Link(_)) => return Ok(v.clone()),
-            (_, Value::Link(_)) if atomic => return Ok(v.clone()),
+            (_, Value::Link(_)) if takes_link(t, atomic) => return Ok(v.clone()),
             _ => {}
         }
         match (t, v) {

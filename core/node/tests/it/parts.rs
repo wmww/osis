@@ -469,11 +469,15 @@ fn waiting_parts_boxes_are_read_in_either_order_spec_crypto_4() {
     };
     let (one, two, whole) = (part(g), part(h), blob.encode());
     let plain = {
-        // G's part is no `secrets.0`: only the waiting part's boxes can be read
+        // G's part is no `secrets.0` (an empty `label.0`): only the waiting part's boxes can be read
         let mut cb = CommitBuilder::new(Kind::Role, ts, author, author, Form::Commit);
         let lab = osis_base::Ak::new("label.0").unwrap();
-        for (t, a) in [(g, &lab), (h, &secrets)] {
-            let mut aw = AspectWrite::new(t, a.clone(), r.lo, r.hi, bytes.clone());
+        let mut w = Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), r.hi);
+        let f = create(&mut w, &osis_schema::core_schema().view(lab.as_str()).unwrap(), &Value::Map(Default::default())).unwrap();
+        let lr = w.range();
+        let empty = encode_delta(&Delta { nonce: [8; 16], fragment: f }, &writer_ctx(Form::Commit, Kind::Role, ts, author, lr.lo, lr.hi), None).unwrap();
+        for (t, a, lo, hi, d) in [(g, &lab, lr.lo, lr.hi, &empty), (h, &secrets, r.lo, r.hi, &bytes)] {
+            let mut aw = AspectWrite::new(t, a.clone(), lo, hi, d.clone());
             aw.retention = osis_commit::retention::write_retention(a.as_str(), None, None).unwrap();
             cb.aspects.push(aw);
         }

@@ -7,6 +7,7 @@ use common::*;
 use osis_base::{Role, Value};
 use osis_crdt::{Op, PathOp, PathSeg};
 use osis_node::Mutation;
+use osis_schema::core_types as ct;
 use std::collections::BTreeMap;
 
 fn write_all(m: &mut Mutation, t: osis_base::Tid, n: i64, tag: &str) {
@@ -158,6 +159,39 @@ fn large_value_spec_dm_6() {
     assert_eq!(lp.peers[0].commit(m).unwrap(), None);
     sync(&mut lp, 0, 1);
     assert_eq!(lp.peers[1].engine.get_full(&t, &ak("t:blob.0")).unwrap(), Some(Value::Bytes(data)));
+}
+
+// spec/crdt.md §3.3 rule 7, spec/data-model.md §6: a core-aspect delta must fit the core type. An
+// element of `group.0`'s `set<tid>` that is a link (the type takes none) or an int is bad input:
+// that delta never applies (its commit stalls alone, spec/commits.md §4) and the group reads whole,
+// later writes too. Before, one such element made `group.0` unreadable for every reader (`blob
+// missing`, or a decode failure: no group, no membership, nothing to sync).
+#[test]
+fn ill_typed_core_element_refused_spec_crdt_3_3() {
+    let bogus = Value::Link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    for bad in [bogus, Value::Int(5)] {
+        let mut lp = net(2, 15);
+        let t = new_thing(&mut lp, 0);
+        let (x, y) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid());
+        let mut m = Mutation::new();
+        m.set(t, &ct::GROUP, &ct::Group { items: [x].into(), subgroups: Default::default() }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        let add = |v: Value| PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(v) };
+        // a writer's own node refuses it too; a hostile one writes it anyway
+        lp.peers[0].engine.core.skip_writer_rules = true;
+        let mut m = Mutation::new();
+        m.op(t, &ct::GROUP, add(bad.clone())).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.peers[0].engine.core.skip_writer_rules = false;
+        let mut m = Mutation::new();
+        m.op(t, &ct::GROUP, add(Value::Tid(y))).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        sync(&mut lp, 0, 1);
+        let e = &mut lp.peers[1].engine;
+        assert_eq!(e.get_typed(&t, &ct::GROUP).unwrap(), Some(ct::Group { items: [x, y].into(), subgroups: Default::default() }), "{bad:?}");
+        assert_eq!(e.get_full(&t, &ak("group.0")).unwrap(), e.get(&t, &ak("group.0")).unwrap());
+        assert!(e.listed_in(&y).0.contains(&t), "{bad:?}: the group's members are known");
+    }
 }
 
 // spec/crdt.md §4.1, §8; notes/local-store.md, Units; spec/requirements.md, Scale: a large map in a field of a struct

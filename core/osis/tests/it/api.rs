@@ -102,6 +102,27 @@ fn typed_keys_and_paths_spec_versioning_5() {
     assert!(matches!(&e, Error::Type { path, .. } if *path == p![0, task::DONE]), "{e}: the path from the aspect's root");
 }
 
+// spec/data-model.md §6, spec/versioning.md §5: a link where the type takes none (a key of a
+// `map<tid, _>`) is a mismatch like any other: the typed read is absent with a diagnostic and
+// fetches nothing (it failed `blob missing`, so one such key broke every typed read of the aspect).
+#[test]
+fn link_where_the_type_takes_none_reads_absent_spec_dm_6() {
+    let db = db(1);
+    let mut w = db.write();
+    let n = w.create_in(db.me(), &[db.home()]).unwrap();
+    w.commit().unwrap();
+    let (tx, diags) = std::sync::mpsc::channel();
+    let _d = db.on_diagnostic(move |_, d| {
+        if d.kind == osis::DiagnosticKind::Mismatch {
+            tx.send(d).unwrap();
+        }
+    });
+    let bogus = Value::Link(osis::schema::osis_base::Link { hash: [3; 32], blob: osis::schema::osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    db.write_with(|w| w.at(n, ak("note:pinned.0")).set(&Value::Map([(bogus, Value::Int(1))].into_iter().collect()))).unwrap();
+    assert_eq!(db.get(n, notes::PINNED).unwrap(), None, "absent, not an error");
+    assert_eq!(recv(&diags).tids, vec![n]);
+}
+
 // notes/api.md Keys: a schema registered at run time types `Key` reads (reader defaults) and
 // validates writes; unknown AKs stay untyped.
 // spec: none (API surface, notes/api.md)

@@ -275,3 +275,83 @@ proptest! {
         }
     }
 }
+
+// spec/data-model.md §6: a link stands only where the type takes one: blob and string positions,
+// and set elements and map keys (and inside them) of a type that is not small. Elsewhere it is a
+// type mismatch, judged from the value and the type alone; `misplaced_link` agrees with the
+// typed read and the view's projection (the receiver's check on core aspects).
+#[test]
+fn link_only_where_the_type_takes_one_spec_dm_6() {
+    let sc = schema(
+        1,
+        "type role = enum { 0 read, 1 write };
+type pair = struct { 0 who: tid, 1 note: string };
+aspect n:a.0: struct { 0 tids: set<tid>, 1 ints: set<int>, 2 roles: set<role>, 3 strs: set<string>, 4 pairs: set<pair>, 5 by: map<tid, string>, 6 named: map<string, int>, 7 one: tid, 8 text: string };",
+    );
+    let ty = sc.aspects["n:a.0"].ty.clone();
+    let link = Value::Link(osis_base::Link { hash: [3; 32], blob: osis_base::BlobId([4; 32]), suite: 1, key: [5; 32] });
+    let set = |v: Value| Value::Set([v].into_iter().collect());
+    let map = |k: Value, v: Value| Value::Map([(k, v)].into_iter().collect());
+    let cases = [
+        (0, set(link.clone()), false),
+        (1, set(link.clone()), false),
+        (2, set(link.clone()), false),
+        (3, set(link.clone()), true),
+        (4, set(link.clone()), true),
+        (4, set(st(&[(0, link.clone()), (1, s("x"))])), false),
+        (4, set(st(&[(0, Value::Tid(Tid::from_bytes([1; 15]))), (1, link.clone())])), true),
+        (5, map(link.clone(), s("x")), false),
+        (5, map(Value::Tid(Tid::from_bytes([1; 15])), link.clone()), true),
+        (6, map(link.clone(), Value::Int(1)), true),
+        (6, map(s("k"), link.clone()), false),
+        (7, link.clone(), false),
+        (8, link.clone(), true),
+    ];
+    for (i, (f, v, ok)) in cases.into_iter().enumerate() {
+        let whole = st(&[(f, v.clone())]);
+        assert_eq!(!misplaced_link(&sc, &whole, &ty, false), ok, "{i}");
+        let probe = Schema::view(&sc, "n:a.0").unwrap().field(u64::try_from(f).unwrap()).unwrap();
+        assert_eq!(probe.project(&v).is_some(), ok, "{i}: the view agrees");
+        let (ft, _) = type_at(&sc, &ty, &Path(vec![Step::Field(u64::try_from(f).unwrap())])).unwrap();
+        assert_eq!(typed_read(&sc, &v, &ft).is_ok(), ok, "{i}: the typed read agrees");
+    }
+}
+
+// spec/crdt.md §3.3 rule 7: a core-aspect delta must fit the type (`Fragment::fits`, the
+// receiver's check): each non-register fragment has the position's encoding, each value
+// projects there, each enum case write names a declared case; undeclared struct fields are not
+// looked into, and `any` takes every encoding.
+#[test]
+fn fragment_fits_its_type_spec_crdt_3_3() {
+    use osis_crdt::{AnyView, Source, Writer, create};
+    let sc = schema(
+        1,
+        "type role = enum { 0 read, 1 write(int) };
+aspect n:a.0: struct { 0 tids: set<tid>, 1 r: role, 2 free: any, 3 n: counter<int> };",
+    );
+    let view = Schema::view(&sc, "n:a.0").unwrap();
+    let ts = osis_base::Ts::make(osis_base::WallMs(1), 0).unwrap();
+    let w = || Writer::new(ts, Source::commit(osis_base::CommitId([0; 32])), 1);
+    let tid = Value::Tid(Tid::from_bytes([1; 15]));
+    let set = |v: Value| Value::Set([v].into_iter().collect());
+    let cases = [
+        (st(&[(0, set(tid.clone()))]), true),
+        (st(&[(0, set(Value::Int(5)))]), false),
+        (st(&[(1, Value::Enum(0, None))]), true),
+        (st(&[(1, Value::Enum(1, Some(Box::new(Value::Int(3)))))]), true),
+        (st(&[(1, Value::Enum(1, Some(Box::new(s("x")))))]), false),
+        (st(&[(1, Value::Enum(7, None))]), false),
+        (st(&[(2, Value::Map([(tid.clone(), set(Value::Int(1)))].into_iter().collect()))]), true),
+        (st(&[(3, Value::Int(2))]), true),
+        (st(&[(9, s("unknown field"))]), true),
+    ];
+    for (i, (v, ok)) in cases.into_iter().enumerate() {
+        assert_eq!(create(&mut w(), &view, &v).unwrap().fits(&view), ok, "{i}");
+    }
+    // the same values in the wrong encodings: a map where the struct is, a list where the set is
+    assert!(!create(&mut w(), &AnyView, &st(&[(0, set(tid.clone()))])).unwrap().fits(&view));
+    let other = schema(1, "aspect n:a.0: struct { 0 tids: list<tid>, 1 r: int };");
+    let ov = Schema::view(&other, "n:a.0").unwrap();
+    assert!(!create(&mut w(), &ov, &st(&[(0, Value::List(vec![tid]))])).unwrap().fits(&view), "a list where the set is");
+    assert!(!create(&mut w(), &ov, &st(&[(1, Value::Int(0))])).unwrap().fits(&view), "a register int where the enum is");
+}

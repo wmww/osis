@@ -8,7 +8,7 @@ use crate::port::method as m;
 use crate::watch::{Callback, Change, Delivery, Filter, Msg, Source, Subscription, Watch, WatchState};
 use osis_base::{Ak, CommitId, Role, Tid, Ts, Value, WallMs};
 use osis_node::{Diagnostic, Engine};
-use osis_schema::{AspectKey, Codec, Path, PathError, Step, type_at, typed_read, value_at};
+use osis_schema::{AspectKey, Codec, Path, PathError, PathErrorKind, Schema, Step, Type, misplaced_link, type_at, typed_read, value_at};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -174,9 +174,27 @@ impl Reader<'_> {
     /// does not match the key's type (a `Mismatch` diagnostic).
     pub fn get<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<Option<K::T>> {
         let ak = ak_of(key)?;
-        let Some(v) = self.value(tid, &ak)? else { return Ok(None) };
-        let t = self.resolve(tid);
+        let (t, Some(raw)) = self.raw(tid, &ak)? else { return Ok(None) };
+        let v = match (key.schema(), key.ty()) {
+            (Some(s), Some(ty)) => match self.materialize_typed(t, &ak, s, raw, ty, false, &Path::root())? {
+                Some(v) => v,
+                None => return Ok(None),
+            },
+            _ => self.materialize(&t, raw)?,
+        };
         Ok(lenient(t, &ak, key.decode(&v), |d| self.e.report(d)))
+    }
+
+    /// `v`, of `tid`'s `ak` at `path` (type `ty`, `atomic` inside a set element or map key),
+    /// materialized; `None` with a `Mismatch` diagnostic when it holds a link where the type takes
+    /// none (spec/data-model.md §6): a mismatch like any other, never fetched.
+    #[allow(clippy::too_many_arguments)]
+    fn materialize_typed(&mut self, tid: Tid, ak: &Ak, s: &Schema, v: Value, ty: &Type, atomic: bool, path: &Path) -> Result<Option<Value>> {
+        if misplaced_link(s, &v, ty, atomic) {
+            self.e.report(mismatch(tid, ak, &PathError::new(path.clone(), PathErrorKind::Mismatch { expected: "no link here" })));
+            return Ok(None);
+        }
+        self.materialize(&tid, v).map(Some)
     }
 
     /// `v` if it decodes through `key`, else `None` with a `Mismatch` diagnostic.
@@ -195,17 +213,17 @@ impl Reader<'_> {
             let Some(sub) = value_at(&raw, path) else { return Ok(None) };
             return Ok(Some(self.materialize(&tid, sub.clone())?));
         };
-        let t = type_at(s, ty, path)?.0;
+        let (t, atomic) = type_at(s, ty, path)?;
         if let Some(sub) = value_at(&raw, path) {
-            let sub = self.materialize(&tid, sub.clone())?;
+            let Some(sub) = self.materialize_typed(tid, &ak, s, sub.clone(), &t, atomic, path)? else { return Ok(None) };
             return Ok(lenient(tid, &ak, typed_read(s, &sub, &t), |d| self.e.report(d)));
         }
         // an absent struct field reads as its default (spec/versioning.md §5): project the parent
         let Some((Step::Field(id), parent)) = path.0.split_last() else { return Ok(None) };
         let parent = Path(parent.to_vec());
         let Some(sub) = value_at(&raw, &parent) else { return Ok(None) };
-        let sub = self.materialize(&tid, sub.clone())?;
-        let pt = type_at(s, ty, &parent)?.0;
+        let (pt, atomic) = type_at(s, ty, &parent)?;
+        let Some(sub) = self.materialize_typed(tid, &ak, s, sub.clone(), &pt, atomic, &parent)? else { return Ok(None) };
         let Some(projected) = lenient(tid, &ak, typed_read(s, &sub, &pt), |d| self.e.report(d)) else { return Ok(None) };
         Ok(value_at(&projected, &Path(vec![Step::Field(*id)])).cloned())
     }
