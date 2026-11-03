@@ -241,7 +241,7 @@ fn at_most_grace_spec_commits_5() {
     }
 }
 
-// spec/commits.md §3 (session form), spec/wire.md §4: session form `[2, nonce]` round-trips, only on an
+// spec/commits.md §3 (session form), spec/wire.md §4: session form `[1, nonce]` round-trips, only on an
 // ephemeral content commit; an ephemeral commit is a commit-form content snapshot or a
 // session-form content commit.
 #[test]
@@ -264,7 +264,7 @@ fn session_form_spec_commits_3() {
     // another form value is malformed
     let mut v = h.to_value();
     if let Value::List(items) = &mut v {
-        items[5] = Value::List(vec![Value::Int(3), Value::bytes(&[6; 16])]);
+        items[5] = Value::List(vec![Value::Int(2), Value::bytes(&[6; 16])]);
     }
     assert!(Header::from_value(&v).is_err());
 }
