@@ -3800,9 +3800,9 @@ fn snapshot_sharing_stamp_of_unseen_death_not_dated_early_spec_commits_5() {
 }
 
 // spec/commits.md §5 (a body dropped for its keep bounds counts as never received; a snapshot
-// dropped other than as covered keeps its frontiers), order seed 3401073: B's write kills A's
+// dropped other than as covered still stands in), order seed 3401073: B's write kills A's
 // keep-at-most-0 write (and so A's snapshot of it) where it arrives before B's demotion, which
-// makes it invalid; the snapshot dropped there keeps its frontiers (`gives`) and leaves the
+// makes it invalid; the snapshot dropped there still stands in (`stands_in`) and leaves the
 // snapshot indexes until a copy arrives again and joins.
 #[test]
 fn snapshot_dropped_before_flip_joins_again_spec_commits_5() {

@@ -1156,7 +1156,7 @@ fn snapshot_first_sync_cost_spec_permissions_5_2() {
     }
 }
 
-// spec/commits.md §5 (a snapshot dropped at its bound keeps its frontiers), spec/permissions.md
+// spec/commits.md §5 (a snapshot dropped at its bound stands in), spec/permissions.md
 // §5.1, notes/testing.md budgets: B (1) gets the owner's writes only through K snapshots of one
 // map key, each received apart and dropped at its keep-at-most bound once the next replaces it;
 // then B's demotion frontier for the owner (it lists the snapshots, received, none covered).
