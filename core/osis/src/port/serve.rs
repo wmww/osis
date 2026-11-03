@@ -42,8 +42,10 @@ pub(crate) enum Job {
     Act(Action),
     /// A subscription of this connection has something to send.
     Dirty(ConnId),
-    /// A `wait_synced` subscription's outcome may be known.
+    /// A task's outcome may be known.
     Woke(ConnId, Id),
+    /// The database's last user handle went: running tasks end, so they do not keep it open.
+    Closing,
 }
 
 impl Job {
@@ -51,13 +53,13 @@ impl Job {
     fn conn(&self) -> Option<ConnId> {
         match self {
             Job::Act(Action::Request { conn, .. } | Action::Room { conn, .. } | Action::Ended { conn }) => Some(*conn),
-            Job::Act(_) => None,
+            Job::Act(_) | Job::Closing => None,
             Job::Dirty(c) | Job::Woke(c, _) => Some(*c),
         }
     }
 }
 
-/// Wakes the worker for a `wait_synced` subscription (from under the handle lock: only a send).
+/// Wakes the worker for a task (from under the handle lock: only a send).
 struct Wake {
     tx: Sender<Job>,
     conn: ConnId,
@@ -139,6 +141,13 @@ impl Port {
             }
         }
     }
+
+    /// The last user handle went: a running task holds the database, which must close.
+    pub fn closing(&self) {
+        if let Some(t) = lock(&self.tx).as_ref() {
+            let _ = t.send(Job::Closing);
+        }
+    }
 }
 
 /// What a subscription callback leaves for the worker (shared with the dispatcher).
@@ -183,6 +192,9 @@ impl Pending {
     }
 }
 
+/// A row that waits, polled on the worker: it holds the database, so `Job::Closing` ends it.
+type Task = std::pin::Pin<Box<dyn Future<Output = Result<Value>>>>;
+
 enum Kind {
     Aspect(Tid, Ak),
     Thing(Tid),
@@ -190,8 +202,8 @@ enum Kind {
     History(Tid, Ak),
     Status,
     Diagnostics,
-    /// One `wait_synced` at this node, until its outcome went.
-    Synced(Option<crate::net::Pending<Result<()>>>),
+    /// A row that waits (`filter::TASK`), until its outcome went.
+    Task(Option<Task>),
 }
 
 impl Kind {
@@ -224,6 +236,8 @@ struct Conn {
     asked: bool,
     /// `settle` calls answered once nothing is left to send.
     settles: Vec<Id>,
+    /// A bundle on its way in pages (`method::EXPORT_BUNDLE`, `BUNDLE_WRITE`).
+    bundle: Vec<u8>,
 }
 
 impl Conn {
@@ -268,10 +282,59 @@ fn unsupported(what: &str) -> Error {
     Error::Unsupported(format!("{what} through the client port"))
 }
 
-/// Polls a `wait_synced`, its waker queueing `Job::Woke`.
-fn poll_wait(tx: &Sender<Job>, conn: ConnId, id: Id, p: &mut crate::net::Pending<Result<()>>) -> std::task::Poll<Result<()>> {
+/// Polls a task, its waker queueing `Job::Woke`.
+fn poll_task(tx: &Sender<Job>, conn: ConnId, id: Id, t: &mut Task) -> std::task::Poll<Result<Value>> {
     let waker = std::task::Waker::from(Arc::new(Wake { tx: tx.clone(), conn, id }));
-    std::pin::Pin::new(p).poll(&mut std::task::Context::from_waker(&waker))
+    t.as_mut().poll(&mut std::task::Context::from_waker(&waker))
+}
+
+/// The empty result of a row.
+fn nothing() -> Value {
+    Value::List(vec![])
+}
+
+/// Starts a row that waits (`filter::TASK`), an Owner's. Each runs as the node's own async call,
+/// polled when its waker fires.
+fn task(db: &Osis, m: u64, args: Vec<Value>) -> Result<Task> {
+    let mut a = Args::of(args);
+    let db = Osis::internal(db.inner.clone());
+    let t: Task = match m {
+        method::WAIT_SYNCED => {
+            let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
+            a.end()?;
+            let p = db.wait_synced_pending(scope, std::time::Duration::from_millis(ms));
+            Box::pin(async move { p.await.map(|()| nothing()) })
+        }
+        method::REDEEM => {
+            let link: crate::ShareLink = a.text()?.parse()?;
+            a.end()?;
+            Box::pin(async move { Ok(Value::Tid(db.redeem(&link).await?)) })
+        }
+        method::DEMOTE => {
+            let (target, holder) = (a.tid()?, a.tid()?);
+            let to = a.opt()?.map_or(Ok(crate::Lower::Remove), |r| c::role(&r).map(crate::Lower::To))?;
+            let d = c::demotion(a.next()?)?;
+            a.end()?;
+            Box::pin(async move { db.demote(target, holder, to, d).await.map(|()| nothing()) })
+        }
+        method::REVOKE_LINK => {
+            let (id, d) = (a.tid()?, c::demotion(a.next()?)?);
+            a.end()?;
+            Box::pin(async move { db.revoke_link(id, d).await.map(|()| nothing()) })
+        }
+        method::REVOKE_JOINER => {
+            let (id, joiner, d) = (a.tid()?, a.tid()?, c::demotion(a.next()?)?);
+            a.end()?;
+            Box::pin(async move { db.revoke_joiner(id, joiner, d).await.map(|()| nothing()) })
+        }
+        method::IMPORT_CONTACT => {
+            let card: crate::ContactCard = a.text()?.parse()?;
+            a.end()?;
+            Box::pin(async move { Ok(Value::Tid(db.import_contact(&card).await?)) })
+        }
+        _ => return Err(unsupported(&format!("method {m} as a row that waits"))),
+    };
+    Ok(t)
 }
 
 impl Worker {
@@ -295,6 +358,7 @@ impl Worker {
             Job::Act(_) => {}
             Job::Dirty(conn) => self.want_room(&db, conn),
             Job::Woke(conn, id) => self.woke(&db, conn, id),
+            Job::Closing => self.closing(&db),
         }
         true
     }
@@ -312,15 +376,29 @@ impl Worker {
         }
     }
 
-    /// Polls a `wait_synced` subscription's outcome; once known, it is queued as the
-    /// subscription's one Notify.
+    /// Polls a task; once its outcome is known, it is queued as the subscription's one Notify.
     fn woke(&mut self, db: &Osis, conn: ConnId, id: Id) {
         let Some(s) = self.conns.get_mut(&conn).and_then(|c| c.subs.get_mut(&id)) else { return };
-        let Kind::Synced(Some(p)) = &mut s.kind else { return };
-        let std::task::Poll::Ready(r) = poll_wait(&self.tx, conn, id, p) else { return };
-        s.kind = Kind::Synced(None);
-        lock(&s.pending).queue.push_back((Value::List(vec![c::done_v(&r)]), 0));
+        let Kind::Task(Some(t)) = &mut s.kind else { return };
+        let std::task::Poll::Ready(r) = poll_task(&self.tx, conn, id, t) else { return };
+        s.kind = Kind::Task(None);
+        lock(&s.pending).queue.push_back((Value::List(vec![c::outcome(r).to_value()]), 0));
         self.want_room(db, conn);
+    }
+
+    /// Ends the running tasks, each told: nobody is left to close a database they would hold.
+    fn closing(&mut self, db: &Osis) {
+        let mut told = Vec::new();
+        for (conn, cn) in &mut self.conns {
+            for s in cn.subs.values_mut().filter(|s| matches!(s.kind, Kind::Task(Some(_)))) {
+                s.kind = Kind::Task(None);
+                lock(&s.pending).queue.push_back((Value::List(vec![c::outcome(Err(Error::Closed)).to_value()]), 0));
+                told.push(*conn);
+            }
+        }
+        for conn in told {
+            self.want_room(db, conn);
+        }
     }
 
     fn feed(&self, db: &Osis, ev: Event) {
@@ -361,7 +439,7 @@ impl Worker {
     fn request(&mut self, db: &Osis, conn: ConnId, tier: Tier, msg: Message) {
         match msg {
             Message::Auth { id, session, .. } => {
-                let new = || Conn { tier, session, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new() };
+                let new = || Conn { tier, session, subs: BTreeMap::new(), held: Arc::default(), asked: false, settles: Vec::new(), bundle: Vec::new() };
                 self.conns.entry(conn).and_modify(|c| c.session = session).or_insert_with(new);
                 if self.session(db, conn).is_none() {
                     return self.reply(db, conn, id, Err(Code::REFUSED));
@@ -588,6 +666,70 @@ impl Worker {
                 Value::List(vec![])
             }
             method::CREATE_OWNERLESS => Value::Tid(db.create_ownerless(a.tid()?)?),
+            method::DEVICES => Value::List(db.devices()?.iter().map(|x| Value::List(vec![Value::Tid(x.node), c::role_v(x.role)])).collect()),
+            method::ADD_HOST | method::REMOVE_HOST => {
+                let h: crate::HostAddr = a.text()?.parse()?;
+                if m == method::ADD_HOST { db.add_host(&h)? } else { db.remove_host(&h)? }
+                nothing()
+            }
+            method::HOST_KEY => c::opt(db.host_key(), |k| Value::bytes(&k)),
+            method::PAIR_OFFER => Value::Str(db.pair_offer()?.to_string()),
+            method::PAIR_ACCEPT => {
+                let (node, reply) = db.pair_accept(&a.text()?.parse()?)?;
+                Value::List(vec![Value::Tid(node), Value::Str(reply.to_string())])
+            }
+            method::CONTACT_CARD => Value::Str(db.contact_card()?.to_string()),
+            method::PROFILE_OF => c::opt(db.profile_of(a.tid()?)?, Value::Tid),
+            method::INVITE_REQUESTS => Value::List(db.invite_requests()?.iter().map(|i| Value::bytes(i.bytes())).collect()),
+            method::ACCEPT_INVITE => {
+                db.accept_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
+                nothing()
+            }
+            method::DECLINE_INVITE => {
+                db.decline_invite(crate::InviteId::from_bytes(&a.bytes()?)?)?;
+                nothing()
+            }
+            method::GROUP_POLICY => Value::List(c::policy_v(&db.group_policy(a.tid()?)?)),
+            method::SYNC_POLICY => {
+                let g = a.tid()?;
+                db.sync_policy(g, c::policy(&mut a)?)?;
+                nothing()
+            }
+            method::ROTATE_REACH => {
+                db.rotate_reach()?;
+                nothing()
+            }
+            method::MOVE_THING => {
+                let (t, owner, groups) = (a.tid()?, a.tid()?, c::tids(a.next()?)?);
+                Value::Tid(db.move_thing(t, owner, &groups)?)
+            }
+            method::EXPORT_BUNDLE => {
+                let mut b = Vec::new();
+                db.export_bundle(&c::tids(a.next()?)?, &mut b)?;
+                let n = b.len();
+                self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle = b;
+                u(n as u64)
+            }
+            method::BUNDLE_READ => {
+                let (off, n) = (usize::try_from(a.uint()?).unwrap_or(usize::MAX), usize::try_from(a.uint()?).unwrap_or(usize::MAX).min(STREAM_CHUNK));
+                let b = &self.conns.get(&conn).ok_or(Error::Closed)?.bundle;
+                let end = off.saturating_add(n).min(b.len());
+                Value::bytes(b.get(off..end).unwrap_or_default())
+            }
+            method::BUNDLE_WRITE => {
+                let page = a.bytes()?;
+                self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle.extend_from_slice(&page);
+                nothing()
+            }
+            method::IMPORT_BUNDLE => {
+                let want = a.uint()?;
+                let b = std::mem::take(&mut self.conns.get_mut(&conn).ok_or(Error::Closed)?.bundle);
+                if b.len() as u64 != want {
+                    return Err(Error::Network("the connection to the node changed during an import: run it again".into()));
+                }
+                db.import_bundle(&b[..])?;
+                nothing()
+            }
             method::LEAVE => {
                 db.leave(a.tid()?)?;
                 Value::List(vec![])
@@ -621,14 +763,20 @@ impl Worker {
             Ok(db.read_local(|r| r.resolve(t)))
         };
         let (kind, filter) = match a.uint()? {
-            filter::SYNCED if acting.is_some() => return Err(unsupported("wait_synced for a thin client")),
-            filter::SYNCED => {
-                let (scope, ms) = (c::sync_scope(a.next()?)?, a.uint()?);
+            // the sharing and sync flows take no actor (`method::for_client`)
+            filter::TASK if acting.is_some() => return Err(unsupported("a row that waits, for a thin client")),
+            filter::TASK => {
+                let (m, args) = (a.uint()?, a.list()?);
                 a.end()?;
-                if c.subs.values().filter(|s| matches!(s.kind, Kind::Synced(Some(_)))).count() >= MAX_WAITS {
+                if c.subs.values().filter(|s| matches!(s.kind, Kind::Task(Some(_)))).count() >= MAX_WAITS {
                     return Err(Error::Invalid(format!("at most {MAX_WAITS} waits at once per connection")));
                 }
-                return Ok(self.sub_synced(db, conn, id, max_reply, scope, ms));
+                // no user handle left: nothing would end it but its own deadline
+                if db.inner.life.0.users_now() == 0 {
+                    return Err(Error::Closed);
+                }
+                let t = task(db, m, args)?;
+                return Ok(self.sub_task(conn, id, max_reply, t));
             }
             filter::ASPECT => {
                 let (t, ak) = (thing(a.tid()?)?, a.ak()?);
@@ -706,14 +854,13 @@ impl Worker {
         Ok(initial)
     }
 
-    /// A `wait_synced` as a subscription (notes/client-port.md §2): the node's own wait (its
-    /// waiter, polled under the lock after every change as a local app's is), never blocking
+    /// A row that waits as a subscription (notes/client-port.md §2): the node's own async call (its
+    /// waiters, polled under the lock after every change as a local app's are), never blocking
     /// this worker; the Reply carries the outcome when it is known at once, else the one Notify.
-    fn sub_synced(&mut self, db: &Osis, conn: ConnId, id: Id, max_reply: usize, scope: crate::share::SyncScope, ms: u64) -> Value {
-        let mut p = db.wait_synced_pending(scope, std::time::Duration::from_millis(ms));
-        let (kind, initial) = match poll_wait(&self.tx, conn, id, &mut p) {
-            std::task::Poll::Ready(r) => (Kind::Synced(None), c::opt(Some(r), |r| c::done_v(&r))),
-            std::task::Poll::Pending => (Kind::Synced(Some(p)), Value::List(vec![])),
+    fn sub_task(&mut self, conn: ConnId, id: Id, max_reply: usize, mut t: Task) -> Value {
+        let (kind, initial) = match poll_task(&self.tx, conn, id, &mut t) {
+            std::task::Poll::Ready(r) => (Kind::Task(None), c::opt(Some(r), |r| c::outcome(r).to_value())),
+            std::task::Poll::Pending => (Kind::Task(Some(t)), Value::List(vec![])),
         };
         if let Some(c) = self.conns.get_mut(&conn) {
             c.subs.insert(id, PortSub { max_reply, kind, pending: Arc::default(), _sub: None, seen: true });

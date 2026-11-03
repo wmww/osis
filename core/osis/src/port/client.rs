@@ -883,7 +883,12 @@ impl Osis {
         self.primary().call(m, args)
     }
 
-    /// Fails `Unsupported` on an attached handle: a process-wide call the port does not carry.
+    /// `rcall` allowing a reply of `max_reply`, sent once.
+    pub(crate) fn primary_call_big(&self, m: u64, args: Vec<Value>, max_reply: usize) -> Result<Value> {
+        self.primary().call_big(m, args, max_reply)
+    }
+
+    /// Fails `Unsupported` on an attached handle: a call that needs this process to be the node.
     pub(crate) fn local_only(&self, what: &str) -> Result<()> {
         if self.is_attached() { Err(Error::Unsupported(format!("{what} on a handle attached to a node"))) } else { Ok(()) }
     }
@@ -1207,14 +1212,15 @@ impl Osis {
         self.remote_sub_kept(self.primary(), None, Value::List(vec![u(super::filter::STATUS)]), cb)
     }
 
-    /// `wait_synced` at the attached node: a subscription the node answers once with the
-    /// outcome of its own `wait_synced(scope, timeout)` (its rule, its clock and deadline); no
-    /// Call waits and nothing holds the node's worker. The connection ending is `Network`.
-    pub(crate) fn remote_wait_synced(&self, r: &Arc<Remote>, scope: crate::share::SyncScope, timeout: Duration) -> Result<(Subscription, crate::net::Pending<Result<()>>)> {
+    /// A row that waits, at `r` (`filter::TASK`): a subscription the node answers once with the
+    /// outcome of its own async call (its rule, its clock and deadlines); no Call waits and nothing
+    /// holds the node's worker. Dropping this future ends it there, as a local one's drop. The
+    /// connection ending is `Network`, and what it had done stays done (a redeem may have joined).
+    pub(crate) async fn remote_task(&self, r: &Arc<Remote>, m: u64, args: Vec<Value>) -> Result<Value> {
         let (pending, slot) = crate::net::Pending::new();
         // the first outcome stands (a later end of the connection does not replace it)
         let first = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let put = move |r: Result<()>| {
+        let put = move |r: Result<Value>| {
             if !first.swap(true, Ordering::AcqRel) {
                 slot.put(r);
             }
@@ -1223,18 +1229,24 @@ impl Osis {
         let cb: Callback = Box::new(move |_, d| match d {
             Delivery::Port(PortEvent::Notify(Payload::Delivery { value })) => {
                 if let Ok(Some(v)) = c::Args::of(vec![value]).opt() {
-                    p2(c::done(v).unwrap_or_else(Err));
+                    p2(c::outcome_of(v).unwrap_or_else(Err));
                 }
             }
             Delivery::Port(PortEvent::Notify(Payload::Lapsed | Payload::TooLarge { .. }) | PortEvent::Closed) => p2(Err(net(LOST))),
             _ => {}
         });
-        let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
-        let (sub, initial) = self.remote_sub(r, None, Value::List(vec![u(super::filter::SYNCED), c::sync_scope_v(scope), u(ms)]), false, cb)?;
+        let (sub, initial) = self.remote_sub(r, None, Value::List(vec![u(super::filter::TASK), u(m), Value::List(args)]), false, cb)?;
         if let Some(v) = c::Args::of(vec![initial]).opt()? {
-            put(c::done(v)?);
+            put(c::outcome_of(v)?);
         }
-        Ok((sub, pending))
+        let out = pending.await;
+        drop(sub);
+        out
+    }
+
+    /// `remote_task` at the attached node of a handle with no store.
+    pub(crate) async fn rtask(&self, m: u64, args: Vec<Value>) -> Result<Value> {
+        self.remote_task(self.primary(), m, args).await
     }
 
     /// A subscription that never fires (a remote watch whose Sub failed on a call that cannot

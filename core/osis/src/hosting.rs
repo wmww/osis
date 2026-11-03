@@ -34,9 +34,6 @@ pub struct Hosting {
 impl Osis {
     /// What this node hosts (none: it does not).
     pub fn hosting(&self) -> Option<Hosting> {
-        if self.is_attached() {
-            return None;
-        }
         let h = self.get(self.node(), ct::HOST).ok().flatten()?;
         Some(Hosting {
             listen: h.listen,
@@ -53,7 +50,6 @@ impl Osis {
     /// and an empty store. Fails `Invalid` on an
     /// unknown policy knob.
     pub fn set_hosting(&self, h: Option<Hosting>) -> Result<()> {
-        self.local_only("set_hosting")?;
         let node = self.node();
         let mut w = self.write();
         match h {
@@ -93,7 +89,9 @@ impl Osis {
     /// fixed listen URL, `HostAddr::new(url, key)` is the address `host_address` will report.
     pub fn host_key(&self) -> Option<[u8; 32]> {
         if self.is_attached() {
-            return None;
+            let v = self.rcall(crate::port::method::HOST_KEY, vec![]).ok()?;
+            let k = crate::port::codec::Args::of(vec![v]).opt().ok()??;
+            return crate::port::codec::Args::of(vec![k]).bytes().ok()?.try_into().ok();
         }
         self.locked(|l| l.sync.host_key())
     }

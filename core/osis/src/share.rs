@@ -130,6 +130,16 @@ pub struct LinkInfo {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct InviteId(osis_base::CommitId);
 
+impl InviteId {
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.0.0
+    }
+
+    pub(crate) fn from_bytes(b: &[u8]) -> Result<InviteId> {
+        Ok(InviteId(osis_base::CommitId(b.try_into().map_err(|_| Error::Invalid("invite id".into()))?)))
+    }
+}
+
 fn bad(what: &str) -> impl Fn(osis_label::Error) -> Error + '_ {
     move |e| Error::Invalid(format!("{what}: {e}"))
 }
@@ -770,7 +780,10 @@ impl Osis {
     /// `Unsupported` on a thing this node reads at another node: move its group home first. A
     /// revocation written to the copy here would never leave it.
     pub async fn demote(&self, target: Tid, holder: Tid, to: Lower, d: Demotion) -> Result<()> {
-        self.local_only("demote")?;
+        if self.is_attached() {
+            let role = crate::port::codec::opt(match to { Lower::To(r) => Some(r), Lower::Remove => None }, crate::port::codec::role_v);
+            return self.rtask(crate::port::method::DEMOTE, vec![Value::Tid(target), Value::Tid(holder), role, crate::port::codec::demotion_v(&d)]).await.map(drop);
+        }
         self.not_routed("demote", target)?;
         let (t, m) = (self.resolved(target), self.resolved(holder));
         // each round removes one way in; the bound only guards against a roster that never settles
@@ -932,7 +945,11 @@ impl Osis {
     /// `Config::wait_timeout`; a used single-use link is refused that way (its key is no holder
     /// of K any more). The link key is forgotten on every outcome, a dropped future included.
     pub async fn redeem(&self, link: &ShareLink) -> Result<Tid> {
-        self.local_only("redeem")?;
+        if self.is_attached() {
+            link.parse()?;
+            let v = self.rtask(crate::port::method::REDEEM, vec![Value::Str(link.0.clone())]).await?;
+            return crate::port::codec::Args::of(vec![v]).tid();
+        }
         let link = link.parse()?;
         let (k, target) = (link.k, link.target);
         let key = self.follow_link(&link)?;
@@ -1001,7 +1018,9 @@ impl Osis {
     /// Ends a link (spec/permissions.md §9): removes its key from K (joiners stay holders of K;
     /// one that kept the seed is revoked only with a new link for the others).
     pub async fn revoke_link(&self, id: Tid, d: Demotion) -> Result<()> {
-        self.local_only("revoke_link")?;
+        if self.is_attached() {
+            return self.rtask(crate::port::method::REVOKE_LINK, vec![Value::Tid(id), crate::port::codec::demotion_v(&d)]).await.map(drop);
+        }
         self.not_routed("revoke_link", id)?;
         let l = self.locked(|x| x.links.get(&id).map(|m| m.l)).ok_or(Error::Invalid(format!("no link {id} made here")))?;
         self.demote_edge(id, l, Lower::Remove, d).await
@@ -1011,7 +1030,9 @@ impl Osis {
     /// rotation (spec/permissions.md §9: a joiner may keep the seed); the other joiners stay
     /// holders of K and need a new link to invite anyone. After the pre-sync `demote` does.
     pub async fn revoke_joiner(&self, id: Tid, joiner: Tid, d: Demotion) -> Result<()> {
-        self.local_only("revoke_joiner")?;
+        if self.is_attached() {
+            return self.rtask(crate::port::method::REVOKE_JOINER, vec![Value::Tid(id), Value::Tid(joiner), crate::port::codec::demotion_v(&d)]).await.map(drop);
+        }
         self.not_routed("revoke_joiner", id)?;
         if d.repudiate {
             return Err(Error::Invalid("repudiating rotations needs the holder's direct edge".into()));
@@ -1086,7 +1107,10 @@ impl Osis {
     /// itself under its own label carrying the person's `created.0` and `keys.0` as certificates.
     /// Made once; later calls return the same card.
     pub fn contact_card(&self) -> Result<ContactCard> {
-        self.local_only("contact_card")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
+            return Ok(ContactCard(crate::port::codec::Args::of(vec![v]).text()?));
+        }
         if let Some(b) = self.engine(|e| e.app_record(CONTACT))? {
             return Ok(ContactCard(String::from_utf8(b).map_err(|_| Error::Storage("contact record".into()))?));
         }
@@ -1133,14 +1157,16 @@ impl Osis {
     /// use. The person writes its profile aspects on it (`name.0`, `contact:*`); everyone holding
     /// the card reads them.
     pub fn profile(&self) -> Result<Tid> {
-        self.local_only("profile")?;
         let card = self.contact_card()?;
         Ok(card.parse()?.target)
     }
 
     /// The profile thing of a person whose card this database imported, if any.
     pub fn profile_of(&self, person: Tid) -> Result<Option<Tid>> {
-        self.local_only("profile_of")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::PROFILE_OF, vec![Value::Tid(person)])?;
+            return crate::port::codec::Args::of(vec![v]).opt()?.map(|t| crate::port::codec::Args::of(vec![t]).tid()).transpose();
+        }
         let Some(b) = self.engine(|e| e.app_record(&format!("{PROFILE_OF}{person}")))? else { return Ok(None) };
         let t = String::from_utf8(b).map_err(|_| Error::Storage("profile record".into()))?;
         t.parse().map(Some).map_err(|_| Error::Storage("profile record".into()))
@@ -1150,7 +1176,11 @@ impl Osis {
     /// written) until the person's `keys.0` is here. Returns the person, usable in `grant`. Fails
     /// `Network` after `Config::wait_timeout`; the card's key is forgotten on every outcome.
     pub async fn import_contact(&self, card: &ContactCard) -> Result<Tid> {
-        self.local_only("import_contact")?;
+        if self.is_attached() {
+            card.parse()?;
+            let v = self.rtask(crate::port::method::IMPORT_CONTACT, vec![Value::Str(card.0.clone())]).await?;
+            return crate::port::codec::Args::of(vec![v]).tid();
+        }
         let link = card.parse()?;
         let p = link.target;
         let key = self.follow_link(&link)?;
@@ -1186,7 +1216,10 @@ impl Osis {
 
     /// The invite requests waiting for the user (`InviteId`).
     pub fn invite_requests(&self) -> Result<Vec<InviteId>> {
-        self.local_only("invite_requests")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::INVITE_REQUESTS, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|b| InviteId::from_bytes(&crate::port::codec::Args::of(vec![b]).bytes()?)).collect();
+        }
         Ok(self.locked(|x| x.sync.invite_requests())?.into_iter().map(InviteId).collect())
     }
 
@@ -1194,7 +1227,9 @@ impl Osis {
     /// joined as for any invite). `Invalid` when no such request waits (accepted, declined or
     /// expired).
     pub fn accept_invite(&self, id: InviteId) -> Result<()> {
-        self.local_only("accept_invite")?;
+        if self.is_attached() {
+            return self.rcall(crate::port::method::ACCEPT_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
+        }
         self.try_act(|x| {
             let (found, acts) = x.sync.accept_invite(id.0)?;
             if !found {
@@ -1207,7 +1242,9 @@ impl Osis {
     /// Declines an invite request: it is forgotten and never shown again (re-sends included).
     /// `Invalid` when no such request waits.
     pub fn decline_invite(&self, id: InviteId) -> Result<()> {
-        self.local_only("decline_invite")?;
+        if self.is_attached() {
+            return self.rcall(crate::port::method::DECLINE_INVITE, vec![Value::Bytes(id.bytes().to_vec())]).map(drop);
+        }
         if !self.locked(|x| x.sync.decline_invite(id.0))? {
             return Err(Error::Invalid("no such invite request".into()));
         }
@@ -1216,7 +1253,13 @@ impl Osis {
 
     /// The person's devices: nodes with an edge on the person actor.
     pub fn devices(&self) -> Result<Vec<Device>> {
-        self.local_only("devices")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::DEVICES, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).list()?.into_iter().map(|d| {
+                let mut a = crate::port::codec::Args::new(d)?;
+                Ok(Device { node: a.tid()?, role: crate::port::codec::role(&a.next()?)? })
+            }).collect();
+        }
         let me = self.me();
         let node_ak = Ak::new("node.0").map_err(|_| Error::Invalid("ak".into()))?;
         self.engine(|e| -> Result<Vec<Device>> {
@@ -1233,7 +1276,6 @@ impl Osis {
     /// Removes a device from the person (a lost or stolen one: `Demotion { sync: Skip, .. }` or a
     /// backdate; spec/permissions.md §5.3).
     pub async fn remove_device(&self, node: Tid, d: Demotion) -> Result<()> {
-        self.local_only("remove_device")?;
         self.demote(self.me(), node, Lower::Remove, d).await
     }
 
@@ -1257,7 +1299,9 @@ impl Osis {
     /// their hosts), not groups owned by others. A database created without hosts becomes
     /// reachable once one is added.
     pub fn add_host(&self, s: &HostAddr) -> Result<()> {
-        self.local_only("add_host")?;
+        if self.is_attached() {
+            return self.rcall(crate::port::method::ADD_HOST, vec![Value::Str(s.to_string())]).map(drop);
+        }
         let mut v = self.hosts();
         if !v.contains(s) {
             v.push(s.clone());
@@ -1268,7 +1312,9 @@ impl Osis {
     /// Removes a host, from the database's list and the labels that follow it (`add_host`);
     /// a group with holders besides the person's devices keeps its last host.
     pub fn remove_host(&self, s: &HostAddr) -> Result<()> {
-        self.local_only("remove_host")?;
+        if self.is_attached() {
+            return self.rcall(crate::port::method::REMOVE_HOST, vec![Value::Str(s.to_string())]).map(drop);
+        }
         let mut v = self.hosts();
         v.retain(|x| x != s);
         self.set_hosts(v)
@@ -1456,10 +1502,8 @@ impl Osis {
             SyncScope::All => self.route_scope(None)?,
         };
         if let crate::sources::Source::Remote(r) = r {
-            let (sub, p) = self.remote_wait_synced(&r, scope, timeout)?;
-            let r = p.await;
-            drop(sub);
-            return r;
+            let ms = u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX);
+            return self.remote_task(&r, crate::port::method::WAIT_SYNCED, vec![crate::port::codec::sync_scope_v(scope), Value::uint(ms)]).await.map(drop);
         }
         self.wait_synced_pending(scope, timeout).await
     }
@@ -1512,7 +1556,21 @@ impl Osis {
 
     /// Writes a bundle of `groups`' labels (spec/sync.md §11) to `out`.
     pub fn export_bundle(&self, groups: &[Tid], mut out: impl std::io::Write) -> Result<()> {
-        self.local_only("export_bundle")?;
+        if self.is_attached() {
+            use crate::port::{STREAM_CHUNK, codec::{Args, tids_v}, method};
+            let len = Args::of(vec![self.rcall(method::EXPORT_BUNDLE, vec![tids_v(groups)])?]).uint()?;
+            let mut off = 0;
+            while off < len {
+                let page = self.primary_call_big(method::BUNDLE_READ, vec![Value::uint(off), Value::uint(STREAM_CHUNK as u64)], STREAM_CHUNK.saturating_add(osis_proto::client::SMALL_REPLY))?;
+                let page = Args::of(vec![page]).bytes()?;
+                if page.is_empty() {
+                    return Err(Error::Network("the connection to the node changed during an export: run it again".into()));
+                }
+                out.write_all(&page).map_err(|e| Error::Storage(e.to_string()))?;
+                off += page.len() as u64;
+            }
+            return Ok(());
+        }
         let bytes = self.locked(|x| -> Result<Vec<u8>> {
             let mut labels = Vec::new();
             for g in groups {
@@ -1526,9 +1584,15 @@ impl Osis {
 
     /// Reads a bundle: what this node can open applies like synced content.
     pub fn import_bundle(&self, mut input: impl std::io::Read) -> Result<()> {
-        self.local_only("import_bundle")?;
         let mut b = Vec::new();
         input.read_to_end(&mut b).map_err(|e| Error::Storage(e.to_string()))?;
+        if self.is_attached() {
+            use crate::port::{STREAM_CHUNK, method};
+            for page in b.chunks(STREAM_CHUNK) {
+                self.rcall(method::BUNDLE_WRITE, vec![Value::Bytes(page.to_vec())])?;
+            }
+            return self.rcall(method::IMPORT_BUNDLE, vec![Value::uint(b.len() as u64)]).map(drop);
+        }
         self.try_act(|x| Ok(x.sync.import_bundle(&b)?))
     }
 
@@ -1537,8 +1601,9 @@ impl Osis {
     /// admin, every current holder of the old thing re-granted on the copy; the copy is placed
     /// into `groups` in one more write. Reads and writes through the old tid then reach the copy.
     pub fn move_thing(&self, tid: Tid, owner: Tid, groups: &[Tid]) -> Result<Tid> {
-        if let crate::sources::Source::Remote(_) = self.route(tid) {
-            return Err(Error::Unsupported("move_thing through the attached node".into()));
+        if let crate::sources::Source::Remote(r) = self.route(tid) {
+            let v = r.call(crate::port::method::MOVE_THING, vec![Value::Tid(tid), Value::Tid(owner), crate::port::codec::tids_v(groups)])?;
+            return crate::port::codec::Args::of(vec![v]).tid();
         }
         let tid = self.resolved(tid);
         if !self.holds(owner) {

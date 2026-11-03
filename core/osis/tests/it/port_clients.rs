@@ -585,6 +585,30 @@ fn watches_and_rows() {
     assert!(matches!(c.remove_client(a), Err(Error::Unsupported(_))));
     assert!(matches!(c.rotate_client_secret(a), Err(Error::Unsupported(_))));
     assert!(matches!(c.register_schema_source("x.osis", "version 1;\naspect x:y.0: int;\n"), Err(Error::Unsupported(_))));
+    // the rows of the node's own (the socket's Owner only), those that wait too
+    let plain = Demotion { sync: WaitForSync::Skip, backdate: None, repudiate: false, keep: None };
+    let link = x.n.make_link(x.g, Role::Read, Default::default());
+    assert!(matches!(block_on(c.demote(x.t, a, Lower::Remove, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.revoke_link(x.t, plain)), Err(Error::Unsupported(_))));
+    assert!(matches!(block_on(c.revoke_joiner(x.t, a, plain)), Err(Error::Unsupported(_))));
+    if let Ok(l) = link {
+        assert!(matches!(block_on(c.redeem(&l)), Err(Error::Unsupported(_))));
+    }
+    assert!(matches!(c.devices(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.add_host(&osis::HostAddr::new("quic://x:1", [1; 32])), Err(Error::Unsupported(_))));
+    assert!(matches!(c.contact_card(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.pair_offer(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.invite_requests(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.group_policy(x.g), Err(Error::Unsupported(_))));
+    assert!(matches!(c.rotate_reach(), Err(Error::Unsupported(_))));
+    assert!(matches!(c.move_thing(x.t, x.g, &[]), Err(Error::Unsupported(_))));
+    assert!(matches!(c.export_bundle(&[x.g], Vec::new()), Err(Error::Unsupported(_))));
+    assert!(matches!(c.import_bundle(&b"x"[..]), Err(Error::Unsupported(_))));
+    // hosting is an aspect of the node's thing, which it does not read
+    assert_eq!(c.hosting(), None);
+    assert_eq!(c.host_key(), None);
+    assert!(c.set_hosting(Some(Default::default())).is_err());
+    assert_eq!(x.n.hosting(), None);
 }
 
 // spec/wire.md §11.2 (Error 4), notes/client-port.md §3: the API's view of the connection cap: the ninth attachment fails Network, one going frees a slot

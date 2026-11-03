@@ -201,15 +201,21 @@ pub(crate) struct Life {
 }
 
 impl Life {
-    fn users(&self, d: isize) {
+    /// Changes the count of user handles, returning it.
+    fn users(&self, d: isize) -> usize {
         let mut g = lock(&self.m);
         g.0 = g.0.saturating_add_signed(d);
         self.cv.notify_all();
+        g.0
+    }
+
+    pub(crate) fn users_now(&self) -> usize {
+        lock(&self.m).0
     }
 }
 
 /// Marks the store closed when `Inner` drops.
-pub(crate) struct LifeGuard(Arc<Life>);
+pub(crate) struct LifeGuard(pub(crate) Arc<Life>);
 
 impl Drop for LifeGuard {
     fn drop(&mut self) {
@@ -240,8 +246,8 @@ impl Clone for Osis {
 
 impl Drop for Osis {
     fn drop(&mut self) {
-        if self.user {
-            self.inner.life.0.users(-1);
+        if self.user && self.inner.life.0.users(-1) == 0 {
+            self.inner.port.closing();
         }
     }
 }

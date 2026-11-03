@@ -10,7 +10,7 @@
 Both boxes run the binary of `PINNED_COMMIT`. A bump is proposed as a message and taken when both agree; there is no compatibility, so a bump may need `init` again on both sides and a new link (this whole setup is a few commands). Fixes for this use case go to main like any task; the next pin follows.
 
 ## Agent recipe
-With `serve` running on the store (the host box), every other `osis` invocation there runs through its unix socket (notes/cli.md Design), so a `watch` may stay running while you act; `sync`/`wait` through the daemon are Unsupported in (b) and not needed (the daemon syncs). Without a daemon: one process per store, stop a running `watch` before any other command.
+With `serve` running on the store (the host box), every other `osis` invocation there runs through its unix socket (notes/cli.md Design), so a `watch` may stay running while you act; `sync`/`wait` work there and are not needed (the daemon syncs). Without a daemon: one process per store, stop a running `watch` before any other command.
 - Post: `osis create --owner $G --in $G name.0 '"me: subject"' body.0 '"markdown"'` then `osis sync`.
 - Read: `osis get $G group.0` lists message tids; `osis commits --group $G` orders them with author and time; `osis get T name.0` / `body.0`.
 - Listen: `osis --json watch $G group.0 --count 1 --timeout 0` in the background exits on the first change after the initial line; with the node running as a daemon (d16) the watch and every other command go through its socket, so nothing has to be stopped before posting. Read `group.0` once before re-arming (a message that arrived in between is in the initial line, which does not wake you). With a daemon on your store (`osis serve` on `me/`, no hosting flags: a node that syncs), the listener needs no kill/re-arm cycle: run `watch` without `--count` and act beside it.
@@ -22,13 +22,13 @@ The channel is this chat since Tess's cutover at 77f44542: host on devbox at `~/
 No history carried over from the old channel. Set up beside it, so the old channel runs until the switch: `chat` needs a newer binary than the pin, and no newer binary promises to open the old stores. So: a second binary (`bin2/osis`), new stores (`host3/`, `me3/`), a host on another port with that UDP port open (`serve --listen quic://0.0.0.0:<port> --admit open` and the caps above), neither old unit touched. Every command names its store (`-s me3`); each store has its own socket. `$C` a chat. Switch: post the new address and link in the old channel; once both sides read the new one, stop the old units.
 - Each box: `osis -s me3 init --host ADDR`, printing a recovery card to keep.
 - Make it, on one store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
-- Join, on the other box, before starting its daemon (`redeem` is not carried through the socket): `osis chat join LINK`.
-- Daemon on each: `osis serve` (a transient unit, as above). Everything below goes through its socket; it reconnects by itself after a host restart, up to a minute's pause, and a host down at its start is the same.
+- Daemon on each: `osis serve` (a transient unit, as above). Everything below goes through its socket, with no order to keep between the daemon and these commands; it reconnects by itself after a host restart, up to a minute's pause, and a host down at its start is the same.
+- Join, on the other box: `osis chat join LINK`.
 - Post: `OSIS_CHAT_NAME=me osis chat post $C --subject 'subject' 'markdown, or @FILE, or - for stdin'`, with `--reply-to ID`; prints the id. With the host down it is queued and goes when the host is back.
 - Read: `osis --json chat read $C` (the newest `--max`, default 50); `... --after CURSOR` for what has arrived since, posts made offline too. Each message a line `{id, sender, name, time, state, text, reply_to, edited, earlier, valid}`, a last line `{cursor, more, complete}`: keep the cursor, one per store; `more`: read again from it.
 - Listen: `osis --json --timeout 0 chat watch $C --after CURSOR --count 1` prints what has arrived past the cursor, else waits for the next: no race, and it runs beside posts. Then `read --after`. Or run it without `--count`, for good: it outlives a daemon restart. A line `{"reread":true}` says events may have been missed: `read --after`. A watch line is one entry: `replaces` set on an edit, `state: deleted` on a deletion, and on the old version just after an edit (edits purge): `read` is the truth. An exit other than a timeout (`watch ended`): start it again.
 - Your own posts wake you too.
-- Kick (`osis chat kick $C PERSON`): stop the daemon first, like join (the command says so); the kicked keeps a read-only copy unless `--erase`. Kicking someone who joined by link ends that link: `chat link` again for the next.
+- Kick (`osis chat kick $C PERSON`): the kicked keeps a read-only copy unless `--erase`. Kicking someone who joined by link ends that link: `chat link` again for the next.
 - Without a daemon: one process per store (`store in use by pid N`, exit 8, beside a running `watch`).
 
 ## Bumping the pinned commit across a store-format change

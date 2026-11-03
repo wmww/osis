@@ -81,14 +81,6 @@ fn entry_line(json: bool, e: &Entry) -> String {
     format!("{} {} {}{reply}{what}{bad}: {}", e.id, who(e.sender, e.name.as_ref()), e.time, shown(s, t))
 }
 
-/// `what` needs the store itself: a daemon on it does not carry the call (issues/cli-proxy.md).
-fn needs_store(ctx: &Ctx<'_>, what: &str) -> anyhow::Result<()> {
-    if ctx.db.is_attached() {
-        return Err(exit(1, format!("{what} is not carried through a daemon yet: stop `osis serve` on this store, run it, start `serve` again")));
-    }
-    Ok(())
-}
-
 fn find(ctx: &Ctx<'_>, c: Tid, i: &str) -> anyhow::Result<Message> {
     osis_chat::find(&ctx.db, c, &id(i)?)?.ok_or_else(|| exit(3, format!("no message {i}")))
 }
@@ -138,14 +130,16 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
             ctx.emit(&[l.to_string()], J::obj([("link", J::str(l.to_string()))]))
         }
         ChatCmd::Join { link } => {
-            needs_store(ctx, "chat join")?;
             let l: osis::ShareLink = ctx.arg_text(&link)?.parse()?;
             let t = wait(ctx, osis_chat::join(&db, &l))?;
             send_out(ctx, None)?;
+            // a `read` through the daemon does not pull: the first messages are here when this ends
+            if db.is_attached() {
+                catch_up(ctx, t);
+            }
             ctx.emit(&[t.to_uri()], J::obj([("tid", J::tid(t))]))
         }
         ChatCmd::Kick { chat, person, erase, keep, purge, no_sync } => {
-            needs_store(ctx, "chat kick")?;
             let (t, p) = (ctx.tid(&chat)?, ctx.tid(&person)?);
             let word = if erase {
                 Some(false)
@@ -283,8 +277,15 @@ pub(crate) fn run(ctx: &mut Ctx<'_>, c: ChatCmd) -> anyhow::Result<()> {
 
 /// A store this command just opened brings what the hosts have (best effort: reading works offline).
 fn pull(ctx: &mut Ctx<'_>, t: Tid) {
+    if !ctx.db.is_attached() {
+        catch_up(ctx, t);
+    }
+}
+
+/// Waits a moment for what the hosts have of `t` (best effort).
+fn catch_up(ctx: &mut Ctx<'_>, t: Tid) {
     let db = ctx.db.clone();
-    if !db.is_attached() && !db.hosts().is_empty() {
+    if !db.hosts().is_empty() {
         let _ = db.sync_now();
         let _ = wait(ctx, db.wait_synced(osis::SyncScope::Group(t), crate::DEFAULT_WAIT.min(std::time::Duration::from_secs(10))));
     }

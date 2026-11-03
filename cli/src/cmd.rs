@@ -620,6 +620,10 @@ fn run(ctx: &mut Ctx<'_>, cmd: Cmd) -> anyhow::Result<()> {
         }
         Cmd::Group(GroupCmd::Unsync { g }) => Ok(db.unsync(ctx.tid(&g)?)?),
         Cmd::Group(GroupCmd::Source { g, to }) => {
+            // the route's attachment and its secret are in the process that holds the store
+            if db.is_attached() {
+                return Err(exit(1, "group source needs the store itself: stop `osis serve` on this store, run it with --remote, start `serve` again"));
+            }
             let g = ctx.tid(&g)?;
             let to = if to == "local" { osis::GroupSource::Local } else { osis::GroupSource::Remote(to.parse()?) };
             match block_on(db.group_source(g, to), ctx.timeout()?) {
