@@ -706,6 +706,8 @@ pub struct Core {
     /// §2.1), so an expired commit, forgotten with its counters, leaves no gap in `session`'s
     /// ranges that a snapshot frontier could not pass (issues/eph-unify.md, decision 2).
     pub expiring: osis_crdt::Session,
+    /// Sessions this open began after its first (`fresh_session`).
+    pub later_sessions: u64,
     /// What memory commits and things report to the ephemeral lane and the local write path.
     pub memory: MemorySync,
     /// Set when a lazily held header failed to decode (`LazyHeader`): every later transaction
@@ -1106,6 +1108,32 @@ impl Core {
         self.stale_commits.clear();
     }
 
+    /// Begins new plain and expiring sessions (spec/crdt.md §2.1), once an own session-form
+    /// write of the current ones turned invalid: a demotion's invalid body would stop every
+    /// snapshot's frontier for its session below it for good (spec/sync.md §9), so what this
+    /// node writes after a grant again starts a session with no such hole. The plain nonce's
+    /// count steps by one (`nonce_count`, no random draw), so `own_plain` recognises every
+    /// session of the open.
+    pub(crate) fn fresh_session(&mut self) {
+        let mut n = self.session.nonce;
+        let count = nonce_count(&n).wrapping_add(1);
+        n[8..].copy_from_slice(&count.to_be_bytes());
+        self.session.nonce = n;
+        self.expiring.nonce = expiring_nonce(&n);
+        self.later_sessions = self.later_sessions.saturating_add(1);
+    }
+
+    /// Whether `n` is the nonce of a plain session of this open (`fresh_session`).
+    pub(crate) fn own_plain(&self, n: &Nonce) -> bool {
+        let now = &self.session.nonce;
+        n[..8] == now[..8] && nonce_count(now).wrapping_sub(nonce_count(n)) <= self.later_sessions
+    }
+
+    /// Whether `n` is the nonce of a session of this open, plain or expiring.
+    pub(crate) fn own_session(&self, n: &Nonce) -> bool {
+        self.own_plain(n) || self.own_plain(&expiring_nonce(n))
+    }
+
     fn new(id: Identity, clock: Arc<dyn Clock>, session: osis_crdt::Session, expiring: osis_crdt::Session) -> Core {
         let key_salt = osis_base::hash::derive_key("osis node key index", id.seed().expose());
         Core {
@@ -1146,6 +1174,7 @@ impl Core {
             frozen_pending: false,
             session,
             expiring,
+            later_sessions: 0,
             memory: MemorySync::default(),
             header_fault: Arc::default(),
             #[cfg(test)]
@@ -1833,16 +1862,32 @@ pub struct Engine {
     pub(crate) cfg: Config,
 }
 
+type Nonce = [u8; osis_crdt::SESSION_NONCE_LEN];
+
 /// This open's two sessions of node `node` (spec/crdt.md §2.1): the plain writes' under a random
 /// nonce, so no two opens of one store (a restored copy, two live copies) share a source, and
-/// the expiring writes' under that nonce with its first bit flipped (distinct from it, and
-/// across opens as it is; drawing a second nonce would move every later draw).
+/// the expiring writes' under `expiring_nonce` of it (drawing a second nonce would move every
+/// later draw).
 fn sessions(node: Tid, rng: &mut dyn CryptoRngCore) -> (osis_crdt::Session, osis_crdt::Session) {
     let mut nonce = [0u8; osis_crdt::SESSION_NONCE_LEN];
     rng.fill_bytes(&mut nonce);
-    let mut expiring = nonce;
-    expiring[0] ^= 0x80;
-    (osis_crdt::Session { node, nonce }, osis_crdt::Session { node, nonce: expiring })
+    (osis_crdt::Session { node, nonce }, osis_crdt::Session { node, nonce: expiring_nonce(&nonce) })
+}
+
+/// The expiring session's nonce beside plain nonce `n`: `n` with its first bit flipped (distinct
+/// from every plain nonce of the open, whose first bytes all equal `n`'s, and across opens as
+/// `n` is).
+fn expiring_nonce(n: &Nonce) -> Nonce {
+    let mut x = *n;
+    x[0] ^= 0x80;
+    x
+}
+
+/// The count in plain nonce `n`'s last 8 bytes (`Core::fresh_session` steps it).
+fn nonce_count(n: &Nonce) -> u64 {
+    let mut b = [0u8; 8];
+    b.copy_from_slice(&n[8..]);
+    u64::from_be_bytes(b)
 }
 
 impl Engine {
@@ -2047,6 +2092,7 @@ impl Engine {
     fn load_fresh(&mut self, rebuild: bool) -> Result<Option<Vec<(Tid, Ak)>>> {
         let id = Identity::from_seed(self.core.id.seed().clone());
         let mut fresh = Core::new(id, self.clock.clone(), self.core.session, self.core.expiring);
+        fresh.later_sessions = self.core.later_sessions;
         fresh.memory = std::mem::take(&mut self.core.memory);
         fresh.hlc = Hlc::new(self.clock.clone(), self.core.hlc.last());
         fresh.hlc.set_offset(self.core.hlc.offset());

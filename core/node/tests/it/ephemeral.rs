@@ -4497,6 +4497,54 @@ fn memory_snapshot_turned_valid_covers_spec_sync_9() {
     }
 }
 
+// spec/sync.md §9 (Compaction, memory class), spec/crdt.md §2.1, spec/permissions.md §5.2: 1 is
+// demoted and granted write again with an `until` (no re-grant: its earlier memory body stays
+// invalid, a demotion lists no memory commit); what it writes after that goes under a fresh
+// session (`Core::fresh_session`), so snapshots' frontiers pass it and every holder drops it as
+// covered. Under the old session it stayed held uncovered at every holder until 1 restarted
+#[test]
+fn memory_regranted_writer_covered_spec_sync_9() {
+    let (mut lp, d) = memory_trio(71);
+    let n1 = lp.peers[1].engine.tid();
+    let x = memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s("X")), None);
+    for i in [0, 2] {
+        memory_deliver(&mut lp, i, &x);
+    }
+    let session = lp.peers[1].engine.ephemeral_session();
+    lp.advance(10);
+    let dm = osis_node::flows::Demotion { holder: n1, new: None, presync: osis_node::flows::PreSync::Synced, keep: None };
+    let r = *lp.peers[0].engine.demote(&d, &dm).unwrap().commits.last().unwrap();
+    let gone = lp.peers[0].engine.package(&r).unwrap().unwrap();
+    lp.advance(10);
+    let until = osis_base::WallMs(lp.peers[0].engine.now().0 + 86_400_000);
+    let id = crate::common::set_edge(&mut lp.peers[0].engine, d, n1, Some(ct::Edge { until: Some(until), ..crate::common::edge(Role::Write) }), None);
+    let back = lp.peers[0].engine.package(&id).unwrap().unwrap();
+    for i in [1, 2] {
+        lp.deliver(i, &gone).unwrap();
+        lp.deliver(i, &back).unwrap();
+    }
+    assert_ne!(lp.peers[1].engine.ephemeral_session(), session, "its own write fell: a fresh session");
+    lp.advance(10);
+    let ys: Vec<_> = (0..2).map(|i| memory_op(&mut lp, 1, d, "t:tags.0~", Vec::new(), Op::Add(s(&format!("y{i}"))), None)).collect();
+    for i in [0, 2] {
+        for y in &ys {
+            memory_deliver(&mut lp, i, y);
+        }
+    }
+    // an author drops its own bodies under its own snapshot only, others under any
+    let s1 = memory_snapshot(&mut lp, 1, d);
+    let s0 = memory_snapshot(&mut lp, 0, d);
+    for (to, c) in [(0, &s1), (2, &s1), (1, &s0), (2, &s0)] {
+        memory_deliver(&mut lp, to, c);
+    }
+    for i in 0..3 {
+        // the invalid body alone stays held (a grant could still make it valid)
+        let bodies: Vec<osis_base::CommitId> = lp.peers[i].engine.core.ix.commits.iter().filter(|(_, m)| m.view.memory && !m.view.kind.is_compaction()).map(|(c, _)| *c).collect();
+        assert_eq!(bodies, vec![x.0], "{i}: the later writes are covered");
+        assert_eq!(memory_tags(&mut lp, i, d), Some(Value::Set([s("y0"), s("y1")].into())), "{i}");
+    }
+}
+
 // spec/sync.md §4: a window placed in a group that a labeled group lists as an item is in a labeled
 // closure: what the node syncs reads that group's `group.0`, and the window's placement.
 #[test]
