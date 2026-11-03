@@ -1197,6 +1197,11 @@ impl SyncEngine {
         out
     }
 
+    /// Whether a hint names a label of `t` not read yet (an inbox blob or a link's: `vet_inbox_hints`).
+    pub fn hinted(&self, t: &Tid) -> bool {
+        self.state.hints.values().any(|h| h.thing == *t)
+    }
+
     /// Hosts with a connection up.
     pub fn connected(&self) -> usize {
         self.conns.values().filter(|c| c.up).count()

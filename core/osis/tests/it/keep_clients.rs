@@ -659,6 +659,8 @@ fn a_thin_client_sees_the_missing_route_and_the_thing_once_synced() {
         no_route(&x.b) && no_route(&app)
     });
     assert_ne!(app.get(t, text()).ok().flatten(), Some(s("plain")));
+    // sharing is not for a thin client (`method::for_client`): `share` as `grant`
+    assert!(matches!(app.share(t, x.bob, Role::Read, Default::default()), Err(osis::Error::Unsupported(_))));
     x.a.sync(t, &[]).unwrap();
     until("the app reads it", || {
         nudge.at(&x.b);
