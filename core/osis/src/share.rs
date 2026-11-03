@@ -1107,7 +1107,7 @@ impl Osis {
 
     /// This person's contact card (spec/sync.md §3): a read link to its profile P, a group of
     /// itself under its own label carrying the person's `created.0` and `keys.0` as certificates.
-    /// Made once; later calls return the same card.
+    /// Made once; later calls return the same card. `Invalid` on a database without hosts.
     pub fn contact_card(&self) -> Result<ContactCard> {
         if self.is_attached() {
             let v = self.rcall(crate::port::method::CONTACT_CARD, vec![])?;
@@ -1118,6 +1118,10 @@ impl Osis {
         }
         let me = self.me();
         let hosts = self.host_addrs();
+        // checked before anything is written: the card's link needs hosts (`make_link`)
+        if hosts.is_empty() {
+            return Err(Error::Invalid("this database has no hosts: a contact card needs one".into()));
+        }
         let p = self.write_with(|w| {
             let p = w.create(me)?;
             w.make_group(p)?;

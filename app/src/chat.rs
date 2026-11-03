@@ -1,14 +1,13 @@
 //! Chats (toolkit-free, over osis-chat, notes/chat.md): the chats this store holds, joining by
 //! link, the newest messages of one, sending, and the name to send under.
 //!
-//! A chat is any synced group with chat settings (`chat:settings.0^`): chats made or joined here
-//! or by the CLI on this store alike. The sender's name is the profile's `name.0` (the same word
-//! `reach` shows for this person), else `OSIS_CHAT_NAME`, as the CLI's `--from`. A store without
-//! hosts has no profile (`profile()` would fail, and leave a thing behind at each try): only the
-//! variable names it.
+//! The chats are `osis_chat::chats`: those made or joined here or by the CLI on this store alike.
+//! The sender's name is the profile's `name.0` (the same word `reach` shows for this person), else
+//! `OSIS_CHAT_NAME`, as the CLI's `--from`. A store without hosts has no profile (`profile()`
+//! fails): only the variable names it.
 
 use osis::core::NAME;
-use osis::{Ak, Osis, Result, Tid};
+use osis::{Osis, Result, Tid};
 use osis_chat::{Body, Draft, Id, Message, Timeline};
 
 /// One chat as a list shows it.
@@ -37,15 +36,7 @@ pub struct Line {
 
 /// The chats this store holds, by name.
 pub fn chats(db: &Osis) -> Result<Vec<ChatTile>> {
-    let ak = Ak::new(osis_chat::SETTINGS).map_err(|e| osis::Error::Invalid(e.to_string()))?;
-    let mut out = Vec::new();
-    for t in db.status()?.groups.into_keys() {
-        // a value of another shape is someone's junk: not a chat
-        if matches!(db.get(t, ak.clone()), Ok(Some(_))) {
-            let name = osis_chat::settings(db, t)?.name;
-            out.push(ChatTile { tid: t, name: if name.trim().is_empty() { "Chat".into() } else { name } });
-        }
-    }
+    let mut out = osis_chat::chats(db)?.into_iter().map(|t| Ok(ChatTile { tid: t, name: name(db, t)? })).collect::<Result<Vec<_>>>()?;
     out.sort_by(|a, b| (&a.name, a.tid).cmp(&(&b.name, b.tid)));
     Ok(out)
 }

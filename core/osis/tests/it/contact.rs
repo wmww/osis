@@ -105,3 +105,17 @@ fn profile_and_contact_overlay() {
     assert_eq!(bob.get(d, ORG).unwrap().unwrap().name, "Smile Clinic");
     assert_eq!(bob.get(d, DATES).unwrap().unwrap()["birthday"].year, None);
 }
+
+/// spec/sync.md §3: a contact card needs hosts; on a hostless database `contact_card` and
+/// `profile` fail before writing anything, so each try leaves no commit or thing behind.
+#[test]
+fn hostless_contact_card_writes_nothing() {
+    let db = crate::common::db(7);
+    let all = osis::CommitQuery::default();
+    let before = db.commits(&all).unwrap().len();
+    for _ in 0..2 {
+        assert!(matches!(db.contact_card(), Err(osis::Error::Invalid(_))));
+        assert!(db.profile().is_err());
+    }
+    assert_eq!(db.commits(&all).unwrap().len(), before);
+}
