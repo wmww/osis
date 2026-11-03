@@ -49,7 +49,7 @@ impl SyncEngine {
                     if role_commit {
                         scoped.extend(h.aspects.iter().map(|a| a.tid));
                     }
-                    if role_commit || h.aspects.iter().any(|a| a.ak.as_str() == "label.0") {
+                    if role_commit {
                         self.served_cache = None;
                         self.holders_moved = true;
                         self.touched.keys = true;

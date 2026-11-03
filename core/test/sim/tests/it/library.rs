@@ -158,7 +158,8 @@ fn link_race_seed_197() {
     ok("link_race", 197);
 }
 
-// spec/sync.md §5, §6, spec/permissions.md §4: sweep seed 46, after the chain-completion fix.
+// spec/sync.md §5, §6, spec/permissions.md §4: sweep seed 46, a first try at chain completion that
+// deleted deposits and never merged.
 #[test]
 #[ignore = "tier 2"]
 fn link_race_seed_46() {
