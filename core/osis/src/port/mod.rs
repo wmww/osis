@@ -104,6 +104,58 @@ pub(crate) mod method {
     pub const SHARE: u64 = 43;
     /// `[admin]` -> tid (`Osis::create_ownerless`)
     pub const CREATE_OWNERLESS: u64 = 44;
+    /// `[]` -> `[[node, role]*]`
+    pub const DEVICES: u64 = 45;
+    /// `[host addr text]` -> `[]`
+    pub const ADD_HOST: u64 = 46;
+    pub const REMOVE_HOST: u64 = 47;
+    /// `[]` -> Opt(key bytes)
+    pub const HOST_KEY: u64 = 48;
+    /// `[]` -> offer text
+    pub const PAIR_OFFER: u64 = 49;
+    /// `[request text]` -> `[node, reply text]`
+    pub const PAIR_ACCEPT: u64 = 50;
+    /// `[]` -> card text
+    pub const CONTACT_CARD: u64 = 51;
+    /// `[person]` -> Opt(tid)
+    pub const PROFILE_OF: u64 = 52;
+    /// `[]` -> `[invite id bytes*]`
+    pub const INVITE_REQUESTS: u64 = 53;
+    /// `[invite id bytes]` -> `[]`
+    pub const ACCEPT_INVITE: u64 = 54;
+    pub const DECLINE_INVITE: u64 = 55;
+    /// `[group]` -> `[Opt(publish_reach), receipts_only]`
+    pub const GROUP_POLICY: u64 = 56;
+    /// `[group, Opt(publish_reach), receipts_only]` -> `[]`
+    pub const SYNC_POLICY: u64 = 57;
+    /// `[]` -> `[]`
+    pub const ROTATE_REACH: u64 = 58;
+    /// `[tid, owner, [group*]]` -> tid
+    pub const MOVE_THING: u64 = 59;
+    /// `[[group*]]` -> length: the bundle waits on this connection for `BUNDLE_READ`, replacing one
+    /// waiting there. A bundle does not fit a frame; held per connection, it goes with it.
+    pub const EXPORT_BUNDLE: u64 = 60;
+    /// `[offset, n]` -> bytes of the waiting bundle (`n` at most `STREAM_CHUNK`)
+    pub const BUNDLE_READ: u64 = 61;
+    /// `[bytes]` -> `[]`: appended to the bundle waiting on this connection for `IMPORT_BUNDLE`
+    pub const BUNDLE_WRITE: u64 = 62;
+    /// `[length]` -> `[]`: imports the waiting bundle, which must have that length (a reconnect
+    /// between pages loses what was sent on the old connection)
+    pub const IMPORT_BUNDLE: u64 = 63;
+
+    // Rows that wait on other nodes: a `[5, method, [arg*]]` subscription, never a Call (`filter`).
+    /// `[sync scope, timeout ms]` -> `[]`
+    pub const WAIT_SYNCED: u64 = 64;
+    /// `[link text]` -> tid
+    pub const REDEEM: u64 = 65;
+    /// `[target, holder, Opt(role), demotion]` -> `[]` (no role: removed)
+    pub const DEMOTE: u64 = 66;
+    /// `[link id, demotion]` -> `[]`
+    pub const REVOKE_LINK: u64 = 67;
+    /// `[link id, joiner, demotion]` -> `[]`
+    pub const REVOKE_JOINER: u64 = 68;
+    /// `[card text]` -> person
+    pub const IMPORT_CONTACT: u64 = 69;
 
     /// The rows a thin client's session may call, each running on a handle acting as its actor.
     /// Absent: process-wide rows, and the sharing and sync rows, whose engine flows act with this
@@ -114,8 +166,9 @@ pub(crate) mod method {
 }
 
 /// Subscription filters (`Sub.filter`): `[0, tid, ak]` aspect, `[1, tid]` thing, `[2, tid]`
-/// roster, `[3]` status, `[4]` diagnostics, `[5, sync scope, timeout ms]` one `wait_synced`
-/// at the node: the Reply and at most one Notify carry `Opt(result)`, the result once known;
+/// roster, `[3]` status, `[4]` diagnostics, `[5, method, [arg*]]` a row that waits, run at the node
+/// without holding its worker: the Reply and at most one Notify carry `Opt(outcome)`, the outcome
+/// once known; an Unsub or the connection's end cancels it, as dropping the future does locally;
 /// `[6, tid, ak]` an aspect's history: each Notify `[change, Opt(entry)]`, the entry read when sent.
 pub(crate) mod filter {
     pub const ASPECT: u64 = 0;
@@ -123,7 +176,7 @@ pub(crate) mod filter {
     pub const ROSTER: u64 = 2;
     pub const STATUS: u64 = 3;
     pub const DIAGNOSTICS: u64 = 4;
-    pub const SYNCED: u64 = 5;
+    pub const TASK: u64 = 5;
     pub const HISTORY: u64 = 6;
 }
 
@@ -140,7 +193,7 @@ pub const SIGNAL_BYTES: usize = 1 << 20;
 /// registrations are process-wide and kept). Resource bound: 0 forbids typed sets through
 /// the port, infinity lets one client fill memory.
 pub const MAX_SCHEMA_BYTES: usize = 1 << 20;
-/// `wait_synced` subscriptions per connection still waiting (each is a waiter the node checks
+/// Rows that wait (`filter::TASK`) per connection still running (each is a waiter the node checks
 /// after every change, O(labels)). Resource bound: 0 forbids waiting through the port, infinity
 /// (`MAX_SUBS`) multiplies the per-change cost of the lock the sync driver needs. Past it `Invalid`.
 pub const MAX_WAITS: usize = 16;

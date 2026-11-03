@@ -767,18 +767,49 @@ pub(crate) fn sync_scope(v: Value) -> Result<SyncScope> {
     Ok(s)
 }
 
-/// A unit result: `[0]` or an error outcome.
-pub(crate) fn done_v(r: &Result<()>) -> Value {
-    match r {
-        Ok(()) => Value::List(vec![u(0)]),
-        Err(e) => outcome_err(e).to_value(),
-    }
+/// A `Demotion`: `[sync, Opt(backdate), repudiate, Opt(keep)]`, sync 0 required, 1 skip, else
+/// `[ms]` try.
+pub(crate) fn demotion_v(d: &crate::Demotion) -> Value {
+    let sync = match d.sync {
+        crate::WaitForSync::Required => u(0),
+        crate::WaitForSync::Skip => u(1),
+        crate::WaitForSync::Try(t) => Value::List(vec![u(u64::try_from(t.as_millis()).unwrap_or(u64::MAX))]),
+    };
+    Value::List(vec![sync, opt(d.backdate, |w| u(w.0)), Value::Bool(d.repudiate), opt(d.keep, Value::Bool)])
 }
 
-pub(crate) fn done(v: Value) -> Result<Result<()>> {
+pub(crate) fn demotion(v: Value) -> Result<crate::Demotion> {
+    let mut a = Args::new(v)?;
+    let sync = match a.next()? {
+        Value::List(l) => crate::WaitForSync::Try(std::time::Duration::from_millis(Args::of(l).uint()?)),
+        s => match s.as_uint() {
+            Some(0) => crate::WaitForSync::Required,
+            Some(1) => crate::WaitForSync::Skip,
+            _ => return Err(bad("demotion")),
+        },
+    };
+    let backdate = a.opt_wall()?;
+    let repudiate = a.bool()?;
+    let keep = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
+    a.end()?;
+    Ok(crate::Demotion { sync, backdate, repudiate, keep })
+}
+
+/// A sync policy's fields.
+pub(crate) fn policy_v(p: &crate::GroupPolicy) -> Vec<Value> {
+    vec![opt(p.publish_reach, Value::Bool), Value::Bool(p.receipts_only)]
+}
+
+pub(crate) fn policy(a: &mut Args) -> Result<crate::GroupPolicy> {
+    let publish_reach = a.opt()?.map(|k| Args::of(vec![k]).bool()).transpose()?;
+    Ok(crate::GroupPolicy { publish_reach, receipts_only: a.bool()? })
+}
+
+/// An outcome carried as a value (a row that waits): the Reply's own forms.
+pub(crate) fn outcome_of(v: Value) -> Result<Result<Value>> {
     let mut a = Args::new(v)?;
     match a.uint()? {
-        0 => a.end().map(Ok),
+        0 => Ok(Ok(a.next()?)),
         1 => {
             let code = a.uint()?;
             Ok(Err(error_of(code, a.rest())))

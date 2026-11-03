@@ -15,7 +15,7 @@
 
 ## Left out
 - Unbuilt core: adding without history (issues/history-less-grant.md), stopping a fetch short of old messages (issues/partial-history-fetch.md; a label does fill newest first, so old messages reach a new device late, each past a cursor), a kick past about 2.4×10^5 messages of one member (frontier heads), factions.
-- Not done here: reactions, read marker, typing, hidden set, `chat:next.0^` segments, attachments, the leave audit, listing link joiners in `members`, who deleted (a tombstone has the request's commit ID; nothing looks up its author but the commit query), `osis chat join` and `kick` through a daemon (`redeem`, `demote` not carried: stop `serve`; issues/cli-proxy.md).
+- Not done here: reactions, read marker, typing, hidden set, `chat:next.0^` segments, attachments, the leave audit, listing link joiners in `members`, who deleted (a tombstone has the request's commit ID; nothing looks up its author but the commit query).
 - Known and small: an edited message deleted leaves a tombstone per version (the link was in the purged bodies). A watch hears an edit under `Purge` as an edit and then a deletion of the old version: a read tells them apart. A concurrent edit landing after a delete brings the text back on the versions it did not purge. Re-adding a member revives posts it made while kicked (a design E forced answer; `kicked_while_offline` asserts it). A kicked person's new device gets nothing, its own messages included.
 
 ## Costs

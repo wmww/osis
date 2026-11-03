@@ -1,8 +1,7 @@
-# Host refusals: `--label` hosts cannot take links, `hosting set` needs a restart
-> Summary: Left from the `--admit own` fix (a dedicated host device now admits its person's labels): a host admitting by label ID refuses a link's new K label; `hosting set` cannot run while `serve` holds the store.
+# Host refusals: `--label` hosts cannot take links
+> Summary: Left from the `--admit own` fix (a dedicated host device now admits its person's labels): a host admitting by label ID refuses a link's new K label.
 > Tags: cli, node-sync, host, security
 
 Fixed (cause, for the record): the driver's start called `host_restart`, which reset the person `set_person` had stored, so `own` admitted only groups owned by the node itself; the in-process `World` (Manual runtime) never restarts and hid it. Then a group made after the host device started was refused at its first registration (the host device learns its label by syncing the owner's labels) and the node reopened three times at once, then called it Stranded for 60 s; a path refused for now now backs off (notes/sync.md Hosting in the node). "Not admitted" is now code 14 with status `Refused` (was 12, as a full host).
 
 - **Label-ID admission and links**: `own` covers links (a link's K label is owned by the sharer's person and the host device learns it by syncing; checked by both tests). A host admitting by label ID (`--label`, a blind host that never reads the group) cannot: each `link make` makes a new K label (K's home label, spec/sync.md §2) the host was never told about, and grants deposit into recipients' inboxes (their own hosts' business, not this host's). No small rule fits: the host cannot tie K to G without reading G. Options: the CLI prints the K label ID on `link make` (as `status` lists group labels) for the owner to add, or `hosting set --label` takes an owner's public key and admits labels whose genesis registration that key signs (protocol change).
-- **`hosting set` while serving** (one process per store, notes/cli.md Not built): `hosting set` cannot run while `serve` holds the store, so admission cannot be tightened without a restart.

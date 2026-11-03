@@ -243,7 +243,7 @@ fn daemon(store: &Path) -> Host {
     Host(c)
 }
 
-// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined from the other (daemon stopped for it: `redeem` is not carried), `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick
+// spec: none. notes/chat.md, notes/dogfood.md: the channel's flow over real QUIC: a host taking anyone, two stores already in use, daemons on both: a chat created through the daemon on one, a link, joined through the daemon on the other, `chat watch` through the socket wakes on a post, the JSON has id, sender, name, time, text and reply; read from a cursor; an edit and a delete; a kick through the daemon
 #[test]
 #[ignore]
 fn chat_channel_localhost() {
@@ -258,6 +258,7 @@ fn chat_channel_localhost() {
     let c = osis(&a, &["chat", "create", "--name", "channel"]);
     let link = osis(&a, &["chat", "link", &c]);
     let first = osis(&a, &["chat", "post", &c, "--from", "alice", "--subject", "hello", "the body"]);
+    let db = daemon(&b);
     let bc = osis(&b, &["chat", "join", &link]);
     assert_eq!(bc, c);
     let read = osis(&b, &["--json", "chat", "read", &c]);
@@ -268,7 +269,6 @@ fn chat_channel_localhost() {
     assert!(field(line, "sender").starts_with("osis://"));
     assert!(line.contains("\"reply_to\":null") && line.contains("\"time\":"), "{line}");
     let cursor = field(read.lines().last().unwrap(), "cursor").to_string();
-    let db = daemon(&b);
     // the listener: wakes on the next message, through the socket
     let w = cmd().arg("-s").arg(&b).args(["--json", "--timeout", "60s", "chat", "watch", &c, "--count", "1"]).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     std::thread::sleep(std::time::Duration::from_secs(1));
@@ -303,11 +303,10 @@ fn chat_channel_localhost() {
         assert!(std::time::Instant::now() < end, "no delete at Bob");
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
-    // a kick needs the stores themselves (`demote` is not carried)
     let bob = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
+    osis(&a, &["chat", "kick", &c, &bob]);
     drop(db);
     drop(da);
-    osis(&a, &["chat", "kick", &c, &bob]);
     let r = run(&b, &["--timeout", "30s", "chat", "post", &c, "after"]);
     let r = if r.0 == 0 { run(&b, &["--timeout", "30s", "chat", "post", &c, "after"]) } else { r };
     assert_ne!(r.0, 0, "{}", r.1);
@@ -364,10 +363,15 @@ fn run_in(store: &Path, args: &[&str], stdin: &[u8]) -> (i32, String, String) {
     (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).into_owned(), String::from_utf8_lossy(&o.stderr).into_owned())
 }
 
+/// A new thing on `store`, to move.
+fn gt_of(store: &Path) -> String {
+    osis(store, &["create", "--owner", "me", "t:x.0", "1"])
+}
+
 /// A `write` script whose last line names an unknown thing (exit 3, nothing committed).
 const BAD_SCRIPT: &[u8] = b"create --owner me --in home --as x a:b.0 1\nset osis://AAAAAAAAAAAAAAAAAAAA a:b.0 1\n";
 
-// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally); `inspect` and a dead daemon stay exit 8; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
+// spec/sync.md §10 (unix), notes/client-port.md §7, notes/cli.md Design (daemon): while `serve` holds the store, a second `osis` process runs its command through the daemon's unix socket as Owner, with output and exit codes as the local run's (`get`, `--json`, `write` incl. a failing script, `watch`, `group sync`, `grant`, `sync`, `wait`: the grant reaches Bob, a group without a label fails `wait` as locally; `device ls`, `card show`, `hosting set/show/off`, `hosts add/rm`, `link redeem/revoke`, `demote`, `move`, `bundle export/import`, `pair offer`); `inspect` and a dead daemon stay exit 8, `group source` exit 1 saying why; no XDG_RUNTIME_DIR falls back to /tmp/osis-<uid>/
 #[test]
 #[ignore]
 fn daemon_clients_localhost() {
@@ -460,6 +464,56 @@ fn daemon_clients_localhost() {
         }
         // inspect needs the store itself
         assert_eq!(run(&s, &["inspect", "thing", &t]).0, 8);
+        // so does `group source`: it says what to do
+        let src = run(&s, &["group", "source", &t, "local"]);
+        assert!(src.0 == 1 && src.2.contains("stop `osis serve`"), "{src:?}");
+        // the node's own commands through the socket: its devices, hosts, hosting, cards, links
+        if xdg {
+            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 1);
+            assert_eq!(osis(&s, &["card", "show"]), scard);
+            let port = std::net::UdpSocket::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+            osis(&s, &["hosting", "set", "--listen", &format!("quic://127.0.0.1:{port}"), "--admit", "open"]);
+            let show = osis(&s, &["hosting", "show"]);
+            let own = show.lines().find_map(|l| l.strip_prefix("address ")).unwrap_or_else(|| panic!("{show}")).to_string();
+            osis(&s, &["hosts", "add", &own]);
+            assert!(osis(&s, &["hosts", "ls"]).contains(&own));
+            osis(&s, &["hosts", "rm", &own]);
+            osis(&s, &["hosting", "off"]);
+            assert_eq!(run(&s, &["hosting", "show"]).0, 3);
+            // a link redeemed and ended through daemons
+            let g = osis(&b, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            osis(&b, &["group", "sync", &g]);
+            let link = osis(&b, &["link", "make", &g, "read"]);
+            assert_eq!(osis(&s, &["link", "redeem", &link]), g);
+            // ... and made there: a joiner, removed with `demote`; another link, revoked
+            let sg = osis(&s, &["create", "--owner", "me", "--in", "home", "--group", "t:made.0", "true"]);
+            osis(&s, &["group", "sync", &sg]);
+            let link = osis(&s, &["link", "make", &sg, "read"]);
+            assert_eq!(osis(&b, &["link", "redeem", &link]), sg);
+            osis(&b, &["sync"]);
+            let bob_me = field(&osis(&b, &["--json", "whoami"]), "me").to_string();
+            let end = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while run(&s, &["via", &sg, &bob_me]).0 != 0 {
+                assert!(std::time::Instant::now() < end, "the join did not reach the daemon");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            osis(&s, &["demote", &sg, &bob_me, "remove"]);
+            assert_ne!(run(&s, &["via", &sg, &bob_me]).0, 0);
+            osis(&s, &["link", "make", &sg, "read"]);
+            let ls = osis(&s, &["link", "ls", &sg]);
+            let id = ls.split_whitespace().next().unwrap_or_else(|| panic!("{ls}")).to_string();
+            osis(&s, &["link", "revoke", &id]);
+            assert_eq!(osis(&s, &["link", "ls", &sg]), "");
+            // moves, a bundle, and a new device paired through the daemon's stdin flow
+            let copy = osis(&s, &["move", &gt_of(&s), &sg]);
+            assert!(copy.starts_with("osis://"), "{copy}");
+            let bundle = cmd().arg("-s").arg(&s).args(["bundle", "export", "home"]).output().unwrap();
+            assert!(bundle.status.success() && bundle.stdout.starts_with(b"osisbndl"), "{}", String::from_utf8_lossy(&bundle.stderr));
+            assert_eq!(run_in(&s, &["bundle", "import"], &bundle.stdout).0, 0);
+            let dev = dir("daemon-device");
+            pair(&s, &dev, Some(&addr));
+            assert_eq!(osis(&s, &["device", "ls"]).lines().count(), 2);
+        }
         drop(host);
         if let Some((ht, w)) = unsynced {
             assert_eq!(run(&s, &["wait", "--group", &ht]), w, "the local run's outcome");

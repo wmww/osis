@@ -219,7 +219,10 @@ impl Osis {
     /// the offer can make their device a full admin device of this person until it is used or
     /// expires (10 minutes): show it only to the new device.
     pub fn pair_offer(&self) -> Result<PairOffer> {
-        self.local_only("pair_offer")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::PAIR_OFFER, vec![])?;
+            return crate::port::codec::Args::of(vec![v]).text()?.parse();
+        }
         let (me, node) = (self.me(), self.node());
         let hosts: Vec<Value> = self.hosts().iter().map(|s| Value::Str(s.to_string())).collect();
         let now = self.inner.clock.now_wall_ms().0;
@@ -237,7 +240,12 @@ impl Osis {
     /// person (or re-seals a device already one, notes/sync.md Limits) and returns its node tid
     /// with the reply to carry back.
     pub fn pair_accept(&self, req: &PairRequest) -> Result<(Tid, PairReply)> {
-        self.local_only("pair_accept")?;
+        if self.is_attached() {
+            // once: a `TooLarge` retry would find the offer used
+            let v = self.primary_call_big(crate::port::method::PAIR_ACCEPT, vec![Value::Str(req.to_string())], osis_proto::serving::REPLY_BUDGET)?;
+            let mut a = crate::port::codec::Args::new(v)?;
+            return Ok((a.tid()?, a.text()?.parse()?));
+        }
         let items = unpack(&req.0, REQUEST)?;
         let [_, Value::Tid(node), pks, Value::Bytes(_)] = items.as_slice() else { return Err(Error::Invalid("malformed pairing request".into())) };
         let now = self.inner.clock.now_wall_ms().0;

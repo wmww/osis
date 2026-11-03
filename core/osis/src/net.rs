@@ -8,7 +8,7 @@ use crate::error::{Error, Result};
 use crate::handle::WeakOsis;
 use crate::share::Status;
 use crate::watch::lock;
-use osis_base::Clock;
+use osis_base::{Clock, Value};
 use osis_node::sync::driver::{self, Control, Shared};
 use osis_node::sync::{Action, SyncEngine};
 use std::future::Future;
@@ -479,9 +479,12 @@ pub struct GroupPolicy {
 
 impl crate::Osis {
     /// `group`'s sync policy as set (`sync_policy`; the default when never set).
-    /// `Unsupported` on an attached handle (no row yet).
     pub fn group_policy(&self, group: osis_base::Tid) -> crate::Result<GroupPolicy> {
-        self.local_only("group_policy")?;
+        if self.is_attached() {
+            let v = self.rcall(crate::port::method::GROUP_POLICY, vec![Value::Tid(group)])?;
+            let mut a = crate::port::codec::Args::new(v)?;
+            return crate::port::codec::policy(&mut a);
+        }
         Ok(self.locked(|x| GroupPolicy { publish_reach: x.sync.reach_policy(&group), receipts_only: x.sync.receipts_only().contains(&group) }))
     }
 
@@ -489,9 +492,12 @@ impl crate::Osis {
     /// change one, start from `group_policy`. Co-readers of groups without `reach.0` are not
     /// dialed. When the group's labels already hold this node's `reach.0` and it no longer goes
     /// there, the node's reach rotates (`rotate_reach`), so readers there cannot dial it any more.
-    /// `Unsupported` on an attached handle (no row yet).
     pub fn sync_policy(&self, group: osis_base::Tid, policy: GroupPolicy) -> crate::Result<()> {
-        self.local_only("sync_policy")?;
+        if self.is_attached() {
+            let mut args = vec![Value::Tid(group)];
+            args.extend(crate::port::codec::policy_v(&policy));
+            return self.rcall(crate::port::method::SYNC_POLICY, args).map(drop);
+        }
         self.act(|l| {
             let mut acts = l.sync.set_reach_policy(group, policy.publish_reach);
             if l.sync.receipts_only().contains(&group) != policy.receipts_only {
@@ -546,9 +552,10 @@ impl crate::Osis {
     /// dialable key from a direct link, never the lan secret) can no longer dial it. Direct links
     /// still open lose first contact (they still work through hosts). Done by itself when a
     /// group holding its `reach.0` stops qualifying and when a direct link ends.
-    /// `Unsupported` on an attached handle (process-wide: no row).
     pub fn rotate_reach(&self) -> crate::Result<()> {
-        self.local_only("rotate_reach")?;
+        if self.is_attached() {
+            return self.rcall(crate::port::method::ROTATE_REACH, vec![]).map(drop);
+        }
         self.act(|l| l.sync.rotate_reach());
         Ok(())
     }
