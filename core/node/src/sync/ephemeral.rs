@@ -1355,7 +1355,8 @@ impl SyncEngine {
     fn eph_forget(&mut self, commits: &[(CommitId, MemoryDrop)], out: &mut Vec<Action>) -> Result<()> {
         for (c, why) in commits {
             // deletes waiting for it wait for what covers it now, and go once they wait for
-            // nothing
+            // nothing (issues/eph-host-deletes-under-others-snapshots.md: a covered entry leaves
+            // the host under any author's snapshot)
             let (cover, author_only) = match why {
                 MemoryDrop::Covered { by } => (by.clone(), false),
                 MemoryDrop::Superseded { by } => (by.clone(), true),
