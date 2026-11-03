@@ -4,7 +4,7 @@
 //! continues. Each write is imported from one origin: the newest held compaction snapshot of
 //! its aspect where that covers it (its frontier holds the write's counter, or it carries writes
 //! of the write's commit-form commit) and carries it, else its own commit (for a write T itself
-//! imported, the import holding it). A write of origin C gets the dot `(Commit(C), k)` (k its
+//! imported, the first import holding it). A write of origin C gets the dot `(Commit(C), k)` (k its
 //! counter in C, or for a snapshot or import its rank by (source, counter) among the writes C
 //! carries on the aspect), and references to writes (anchors, reset stamps) map the same way. A frontier is not trusted alone: a write it claims but the
 //! snapshot does not carry is imported from its commit while the current state holds it.
@@ -55,23 +55,22 @@ impl Carrier {
     }
 }
 
-/// Per aspect of the moved thing, each held import on it (in held order) with the writes it owns
+/// Per aspect of the moved thing, each held import on it (by `(ts, ID)`) with the writes it owns
 /// there (those under its origins' sources), each by its rank by (source, counter) among them.
 type Owners = BTreeMap<Ak, Vec<Owner>>;
 type Owner = (CommitId, BTreeMap<Dot, u64>);
 
-/// The import owning write `x` on an aspect, with its rank there: origin `c` if it does, else the
-/// first held (two imports owning one write is hostile).
-fn owner_of(imports: Option<&Vec<Owner>>, c: &CommitId, x: &Dot) -> Option<(CommitId, u64)> {
-    let imports = imports?;
-    let mine = imports.iter().find(|(i, _)| i == c).and_then(|(i, w)| Some((*i, *w.get(x)?)));
-    mine.or_else(|| imports.iter().find_map(|(i, w)| Some((*i, *w.get(x)?))))
+/// The import write `x` on an aspect is imported from, with its rank there: the first held by
+/// `(ts, ID)` that owns it (two owning one write is a hostile creator's: the others give it not,
+/// so it is not doubled).
+fn owner_of(imports: Option<&Vec<Owner>>, x: &Dot) -> Option<(CommitId, u64)> {
+    imports?.iter().find_map(|(i, w)| Some((*i, *w.get(x)?)))
 }
 
 /// The dot an imported write or reference gets (spec/permissions.md §7): covered and carried by
 /// the snapshot origin, its rank there; else its own commit's ID with its counter, or the import
 /// owning it with its rank there (a carried write whose commit is not held: its rank).
-fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, owners: (Option<&Vec<Owner>>, &CommitId), x: &Dot) -> Option<Dot> {
+fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Option<(&Source, &CommitId, Form, u64, u64)>, owners: Option<&Vec<Owner>>, x: &Dot) -> Option<Dot> {
     let rank = carrier.and_then(|s| Some((s.id, *s.rank.get(x)?, s.covers_dot(x))));
     if let Some((s, r, true)) = rank {
         return Some(Dot::new(Source::commit(s), r));
@@ -89,7 +88,7 @@ fn imported(core: &Core, tid: &Tid, ak: &Ak, carrier: Option<&Carrier>, own: Opt
     {
         return Some(Dot::new(Source::commit(k), x.ctr));
     }
-    if let Some((i, r)) = owner_of(owners.0, owners.1, x) {
+    if let Some((i, r)) = owner_of(owners, x) {
         return Some(Dot::new(Source::commit(i), r));
     }
     rank.map(|(s, r, _)| Dot::new(Source::commit(s), r))
@@ -174,13 +173,16 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
             let (core, s) = (&*tx.core, carrier);
             f.remove_dots(&|d| out.iter().any(|o| o.owns(d)) || (s.is_some_and(|s| !s.covers_dot(d)) && from_own(core, &a.tid, &a.ak, d)));
         } else if import {
-            // of its own writes: purged ones, and those the snapshot carries, or covers while the
-            // current state does not hold them (as for a commit-form commit it claims)
+            // of its own writes: purged ones, those an earlier import gives (`owner_of`), and those
+            // the snapshot carries, or covers while the current state does not hold them (as for
+            // a commit-form commit it claims)
             let out = excluded(tx, &a.tid, &a.ak);
-            let mine = owners.get(&a.ak).and_then(|v| v.iter().find(|(i, _)| i == c)).map(|(_, w)| w);
+            let held = owners.get(&a.ak);
+            let mine = held.and_then(|v| v.iter().find(|(i, _)| i == c)).map(|(_, w)| w);
             let l = live.get(&a.ak);
             let own_write = |d: &Dot| mine.is_some_and(|w| w.contains_key(d));
-            f.remove_dots(&|d| own_write(d) && (out.iter().any(|o| o.owns(d)) || carrier.is_some_and(|s| s.covers_dot(d) && (s.rank.contains_key(d) || !l.is_some_and(|l| l.contains(d))))));
+            let given = |d: &Dot| owner_of(held, d).is_some_and(|(i, _)| i != *c);
+            f.remove_dots(&|d| own_write(d) && (given(d) || out.iter().any(|o| o.owns(d)) || carrier.is_some_and(|s| s.covers_dot(d) && (s.rank.contains_key(d) || !l.is_some_and(|l| l.contains(d))))));
             if !f.writes().iter().any(|(d, _)| own_write(d.owner())) {
                 continue;
             }
@@ -208,7 +210,7 @@ fn import_one(tx: &mut Tx<'_>, t: &Tid, m: &Tid, c: &CommitId, carriers: &BTreeM
         let core = &*tx.core;
         let (tid, ak, lo, hi, form) = (a.tid, a.ak.clone(), a.lo, a.hi, h.form);
         let own_writes = (h.kind == Kind::Content).then_some((&own, c, form, lo, hi));
-        f.map_dots(&|x| imported(core, &tid, &ak, carrier, own_writes, (owners.get(&ak), c), x));
+        f.map_dots(&|x| imported(core, &tid, &ak, carrier, own_writes, owners.get(&ak), x));
         if f.is_empty() {
             continue;
         }
