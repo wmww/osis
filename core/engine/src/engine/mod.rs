@@ -612,6 +612,10 @@ pub struct Core {
     pub defer_deaths: bool,
     /// No keep-at-most drop (tests: an oracle holding every body, `Engine::keep_bodies`).
     pub keep_bodies: bool,
+    /// What `retention::fit_requests` fits a frontier to: `MAX_LIST_BYTES` (tests: `Engine::list_bound`).
+    pub list_bound: usize,
+    /// Value-less lists changed in this transaction, written at its end (`retention::persist_valueless`).
+    pub valueless_dirty: BTreeSet<(Tid, Ak)>,
     /// At or before the earliest retention timer held (wall ms; `u64::MAX`: none): set by
     /// `tick` and at open, lowered by every timer put (`Engine::timers_due`).
     pub timer_floor: u64,
@@ -921,6 +925,8 @@ impl Core {
             key_actors: BTreeMap::new(),
             defer_deaths: false,
             keep_bodies: false,
+            list_bound: osis_commit::MAX_LIST_BYTES,
+            valueless_dirty: BTreeSet::new(),
             timer_floor: 0,
             changed: None,
             sync_records: None,
@@ -1738,6 +1744,10 @@ impl Engine {
                 if r.is_ok() && !tx.core.defer_deaths && !tx.core.ix.deaths_due.is_empty() {
                     r = r.and_then(|v| crate::retention::settle_due(&mut tx).map(|_| v));
                 }
+                if r.is_ok() {
+                    r = r.and_then(|v| crate::retention::persist_valueless(&mut tx).map(|_| v));
+                }
+                tx.core.valueless_dirty.clear();
                 if r.is_ok() {
                     tx.core.history_changes();
                 }

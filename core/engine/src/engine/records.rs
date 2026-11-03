@@ -21,11 +21,9 @@ pub const RECEIPT: &[u8] = b"r/";
 pub const VALUELESS: &[u8] = b"v/";
 /// What a delta held value-less (expired, purged) leaves once its body goes: its body's writes
 /// with every value stripped (spec/crdt.md §4.7), one row per delta: `w/` + aspect key + commit
-/// ID + aspect index (4 bytes).
+/// ID + aspect index (4 bytes). Read only while the delta is in the value-less list: a purge that fell
+/// leaves the row, for a rise with no body left (`retention::make_valueless`).
 pub const RESIDUE: &[u8] = b"w/";
-/// The residue of a delta whose purge fell, its body gone: purged again, it leaves what it left at a
-/// node that never saw the fall. `wl/` + aspect key + commit ID + aspect index.
-pub const LEFT: &[u8] = b"wl/";
 /// What a snapshot dropped for a purge gave (`Dropped::gives`), kept when the purge falls: its body
 /// is gone, and dropped again it gives what it gave at a node that never saw the fall. `wg/` + aspect
 /// key + commit ID + aspect index.
@@ -102,10 +100,6 @@ pub fn aspect_key(prefix: &[u8], tid: &Tid, ak: &Ak) -> Vec<u8> {
 
 pub fn purges_named_key(tid: &Tid, ak: &Ak, id: &CommitId) -> Vec<u8> {
     [aspect_key(PURGES_NAMED, tid, ak).as_slice(), &id.0[..]].concat()
-}
-
-pub fn left_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {
-    [aspect_key(LEFT, tid, ak), id.0.to_vec(), (ai as u32).to_be_bytes().to_vec()].concat()
 }
 
 pub fn gave_key(tid: &Tid, ak: &Ak, id: &CommitId, ai: usize) -> Vec<u8> {

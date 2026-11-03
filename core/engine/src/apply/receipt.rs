@@ -191,14 +191,14 @@ impl Engine {
     /// header alone at the record's), memory commits never, and held ones whose every delta is
     /// held or dropped here and whose part there is droppable here (`droppable_here`) left out;
     /// and, where it falls below write, its held commits acting for that thing, each left out
-    /// under the same rule on every delta but `created.0`; and every purge request of a demoted
-    /// node on a thing in question. This node's own receipts only;
+    /// under the same rule on every delta but `created.0`; and every purge request whose right
+    /// may rest on a role it puts in question (`retention::requests_resting_on`). This node's own receipts only;
     /// `as_of` earlier than now gives a backdated revoke's frontier.
     pub fn frontier(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<Frontier> {
         Ok(self.frontier_and_requests(scope, as_of)?.0)
     }
 
-    /// `frontier`, and the commits it lists only as requests, those received last first
+    /// `frontier`, and the commits it lists that are requests, those received last first
     /// (`fit_requests`).
     pub(crate) fn frontier_and_requests(&mut self, scope: &DemotionScope, as_of: WallMs) -> Result<(Frontier, Vec<CommitId>)> {
         // the aspects a fall below admin puts in question: role-class and admin-only (`^`) ones
@@ -278,14 +278,16 @@ impl Engine {
             // whatever aspect its own delta lies
             let mut requests = Vec::new();
             for (node, things) in &scope.roles {
-                for pc in crate::retention::requests_on(tx, things)? {
+                for pc in crate::retention::requests_resting_on(tx.core, node, things) {
                     let Some(m) = tx.core.ix.commits.get(&pc) else { continue };
-                    if m.received.0 <= as_of.0 && !m.view.memory && (m.view.author == *node || m.header.actor == *node) && f.commits.insert(pc) {
+                    if m.received.0 <= as_of.0 {
+                        f.commits.insert(pc);
                         requests.push((std::cmp::Reverse(m.received.0), pc));
                     }
                 }
             }
             requests.sort();
+            requests.dedup();
             Ok((f, requests.into_iter().map(|x| x.1).collect()))
         })
     }

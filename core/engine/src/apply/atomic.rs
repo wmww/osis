@@ -1299,12 +1299,13 @@ fn residues(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Fragment>> {
     tx.scan(&records::aspect_key(records::RESIDUE, tid, ak), |k, v| {
         let mut r = records::Rd::new(k);
         let c = CommitId(r.arr()?);
-        rows.push((c, v));
+        let ai = u32::from_be_bytes(r.arr()?) as usize;
+        rows.push((c, ai, v));
         Ok(())
     })?;
     let mut out = Vec::new();
-    for (c, v) in rows {
-        if !tx.core.ix.void.contains(&c) {
+    for (c, ai, v) in rows {
+        if !tx.core.ix.void.contains(&c) && crate::retention::valueless(tx.core, &c, ai) {
             out.push(crate::engine::state::decode(&v)?);
         }
     }

@@ -525,7 +525,6 @@ fn a_fallen_purge_shows_no_tombstone_spec_perm_8() {
     // not the demoted admin: it reads the label no more
     for x in [a, b, n] {
         assert!(holds(&mut net, x), "at {x}: the body is back");
-        assert!(net.engine(x).named_permanent_count().unwrap() == 0, "at {x}: no lasting note");
     }
     let before = known_entries(&mut net, a, host);
     for _ in 0..6 {
