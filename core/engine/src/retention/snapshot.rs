@@ -219,9 +219,10 @@ pub(crate) fn covered(tx: &mut Tx<'_>, s: &CommitId, c: &CommitId, tid: &Tid, ak
     if m.header.aspects.get(cai).is_some_and(|a| a.expires.is_some()) {
         return Ok(Some(false));
     }
-    // a session-form body the snapshot's frontier (indexed) does not reach: judged before either
+    // a memory body the snapshot's frontier (indexed) does not reach: judged before either
     // body is decoded (a memory apply weighs every held body against every held snapshot)
-    if m.header.form.counted()
+    if m.header.ephemeral.is_some()
+        && m.header.form.counted()
         && m.header.kind.has_own_writes()
         && let Some(a) = m.header.aspects.get(cai)
         && tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().any(|x| x.1 == *s && unseen_by(&x.2, &m.header, c, a.hi))
