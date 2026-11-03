@@ -148,6 +148,39 @@ mod tests {
             assert_eq!(lp.peers[r].engine.get_typed(&t, &ct::SECRETS).unwrap().unwrap(), want, "receiver {r}");
         }
     }
+    // spec/permissions.md §2, §5.2: an earlier grant on the same edge, arriving late, leaves an
+    // invite grant unapplied, its boxes with no exemption: judged again though its author's roles
+    // did not move, as where they came in the other order.
+    #[test]
+    fn invite_grant_overtaken_on_its_edge_any_order_spec_perm_2() {
+        let mut lp = LocalPeer::new(5, 971, WallMs(1_700_000_000_000)).unwrap();
+        lp.sync_all().unwrap();
+        // 0 admin, 1 invite holder, 2 grantee, 3 and 4 receivers
+        let (a, b, e) = (lp.peers[0].engine.tid(), lp.peers[1].engine.tid(), lp.peers[2].engine.tid());
+        let mut m = Mutation::new();
+        let t = lp.peers[0].engine.new_thing(&mut m, a);
+        m.set(t, &osis_base::Ak::new("x:a.0").unwrap(), &Value::Int(1)).unwrap();
+        lp.peers[0].commit(m).unwrap();
+        let read = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+        lp.peers[0].engine.grant(&t, &b, &ct::Edge { invite: Some(Role::Read), ..read.clone() }).unwrap();
+        lp.sync_all().unwrap();
+        let by_admin = *lp.peers[0].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
+        let by_admin = lp.peers[0].engine.package(&by_admin).unwrap().unwrap();
+        lp.advance(1000);
+        let id = *lp.peers[1].engine.grant(&t, &e, &read).unwrap().commits.last().unwrap();
+        let by_invite = lp.peers[1].engine.package(&id).unwrap().unwrap();
+        lp.deliver(3, &by_invite).unwrap();
+        assert!(lp.peers[3].engine.edge_write_applied(&t, &id), "applied while alone");
+        lp.deliver(3, &by_admin).unwrap();
+        lp.deliver(4, &by_admin).unwrap();
+        lp.deliver(4, &by_invite).unwrap();
+        let secrets = osis_base::Ak::new("secrets.0").unwrap();
+        for r in [3, 4] {
+            assert!(!lp.peers[r].engine.edge_write_applied(&t, &id), "receiver {r}");
+        }
+        assert_eq!(lp.peers[3].engine.body_valid(&id, &t, &secrets), lp.peers[4].engine.body_valid(&id, &t, &secrets));
+        assert_eq!(lp.peers[3].engine.get_typed(&t, &ct::SECRETS).unwrap(), lp.peers[4].engine.get_typed(&t, &ct::SECRETS).unwrap());
+    }
     // spec/permissions.md §2: an invite grant's `secrets.0` entries are new, created by its own
     // delta. A record claiming the grantee's key at another holder's entry dot would merge into
     // that entry (the stored key wins), overwriting its box: not a put, no invite exemption.

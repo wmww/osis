@@ -982,13 +982,15 @@ fn rejudge_once(tx: &mut Tx<'_>, rebuild: bool) -> Result<Vec<(Tid, Ak)>> {
     let explicit = std::mem::take(&mut tx.core.stale_commits);
     let all = std::mem::take(&mut tx.core.stale_all);
     // the commits whose author's role may have moved on a thing they write
-    let authored: BTreeSet<CommitId> = under.iter().flat_map(|t| authors.iter().map(move |a| (*t, *a))).flat_map(|k| tx.core.ix.by_thing.get(&k).into_iter().flatten().copied()).collect();
+    let (on, acting) = tx.core.authored_under(&under, &authors);
+    let authored: BTreeSet<CommitId> = on.collect();
+    let acting: BTreeSet<CommitId> = acting.collect();
     // re-judged whole: those named, and those acting for a thing whose timeline changed
     // (`acts_for`); deltas on a thing answer to its `required.0^` deltas (`in_force`), so where
     // one of those is judged again they are too
     let mut whole = explicit;
     whole.extend(things.iter().flat_map(|t| tx.core.acting_for(t)));
-    whole.extend(under.iter().flat_map(|t| authors.iter().map(move |a| (*t, *a))).flat_map(|k| tx.core.ix.by_actor.get(&k).into_iter().flatten().copied()));
+    whole.extend(acting);
     for id in whole.iter().chain(&authored) {
         let Some(m) = tx.core.ix.commits.get(id) else { continue };
         things.extend(m.view.aspects.iter().filter(|a| a.ak.as_str() == osis_commit::retention::REQUIRED).map(|a| a.tid));

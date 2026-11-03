@@ -693,7 +693,7 @@ pub fn member_churn(seed: u64) -> Res<Report> {
     let t = sim.item(a, g)?;
     let write = |sim: &mut NetSim, d: &mut Dice, n: usize, k: u64| -> Res<()> {
         let mut m = Mutation::new();
-        m.op(t, &workload::TAGS, osis_crdt::PathOp { path: Vec::new(), op: osis_crdt::Op::Add(Value::Str(format!("n{n} {k}"))) }).map_err(|e| sim.fail(e.to_string()))?;
+        m.set(t, &workload::REG, &Value::Str(format!("n{n} {k}"))).map_err(|e| sim.fail(e.to_string()))?;
         sim.commit(n, m)?;
         sim.run(d.below(4))
     };

@@ -9,7 +9,7 @@
 use crate::cache::{self, Inputs, Only};
 use crate::held::HeldSet;
 use crate::timeline::Timeline;
-use crate::types::{Edge, Point, RoleCommit, RosterSnapshot};
+use crate::types::{Point, RoleCommit, RosterSnapshot};
 use crate::walk::Change;
 use osis_base::{CommitId, CreationRecord, Tid};
 use std::collections::{BTreeMap, BTreeSet};
@@ -67,26 +67,29 @@ pub struct Changed {
 
 /// Adds the (holder, target) pairs whose changes differ between `old` and `new`: past their
 /// common beginning, each by (point, pair).
-fn history_diff(old: &[&Change], new: &[&Change], out: &mut BTreeSet<(Tid, Tid)>) {
-    let same = |a: &&Change, b: &&Change| a.point == b.point && a.holder == b.holder && a.target == b.target && a.edge == b.edge;
-    let n = old.iter().zip(new).take_while(|(a, b)| same(a, b)).count();
-    let map = |l: &[&Change]| -> BTreeMap<(Point, Tid, Tid), Option<Edge>> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), c.edge)).collect() };
+fn history_diff<'a>(old: &[&'a Change], new: &[&'a Change], out: &mut BTreeSet<(Tid, Tid)>) {
+    // how it was written too: the same edge by an invite grant or by an audited write demotes
+    // differently
+    let n = old.iter().zip(new).take_while(|(a, b)| a == b).count();
+    let map = |l: &[&'a Change]| -> BTreeMap<(Point, Tid, Tid), &'a Change> { l.iter().skip(n).map(|c| ((c.point, c.holder, c.target), *c)).collect() };
     let (a, b) = (map(old), map(new));
     out.extend(a.iter().filter(|(k, e)| b.get(k) != Some(*e)).chain(b.iter().filter(|(k, e)| a.get(k) != Some(*e))).map(|(k, _)| (k.1, k.2)));
 }
 
 /// What a component's walk was, to tell what an update changed (`Changed::edges`).
 struct WalkWas {
+    initial: crate::graph::Edges,
     edges: crate::graph::Edges,
     history: Vec<Change>,
 }
 
 impl WalkWas {
     fn of(tl: &Timeline) -> WalkWas {
-        WalkWas { edges: tl.edges().clone(), history: tl.history().to_vec() }
+        WalkWas { initial: tl.initial().clone(), edges: tl.edges().clone(), history: tl.history().to_vec() }
     }
 
     fn diff(&self, tl: &Timeline, out: &mut BTreeSet<(Tid, Tid)>) {
+        tl.initial().diff(&self.initial, out);
         tl.edges().diff(&self.edges, out);
         history_diff(&self.history.iter().collect::<Vec<_>>(), &tl.history().iter().collect::<Vec<_>>(), out);
     }
@@ -371,7 +374,8 @@ impl Timelines {
         let (mut changed, mut things) = (Changed::default(), BTreeSet::new());
         for (i, (new, per, join, leaves)) in work {
             let Some(mut c) = self.comps.remove(&i) else { continue };
-            let was = WalkWas::of(&c.tl);
+            // leaves alone leave the walk as it was: no copy of its history per new thing
+            let was = (!new.is_empty()).then(|| WalkWas::of(&c.tl));
             if !leaves.is_empty() {
                 match c.tl.add_leaves(&leaves) {
                     Ok(tl) => c.tl = tl,
@@ -397,7 +401,9 @@ impl Timelines {
                     Ok(tl) => c.tl = tl,
                     Err(tl) => {
                         c.tl = *tl;
-                        was.diff(&c.tl, &mut changed.edges);
+                        if let Some(w) = &was {
+                            w.diff(&c.tl, &mut changed.edges);
+                        }
                         self.comps.insert(i, c);
                         return Some((changed, things, false));
                     }
@@ -423,7 +429,9 @@ impl Timelines {
                 }
             }
             c.per.extend(per);
-            was.diff(&c.tl, &mut changed.edges);
+            if let Some(w) = &was {
+                w.diff(&c.tl, &mut changed.edges);
+            }
             self.comps.insert(i, c);
         }
         Some((changed, things, true))
@@ -449,10 +457,12 @@ impl Timelines {
         let mut cache: BTreeMap<Inputs, (Timeline, usize, bool)> = BTreeMap::new();
         let old: BTreeSet<u64> = region.iter().filter_map(|t| self.of.get(t).copied()).collect();
         let (mut before, mut after) = (crate::graph::Edges::default(), crate::graph::Edges::default());
+        let (mut first, mut new_first) = (crate::graph::Edges::default(), crate::graph::Edges::default());
         let (mut history, mut records): (Vec<Change>, BTreeSet<Tid>) = (Vec::new(), BTreeSet::new());
         for c in old {
             if let Some(comp) = self.comps.remove(&c) {
                 before.take_targets(comp.tl.edges());
+                first.take_targets(comp.tl.initial());
                 history.extend_from_slice(comp.tl.history());
                 records.extend(comp.inputs.2.iter().copied());
                 for t in &comp.inputs.0 {
@@ -565,6 +575,7 @@ impl Timelines {
                 }
             };
             after.take_targets(tl.edges());
+            new_first.take_targets(tl.initial());
             new_history.extend_from_slice(tl.history());
             new_records.extend(inputs.2.iter().copied());
             let i = self.next;
@@ -582,6 +593,7 @@ impl Timelines {
             self.retire(&k, basis);
         }
         after.diff(&before, &mut changed.edges);
+        new_first.diff(&first, &mut changed.edges);
         history_diff(&history.iter().collect::<Vec<_>>(), &new_history.iter().collect::<Vec<_>>(), &mut changed.edges);
         changed.created.extend(records.symmetric_difference(&new_records).copied());
         (evaluated, changed)

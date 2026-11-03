@@ -174,7 +174,7 @@ fn run(samples: u64, seed: u64) -> usize {
                 let skip: BTreeSet<_> = all.difference(&held_ids).copied().collect();
                 let held = held_at(&w, &skip, &leaves, step + 1);
                 if around {
-                    inc.update_touched(&held, &touched(&prev, &held));
+                    update_moved(&mut inc, &held, &prev);
                     appended += inc.appended();
                 } else {
                     inc.update(&held);
@@ -764,7 +764,7 @@ fn adversarial(samples: u64, seed: u64) -> usize {
         for (step, i) in order.into_iter().enumerate() {
             skip.remove(&late[i]);
             let held = w.held_without(&skip);
-            inc.update_touched(&held, &touched(&prev, &held));
+            update_moved(&mut inc, &held, &prev);
             appended += inc.appended();
             if let Some(d) = check(&held, &inc, &n) {
                 panic!("seed {seed:#x} sample {s} step {step}: {d}");
@@ -1088,7 +1088,7 @@ fn adversarial_shapes(samples: u64, seed: u64) -> (usize, usize) {
             }
             i += take;
             let held = w.held_without(&skip);
-            inc.update_touched(&held, &touched(&prev, &held));
+            update_moved(&mut inc, &held, &prev);
             appended += inc.appended();
             placed += inc.placed();
             if let Some(d) = check_more(&held, &inc, &n) {
@@ -1453,7 +1453,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
             // (half the time the `created.0` records of this step alone first)
             if rng.below(2) == 0 && created_late.iter().any(|c| c.1 == step) {
                 let held = held_at(&w, &skip, &created_late, step);
-                inc.update_touched(&held, &touched(&prev, &held));
+                update_moved(&mut inc, &held, &prev);
                 if let Some(d) = check(&held, &inc, &n) {
                     panic!("seed {seed:#x} sample {s} arrival {i} (records alone): {d}");
                 }
@@ -1464,7 +1464,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
             }
             i += take;
             let held = held_at(&w, &skip, &created_late, step);
-            inc.update_touched(&held, &touched(&prev, &held));
+            update_moved(&mut inc, &held, &prev);
             appended += inc.appended();
             placed += inc.placed();
             if let Some(d) = check(&held, &inc, &n) {
@@ -1481,7 +1481,7 @@ fn adversarial_corners(samples: u64, seed: u64) -> (usize, usize) {
             prev = held;
         }
         let held = w.held();
-        inc.update_touched(&held, &touched(&prev, &held));
+        update_moved(&mut inc, &held, &prev);
         if let Some(d) = check(&held, &inc, &n) {
             panic!("seed {seed:#x} sample {s} (all records): {d}");
         }
@@ -1622,7 +1622,7 @@ fn adversarial_falls(samples: u64, seed: u64) -> (usize, usize) {
             }
             i += take;
             let held = w.held_without(&skip);
-            inc.update_touched(&held, &touched(&prev, &held));
+            update_moved(&mut inc, &held, &prev);
             appended += inc.appended();
             placed += inc.placed();
             if let Some(d) = check(&held, &inc, &n) {
@@ -1898,7 +1898,7 @@ fn creation_histories(samples: u64, seed: u64) -> usize {
             i += take;
             let held = held_now(&skip, &created);
             let t = touched(&prev, &held);
-            let a = fast.update_touched(&held, &t);
+            let a = update_moved(&mut fast, &held, &prev);
             let b = general.update_touched(&held, &t);
             appended += fast.appended();
             // The general path may report more: when several old components merge it continues
@@ -1970,7 +1970,7 @@ fn merge_continues_the_larger_component_spec_permissions_5_1() {
         inc.set_general_only(general_only);
         inc.update(&prev);
         assert!(!std::ptr::eq(inc.get(&lone).unwrap(), inc.get(&b).unwrap()));
-        let ch = inc.update_touched(&held, &touched(&prev, &held));
+        let ch = update_moved(&mut inc, &held, &prev);
         assert!(ch.evaluated.is_empty(), "{ch:?}");
         let want: BTreeSet<Tid> = if general_only { [lone, b].into() } else { [b].into() };
         assert_eq!(ch.extended, want, "general only: {general_only}");
@@ -2012,4 +2012,161 @@ fn saved_walk_keeps_keep_spec_permissions_3() {
     assert!(back.restored() > 0, "restored, not walked");
     let ended = back.get(&g).unwrap().ended(&g, ts(100));
     assert_eq!(ended.get(&n[1]).unwrap().0, osis_perm::EdgeEnd::Said(true));
+}
+
+thread_local! {
+    /// Whether `update_moved` checks what it reports (the `role_moves_*` tests turn it on).
+    static MOVES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Every (node, thing) answer validity and sync read of the timeline: roles and demotions, and
+/// validity at `points` for a delta of the node's with no frontier naming it, or its own commit.
+fn answers(inc: &Timelines, nodes: &BTreeSet<Tid>, things: &BTreeSet<Tid>, points: &BTreeSet<osis_perm::Point>) -> BTreeMap<(Tid, Tid), String> {
+    use std::fmt::Write;
+    let none = osis_perm::Validity::Invalid { by: None };
+    let mut out = BTreeMap::new();
+    for t in things {
+        let tl = inc.get(t);
+        for n in nodes {
+            let mut a = format!("{:?} {:?} {:?}", tl.map_or(osis_perm::Class::None, |tl| tl.class(n, t, At::END)), tl.and_then(|tl| tl.role(n, t, At::END)), tl.map_or(&[][..], |tl| tl.demotions(n, t)));
+            for p in points {
+                let _ = write!(a, " {:?}", tl.and_then(|tl| tl.role(n, t, At::before(*p))));
+                for r in [osis_base::Role::Read, osis_base::Role::Write, osis_base::Role::Admin] {
+                    let any = osis_perm::Point { node: *n, commit: osis_base::CommitId([0xee; 32]), ..*p };
+                    let _ = write!(a, " {:?}", tl.map_or(none, |tl| tl.delta_valid(any, t, r)));
+                    if p.node == *n {
+                        let _ = write!(a, " {:?}", tl.map_or(none, |tl| tl.delta_valid(*p, t, r)));
+                    }
+                }
+            }
+            out.insert((*n, *t), a);
+        }
+    }
+    out
+}
+
+/// The invite grants applied, by write: (author, target), what `validity::valid_on` reads beside roles.
+fn invite_grants(inc: &Timelines, things: &BTreeSet<Tid>) -> BTreeMap<WriteId, (Tid, Tid)> {
+    let mut out = BTreeMap::new();
+    for tl in things.iter().filter_map(|t| inc.get(t)) {
+        out.extend(tl.applied().iter().filter(|(_, a)| matches!(a.attr, osis_perm::Attr::By(osis_perm::Class::Invite(_)))).map(|(w, a)| (*w, (a.author, a.target))));
+    }
+    out
+}
+
+/// `update_touched`, with `MOVES` checking the rule the engine's and sync's narrow paths rest on
+/// (`Core::timelines_changed`, `SyncEngine::note_role_moves`): an answer about (node, thing)
+/// differs only where the thing's component was evaluated, it is below a new record, or the node
+/// is upstream of a reported edge's holder or new record and the thing reachable from its target or
+/// that record; in the walk's past too, and however the node stands now.
+fn update_moved(inc: &mut Timelines, held: &osis_perm::MemoryHeldSet, prev: &osis_perm::MemoryHeldSet) -> osis_perm::Changed {
+    let t = touched(prev, held);
+    if !MOVES.get() {
+        return inc.update_touched(held, &t);
+    }
+    // holder -> target and owner -> owned, of any validity: `Held::named_on`, `Held::owned`
+    let mut down: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+    let mut up: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+    let mut owned: BTreeMap<Tid, BTreeSet<Tid>> = BTreeMap::new();
+    let mut link = |a: Tid, b: Tid| {
+        down.entry(a).or_default().insert(b);
+        up.entry(b).or_default().insert(a);
+    };
+    let mut nodes = BTreeSet::new();
+    let mut points = BTreeSet::new();
+    for c in held.commits.values().flatten() {
+        nodes.insert(c.author);
+        points.insert(c.point());
+        for o in &c.ops {
+            nodes.insert(o.holder);
+            link(o.holder, o.target);
+        }
+    }
+    for s in held.snapshots.values().flatten() {
+        nodes.insert(s.author);
+        points.insert(s.point());
+        for m in s.roster.keys().chain(s.ledger.iter().map(|l| &l.holder)) {
+            nodes.insert(*m);
+            link(*m, s.thing);
+        }
+    }
+    for (x, r) in &held.created {
+        match r.owner_link() {
+            osis_base::Owner::Actor(o) => {
+                link(o, *x);
+                owned.entry(o).or_default().insert(*x);
+            }
+            osis_base::Owner::Ownerless(o) => {
+                link(o, *x);
+                nodes.insert(o);
+            }
+            _ => {}
+        }
+        if matches!(r, osis_base::CreationRecord::KeyActor { .. }) {
+            nodes.insert(*x);
+        }
+    }
+    let closure = |from: BTreeSet<Tid>, by: &BTreeMap<Tid, BTreeSet<Tid>>| {
+        let (mut out, mut stack) = (BTreeSet::new(), from.into_iter().collect::<Vec<_>>());
+        while let Some(x) = stack.pop() {
+            if out.insert(x) {
+                stack.extend(by.get(&x).into_iter().flatten().copied());
+            }
+        }
+        out
+    };
+    let mut things: BTreeSet<Tid> = held.things().into_iter().collect();
+    things.extend(prev.things());
+    // a thing with no timeline holds no delta to judge (a node only named till now)
+    things.retain(|t| inc.get(t).is_some() || held.created.contains_key(t));
+    let before = answers(inc, &nodes, &things, &points);
+    let grants = invite_grants(inc, &things);
+    let c = inc.update_touched(held, &t);
+    let after = answers(inc, &nodes, &things, &points);
+    let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
+    let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
+    let (subjects, reached, below) = (closure(holders, &up), closure(targets, &down), closure(c.created.clone(), &owned));
+    let covered = |n: &Tid, t: &Tid| c.evaluated.contains(t) || below.contains(t) || subjects.contains(n) && reached.contains(t);
+    for (k, a) in &after {
+        assert!(*a == before[k] || covered(&k.0, &k.1), "an answer about {:?} on {:?} moved unreported: edges {:?}, created {:?}\nwas {}\nnow {a}", k.0, k.1, c.edges, c.created, before[k]);
+    }
+    let new = invite_grants(inc, &things);
+    let old_ids: BTreeSet<osis_base::CommitId> = prev.commits.values().flatten().map(|c| c.id).collect();
+    for (w, k) in grants.iter().filter(|(w, _)| !new.contains_key(*w)).chain(new.iter().filter(|(w, _)| !grants.contains_key(*w))) {
+        let held_before = match w {
+            WriteId::Op(id, _) => old_ids.contains(id),
+            WriteId::Snapshot(_) => true,
+        };
+        // the engine judges again the commits writing a reported edge (`Core::timelines_changed`)
+        let own = match w {
+            WriteId::Op(id, i) => held.commits.values().flatten().find(|c| c.id == *id).and_then(|c| c.ops.get(*i as usize)).is_some_and(|o| c.edges.contains(&(o.holder, o.target))),
+            WriteId::Snapshot(_) => false,
+        };
+        assert!(!held_before || own || covered(&k.0, &k.1), "invite grant {w:?} of {:?} on {:?} moved unreported: edges {:?}", k.0, k.1, c.edges);
+    }
+    c
+}
+
+/// A role moves only as `Changed` says (`update_moved`) under each generator's histories.
+fn moves_on(samples: u64, seed: u64) {
+    MOVES.set(true);
+    run(samples, seed);
+    adversarial(samples, seed ^ 1);
+    adversarial_shapes(samples, seed ^ 2);
+    adversarial_corners(samples, seed ^ 3);
+    adversarial_falls(samples, seed ^ 4);
+    creation_histories(samples, seed ^ 5);
+    MOVES.set(false);
+}
+
+// spec/permissions.md §5, §5.2, §6: what the engine re-judges and a pass looks at follows `Changed`.
+#[test]
+fn role_moves_as_reported_spec_permissions_5_2() {
+    moves_on(2, 0x5eed_0b01);
+}
+
+#[test]
+#[ignore]
+fn role_moves_as_reported_large() {
+    sharded(320, 0x5eed_0b02, moves_on);
 }

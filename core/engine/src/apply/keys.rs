@@ -293,7 +293,8 @@ pub(crate) fn secrets_patch(read: &mut ct::Secrets, delta: &Fragment, state: &Fr
             _ => None,
         }
     }
-    if delta.reset().is_some() || [0, 1].iter().any(|i| field(delta, *i).is_some_and(|f| f.reset().is_some())) {
+    let plain = matches!(delta, Fragment::Struct(_)) && [0, 1].iter().all(|i| field(delta, *i).is_none_or(|f| matches!(f, Fragment::Map(_)) && f.reset().is_none()));
+    if delta.reset().is_some() || !plain {
         return false;
     }
     for (_, _, k, _) in map(field(delta, 0)).into_iter().flat_map(|m| m.entries()) {

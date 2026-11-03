@@ -227,6 +227,24 @@ impl Work {
         self.keys |= o.keys;
     }
 
+    /// What grows with changes elsewhere until the next pass.
+    pub fn waiting(&self) -> usize {
+        self.commits.len() + self.blobs.len() + self.states.len() + self.whole.len() + self.moved.len() + self.roles.reached.len()
+    }
+
+    /// Past `max` waiting, the next pass judges everything instead (`SyncConfig::work_max`).
+    pub fn bound(&mut self, max: usize) {
+        if self.waiting() > max {
+            self.full = true;
+            self.commits.clear();
+            self.blobs.clear();
+            self.states.clear();
+            self.whole.clear();
+            self.moved.clear();
+            self.roles = RoleMoves::default();
+        }
+    }
+
     /// Takes what pass left to do (`Left`) as the next pass's set.
     pub fn leave(&mut self, left: Left) {
         self.full = false;

@@ -783,6 +783,12 @@ impl Core {
     fn timelines_changed(&mut self, c: osis_perm::Changed) {
         self.stale_things.extend(c.evaluated);
         self.stale_things.extend(self.ix.held.below(&c.created));
+        // a write on a changed edge may have stopped or started applying, whoever signed it, and
+        // an invite grant's boxes rest on that (`validity::valid_on`)
+        for (h, t) in &c.edges {
+            let on = self.ix.held.commits_on(t).iter().filter(|r| r.ops.iter().any(|o| o.target == *t && o.holder == *h));
+            self.stale_commits.extend(on.map(|r| r.id));
+        }
         let holders: BTreeSet<Tid> = c.edges.iter().map(|p| p.0).chain(c.created.iter().copied()).collect();
         let targets: BTreeSet<Tid> = c.edges.iter().map(|p| p.1).chain(c.created.iter().copied()).collect();
         self.stale_authors.extend(self.ix.held.upstream(&holders));
@@ -790,6 +796,20 @@ impl Core {
         if let Some(s) = &mut self.changed {
             s.edges.extend(c.edges);
         }
+    }
+
+    /// The commits of `index` (by (thing, author)) on `under` by `authors`: O(the things and their
+    /// authors), not their product.
+    fn by_authors<'a>(index: &'a JSetMap<(Tid, Tid), CommitId>, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> impl Iterator<Item = CommitId> + 'a {
+        under.iter().flat_map(move |t| {
+            let t = *t;
+            index.range((t, Tid::from_bytes([0; 15]))..).take_while(move |((x, _), _)| *x == t).filter(|((_, a), _)| authors.contains(a)).flat_map(|(_, s)| s.iter().copied())
+        })
+    }
+
+    /// The commits on `under` by `authors` (`rejudge_once`), and those acting for one of `under`.
+    pub(crate) fn authored_under<'a>(&'a self, under: &'a BTreeSet<Tid>, authors: &'a BTreeSet<Tid>) -> (impl Iterator<Item = CommitId> + 'a, impl Iterator<Item = CommitId> + 'a) {
+        (Self::by_authors(&self.ix.by_thing, under, authors), Self::by_authors(&self.ix.by_actor, under, authors))
     }
 
     /// The held commits acting for `actor` by another author (a range of `by_actor`).
@@ -1872,7 +1892,7 @@ impl Engine {
                     tx.core.history_changes();
                 }
                 // every validity change was judged before the index is persisted
-                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?}", tx.core.stale_things, tx.core.stale_commits);
+                debug_assert!(r.is_err() || (tx.core.stale_things.is_empty() && tx.core.stale_authors.is_empty() && tx.core.stale_commits.is_empty()), "stale validity left unjudged: {:?} {:?} {:?}", tx.core.stale_things, tx.core.stale_authors, tx.core.stale_commits);
                 let persisted = {
                     let _s = crate::costs::span("tx: persist index");
                     r.and_then(|v| index::persist(&mut tx).map(|_| v))
