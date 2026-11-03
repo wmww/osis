@@ -124,6 +124,11 @@ pub struct SyncConfig {
     pub unvouched_cap: usize,
     /// Every pass judges everything (no work sets): a check that the work sets miss no trigger.
     pub full_passes: bool,
+    /// What a label's work set may hold waiting for its next pass: past it the set goes and that
+    /// pass judges everything. Memory bound, labels a post does not pass wait till their resync
+    /// (a performance switch: 0 makes every pass full, infinity holds 32 B per message since
+    /// that pass, per label).
+    pub work_max: usize,
     /// Ephemeral bytes per label this node holds from others (notes/ephemeral.md Bounds): past
     /// it, further ephemeral commits of that label are not applied (`EphemeralRefused`).
     pub ephemeral_bytes: u64,
@@ -154,6 +159,7 @@ impl Default for SyncConfig {
             peer_pass_wait_ms: 300_000,
             unvouched_cap: 1 << 16,
             full_passes: false,
+            work_max: 1 << 14,
             ephemeral_bytes: 16 << 20,
         }
     }
@@ -1162,6 +1168,7 @@ impl SyncEngine {
         let t = std::mem::take(&mut self.touched);
         let st = std::mem::take(&mut self.state.touched);
         let carriers = std::mem::take(&mut self.state.touched_commits);
+        let max = self.cfg.work_max;
         let conns = self.conns.values_mut().flat_map(|c| c.labels.iter_mut().map(|(l, lc)| (l, &mut lc.work)));
         for (l, w) in conns.chain(self.local_work.iter_mut()) {
             w.full |= t.full;
@@ -1179,6 +1186,7 @@ impl SyncEngine {
                     state::Touch::Blob(b) => w.blobs.insert(*b),
                 };
             }
+            w.bound(max);
         }
     }
 
@@ -2072,6 +2080,11 @@ impl SyncEngine {
     /// What passes did so far (scale checks).
     pub fn pass_stats(&self) -> PassStats {
         PassStats { examined: self.engine.examined(), ..self.stats }
+    }
+
+    /// The most any label's work set holds waiting for its pass (`SyncConfig::work_max`).
+    pub fn work_waiting(&self) -> usize {
+        self.conns.values().flat_map(|c| c.labels.values().map(|l| &l.work)).chain(self.local_work.iter().map(|x| x.1)).map(work::Work::waiting).max().unwrap_or(0)
     }
 
     /// Whether every open label on every connection has completed a pass and nothing is

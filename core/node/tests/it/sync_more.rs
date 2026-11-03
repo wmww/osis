@@ -1428,6 +1428,39 @@ fn role_change_judges_only_its_labels_spec_sync_6() {
     assert!(s3.bodies - s2.bodies < 6, "the add's bodies alone: {}", s3.bodies - s2.bodies);
 }
 
+// spec: none (memory, spec/requirements.md Scale): posts leave work at the labels they do not pass
+// only up to `work_max`; past it that label's next pass judges everything, and the set is empty after.
+#[test]
+fn work_waiting_bounded_spec_sync_6() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let addr = net.address(host);
+    let g0 = net.group_seeded(a, &[(b, Role::Read)], vec![addr.clone()], 1);
+    let _idle = net.group_seeded(a, &[(b, Role::Read)], vec![addr], 2);
+    let t = net.item(a, g0, g0, "t");
+    net.run();
+    net.advance(61_000);
+    net.run();
+    let cap = 16;
+    net.sync(a).config_mut().work_max = cap;
+    let s0 = net.sync(a).pass_stats();
+    let mut most = 0;
+    for i in 0..3 * cap {
+        net.write(a, t, &format!("v{i}"));
+        net.run();
+        most = most.max(net.sync(a).work_waiting());
+    }
+    assert!(most <= 2 * cap, "the bound holds: {most}");
+    assert!(most > cap / 2, "the idle label waited: {most}");
+    assert_eq!(net.sync(a).pass_stats().full, s0.full, "the label holding the posts is not full");
+    net.advance(61_000);
+    net.run();
+    assert!(net.sync(a).pass_stats().full > s0.full, "past the bound its next pass is full");
+    assert!(net.sync(a).work_waiting() < cap / 2, "and nothing waits after: {}", net.sync(a).work_waiting());
+}
+
 // spec/sync.md §5 (an open holds under the head's sync key): a removed reader still connected
 // and subscribed when the remover registers the new step (ignoring all it is sent from then on)
 // is told of no entry added after it, while the remaining reader and the admin go on over the

@@ -532,6 +532,11 @@ impl Timeline {
         &self.walked.history
     }
 
+    /// The edge state before the walk's changes (an epoch start's roster, first admins).
+    pub(crate) fn initial(&self) -> &crate::graph::Edges {
+        &self.walked.initial
+    }
+
     /// The current edge state.
     pub(crate) fn edges(&self) -> &crate::graph::Edges {
         &self.walked.edges
