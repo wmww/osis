@@ -1145,7 +1145,9 @@ struct Oracle {
     /// On aspects of the commits the oracle took beyond the node's, its deaths of held snapshots
     /// before it took them: a write only it holds may die later than any the node knows, under a
     /// stamp a held snapshot shares (a creation's), so a snapshot's last death there is judged
-    /// against what the node's own held set gives.
+    /// against what the node's own held set gives, or against the oracle's final date where that
+    /// is earlier: before taking, it played the taken commits' writes at their snapshot's `ts`, not
+    /// their own, which the node uses (spec/crdt.md §4.8; seed 9410015). None before: not judged.
     took: Deaths,
     /// `register_deaths`: bodies judged and how many died, or the first mismatch.
     registers: Result<(u64, u64), String>,
@@ -1311,7 +1313,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                 let ok = match (x, y, copies) {
                     (Some(x), Some(y), false) => x.0 >= y.0 && x.1 >= y.1,
                     (None, None, false) | (_, None, true) => true,
-                    (x, Some(y), true) => o.took.get(&k).map_or(Some(y), |b| *b).is_none_or(|y| x.is_some_and(|x| x.1 >= y.1)),
+                    (x, Some(y), true) => o.took.get(&k).map_or(Some(y), |b| b.map(|b| if b.1 < y.1 { b } else { y })).is_none_or(|y| x.is_some_and(|x| x.1 >= y.1)),
                     _ => false,
                 };
                 if !ok && !(x.is_none() && !copies && orphaned(e, &id, a.tid, &a.ak, y)) {
@@ -3825,6 +3827,11 @@ fn arrival_order_found_histories_spec_crdt_4_6() {
     // differed)
     let h = vec![Nested { by: 1, other: 2, t: 1, k: 1, text: false, compact: true, also: true }, NewTop { by: 1 }, Typed { by: 2, t: 3, op: 8, k: 2, v: 4 }, NestedItem { by: 2, other: 0, t: 6, k: 1, compact: true, also: false }, Roster { by: 0, t: 3 }, Demote { by: 2, t: 4, holder: 2, at: 4, to_read: false }, Typed { by: 2, t: 4, op: 28, k: 1, v: 9 }, Edge { by: 2, t: 1, holder: 1, role: None }, Nested { by: 0, other: 1, t: 6, k: 0, text: false, compact: true, also: true }, Sync { from: 1, to: 0 }, Advance { who: None, ms: 6831206 }, Compact { by: 1, t: 4, op: 4 }, Compact { by: 0, t: 7, op: 4 }];
     cases.push((5288, h.into_iter().map(|s| if matches!(s, Advance { .. } | Sync { .. } | NewTop { .. }) { s } else { Aim(Box::new(s)) }).collect(), synced));
+    // seq_compact seed 9410015 (spec/crdt.md §4.8): a held snapshot carries a write whose own
+    // commit is not held, at that write's own `ts`, killing another snapshot's last write there;
+    // the oracle, before taking that commit, played it at its snapshot's `ts` and dated later
+    let h = vec![aim(Typed { by: 1, t: 0, op: 24, k: 1, v: 4 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 2 }), aim(Typed { by: 1, t: 0, op: 23, k: 0, v: 4 }), aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 0 }), aim(Typed { by: 1, t: 0, op: 23, k: 1, v: 6 }), aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 2 }), Compact { by: 1, t: 0, op: 11 }, Compact { by: 2, t: 0, op: 11 }, aim(Typed { by: 1, t: 0, op: 11, k: 1, v: 3 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 5 }), aim(Typed { by: 2, t: 0, op: 24, k: 1, v: 7 }), aim(Undo { by: 2, back: 2 }), Compact { by: 2, t: 0, op: 24 }, aim(Undo { by: 2, back: 2 }), Sync { from: 2, to: 0 }, aim(Typed { by: 0, t: 0, op: 11, k: 0, v: 0 }), Compact { by: 0, t: 0, op: 23 }];
+    cases.push((9410015, h, synced));
     // in parallel: the slowest test of the module otherwise
     let idx: Vec<u64> = (0..cases.len() as u64).collect();
     let results = par_map(&idx, threads("OSIS_ORDER_THREADS"), |i| {
