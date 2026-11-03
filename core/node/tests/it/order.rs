@@ -1241,7 +1241,7 @@ fn dating(p: &mut Peer, o: &Oracle, now: WallMs) -> Option<String> {
                     (x, Some(y), true) => o.took.get(&k).map_or(Some(y), |b| *b).is_none_or(|y| x.is_some_and(|x| x.1 >= y.1)),
                     _ => false,
                 };
-                if !ok && !(x.is_none() && orphaned(e, &id, a.tid, &a.ak, y)) {
+                if !ok && !(x.is_none() && !copies && orphaned(e, &id, a.tid, &a.ak, y)) {
                     return Some(format!("death dated early or missing: {what}"));
                 }
                 if r.at_most.rel == Some(0) && x.is_some() && !e.body_live(&id, &a.tid, &a.ak).unwrap() {
@@ -1298,7 +1298,7 @@ fn facts_text(e: &mut osis_node::Engine) -> String {
             let low = if copies { e.body_min_ts(&id, &a.tid, &a.ak).unwrap().map_or("-".into(), |t| format!("{t:?}")) } else { "-".to_string() };
             let orphan = !copies && orphan_here(e, &id, a.tid, &a.ak);
             let missing = e.core.ix.commits.get(&id).is_some_and(|m| m.missing.contains(&ai));
-            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}|{missing}", a.tid, a.ak.as_str(), h.ts);
+            let _ = writeln!(facts, "{id:?}|{:?}|{}|{at_most}|{held}|{valid}|{:?}|{approx}|{owns}|{copies}|{low}|{orphan}|{missing}|{ai}", a.tid, a.ak.as_str(), h.ts);
             aspects.insert((a.tid, a.ak.clone()));
         }
     }
@@ -1424,10 +1424,12 @@ struct Fact {
     orphan: bool,
     /// Missing (counting as never received, as after a fall) when judged.
     missing: bool,
+    /// Its aspect's index in the commit.
+    ai: usize,
 }
 
 impl Fact {
-    /// Whether a dot as a state prints it (`NTid(..):ctr`) is one of this body's.
+    /// Whether a dot as a state prints it (`STid(..)/sess:ctr`) is one of this body's.
     fn owns_dot(&self, dot: &str) -> bool {
         let (Some((src, r)), Some((d, ctr))) = (self.owns.rsplit_once(':'), dot.rsplit_once(':')) else { return false };
         let (Some((lo, hi)), Ok(ctr)) = (r.split_once('-'), ctr.parse::<u64>()) else { return false };
@@ -1467,7 +1469,8 @@ fn bare_records(state: &str) -> (Vec<String>, String) {
         *out = out.replace("{, ", "{").replace(", }", "}").replace(", , ", ", ");
     };
     while let Some(i) = out.find(ELEM) {
-        let Some(start) = out[..i].rfind("NTid(") else { break };
+        // the element's dot follows the map's `{` or the previous element's `, `
+        let start = out[..i].rfind('{').map_or(0, |j| j + 1).max(out[..i].rfind(", ").map_or(0, |j| j + 2));
         let Some(end) = out[i..].find('}').map(|j| i + j + 1) else { break };
         dots.push(out[start..i].to_string());
         cut(&mut out, start, end);
@@ -1506,7 +1509,7 @@ fn facts_of(text: &str) -> (Facts, Invalid) {
             continue;
         }
         let b = |i: usize| f[i] == "true";
-        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11), missing: b(12) });
+        out.insert((f[0].into(), f[1].into(), f[2].into()), Fact { at_most: b(3), held: b(4), valid: b(5), ts: ts_of(f[6]), approx: b(7), owns: f[8].into(), copies: b(9), low: (f[10] != "-").then(|| ts_of(f[10])), orphan: b(11), missing: b(12), ai: f[13].parse().unwrap() });
     }
     (out, inv)
 }
@@ -1591,8 +1594,11 @@ fn alike(want: &Judged, got: &Judged, flips: &dyn Fn(&str, &str) -> bool) -> Opt
             let orphan = |c: &CommitId| {
                 let (Some(x), Some(y)) = (w.commits.get(c), g.commits.get(c)) else { return false };
                 let id = format!("{c:?}");
-                let held_orphan = |a: &Facts, b: &Facts| a.iter().any(|(k, f)| k.0 == id && f.orphan && b.get(k).is_some_and(|o| !o.orphan));
-                x.dropped != y.dropped && CommitDigest { dropped: y.dropped.clone(), ..x.clone() } == *y && (held_orphan(&wf, &gf) || held_orphan(&gf, &wf))
+                // the parts orphan-held at one node and not at the other: exactly those dropped at one
+                let held_orphan = |a: &Facts, b: &Facts| a.iter().filter(|(k, f)| k.0 == id && f.orphan && b.get(*k).is_some_and(|o| !o.orphan)).map(|(_, f)| f.ai).collect::<BTreeSet<_>>();
+                let mut orphans = held_orphan(&wf, &gf);
+                orphans.extend(held_orphan(&gf, &wf));
+                x.dropped != y.dropped && CommitDigest { dropped: y.dropped.clone(), ..x.clone() } == *y && x.dropped.symmetric_difference(&y.dropped).copied().collect::<BTreeSet<_>>() == orphans
             };
             // ... and counted held there: `bounded_held` differs per aspect by those bodies alone
             let orphans_counted = || {
