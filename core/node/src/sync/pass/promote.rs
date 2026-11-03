@@ -16,7 +16,11 @@ impl SyncEngine {
                 continue;
             }
             let seen = *self.deposit_seen.entry((host, l, id)).or_insert(raw);
-            let due = seen.saturating_add(self.relay_delay(&id.0));
+            // by what it carries: a blob's ID is the luck of its sealing
+            let due = seen.saturating_add(match &e.kind {
+                Kind::Commit { commit, .. } => self.relay_delay(&commit.0),
+                _ => self.relay_delay(&id.0),
+            });
             if raw < due {
                 self.settle_by(due, l);
                 continue;
@@ -176,7 +180,7 @@ impl SyncEngine {
         Ok(Some(out))
     }
 
-    /// This node's wait before relaying another node's blob `key` (`RELAY_MIN_MS` to
+    /// This node's wait before relaying another node's blob, named by `key` (`RELAY_MIN_MS` to
     /// `SETTLE_MS`, fixed per node and blob, so co-writers draw different points).
     pub(super) fn relay_delay(&self, key: &[u8]) -> u64 {
         let mut h = osis_base::hash::Hasher::new();

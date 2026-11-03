@@ -3,6 +3,8 @@
 //! skew}.rs), one seed each. Every run ends with the quiescent invariants. Scenarios an engine bug
 //! breaks are ignored with the issue's name; all but the quickest few
 //! (osis-sim's whole tier 1 stays near 10 s) are tier 2 (`-- --ignored`) and swept nightly by `sim-sweep`.
+//! A `_seed_N` test names what that seed once hit: a seed keeps a run only while the sim's dice and
+//! the code it runs stay, so most are plain runs by now, and the fix's own test is what pins it.
 
 use osis_sim::{Report, replay};
 

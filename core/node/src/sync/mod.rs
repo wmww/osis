@@ -53,6 +53,9 @@ pub use state::Kind as EntryKind;
 
 /// The earliest Tick asked for after any event (ms).
 const MIN_WAKE_MS: u64 = 1_000;
+/// Rounds of passes a step runs on what its passes marked (minor: a chain longer than this waits
+/// for the next event, as all of it did at 0; unbounded, a pass marking itself would spin).
+const PASS_AGAIN: usize = 8;
 
 /// A body: its commit and parts `(ai, di)`.
 type BodyKey = (osis_base::CommitId, Vec<(usize, usize)>);
@@ -452,19 +455,14 @@ impl SyncEngine {
             self.wake = None;
             self.last_tick = self.raw_now();
         }
-        // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
-        self.engine.core.defer_deaths = true;
-        let r = self.step(ev, &mut out).and_then(|()| self.redeliver());
-        // off whatever the step returned: left on, no later transaction would settle
-        let settled = self.engine.defer_deaths(false);
-        for e in [r.err(), settled.err()].into_iter().flatten() {
-            self.diag(format!("sync: {e}"));
-        }
-        // what the passes' recomputes marked: judged by the next pass
-        if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
-            && let Err(e) = self.engine_events()
-        {
-            self.diag(format!("sync: {e}"));
+        let mut ok = self.settled_step(ev, &mut out);
+        // what the passes marked (a refetch applied commits, an admin recorded a step) passes now,
+        // not at whatever event comes next; a step that failed (a store gone) tries no more
+        for _ in 0..PASS_AGAIN {
+            if !ok || self.dirty_labels().is_empty() {
+                break;
+            }
+            ok = self.settled_step(Event::Local, &mut out);
         }
         // to the open labels' work sets now: with none (offline, LAN or local labels only) the
         // changes go (a label opened later judges everything)
@@ -490,6 +488,27 @@ impl SyncEngine {
             out.push(Action::Wake { at });
         }
         out
+    }
+
+    /// `step` and what it left for the engine to settle; whether all went well.
+    fn settled_step(&mut self, ev: Event, out: &mut Vec<Action>) -> bool {
+        // one deaths recompute per aspect per step (validity flips, un-merges) (`retention::mark_deaths_due`)
+        self.engine.core.defer_deaths = true;
+        let r = self.step(ev, out).and_then(|()| self.redeliver());
+        // off whatever the step returned: left on, no later transaction would settle
+        let settled = self.engine.defer_deaths(false);
+        let mut ok = r.is_ok() && settled.is_ok();
+        for e in [r.err(), settled.err()].into_iter().flatten() {
+            self.diag(format!("sync: {e}"));
+        }
+        // what the passes' recomputes marked: judged by the next pass
+        if self.engine.core.changed.as_ref().is_some_and(|c| !c.is_empty())
+            && let Err(e) = self.engine_events()
+        {
+            ok = false;
+            self.diag(format!("sync: {e}"));
+        }
+        ok
     }
 
     fn step(&mut self, ev: Event, out: &mut Vec<Action>) -> Result<()> {

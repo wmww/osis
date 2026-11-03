@@ -19,7 +19,7 @@ use std::collections::BTreeSet;
 pub const DAY_MS: u64 = 86_400_000;
 
 pub fn lossy() -> LinkFaults {
-    LinkFaults { cut_pct: 2, dup_pct: 1, max_delay_ms: 3_000, reorder: true }
+    LinkFaults { cut_pct: 2, dup_pct: 1, max_delay_ms: 3_000 }
 }
 
 pub fn clock(d: &mut Dice) -> ClockSpec {
