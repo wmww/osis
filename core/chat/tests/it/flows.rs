@@ -526,6 +526,117 @@ fn creator_on_a_new_device_spec_sync_3() {
     assert_eq!(texts(&r, c), ["hello", "from two"], "restored");
 }
 
+// spec/permissions.md §5.1, §5.2: a member's write stamped after its kick reaches another member before the kick does: once the kick is there it is hidden from others, an edit of the member's older message by it answers for nothing; its own node shows it, marked; a watch says it turned invalid
+#[test]
+fn turned_invalid_at_a_reader_spec_perm_5() {
+    let Room { mut w, a, b, c, bob } = room(Options::default());
+    let (d, _) = w.person(3, &[0]);
+    w.run();
+    let dee = meet(&mut w, &a, &d);
+    add(&a, c, dee, Role::Write).unwrap();
+    w.run();
+    let old = post(&b, c, "old").unwrap();
+    w.run();
+    w.advance(1000);
+    w.set_online(&a, false);
+    w.until(kick(&a, c, bob, None, WaitForSync::Skip), 1000, 10).unwrap();
+    w.advance(1000);
+    let m = find(&b, c, &old).unwrap().unwrap();
+    let edit_id = edit(&b, c, &m, "rewritten").unwrap();
+    let late = post(&b, c, "late").unwrap();
+    w.run();
+    assert_eq!(texts(&d, c).last().unwrap(), "late", "there before the kick");
+    assert_eq!(find(&d, c, &edit_id).unwrap().unwrap().body, Body::Text("rewritten".into()));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _s = watch(&d, c, move |_, e| tx.send(e).unwrap()).unwrap();
+    w.set_online(&a, true);
+    w.advance(60_000);
+    w.run();
+    d.settle();
+    let t = texts(&d, c);
+    assert!(!t.contains(&"late".to_string()) && !t.contains(&"rewritten".to_string()), "{t:?}");
+    assert!(rx.try_iter().any(|e| matches!(e, Event::Entry(e) if e.id == late && !e.valid)));
+    b.settle();
+    assert!(!find(&b, c, &late).unwrap().unwrap().valid, "its own, marked");
+    assert_eq!(find(&b, c, &edit_id).unwrap().unwrap().id, edit_id, "an invalid edit replaces nothing");
+}
+
+// spec/permissions.md §5.2: an edit's list of what it answers for hides only its sender's own tombstones: a member naming another's deleted message hides nothing
+#[test]
+fn forged_prior_hides_no_tombstone_spec_perm_5() {
+    let Room { mut w, a, b, c, .. } = room(Options::default());
+    let hers = post(&a, c, "hers").unwrap();
+    w.run();
+    w.advance(10);
+    let his = post(&b, c, "his").unwrap();
+    w.run();
+    delete(&a, c, &find(&a, c, &hers).unwrap().unwrap()).unwrap();
+    w.run();
+    write_raw_replaces(&b, c, "his, edited", &Replaces { original: his, prior: vec![hers, his] });
+    w.run();
+    assert_eq!(texts(&a, c), ["<deleted>", "his, edited"]);
+}
+
+// spec: none (notes/chat.md Read): a cursor goes by arrival: a member's post made offline, stamped before what the reader has seen, comes after the cursor; any entry's id is a cursor; nothing new reads as nothing
+#[test]
+fn late_post_comes_after_a_cursor_spec_none() {
+    let Room { mut w, a, b, c, .. } = room(Options::default());
+    let first = post(&a, c, "first").unwrap();
+    w.run();
+    w.set_online(&b, false);
+    w.advance(1000);
+    let late = post(&b, c, "from the train").unwrap();
+    w.advance(1000);
+    let seen = post(&a, c, "seen").unwrap();
+    w.run();
+    let got = since(&a, c, Some(&first), 10).unwrap();
+    assert_eq!(got.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [seen]);
+    let at = got.cursor.unwrap();
+    assert_eq!(cursor(&a, c).unwrap(), Some(at));
+    w.set_online(&b, true);
+    w.advance(60_000);
+    w.run();
+    assert!(late.pos < seen.pos);
+    let got = since(&a, c, Some(&at), 10).unwrap();
+    assert_eq!(got.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
+    assert_eq!(got.cursor, Some(late), "it arrived last");
+    assert_eq!(cursor(&a, c).unwrap(), Some(late));
+    assert!(since(&a, c, Some(&late), 10).unwrap().messages.is_empty());
+    // by the page: one at a time, none lost
+    let page = since(&a, c, None, 2).unwrap();
+    assert!(page.more);
+    assert_eq!(page.messages.len(), 2);
+    let rest = since(&a, c, page.cursor.as_ref(), 2).unwrap();
+    assert_eq!(rest.messages.iter().map(|m| m.id).collect::<Vec<_>>(), [late]);
+}
+
+// spec/permissions.md §9, §3: a link joiner leaves: its edge is on the link's key, so `leave` goes there; it writes no more, keeps its copy, the link's other joiner stays
+#[test]
+fn link_joiner_leaves_spec_perm_9() {
+    let mut w = World::new();
+    let host = w.add_host();
+    let (a, _) = w.person(1, &[host]);
+    let (b, _) = w.person(2, &[host]);
+    let (d, _) = w.person(3, &[host]);
+    w.run();
+    let c = create(&a, &Options::default()).unwrap();
+    let l = link(&a, c, Role::Write, false).unwrap();
+    post(&a, c, "hi").unwrap();
+    w.run();
+    w.until(join(&b, &l), 1000, 30).unwrap();
+    w.until(join(&d, &l), 1000, 30).unwrap();
+    w.run();
+    leave(&b, c).unwrap();
+    w.run();
+    assert!(post(&b, c, "gone").is_err());
+    assert!(b.holder_path(c, b.me()).is_empty());
+    assert_eq!(texts(&b, c), ["hi"], "the leaver's copy");
+    post(&d, c, "still here").unwrap();
+    w.run();
+    assert_eq!(texts(&a, c), ["hi", "still here"]);
+    assert!(!texts(&b, c).contains(&"still here".to_string()));
+}
+
 // spec/permissions.md §9, §5.2: joining by link on a store in use: the joiner is its own verified sender, its name and reply come through; a cursor gives what is new, an edit of an older message as that message; kicking a joiner leaves the link's other joiners
 #[test]
 fn link_join_name_reply_cursor_spec_perm_9() {

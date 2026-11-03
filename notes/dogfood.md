@@ -17,13 +17,17 @@ With `serve` running on the store (the host box), every other `osis` invocation 
 - `status` right after opening says Unreachable for every group: it is a snapshot before the first connection, not a failure; the command's exit code is what counts.
 
 ## The channel as a chat (`osis chat`, notes/chat.md)
-Over the same host (`--admit open`) and daemons; `$C` a chat. No history carried over from the old channel.
-- Make it, on a store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
-- Join, on the other box's existing store, its daemon stopped (`redeem` is not carried through the socket): `osis chat join LINK`, then start `serve` again.
-- Post: `OSIS_CHAT_NAME=me osis chat post $C --subject 'subject' 'markdown, or @FILE, or - for stdin'`, with `--reply-to ID`; prints the id.
-- Read: `osis --json chat read $C` (the newest `--max`, default 50); `... --after CURSOR` for what is new. Each message a line `{id, sender, name, time, state, text, reply_to, edited, earlier, valid}`, a last line `{cursor, more, complete}`: keep the cursor.
-- Listen: `osis --json --timeout 0 chat watch $C --after CURSOR --count 1` prints what lies past the cursor, else waits for the next: no race, and it goes through the daemon's socket beside posts. Then `read --after`. A watch line is one entry: `replaces` set on an edit, `state: deleted` on a deletion.
-- Kick (`osis chat kick $C PERSON`) stops the daemon first, like join; the kicked keeps a read-only copy unless `--erase`.
+No history carried over from the old channel. Set up beside it, so the old channel runs until the switch: `chat` needs a newer binary than the pin, and no newer binary promises to open the old stores. So: a second binary (`bin2/osis`), new stores (`host3/`, `me3/`), a host on another port with that UDP port open (`serve --listen quic://0.0.0.0:<port> --admit open` and the caps above), neither old unit touched. Every command names its store (`-s me3`); each store has its own socket. `$C` a chat. Switch: post the new address and link in the old channel; once both sides read the new one, stop the old units.
+- Each box: `osis -s me3 init --host ADDR`, printing a recovery card to keep.
+- Make it, on one store (a daemon may hold it): `C=$(osis chat create --name channel)`; `osis chat link $C`.
+- Join, on the other box, before starting its daemon (`redeem` is not carried through the socket): `osis chat join LINK`.
+- Daemon on each: `osis serve` (a transient unit, as above). Everything below goes through its socket; it reconnects by itself after a host restart, up to a minute's pause, and a host down at its start is the same.
+- Post: `OSIS_CHAT_NAME=me osis chat post $C --subject 'subject' 'markdown, or @FILE, or - for stdin'`, with `--reply-to ID`; prints the id. With the host down it is queued and goes when the host is back.
+- Read: `osis --json chat read $C` (the newest `--max`, default 50); `... --after CURSOR` for what has arrived since, posts made offline too. Each message a line `{id, sender, name, time, state, text, reply_to, edited, earlier, valid}`, a last line `{cursor, more, complete}`: keep the cursor, one per store; `more`: read again from it.
+- Listen: `osis --json --timeout 0 chat watch $C --after CURSOR --count 1` prints what has arrived past the cursor, else waits for the next: no race, and it runs beside posts. Then `read --after`. Or run it without `--count`, for good: it outlives a daemon restart. A line `{"reread":true}` says events may have been missed: `read --after`. A watch line is one entry: `replaces` set on an edit, `state: deleted` on a deletion, and on the old version just after an edit (edits purge): `read` is the truth. An exit other than a timeout (`watch ended`): start it again.
+- Your own posts wake you too.
+- Kick (`osis chat kick $C PERSON`): stop the daemon first, like join (the command says so); the kicked keeps a read-only copy unless `--erase`. Kicking someone who joined by link ends that link: `chat link` again for the next.
+- Without a daemon: one process per store (`store in use by pid N`, exit 8, beside a running `watch`).
 
 ## Bumping the pinned commit across a store-format change
 Stores made before store-row-padding (d10) fail to open under later binaries (`store corrupt: row padding`), the host store included. A bump then is a cut-over, not a restart: start a second host (new store, another port) with the new binary, make a new group and link, post both in the old channel, and only once both nodes are on the new channel stop the old host. With the daemon (d16), each node store runs `osis serve` permanently and every other command goes through its socket, so the listener never blocks a post.
