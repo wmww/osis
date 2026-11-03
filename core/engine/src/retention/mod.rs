@@ -285,10 +285,9 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     }
     // as covered only with a coverer: the others come back on arrival alone
     let why = if why == DropFor::Cover && covered_by.is_empty() { DropFor::Other } else { why };
-    // a snapshot dropped other than as covered keeps its frontiers and `Absorbed` (counters
-    // and IDs): what it gave still counts as received while it is valid (spec/commits.md §5);
-    // a covered one's coverers reach them
-    let gives = if snapshot && why != DropFor::Cover { tx.core.ix.snapshots.get(&k).and_then(|v| v.iter().find(|x| x.1 == *c)).map(|g| (g.2.clone(), g.3.clone())) } else { None };
+    // a snapshot dropped other than as covered still stands in for what it was stamped after
+    // (spec/commits.md §4, §5); a coverer, stamped no earlier, does for a covered one
+    let stands_in = snapshot && why != DropFor::Cover && tx.core.ix.snapshots.get(&k).is_some_and(|v| v.iter().any(|x| x.1 == *c));
     // a valid snapshot's misstated copies govern while it is held (spec/permissions.md §5.2):
     // dropped, the held deltas give those writes again
     let misstated = if snapshot && m.valid_at(ai) { crate::apply::copies::misstated_by(tx, c, &a.tid, &a.ak)? } else { BTreeSet::new() };
@@ -310,7 +309,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     if held.is_empty() {
         tx.shred_bodies(&a.tid, &a.ak, &[])?;
     }
-    m.dropped.insert(ai, Dropped { covered_by, why, live, gives, role, overreach, keysets, names });
+    m.dropped.insert(ai, Dropped { covered_by, why, live, stands_in, role, overreach, keysets, names });
     // a setting not held binds nothing (`validity::never_could_set`)
     if a.ak.as_str() == osis_commit::retention::REQUIRED {
         let mut settings = tx.core.ix.required.get(&a.tid).cloned().unwrap_or_default();
@@ -335,7 +334,7 @@ fn drop_part_for(tx: &mut Tx<'_>, c: &CommitId, ai: usize, why: DropFor) -> Resu
     let header = m.header.clone();
     let vouched = snapshot && m.valid_at(ai);
     tx.core.put_meta(*c, m);
-    crate::apply::note_gives(tx.core, c);
+    crate::apply::note_stands_in(tx.core, c);
     crate::apply::forget_snapshot(tx.core, &a.tid, &a.ak, c);
     tx.core.forget_live(&a.tid, &a.ak);
     tx.txn.drop_body(&body, &[k])?;
@@ -408,7 +407,7 @@ pub(crate) fn uncover(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<Vec<Owned>>
         suspect::raise(tx, tid, ak, suspect::Why::Uncovered, &lost)?;
     }
     for (c, ai) in lost {
-        // dropped as covered: no frontiers kept (`Dropped::gives`), nothing in `dropped_snapshots`;
+        // dropped as covered: nothing in `dropped_snapshots` (`Dropped::stands_in`);
         // the epochs it introduced or held go too (`keys::rebuild_keysets` below)
         let Some(m) = reopen_to_fetch(tx, &c, ai)? else { continue };
         // its residue, if it went value-less while dropped, came from its coverers' copies
@@ -473,8 +472,8 @@ pub(crate) fn unbreak(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
 fn reopen(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<Option<crate::engine::Meta>> {
     tx.core.touch();
     let Some(mut m) = tx.core.ix.commits.get(c).cloned() else { return Ok(None) };
-    // a snapshot dropped for its keep bounds gives what it gave no more (`Dropped::gives`)
-    if m.dropped.remove(&ai).is_some_and(|d| d.gives.is_some())
+    // a snapshot dropped for its keep bounds stands in no more (`Dropped::stands_in`)
+    if m.dropped.remove(&ai).is_some_and(|d| d.stands_in)
         && let Some(a) = m.view.aspects.get(ai)
     {
         tx.core.ix.dropped_snapshots.remove(&(a.tid, a.ak.clone()), c);

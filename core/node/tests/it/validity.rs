@@ -152,7 +152,7 @@ impl osis_commit::Secrets for Dedup {
     }
 }
 
-// spec/commits.md §4: two commits by one node with overlapping node-form ranges on one aspect
+// spec/commits.md §4: two commits of one session with overlapping ranges on one aspect
 // are both invalid.
 // spec/permissions.md §5.2 (dot reuse)
 #[test]
@@ -344,9 +344,9 @@ fn backdated_frontier_lists_by_cutoff_spec_perm_5_1() {
     assert!(f.commits.contains(&one) && f.commits.contains(&two), "{f:?}");
 }
 
-// spec/commits.md §3, §4 (counter reuse): role commits use commit form and a node-form one
+// spec/commits.md §3, §4 (counter reuse): role commits use commit form and a session-form one
 // is bad input, so a node cannot void its own grant by later reusing its counters (overlapping
-// node-form ranges void both commits): Bob keeps the edge Alice gave him.
+// session ranges void both commits): Bob keeps the edge Alice gave him.
 #[test]
 fn reused_counters_never_void_a_grant_spec_commits_4() {
     use osis_commit::{AspectWrite, CommitBuilder, Form, Kind, MemoryBlobs, writer_ctx};
@@ -1718,7 +1718,7 @@ fn valueless_copy_governs_unreported_spec_perm_5_2() {
 
 // spec/requirements.md, Out of scope ("malicious readers can only waste storage"), Decentralization;
 // spec/permissions.md §5.2: a reader's snapshot gives nothing. A reader's snapshot carrying another
-// value under the dot and `ts` of a writer's node-form write changes nothing, whether it arrives
+// value under the dot and `ts` of a writer's session-form write changes nothing, whether it arrives
 // after that write's commit (peer 2) or before it (peer 3); a restart keeps it so.
 #[test]
 fn snapshot_forging_held_node_dot_changes_nothing_spec_perm_5_2() {

@@ -472,39 +472,6 @@ pub(crate) struct RecordHead {
     pub dropped: BTreeMap<usize, super::Dropped>,
 }
 
-pub(crate) fn write_gives(mut w: records::Wr, (fr, abs): &super::Gives) -> records::Wr {
-    w = w.u32(fr.nodes.len() as u32);
-    for (n, c) in &fr.nodes {
-        w = w.raw(n.as_bytes()).u64(*c);
-    }
-    w = w.u32(fr.sessions.len() as u32);
-    for (s, c) in &fr.sessions {
-        w = w.raw(&s.to_bytes()).u64(*c);
-    }
-    w = w.u32(abs.len() as u32);
-    for (c, n) in abs {
-        w = w.raw(&c.0).raw(n.as_bytes());
-    }
-    w
-}
-
-pub(crate) fn read_gives(r: &mut records::Rd<'_>) -> Result<super::Gives> {
-    let mut fr = osis_crdt::Frontiers::default();
-    for _ in 0..r.u32()? {
-        let n = r.tid()?;
-        fr.nodes.insert(n, r.u64()?);
-    }
-    for _ in 0..r.u32()? {
-        let s = osis_crdt::Session::from_bytes(&r.arr()?);
-        fr.sessions.insert(s, r.u64()?);
-    }
-    let mut abs = Vec::new();
-    for _ in 0..r.u32()? {
-        abs.push((CommitId(r.arr()?), r.tid()?));
-    }
-    Ok((fr, abs))
-}
-
 pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
     let mut w = records::Wr::new().u8(1).u64(m.received.0).u8(match m.origin {
         Origin::Local => 0,
@@ -533,11 +500,7 @@ pub(crate) fn record_head(m: &Meta) -> Vec<u8> {
         for (k, role, e, sealed) in &d.names {
             w = w.raw(k.as_bytes()).u8(*role as u8).u64(e.n()).raw(e.nonce()).bytes(sealed);
         }
-        let Some(g) = &d.gives else {
-            w = w.u8(0);
-            continue;
-        };
-        w = write_gives(w.u8(1), g);
+        w = w.u8(u8::from(d.stands_in));
     }
     w.take()
 }
@@ -668,12 +631,9 @@ pub(crate) fn parse_head(v: &[u8]) -> Result<(RecordHead, &[u8])> {
             let e = osis_crypto::Epoch::new(r.u64()?, r.arr()?).map_err(|_| Error::Corrupt("dropped names epoch"))?;
             names.push((holder, role, e, r.bytes()?.to_vec()));
         }
-        let gives = match r.u8()? {
-            0 => None,
-            _ => Some(read_gives(&mut r)?),
-        };
+        let stands_in = r.u8()? != 0;
         let role = [Role::Read, Role::Write, Role::Admin].get(<usize as From<u8>>::from((flags >> 2) & 3).wrapping_sub(1)).copied();
-        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Broke } else if flags & 64 != 0 { super::DropFor::Purge } else { super::DropFor::Other }, live: flags & 2 != 0, gives, role, overreach: flags & 16 != 0, keysets, names });
+        dropped.insert(a, super::Dropped { covered_by, why: if flags & 1 != 0 { super::DropFor::Cover } else if flags & 32 != 0 { super::DropFor::Broke } else if flags & 64 != 0 { super::DropFor::Purge } else { super::DropFor::Other }, live: flags & 2 != 0, stands_in, role, overreach: flags & 16 != 0, keysets, names });
     }
     Ok((RecordHead { received, origin, dropped }, r.rest()))
 }
@@ -872,7 +832,7 @@ pub(crate) fn load(tx: &mut Tx<'_>) -> Result<()> {
         }
         crate::apply::index_commit(tx.core, &id, &view);
         tx.core.put_meta(id, Meta { view, header, received: head.received, origin: head.origin, valid, dropped: head.dropped, missing });
-        crate::apply::note_gives(tx.core, &id);
+        crate::apply::note_stands_in(tx.core, &id);
         tx.core.index_validity(&id);
     }
     drop(_ms);

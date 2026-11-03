@@ -30,19 +30,16 @@ pub(crate) fn any_bounded(core: &Core, tid: &Tid, ak: &Ak) -> bool {
     any
 }
 
-/// Whether a snapshot with frontier `fr` and `Absorbed` `abs` on `tid` is known, from those
-/// alone, to have been taken after its author applied the write of dot `o`: a
-/// session-form one under its frontier, a commit-form one when `abs` lists its commit or a held import of it. A snapshot
-/// may carry writes past these (a session write applied before an earlier counter, an import
-/// whose header this node does not hold): `Parts::holds` reads its body.
-fn took(core: &Core, tid: &Tid, fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
+/// Whether a snapshot with frontier `fr` and `Absorbed` `abs` is known, from those alone, to
+/// have been taken after its author applied the write of dot `o`: a session-form one under its
+/// frontier, a commit-form one when `abs` lists its commit. A snapshot may carry writes past these
+/// (a session write applied before an earlier counter, an imported write): `Parts::holds` reads
+/// its body.
+fn took(fr: &osis_crdt::Frontiers, abs: &[(CommitId, Tid)], o: &osis_crdt::Dot) -> bool {
     let o = o.owner();
     match o.src.kind() {
         osis_crdt::SourceKind::Node(_) | osis_crdt::SourceKind::Session(_) => fr.of(&o.src) >= o.ctr,
-        osis_crdt::SourceKind::Commit(c) => {
-            let imports = core.ix.imports.get(&(*tid, *c));
-            abs.iter().any(|(a, _)| a == c || imports.is_some_and(|i| i.contains(a)))
-        }
+        osis_crdt::SourceKind::Commit(c) => abs.iter().any(|(a, _)| a == c),
         osis_crdt::SourceKind::Derived(_) => false,
     }
 }
@@ -81,7 +78,7 @@ fn carriers(tx: &mut Tx<'_>, parts: &mut Parts, tid: &Tid, ak: &Ak, d: &Death, a
         .flatten()
         // an invalid snapshot carries nothing (spec/permissions.md §5.2)
         .filter(|(_, s, _, _)| !crate::apply::copies::invalid_snapshot(core, s, tid, ak))
-        .filter_map(|(ts, s, fr, abs)| bounded_part(core, s, tid, ak).map(|ai| (*ts, *s, ai, took(core, tid, fr, abs, dot), took(core, tid, fr, abs, &d.by))))
+        .filter_map(|(ts, s, fr, abs)| bounded_part(core, s, tid, ak).map(|ai| (*ts, *s, ai, took(fr, abs, dot), took(fr, abs, &d.by))))
         .collect();
     for (ts, s, ai, has, saw) in snaps {
         // a snapshot taken before the write cannot carry it
@@ -161,7 +158,7 @@ impl Parts {
                 .into_iter()
                 .flatten()
                 .filter(|(ts, s, _, _)| s != c && *ts >= d.at && !crate::apply::copies::invalid_snapshot(core, s, tid, ak))
-                .filter_map(|(_, s, fr, abs)| held_part(core, s, tid, ak).map(|sai| (*s, sai, took(core, tid, fr, abs, &d.by))))
+                .filter_map(|(_, s, fr, abs)| held_part(core, s, tid, ak).map(|sai| (*s, sai, took(fr, abs, &d.by))))
                 .collect();
             let mut v = Vec::new();
             for (s, sai, has) in cand {
@@ -282,13 +279,13 @@ pub(crate) fn note_copies(tx: &mut Tx<'_>, c: &CommitId, tid: &Tid, ak: &Ak) -> 
         let core = &*tx.core;
         let joined = ch.into_deaths();
         undated |= by_vouched_copy(core, tid, ak, &joined);
-        deaths.extend(joined.into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(core, tid, &fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
+        deaths.extend(joined.into_iter().filter(|d| f.holds_stamp(&d.stamp) && (d.at > ts || !took(&fr, &abs, &d.by) && dies_in(&f, d))).map(|d| d.at.max(ts)));
         Ok(())
     })?;
     #[cfg(test)]
     {
         let a: Vec<Ts> = deaths.iter().copied().collect();
-        let w = super::oracle::copies_deaths(tx, c, ai, tid, ak, ts, &|core, d| took(core, tid, &fr, &abs, &d.by))?;
+        let w = super::oracle::copies_deaths(tx, c, ai, tid, ak, ts, &|d| took(&fr, &abs, &d.by))?;
         assert_eq!(a, w, "note_copies streamed vs whole");
     }
     // a copy of a held creation or delete, an out-of-order flag or a vouched copy: dated from the

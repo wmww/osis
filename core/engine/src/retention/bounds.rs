@@ -88,7 +88,7 @@ pub(super) fn live(tx: &mut Tx<'_>, c: &CommitId, ai: usize) -> Result<bool> {
 /// live writes as for deltas, `Fragment::live_writes`: no element or entry tombstone): held, a
 /// write it carries (by dot) is there, judged a piece of it at a time against the state's part
 /// it meets. Dropped, which writes it carried went with the body
-/// (spec/commits.md §5; kept frontiers, `Dropped::gives`, reach dead writes too), so whether it
+/// (spec/commits.md §5), so whether it
 /// was live then is kept (`Dropped::live`): dropped dead it stays dead (undo and redo write
 /// new dots; a write a validity flip brings back comes from a held body,
 /// which carries it at hosts itself); dropped live, it is

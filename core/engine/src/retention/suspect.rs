@@ -6,16 +6,17 @@
 //! at its expiry (counts as never received). The node reports them in its heartbeats; a writer
 //! re-snapshots such an aspect (spec/sync.md §7). A flag names the bodies it is about; an entry
 //! goes as its body comes back (held again: what the aspect lacked for it is in). A Flip or
-//! Uncovered entry is dormant while a held snapshot valid here lists its delta as included
-//! (`receipt::listed_by_valid`: it carried that delta's writes), judged when the flags are read,
-//! from what is held then: a snapshot that turns invalid gives nothing (spec/permissions.md
-//! §5.2), so the flag it had settled shows again. A snapshot that lists none of them (any
-//! writer's compaction, stamped whenever) settles nothing. A PendingExpiry entry is never
+//! Uncovered entry is dormant while a held snapshot valid here is stamped after its commit
+//! (`receipt::settled`), judged when the flags are read, from what is held then: a snapshot that
+//! turns invalid gives nothing (spec/permissions.md §5.2), so the flag it had settled shows
+//! again. A snapshot's author that lacked the delta leaves a node that holds it richer until a
+//! writer holding it compacts (notes/node.md Suspect repair). A PendingExpiry entry is never
 //! dormant: its part's writes reach this node only as a snapshot's copies, and no test on what a
 //! snapshot holds tells whether they repaired it (a listing snapshot may carry nothing of the part;
 //! a copy key-erased at expiry, spec/crdt.md §4.7, lands outside the entry the part wrote; writes
-//! of one delta share a dot). The heartbeat's digests say whether nodes
-//! agree; such an entry goes only with its thing (`forget`).
+//! of one delta share a dot). The heartbeat's digests say whether nodes agree; such an entry goes
+//! only with its thing (`forget`), yields to any flag raised after it (`suspects_under`: most
+//! recent first) and so cannot keep a newer one out of a heartbeat.
 
 use crate::engine::records;
 use crate::engine::{Core, DropFor, Engine, Tx};
@@ -107,9 +108,9 @@ pub(crate) fn body_back(tx: &mut Tx<'_>, c: &CommitId, ai: usize, tid: &Tid, ak:
 }
 
 /// Whether flag entry `e` is dormant: not about a part that went pending at its expiry, and a
-/// held snapshot valid here lists its delta as included (spec/commits.md §4).
+/// held snapshot valid here is stamped after its commit.
 fn dormant(core: &Core, e: &Entry) -> bool {
-    e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::listed_by_valid(core, &m.header, &e.0, usize::from(e.1)))
+    e.2 & Why::PendingExpiry as u8 == 0 && core.ix.commits.get(&e.0).is_some_and(|m| crate::apply::receipt::settled(core, &m.header, usize::from(e.1)))
 }
 
 /// The parts of `(tid, ak)` dropped other than as covered, at expiry or by a purge: their

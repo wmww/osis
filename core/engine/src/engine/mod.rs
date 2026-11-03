@@ -114,11 +114,11 @@ pub struct Dropped {
     /// A compaction snapshot whose body had a write in the state when dropped (what it carried
     /// went with it; `retention::snapshot_live` starts from this).
     pub live: bool,
-    /// A compaction snapshot dropped other than as covered (never as covered: a covered
-    /// one's coverers reach them): the frontiers and `Absorbed` its body had (counters and IDs,
-    /// no content), which still stand in for the deltas they list in atomic apply
-    /// (`receipt::listed`; indexed by `ix.dropped_snapshots`).
-    pub gives: Option<Gives>,
+    /// A held compaction snapshot dropped other than as covered: it still counts as held for
+    /// atomic apply and suspect flags (`receipt::listed`, `settled`; indexed by
+    /// `ix.dropped_snapshots`). One dropped as covered does not need to: a coverer is valid and
+    /// stamped no earlier, so it counts for all it did.
+    pub stands_in: bool,
     /// Its `rotation_role` and `grant_overreach` notes when it dropped: judgments the body made,
     /// kept so re-judging the part (and a rebuild) needs no body.
     pub role: Option<osis_base::Role>,
@@ -451,7 +451,7 @@ indexes! {
     /// carrying a write besides its own (deaths, spec/commits.md §5); what stands in for missing
     /// deltas in atomic apply (`receipt::listed`).
     pub snapshots: JMap<(Tid, Ak), Vec<HeldSnapshot>>,
-    /// Snapshots per aspect whose dropped part kept its frontiers (`Dropped::gives`; derived at
+    /// Snapshots per aspect whose dropped part still stands in (`Dropped::stands_in`; derived at
     /// open, not persisted).
     pub dropped_snapshots: JSetMap<(Tid, Ak), CommitId>,
     /// Writes held snapshots carry whose own delta was never received, per aspect

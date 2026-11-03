@@ -263,7 +263,7 @@ impl Engine {
     }
 
     /// Commits with a dropped part, commits with an invalid part, and snapshots kept for their
-    /// dropped parts' frontiers (`Dropped::gives`). Tests: what a random history reached.
+    /// dropped parts standing in (`Dropped::stands_in`). Tests: what a random history reached.
     #[doc(hidden)]
     pub fn drop_counts(&self) -> [usize; 3] {
         let ms = || self.core.ix.commits.values();
@@ -295,9 +295,9 @@ impl Engine {
     pub fn index_digest(&self) -> IndexDigest {
         let ix = &self.core.ix;
         let commits = ix.commits.iter().map(|(id, m)| {
-            let gives = m.dropped.iter().filter_map(|(ai, d)| Some((*ai, format!("{:?}", d.gives.as_ref()?)))).collect();
+            let stands_in = m.dropped.iter().filter(|(_, d)| d.stands_in).map(|(ai, _)| *ai).collect();
             let rest = format!("{:?} {:?} {:?}", m.received, m.origin, m.view);
-            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), gives, missing: m.missing.clone(), rest })
+            (*id, CommitDigest { kind: m.view.kind, valid: m.valid.clone(), dropped: m.dropped.keys().copied().collect(), stands_in, missing: m.missing.clone(), rest })
         }).collect();
         let held = osis_perm::HeldSet::things(&ix.held).into_iter().map(|t| {
             // sorted: the held set keeps arrival order, which nothing it answers depends on
@@ -605,10 +605,10 @@ pub struct IndexDigest {
 pub struct CommitDigest {
     pub kind: osis_commit::Kind,
     pub valid: Vec<bool>,
-    /// Aspects whose deltas were all dropped, and the kept frontiers of those that keep them
-    /// (`Dropped::gives`, as text).
+    /// Aspects whose deltas were all dropped, and those of them standing in
+    /// (`Dropped::stands_in`).
     pub dropped: std::collections::BTreeSet<usize>,
-    pub gives: BTreeMap<usize, String>,
+    pub stands_in: std::collections::BTreeSet<usize>,
     pub missing: std::collections::BTreeSet<usize>,
     /// Received time, origin and view, as text.
     pub rest: String,

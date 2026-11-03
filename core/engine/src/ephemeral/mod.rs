@@ -105,7 +105,7 @@ pub struct Eph {
     session: Session,
     /// Source of every local ephemeral write: `Session(node, nonce)` (spec/crdt.md §2.1).
     src: Source,
-    /// Per aspect written this session, its next counter (contiguous from 1, as a node's; a
+    /// Per aspect written this session, its next counter (contiguous from 1, as a durable commit's; a
     /// write's counters are taken when it applies, so a refused one takes none). Kept for the
     /// whole session, freed things' too (a freed thing's writes may be held elsewhere and the
     /// thing received again): a counter used twice would make two writes one dot.

@@ -128,8 +128,9 @@ impl SyncEngine {
                 }
                 Some(true) => {}
             }
-            // covered-equal snapshots: only the higher commit ID goes (spec/sync.md §7), as in
-            // the must-hold judgment, or this node drops the one a co-writer keeps uploading
+            // covered-equal snapshots (equal `ts`): only the higher commit ID goes (spec/sync.md
+            // §7), as in the must-hold judgment, or this node drops the one a co-writer keeps
+            // uploading
             if super::pass::is_snapshot(h.kind) && c < s && self.engine.covered(&c, &s, t, ak)? == Some(true) {
                 self.covered_judged.insert((s, c, *t, ak.clone()));
                 continue;
