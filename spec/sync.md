@@ -299,7 +299,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
     - past keep-at-most;
     - dropped without a right (spec/permissions.md §7);
     - outside the required set;
-    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas hold a live write no snapshot under the label covers;
+    - a blob of commit C whose delta set is a strict subset of another held blob of C under that label that is not itself must-not-hold and whose extra deltas include one only a blob carries: before its keep-at-least bound, under `nobody` while kept, or holding a live write no snapshot under the label covers;
     - another node's node-card commit (spec/permissions.md §4) once a later valid card commit of that node writing the same aspect is under the label (an entry of it this node opened and checked against its header);
     - another node's node-card commit, for `node.0` and `reach.0`, once that node reads the label's actor no more after an applied edge write on its way to the actor ended an edge (removed it, or its `until` passed).
   - **may-hold**: the rest: covered, between bounds, parked, unfetched pages, a certificate blob whose author has no other blob under the label.
@@ -308,7 +308,7 @@ Each operation names a label. Writes are signed with the role keys of the host's
   - **Writer**: uploads every must-hold body the label lacks, as a fresh encryption if the old blob ID is tombstoned or its entry counts as lacking there (§5). A blob of the commit that is not must-not-hold and holds every delta of the body that no snapshot under the label covers holds it.
   - **Reader**: relays the stamped must-hold entries it holds that the label lacks.
   - **Neither** uploads nor relays a body a delete removed from the label (an entry of it that is not a certificate copy, within `TOMBSTONE_LIFETIME`) while both of these hold:
-    - each of its live writes is carried there (it has none, or a carrier of §7 holds it);
+    - each of its deltas only a blob carries (as for a strict subset above) is held there by another blob of the commit that is not must-not-hold;
     - no held purge request signed by ones that could hold the right (spec/commits.md §4) names a delta of it without dropping it (spec/permissions.md §7).
   - **Delete-key holders** delete must-not-hold bodies.
   - **Dropped bodies**: a node that dropped a body keeps knowing its entries (not its key or wrap). When the body counts as never received again (spec/permissions.md §5.2) it fetches them again where present, and otherwise takes the body from a holder's upload (it is must-hold there: no valid snapshot covers it).

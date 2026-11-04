@@ -255,11 +255,14 @@ fn envelope_rejections() {
     let mut twice = env.clone();
     twice.sections[1].ais = vec![0, 1];
     assert!(Envelope::decode(&twice.encode()).is_err());
-    // an owner chain rides in the clear and round-trips; one past MAX_OWNER_DEPTH is bad input
+    // an owner chain rides in the clear and round-trips; one past MAX_OWNER_DEPTH, or listing a
+    // tid twice (a reader would derive through it again and again), is bad input
     let mut chain = env.clone();
     chain.sections[0].owners = vec![t(7), t(8)];
     assert_eq!(Envelope::decode(&chain.encode()).unwrap(), chain);
-    chain.sections[0].owners = vec![t(7); osis_base::format::MAX_OWNER_DEPTH + 1];
+    chain.sections[0].owners = (0..=osis_base::format::MAX_OWNER_DEPTH as u8).map(t).collect();
+    assert!(Envelope::decode(&chain.encode()).is_err());
+    chain.sections[0].owners = vec![t(7), t(8), t(7)];
     assert!(Envelope::decode(&chain.encode()).is_err());
     let mut short = env.clone();
     short.sections[0].wrap.pop();

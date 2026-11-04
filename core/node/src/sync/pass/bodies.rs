@@ -93,18 +93,11 @@ impl SyncEngine {
     pub(super) fn must_hold(&mut self, b: &Body, snaps: &Snaps, unsettled: &Unsettled, note: &mut Note) -> Result<Option<Vec<(usize, usize)>>> {
         let Some(h) = self.engine.header(&b.commit) else { return Ok(None) };
         let aspects: Vec<(Tid, Ak)> = b.parts.iter().filter_map(|(ai, _)| h.aspects.get(*ai)).map(|a| (a.tid, a.ak.clone())).collect();
-        let now = self.now();
         let mut before = false;
         let mut covered = !aspects.is_empty();
         let mut needed = Vec::new();
         for (p, (t, a)) in b.parts.iter().zip(&aspects) {
-            let at_least = self.engine.body_keep(&b.commit, t, a)?.at_least;
-            // no right holder will ever drop a `nobody` part: must-hold while kept, covered or not
-            let nobody = h.aspects.get(p.0).is_some_and(|x| x.retention.by == osis_base::PurgeBy::Nobody);
-            let kept = nobody || at_least > now;
-            if at_least > now {
-                note.at(at_least);
-            }
+            let kept = self.part_kept(&h, &b.commit, p, note)?;
             before |= kept;
             let mut c = false;
             for s in snaps.get(&(*t, a.clone())).into_iter().flatten() {
@@ -128,23 +121,46 @@ impl SyncEngine {
         Ok(must.then_some(needed))
     }
 
-    /// Whether a delete took body `b` from `l` and it stays out: its live writes are carried there
-    /// (at `host`) and no purge that fell may have been what took it (spec/sync.md §6).
-    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
-        Ok(self.state.body_deleted(l, b.commit, &b.parts) && self.live_carried(host, l, b, parts, snaps, note)? && !self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
+    /// Whether part `p` of commit `c` is kept whatever covers it: `nobody` (no right holder will
+    /// ever drop it) or before its keep-at-least bound (noted).
+    fn part_kept(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), note: &mut Note) -> Result<bool> {
+        let Some(a) = h.aspects.get(p.0) else { return Ok(false) };
+        if a.retention.by == osis_base::PurgeBy::Nobody {
+            return Ok(true);
+        }
+        let at_least = self.engine.body_keep(c, &a.tid, &a.ak)?.at_least;
+        let kept = at_least > self.now();
+        if kept {
+            note.at(at_least);
+        }
+        Ok(kept)
     }
 
-    /// Whether each of `parts` of body `b` has no live write, or a carrier under `l` at `host`:
-    /// another blob of the commit holding it (a rewrite, spec/sync.md §7) or a snapshot under
-    /// the label (`snaps`) covering it.
-    fn live_carried(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+    /// Whether only a blob of commit `c` can carry part `p` under the label (spec/sync.md §6):
+    /// kept (`part_kept`), or holding a live write no snapshot under the label (`snaps`)
+    /// covers. A blob missing such a part (a junk Replace's victim, a rewrite that dropped it)
+    /// is healed by an upload.
+    pub(super) fn must_carry(&mut self, h: &osis_commit::Header, c: &CommitId, p: &(usize, usize), snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        if self.part_kept(h, c, p, note)? {
+            return Ok(true);
+        }
+        Ok(self.part_live(h, c, p) && !self.parts_covered(snaps, c, h, &[*p], note)?)
+    }
+
+    /// Whether a delete took body `b` from `l` and it stays out: every one of its `parts` only a
+    /// blob can carry (`must_carry`) is held there (at `host`) by another genuine blob of the
+    /// commit, and no purge that fell may have been what took it (spec/sync.md §6).
+    pub(super) fn delete_stands(&mut self, host: Option<&HostKey>, l: LabelId, b: &Body, parts: &[(usize, usize)], snaps: &Snaps, note: &mut Note) -> Result<bool> {
+        if !self.state.body_deleted(l, b.commit, &b.parts) {
+            return Ok(false);
+        }
         let Some(h) = self.engine.header(&b.commit) else { return Ok(false) };
         for p in parts {
-            if self.part_live(&h, &b.commit, p) && !self.carried_by(host, &l, &b.commit, &[*p]) && !self.parts_covered(snaps, &b.commit, &h, &[*p], note)? {
+            if self.must_carry(&h, &b.commit, p, snaps, note)? && !self.carried_by(host, &l, &b.commit, &[*p]) {
                 return Ok(false);
             }
         }
-        Ok(true)
+        Ok(!self.engine.named_by_a_fallen_purge(&b.commit, parts)?)
     }
 
     /// Whether every part's aspect of commit `c` is covered by a snapshot under `l`.
