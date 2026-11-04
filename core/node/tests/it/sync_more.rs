@@ -1611,6 +1611,101 @@ fn suspect_aspect_repaired_by_writer_snapshot_spec_permissions_4() {
     assert_eq!(net.read(c, t), net.read(b, t));
 }
 
+/// Writer `a` holds `v1` on `t` under at most 0, compacted. Writer `b` overwrites it with `v0`, which `a` takes
+/// or not; `a` then lowers `b` with a frontier leaving that write out, so it turns invalid. Reader
+/// `c`, offline, is given the write and the lowering in the order asked. Returns the net, `t`, the
+/// aspect and the nodes `a`, `b`, `c`.
+fn flip_after_drop(a_saw_kill: bool, kill_before_flip: bool) -> (Net, osis_base::Tid, Ak, [usize; 3]) {
+    use osis_node::flows::{Demotion, PreSync};
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let c = net.node(3, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "v");
+    let zero = osis_schema::Retention { by: osis_schema::PurgeBy::Writer, at_least: Default::default(), at_most: osis_schema::Bound { abs: None, rel: Some(0) } };
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, zero).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let gone = Ak::new(GONE.ak()).unwrap();
+    // its snapshot covers the body
+    net.engine(a).snapshot(&t, &gone).unwrap();
+    net.run();
+    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")));
+    let cut = osis_base::WallMs(net.now());
+    net.advance(60_000);
+    net.set_online(c, false);
+    // not seen by `a`: `b` stays away too, so it deletes nothing at the host
+    if !a_saw_kill {
+        net.set_online(a, false);
+        net.set_online(b, false);
+    }
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, zero).unwrap();
+    m.set(t, &GONE, &s("v0")).unwrap();
+    let kill = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    let kill = net.engine(b).package(&kill).unwrap().unwrap();
+    assert_eq!(net.engine(a).get(&t, &gone).unwrap().is_some_and(|v| v == s("v0")), a_saw_kill);
+    let holder = net.tid(b);
+    let new = ct::Edge { role: Role::Read, until: None, invite: None, since: None, tied: None, keyset: None };
+    let done = net.engine(a).demote(&g, &Demotion { holder, new: Some(new), presync: PreSync::Backdated(cut), keep: None }).unwrap();
+    let flip = done.commits.first().copied().unwrap();
+    let acts = net.sync(a).carry_out(done).unwrap();
+    net.actions(a, acts);
+    let flip = net.engine(a).package(&flip).unwrap().unwrap();
+    let packs = if kill_before_flip { [&kill, &flip] } else { [&flip, &kill] };
+    for p in packs {
+        net.engine(c).ingest(&p.bytes, p.blobs.clone()).unwrap();
+    }
+    (net, t, gone, [a, b, c])
+}
+
+// spec/requirements.md Deterministic, spec/sync.md §7 (repair): a reader took a killer that a's
+// lowering later made invalid: it dropped the body and a's snapshot under at most 0 and reads empty,
+// flagged. Writer a never took the killer and reads `v1`; the snapshot is still at the host, so
+// nothing is placed again and only its report brings a's new snapshot.
+#[test]
+fn flip_after_drop_mended_by_a_writer_holding_it_spec_sync_7() {
+    let (mut net, t, gone, [a, _, c]) = flip_after_drop(false, true);
+    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), None, "dropped before the flip");
+    assert!(net.engine(c).suspects().unwrap().iter().any(|x| x.0 == t && x.1 == gone), "flagged");
+    net.set_online(a, true);
+    net.set_online(c, true);
+    net.run();
+    for _ in 0..3 {
+        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    }
+    assert_eq!(net.engine(a).get(&t, &gone).unwrap(), Some(s("v1")));
+    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")), "{:?}", net.diagnostics(a));
+    assert!(net.diagnostics(a).iter().any(|d| d.contains("re-snapshotted")));
+}
+
+// spec/sync.md §7, issues/flip-after-drop-no-writer-holds.md: every writer took the killer first
+// and dropped `v1`; the reader took the lowering first and kept it. No writer can mend what it lacks
+// and a reader cannot place it again (the blob's ID is tombstoned): they read apart until the next
+// write on the aspect.
+#[test]
+fn flip_after_drop_only_a_reader_holds_it_lasts_to_the_next_write_spec_sync_7() {
+    let (mut net, t, gone, [a, b, c]) = flip_after_drop(true, false);
+    net.set_online(c, true);
+    net.run();
+    for _ in 0..3 {
+        net.advance(osis_base::format::HEARTBEAT_MIN_INTERVAL_MS + 60_000);
+    }
+    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("v1")), "kept at the reader");
+    assert_eq!(net.engine(a).get(&t, &gone).unwrap(), None, "dropped at the writer");
+    assert_eq!(net.engine(b).get(&t, &gone).unwrap(), None, "dropped at the lowered writer");
+    let mut m = Mutation::new();
+    m.set(t, &GONE, &s("next")).unwrap();
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(net.engine(c).get(&t, &gone).unwrap(), Some(s("next")));
+}
+
 // spec/sync.md §7 (repair, one snapshot per state): a report no snapshot can settle (order seed
 // 5288: a reader's digest that never agrees) costs a writer one snapshot, not one per heartbeat.
 #[test]
