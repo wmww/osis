@@ -52,7 +52,7 @@ pub(crate) fn put(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, c: &CommitId, ai: usize, 
     let key = records::leftover_key(tid, ak, c, ai);
     let enc = l.encode()?;
     let memory = tx.txn.is_memory_aspect(tid, ak);
-    tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::No)?))
+    tx.in_class(memory, |tx| Ok(tx.txn.put_local(&key, &enc, Shred::Yes)?))
 }
 
 /// Forgets the leftover of part `ai` of `c`, shredded.

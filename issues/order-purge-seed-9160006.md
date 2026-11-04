@@ -9,3 +9,5 @@ h = vec![aim(Breaking { by: 2, t: 0, op: 3, v: 3, fits: false }), aim(Typed { by
 ```
 
 Failing order: held `[0..=8, 12..=19]` of 20 commits (base 9), then the rest (`9, 10, 11`), against the whole set as made: reads on `t:map.0` want `{k0: {0: "v3", 1: 3}, k2: {0: "v1", 1: 1}}`, got `{k2: ...}` only. The full seed takes about 8 minutes (its shrink).
+
+Still fails after drop-rejoin items 1+2 (leftover-bodies): same order, same missing `k0`.

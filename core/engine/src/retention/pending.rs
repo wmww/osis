@@ -166,10 +166,13 @@ pub(crate) fn waiting_stripped(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: u
     leftover::has(tx, &a.tid, &a.ak, id, ai)
 }
 
-/// Forgets the leftover kept for waiting part `ai` of commit `id` (header `h`), if it has not
-/// joined (an applied part's leftover is its body).
+/// Forgets the leftover kept for waiting part `ai` of commit `id` (header `h`) not yet applied.
+/// An applied commit's goes only when a copy joins whole (`forget_joined_leftovers`): a stripped
+/// part's is its body, and a missing part's (set aside at its purge's fall, or what a waiting part
+/// was stripped to) is adopted when the part is held value-less again (`make_leftover`), at expiry
+/// as on a rise, as at a node that held the part throughout.
 fn forget_waiting_leftover(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize) -> Result<()> {
-    if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(&ai)) {
+    if tx.core.ix.commits.contains_key(id) {
         return Ok(());
     }
     let Some(a) = h.aspects.get(ai) else { return Ok(()) };
@@ -177,15 +180,20 @@ fn forget_waiting_leftover(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ai: usize
 }
 
 /// Forgets the leftovers kept for parts `ais` of commit `id` (header `h`) that just joined whole
-/// (`forget_waiting_leftover`: a waiting part's, or one set aside at its purge's fall).
+/// (a waiting part's, or one set aside at its purge's fall).
 pub(crate) fn forget_joined_leftovers(tx: &mut Tx<'_>, h: &Header, id: &CommitId, ais: &BTreeSet<usize>) -> Result<()> {
     for ai in ais {
-        forget_waiting_leftover(tx, h, id, *ai)?;
+        if tx.core.ix.commits.get(id).is_some_and(|m| m.stripped.contains(ai)) {
+            continue;
+        }
+        if let Some(a) = h.aspects.get(*ai) {
+            leftover::remove(tx, &a.tid, &a.ak, id, *ai)?;
+        }
     }
     Ok(())
 }
 
-/// Forgets every leftover kept for the waiting parts of commit `id` (`forget_waiting_leftover`).
+/// Forgets every leftover kept for the parts of commit `id` not yet applied (`forget_waiting_leftover`).
 pub(crate) fn forget_waiting_leftovers(tx: &mut Tx<'_>, id: &CommitId) -> Result<()> {
     let h = match tx.core.ix.commits.get(id) {
         Some(m) => (*m.header).clone(),
@@ -225,10 +233,6 @@ pub(crate) fn stripped_joined(tx: &mut Tx<'_>, id: &CommitId, joined: &[(usize, 
 /// `hold_valueless`), flagged suspect (`flag`); node-sync then forgets the blobs holding it
 /// (`mark_changed`).
 pub(super) fn strip_pending(tx: &mut Tx<'_>, c: &CommitId, ai: usize, flag: bool) -> Result<()> {
-    // also of a commit no longer pending: `apply::pend_aside` judges its parts after `unpend`
-    if let Some(h) = tx.core.ix.commits.get(c).map(|m| m.header.clone()) {
-        forget_waiting_leftover(tx, &h, c, ai)?;
-    }
     if !tx.core.ix.pending.contains_key(c) {
         return Ok(());
     }

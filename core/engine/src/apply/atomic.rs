@@ -1182,6 +1182,20 @@ pub(crate) fn check_rebuilt(tx: &mut Tx<'_>) -> Result<()> {
     for (tid, ak) in touched {
         // unseen: the cached state as it was, and no cost recorded
         let k = (tid, ak.clone());
+        // the value-less list is a cache of the parts' statuses: a part held as its leftover has
+        // its own writes on it, one held whole none
+        let list = tx.core.ix.valueless.get(&k).cloned().unwrap_or_default();
+        for c in tx.core.ix.by_aspect.get(&k).map(|s| s.iter().map(|(_, c)| *c).collect::<Vec<_>>()).unwrap_or_default() {
+            let Some(m) = tx.core.ix.commits.get(&c) else { continue };
+            let Some(ai) = m.aspect(&tid, &ak) else { continue };
+            let own = crate::retention::writes_of(&m.header, &c, ai);
+            let on = own.iter().filter(|o| list.binary_search(o).is_ok()).count();
+            if m.stripped.contains(&ai) {
+                debug_assert_eq!(on, own.len(), "{c:?} on {tid:?} {ak:?}: held as its leftover, its writes not all value-less");
+            } else if m.holds(ai) {
+                debug_assert_eq!(on, 0, "{c:?} on {tid:?} {ak:?}: held whole, its writes value-less");
+            }
+        }
         let cached = (tx.core.states.get(&k).cloned(), tx.core.pages.get(&k).cloned());
         let (want, got) = crate::costs::paused(|| -> Result<_> { Ok((rebuilt(tx, &tid, &ak, &[], &BTreeSet::new())?.0, tx.state(&tid, &ak)?.cloned())) })?;
         match cached.0 {
