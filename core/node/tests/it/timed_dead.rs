@@ -400,10 +400,80 @@ fn absolute_bound_passing_offline_reaches_reader_spec_commits_5() {
     m.set(t, &GONE, &s("v1")).unwrap();
     net.engine(a).commit(m).unwrap().unwrap();
     net.advance(20_000);
-    net.engine(a).tick().unwrap();
+    // its sync engine's timers run offline too (an engine tick alone skips the carrier)
+    net.sync(a).expire_due();
     net.set_online(a, true);
     net.run();
     reader_got_v1(&mut net, a, b, t);
+}
+
+// spec/commits.md §5 (by an absolute keep at most every node drops the body; a live write goes
+// with a carrier): a body with no relative bound drops at T at writer and reader alike, its write
+// staying in the state, and the host's copy goes once the carrier is up.
+#[test]
+fn absolute_bound_alone_drops_at_t_spec_commits_5() {
+    let gone = osis_base::Ak::new("t:gone.0").unwrap();
+    let (mut net, a, b, t) = writer_and_reader(0x9a30);
+    let l = net.label(a);
+    let at = net.now() + 10_000;
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(Some(at), None).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    let c = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    assert_eq!(at_host(&mut net, a, 0, &l, &c).len(), 1);
+    net.advance(5_000);
+    for n in [a, b] {
+        assert!(net.engine(n).body_not_dropped(&c, &t, &gone), "held before T at {n}");
+    }
+    net.advance(5_000);
+    net.run();
+    for n in [a, b] {
+        assert!(!net.engine(n).body_not_dropped(&c, &t, &gone), "dropped at T at {n}");
+        assert_eq!(net.engine(n).get(&t, &gone).unwrap(), Some(s("v1")), "the live write stays at {n}");
+    }
+    assert!(at_host(&mut net, a, 0, &l, &c).is_empty(), "the host's copy went");
+    let entries = net.sync(a).entries(&l);
+    let snapshot = entries.into_iter().any(|(_, k)| matches!(k, EntryKind::Commit { commit, .. } if net.engine(a).header(&commit).is_some_and(|h| h.kind == osis_commit::Kind::ContentSnapshot)));
+    assert!(snapshot, "a carrier went up first");
+}
+
+// spec/commits.md §5, spec/requirements.md Decentralization: the body arriving before T and
+// judged at T, or arriving past T, ends alike: dropped, the write in the state.
+#[test]
+fn absolute_bound_alike_in_either_arrival_order_spec_commits_5() {
+    use osis_base::Role;
+    let gone = osis_base::Ak::new("t:gone.0").unwrap();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(0x9a40, &[host]);
+    let b = net.node(0x9a41, &[host]);
+    let c = net.node(0x9a42, &[host]);
+    let g = net.group(a, &[(b, Role::Read), (c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    net.run();
+    for n in [a, b, c] {
+        net.set_online(n, false);
+    }
+    let at = net.now() + 10_000;
+    let mut m = Mutation::new();
+    m.retention(t, &GONE, most(Some(at), None).unwrap()).unwrap();
+    m.set(t, &GONE, &s("v1")).unwrap();
+    m.set(t, &REG, &s("k")).unwrap();
+    let id = net.engine(a).commit(m).unwrap().unwrap();
+    let pk = net.engine(a).package(&id).unwrap().unwrap();
+    net.engine(b).ingest(&pk.bytes, pk.blobs.clone()).unwrap();
+    net.sync(b).expire_due();
+    assert!(net.engine(b).body_not_dropped(&id, &t, &gone));
+    net.advance(10_000);
+    net.engine(c).ingest(&pk.bytes, pk.blobs).unwrap();
+    for n in [b, c] {
+        net.sync(n).expire_due();
+        assert!(net.engine(n).pending().is_empty());
+        assert!(!net.engine(n).body_not_dropped(&id, &t, &gone), "dropped past T at {n}");
+        assert_eq!(net.engine(n).get(&t, &gone).unwrap(), Some(s("v1")));
+    }
+    assert_eq!(net.engine(b).state(&t, &gone).unwrap(), net.engine(c).state(&t, &gone).unwrap());
 }
 
 // spec/commits.md §4: a reader's first sync, a host hiding one of a commit's two bodies: the other
