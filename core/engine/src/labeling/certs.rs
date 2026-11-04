@@ -504,9 +504,7 @@ impl Engine {
                     continue;
                 }
                 let mut roots = Vec::new();
-                if let Some(v) = d.fragment.read() {
-                    crate::engine::large::links_in(&v, &mut roots);
-                }
+                d.fragment.values(&mut |v| crate::engine::large::links_in(v, &mut roots));
                 let Some(dedup) = tx.core.dedup(&a.tid) else { continue };
                 let mut trees = crate::engine::large::LiveTrees::default();
                 crate::engine::large::tree_blobs(tx, &dedup, &roots, &mut trees)?;

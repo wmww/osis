@@ -30,7 +30,7 @@ impl Fragment {
 
     /// Whether the fragment holds a value-less write (§4.7) of the commit of stamp `c` (its `ts`
     /// and source): a register or case write without its value, a key-erased record's creation,
-    /// a text element's creation whose char is gone (a deleted element's tells nothing: snapshots
+    /// a text whose chars of that commit are gone (a deleted element's tells nothing: snapshots
     /// never carry it). A list element whose content holds one is not live (§5.7 Live): its
     /// creation's value, the content its commit wrote, is held value-less.
     pub(crate) fn valueless_of(&self, c: &Stamp) -> bool {
@@ -43,11 +43,18 @@ impl Fragment {
             Fragment::Struct(s) => s.fields.values().any(|f| f.valueless_of(c)),
             Fragment::Enum(e) => e.case.as_ref().is_some_and(|k| k.case.is_none() && same(&k.stamp)) || e.payloads.values().any(|f| f.valueless_of(c)),
             Fragment::Map(m) => m.entries.iter().any(|(id, en)| (id.key.is_none() && en.created.as_ref().is_some_and(same)) || en.frag.as_deref().is_some_and(|f| f.valueless_of(c))),
-            Fragment::Seq(s) => s.elems().values().any(|el| match &el.content {
-                SeqContent::Frag(f) => f.valueless_of(c),
-                SeqContent::None => s.text && !el.flag() && el.char().is_none() && el.created.as_ref().is_some_and(|(s, _)| same(s)),
-                SeqContent::Char(_) => false,
-            }),
+            // a text: no shown char of that commit left and a stripped one there (a char-less
+            // element beside valued ones is an import's anchor, its delete left out, or an
+            // undelete with no char: nothing was stripped)
+            Fragment::Seq(s) if s.text => {
+                let of = s.elems().values().filter(|el| !el.flag() && el.created.as_ref().is_some_and(|(s, _)| same(s)));
+                let (mut stripped, mut valued) = (false, false);
+                for el in of {
+                    if el.char().is_some() { valued = true } else { stripped = true }
+                }
+                stripped && !valued
+            }
+            Fragment::Seq(s) => s.elems().values().any(|el| matches!(&el.content, SeqContent::Frag(f) if f.valueless_of(c))),
         }
     }
 
@@ -189,8 +196,7 @@ impl Fragment {
                     }
                 }
                 // an entry's creation whose own dot stays is kept, though nothing else is left
-                // in it: a join gives it to the entry where another body holds content, and
-                // prunes it otherwise (§5.6); so the result is joined or pruned before use
+                // in it: a write of its own (§5.6)
                 en.reset.is_some() || en.frag.is_some() || en.created.is_some()
             }),
             Fragment::Seq(s) => seq::remove_dots(s, pred, keep),

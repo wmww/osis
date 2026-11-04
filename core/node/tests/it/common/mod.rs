@@ -36,6 +36,7 @@ aspect t:keptset.0: set<string> [by: writer, keep_at_least: 1d];
 aspect t:short.0: string [by: writer, keep_at_most: 10m];
 aspect t:short2.0: string [by: writer, keep_at_most: 10m];
 aspect t:list.0: list<string>;
+aspect t:listtext.0: list<text>;
 aspect t:text.0: text;
 aspect t:blob.0: blob;
 aspect t:book.0: book;
@@ -66,6 +67,8 @@ pub const TEXT: Aspect<Value> = Aspect::new("t:text.0", &TEST);
 pub const BLOB: Aspect<Value> = Aspect::new("t:blob.0", &TEST);
 pub const BOOK: Aspect<Value> = Aspect::new("t:book.0", &TEST);
 pub const DOCS: Aspect<Value> = Aspect::new("t:docs.0", &TEST);
+pub const BIGMAP: Aspect<Value> = Aspect::new("t:big.0", &TEST);
+pub const LISTTEXT: Aspect<Value> = Aspect::new("t:listtext.0", &TEST);
 pub const SHORTMAP: Aspect<Value> = Aspect::new("t:shortmap.0", &TEST);
 
 pub fn ak(s: &str) -> Ak {

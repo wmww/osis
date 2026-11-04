@@ -849,8 +849,8 @@ impl Frag {
     }
 
     /// Whether the fragment holds a value-less write (§4.7) of the commit of stamp `c` (its `ts` and source): a
-    /// register or case write without its value, a key-erased record's creation, a text element's creation whose
-    /// char is gone (a deleted element's tells nothing: snapshots never carry it). A list element whose content holds
+    /// register or case write without its value, a key-erased record's creation, a text whose chars of that commit
+    /// are gone (a deleted element's tells nothing: snapshots never carry it). A list element whose content holds
     /// one is not live (§5.7 Live): its creation's value, the content its commit wrote, is held value-less.
     pub fn valueless_of(&self, c: &Stamp) -> bool {
         let same = |s: &Stamp| s.ts == c.ts && owner(&s.dot).source == owner(&c.dot).source;
@@ -863,11 +863,13 @@ impl Frag {
             Frag::Map { entries, .. } => entries.iter().any(|((_, k), en)| {
                 (k.is_none() && en.created.as_ref().is_some_and(same)) || en.frag.as_ref().is_some_and(|f| f.valueless_of(c))
             }),
-            Frag::Seq { text, elems, .. } => elems.values().any(|el| match &el.content {
-                Content::Frag(f) => f.valueless_of(c),
-                Content::None => *text && !el.is_deleted(true) && el.created.as_ref().is_some_and(|(s, _)| same(s)) && el.char().is_none(),
-                Content::Char(_) => false,
-            }),
+            // a text: no shown char of that commit left and a stripped one there (a char-less element beside valued
+            // ones is an import's anchor, or an undelete with no char: nothing was stripped)
+            Frag::Seq { text: true, elems, .. } => {
+                let of = || elems.values().filter(|el| !el.is_deleted(true) && el.created.as_ref().is_some_and(|(s, _)| same(s)));
+                of().any(|el| el.char().is_none()) && !of().any(|el| el.char().is_some())
+            }
+            Frag::Seq { elems, .. } => elems.values().any(|el| matches!(&el.content, Content::Frag(f) if f.valueless_of(c))),
         }
     }
 

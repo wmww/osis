@@ -705,3 +705,29 @@ fn moving_a_copy_with_a_doubled_import_spec_perm_7() {
         assert_eq!(lp.peers[0].engine.get(&copy2, &ak(k)).unwrap(), want, "{k}");
     }
 }
+
+// spec/crdt.md §5.7 Live, spec/permissions.md §7: a delete an import leaves out (it expires) leaves
+// a nested text's char-less anchor in the copy, without its flag; other chars of the commit read,
+// so nothing was stripped and the element stays.
+#[test]
+fn move_keeps_element_of_text_with_delete_left_out_spec_perm_7() {
+    let k = ak("t:listtext.0");
+    for expiring in [false, true] {
+        let mut lp = net(1, 0x7a06);
+        let t = new_thing(&mut lp, 0);
+        let a = lp.peers[0].engine.tid();
+        let mut m = Mutation::new();
+        m.op(t, &LISTTEXT, PathOp { path: vec![], op: Op::Insert { at: 0, items: vec![s("abc")] } }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let mut m = Mutation::new();
+        if expiring {
+            m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+        }
+        m.op(t, &LISTTEXT, PathOp { path: vec![PathSeg::Index(0)], op: Op::Delete { at: 1, len: 1 } }).unwrap();
+        lp.peers[0].commit(m).unwrap().unwrap();
+        lp.advance(10);
+        let (copy, _) = lp.peers[0].engine.move_thing(&t, a).unwrap();
+        assert_eq!(lp.peers[0].engine.get(&copy, &k).unwrap(), Some(Value::List(vec![s("ac")])), "expiring {expiring}");
+    }
+}

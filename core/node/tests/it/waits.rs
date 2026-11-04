@@ -597,7 +597,7 @@ fn expiring_part_stays_to_join_past_snapshot_spec_commits_5() {
 // spec/crdt.md §4.7, §5.6 Live (was issues/expired-entry-key-kept.md): a map entry an expiring
 // delta created goes at T with another writer's later write of the same key inside it, whatever
 // the arrival order and under keep at most 0 (the expiry and the bound fall due at one instant:
-// two timers, `records::timer_key`).
+// the expiry's timer alone is set, `judge_at_most`).
 #[test]
 fn expired_entry_goes_with_nested_write_alike_spec_crdt_4_7() {
     let map = ak("t:gonemap.0");
@@ -1016,4 +1016,67 @@ fn sync_set_of_final_group_reads_alike_in_any_order_spec_commits_4() {
         assert_eq!(p.engine.get(&t, &ak("t:reg.0")).unwrap(), Some(s("t")), "{seq:?}");
         assert!(p.engine.pending().is_empty(), "{seq:?}: {:?}", p.engine.pending());
     }
+}
+
+// issues/list-element-outlives-expiry.md, spec/crdt.md §5.7 Live: an expiring list element whose
+// content another write replaced whole holds no value-less write at T, so it stays.
+#[test]
+#[ignore = "issues/list-element-outlives-expiry.md"]
+fn list_element_overwritten_goes_at_expiry_repro_spec_crdt_5_7() {
+    let k = ak("t:list.0");
+    let mut lp = net(2, 0x7a05);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    for (a, b) in [(0, 1), (1, 0)] {
+        sync(&mut lp, a, b);
+    }
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("hello")] } }).unwrap();
+    lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &LIST, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("edited")) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(2 * 3_600_000);
+    lp.peers[1].engine.tick().unwrap();
+    assert_eq!(lp.peers[1].engine.get(&t, &k).unwrap(), Some(Value::List(vec![])));
+}
+
+// issues/hidden-writes-kept.md, spec/commits.md §5, spec/crdt.md §4.8: an edit into a removed entry
+// is hidden, so never dead: under keep at most 0 its body stays, a snapshot carries its value and
+// the removed key, and a purge of the edit leaves the key.
+#[test]
+#[ignore = "issues/hidden-writes-kept.md"]
+fn hidden_write_goes_under_keep_at_most_repro_spec_commits_5() {
+    let k = ak("t:gonemap.0");
+    let mut lp = net(2, 0x7a02);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    lp.sync_all().unwrap();
+    let op = |lp: &mut LocalPeer, i: usize, path: Vec<osis_crdt::PathSeg>, op: osis_crdt::Op| {
+        let mut m = Mutation::new();
+        m.op(t, &GONEMAP, osis_crdt::PathOp { path, op }).unwrap();
+        lp.peers[i].commit(m).unwrap().unwrap()
+    };
+    let key = || vec![osis_crdt::PathSeg::Key(s("SECRETKEY"))];
+    op(&mut lp, 0, key(), osis_crdt::Op::Set(s("first")));
+    lp.sync_all().unwrap();
+    lp.advance(10);
+    op(&mut lp, 0, vec![], osis_crdt::Op::Remove(s("SECRETKEY")));
+    lp.advance(10);
+    let edit = op(&mut lp, 1, key(), osis_crdt::Op::Set(s("HIDDENVAL")));
+    lp.sync_all().unwrap();
+    assert_eq!(lp.peers[0].engine.get(&t, &k).unwrap(), Some(Value::Map(Default::default())));
+    lp.advance(40 * 86_400_000);
+    lp.peers[0].engine.tick().unwrap();
+    let carries = |lp: &mut LocalPeer, what: &[u8]| {
+        let c = lp.peers[0].engine.snapshot(&t, &k).unwrap().unwrap();
+        let pk = lp.peers[0].engine.package(&c).unwrap().unwrap();
+        std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(what.len()).any(|x| x == what))
+    };
+    assert!(!lp.peers[0].engine.body_not_dropped(&edit, &t, &k), "the body past its bound");
+    assert!(!carries(&mut lp, b"HIDDENVAL"), "the value in a snapshot");
+    assert!(!carries(&mut lp, b"SECRETKEY"), "the removed key in a snapshot");
 }

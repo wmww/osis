@@ -1,0 +1,7 @@
+# An expiring list element whose content was overwritten stays past its expiry
+> Summary: A list element is hidden at T only through a value-less write of its creation's commit (`Fragment::valueless_of`). Replace its content whole before T and none is left, so the element stays with the replacing write: any edit of a `list<string>` element, a replaced nested text, a `W`-only struct. Spec/requirements.md: what is written in a disappearing entry disappears with it. Maps do not have this (the key-erased record).
+> Tags: crdt, engine
+
+Repro: osis-node `waits::list_element_overwritten_goes_at_expiry_repro_spec_crdt_5_7` (ignored). A writer can avoid it by giving its edit the expiry (spec/crdt.md §4.7 SHOULD); the node's write path does not, and cannot alone: one delta has one expiry, so a batch touching other elements would lose them at T.
+
+Simplest rule found: expiry or purge of a list element's creation sets its element reset to the creation's own stamp, and an element is not live when `created <= R_elem` (today `<`). Reset is monotone, needs no wire change (a `FlagW true` of a foreign stamp in a snapshot), prunes nothing (nested writes are newer or the creation's own) and replaces `valueless_of` and its corners. Set at the node's T or purge, not by a snapshot carrying a value-less copy before T, which must lose to the valued delta. To check: a purge an admin's demotion undoes (spec/requirements.md Deletion) must lift the reset.
