@@ -1413,3 +1413,55 @@ fn purged_import_needs_no_carrier_spec_commits_5() {
     assert!(snapshots(&mut net, a, &copy, &k).is_empty(), "nothing asked for a carrier");
     assert_eq!(net.engine(a).get(&copy, &k).unwrap(), None);
 }
+
+// spec/commits.md §5, spec/sync.md §7: a purge naming one aspect of a two-aspect import body: the
+// blob with the purged value goes at the host, and the other aspect's live write, carried by the
+// rewrite, reaches a later reader.
+#[test]
+fn import_purge_of_one_aspect_carries_the_other_spec_commits_5() {
+    use osis_commit::PurgeItem;
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    net.blocked.insert((c, host));
+    let g = net.group(a, &[(c, Role::Read)], &[host]);
+    let t = net.item(a, g, g, "x");
+    let (k1, k2) = (Ak::new(REG.ak()).unwrap(), Ak::new(BIG.ak()).unwrap());
+    let mut m = Mutation::new();
+    m.set(t, &REG, &s("secret")).unwrap();
+    m.op(t, &BIG, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Key(s("k"))], op: osis_crdt::Op::Set(s("stays")) }).unwrap();
+    let origin = net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    let (copy, imports) = net.engine(a).move_thing(&t, g).unwrap();
+    let i = *imports.iter().find(|i| net.engine(a).header(i).is_some_and(|h| h.origins.iter().any(|o| o.commit == origin))).unwrap();
+    assert_eq!(net.engine(a).header(&i).unwrap().aspects.iter().filter(|x| x.tid == copy).count(), 2);
+    let mut grp = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap();
+    grp.items.insert(copy);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &grp).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    let l = net.label(a);
+    let at_host: Vec<_> = net.sync(a).entries(&l).into_iter().filter(|(_, e)| matches!(e, EntryKind::Commit { commit, .. } if *commit == i)).map(|(id, _)| id).collect();
+    assert_eq!(at_host.len(), 1);
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    let now = net.engine(a).now();
+    m.set(copy, &ct::PURGE, &now).unwrap();
+    m.purge(PurgeItem::Commit { commit: i, tid: copy, ak: k1.clone() });
+    net.engine(a).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(60_000);
+    net.run();
+    assert!(!net.engine(a).body_not_dropped(&i, &copy, &k1));
+    assert!(net.engine(a).body_not_dropped(&i, &copy, &k2));
+    let ids = net.host_ids(host, &l);
+    assert!(at_host.iter().all(|b| !ids.contains(b)), "the blob with the purged value is gone at the host");
+    net.blocked.clear();
+    net.advance(10_000);
+    net.run();
+    let ec = net.engine(c);
+    assert_ne!(ec.get(&copy, &k1).unwrap(), Some(s("secret")));
+    assert_eq!(ec.get_at(&copy, &k2, &[osis_crdt::PathSeg::Key(s("k"))]).unwrap(), Some(s("stays")));
+}

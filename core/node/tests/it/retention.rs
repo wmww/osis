@@ -2639,3 +2639,82 @@ fn import_with_a_live_write_keeps_its_grace_spec_commits_5() {
     let e = &mut lp.peers[0].engine;
     assert!(!e.body_live(&i, &copy, &g).unwrap() && !e.body_not_dropped(&i, &copy, &g));
 }
+
+// spec/commits.md §5, spec/permissions.md §7: an import's liveness and drop match ordinary deltas
+// holding the same writes (a thing never moved, the same random script on both), not through
+// `writes_of`, which `retention::oracle` shares; a later device given what the node holds reads
+// the same.
+#[test]
+fn import_live_as_ordinary_deltas_spec_commits_5() {
+    use osis_crdt::PathSeg;
+    let mut rng = 1u64;
+    let mut next = move |n: u64| {
+        rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (rng >> 33) % n
+    };
+    let (mut seen_live, mut seen_dead) = (0, 0);
+    for seed in 0..5u64 {
+        let mut lp = net(1, 2000 + seed);
+        let t = new_thing(&mut lp, 0);
+        let plain = new_thing(&mut lp, 0);
+        let k = ak("t:gonemap.0");
+        let groups: Vec<Vec<String>> = vec![vec!["a".into(), "b".into()], vec!["c".into()], vec!["d".into(), "e".into(), "f".into()]];
+        let mut origins = Vec::new();
+        let mut ords = Vec::new();
+        for g in &groups {
+            for (x, out) in [(t, &mut origins), (plain, &mut ords)] {
+                let mut m = Mutation::new();
+                for key in g {
+                    m.op(x, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(key))], op: Op::Set(s("old")) }).unwrap();
+                }
+                out.push(lp.peers[0].commit(m).unwrap().unwrap());
+            }
+            lp.advance(5);
+        }
+        let me = lp.peers[0].engine.tid();
+        let (copy, imports) = lp.peers[0].engine.move_thing(&t, me).unwrap();
+        let imp: Vec<_> = origins.iter().map(|o| *imports.iter().find(|i| lp.peers[0].engine.header(i).is_some_and(|h| h.origins.iter().any(|x| x.commit == *o))).unwrap()).collect();
+        let mut read: std::collections::BTreeMap<String, Option<String>> = groups.iter().flatten().map(|x| (x.clone(), Some("old".to_string()))).collect();
+        for step in 0..14 {
+            lp.advance(5);
+            let gi = next(3) as usize;
+            let ki = next(groups[gi].len() as u64) as usize;
+            let key = groups[gi][ki].clone();
+            let remove = next(2) == 0 && read[&key].is_some();
+            let v = format!("v{step}");
+            for x in [copy, plain] {
+                let mut m = Mutation::new();
+                if remove {
+                    m.op(x, &GONEMAP, PathOp { path: vec![], op: Op::Remove(s(&key)) }).unwrap();
+                } else {
+                    m.op(x, &GONEMAP, PathOp { path: vec![PathSeg::Key(s(&key))], op: Op::Set(s(&v)) }).unwrap();
+                }
+                lp.peers[0].commit(m).unwrap();
+            }
+            read.insert(key.clone(), (!remove).then(|| v.clone()));
+            for gi in 0..3 {
+                let e = &mut lp.peers[0].engine;
+                let (a, b) = (e.body_live(&imp[gi], &copy, &k).unwrap(), e.body_live(&ords[gi], &plain, &k).unwrap());
+                let (c, d) = (e.body_not_dropped(&imp[gi], &copy, &k), e.body_not_dropped(&ords[gi], &plain, &k));
+                assert_eq!((a, c), (b, d), "seed {seed} step {step} group {gi}: (live, held) import vs ordinary");
+                if a {
+                    seen_live += 1;
+                } else {
+                    seen_dead += 1;
+                }
+            }
+            let packs = packages(&mut lp, 0);
+            let now = lp.peers[0].engine.now();
+            let mut later = osis_node::local_peer::Peer::new(5000 + seed * 100 + step, now).unwrap();
+            for p in &packs {
+                later.engine.ingest(&p.bytes, p.blobs.clone()).unwrap();
+            }
+            for (key, v) in &read {
+                let want = v.as_ref().map(|v| s(v));
+                assert_eq!(later.engine.get_at(&copy, &k, &[PathSeg::Key(s(key))]).unwrap(), want, "seed {seed} step {step} later reads {key} on the copy");
+                assert_eq!(later.engine.get_at(&plain, &k, &[PathSeg::Key(s(key))]).unwrap(), want, "seed {seed} step {step} later reads {key} on the plain thing");
+            }
+        }
+    }
+    assert!(seen_dead > 10 && seen_live > 10, "live {seen_live}, dead {seen_dead}");
+}
