@@ -94,7 +94,7 @@ pub(crate) fn snapshot_right(core: &Core, s: &CommitId, c: &CommitId, tid: &Tid,
 /// would walk the aspect on every pass.
 pub(crate) fn lasting(tx: &mut Tx<'_>, id: &CommitId, on: &dyn Fn(&Core, &Tid) -> bool) -> Result<bool> {
     let Some(m) = tx.core.ix.commits.get(id).cloned() else { return Ok(false) };
-    if m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && m.dropped.get(&ai).is_some_and(|d| d.why != DropFor::Broke) && on(tx.core, &a.tid)) {
+    if m.view.aspects.iter().enumerate().any(|(ai, a)| a.permanent && m.dropped.get(&ai).is_some_and(|d| d.why != DropFor::Invalid) && on(tx.core, &a.tid)) {
         return Ok(true);
     }
     if !m.view.purges {

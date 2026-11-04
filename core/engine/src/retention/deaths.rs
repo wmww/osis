@@ -5,7 +5,8 @@
 //! takes the deaths of the writes it carries that the state superseded before it (`note_copies`).
 //! A validity flip or an un-merge marks the aspect (`Core::deaths_due`): the transaction, or
 //! within a node-sync step the next read of deaths, recomputes its deaths from the held bodies
-//! and the state (`replay_all`).
+//! and the state (`replay_all`). A write invalid here, or one an un-merge took, has no superseder
+//! to date it: under a relative keep at most it counts dead from its fall (`falls`, `date_falls`).
 
 use super::{body_of, bounded, check_at_most, held_part};
 use crate::engine::records::{self, Rd};
@@ -486,9 +487,59 @@ fn replay_all(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
             *e = (e.0.min(at), e.1.max(at));
         }
     }
+    date_falls(tx, tid, ak, &held, &mut got)?;
     for c in &held {
         let Some(ai) = bounded_part(tx.core, c, tid, ak) else { continue };
         set_deaths(tx, tid, ak, c, ai, got.get(&(*c, ai)).copied())?;
+    }
+    Ok(())
+}
+
+/// Whether a fall dates a death on part `a` of a commit (spec/commits.md §5): it answers to a
+/// relative keep at most, and no role commit goes this way. A body with no such bound keeps its
+/// fallen writes.
+pub(crate) fn falls(h: &osis_commit::Header, a: &osis_commit::AspectEntry) -> bool {
+    a.retention.at_most.rel.is_some() && h.kind != osis_commit::Kind::Role
+}
+
+/// Adds the falls of `(tid, ak)` to `got`: a held body under a relative keep at most counts dead
+/// from its own fall if invalid here (`fell_at`), and if valid with no write in the state and no
+/// death from the newest fall on the aspect, no earlier than its own `ts` (an un-merge took its
+/// writes under a record an invalid delta created; which one is not kept, so the date may be late,
+/// never early). Only a decided judgment counts: a commit waiting is not applied, and a demotion
+/// waiting moves no timeline. A flip, or a judgment again of an invalid part, dates them again (`mark_deaths_due`). Cost: per held body
+/// with no death, on an aspect holding an invalid part, its liveness.
+fn date_falls(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, held: &[CommitId], got: &mut BTreeMap<(CommitId, usize), (Ts, Ts)>) -> Result<()> {
+    let core = &*tx.core;
+    let fell_at = |c: &CommitId, m: &crate::engine::Meta, ai: usize| crate::apply::validity::fell_at(core, &m.header, c, ai);
+    let newest = core.ix.invalid.get(&(*tid, ak.clone())).into_iter().flatten().filter_map(|c| {
+        let m = core.ix.commits.get(c)?;
+        let ai = m.aspect(tid, ak).filter(|ai| !m.valid_at(*ai))?;
+        Some(fell_at(c, m, ai))
+    }).max();
+    let Some(newest) = newest else { return Ok(()) };
+    let mut dated = Vec::new();
+    let mut taken = Vec::new();
+    for c in held {
+        let Some(ai) = bounded_part(core, c, tid, ak) else { continue };
+        let Some(m) = core.ix.commits.get(c).filter(|m| !m.view.memory) else { continue };
+        if !m.header.aspects.get(ai).is_some_and(|a| falls(&m.header, a)) {
+            continue;
+        }
+        if !m.valid_at(ai) {
+            dated.push(((*c, ai), fell_at(c, m, ai)));
+        } else if m.header.kind.has_own_writes() && !got.contains_key(&(*c, ai)) {
+            taken.push(((*c, ai), newest.max(m.header.ts)));
+        }
+    }
+    for (k, at) in taken {
+        if !super::live(tx, &k.0, k.1)? {
+            dated.push((k, at));
+        }
+    }
+    for (k, at) in dated {
+        let e = got.entry(k).or_insert((at, at));
+        *e = (e.0.min(at), e.1.max(at));
     }
     Ok(())
 }

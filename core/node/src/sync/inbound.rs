@@ -1226,7 +1226,8 @@ impl SyncEngine {
     }
 
     /// The entries of commits with a part missing again (`Changed::undropped`: dropped under a
-    /// cover since turned invalid, spec/permissions.md §5.2) whose bytes and wrap went with the
+    /// cover since turned invalid, spec/permissions.md §5.2, or while invalid and valid since,
+    /// spec/commits.md §5) whose bytes and wrap went with the
     /// drop: unopened again, so a pass fetches them where present (`refetch`), the reply bringing
     /// the wrap back. A body deleted everywhere comes back only as a holder's new upload. `None`:
     /// every commit (at start: a crash may have come between the engine's change and this).

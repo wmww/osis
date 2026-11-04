@@ -94,9 +94,10 @@ pub enum DropFor {
     /// As covered (compaction, `Engine::drop_body`, with a coverer): it comes back as missing once
     /// no coverer carries it.
     Cover,
-    /// For breaking the thing's required retention (`Engine::drop_broken`): it comes back as missing
-    /// when it turns valid.
-    Broke,
+    /// While invalid: for breaking the thing's required retention (`Engine::drop_broken`), or at a
+    /// keep-at-most bound dated from its fall (`retention::deaths`). It comes back as missing when
+    /// it turns valid.
+    Invalid,
     /// For a purge request (`retention::rejudge_purges`): it comes back as missing when no held
     /// request drops it any more. A delta with writes (`retention::writes_of`) is also in the
     /// value-less list, and that decides for it.
@@ -852,8 +853,9 @@ pub struct Changed {
     /// Aspects whose state changed other than by a valid write's join (a validity flip, an
     /// un-merge, expiry, purge, a late delta): what waits on the state is judged again.
     pub aspects: BTreeSet<(Tid, Ak)>,
-    /// Commits with a part dropped under a cover since turned invalid, missing again
-    /// (`retention::uncover`): node-sync fetches its entries again.
+    /// Commits with a part dropped under a cover since turned invalid, or while invalid and valid
+    /// since, missing again
+    /// (`retention::uncover`, `retention::valid_again`): node-sync fetches its entries again.
     pub undropped: BTreeSet<CommitId>,
     /// (holder, target) edges whose current value changed (`osis_perm::Changed::edges`).
     pub edges: BTreeSet<(Tid, Tid)>,
