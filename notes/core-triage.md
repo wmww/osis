@@ -40,6 +40,7 @@ Categories: **A** security (leak of purged content, privilege, forgery); **B** d
 | 34 | eph-unify (left: C, D, E) | C/F | L | B2 swapped ephemeral onto Core; the lane onto the durable sync path (lifts eph-unpaged-cover), undo over held bodies and durable auto-compaction are simplification and features, not bugs. |
 
 ### D: hostile-only, stated-limit candidates
+Priority (Tess): shapes only a malicious writer can craft inside data it may write (it could overwrite or clear that data anyway) are very low priority: fix if easy, never add much complexity or spend resources on them while the honest paths are not nailed down. Not a requirements sentence.
 | Issue | Why | Limit to state |
 |---|---|---|
 | purge-keeps-repeated-key | a writer crafts a key under a dot no delta owns so it reads back after its own purge; one CRDT fix tried and broke laws | purge is exact for content honest writers produce; a writer's own crafted leftovers are swept by any entry removal or reset |
