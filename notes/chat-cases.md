@@ -214,7 +214,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Can a chat have forward secrecy at all? | yes | core m | core m | core m | no! core m | core m |
 | Kick or lost device in a 1000-member group under 10 MB upload with forward secrecy? | yes | – | – | – | – | – |
 
-## Realms (servers, teams, channels and roles are all realms; a channel is a child realm)
+## Realms (notes/realms.md: servers, teams and roles are realms; a channel is a chat a realm holds write on)
 
 | case | want | A | B | C | D | E |
 |---|---|---|---|---|---|---|
@@ -243,9 +243,9 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 | Can a member choose which channels to sync, with none by default? | yes | – | – | – | – | core s |
 | Unread counts for channels not synced? | yes | – | – | – | – | opt⁵² |
 | Mentions in channels not synced? | yes | – | – | – | – | core h |
-| Threads without a new realm per thread? | yes | – | – | – | – | yes⁵³ |
+| Threads without a new chat per thread? | yes | – | – | – | – | yes⁵³ |
 | A document anyone in the realm can edit, synced to every member? | yes | – | – | – | – | yes⁵⁴ |
-| Can a member remove another member's document from the realm's auto-synced content? | no | – | – | – | – | yes! core f |
+| Can a member remove another member's document from the realm's auto-synced content? | no | – | – | – | – | no⁵⁴ |
 | The same chat in two realms? | yes | – | – | – | – | yes |
 | Move a chat between realms without copying it? | yes | – | – | – | – | yes |
 | A realm inside a realm, members inherited? | yes | – | – | – | – | yes |
@@ -271,7 +271,7 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 - **o** Newest-first fetch of a label: built (spec/sync.md §6); a device that stops fetching: issues/partial-history-fetch.md.
 - **p** Verified actor: a commit is invalid unless its author could write as its `actor` (built: spec/permissions.md §5.2, Acting).
 - **r** Pure readers place nothing under big labels: no chain certificates, node card or heartbeats from a reader unless asked (realms past a few thousand members).
-- **s** Default-off sync: a device holding a realm's secret does not sync its children's labels until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
+- **s** Default-off sync: a device holding a realm's secret does not sync the labels of the things the realm holds until the app chooses (today `compute_labels` syncs every label whose secret the node holds).
 - **q** Purge sets: `author` (admins cannot purge) is a setting beside `admin` and `nobody` (spec/commits.md §5).
 
 ## Footnotes
@@ -318,17 +318,17 @@ Assumed fixed (issues/): deposits of closure content, writer rotating to itself,
 40. E: with the frontier study; today a kick lists about 34 B per message the member ever sent (3.4 MB at 10^5) and caps near 1.9x10^6 messages.
 41. The removal and the top realm's rotation are one commit (2.7 KB per member); each child re-keys on any writer's next sync pass (about 11 KB, eager, may fork). Cutting sync, write and deposit keys needs an admin of each child to register a step at each host; until then the removed member reads ciphertext and can upload.
 42. At 1000: 2.7 MB plus about 11 KB per child, spread over members' passes. At 100,000 with tiers of 1000: the tier (2.7 MB), the top realm (100 boxes), then children; estimated, and only with issues/keyset-names-placement-rosters.md fixed.
-43. All three roles rotate on every realm the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
+43. All three roles rotate on every realm and chat the mod administered, admins only; the ex-mod keeps delete keys until each label is stepped.
 44. Every syncing device places its chain (11.5 KB per person), card (1.5 KB) and four heartbeats a day under each label it reads: about 13 MB once and 2.4 MB a day at 1000; about 1.4 GB and 240 MB a day at 100,000 (e-realms-review.md §3).
 45. By rights no: a role is the maximum over paths and `until` only ends a grant. Mods write a muted set with a time; honest clients hide and mods purge; a modified client posts on.
 46. Messages on a thing owned by the chat with an admin edge for the delete role (spec/permissions.md §1): purge without roster or lock; one more rotation per kick.
 47. Admin passes only through admin, and admins of a realm manage its roster; direct per-channel admin grants avoid it at one grant per channel.
-48. A sibling realm the members write carries the reactions; the app shows them under the announcement.
-49. Default: the directory is an admin-only aspect on the parent; a member creates a chat and asks an admin to list it.
-50. The directory aspect holds tid, name and category; children are not in the parent's group, so nothing of theirs is under the parent's label.
-51. Grant the private child only to a role realm and list it in that realm's directory. Left: its hosts see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
+48. A sibling chat the members write carries the reactions; the app shows them under the announcement.
+49. Adding a channel is a grant for the realm on the chat, needing admin on the chat and on the realm's layout; a member creates a chat and asks an admin to add it.
+50. The realm's edges are its contents (every member holds them through the realm's inbox copies); names and categories are a chat-app layout aspect on the realm. Channels are not in the realm's group, so nothing of theirs is under its label.
+51. Grant the private channel only to a role realm. Left: its hosts see its label, a device-removal frontier head names its tid under public labels (frontier-study format), and a purge across children shows their tids.
 52. Entry counts are drowned by heartbeats and certificates (no kind in the log); a latest-time register per child on the parent, written by posters, is the cheap source.
 53. Threads and forum posts are reply chains inside the channel, grouped by the app.
-54. A thing owned by the realm (or granted it write), added to the realm's group, syncs under its label to every member; in the directory with its own label it syncs on demand.
+54. A thing owned by the realm or holding an edge for it is in the realm; placed in the realm's group it syncs under the realm's label, one with its own label syncs under that. With plain edges (notes/realms.md open question 1) a writer's unplacing only stops the auto-sync; removing it from the realm is an admin's edge removal.
 55. An ownerless actor has no roster snapshots, so its role history is kept forever and readable by its holders.
 56. Rights: demote the top realm on each child, one commit per child; one step only as a client-honored flag.

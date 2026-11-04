@@ -1,7 +1,7 @@
 # Chat design E: the chat's history is the chat
 > Summary: A chat C is one ownerless thing, actor and label; members hold write on C and every message is one write on a message aspect of C, kept as history by retention `author_or_admin` with keep at least forever (a permanent delta); the sender is the header's actor checked by a display rule until core verifies it, admins and the sender may purge, nobody else may drop or hide a body. No member actor, no member list, no per-message thing. Moderator delete, lasting tombstones and newest-first fetch are built; cheap kicks fall out once the frontier study lands; new: a history-less grant. Citations: `e-evidence.md`; corrections from `e-review.md` applied.
 
-**A chat is a realm** (notes/chat-designs/e-realms.md): an actor with members and a message aspect; servers, teams, channels and roles are the same thing, nested by grants. Nothing below changes for a plain chat.
+**Realms** (notes/realms.md, chat mapping in notes/chat-designs/e-realms.md): a server or team is a realm, a channel a chat it holds write on, a mod role a realm holding admin. A plain chat is no realm. Nothing below changes.
 
 **[unbuilt]** marks a claim resting on core work not yet built: the frontier study (notes/frontier-study.md), the history-less grant.
 
