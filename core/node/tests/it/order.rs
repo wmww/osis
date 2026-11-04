@@ -1024,12 +1024,7 @@ pub(crate) fn play(seed: u64, steps: &[Step]) -> Played {
                     0 => std::collections::BTreeMap::new(),
                     1 => one(aspect_of(op).as_str(), keep),
                     2 => one("t:", Retention::default()),
-                    // `t:map.0` out of a keep at most: issues/at-most-map-snapshot-drop.md
-                    _ => {
-                        let mut all = one("", keep);
-                        all.extend(one("t:map", Retention::default()));
-                        all
-                    }
+                    _ => one("", keep),
                 };
                 let m = {
                     let mut m = Mutation::new();
