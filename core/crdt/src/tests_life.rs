@@ -1051,12 +1051,6 @@ fn bare_anchors_go_with_the_creation_spec_crdt_4_2() {
         gone.join(removal.clone());
         let Fragment::Map(mp) = &gone else { panic!("a map") };
         assert!(mp.entries.keys().all(|id| id.key.is_none()), "the key is gone");
-        // the map's own reset takes it too: no write is left
-        let mut replaced = put.clone();
-        let meta = crate::fragment::Meta { reset: Some(Writer::new(ts(7), x.clone(), 9).delta_stamp()), w: None };
-        replaced.join(Fragment::Map(crate::fragment::Map::new(meta, Default::default())));
-        let Fragment::Map(mp) = &replaced else { panic!("a map") };
-        assert!(mp.entries.is_empty(), "no record is left");
         let mut a = gone;
         a.join(edit.clone());
         let mut b = put.clone();

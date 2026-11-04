@@ -1378,6 +1378,52 @@ fn removed_text_entry_key_goes_spec_crdt_5_6() {
     assert!(!std::iter::once(&pk.bytes).chain(pk.blobs.iter().map(|(_, b)| b)).any(|b| b.windows(9).any(|x| x == b"SECRETKEY")));
 }
 
+// spec/crdt.md §4.7, §5.6: before T a node holding only the snapshot reads the element as ended, as a
+// partial receipt, like a map's entry; its body still comes, and the valued copy beats the mark in
+// either order, others' writes in the element included.
+#[test]
+fn list_mark_before_expiry_yields_to_the_body_spec_crdt_4_7() {
+    let k = ak("t:listtext.0");
+    let mut lp = net(3, 0x7a19);
+    let t = new_thing(&mut lp, 0);
+    writer(&mut lp, t, 1);
+    lp.sync_all().unwrap();
+    let mut m = Mutation::new();
+    m.expires(t, &k, WallMs(T0.0 + 3_600_000)).unwrap();
+    m.op(t, &LISTTEXT, osis_crdt::PathOp { path: vec![], op: osis_crdt::Op::Insert { at: 0, items: vec![s("abc")] } }).unwrap();
+    let c = lp.peers[0].commit(m).unwrap().unwrap();
+    sync(&mut lp, 0, 1);
+    lp.advance(10);
+    let mut m = Mutation::new();
+    m.op(t, &LISTTEXT, osis_crdt::PathOp { path: vec![osis_crdt::PathSeg::Index(0)], op: osis_crdt::Op::Set(s("abcX")) }).unwrap();
+    lp.peers[1].commit(m).unwrap().unwrap();
+    lp.advance(10);
+    let snap = lp.peers[1].engine.snapshot(&t, &k).unwrap().unwrap();
+    let pks = packages(&mut lp, 1);
+    let body = pks.iter().find(|p| p.id == c).unwrap();
+    let rest: Vec<_> = pks.iter().filter(|p| p.id != c).collect();
+    let now = lp.peers[1].engine.now();
+    let holder = lp.peers[1].engine.state_digest(&t, &k).unwrap();
+    let mut only = osis_node::local_peer::Peer::new(0x7a1a, now).unwrap();
+    only.engine.set_syncing(t, true).unwrap();
+    for x in pks.iter().filter(|p| p.id != c) {
+        let _ = only.engine.ingest(&x.bytes, x.blobs.clone());
+    }
+    assert_eq!(only.engine.get(&t, &k).unwrap(), Some(Value::List(vec![])), "the snapshot alone, before T");
+    let _ = only.engine.ingest(&body.bytes, body.blobs.clone());
+    assert_eq!(only.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("abcX")])), "its body comes");
+    let mut first = osis_node::local_peer::Peer::new(0x7a1b, now).unwrap();
+    first.engine.set_syncing(t, true).unwrap();
+    let _ = first.engine.ingest(&body.bytes, body.blobs.clone());
+    for x in rest.iter().filter(|p| p.id != snap).chain(rest.iter().filter(|p| p.id == snap)) {
+        let _ = first.engine.ingest(&x.bytes, x.blobs.clone());
+    }
+    first.engine.reexamine().unwrap();
+    assert_eq!(first.engine.get(&t, &k).unwrap(), Some(Value::List(vec![s("abcX")])));
+    assert_eq!(first.engine.state_digest(&t, &k).unwrap(), only.engine.state_digest(&t, &k).unwrap(), "either order");
+    assert_eq!(first.engine.state_digest(&t, &k).unwrap(), holder, "as a holder of the body");
+}
+
 // spec/crdt.md §4.7, §5.7 Live: a snapshot written before T carries the element's value-less mark, so a
 // node holding only it, past T and with no way to get the expired commit, does not show others'
 // writes in the element.

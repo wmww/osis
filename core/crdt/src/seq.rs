@@ -692,8 +692,8 @@ pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     elems.retain(|d, el| prune_elem(d, el, text, e, ch));
 }
 
-/// Drops the bare anchors, at any depth of list content, of a sequence in a map record holding no
-/// creation (§4.2). A look at the records first, so a record's hidden writes keep their placement
+/// Drops the bare anchors, at any depth of list content, of a sequence in a map record under a
+/// reset of its dot (§4.2). A look at the records first, so a record's hidden writes keep their placement
 /// through a join finding no anchor.
 pub(crate) fn drop_anchors(s: &mut Seq) {
     if !s.elems().values().any(|el| !el.is_record() || matches!(el.content, SeqContent::Frag(_))) {

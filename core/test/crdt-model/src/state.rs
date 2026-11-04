@@ -615,8 +615,8 @@ impl Frag {
                     if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
                         en.created = None;
                     }
-                    // a reset of the dot ended the entry; with no write left and no creation, so did whatever took them. Any
-                    // other record without a creation may be a partial receipt (§4.2)
+                    // a reset of the dot ended the entry; any other record without a creation may be a partial receipt, its
+                    // anchors needed once the creation comes (§4.2)
                     if max_opt(en.reset.clone(), cross.get(id).cloned().flatten()).is_some() {
                         if let Some(f) = &mut en.frag {
                             f.drop_anchors();
@@ -624,8 +624,6 @@ impl Frag {
                                 en.frag = None;
                             }
                         }
-                    } else if en.created.is_none() && en.frag.as_ref().is_some_and(|f| f.all_max().is_none()) {
-                        en.frag = None;
                     }
                     // a creation is a write of its own: it may be left alone (its content un-merged)
                     en.reset.is_some() || en.frag.is_some() || en.created.is_some()
@@ -665,8 +663,8 @@ impl Frag {
         }
     }
 
-    /// Drops the bare anchors of the content of a map record holding no creation (§4.2), down to any nested map
-    /// record, which judges its own by its own creation.
+    /// Drops the bare anchors of the content of a map record under a reset of its dot (§4.2), down to any nested map
+    /// record, which judges its own by its own resets.
     fn drop_anchors(&mut self) {
         match self {
             Frag::Struct { fields: m, .. } | Frag::Enum { payloads: m, .. } => m.retain(|_, x| {

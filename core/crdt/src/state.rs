@@ -242,8 +242,8 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 /// Prunes the records of one dot (§5.6): each under its own reset, the key-erased record also
 /// under every keyed record's, a keyed record also under the key-erased record's. A creation is
 /// a write of its own (a record may hold it alone, its content un-merged), and a record reads
-/// only with it (§5.6 Live). Bare anchors go with it (§4.2), so records left with no write go,
-/// and a key they repeat with them.
+/// only with it (§5.6 Live). Under a reset of the dot bare anchors go too (§4.2), so records left
+/// with no write go, and a key they repeat with them.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
@@ -256,12 +256,10 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
         let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross);
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
-        // a reset of the dot ended the entry; with no write left and no creation, so did whatever
-        // took them. Any other record without a creation may be a partial receipt (§4.2)
+        // a reset of the dot ended the entry; any other record without a creation may be a partial
+        // receipt, its anchors needed once the creation comes (§4.2)
         if dot_reset {
             drop_anchors_opt(&mut en.frag);
-        } else if en.created.is_none() && en.frag.as_deref().is_some_and(|f| f.all_max().is_none()) {
-            en.frag = None;
         }
     }
     recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some() || en.created.is_some());
@@ -536,8 +534,8 @@ impl Fragment {
         }
     }
 
-    /// Drops the bare anchors of this content of a map record holding no creation (§4.2), down to
-    /// any nested map record, which judges its own by its own creation.
+    /// Drops the bare anchors of this content of a map record under a reset of its dot (§4.2), down
+    /// to any nested map record, which judges its own by its own resets.
     pub(crate) fn drop_anchors(&mut self) {
         match self {
             Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.retain(|_, x| {

@@ -175,7 +175,9 @@ pub(crate) enum Step {
     LinkedDemote { by: usize, t: usize, holder: usize },
 }
 
-const OPS: u8 = 32;
+const OPS: u8 = 35;
+/// The ops random histories draw: `list_expiry_history` alone draws the rest.
+const DRAWN: u8 = 32;
 
 fn aspect_of(op: u8) -> Ak {
     ak(match op % OPS {
@@ -207,6 +209,8 @@ fn aspect_of(op: u8) -> Ak {
         // a relative one
         30 => "t:list.0",
         31 => "t:short.0",
+        // an expiring list element, another's write in it, its removal
+        32..=34 => "t:listtext.0",
         _ => "t:docs.0",
     })
 }
@@ -231,7 +235,7 @@ fn keep_of(op: u8) -> Option<Retention> {
 /// `keep_of(op)`, with an absolute keep at most for ops 30 and 31 (spec/commits.md §5): a second
 /// (a peer's own clock steps pass it) or half an hour after `now`, by `v`.
 fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
-    let abs = (op % OPS >= 30).then(|| now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 });
+    let abs = (30..=31).contains(&(op % OPS)).then(|| now.0 + if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 });
     match (keep_of(op), abs) {
         (r, None) => r,
         (r, Some(t)) => {
@@ -247,7 +251,7 @@ fn retention_of(op: u8, v: u8, now: WallMs) -> Option<Retention> {
 /// `k` 2 the commit also writes `t:rec.0`, expiring with it (one expiry per commit): two
 /// parts, so split delivery makes one a late part, maybe arriving after T.
 fn expiry_of(op: u8, v: u8) -> Option<u64> {
-    (27..=29).contains(&(op % OPS)).then_some(if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 })
+    matches!(op % OPS, 27..=29 | 32).then_some(if v.is_multiple_of(2) { 1_000 } else { HOUR / 2 })
 }
 
 /// The op of a `Write`: k and v from small domains, so writers collide.
@@ -283,6 +287,9 @@ fn content_op(op: u8, k: u8, v: u8) -> (Ak, PathOp) {
         23..=26 => return content_op([10, 11, 5, 8][(op % OPS - 23) as usize], k, v),
         27..=29 => return content_op([0, 3, 10][(op % OPS - 27) as usize], k, v),
         30 => return content_op(14, k, v),
+        32 => PathOp { path: vec![], op: Op::Insert { at, items: vec![s(&val)] } },
+        33 => PathOp { path: vec![PathSeg::Index(0)], op: Op::Set(s(&val)) },
+        34 => PathOp { path: vec![], op: Op::Delete { at, len: 1 } },
         _ => PathOp { path: vec![], op: Op::Set(s(&val)) },
     };
     (aspect_of(op), po)
@@ -303,6 +310,7 @@ fn key_of(op: u8) -> &'static osis_schema::Aspect<Value> {
         "t:brief.0" => &BRIEF,
         "t:count.0" => &COUNT,
         "t:list.0" => &LIST,
+        "t:listtext.0" => &LISTTEXT,
         "t:rec.0" => &REC,
         "t:kept.0" => &KEPT,
         "t:short.0" => &SHORT,
@@ -411,19 +419,19 @@ fn random_step(rng: &mut Rng) -> Step {
     let t = rng.below(8) as usize;
     let aim = |x: Step| Step::Aim(Box::new(x));
     match rng.below(46) {
-        0..=7 => aim(Step::Typed { by, t, op: rng.below(OPS as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 }),
+        0..=7 => aim(Step::Typed { by, t, op: rng.below(DRAWN as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 }),
         8..=10 => aim(Step::Write { by, t, op: rng.pick(&UNTYPED), k: rng.below(3) as u8, v: rng.below(10) as u8 }),
         40 | 41 => {
             let other = (by + 1 + rng.below(2) as usize) % 3;
             aim(Step::NestedItem { by, other, t, k: rng.below(3) as u8, compact: rng.below(3) != 0, also: rng.below(2) == 0 })
         }
-        42..=44 => Step::Forged { by, a: t, b: rng.below(8) as usize, how: rng.below(5) as u8, op: rng.below(OPS as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 },
+        42..=44 => Step::Forged { by, a: t, b: rng.below(8) as usize, how: rng.below(5) as u8, op: rng.below(DRAWN as u64) as u8, k: rng.below(3) as u8, v: rng.below(10) as u8 },
         45 => Step::NewTop { by },
         11..=13 => aim(Step::Edge { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), role: rng.pick(&[None, Some(Role::Read), Some(Role::Write), Some(Role::Write), Some(Role::Admin)]) }),
         14..=17 => aim(Step::Demote { by: rng.pick(&[0, 0, 2]), t, holder: rng.pick(&[1, 2]), at: rng.below(6) as u8, to_read: rng.below(3) == 0 }),
         18 => aim(Step::Leave { by: rng.pick(&[1, 2]), t }),
         19 => aim(Step::Roster { by: rng.pick(&[0, 0, 2]), t }),
-        20..=22 => aim(Step::Compact { by, t, op: rng.below(OPS as u64) as u8 }),
+        20..=22 => aim(Step::Compact { by, t, op: rng.below(DRAWN as u64) as u8 }),
         23 | 24 => aim(Step::New { by: rng.pick(&[0, 0, 2]), parent: t, write: rng.below(2) == 0 }),
         25..=28 => {
             let other = (by + 1 + rng.below(2) as usize) % 3;
@@ -2635,7 +2643,7 @@ fn history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
 /// `cfg.all_up_to` commits after the setup (a prefix of a history plays as its start).
 /// A step of a thing's required retention: an admin's change or a write that may break it.
 fn required_step(r: &mut Rng) -> Step {
-    let (by, t, op) = (r.below(3) as usize, r.below(3) as usize, r.below(OPS as u64) as u8);
+    let (by, t, op) = (r.below(3) as usize, r.below(3) as usize, r.below(DRAWN as u64) as u8);
     Step::Aim(Box::new(if r.below(3) == 0 {
         Step::Require { by: r.pick(&[0, 0, 2]), t, op, rule: r.below(4) as u8 }
     } else {
@@ -2647,7 +2655,7 @@ fn required_step(r: &mut Rng) -> Step {
 /// the admin who made a change, compactions, all on one thing, so every order meets them.
 fn required_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut rng = Rng(seed.wrapping_mul(0xa24b_aed4_963e_e407) | 1);
-    let op = rng.below(OPS as u64) as u8;
+    let op = rng.below(DRAWN as u64) as u8;
     // Carol's rule, a write breaking it, and Alice demoting her with or without having received
     // the rule, so it may fall
     let mut steps = vec![
@@ -3527,7 +3535,7 @@ fn device_history(seed: u64, len: usize, cfg: Cfg) -> Vec<Step> {
     let mut steps = history(seed, len, cfg);
     let mut rng = Rng(seed.wrapping_mul(0xd1b5_4a32_d192_ed03) | 1);
     let at = steps.len() / 2;
-    let op = rng.below(OPS as u64) as u8;
+    let op = rng.below(DRAWN as u64) as u8;
     steps.splice(at..at, [Step::Write { by: 1, t: 0, op, k: rng.below(3) as u8, v: rng.below(10) as u8 }, Step::Sync { from: 1, to: 0 }, Step::Advance { who: None, ms: 1_000 }, Step::Compact { by: 0, t: 0, op }]);
     steps.push(Step::Advance { who: None, ms: 1_000 });
     steps.push(Step::Demote { by: 0, t: 0, holder: 1, at: rng.below(6) as u8, to_read: false });
@@ -3651,6 +3659,35 @@ fn new_device_alike_spec_permissions_5_1() {
 #[ignore = "tier 2"]
 fn new_device_alike_large_spec_permissions_5_1() {
     run_new_device("new_device_alike_large_spec_permissions_5_1", 0..256, 40);
+}
+
+// spec/crdt.md §4.7, §5.7: expiring list elements, others' writes in them, snapshots written before
+// and after T carrying their marks, removals by writers who may fall.
+fn list_expiry_history(seed: u64, len: usize, _: Cfg) -> Vec<Step> {
+    let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+    (0..len)
+        .map(|_| {
+            let by = rng.below(3) as usize;
+            let to = (by + 1 + rng.below(2) as usize) % 3;
+            match rng.below(16) {
+                0..=3 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 32, k: 0, v: rng.below(10) as u8 })),
+                4..=6 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 33, k: 0, v: rng.below(10) as u8 })),
+                7 => Step::Aim(Box::new(Step::Typed { by, t: 0, op: 34, k: 0, v: rng.below(10) as u8 })),
+                8 | 9 => Step::Compact { by, t: 0, op: 32 },
+                10 => Step::Aim(Box::new(Step::Undo { by, back: rng.below(3) as u8 })),
+                11 => Step::Aim(Box::new(Step::Demote { by, t: 0, holder: to, at: rng.below(6) as u8, to_read: rng.below(2) == 0 })),
+                12 => Step::Advance { who: Some(by), ms: 400 + rng.below(800) },
+                13 => Step::Send { from: by, to, back: rng.below(2) as u8 },
+                _ => Step::Sync { from: by, to },
+            }
+        })
+        .collect()
+}
+
+#[test]
+#[ignore = "tier 2"]
+fn arrival_order_list_expiry_large_spec_crdt_4_7() {
+    run("arrival_order_list_expiry_large_spec_crdt_4_7", 3000..3040, 40, LARGE, list_expiry_history);
 }
 
 // spec/requirements.md Decentralization, spec/crdt.md §5.7: the same for sequences compacted with
