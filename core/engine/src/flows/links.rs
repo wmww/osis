@@ -91,11 +91,12 @@ impl Engine {
         self.run(|tx| grant_in(tx, Some(l), k, grantee, &grant, single_use))
     }
 
-    /// Whether the held role history shows L put on K and its edge over: removed, or past `until`
-    /// (spec/permissions.md §9). An L not seen yet says nothing: its edge may be on its way.
-    pub fn link_key_gone(&mut self, k: &Tid, l: &Tid) -> bool {
+    /// Whether the held role history shows `holder` put on `thing` and its edge over: removed, or
+    /// past `until` (spec/permissions.md §9). A holder not seen yet says nothing: its edge may be
+    /// on its way.
+    pub fn edge_gone(&mut self, thing: &Tid, holder: &Tid) -> bool {
         let ts = super::now_ts(&self.core);
-        self.core.timelines.get(k).is_some_and(|tl| tl.ended(k, ts).contains_key(l))
+        self.core.timelines.get(thing).is_some_and(|tl| tl.ended(thing, ts).contains_key(holder))
     }
 
     /// Finalizes a link (spec/permissions.md §9): a sharer device's plain removal of L from K,

@@ -180,8 +180,8 @@ pub fn link(db: &Osis, c: Tid, role: Role, single_use: bool) -> Result<osis::Sha
 /// Joins by link: the chat, once it is here. Kicks reach a joiner like any member (`kick`). A chat
 /// already held (`chats`) is returned as is, also when redeeming failed because it is: the link
 /// may be used up, or its maker or a member pasted it. So a link never raises a member's role, and
-/// one whose target names a held chat opens that chat whatever its key is (the target is the link
-/// text's word; issues/link-target-unchecked.md).
+/// one whose target names a held chat opens that chat and joins nothing, whatever its key is. One
+/// naming a chat not held joins only if its key is on that chat (`Osis::redeem`).
 pub async fn join(db: &Osis, l: &osis::ShareLink) -> Result<Tid> {
     let c = l.target()?;
     let held = || chats(db).is_ok_and(|x| x.contains(&c));

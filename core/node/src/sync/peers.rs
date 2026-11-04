@@ -418,10 +418,12 @@ impl SyncEngine {
         self.state.link_peers.values().flat_map(|lp| lp.peers.iter().map(|a| a.key)).collect()
     }
 
-    /// A link follow ended without a redemption (it failed, or its key guard went): its hint
-    /// and sharer node are forgotten.
+    /// A link follow ended without a redemption (it failed, or its key guard went): its hint and
+    /// sharer node are forgotten, and what only the link's key read goes with the key
+    /// (spec/permissions.md §3): K and whatever K holds, whatever the link named.
     #[must_use]
     pub fn forget_link(&mut self, k: Tid) -> Vec<Action> {
+        let _ = self.engine.judge_lost(&k);
         self.state.remove_link_peer(&k);
         let hinted: Vec<LabelId> = self.state.hints.iter().filter(|(_, h)| h.thing == k && h.via.is_some()).map(|(l, _)| *l).collect();
         for l in hinted {
