@@ -70,19 +70,18 @@ fn holds_large(v: &Value) -> bool {
 
 impl crate::fragment::Fragment {
     /// Whether this fragment holds, unchunked, a value that must be chunked (spec/data-model.md
-    /// §6): `holds_large` in any register, or a map key, or (`whole_elements`) a set or bag
-    /// element's whole value above `CHUNK_THRESHOLD`. Text characters merge as sequences and never
-    /// chunk.
-    pub fn holds_unchunked(&self, whole_elements: bool) -> bool {
+    /// §6): `holds_large` in any register, or a map key, or a set or bag element's whole value
+    /// above `CHUNK_THRESHOLD`. Text characters merge as sequences and never chunk.
+    pub fn holds_unchunked(&self) -> bool {
         use crate::fragment::{Bag, Fragment, Register, Set, Slots};
         let reg = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(holds_large);
-        let on = |f: &Fragment| f.holds_unchunked(whole_elements);
+        let on = |f: &Fragment| f.holds_unchunked();
         match self {
             Fragment::Register(r) => reg(r),
             Fragment::Slots(Slots { reg: r, slots }) => r.as_ref().is_some_and(reg) || slots.values().any(on),
             Fragment::Bag(Bag { elems, .. }) | Fragment::Set(Set { elems, .. }) => elems.values().filter_map(|e| e.frag.as_deref()).any(|f| {
                 let whole = |r: &Register| r.write.as_ref().and_then(|w| w.value.as_ref()).is_some_and(Value::above_chunk_threshold);
-                on(f) || (whole_elements && matches!(f, Fragment::Register(r) if whole(r)))
+                on(f) || matches!(f, Fragment::Register(r) if whole(r))
             }),
             Fragment::Struct(s) => s.fields.values().any(on),
             Fragment::Enum(e) => e.payloads.values().any(on),
