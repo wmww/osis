@@ -25,7 +25,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 
 ## Suggested order
 1. eph-lane: merged (item 269).
-2. Whole commits steps 2b, 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
+2. Whole commits: 2b merged (item 276); next steps 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
 3. issues/drop-rejoin-robust.md item 5 (rebuild check after every transaction in debug builds): cheap, and it will find what the rest of that issue fixes. Then its items 2, 1, 3, 4, 7, with the reference model (6) alongside.
 4. The simplifications keep-at-most-relative and roster option 2 (remove-moves is done). Each deletes code and spec; spec/ describes only what is built, so each lands its own spec edit.
 5. notes/core-triage.md §1, by rank (refreshed after item 272).
