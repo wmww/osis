@@ -20,7 +20,6 @@
 
 ## Deviations from the original design (the deleted CLI plan)
 - `commits --limit N` is `--max N` (`--limit` is the global materialization bound).
-- `same` false exits 3 (§6 table) rather than 1 (§4 text).
 - `edit` takes the whole aspect: the API's `edit(base, new)` has no path form.
 - `-v` (any count) copies the node's diagnostics to stderr, formatted as `diag --follow` (`--json`: JSON lines), while a command that opens the store with sync on runs; best effort. A no-op for `serve` and `diag --follow` (they print them on stdout). Local commands print none: the diagnostics worth seeing come from sync.
 - `diag --since` dropped: there is no stored diagnostics log yet.
@@ -69,7 +68,6 @@ Every public `Osis` method appears here (checked by tests/it/cli.rs). Now = work
 | `chat create/add/link/join/kick/post/read/watch/edit/resend/delete/leave/members/disappear` (notes/chat.md; `read --after ID`, `watch --after ID --count N`; `--json` lines) | osis-chat over `create_ownerless`, `share`, `make_link`, `redeem`, `demote`, `history`, `on_history`, `purge_commit`, `purge_author`, `leave` | now (through a daemon too; `join` there waits a moment for the first messages, a `read` there does not pull) |
 | `card show/import/profile [PERSON]` | `contact_card` / `import_contact` / `profile`, `profile_of` | now |
 | `invite ls/accept/decline` | `invite_requests` / `accept_invite` / `decline_invite` | 2nd (`InviteId` has no text form yet) |
-| `move T OWNER (--in G…)` / `same A B` | `move_thing` / `same_thing` | now |
 | `ownerless ADMIN` (prints the tid) | `create_ownerless` | now |
 | `status [--watch]` / `sync` / `wait` | `status`, `watch_status` (lines `group state last_sync labels`, labels comma-separated, `-` for none, then `thing split: writes refused`; `--json`: `{groups: [..], split: [..]}`) / `sync_now`, `wait_synced` (`All` leaves hostless labels out) | now |
 | `group sync/unsync/policy` | `sync` / `unsync` / sync_policy | now (policy 2nd) |
@@ -112,7 +110,7 @@ One JSON document per command; streaming commands print JSON lines. int → numb
 | 0 | ok |
 | 1 | other: `Storage`, `Closed`, `NotUndoable`, `Unsupported`, I/O |
 | 2 | usage, unparsable argument or value |
-| 3 | `UnknownThing`, `UnknownActor`, absent on `get`, `same` false, nothing to undo/redo |
+| 3 | `UnknownThing`, `UnknownActor`, absent on `get`, nothing to undo/redo |
 | 4 | `Permission` |
 | 5 | `TooLarge`, `Type` |
 | 6 | `Network`, `Unsynced`, timeout |

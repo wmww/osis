@@ -71,7 +71,7 @@ Reading: the sentence that costs most is not any one of these but their product:
 
 ### 2.6 Drop keep (no read-only copy after removal)
 **Rule.** Every removal erases; Deletion's "unless its removal said to keep a read-only copy" goes.
-**Deletes.** spec/permissions.md §3 Keep (ways, least fixpoint, per-copy records, late defaults, `until` 0 as "keep", the `keep` default in `required.0^`, the link and move clients writing it), `rotation/lost.rs`'s ways and keeps (about 400 of 721 lines), d36/d41's rounds. **Loses.** "You left the group but keep your history" has to be an app export before leaving. Tess asked for keep (chat design); it is self-contained and generates no open issue, so not recommended now; listed because it is a fifth of the rotation crate.
+**Deletes.** spec/permissions.md §3 Keep (ways, least fixpoint, per-copy records, late defaults, `until` 0 as "keep", the `keep` default in `required.0^`, the link client writing it), `rotation/lost.rs`'s ways and keeps (about 400 of 721 lines), d36/d41's rounds. **Loses.** "You left the group but keep your history" has to be an app export before leaving. Tess asked for keep (chat design); it is self-contained and generates no open issue, so not recommended now; listed because it is a fifth of the rotation crate.
 
 ### 2.7 Not candidates
 - **"Nothing trusts a host's word"**: the alternative (hosts told who may read) un-blinds hosts and breaks the Untrusted-nodes section whole. Claim sets, steps, the k-walk and establishment are its price and converged.

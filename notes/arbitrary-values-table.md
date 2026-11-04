@@ -30,7 +30,6 @@ Classes: **P** performance switch between correct strategies (or a cache/batch s
 | `MAX_PAGE_ITEMS` 2^21 | R (validity rule, every durable reader alike; honest worst case about 1.4 x 2^20, notes/crdt.md Page items) | every delta invalid / one blob decodes to GBs |
 | `MAX_RELAY_BLOB` 64 KiB | R | no relay-only blobs / relays as big as blobs |
 | `MAX_DRIFT`, `ROLE_KEEP`, `AT_MOST_GRACE`, `INBOX_LIFETIME`, `HEARTBEAT_*`, `TOMBSTONE_LIFETIME`, `MAX_CLAIMS`, LAN window | O | sign-off list |
-| `RESOLUTION_HOPS` 8 | M | no resolution / cycles (guarded); past it a tid reads as an intermediate copy |
 | `MAX_HEARTBEAT_SUSPECTS` 32 | R | no repair at all / a heartbeat as long as the label's flagged aspects (a deposit, budgeted); past it the newest flags are reported and the rest wait for those to clear (repair a few intervals late, nothing lost: flags stay until repaired) |
 | `MAX_REQUIRED_ENTRIES` 64 | R | no setting can say anything / `MAX_VALUE_BYTES` of prefixes in every node's memory per `required.0^` delta; past it the delta requires nothing, a writer refuses it |
 | `MAX_OWNER_DEPTH` 64 | R | only key actors / unbounded chain walks; deeper is invalid everywhere alike |

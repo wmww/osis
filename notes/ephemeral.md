@@ -125,7 +125,7 @@ Decisions where the design was open:
 - Node-sync subscribes with `subscribe_durable` (no `Event::Ephemeral`), the osis handle skips `SyncEvent::Local` after ephemeral-only events, and node-sync ignores an Expiry `Changed` naming only ephemeral aspects: a local ephemeral write costs the sync engine nothing.
 - `delete`: per aspect a durable remove when a durable delta is held, else an ephemeral reset (an aspect on both sides loses its durable side only); freeing scans the ephemeral things for owned ones (O(ephemeral things)).
 - A new ephemeral thing needs the role its creation would need (checked at write, like `created.0`).
-- `move_thing(tid, owner, groups)` persists an ephemeral tid or owner first; `grant`/`change_edge`, `make_link` and `sync` persist an ephemeral target first (`Osis::persist`, a content commit of its own).
+- `grant`/`change_edge`, `make_link` and `sync` persist an ephemeral target first (`Osis::persist`, a content commit of its own).
 - An ephemeral-keyed raw write of `group.0` stays `Invalid`; `placed.0~` is written by group ops only.
 - The rights check (perm timeline role per write) is the largest cost part and trivially cacheable per (thing, roster generation) if a budget ever needs it.
 - Not built in step 1 (still open): text sessions committing each edit at once on ephemeral aspects (they idle-commit like durable ones, harmless); requirements.md's Ephemeral data section (with step 3: it is about sync).

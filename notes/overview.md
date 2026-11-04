@@ -43,7 +43,7 @@ Known open (issues/): cost residues (perm-eval-cost, node-core-gaps, node-sequen
 - notes/data-model.md: tids, CBOR, large values, AK grammar, schema DSL sketch.
 - notes/versioning.md: transition conventions, write policy, blessed paths for hard schema changes.
 - notes/crdt.md: merge design reasons, anomalies, reference model, text size, worked examples.
-- notes/permissions.md: permission rules' reasons, roles model findings, move (copy) and revocation reasoning, sharing patterns.
+- notes/permissions.md: permission rules' reasons, roles model findings, revocation reasoning, sharing patterns.
 - notes/sync.md: sync and host reasons, limits, what a blind node learns, policy defaults.
 - notes/crypto.md: suite choices, costs, crates.
 - notes/ephemeral.md: ephemeral data design and what is built (in-memory things and aspects, persistence, placements, undo, ephemeral commits held in memory at nodes and hosts, relay-only signals; values kept alive by their author's rewrites), expiry, the all-nodes predicate, heartbeats and the stranded flag.
