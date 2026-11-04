@@ -1292,6 +1292,18 @@ pub(crate) fn check_content_rules(core: &Core, h: &Header, parts: &[(usize, usiz
     if h.frontier.is_some() && !lowers && !changed.is_empty() {
         return Err(Error::BadInput("a frontier on a commit that demotes nobody"));
     }
+    // a removal of another's edge with no frontier is a finalize (spec/permissions.md §2): of
+    // an edge not past its `until` it would apply nothing, so a revoke written so would cut off
+    // nobody
+    if h.frontier.is_none() {
+        for (target, m, new) in &changed {
+            let old = core.timelines.get(target).and_then(|tl| tl.edges_at(None).get(m, target).copied());
+            let removes = *m != h.author && new.as_ref().is_none_or(|e| e.says_keep()) && !self_removal(core, &h.author, target, m, h.ts);
+            if removes && old.is_some_and(|o| o.until.is_none() || o.alive_at(Some(h.ts))) {
+                return Err(Error::BadInput("a removal with no frontier of an edge not past its until"));
+            }
+        }
+    }
     // a removal or demotion on a thing with secrets of its own carries its rotation
     for (target, m, new) in &changed {
         if *m == h.author {

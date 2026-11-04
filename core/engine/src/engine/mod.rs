@@ -2214,6 +2214,10 @@ mod tests {
         };
         let mut mu = Mutation::new();
         mu.op(t, &ct::ROLES, PathOp { path, op }).unwrap();
+        // an explicit removal: with no frontier it would be a finalize (spec/permissions.md §2)
+        if role.is_none() {
+            mu.frontier(ct::Frontier::default().to_value());
+        }
         mu
     }
 
