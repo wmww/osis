@@ -665,12 +665,30 @@ fn deleted_creation(d: &Dot, e: &SeqElem, ch: &mut Changes) {
     }
 }
 
-/// Prunes every element record under effective reset `e` (records are never removed, §4.2).
+/// Prunes every element record under effective reset `e` (records are not removed here, §4.2).
 pub(crate) fn prune_elems(s: &mut Seq, e: Option<&Stamp>, ch: &mut Changes) {
     let text = s.text;
     let elems = s.elems_mut();
     cut_chains(elems, e);
     elems.retain(|d, el| prune_elem(d, el, text, e, ch));
+}
+
+/// Drops the bare anchors, at any depth of list content, of a sequence in a map record holding no
+/// creation (§4.2). A look at the records first, so a record's hidden writes keep their placement
+/// through a join finding no anchor.
+pub(crate) fn drop_anchors(s: &mut Seq) {
+    if !s.elems().values().any(|el| !el.is_record() || matches!(el.content, SeqContent::Frag(_))) {
+        return;
+    }
+    s.elems_mut().retain(|_, el| {
+        if let SeqContent::Frag(f) = &mut el.content {
+            f.drop_anchors();
+            if f.is_empty() {
+                el.content = SeqContent::None;
+            }
+        }
+        el.is_record()
+    });
 }
 
 /// `prune_elems` for a join that raised the sequence's own reset: what it left bare is merged

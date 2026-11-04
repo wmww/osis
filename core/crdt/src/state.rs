@@ -242,7 +242,8 @@ fn join_coll(meta: &mut Meta, elems: &mut BTreeMap<Dot, Elem>, dm: Meta, de: BTr
 /// Prunes the records of one dot (§5.6): each under its own reset, the key-erased record also
 /// under every keyed record's, a keyed record also under the key-erased record's. A creation is
 /// a write of its own (a record may hold it alone, its content un-merged), and a record reads
-/// only with it (§5.6 Live). Records left with no write go.
+/// only with it (§5.6 Live). Bare anchors go with it (§4.2), so records left with no write go,
+/// and a key they repeat with them.
 fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) {
     for (_, en) in recs.iter_mut() {
         prune_write(&mut en.reset, e, ch);
@@ -251,11 +252,29 @@ fn prune_dot(recs: &mut Vec<(Eid, Entry)>, e: Option<&Stamp>, ch: &mut Changes) 
     let keyed = recs.iter().filter(|(id, _)| id.key.is_some()).fold(None, |m, (_, en)| max_opt(m, en.reset.clone()));
     for (id, en) in recs.iter_mut() {
         let cross = if id.key.is_none() { keyed.clone() } else { erased.clone() };
+        let dot_reset = en.reset.is_some() || cross.is_some();
         let ee = max_opt(max_opt(e.cloned(), en.reset.clone()), cross);
         prune_opt(&mut en.frag, ee.as_ref(), ch);
         prune_write(&mut en.created, ee.as_ref(), ch);
+        // a reset of the dot ended the entry; with no write left and no creation, so did whatever
+        // took them. Any other record without a creation may be a partial receipt (§4.2)
+        if dot_reset {
+            drop_anchors_opt(&mut en.frag);
+        } else if en.created.is_none() && en.frag.as_deref().is_some_and(|f| f.all_max().is_none()) {
+            en.frag = None;
+        }
     }
     recs.retain(|(_, en)| en.reset.is_some() || en.frag.is_some() || en.created.is_some());
+}
+
+/// `drop_anchors` of a record's content, which goes when nothing is left.
+fn drop_anchors_opt(f: &mut Option<Box<Fragment>>) {
+    if let Some(x) = f {
+        x.drop_anchors();
+        if x.is_empty() {
+            *f = None;
+        }
+    }
 }
 
 /// The deaths the records of one dot imply across each other (§5.6 Live: a keyed record reads
@@ -514,6 +533,24 @@ impl Fragment {
                 let (reg, slots) = parts(std::mem::take(self));
                 *self = prune_slots(reg, slots, e_parent, ch);
             }
+        }
+    }
+
+    /// Drops the bare anchors of this content of a map record holding no creation (§4.2), down to
+    /// any nested map record, which judges its own by its own creation.
+    pub(crate) fn drop_anchors(&mut self) {
+        match self {
+            Fragment::Struct(Struct { fields: m, .. }) | Fragment::Enum(Enum { payloads: m, .. }) => m.retain(|_, x| {
+                x.drop_anchors();
+                !x.is_empty()
+            }),
+            Fragment::Slots(_) => {
+                let (reg, mut slots) = parts(std::mem::take(self));
+                slots.values_mut().for_each(Fragment::drop_anchors);
+                *self = assemble(reg, slots);
+            }
+            Fragment::Seq(s) => seq::drop_anchors(s),
+            Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) | Fragment::Map(_) => {}
         }
     }
 

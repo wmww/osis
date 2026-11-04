@@ -601,6 +601,18 @@ impl Frag {
                     if !en.created.as_ref().map_or(true, |c| survives(c, ee.as_ref())) {
                         en.created = None;
                     }
+                    // a reset of the dot ended the entry; with no write left and no creation, so did whatever took them. Any
+                    // other record without a creation may be a partial receipt (§4.2)
+                    if max_opt(en.reset.clone(), cross.get(id).cloned().flatten()).is_some() {
+                        if let Some(f) = &mut en.frag {
+                            f.drop_anchors();
+                            if f.is_empty() {
+                                en.frag = None;
+                            }
+                        }
+                    } else if en.created.is_none() && en.frag.as_ref().is_some_and(|f| f.all_max().is_none()) {
+                        en.frag = None;
+                    }
                     // a creation is a write of its own: it may be left alone (its content un-merged)
                     en.reset.is_some() || en.frag.is_some() || en.created.is_some()
                 });
@@ -636,6 +648,32 @@ impl Frag {
                     el.keeps_record(d)
                 });
             }
+        }
+    }
+
+    /// Drops the bare anchors of the content of a map record holding no creation (§4.2), down to any nested map
+    /// record, which judges its own by its own creation.
+    fn drop_anchors(&mut self) {
+        match self {
+            Frag::Struct { fields: m, .. } | Frag::Enum { payloads: m, .. } => m.retain(|_, x| {
+                x.drop_anchors();
+                !x.is_empty()
+            }),
+            Frag::Slots { .. } => {
+                let (reg, mut slots) = parts(std::mem::replace(self, Frag::empty(0)));
+                slots.values_mut().for_each(Frag::drop_anchors);
+                *self = assemble(reg, slots);
+            }
+            Frag::Seq { elems, .. } => elems.retain(|_, el| {
+                if let Content::Frag(f) = &mut el.content {
+                    f.drop_anchors();
+                    if f.is_empty() {
+                        el.content = Content::None;
+                    }
+                }
+                el.is_record()
+            }),
+            Frag::Register { .. } | Frag::Bag { .. } | Frag::Set { .. } | Frag::Map { .. } => {}
         }
     }
 

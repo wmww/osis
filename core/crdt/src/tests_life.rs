@@ -985,6 +985,149 @@ fn sweep_takes_only_what_is_hidden_spec_sync_7() {
     assert!(!over.holds_write(&Dot::new(y, 1)));
 }
 
+/// Every map at any depth.
+fn map_records(f: &Fragment, out: &mut Vec<crate::fragment::Map>) {
+    match f {
+        Fragment::Slots(s) => s.slots.values().for_each(|x| map_records(x, out)),
+        Fragment::Struct(s) => s.fields.values().for_each(|x| map_records(x, out)),
+        Fragment::Enum(s) => s.payloads.values().for_each(|x| map_records(x, out)),
+        Fragment::Map(m) => {
+            out.push(m.clone());
+            m.entries.values().filter_map(|en| en.frag.as_deref()).for_each(|x| map_records(x, out));
+        }
+        Fragment::Seq(s) => {
+            for el in s.elems().values() {
+                if let crate::seq::SeqContent::Frag(x) = &el.content {
+                    map_records(x, out);
+                }
+            }
+        }
+        Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => {}
+    }
+}
+
+/// `f` with the bare anchors of every map record holding no creation dropped.
+fn hidden_anchors_gone(mut f: Fragment) -> Fragment {
+    fn walk(f: &mut Fragment) {
+        match f {
+            Fragment::Slots(s) => s.slots.values_mut().for_each(walk),
+            Fragment::Struct(s) => s.fields.values_mut().for_each(walk),
+            Fragment::Enum(s) => s.payloads.values_mut().for_each(walk),
+            Fragment::Map(m) => {
+                m.entries.retain(|_, en| {
+                    if let Some(x) = en.frag.as_deref_mut() {
+                        if en.created.is_none() {
+                            x.drop_anchors();
+                        }
+                        walk(x);
+                        if x.is_empty() {
+                            en.frag = None;
+                        }
+                    }
+                    en.reset.is_some() || en.frag.is_some() || en.created.is_some()
+                });
+            }
+            Fragment::Seq(s) => {
+                for el in s.elems_mut().values_mut() {
+                    if let crate::seq::SeqContent::Frag(x) = &mut el.content {
+                        walk(x);
+                    }
+                }
+            }
+            Fragment::Register(_) | Fragment::Bag(_) | Fragment::Set(_) => {}
+        }
+    }
+    walk(&mut f);
+    f
+}
+
+/// spec/crdt.md §4.2, §5.6: a record under a reset of its dot holds no bare anchor, so a removed
+/// text entry leaves no record repeating its key, and a write into it arriving before or after the
+/// removal leaves the same state.
+#[test]
+fn bare_anchors_go_with_the_creation_spec_crdt_4_2() {
+    use crate::ops::{Writer, create};
+    use crate::testutil::TyView;
+    let (x, y) = (sess(Tid::from_bytes([1; 15])), sess(Tid::from_bytes([2; 15])));
+    let key = Value::Str("k".into());
+    let shapes = [Ty::Text, Ty::Struct([(1, Ty::Text)].into_iter().collect())];
+    let values = [Value::Str("ab".into()), Value::Map([(Value::Int(1), Value::Str("ab".into()))].into_iter().collect())];
+    let edited = [Value::Str("abc".into()), Value::Map([(Value::Int(1), Value::Str("abc".into()))].into_iter().collect())];
+    for ((ty, v), e) in shapes.into_iter().zip(values).zip(edited) {
+        let ty = TyView(Ty::Map(Box::new(Ty::Register), Box::new(ty)));
+        let m = |v: &Value| Value::Map([(key.clone(), v.clone())].into_iter().collect());
+        let put = create(&mut Writer::new(ts(5), x.clone(), 1), &ty, &m(&v)).unwrap();
+        let edit = crate::diff(&mut Writer::new(ts(9), y.clone(), 1), Some(&put), &ty, &m(&e)).unwrap().unwrap();
+        let removal = crate::reset_entries(&Writer::new(ts(7), x.clone(), 9), &[(Dot::new(x.clone(), 1), key.clone())]);
+        let mut gone = put.clone();
+        gone.join(removal.clone());
+        let Fragment::Map(mp) = &gone else { panic!("a map") };
+        assert!(mp.entries.keys().all(|id| id.key.is_none()), "the key is gone");
+        // the map's own reset takes it too: no write is left
+        let mut replaced = put.clone();
+        let meta = crate::fragment::Meta { reset: Some(Writer::new(ts(7), x.clone(), 9).delta_stamp()), w: None };
+        replaced.join(Fragment::Map(crate::fragment::Map::new(meta, Default::default())));
+        let Fragment::Map(mp) = &replaced else { panic!("a map") };
+        assert!(mp.entries.is_empty(), "no record is left");
+        let mut a = gone;
+        a.join(edit.clone());
+        let mut b = put.clone();
+        b.join(edit.clone());
+        b.join(removal.clone());
+        assert_eq!(a, b, "the write before or after the removal");
+        assert_eq!(a.read(), Some(Value::Map(Default::default())));
+        // what it anchored at is gone: swept, nothing is left of it
+        let sweep = a.sweep(&Writer::new(ts(20), y.clone(), 5).delta_stamp(), &|_| false).expect("a removal hid the edit");
+        a.join(sweep);
+        let Fragment::Map(mp) = &a else { panic!("a map") };
+        assert!(mp.entries.keys().all(|id| id.key.is_none()), "the key is gone with the hidden write");
+    }
+}
+
+/// `bare_anchors_go_with_the_creation_spec_crdt_4_2` on random histories, in random orders.
+#[test]
+fn bare_anchors_go_with_the_creation_random_spec_crdt_4_2() {
+    let reg = || Box::new(Ty::Register);
+    let pair = || Ty::Struct([(1, Ty::Register), (2, Ty::Text)].into_iter().collect());
+    let types = [Ty::Map(reg(), Box::new(Ty::Text)), Ty::Map(reg(), Box::new(pair())), Ty::Map(reg(), Box::new(Ty::List(Box::new(pair())))), Ty::Map(reg(), Box::new(Ty::Map(reg(), Box::new(Ty::Text)))), sink_no_seq()];
+    let mut dropped = 0;
+    for ty in &types {
+        for seed in 0..60u64 {
+            let mut r = crate::testutil::rng(seed * 2 + 1);
+            let commits = crate::testutil::history_honest(&mut r, std::slice::from_ref(ty), 3, 6);
+            let mut bodies: Vec<Fragment> = commits.iter().map(|c| frag(&c.delta)).collect();
+            let joined = |b: &[Fragment]| {
+                let mut s = Fragment::default();
+                b.iter().for_each(|x| {
+                    s.join(x.clone());
+                });
+                s
+            };
+            let a = joined(&bodies);
+            for i in (1..bodies.len()).rev() {
+                bodies.swap(i, r.below(i + 1));
+            }
+            // a record hidden by a parent's reset alone may keep anchors by arrival order (§4.2); its
+            // creation is below that reset, so they read as nothing
+            let b = joined(&bodies);
+            assert_eq!(a.read(), b.read(), "any order");
+            assert_eq!(hidden_anchors_gone(a.clone()), hidden_anchors_gone(b), "any order");
+            let mut recs = Vec::new();
+            map_records(&a, &mut recs);
+            for f in recs.iter().filter(|m| m.entries.values().any(|en| en.reset.is_some())) {
+                for en in f.entries.iter().filter(|(id, _)| f.of_dot(&id.dot).any(|(_, x)| x.reset.is_some())).map(|(_, en)| en) {
+                    dropped += 1;
+                    let Some(g) = &en.frag else { continue };
+                    let mut h = (**g).clone();
+                    h.drop_anchors();
+                    assert_eq!(&h, &**g, "a bare anchor under a reset of the dot");
+                }
+            }
+        }
+    }
+    assert!(dropped > 0, "never a record under a reset");
+}
+
 /// `v` with empty collections left out: a sweep's reset is a write, so a collection another writer
 /// reset meanwhile may read empty rather than absent, as under any concurrent removal (§4.3).
 fn shown(v: Value) -> Option<Value> {

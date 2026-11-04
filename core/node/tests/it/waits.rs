@@ -1355,11 +1355,10 @@ fn partial_receipt_survives_compaction_spec_sync_7() {
 }
 
 
-// issues/removed-text-entry-keeps-key.md, spec/crdt.md §5.6: a removal leaves a text's bare anchors
-// in the record that repeats the key, so a snapshot carries the removed key.
+// spec/crdt.md §4.2, §5.6: a text's bare anchors go with the entry's creation, so no record repeats
+// the removed key and no snapshot carries it.
 #[test]
-#[ignore = "issues/removed-text-entry-keeps-key.md"]
-fn removed_text_entry_key_goes_repro_spec_crdt_5_6() {
+fn removed_text_entry_key_goes_spec_crdt_5_6() {
     let k = ak("t:docs.0");
     let mut lp = net(1, 0x7a18);
     let t = new_thing(&mut lp, 0);
