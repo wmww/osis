@@ -262,17 +262,35 @@ pub(crate) fn vouched(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, owned: &[Owned]) -> R
     let snaps: Vec<CommitId> = tx.core.ix.snapshots.get(&(*tid, ak.clone())).into_iter().flatten().map(|s| s.1).filter(|s| snapshot_valid(tx.core, s, tid, ak)).collect();
     for s in snaps {
         let Some(ix) = copy_index(tx, &s, tid, ak)? else { continue };
-        for o in owned {
-            let (src, lo, hi) = match o {
-                Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
-                Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
-                Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
-            };
-            out.extend(ix.records_in(&src, lo, hi).filter(|(d, _)| o.owns(d)).map(|(d, k)| (d.clone(), k.cloned())));
-            erased.extend(ix.erased_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
-        }
+        vouched_in(&ix, owned, &mut out, &mut erased);
     }
     Ok((out, erased))
+}
+
+/// `vouched` of one snapshot's writes, indexed `ix`.
+fn vouched_in(ix: &osis_crdt::CopyIndex, owned: &[Owned], out: &mut Records, erased: &mut BTreeSet<Dot>) {
+    for o in owned {
+        let (src, lo, hi) = match o {
+            Owned::Range { src, lo, hi } => (src.clone(), *lo, *hi),
+            Owned::Commit(c) => (osis_crdt::Source::commit(*c), 0, u64::MAX),
+            Owned::Dots { src, ctrs } => (src.clone(), ctrs.first().copied().unwrap_or(0), ctrs.last().map_or(0, |x| x.saturating_add(1))),
+        };
+        out.extend(ix.records_in(&src, lo, hi).filter(|(d, _)| o.owns(d)).map(|(d, k)| (d.clone(), k.cloned())));
+        erased.extend(ix.erased_in(&src, lo, hi).filter(|d| o.owns(d)).cloned());
+    }
+}
+
+/// Whether a valid snapshot's piece `f` vouches for a write of the deltas `owned` matches
+/// (`vouched` of it is not empty), a hidden anchor's creation copy included: joined, the aspect
+/// is rebuilt, since what un-merge keeps of those deltas' bodies depends on it.
+/// Invariant: exactly when the rebuild's `Unmerge` would read a vouched record from `f`.
+pub(crate) fn vouches_any(f: &Fragment, owned: &[Owned]) -> bool {
+    if owned.is_empty() {
+        return false;
+    }
+    let (mut out, mut erased) = (Records::new(), BTreeSet::new());
+    vouched_in(&f.copy_index(), owned, &mut out, &mut erased);
+    !out.is_empty() || !erased.is_empty()
 }
 
 /// The dots under which the snapshots `snaps` hold copies of the writes of commit `id`'s delta
