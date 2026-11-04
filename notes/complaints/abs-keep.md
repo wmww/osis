@@ -6,3 +6,4 @@
 - The order harness's random `op` draws feed pinned explicit histories and judgment vectors: changing what an existing op writes silently changes those regressions. New behaviour goes in new op numbers.
 - Oracle set ran at load 60 (other agents' runs): about 3x the testing.md wall times.
 - Review: keep-at-most and expiry timers share one key per (time, commit, part); a death-set keep-at-most timer at T == expiry overwrote the expiry's kind, so an expiring live entry outlived its expiry (now never set there).
+- Review gate 692 s at load 35-85 (other agents' runs); the alike oracle at 5317000 ran 222 s, its one seed's shrink 107 s.
