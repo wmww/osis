@@ -245,6 +245,72 @@ fn reader_after_timed_delete_spec_commits_4() {
     reader_applies_after_carrierless_delete(0x7d20, r, r, 600_000 + 1_000);
 }
 
+// spec/commits.md §4 (atomic apply: a delta that left with no carrier and nothing on its aspect as
+// late waits), §5 (a header-only blob goes under a label only as a lasting header): a snapshot
+// taken without an earlier-stamped removal is dead on arrival under at most 0. Nothing of it stays
+// at the host, so a node coming later never hears of it and has nothing pending. Handed the bare
+// header anyway, it waits, reads the same, and the aspect's next write releases it.
+#[test]
+fn snapshot_dead_by_earlier_removal_leaves_no_wait_spec_commits_4() {
+    use osis_base::Role;
+    use osis_crdt::{Op, PathOp, PathSeg};
+    let gone = osis_base::Ak::new("t:gonemap.0").unwrap();
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(0x7d30, &[host]);
+    let b = net.node(0x7d31, &[host]);
+    let late = net.node(0x7d32, &[host]);
+    let g = net.group(a, &[(b, Role::Write), (late, Role::Read)], &[host]);
+    net.set_online(late, false);
+    let t = net.item(a, g, g, "x");
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("k"))], op: Op::Set(s("v")) }).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.set_online(a, false);
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: Vec::new(), op: Op::Remove(s("k")) }).unwrap();
+    let rm = net.engine(b).commit(m).unwrap().unwrap();
+    net.run();
+    net.advance(1_000);
+    let snap = net.engine(a).snapshot(&t, &gone).unwrap().unwrap();
+    assert!(net.engine(a).header(&snap).unwrap().ts > net.engine(b).header(&rm).unwrap().ts);
+    net.set_online(a, true);
+    net.run();
+    let resync = net.sync(a).config().resync_ms;
+    net.advance(resync);
+    net.run();
+    net.advance(resync);
+    net.run();
+    for n in [a, b] {
+        assert!(!net.engine(n).body_not_dropped(&snap, &t, &gone), "dead, so gone");
+    }
+    let l = net.label(a);
+    assert!(at_host(&mut net, a, host, &l, &snap).is_empty(), "deleted at the host, no carrier");
+    net.set_online(late, true);
+    net.run();
+    net.advance(resync);
+    net.run();
+    assert_eq!(net.engine(late).pending(), Vec::new());
+    assert!(net.engine(late).header(&snap).is_none(), "nothing of it reaches a later node");
+    let want = net.engine(a).get(&t, &gone).unwrap();
+    assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
+    let pk = net.engine(a).package(&snap).unwrap().unwrap();
+    assert!(net.engine(a).bodies(&snap).unwrap().is_empty());
+    net.engine(late).ingest(&pk.bytes, pk.blobs).unwrap();
+    assert_eq!(net.engine(late).pending(), vec![(snap, osis_node::Reason::WaitDeltas)]);
+    assert_eq!(net.engine(late).get(&t, &gone).unwrap(), want);
+    net.advance(1_000);
+    let mut m = Mutation::new();
+    m.op(t, &GONEMAP, PathOp { path: vec![PathSeg::Key(s("j"))], op: Op::Set(s("w")) }).unwrap();
+    net.engine(a).commit(m).unwrap();
+    net.run();
+    net.advance(resync);
+    net.run();
+    assert_eq!(net.engine(late).pending(), Vec::new());
+}
+
 // spec/commits.md §4: a pending commit whose missing part's bound comes wakes its node at the
 // bound, nothing else happening (no resync, no timer of its own).
 #[test]

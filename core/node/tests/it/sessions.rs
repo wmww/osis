@@ -481,7 +481,7 @@ fn pruned_sessions_check(seed: u64) -> Result<(), String> {
 /// spec/commits.md §5 (a held body is judged by the join whatever the frontiers): two writers see part of
 /// each other's commits, so their snapshots list sessions short of bodies. Given everything, a
 /// node dropping what the join covers reads and rebuilds as one dropping nothing, and a fresh node
-/// from what it still holds has nothing pending; no snapshot covers a delta stamped after it.
+/// from the bodies it still holds has nothing pending; no snapshot covers a delta stamped after it.
 fn gap_cover_check(seed: u64) -> Result<(), String> {
     let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
     let mut lp = net(5, 0x5ea0 + seed);
@@ -572,8 +572,10 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
         let (x, y) = (states(&mut lp, 3), states(&mut lp, 2));
         return Err(format!("the dropper's state differs:\n{x:#?}\n{y:#?}"));
     }
-    for pk in packages(&mut lp, 3) {
-        let _ = lp.deliver(4, &pk);
+    // a commit with no body left goes under no label (none here is a lasting header, §5)
+    let (bodies, headers): (Vec<Package>, Vec<Package>) = packages(&mut lp, 3).into_iter().partition(|pk| !lp.peers[3].engine.bodies(&pk.id).unwrap().is_empty());
+    for pk in &bodies {
+        let _ = lp.deliver(4, pk);
     }
     lp.peers[4].engine.reexamine().map_err(|e| e.to_string())?;
     if !lp.peers[4].engine.pending().is_empty() {
@@ -582,11 +584,22 @@ fn gap_cover_check(seed: u64) -> Result<(), String> {
     if reads(&mut lp, 4) != want {
         return Err(format!("the fresh node differs: {want:?} vs {:?}", reads(&mut lp, 4)));
     }
+    // bare headers change no read; one may wait for a later commit on its aspect (§4, last sentence of Atomic apply)
+    for pk in &headers {
+        let _ = lp.deliver(4, pk);
+    }
+    lp.peers[4].engine.reexamine().map_err(|e| e.to_string())?;
+    if reads(&mut lp, 4) != want {
+        return Err(format!("the fresh node differs after the bare headers: {want:?} vs {:?}", reads(&mut lp, 4)));
+    }
     // the original bodies again
     for pk in &packs {
         let _ = lp.deliver(4, pk);
     }
     lp.peers[4].engine.reexamine().map_err(|e| e.to_string())?;
+    if !lp.peers[4].engine.pending().is_empty() {
+        return Err(format!("the fresh node pends after the replay: {:?}", lp.peers[4].engine.pending()));
+    }
     if reads(&mut lp, 4) != want {
         return Err(format!("the fresh node differs after the replay: {want:?} vs {:?}", reads(&mut lp, 4)));
     }
