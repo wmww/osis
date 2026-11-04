@@ -28,7 +28,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 2. Whole commits steps 2b, 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
 3. issues/drop-rejoin-robust.md item 5 (rebuild check after every transaction in debug builds): cheap, and it will find what the rest of that issue fixes. Then its items 2, 1, 3, 4, 7, with the reference model (6) alongside.
 4. The simplifications keep-at-most-relative and roster option 2 (remove-moves is done). Each deletes code and spec; spec/ describes only what is built, so each lands its own spec edit.
-5. notes/core-triage.md A list: pending-unbounded and purged-pending-unchecked need a bound (re-check after whole commits: pending shrinks to parts on unheld things), epoch-establishment-redesign's review, ephemeral-undo-no-authority, expired-entry-key-kept.
+5. notes/core-triage.md §1, by rank (refreshed after item 272).
 6. crdt-leftovers decision; the rest of core-triage by rank.
 Periodic checks and simplification passes per notes/coordination.md, with `OSIS_FULL=1`. After whole commits and the simplifications land, a spec pass: spec/commits.md §4-5 should shrink a lot (it grew from 388 to about 6900 words in three weeks of seed fixes).
 

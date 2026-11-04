@@ -1,5 +1,5 @@
 # One aspect with very many kept writes: what is left
-> Summary: Measured `scale::long_aspect` (chat design E). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits now fails at the author until frontier heads land. Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync.md §6), not the whole log. Numbers in notes/testing.md.
+> Summary: Measured `scale::long_aspect` (chat design E). At 10^6 a write takes 2.4 ms before its fsync (measured on tmpfs), a fall of 3*10^5 deltas 11 s, a rise 0.6-11 s; every flip still walks the thing's commits (0.6 s) and the first decodes all headers (+2 GB). A kick over about 1.9*10^6 commits fails at the author (a stated limit: kick frontiers are IDs only). Open takes 5 s and 2.6 GB. A new device reads the newest page after the listing (spec/sync.md §6), not the whole log. Numbers in notes/testing.md.
 > Tags: node, permissions, performance
 
 Repro: `OSIS_SCALE_N=100000 OSIS_SCALE_DIR=<dir on disk> cargo test --release -p osis-node --test it -- --ignored --nocapture --test-threads 1 scale::long_aspect::cost`, `scale::long_aspect::first_sync`. A run of 10^6 took 82 min on tmpfs, about 8 GB of it and 5 GB resident per step.
@@ -8,8 +8,8 @@ Fixed here: the join's walk of the aspect (`Indexes::bounded_held`), the quadrat
 
 In order of damage:
 
-1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Before it succeeded and every receiver refused it. notes/frontier-study.md's heads remove it; frontier F2 still lists keep-forever writes.
-2. **Every flip walks the thing's commits**, under the engine lock (`validity::rejudge_all`, its `judge` over `by_thing`): 0.6 s at 10^6 for one flipped write. The first after an open also decodes every header: 3 s more and resident from 2.6 to 4.7 GiB. Heads would let a flip judge what it names.
+1. **A kick over about 1.9*10^6 commits cannot be sent.** The frontier passes `MAX_LIST_BYTES`, so `demote` fails with `Commit(TooLarge("header list"))` and the member stays. Before it succeeded and every receiver refused it. Tess chose IDs only (spec/requirements.md Cost); ID batches are the fallback (notes/frontier-study.md §11).
+2. **Every flip walks the thing's commits**, under the engine lock (`validity::rejudge_all`, its `judge` over `by_thing`): 0.6 s at 10^6 for one flipped write. The first after an open also decodes every header: 3 s more and resident from 2.6 to 4.7 GiB. 
 3. **Open at 10^6**: 5 s CPU, 2.6 GiB resident (2.6 KB per message). Lazy headers: issues/node-core-gaps.md. The first open after a long fill also rewrites the index.
 4. **A write while many deltas are invalid** costs 1 us per invalid delta (`Unmerge::probe` walks them per join): 0.30 s at 3*10^5. A received invalid delta runs `Unmerge::of` each, so a node first learning a kicked member's writes is quadratic in them (not measured). Asking per dot which delta owns it would remove both.
 5. **Other shapes still read every body on a rise or a fallen winner**: anything but a register, any aspect holding a snapshot; also an aspect with a relative bound, for its deaths (`replay_all`) and keep-at-most (`recheck_at_most`). A map's rebuild would need an index of which bodies hold what lies under each delta (issues/node-core-gaps.md).
