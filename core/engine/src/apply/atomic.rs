@@ -1208,9 +1208,14 @@ pub(crate) fn observe_state(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak) -> Result<()> {
         // every path that changes a `group.0` (late deltas, re-judging) updates `groups.0`
         // (what a thing's groups are decides what the node syncs: its waits are examined again)
         "group.0" => {
-            for t in tx.core.ix.groups.set(*tid, group_def(v)) {
-                tx.core.waits.wake_thing(&t);
+            let def = group_def(v);
+            // any change, not only what moved: a subgroup edge moves no durable closure when the
+            // subgroup holds only ephemeral placements, yet brings those in (`groups_of`)
+            if tx.core.ix.groups.defs.get(tid) != def.as_ref() {
                 tx.core.memory.closures += 1;
+            }
+            for t in tx.core.ix.groups.set(*tid, def) {
+                tx.core.waits.wake_thing(&t);
             }
         }
         _ => {}

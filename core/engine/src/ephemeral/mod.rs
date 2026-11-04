@@ -132,9 +132,11 @@ impl Engine {
     /// kept on under its label here, without walking it.
     ///
     /// Invariant the kept rows give (`ephemeral_reverts_within_rights_alike_*`): a node that
-    /// holds a commit on `t` under `g`'s label keeps sending what it has of `t` there, so every
-    /// holder of the label reads `t` alike whatever stops listing it. Rows widen where a commit
-    /// goes, never who may read it: `eph_place` still sends only what `g`'s actor may read.
+    /// holds a commit on `t` under `g`'s label keeps placing its new commits on `t` there, so
+    /// the label's holders go on reading `t` alike whatever stops listing it. Commits held
+    /// before a row or a listing appears do not go (issues/ephemeral-closure-entry-old-state.md).
+    /// Rows widen where a commit goes, never who may read it: `eph_place` still sends only what
+    /// `g`'s actor may read.
     pub fn in_ephemeral_closure(&self, g: &Tid, t: &Tid) -> bool {
         t == g || self.core.memory.kept.get(t).is_some_and(|gs| gs.contains(g)) || self.closure(g).contains(t) || self.groups_of(t).contains(g)
     }

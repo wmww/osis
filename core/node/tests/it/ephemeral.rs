@@ -466,6 +466,167 @@ fn written_outside_goes_on_any_way_in_spec_sync_9() {
     assert!(!entries_under(&mut net, a, &l).is_empty(), "the commit went under the new label");
 }
 
+
+fn sub_add(net: &mut Net, a: usize, g: Tid, sub: Tid) {
+    let mut items = net.engine(a).get_typed(&g, &ct::GROUP).unwrap().unwrap_or_default();
+    items.subgroups.insert(sub);
+    let mut m = Mutation::new();
+    m.set(g, &ct::GROUP, &items).unwrap();
+    net.engine(a).commit(m).unwrap();
+    local(net, a);
+}
+
+// spec/sync.md §9: a thing placed ephemerally in an unlabeled group goes once that group becomes a
+// subgroup of a synced one, though the edge moves no durable closure.
+#[test]
+fn subgroup_edge_brings_parked_writes_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let sub = e.new_thing(&mut m, g);
+    m.set(sub, &ct::GROUP, &ct::Group::default()).unwrap();
+    e.commit(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.op(sub, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("draft")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert!(!net.engine(a).ephemeral_synced(&w), "parked");
+    sub_add(&mut net, a, g, sub);
+    net.run();
+    assert!(net.engine(a).ephemeral_synced(&w), "in the closure now");
+    for _ in 0..5 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("draft")), "parked commit went");
+}
+
+// spec/sync.md §9: what a thing held before it entered a label's closure reaches that label's readers.
+#[test]
+#[ignore = "issues/ephemeral-closure-entry-old-state.md"]
+fn second_label_gets_held_state_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let c = net.node(3, &[host]);
+    let addr = net.hosts[host].address.clone();
+    let x = net.group_seeded(a, &[], vec![addr], 1);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, x);
+    m.op(x, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("old")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    reading_group(&mut net, a, x, w, &[(c, Role::Read)], host, 2);
+    for _ in 0..5 {
+        net.advance(15_000);
+    }
+    assert_eq!(net.eph_read(c, w, STATE), Some(s("old")), "the second label's reader gets the state");
+}
+
+// spec/sync.md §9: a node on two labels, restarted, writes before the old label's entries are back:
+// the old label's other holder gets that write too.
+#[test]
+#[ignore = "issues/ephemeral-closure-entry-old-state.md"]
+fn write_before_kept_row_returns_reaches_label_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let y = net.node(1, &[host]);
+    let k = net.node(3, &[host]);
+    let addr = net.hosts[host].address.clone();
+    let x = net.group_seeded(y, &[], vec![addr], 1);
+    net.run();
+    let e = net.engine(y);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, x);
+    m.set(w, &REG, &s("durable")).unwrap();
+    e.commit(m).unwrap();
+    local(&mut net, y);
+    net.run();
+    // L1: k may write there; w placed, a write held under it by both, then unplaced
+    let g1 = reading_group(&mut net, y, x, w, &[(k, Role::Write)], host, 2);
+    let tk = net.tid(k);
+    let done = net.engine(y).grant(&x, &tk, &crate::common::edge(Role::Write)).unwrap();
+    let acts = net.sync(y).carry_out(done).unwrap();
+    net.actions(y, acts);
+    net.run();
+    note(&mut net, y, w, "first", "1");
+    net.run();
+    assert_eq!(notes(&mut net, k, w), map(&[("first", "1")]));
+    // L2 holds it too; then out of L1
+    let _g2 = reading_group(&mut net, y, x, w, &[], host, 3);
+    let mut items = net.engine(y).get_typed(&g1, &ct::GROUP).unwrap().unwrap();
+    items.items.remove(&w);
+    let mut m = Mutation::new();
+    m.set(g1, &ct::GROUP, &items).unwrap();
+    net.engine(y).commit(m).unwrap();
+    local(&mut net, y);
+    net.run();
+    assert!(!net.engine(y).groups_of(&w).contains(&g1));
+    assert!(net.engine(k).ephemeral_kept_on(&w).contains(&g1));
+    // k off with its copy, the host loses everything, y restarts and comes back through L2 alone
+    net.set_online(k, false);
+    net.restart_host(host);
+    net.restart(y, 77);
+    net.advance(10_000);
+    note(&mut net, y, w, "second", "2");
+    net.run();
+    net.set_online(k, true);
+    for _ in 0..5 {
+        net.advance(15_000);
+    }
+    assert_eq!(notes(&mut net, y, w), notes(&mut net, k, w), "the holders of L1 read alike");
+}
+
+// notes/ephemeral.md Deletion: a deleted thing does not come back from a holder's copy.
+#[test]
+#[ignore = "issues/ephemeral-delete-comes-back.md"]
+fn deleted_thing_stays_deleted_at_holders_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "secret");
+    note(&mut net, a, w, "k1", "v1");
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("secret")));
+    let mut m = Mutation::new();
+    m.remove_aspect(w, &eph(STATE)).unwrap();
+    m.remove_aspect(w, &eph(NOTES)).unwrap();
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Remove(Value::Tid(w)) }).unwrap();
+    m.free(w);
+    net.engine(a).write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    net.advance(15_000);
+    // a holder's later write (a cursor, say), with no placement
+    note(&mut net, b, w, "b", "later");
+    net.run();
+    net.advance(15_000);
+    // past the host's tombstone, b reconnects
+    net.set_online(b, false);
+    net.advance(3_700_000);
+    net.set_online(b, true);
+    net.advance(15_000);
+    assert_eq!(net.eph_read(a, w, STATE), None, "nor back at the deleter");
+    assert_eq!(net.eph_read(b, w, STATE), None, "deleted stays deleted at the holder");
+}
+
 // notes/ephemeral.md Tess's direction (the shared window): two holders keep editing while one is
 // offline; on reconnect both converge on the merge, through a host
 #[test]
@@ -4911,6 +5072,10 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
 /// alike, a thing no group lists any more too (spec/sync.md §9: it stays in the closure of the
 /// labels a commit on it was kept under).
 fn revert_run(seed: u64) {
+    revert_run_with(seed, false)
+}
+
+fn revert_run_with(seed: u64, restarts: bool) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
         x ^= x << 13;
@@ -4930,6 +5095,24 @@ fn revert_run(seed: u64) {
     let mut ids = Vec::new();
     let mut lost = [false; 2];
     for step in 0..30u64 {
+        if restarts && rnd(6) == 0 {
+            match rnd(4) {
+                0 => {
+                    net.restart(b, seed ^ step ^ 0x77);
+                    ids.clear();
+                }
+                1 => net.restart(a, seed ^ step ^ 0x78),
+                2 => net.restart_host(host),
+                _ => {
+                    net.restart(b, seed ^ step ^ 0x79);
+                    ids.clear();
+                    net.restart_host(host);
+                }
+            }
+            if rnd(2) == 0 {
+                net.advance(10_000);
+            }
+        }
         match rnd(7) {
             0 | 1 => {
                 let t = things[rnd(things.len() as u64) as usize];
@@ -5008,6 +5191,14 @@ fn revert_run(seed: u64) {
 fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
     let name = "ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6";
     osis_base::testenv::run_seeds(name, &[0, 3, 5, 96, 132, 181, 903, 41169], false, |seed| eph_replay(name, seed), revert_run);
+}
+
+// the same with node and host restarts; known failing seeds: issues/ephemeral-restart-reverts-diverge.md
+#[test]
+#[ignore]
+fn ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6() {
+    let name = "ephemeral::ephemeral_reverts_with_restarts_alike_large_spec_crdt_4_6";
+    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| revert_run_with(seed, true));
 }
 
 #[test]
