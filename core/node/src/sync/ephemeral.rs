@@ -759,10 +759,10 @@ impl SyncEngine {
             }
             let l = gl.id;
             // the records of their owner chains ride beside the parts (spec/commits.md §2)
-            let readers: Vec<Option<Tid>> = blob.header.aspects.iter().map(|a| self.engine.in_ephemeral_closure(&g, &a.tid).then(|| self.engine.ephemeral_reader(&a.tid))).collect();
-            if readers.iter().all(Option::is_none) {
+            if !blob.header.aspects.iter().any(|a| self.engine.in_ephemeral_closure(&g, &a.tid)) {
                 continue;
             }
+            let readers: Vec<Option<Tid>> = blob.header.aspects.iter().map(|a| Some(self.engine.ephemeral_reader(&a.tid))).collect();
             let actor = self.engine.group_actor(&g);
             let Some(secret) = self.engine.wrap_secret(&g, None)? else { continue };
             let projections = osis_commit::project(&blob, |ai| readers.get(ai).copied().flatten())?;

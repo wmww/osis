@@ -176,6 +176,7 @@ impl Engine {
     /// snapshot of their join (`coalesce`), so an aspect goes up as one entry per round trip
     /// whatever the write rate.
     pub fn take_memory_commits(&mut self, busy: &BTreeSet<Tid>) -> Result<Vec<CommitId>> {
+        let whole = self.going_whole();
         let unsent = std::mem::take(&mut self.core.memory.unsent);
         let mut out = Vec::new();
         for c in unsent {
@@ -202,11 +203,11 @@ impl Engine {
                 }
             }
         }
-        for ((tid, ak), (ids, whole)) in by_aspect {
-            if ids.len() < 2 {
+        for ((tid, ak), (ids, all)) in by_aspect {
+            if ids.len() < 2 || whole.contains(&(tid, ak.clone())) {
                 continue;
             }
-            let s = if whole { self.snapshot(&tid, &ak)? } else { self.coalesce(&tid, &ak, &ids)? };
+            let s = if all { self.snapshot(&tid, &ak)? } else { self.coalesce(&tid, &ak, &ids)? };
             if let Some(s) = s {
                 out.push(s);
             }
@@ -217,6 +218,20 @@ impl Engine {
         out.retain(|c| self.holds_memory(c) && seen.insert(*c));
         self.core.memory.unsent.retain(|c| !seen.contains(c));
         Ok(out)
+    }
+
+    /// The aspects of unsent commits on several things (only a revert writes one: the undo of a
+    /// creation resets the thing and removes its placement): such a commit goes under a label
+    /// holding any of its things, and may be all that takes the others there, so it is sent with
+    /// every part, none covered first (spec/sync.md §3).
+    fn going_whole(&self) -> BTreeSet<(Tid, Ak)> {
+        let mut out = BTreeSet::new();
+        for m in self.core.memory.unsent.iter().filter_map(|c| self.core.ix.commits.get(c)) {
+            if m.view.aspects.iter().any(|a| m.view.aspects.first().is_some_and(|f| f.tid != a.tid)) {
+                out.extend(m.view.aspects.iter().map(|a| (a.tid, a.ak.clone())));
+            }
+        }
+        out
     }
 
     /// Memory commits forgotten since the last take, with why (the lane forgets their entries
@@ -301,9 +316,14 @@ impl Engine {
     /// snapshots written (listed unsent by their apply: the lane places them).
     pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
         let dirty: Vec<(Tid, Ak)> = if force { self.memory_aspects() } else { std::mem::take(&mut self.core.memory.dirty).into_iter().collect() };
+        let whole = self.going_whole();
         let mut out = Vec::new();
         for (tid, ak) in dirty {
             if !self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none() {
+                continue;
+            }
+            if whole.contains(&(tid, ak.clone())) {
+                self.core.memory.dirty.insert((tid, ak));
                 continue;
             }
             let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };

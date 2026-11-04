@@ -4640,11 +4640,14 @@ fn ephemeral_revert_needs_write_spec_crdt_4_6() {
     assert!(groups.contains(&g) && !groups.contains(&keep), "{groups:?}");
 }
 
-/// One seed of `ephemeral_reverts_stay_within_rights`: a writer writes, creates and reverts at
+/// One seed of `ephemeral_reverts_within_rights_alike`: a writer writes, creates and reverts at
 /// random while an admin takes write of a group away. A revert that goes through touched only
-/// what the writer may still write; one refused left the log and what it reads alone. `alike`:
-/// the two nodes also read alike at the end (issues/ephemeral-revert-diverges.md).
-fn revert_rights_run(seed: u64, alike: bool) {
+/// what the writer may still write; one refused left the log and what it reads alone, and no
+/// other error is met. In the end the two nodes list every thing in the same groups and read it
+/// alike, except a thing of a group the writer lost that no group lists: its only placement went
+/// with the writer's writes, so it is synced no more and each node keeps what it holds
+/// (spec/sync.md §9).
+fn revert_run(seed: u64) {
     let mut x = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
     let mut rnd = move |n: u64| {
         x ^= x << 13;
@@ -4701,7 +4704,8 @@ fn revert_rights_run(seed: u64, alike: bool) {
                         }
                         ids.push(w.id);
                     }
-                    Err(_) => {
+                    Err(e) => {
+                        assert!(matches!(e, osis_node::Error::Permission { .. }), "seed {seed} step {step}: {e:?}");
                         assert_eq!(before, reads(&mut net, &things), "seed {seed} step {step}: a refused revert");
                         assert_eq!(logged, net.engine(b).ephemeral_log().len(), "seed {seed} step {step}: a refused revert");
                     }
@@ -4726,35 +4730,137 @@ fn revert_rights_run(seed: u64, alike: bool) {
         local(&mut net, b);
         net.run();
     }
-    if alike {
-        for _ in 0..3 {
-            net.advance(15_000);
-        }
-        for t in &things {
+    for _ in 0..3 {
+        net.advance(15_000);
+    }
+    for t in &things {
+        let (ga, gb) = (net.engine(a).groups_of(t), net.engine(b).groups_of(t));
+        assert_eq!(ga, gb, "seed {seed}: {t:?} listed");
+        let owner = net.engine(a).ephemeral_thing(t).and_then(|x| x.record.owner());
+        let unsynced = ga.is_empty() && lost.iter().zip(&groups).any(|(l, g)| *l && owner == Some(*g));
+        if !unsynced {
             assert_eq!(net.eph_read(a, *t, STATE), net.eph_read(b, *t, STATE), "seed {seed}: {t:?}");
         }
     }
 }
 
-// spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write.
+// spec/crdt.md §4.6: an ephemeral undo or redo needs the rights of a write, and leaves the nodes alike.
 #[test]
-fn ephemeral_reverts_stay_within_rights_spec_crdt_4_6() {
-    let name = "ephemeral::ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6";
-    osis_base::testenv::run_seeds(name, &[0, 1, 2, 3, 96], false, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, false));
+fn ephemeral_reverts_within_rights_alike_spec_crdt_4_6() {
+    let name = "ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6";
+    osis_base::testenv::run_seeds(name, &[0, 3, 5, 96, 132, 181], false, |seed| eph_replay(name, seed), revert_run);
 }
 
 #[test]
 #[ignore]
-fn ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6() {
-    let name = "ephemeral::ephemeral_reverts_stay_within_rights_large_spec_crdt_4_6";
-    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, false));
+fn ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6() {
+    let name = "ephemeral::ephemeral_reverts_within_rights_alike_large_spec_crdt_4_6";
+    eph_seeds().run(name, |seed| eph_replay(name, seed), revert_run);
 }
 
-// issues/ephemeral-revert-diverges.md: seeds 5, 6, 26, 42, 59, 75, 100, 181 read differently at the
-// two nodes, on main's revert code too.
+/// A net with writer `b` in group `g` of admin `a`, and `b`'s batch making a window placed in `g`.
+fn undo_world() -> (Net, usize, usize, Tid, Tid, Tid, osis_node::ChangeId) {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    let tb = net.tid(b);
+    let (w, id) = made_window(&mut net, b, g, "v");
+    local(&mut net, b);
+    net.run();
+    (net, a, b, g, tb, w, id)
+}
+
+fn made_window(net: &mut Net, b: usize, g: Tid, v: &str) -> (Tid, osis_node::ChangeId) {
+    let e = net.engine(b);
+    let mut m = Mutation::new();
+    let w = e.new_thing(&mut m, g);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s(v)).unwrap();
+    (w, e.write(m).unwrap().unwrap().id)
+}
+
+fn written(r: osis_node::ephemeral::Reverted) -> osis_node::ChangeId {
+    let osis_node::ephemeral::Reverted::Written(w) = r else { panic!("{r:?}") };
+    w.id
+}
+
+// spec/crdt.md §4.6, spec/sync.md §3: the undo of a creation is one commit, the placement's removal and the thing's reset, so it reaches the group's holders whole, though the thing has left the closure by then.
 #[test]
-#[ignore]
-fn repro_ephemeral_revert_diverges() {
-    let name = "ephemeral::repro_ephemeral_revert_diverges";
-    eph_seeds().run(name, |seed| eph_replay(name, seed), |seed| revert_rights_run(seed, true));
+fn undo_of_creation_reaches_holders_spec_crdt_4_6() {
+    let (mut net, a, b, g, tb, w, id) = undo_world();
+    assert_eq!(net.eph_read(a, w, STATE), Some(s("v")));
+    net.engine(b).revert_change(id, tb).unwrap();
+    local(&mut net, b);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), None);
+    assert!(!net.engine(a).groups_of(&w).contains(&g));
+    assert_eq!(net.eph_read(a, w, STATE), None, "the reset reaches a holder");
+}
+
+// spec/sync.md §9: nor does coalescing take the thing's reset out of that commit when a write waits beside it.
+#[test]
+fn undo_of_creation_not_coalesced_away_spec_sync_9() {
+    let (mut net, a, b, _, tb, w, id) = undo_world();
+    note(&mut net, b, w, "k1", "v1");
+    net.run();
+    assert_eq!(notes(&mut net, a, w).len(), 1);
+    let mut m = Mutation::new();
+    m.op(w, &eph(NOTES), PathOp { path: vec![PathSeg::Key(s("k2"))], op: Op::Put(s("v2")) }).unwrap();
+    net.engine(b).write(m).unwrap();
+    net.engine(b).revert_change(id, tb).unwrap();
+    local(&mut net, b);
+    net.run();
+    assert_eq!(notes(&mut net, a, w), BTreeMap::new(), "the reset reaches a holder");
+}
+
+// spec/crdt.md §4.6: reverting the undo of a thing's creation, its placement the group's first, leaves a thing placed since where it is.
+#[test]
+fn redo_keeps_later_placement_spec_crdt_4_6() {
+    let (mut net, a, b, g, tb, w, id) = undo_world();
+    let undo = written(net.engine(b).revert_change(id, tb).unwrap());
+    let (later, _) = made_window(&mut net, b, g, "later");
+    let redo = written(net.engine(b).revert_change(undo, tb).unwrap());
+    local(&mut net, b);
+    net.run();
+    for n in [a, b] {
+        let groups = net.engine(n).groups_of(&later);
+        assert!(groups.contains(&g), "{groups:?}");
+        assert!(net.engine(n).groups_of(&w).contains(&g));
+    }
+    // and undoing the redo takes out only what it brought back
+    net.engine(b).revert_change(redo, tb).unwrap();
+    assert!(net.engine(b).groups_of(&later).contains(&g));
+    assert!(!net.engine(b).groups_of(&w).contains(&g));
+}
+
+// spec/crdt.md §2.3: a revert whose undo and whose deletion both write one `placed.0~` makes one delta under one stamp (the thing placed under two dots here: its first and the redo's).
+#[test]
+fn undo_with_deletion_on_one_placement_has_one_delta_stamp_spec_crdt_2_3() {
+    let (mut net, a, b, g, tb, w, id) = undo_world();
+    let undo = written(net.engine(b).revert_change(id, tb).unwrap());
+    local(&mut net, b);
+    net.run();
+    net.engine(b).revert_change(undo, tb).unwrap();
+    local(&mut net, b);
+    net.run();
+    assert!(net.engine(b).groups_of(&w).contains(&g));
+    net.engine(b).revert_change(id, tb).unwrap();
+    local(&mut net, b);
+    net.run();
+    for n in [a, b] {
+        assert!(!net.engine(n).groups_of(&w).contains(&g));
+        assert_eq!(net.eph_read(n, w, STATE), None);
+    }
+}
+
+// spec/crdt.md §4.6: a thing undone twice stays undone when the second undo is reverted: the first is still in effect.
+#[test]
+fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
+    let (mut net, _, b, _, tb, w, id) = undo_world();
+    written(net.engine(b).revert_change(id, tb).unwrap());
+    let second = written(net.engine(b).revert_change(id, tb).unwrap());
+    net.engine(b).revert_change(second, tb).unwrap();
+    assert!(net.engine(b).ephemeral_thing(&w).unwrap().deleted);
 }

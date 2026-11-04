@@ -233,7 +233,10 @@ impl Engine {
         let is_eph = |t: &&Tid| self.eph.draft_like(&self.core, t);
         let mut del: BTreeSet<Tid> = entry.map(|e| e.making.made.iter().filter(is_eph).copied().collect()).unwrap_or_default();
         let (saved, unsaved) = entry.map(|e| (e.making.saved.clone(), e.making.unsaved.clone())).unwrap_or_default();
-        let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).copied().collect()).unwrap_or_default(), unmade: del.iter().copied().collect(), saved: unsaved, unsaved: saved.clone() };
+        // a thing changes only if the revert changes it: reverting a second undo of a creation
+        // is not the undo of the first, which stays in effect
+        let deleted = |t: &Tid| self.eph.deleted.contains(t) || self.eph.drafts.get(t) == Some(&true);
+        let making = Making { made: entry.map(|e| e.making.unmade.iter().filter(is_eph).filter(|t| deleted(t)).copied().collect()).unwrap_or_default(), unmade: del.iter().filter(|t| !deleted(t)).copied().collect(), saved: unsaved, unsaved: saved.clone() };
         let keep: BTreeSet<Tid> = saved.into_iter().collect();
         if let ChangeId::Commit(c) = id
             && let Some(m) = self.core.ix.commits.get(&c)
@@ -368,7 +371,9 @@ fn ephemeral_undo(tx: &mut Tx<'_>, log: &Log, at: usize, ts: Ts, del: &BTreeSet<
             let undone = Undone { delta: &la.delta, source: &la.src, range: la.range, restored: &restored };
             let core = &*tx.core;
             let expiry = |d: &Dot| Engine::copied_expiry(core, &la.tid, &la.ak, d);
-            let before = Before { state: la.pre.clone(), complete: true };
+            // `placed.0~` has no presence of its own: empty is not absent, so a revert changes
+            // the members its batch changed and no others (spec/crdt.md §4.6)
+            let before = Before { state: la.pre.clone(), complete: la.ak.as_str() != PLACED.ak() };
             let r = undo_expiring(w, &undone, &state, before, la.schema.as_deref(), &la.ak, ts.wall_ms().0, &expiry)?;
             let expiring = r.as_ref().is_some_and(|x| x.2.is_some());
             result = r;
@@ -419,11 +424,11 @@ fn unmake_ephemeral(tx: &mut Tx<'_>, del: &BTreeSet<Tid>, ts: Ts, own: &[Source;
         let view = schema.as_ref().and_then(|s| s.view(ak.as_str()));
         // after what `out` already writes to the aspect, under the plain session
         let nonce = own[0].as_session().map(|s| s.nonce).unwrap_or_default();
-        let lo = match at.and_then(|i| out.get(i)) {
-            Some(r) => r.range.hi,
-            None => tx.txn.counter(&tid, &ak, &nonce)?,
+        // joined into one delta, so one delta stamp (spec/crdt.md §2.3)
+        let w = match at.and_then(|i| out.get(i)) {
+            Some(r) => Writer::new(ts, own[0].clone(), r.range.lo).resume(r.range.hi),
+            None => Writer::new(ts, own[0].clone(), tx.txn.counter(&tid, &ak, &nonce)?),
         };
-        let w = Writer::new(ts, own[0].clone(), lo);
         let res = match &view {
             Some(v) => run_ops(&state, w, &ops, v)?,
             None => run_ops(&state, w, &ops, &AnyView)?,
