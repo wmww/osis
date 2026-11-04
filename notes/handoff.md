@@ -24,7 +24,7 @@ Written on ostrich with main at the commit that adds this note. Nothing is runni
 - Tests: per-branch oracle sizes are a tenth of full by default, `OSIS_FULL=1` in periodic runs only; no rerun of run ranges; one all-core run per box; a study, not a third patch, after a second seed-found fix in one area (notes/coordination.md, notes/test-value-study.md).
 
 ## Suggested order
-1. eph-lane (cleanup done; review running under Wren): it blocks whole-commits 2b.
+1. eph-lane: merged (item 269).
 2. Whole commits steps 2b, 3, 4 (issues/whole-commits.md, notes/whole-commits.md): deletes the cross-thing waits and two requirement exceptions.
 3. issues/drop-rejoin-robust.md item 5 (rebuild check after every transaction in debug builds): cheap, and it will find what the rest of that issue fixes. Then its items 2, 1, 3, 4, 7, with the reference model (6) alongside.
 4. The three simplifications: remove-moves, keep-at-most-relative, roster option 2. Each deletes code and spec; spec/ describes only what is built, so each lands its own spec edit.
