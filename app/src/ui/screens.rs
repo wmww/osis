@@ -21,7 +21,7 @@ impl Ui {
     }
 
     pub(super) fn status_widget(&mut self) -> NewWidget<SizedBox> {
-        NewWidget::new_with_tag(SizedBox::new(style::label(&self.look, "", Text::Small)), STATUS)
+        NewWidget::new_with_tag(SizedBox::new(style::prose(&self.look, "", Text::Small)), STATUS)
     }
 
     pub(super) fn act(&mut self, w: NewWidget<impl Widget + ?Sized>, a: Act) -> NewWidget<dyn Widget> {
