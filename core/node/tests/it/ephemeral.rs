@@ -2131,7 +2131,7 @@ fn random_window_one_capped_host_large() {
 // both were deleted at the hosts)
 #[test]
 fn random_window_converges_spec_sync_6() {
-    for seed in [0, 1, 5327166] {
+    for seed in [0, 1, 5327166, 9130016] {
         random_window_run(seed);
     }
 }
@@ -5237,4 +5237,103 @@ fn reverting_second_undo_leaves_thing_undone_spec_crdt_4_6() {
     let second = written(net.engine(b).revert_change(id, tb).unwrap());
     net.engine(b).revert_change(second, tb).unwrap();
     assert!(net.engine(b).ephemeral_thing(&w).unwrap().deleted);
+}
+
+// spec/sync.md §9 (records about ephemeral commits in memory only; tombstones last `MAX_DRIFT`):
+// a writer typing through a host stores no row, however its bodies go (coalesced, uploaded and
+// deleted; its cursor row only moves), and once `MAX_DRIFT` passes nothing is left of them but
+// the last entries
+#[test]
+fn typing_leaves_nothing_stored_or_kept_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let w = window(&mut net, a, g, "w");
+    net.run();
+    net.advance(1000);
+    let rows_at = |net: &Net, n: usize| rows(&net.nodes[n].backend);
+    let ra = rows_at(&net, a);
+    for i in 0..200 {
+        let mut m = Mutation::new();
+        m.set(w, &eph(STATE), &s(&format!("v{i}"))).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+        // some writes coalesce behind an upload in flight, some go alone
+        if i % 3 == 0 {
+            net.round();
+        } else if i % 7 == 0 {
+            net.run();
+        }
+    }
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("v199")));
+    assert_eq!(rows_at(&net, a), ra, "the writer's store gained rows");
+    for _ in 0..4 {
+        net.advance(osis_base::format::MAX_DRIFT_MS / 2);
+    }
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("v199")));
+    for n in [a, b] {
+        let [forgotten, deleted, tombs, carriers, blobs, entries, commits] = net.sync(n).memory_kept();
+        // the window's state, its placement and a compaction snapshot at most
+        let kept = [blobs, entries, commits].into_iter().max().unwrap();
+        assert!(kept <= 4, "node {n}: blobs {blobs} entries {entries} commits {commits}");
+        assert!(forgotten <= 4 && deleted <= 4 && tombs <= 4 && carriers <= 4, "node {n}: forgotten {forgotten} deleted {deleted} tombs {tombs} carriers {carriers}");
+    }
+}
+
+// spec/sync.md §9 (Compaction): a local-only ephemeral aspect, on a thing never a label entry
+// here, is compacted like a synced one: its bodies do not pile up per write
+#[test]
+fn local_only_bodies_do_not_pile_up_spec_sync_9() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    net.group(a, &[], &[host]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let root = e.tid();
+    let t = e.new_thing(&mut m, root);
+    m.set(t, &eph(STATE), &s("x")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    for i in 0..100 {
+        let mut m = Mutation::new();
+        m.set(t, &eph(STATE), &s(&format!("v{i}"))).unwrap();
+        net.engine(a).write(m).unwrap();
+        local(&mut net, a);
+    }
+    assert_eq!(net.eph_read(a, t, STATE), Some(s("v99")));
+    let held = net.engine(a).memory_commits().len();
+    assert!(held <= 8, "{held} bodies held for one register");
+}
+
+// spec/sync.md §3, §9: a batch's one memory commit spanning things goes under a label only as
+// the parts its actor may read: a co-holder of the group reads nothing of the writer's private
+// thing written beside the window
+#[test]
+fn batch_part_on_private_thing_stays_out_of_label_spec_sync_3() {
+    let mut net = Net::new();
+    let host = net.add_host();
+    let a = net.node(1, &[host]);
+    let b = net.node(2, &[host]);
+    let g = net.group(a, &[(b, Role::Write)], &[host]);
+    net.run();
+    let e = net.engine(a);
+    let mut m = Mutation::new();
+    let me = e.tid();
+    let private = e.new_thing(&mut m, me);
+    let w = e.new_thing(&mut m, g);
+    m.op(g, &ct::GROUP, PathOp { path: vec![PathSeg::Field(0)], op: Op::Add(Value::Tid(w)) }).unwrap();
+    m.set(w, &eph(STATE), &s("public")).unwrap();
+    m.set(private, &eph(STATE), &s("secret")).unwrap();
+    e.write(m).unwrap();
+    local(&mut net, a);
+    net.run();
+    assert_eq!(net.eph_read(b, w, STATE), Some(s("public")));
+    assert_eq!(net.eph_read(b, private, STATE), None);
+    assert_eq!(net.eph_read(a, private, STATE), Some(s("secret")));
 }

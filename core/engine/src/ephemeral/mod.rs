@@ -134,7 +134,8 @@ impl Engine {
 
     /// Node-sync kept a label entry of a memory commit on `things` here (made or received): a
     /// holder may have their writes from now on, so a delete of one is resets and tombstones
-    /// (`MemorySync::synced`, `freeable`). A thing with no record held gets no row.
+    /// (`MemorySync::synced`, `freeable`), and its aspects compact only while in a closure. A thing
+    /// with no record held gets no row.
     pub fn note_memory_synced(&mut self, things: impl IntoIterator<Item = Tid>) {
         for t in things {
             if self.core.ix.held.is_memory(&t) {

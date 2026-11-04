@@ -243,7 +243,6 @@ impl SyncEngine {
         for c in signals {
             self.place_relay(c.id, c.blob, out)?;
         }
-        self.sweep_forgotten();
         self.memory.coalesced.retain(|c| self.engine.holds_memory(c));
         Ok(())
     }
@@ -257,9 +256,8 @@ impl SyncEngine {
     }
 
     /// Memory commits the engine forgot: their entries' charge is released, their header and
-    /// why kept while entries of them are known (deletes at hosts are judged by them, `pass/
-    /// delete`), the snapshots that covered them recorded as carriers, and their labels judged
-    /// again.
+    /// why (what carries them) kept while entries of them are known (deletes at hosts are judged
+    /// by them, `pass/delete`), and their labels judged again.
     fn memory_dropped(&mut self, dropped: &[(CommitId, Arc<osis_commit::Header>, MemoryDrop)]) {
         let mut labels = BTreeSet::new();
         for (c, header, why) in dropped {
@@ -269,11 +267,6 @@ impl SyncEngine {
                 self.state.charge_pending(*l, *b, None);
                 self.state.touch(*l, *b);
                 labels.insert(*l);
-            }
-            if let MemoryDrop::Covered { by } = why {
-                for s in by {
-                    self.state.set_carrier(*c, *s);
-                }
             }
             // recorded with or without entries: one forgotten before it was placed may stand
             // for what carries another (`carriers_of_forgotten`); the sweep keeps what is needed
@@ -313,13 +306,17 @@ impl SyncEngine {
         out
     }
 
-    /// Forgets the headers of forgotten commits no entry names any more, but those that stand
-    /// for what carries another forgotten commit (`carriers_of_forgotten`).
-    fn sweep_forgotten(&mut self) {
+    /// Forgets the headers of forgotten commits no entry names any more, or held again, but
+    /// those that stand for what carries another forgotten commit (`carriers_of_forgotten`).
+    /// With the tombstones' expiry (a scan of every deleted body: not per write).
+    pub(crate) fn sweep_forgotten(&mut self) {
+        if self.memory.forgotten.is_empty() {
+            return;
+        }
         // kept while an entry of the commit is known or one of its bodies left a label by a
         // delete within the tombstone (a host that got it late announces it again)
         let deleted: BTreeSet<CommitId> = self.state.deleted.keys().map(|(_, c, _)| *c).collect();
-        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.keys().filter(|c| self.has_entries(c) || deleted.contains(c)).copied().collect();
+        let mut keep: BTreeSet<CommitId> = self.memory.forgotten.keys().filter(|c| !self.engine.holds_memory(c) && (self.has_entries(c) || deleted.contains(c))).copied().collect();
         let mut stack: Vec<CommitId> = keep.iter().copied().collect();
         while let Some(c) = stack.pop() {
             for x in self.memory.forgotten.get(&c).map(|f| f.why.by()).unwrap_or_default() {
@@ -942,6 +939,14 @@ impl SyncEngine {
         }
         let _ = writeln!(out, "  bytes {:?} pending {:?} refused {:?}", self.state.memory_bytes.get(l), self.state.pending_bytes.get(l), self.memory.refused.get(l).map(|r| r.ids.len()));
         out
+    }
+
+    /// Tests: what node-sync keeps beside the memory entries: forgotten headers, deleted bodies,
+    /// tombstones, carriers, blob records, class marks of entries and commits.
+    #[doc(hidden)]
+    pub fn memory_kept(&self) -> [usize; 7] {
+        let s = &self.state;
+        [self.memory.forgotten.len(), s.deleted.len(), s.tombs.len(), s.carriers.len(), s.blobs.values().filter(|r| r.memory).count(), s.memory_entries.len(), s.memory_commits.len()]
     }
 
     /// Memory entries held under `l` whose commit the engine holds (tests, diagnostics).

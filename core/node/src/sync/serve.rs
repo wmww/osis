@@ -921,6 +921,7 @@ impl SyncEngine {
         let wall = self.state.now;
         self.state.feed.expire(wall);
         self.state.expire_tombs(wall);
+        self.sweep_forgotten();
         // these scan every entry and placement: at most once per `RECORD_SWEEP_MS`
         if wall >= self.swept.saturating_add(RECORD_SWEEP_MS) {
             self.swept = wall;

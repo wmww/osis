@@ -246,15 +246,16 @@ impl Engine {
     /// charged (`part_weight`) plus `ENTRY_CHARGE`, this node writes the snapshot
     /// (`compaction_snapshot`) if it may. Weighed only once the held cost passes `FACTOR` times
     /// the snapshot cost last weighed, so rebuilds cost O(1) per byte written, amortized. Only
-    /// aspects of things in a labeled closure here: compaction serves the caps, and a snapshot
-    /// of a thing in no closure goes nowhere while the bodies it covered may still travel in a
-    /// commit that also touches the closure (a deletion's resets beside the unplacing). The
-    /// snapshots written (marked changed by their apply: the passes place them).
+    /// aspects of things in a labeled closure here or never a label entry here (local-only data,
+    /// whose bodies would pile up): of a thing that left every closure a snapshot goes nowhere
+    /// while the bodies it covered may still travel in a commit that also touches the closure (a
+    /// deletion's resets beside the unplacing). The snapshots written (marked changed by their apply: the passes place them).
     pub fn memory_compactions(&mut self, force: bool) -> Result<Vec<CommitId>> {
         let dirty: Vec<(Tid, Ak)> = if force { self.memory_aspects() } else { std::mem::take(&mut self.core.memory.dirty).into_iter().collect() };
         let mut out = Vec::new();
         for (tid, ak) in dirty {
-            if (!self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none()) || !self.ephemeral_synced(&tid) {
+            // out of every closure but once a label entry here: holders may still need its parts
+            if (!self.core.ix.held.is_memory(&tid) && self.core.created(&tid).is_none()) || (self.core.memory.synced.contains(&tid) && !self.ephemeral_synced(&tid)) {
                 continue;
             }
             let Some((held, largest, bodies)) = self.held_cost(&tid, &ak)? else { continue };
