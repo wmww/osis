@@ -1,1 +1,2 @@
 - issues/set-hosts-other-devices-links.md misread the guard: a working link's K never moved, on any device (`follow_labels`'s holder check, L has no owner). What moved was a revoked link's K. Check what a stated bug's mechanism does before building the brief's test around it.
+- Review: an order seed failing took 12 min to tell apart from the branch, presumably mostly shrinking, at load (replaying the one seed: 164 s on the branch, 434 s on the base). A replay that skips the shrink would answer in seconds.

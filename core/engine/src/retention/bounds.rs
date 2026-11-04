@@ -153,9 +153,9 @@ impl Engine {
     }
 
     /// Whether a write of the body holding aspect `ak` of `c` is still in this node's state (a
-    /// dot its deltas own, an import's origins' dots, survives there; unknown counts as live). A body without one needs no
-    /// carrier before it leaves a label (spec/sync.md §7); one with one gets `AT_MOST_GRACE`
-    /// (spec/commits.md §5). Writes the state does not hold count
+    /// dot its deltas own, an import's origins' dots, survives there; unknown counts as live). A
+    /// body without one needs no carrier before it leaves a label (spec/sync.md §7); one with one
+    /// gets `AT_MOST_GRACE` (spec/commits.md §5). Writes the state does not hold count
     /// dead: superseded, purged or expired ones, and those of deltas invalid here or undone (they
     /// are stripped from the state; they count live again once a validity flip or a redo puts
     /// them back). Any write counts: resets, tombstones and value-less writes too. Kept per body
@@ -170,7 +170,9 @@ impl Engine {
 
     /// Whether delta `ai` of `c` holds writes of its own and is held value-less for all of them: a
     /// purge took them, so it has no live write to carry (spec/commits.md §5). An import with a
-    /// purged origin and another standing is not: its other writes count (`body_live`).
+    /// purged origin and another standing is not: its other writes count (`body_live`). Limit, with
+    /// that other origin dead too: the residue reads live and its blob waits for a carrier. Only a
+    /// hand-made import lists several origins, and only the thing's creator can write one.
     pub fn part_valueless(&self, h: &Header, c: &CommitId, ai: usize) -> bool {
         let own = writes_of(&self.core, h, c, ai);
         !own.is_empty() && gone_of(&self.core, h, c, ai).len() == own.len()
