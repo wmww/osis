@@ -52,7 +52,7 @@ impl Replica {
     fn apply(&mut self, d: Frag) {
         apply(&mut self.state, d);
         if let Some(s) = &mut self.state {
-            s.strip(&in_ranges(&self.expired));
+            s.expire(&in_ranges(&self.expired));
         }
     }
     fn expire(&mut self, r: &Range) {
@@ -60,7 +60,7 @@ impl Replica {
             self.expired.push(r.clone());
         }
         if let Some(s) = &mut self.state {
-            s.strip(&in_ranges(&self.expired));
+            s.expire(&in_ranges(&self.expired));
         }
     }
 }
@@ -190,7 +190,7 @@ fn converge(seed: u64, ty: &Ty, n: usize, rounds: usize, partial: bool, expiry: 
         apply(&mut reference, c.delta.clone());
     }
     if let Some(s) = &mut reference {
-        s.strip(&in_ranges(&expiring));
+        s.expire(&in_ranges(&expiring));
     }
     assert_eq!(reference.as_ref().map_or(vec![], snapshot), snaps[0], "matches join-then-expire");
     // frontiers cover every commit, and a fresh node bootstrapped from a snapshot reads the same
@@ -283,6 +283,13 @@ proptest! {
         // wins over its value-less one
         let expired: Vec<Range> = ranges.into_iter().filter(|_| r.chance(1, 2)).collect();
         let strip = |f: &Frag| { let mut g = f.clone(); g.strip(&in_ranges(&expired)); g };
+        let expire = |f: &Frag| { let mut g = f.clone(); g.expire(&in_ranges(&expired)); g };
+        prop_assert_eq!(expire(&join3(a, b)), join3(&expire(a), &expire(b)), "expire commutes with join");
+        prop_assert_eq!(expire(&join3(a, &expire(b))), expire(&join3(a, b)), "expire commutes with partial expire");
+        prop_assert_eq!(expire(&strip(a)), expire(a), "expire of a strip");
+        prop_assert_eq!(expire(&expire(a)), expire(a), "expire idempotent");
+        let (ea, eb, ec) = (expire(a), expire(b), expire(c));
+        prop_assert_eq!(join3(&join3(&ea, &eb), &ec), join3(&ea, &join3(&eb, &ec)), "associative after expire");
         prop_assert_eq!(strip(&join3(a, b)), join3(&strip(a), &strip(b)), "strip commutes with join");
         prop_assert_eq!(strip(&join3(a, &strip(b))), strip(&join3(a, b)), "strip commutes with partial strip");
         prop_assert_eq!(strip(&strip(a)), strip(a), "strip idempotent");
@@ -922,10 +929,10 @@ fn list_delete_is_an_element_reset() {
     let mut s3 = base.clone();
     s3.join(later.clone());
     assert_eq!(s3.read(), Some(Value::List(vec![Value::fields(vec![(1, Value::Int(1)), (2, Value::Int(3))])])));
-    s3.strip(&in_ranges(&[range(&a)]));
+    s3.expire(&in_ranges(&[range(&a)]));
     assert_eq!(s3.read(), Some(Value::List(vec![])), "the element goes with its creation's expiry");
     let mut s4 = base.clone();
-    s4.strip(&in_ranges(&[range(&a)]));
+    s4.expire(&in_ranges(&[range(&a)]));
     assert_eq!(s4.read(), Some(Value::List(vec![])));
     s4.join(later);
     assert_eq!(s4, s3);

@@ -61,6 +61,8 @@ pub struct Mutation {
     /// Map entries to reset whatever their liveness here (spec/crdt.md §5.6): an explicit removal
     /// of an edge already removed (role flows).
     pub(crate) dead_resets: BTreeMap<(Tid, Ak), Vec<(osis_crdt::Dot, Value)>>,
+    /// Aspects whose hidden records this commit resets (`Fragment::sweep`, compaction).
+    pub(crate) sweeps: BTreeSet<(Tid, Ak)>,
     /// Chunk and node blobs never reused, written afresh (`Engine::relink`).
     pub(crate) fresh: std::collections::BTreeSet<osis_base::BlobId>,
     /// Things `Engine::write` persists with this batch if ephemeral.
@@ -85,7 +87,7 @@ fn ak_of<K: AspectKey>(key: &K) -> Result<Ak> {
 
 impl Mutation {
     pub fn new() -> Mutation {
-        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
+        Mutation { creates: Creates::new(), first: BTreeMap::new(), aspects: BTreeMap::new(), actor: None, confined: false, commit_form: false, purge: Vec::new(), undoes: None, undo_keep: Default::default(), frontier: None, unchecked: false, signer: None, roster: false, dead_resets: BTreeMap::new(), sweeps: BTreeSet::new(), fresh: Default::default(), persist: Default::default(), free: Default::default(), ts: None, synced: Vec::new() }
     }
 
     /// The actor this node acts for (header field 2); default the node itself.
@@ -183,6 +185,12 @@ impl Mutation {
     /// Removes the aspect (spec/crdt.md §4.3: absent afterwards).
     pub fn remove_aspect<K: AspectKey>(&mut self, tid: Tid, key: &K) -> Result<&mut Self> {
         self.op(tid, key, PathOp { path: Vec::new(), op: Op::RemoveAspect })
+    }
+
+    /// Resets the hidden records of `(tid, ak)` (`Fragment::sweep`); the schema gives its retention.
+    pub(crate) fn sweep(&mut self, tid: Tid, ak: Ak, schema: Option<Arc<Schema>>) {
+        self.aspects.entry((tid, ak.clone())).or_default().schema = schema;
+        self.sweeps.insert((tid, ak));
     }
 
     /// Retention for this aspect's delta, instead of the schema default (spec/commits.md §5).
@@ -427,6 +435,13 @@ pub(crate) fn framing_for(core: &Core, memory: bool, plan: &CommitPlan, publishe
     Ok((retention, expires, framing))
 }
 
+/// The writes of a compacting writer's sweep of `(tid, ak)` at stamp `r` (`Fragment::sweep`), the
+/// value-less list saying what is gone here.
+pub(crate) fn sweep_of(tx: &mut Tx<'_>, tid: &Tid, ak: &Ak, r: &osis_crdt::Stamp) -> Result<Option<Fragment>> {
+    let gone = tx.core.ix.valueless.get(&(*tid, ak.clone())).cloned().unwrap_or_default();
+    Ok(tx.state(tid, ak)?.and_then(|st| st.sweep(r, &|d| gone.iter().any(|o| o.owns(d)))))
+}
+
 /// The writer's own source: its session, or for commit form a placeholder commit that sorts
 /// below every other commit like the real one will (spec/crdt.md §3.3 rule 2).
 fn own_source(form: Form, node: Tid) -> Source {
@@ -617,7 +632,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
         e.schema = Some(core_schema.clone());
         e.ops.push(PathOp { path: Vec::new(), op: Op::Set(rec.to_value()) });
     }
-    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().cloned().collect();
+    let dead: Vec<(Tid, Ak)> = m.dead_resets.keys().chain(&m.sweeps).cloned().collect();
     for k in dead {
         m.aspects.entry(k).or_default();
     }
@@ -736,6 +751,7 @@ pub(crate) fn commit_in(tx: &mut Tx<'_>, mut m: Mutation) -> Result<Option<Commi
             }
             (None, Some(ds)) => Some((osis_crdt::reset_entries(&w2, ds), w2.range())),
         };
+        let out = if m.sweeps.contains(&(tid, ak.clone())) { sweep_of(tx, &tid, &ak, &w2.delta_stamp())?.map(|f| (f, w2.range())) } else { out };
         let Some((fragment, range)) = out else { continue };
         if form == Form::Commit {
             next_ctr = range.hi;

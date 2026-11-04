@@ -163,18 +163,17 @@ impl SeqElem {
     fn creation_counts(&self) -> bool {
         matches!(self.content, Content::Frag(_)) || self.char().is_some() || self.deleted.as_ref().map_or(false, |d| d.1)
     }
-    /// Text: the deleted flag. List: not live (§5.7 Live): no creation held, the creation below the element's
-    /// reset, the creation value-less (its content holds a value-less write of its commit, §4.7), or no present
-    /// content fragment.
+    /// Text: the deleted flag. List: not live (§5.7 Live): no creation held, the creation at or below the element's
+    /// reset (at: it expired or was purged at this node), or no present content fragment.
     pub fn is_deleted(&self, text: bool) -> bool {
         if text {
             return self.deleted.as_ref().map_or(false, |d| d.1);
         }
         let Some((c, _)) = &self.created else { return true };
-        if self.deleted.as_ref().is_some_and(|(r, _)| *c < *r) {
+        if self.deleted.as_ref().is_some_and(|(r, _)| *c <= *r) {
             return true;
         }
-        !matches!(&self.content, Content::Frag(f) if f.present() && !f.valueless_of(c))
+        !matches!(&self.content, Content::Frag(f) if f.present())
     }
     fn is_record(&self) -> bool {
         self.created.is_some() || !self.pos.is_empty() || self.deleted.is_some() || matches!(self.content, Content::Frag(_))
@@ -843,42 +842,24 @@ impl Frag {
     /// Hold every value-carrying write owned by an expired commit value-less (§4.7). `expired` is asked about owner
     /// dots (never `Derived`). Commutes with join; applied after every join on a node past the commit's T.
     pub fn strip(&mut self, expired: &dyn Fn(&Dot) -> bool) {
-        self.strip_values(expired);
+        self.strip_values(expired, false);
         // drop `Derived` records left without a write (their creation was known only from the value)
         self.prune(None);
     }
 
-    /// Whether the fragment holds a value-less write (§4.7) of the commit of stamp `c` (its `ts` and source): a
-    /// register or case write without its value, a key-erased record's creation, a text whose chars of that commit
-    /// are gone (a deleted element's tells nothing: snapshots never carry it). A list element whose content holds
-    /// one is not live (§5.7 Live): its creation's value, the content its commit wrote, is held value-less.
-    pub fn valueless_of(&self, c: &Stamp) -> bool {
-        let same = |s: &Stamp| s.ts == c.ts && owner(&s.dot).source == owner(&c.dot).source;
-        match self {
-            Frag::Slots { reg, slots } => reg.iter().any(|r| r.valueless_of(c)) || slots.values().any(|f| f.valueless_of(c)),
-            Frag::Register { write, .. } => matches!(write, Some((s, None)) if same(s)),
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values().filter_map(|e| e.frag.as_ref()).any(|f| f.valueless_of(c)),
-            Frag::Struct { fields, .. } => fields.values().any(|f| f.valueless_of(c)),
-            Frag::Enum { case, payloads, .. } => matches!(case, Some((s, None)) if same(s)) || payloads.values().any(|f| f.valueless_of(c)),
-            Frag::Map { entries, .. } => entries.iter().any(|((_, k), en)| {
-                (k.is_none() && en.created.as_ref().is_some_and(same)) || en.frag.as_ref().is_some_and(|f| f.valueless_of(c))
-            }),
-            // a text: no shown char of that commit left and a stripped one there (a char-less element beside valued
-            // ones is an import's anchor, or an undelete with no char: nothing was stripped)
-            Frag::Seq { text: true, elems, .. } => {
-                let of = || elems.values().filter(|el| !el.is_deleted(true) && el.created.as_ref().is_some_and(|(s, _)| same(s)));
-                of().any(|el| el.char().is_none()) && !of().any(|el| el.char().is_some())
-            }
-            Frag::Seq { elems, .. } => elems.values().any(|el| matches!(&el.content, Content::Frag(f) if f.valueless_of(c))),
-        }
+    /// Holds them value-less at this node (§4.7): `strip`, and a list element they created gets its creation's own
+    /// stamp as its reset (§5.7 Live).
+    pub fn expire(&mut self, expired: &dyn Fn(&Dot) -> bool) {
+        self.strip_values(expired, true);
+        self.prune(None);
     }
 
-    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool) {
+    fn strip_values(&mut self, expired: &dyn Fn(&Dot) -> bool, at_node: bool) {
         let exp = |d: &Dot| expired(owner(d));
         match self {
             Frag::Slots { reg, slots } => {
-                reg.iter_mut().for_each(|r| r.strip_values(expired));
-                slots.values_mut().for_each(|f| f.strip_values(expired));
+                reg.iter_mut().for_each(|r| r.strip_values(expired, at_node));
+                slots.values_mut().for_each(|f| f.strip_values(expired, at_node));
             }
             Frag::Register { write, .. } => {
                 if let Some(w) = write {
@@ -887,15 +868,15 @@ impl Frag {
                     }
                 }
             }
-            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired)),
-            Frag::Struct { fields, .. } => fields.values_mut().for_each(|f| f.strip_values(expired)),
+            Frag::Bag { elems, .. } | Frag::Set { elems, .. } => elems.values_mut().filter_map(|e| e.frag.as_mut()).for_each(|f| f.strip_values(expired, at_node)),
+            Frag::Struct { fields, .. } => fields.values_mut().for_each(|f| f.strip_values(expired, at_node)),
             Frag::Enum { case, payloads, .. } => {
                 if let Some(k) = case {
                     if exp(&k.0.dot) {
                         k.1 = None;
                     }
                 }
-                payloads.values_mut().for_each(|f| f.strip_values(expired));
+                payloads.values_mut().for_each(|f| f.strip_values(expired, at_node));
             }
             Frag::Map { entries, .. } => {
                 // the key is the creation's value, wherever a record of the entry repeats it: the dot's records join
@@ -910,16 +891,24 @@ impl Frag {
                     out.insert(id, en);
                 }
                 for f in out.values_mut().filter_map(|en| en.frag.as_mut()) {
-                    f.strip_values(expired);
+                    f.strip_values(expired, at_node);
                 }
                 *entries = out;
             }
-            Frag::Seq { elems, .. } => {
+            Frag::Seq { text, elems, .. } => {
+                let text = *text;
                 for (d, el) in elems.iter_mut() {
+                    if at_node && !text && exp(d) {
+                        if let Some((c, _)) = &el.created {
+                            if el.deleted.as_ref().map_or(true, |x| x.0 < *c) {
+                                el.deleted = Some((c.clone(), true));
+                            }
+                        }
+                    }
                     match &mut el.content {
                         // a list element loses the content writes of the expiring delta; others' nested writes
                         // stay, hidden while the element is not live (§4.7, §5.7 Live)
-                        Content::Frag(f) => f.strip_values(expired),
+                        Content::Frag(f) => f.strip_values(expired, at_node),
                         _ if exp(d) => {
                             el.content = Content::None;
                             el.undel = None;

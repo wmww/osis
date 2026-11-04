@@ -968,14 +968,14 @@ pub(crate) fn is_visible(e: &SeqElem, text: bool) -> bool {
     if text {
         return e.char().is_some() && !e.flag();
     }
-    // a list element is live while its creation is held, outlives the element's reset and is
-    // valued (its content holds no value-less write of its commit, §4.7), and its content reads
-    // (§5.7 Live): a write newer than the reset never shows the element again
+    // a list element is live while its creation is held and above the element's reset, and its
+    // content reads (§5.7 Live): a write newer than the reset never shows the element again; a
+    // creation expired or purged here has its own stamp as the reset
     let Some((c, _)) = &e.created else { return false };
-    if e.reset().is_some_and(|r| *c < r) {
+    if e.reset().is_some_and(|r| *c <= r) {
         return false;
     }
-    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some() && !f.valueless_of(c))
+    matches!(&e.content, SeqContent::Frag(f) if f.read().is_some())
 }
 
 /// The read of a present sequence: string or list (§5.7 Read, §6).
@@ -1009,11 +1009,21 @@ pub(crate) fn read(s: &Seq) -> Option<Value> {
 }
 
 /// Holds value-carrying writes of expired deltas value-less (§4.7); `expired` gets owner dots.
-pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, ch: &mut Changes) {
+/// `at_node`: they expired here, so a list element they created gets its creation's own stamp as
+/// its reset, which ends it whatever else was written into it (§5.7 Live) and prunes nothing a
+/// later write holds (a nested write is newer than the creation).
+pub(crate) fn strip_values(s: &mut Seq, expired: &dyn Fn(&Dot) -> bool, at_node: bool, ch: &mut Changes) {
+    let text = s.text;
     for (d, el) in s.elems_mut().iter_mut() {
+        if at_node && !text && expired(d.owner())
+            && let Some((c, _)) = &el.created
+            && el.deleted.as_ref().is_none_or(|x| x.0 < *c)
+        {
+            el.deleted = Some((c.clone(), true));
+        }
         match &mut el.content {
             // a list element loses only the content writes of the expiring delta (§4.7)
-            SeqContent::Frag(f) => f.strip_values(expired, ch),
+            SeqContent::Frag(f) => f.strip_values(expired, at_node, ch),
             // a text element's char, the undelete's copy included (§4.7)
             _ if expired(d.owner()) => {
                 el.content = SeqContent::None;
