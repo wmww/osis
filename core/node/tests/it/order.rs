@@ -1640,9 +1640,15 @@ fn flip(w: &Facts, g: &Facts, inv: &Invalid, k: &BodyKey) -> bool {
 /// once each is given these again (`alike_exchanged`).
 fn drop_flips(want: &Judged, got: &Judged) -> BTreeSet<String> {
     let ((wf, inv), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
-    // or missing at one node: dropped while invalid and valid since, so fetched again (`valid_again`)
-    let refetched = |k: &BodyKey| wf[k].at_most && (wf[k].missing != gf[k].missing || wf[k].missing);
-    wf.keys().filter(|k| gf.contains_key(*k) && (flip(&wf, &gf, &inv, k) || refetched(k))).map(|k| k.0.clone()).collect()
+    let again = refetched(want, got);
+    wf.keys().filter(|k| gf.contains_key(*k) && (flip(&wf, &gf, &inv, k) || again.contains(&k.0))).map(|k| k.0.clone()).collect()
+}
+
+/// The commits with a keep-at-most part missing at either node: dropped while invalid and valid
+/// since, so fetched again (`valid_again`).
+fn refetched(want: &Judged, got: &Judged) -> BTreeSet<String> {
+    let ((wf, _), (gf, _)) = (facts_of(&want.facts), facts_of(&got.facts));
+    wf.keys().filter(|k| gf.contains_key(*k) && wf[*k].at_most && (wf[*k].missing || gf[*k].missing)).map(|k| k.0.clone()).collect()
 }
 
 /// Whether two nodes holding the same commits read alike (`None`), else the first difference: reads
@@ -1791,7 +1797,8 @@ fn alike_exchanged(played: &Played, want: &Judged, want_order: &[usize], got: &J
 /// no writer left the exceptions have no end), value-less stamps may stay apart. That compaction
 /// may reach a node before a flip that its keep bounds or a purge dropped the snapshot for: the
 /// node flags the aspect suspect and a writer snapshots it again (spec/sync.md §7), so here a
-/// flagged aspect's compactions come again, as that snapshot does.
+/// flagged aspect's compactions come again, as that snapshot does, and a body missing again comes
+/// from a node holding it.
 fn alike_repaired(played: &Played, want: &Judged, want_order: &[usize], got: &Judged, got_order: &[usize], way: Way) -> Option<String> {
     let at = played.now.0.saturating_sub(HOUR);
     let compactions: Vec<(usize, BTreeSet<(String, String)>)> = played
@@ -1808,7 +1815,9 @@ fn alike_repaired(played: &Played, want: &Judged, want_order: &[usize], got: &Ju
         let others = keyed(j.part("reads")).into_keys().chain(keyed(want.part("reads")).into_keys()).chain(keyed(got.part("reads")).into_keys()).filter(|k| !compacted.contains(k)).collect();
         Judged { expired_pending: others, parts, ..j.clone() }
     };
-    let again: Vec<usize> = compactions.iter().filter(|c| c.1.iter().any(|k| want.suspect.contains(k) || got.suspect.contains(k))).map(|c| c.0).collect();
+    // what a flag's body is fetched as, then the compactions
+    let mut again = packs_of(played, &refetched(want, got));
+    again.extend(compactions.iter().filter(|c| c.1.iter().any(|k| want.suspect.contains(k) || got.suspect.contains(k))).map(|c| c.0));
     if again.is_empty() {
         return alike(&plain(want), &plain(got));
     }
